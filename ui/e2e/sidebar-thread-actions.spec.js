@@ -508,3 +508,39 @@ test("a Delete the harness refuses names the thread with its reason, from the mo
     expect(harness.threadStore.get(id("Bulk three"))).toBeTruthy();
   }finally{await harness.close()}
 });
+
+test("an Undo the harness refuses says so where the Undo was, naming the thread it could not put back, and writes nothing in the open thread",async({page})=>{
+  test.setTimeout(120_000);
+  const list=["Bulk one","Bulk two","Bulk three","Bulk four","Bulk five","Bulk six"];
+  const {harness,proxy,id}=await openSidebarApp(page,list);
+  const toast=page.getByTestId("app-action-error"),conversation=page.locator(".conversation-column");
+  try{
+    // Bulk one stays open while another thread is archived from its row's menu and the harness refuses to bring it back: Undo is
+    // clicked on the toast in dark, and Ctrl+Z pressed in light.
+    for(const [mode,name] of [["dark","Bulk two"],["light","Bulk three"]]){
+      await switchMode(page,mode);
+      const row=await rowMenu(page,name);
+      await row.getByRole("button",{name:"Archive",exact:true}).click();
+      await expect(threadRow(page,name)).toHaveCount(0);await expect(undoToast(page).locator("span").first()).toHaveText("Thread archived");
+      proxy.refuse=message=>message.method==="thread/unarchive"?"Archive store is read-only":null;
+      if(mode==="dark")await undoToast(page).getByRole("button",{name:"Undo",exact:true}).click();else await page.keyboard.press("Control+z");
+      await expect(toast).toHaveText("Could not restore “"+name+"”: Archive store is read-only.");
+      await expect(undoToast(page)).toHaveCount(0);await expect(threadRow(page,name)).toHaveCount(0);
+      await expect(conversation).toContainText("Done with bulk one.");await expect(conversation.getByText("Archive store is read-only")).toHaveCount(0);
+      await shoot(page,"sidebar-archive-undo-refused");
+      proxy.refuse=()=>null;
+    }
+    expect(harness.threadStore.get(id("Bulk two")).archived).toBe(true);expect(harness.threadStore.get(id("Bulk three")).archived).toBe(true);
+    // The Undo of a bulk Archive tries every thread, as the Archive did: the one the harness keeps is named, and the other comes back.
+    await switchMode(page,"dark");
+    await selectThreads(page,["Bulk four","Bulk five"]);
+    await bulkBar(page).getByRole("button",{name:"Archive",exact:true}).click();
+    await expect(undoToast(page)).toContainText("2 threads archived");await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk six"]]]);
+    proxy.refuse=message=>message.method==="thread/unarchive"&&message.params?.threadId===id("Bulk four")?"Archive store is read-only":null;
+    await undoToast(page).getByRole("button",{name:"Undo",exact:true}).click();
+    await expect(toast).toHaveText("Could not restore “Bulk four”: Archive store is read-only.");
+    await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk five","Bulk six"]]]);
+    await expect(conversation.getByText("Archive store is read-only")).toHaveCount(0);
+    expect(harness.threadStore.get(id("Bulk four")).archived).toBe(true);expect(harness.threadStore.get(id("Bulk five")).archived).toBeFalsy();
+  }finally{await harness.close()}
+});

@@ -1985,6 +1985,9 @@ export default function App(){
   const orderedSectionsRef=useRef([]);orderedSectionsRef.current=Array.isArray(settings.orderedThreadSections)?settings.orderedThreadSections.map(String):[];
   // The moves a person made that are queued or being written (moveThreadOrder): pending, made in all, and the epoch a failed move ends.
   const threadMovesRef=useRef({tail:Promise.resolve(),pending:0,made:0,epoch:0});
+  // Each thread's meta, also a ref: a list load that an older render started (an Undo's, made in the render of its action) merges with
+  // the newest, so a thread archived since that render, one whose Undo the harness refused, stays out of the list.
+  const threadMetaRef=useRef(threadMeta);threadMetaRef.current=threadMeta;
   async function loadThreads(client,{strict=false}={}){
     const moves=threadMovesRef.current,madeBefore=moves.made;
     try{
@@ -1999,7 +2002,7 @@ export default function App(){
       setThreads(previous=>{
         const shown=keep?new Map(previous.filter(thread=>Number.isFinite(thread?.sectionRank)).map(thread=>[String(thread.id),thread])):null;
         const incoming=shown?ranked.map(thread=>{const local=shown.get(String(thread.id));return local&&(local.section?.id||null)===(thread.section?.id||null)?{...thread,sectionRank:local.sectionRank,sectionPlaced:local.sectionPlaced,sectionOrderError:null}:thread}):ranked;
-        return mergeThreadCatalog(previous.map(thread=>thread?.sectionRank==null&&!thread?.sectionOrderError?thread:{...thread,sectionRank:null,sectionOrderError:null}),incoming,{runtime:agentRuntime,provider,threadMeta});
+        return mergeThreadCatalog(previous.map(thread=>thread?.sectionRank==null&&!thread?.sectionOrderError?thread:{...thread,sectionRank:null,sectionOrderError:null}),incoming,{runtime:agentRuntime,provider,threadMeta:threadMetaRef.current});
       });
       setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,ranked));
       return mergeThreadCatalog([],ranked,{runtime:agentRuntime,provider});
@@ -2559,10 +2562,11 @@ export default function App(){
     },250);return()=>{cancelled=true;clearTimeout(timer)}
   },[query,threads,threadMeta,projectRecords,rpc,rpcStatus,agentRuntime,runtimeCapabilities.threadSearch]);
 
+  // label: what could not be done, said before the error's own words; "" for an error that says it itself (a thread's Undo).
   function showActionError(error,label="Action failed"){
     const detail=error?.message||String(error)||"Unknown error";
     if(actionErrorTimerRef.current)clearTimeout(actionErrorTimerRef.current);
-    setActionError(label+": "+detail);
+    setActionError(label?label+": "+detail:detail);
     actionErrorTimerRef.current=setTimeout(()=>{actionErrorTimerRef.current=null;setActionError("")},6000);
   }
   function runUserAction(action,label){
@@ -3227,18 +3231,20 @@ export default function App(){
     threadUndoTimerRef.current=setTimeout(()=>{if(threadUndoRef.current?.id===id){threadUndoRef.current=null;setThreadUndo(null)}},5000);
   }
   // A Settings undo (a deleted custom theme) fails into the Settings alert while Settings is open. Once it is closed, the app's error
-  // toast shows the failure: the chat "Undo failed" event is not on screen there, and a theme failure does not belong in a thread.
+  // toast shows the failure, as it does a thread's (undoThreadAction).
   function offerSettingsUndo(label,undo){offerThreadUndo(label,()=>Promise.resolve().then(undo).catch(error=>{if(sectionRef.current!=="settings")showActionError(error,"Undo failed")}))}
   // A removed project or environment comes back the same way. Its page reports a failed restore while it is on screen; once it is
   // not, the restore throws and the app's error toast says so.
   // A page's Undo that went through with something left out (Projects: a save that did not answer in time) says so here when that
   // page is no longer on screen: it resolves to the note.
   function offerPageUndo(label,undo){offerThreadUndo(label,()=>Promise.resolve().then(undo).then(note=>{if(typeof note==="string"&&note)showActionError(new Error(note),"Undo")}).catch(error=>showActionError(error,"Undo failed")))}
+  // A thread's Undo the harness refuses says so in the app's error toast, where the Undo was, naming the threads it could not put back
+  // (undoThreadActions): the open thread's conversation is about another thread.
   async function undoThreadAction(){
     const current=threadUndoRef.current;if(!current)return;
     clearThreadUndo();
     try{await current.undo()}
-    catch(error){setEvents(prev=>[...prev,{id:"thread-undo-error-"+Date.now(),kind:"error",title:"Undo failed: "+(error.message||String(error)),status:"done",raw:{}}])}
+    catch(error){showActionError(error,"")}
   }
   useEffect(()=>()=>{if(threadUndoTimerRef.current)clearTimeout(threadUndoTimerRef.current)},[]);
   // Where an undo puts the thread back: its section, and its place there only if it held one a person gave it (thread-order.js).
@@ -3326,10 +3332,15 @@ export default function App(){
         loadThreads(rpc);if(wasActive)await openThread(shown);
       };
     }else return null;
-    const result={label,undo,threadId:thread.id,anchorThreadId:snapshot.anchorThreadId,beforeThreadId:snapshot.beforeThreadId};if(offerUndo&&undo)offerThreadUndo(label,undo);return result;
+    const result={label,undo,threadId:thread.id,title:titleOf(thread),anchorThreadId:snapshot.anchorThreadId,beforeThreadId:snapshot.beforeThreadId};if(offerUndo&&undo)offerThreadUndo(label,()=>undoThreadActions([result]));return result;
   }
-  // An undo of several threads puts each back after the thread it goes before, when that one is put back too (thread-order.js).
-  async function undoThreadActions(results){const restored=new Map();for(const result of undoOrder(results))await result.undo?.(restored)}
+  // An undo of several threads puts each back after the thread it goes before, when that one is put back too (thread-order.js). It
+  // tries every thread, as the action did, and the error names the ones the harness would not put back, each with its reason.
+  async function undoThreadActions(results){
+    const restored=new Map(),failed=[];
+    for(const result of undoOrder(results)){try{await result.undo?.(restored)}catch(error){failed.push({title:result.title,error})}}
+    if(failed.length)throw new Error(bulkActionFailure("restore",failed));
+  }
   async function threadAction(thread,action){
     if(action==="pin"||action==="settle"||action==="active"||action==="archive"){await reversibleThreadAction(thread,action);return}
     if(action==="snooze"){setSnoozeRequest({threads:[thread],bulk:false});return}

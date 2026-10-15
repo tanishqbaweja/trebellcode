@@ -1140,7 +1140,7 @@ test("on Codex a section shows by recent activity until a person orders it, then
     await page.getByTestId("thread-undo-toast").getByRole("button",{name:"Undo",exact:true}).click();
     await expect.poll(()=>moves().at(-1)).toEqual({threadId:"pinned-beta",sectionId:"0198-pinned",beforeThreadId:"pinned-alpha"});
     await expect.poll(()=>sidebarGroups(page)).toEqual(reordered);
-    await expect(page.getByText(/Undo failed/)).toHaveCount(0);
+    await expect(page.getByText(/Could not restore/)).toHaveCount(0);
   }finally{await harness.close()}
 });
 
@@ -1446,7 +1446,7 @@ test("on a relay harness a bulk Pin un-done puts the threads a person placed bac
     await page.screenshot({path:join(shotsDir,"sidebar-relay-bulk-undo-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
     // The relay keeps that order.
     await page.reload();await expect.poll(()=>sidebarGroups(page)).toEqual(placed);
-    await expect(page.getByText(/Undo failed/)).toHaveCount(0);
+    await expect(page.getByText(/Could not restore/)).toHaveCount(0);
   }finally{await relay.close();await rm(home,{recursive:true,force:true}).catch(()=>{})}
 });
 
@@ -1472,7 +1472,7 @@ test("on Codex a bulk Pin un-done puts the threads of a section a person ordered
     await page.getByTestId("thread-undo-toast").getByRole("button",{name:"Undo",exact:true}).click();
     await expect.poll(()=>harness.order.get("0199-research")).toEqual(["research-a","research-b","research-c"]);
     await expect.poll(()=>sidebarGroups(page)).toEqual(ordered);
-    await expect(page.getByText(/Undo failed/)).toHaveCount(0);
+    await expect(page.getByText(/Could not restore/)).toHaveCount(0);
   }finally{await harness.close()}
 });
 
