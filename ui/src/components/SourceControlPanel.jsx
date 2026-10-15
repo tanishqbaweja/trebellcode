@@ -373,32 +373,41 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   function stackFor(pr){
     return Array.isArray(pr?.stack?.layers)?pr.stack.layers:[];
   }
+  // The open layers a Merge through merges: the selected one and those below it. With none, as with no open layer for Rebase stack,
+  // the button is not offered.
+  function mergeScopeFor(pr){
+    const stack=stackFor(pr),position=Number(pr?.stack?.position)||stack.find(layer=>layer.number===pr?.number)?.position||stack.length;
+    return stack.filter(layer=>layer.state==="OPEN"&&Number(layer.position)<=position);
+  }
 
   async function stackAction(kind){
     const stack=stackFor(selectedPr);
     if(stack.length<1||!selectedPr?.stack)return;
-    const selectedPosition=Number(selectedPr.stack?.position)||stack.find(layer=>layer.number===selectedPr.number)?.position||stack.length;
-    const mergeScope=stack.filter(layer=>layer.state==="OPEN"&&Number(layer.position)<=selectedPosition);
+    const mergeScope=mergeScopeFor(selectedPr);
     const label=stack.map(pr=>"#"+pr.number).join(" → "),through=mergeScope.map(pr=>"#"+pr.number).join(" → ");
     const promptText=kind==="merge"
       ?"Merge "+through+" using "+stackMergeMethod+" as one GitHub stack operation? GitHub will enforce branch rules and merge queues."
       :"Rebase stack "+label+"? This rewrites the remote stack branches bottom-to-top with force-with-lease and restarts checks. Your current checkout is not changed.";
     // A merge goes as one stack's single merge does (mergePr); a rebase rewrites the remote branches, so its button is red.
     if(!await askConfirm(promptText,kind==="merge"?{confirm:"Merge through #"+selectedPr.number,tone:"primary"}:{confirm:"Rebase stack"}))return;
-    const started=contextRef.current;
+    const started=contextRef.current,number=selectedPr.number;
     setBusy(kind+"-stack");setError("");
     try{
-      if(kind==="merge"){
-        await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:selectedPr.number,action:"merge",method:stackMergeMethod})});
-      }else{
-        await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:selectedPr.number,action:"rebase-stack"})});
-      }
+      const result=kind==="merge"
+        ?await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number,action:"merge",method:stackMergeMethod})})
+        :await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number,action:"rebase-stack"})});
       if(!stillShown(started))return;
       const issues=[];const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
       if(selectedPr&&openPrRequestRef.current?.number===selectedPr.number){const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
-      // Either says that it worked, as a merged pull request does, naming the layers as its question did; GitHub merges a stack after
-      // it answers, so the merge is said to be under way.
-      partialSuccess(kind==="merge"?"GitHub is merging "+through:"Stack "+label+" was rebased",issues,started,true);
+      // Either says what the host did, as a merged pull request does, naming the layers as its question did. The server rebases only
+      // the layers still open (`updated`, none when none is), and merges the stack as one, which GitHub finishes after it answers,
+      // only when it could read the stack (`stack`); otherwise it merged the pull request alone.
+      const rebased=(Array.isArray(result?.updated)?result.updated:[]).map(layer=>"#"+layer.number);
+      const done=kind==="merge"?(result?.stack?"GitHub is merging "+through:"Pull request #"+number+" was merged")
+        :!rebased.length?"Nothing was rebased: no layer of stack "+label+" is open"
+        :stack.every(layer=>rebased.includes("#"+layer.number))?"Stack "+label+" was rebased"
+        :rebased.join(" → ")+(rebased.length===1?" was":" were")+" rebased; the rest of stack "+label+" is merged or closed";
+      partialSuccess(done,issues,started,true);
     }catch(e){reportError(started,actionError(kind==="merge"?"Could not merge the stack":"Could not rebase the stack",e))}
     finally{setBusy("")}
   }
@@ -490,7 +499,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       {prs.length?<div className="pr-layout"><div className="pr-list">{prWindow.visible.map(pr=><button key={pr.number} onClick={()=>openPr(pr)} className={selectedPr?.number===pr.number?"active":""}><GitPullRequest size={14}/><div><strong>#{pr.number} {pr.title}</strong><span>{pr.headRefName} → {pr.baseRefName}{pr.stack?.position&&pr.stack?.size?" · stack "+pr.stack.position+"/"+pr.stack.size:""}</span></div><em data-state={String(pr.state||"").toLowerCase()}>{pr.state}</em></button>)}{prWindow.hasMore&&<div className="source-window-footer"><button onClick={()=>setPrLimit(limit=>limit+SOURCE_CONTROL_PAGE_SIZE)}>Show {prWindow.nextCount} more PRs</button><span>{prWindow.shown} of {prWindow.total} shown</span></div>}</div>
       <div className="pr-detail" ref={prDetailRef}>{selectedPr?<>
         <h3>#{selectedPr.number} {selectedPr.title}</h3>{linkedThreads.length>0&&<div className="pr-linked-threads"><span>Linked threads</span>{linkedThreads.map(thread=><button key={thread.threadId} title={thread.threadId} onClick={()=>Promise.resolve(onOpenLinkedThread?.(thread)).catch(error=>setError(actionErrorUnlessNamed("Could not open the linked thread",error,NAMES_LINKED_THREAD)))}>{thread.title||thread.threadId.slice(0,8)}{thread.archived?" · archived":""}</button>)}</div>}<p>{selectedPr.body||"No description."}</p>{selectedPr.autoMergeRequest&&!selectedPr.mergedAt&&<p className="pr-auto-merge">Auto-merge is on ({({SQUASH:"squash",MERGE:"merge commit",REBASE:"rebase"})[String(selectedPr.autoMergeRequest.mergeMethod||"").toUpperCase()]||"the host's default method"}){selectedPr.autoMergeRequest.enabledBy?.login?", turned on by "+selectedPr.autoMergeRequest.enabledBy.login:""}. It merges once its required checks pass.</p>}
-        {selectedPr.stack&&<div className="pr-stack"><div className="pr-stack-head"><strong><Layers3 size={12}/> GitHub stack #{selectedPr.stack.number}</strong><span>Layer {selectedPr.stack.position||stackFor(selectedPr).find(layer=>layer.number===selectedPr.number)?.position||"?"} of {selectedPr.stack.size||stackFor(selectedPr).length||"?"} · base {selectedPr.stack.baseRefName||"unknown"}</span></div>{stackFor(selectedPr).length>0&&<><div className="pr-stack-layers">{stackFor(selectedPr).map(layer=><button key={layer.number} className={layer.number===selectedPr.number?"active":""} onClick={()=>layer.number===selectedPr.number?null:openPr({...layer,provider:"github"})}><span>{layer.position}</span><strong>#{layer.number} {layer.title||layer.headRefName}</strong><em>{layer.state}{layer.isDraft?" · draft":""}</em></button>)}</div><div className="pr-stack-actions"><button onClick={()=>stackAction("rebase")} disabled={!!busy}>Rebase stack</button><select aria-label="Stack merge method" value={stackMergeMethod} onChange={event=>setStackMergeMethod(event.target.value)}><option value="squash">Squash</option><option value="merge">Merge commit</option><option value="rebase">Rebase merge</option></select><button onClick={()=>stackAction("merge")} disabled={!!busy||selectedPr.mergedAt}>Merge through #{selectedPr.number}</button></div></>}</div>}
+        {selectedPr.stack&&<div className="pr-stack"><div className="pr-stack-head"><strong><Layers3 size={12}/> GitHub stack #{selectedPr.stack.number}</strong><span>Layer {selectedPr.stack.position||stackFor(selectedPr).find(layer=>layer.number===selectedPr.number)?.position||"?"} of {selectedPr.stack.size||stackFor(selectedPr).length||"?"} · base {selectedPr.stack.baseRefName||"unknown"}</span></div>{stackFor(selectedPr).length>0&&<><div className="pr-stack-layers">{stackFor(selectedPr).map(layer=><button key={layer.number} className={layer.number===selectedPr.number?"active":""} onClick={()=>layer.number===selectedPr.number?null:openPr({...layer,provider:"github"})}><span>{layer.position}</span><strong>#{layer.number} {layer.title||layer.headRefName}</strong><em>{layer.state}{layer.isDraft?" · draft":""}</em></button>)}</div><div className="pr-stack-actions"><button onClick={()=>stackAction("rebase")} disabled={!!busy||!stackFor(selectedPr).some(layer=>layer.state==="OPEN")}>Rebase stack</button><select aria-label="Stack merge method" value={stackMergeMethod} onChange={event=>setStackMergeMethod(event.target.value)}><option value="squash">Squash</option><option value="merge">Merge commit</option><option value="rebase">Rebase merge</option></select><button onClick={()=>stackAction("merge")} disabled={!!busy||selectedPr.mergedAt||!mergeScopeFor(selectedPr).length}>Merge through #{selectedPr.number}</button></div></>}</div>}
         {/* A merged pull request offers only what its host still does with one: no Checkout and no reviewer to ask (it can no longer
             be reviewed), and Edit only where the host edits a merged one's title and description; comments stay. */}
         <div className="pr-actions"><button onClick={()=>openWebLink(selectedPr.url)}><ExternalLink size={12}/> Open</button><button onClick={()=>runCallback("attach-pr",()=>onAttachPr?.(selectedPr))} disabled={!!busy}><MessageSquare size={12}/> Attach</button><button className={linkedPullRequests.some(x=>x.number===selectedPr.number&&x.url===selectedPr.url)?"linked":""} onClick={()=>runCallback(linkedPullRequests.some(x=>x.number===selectedPr.number&&x.url===selectedPr.url)?"unlink-pr":"link-pr",()=>onLinkPr?.(selectedPr))} disabled={!!busy}><GitPullRequest size={12}/> {linkedPullRequests.some(x=>x.number===selectedPr.number&&x.url===selectedPr.url)?"Linked":"Link to thread"}</button>{capabilities.edit&&(!selectedPr.mergedAt||capabilities.editMerged)&&<button onClick={async()=>{const title=await askText("PR title",selectedPr.title||"");if(title==null||!title.trim())return;const body=await askText("PR description",selectedPr.body||"",{multiline:true});if(body==null)return;const changes={...(title.trim()!==(selectedPr.title||"")?{title:title.trim()}:{}),...(body!==(selectedPr.body||"")?{body}:{})};if(Object.keys(changes).length)prAction("edit",changes)}} disabled={!!busy}><Pencil size={12}/> Edit</button>}{capabilities.checkout&&!selectedPr.mergedAt&&<button onClick={()=>prAction("checkout")} disabled={!!busy}><Download size={12}/> Checkout</button>}{capabilities.reviewers&&!selectedPr.mergedAt&&<button onClick={async()=>{const reviewer=await askText("Reviewer username");if(reviewer?.trim())prAction("request-reviewer",{reviewer:reviewer.trim()})}} disabled={!!busy}>Request reviewer</button>}{capabilities.approveWorkflows&&selectedPr.awaitingWorkflowApproval?.length>0&&<button onClick={()=>prAction("approve-workflows")} disabled={!!busy}><ShieldCheck size={12}/> Approve workflows ({selectedPr.awaitingWorkflowApproval.length})</button>}{capabilities.revert&&selectedPr.mergedAt&&selectedPr.mergeCommitSha&&<button onClick={async()=>{if(!await askConfirm("Open a new pull request that reverts #"+selectedPr.number+"?",{confirm:"Open revert pull request",tone:"primary"}))return;const result=await prAction("revert");if(result?.url)openWebLink(result.url)}} disabled={!!busy}><GitPullRequest size={12}/> Revert PR</button>}{capabilities.autoMerge&&!selectedPr.mergedAt&&!selectedPr.stack&&!selectedPr.autoMergeRequest&&<button onClick={()=>mergePr(true)} disabled={!!busy}>Auto-merge</button>}{capabilities.merge&&!selectedPr.mergedAt&&!selectedPr.stack&&<button onClick={()=>mergePr(false)} disabled={!!busy}>Merge</button>}</div>
