@@ -336,7 +336,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const searching=Boolean(query.trim()),source=searching?searchResults:entries;
   const treeWindow=useMemo(()=>searching?{visible:source,total:source.length,shown:source.length,hasMore:false,nextCount:0}:workspaceListWindow(source,{limit:treeLimit,pageSize:WORKSPACE_TREE_PAGE_SIZE}),[source,searching,treeLimit]);
   const changedWindow=useMemo(()=>workspaceListWindow(changedPaths,{limit:changedLimit,pageSize:WORKSPACE_CHANGED_PAGE_SIZE}),[changedPaths,changedLimit]);
-  const diffWindow=useMemo(()=>workspaceTextWindow(diff.diff||diff.error||"No unstaged diff.",{limit:diffLimit,chunkSize:WORKSPACE_DIFF_CHUNK_CHARS}),[diff.diff,diff.error,diffLimit]);
+  // The diff is the working tree against HEAD, staged changes and new files with the rest (see workspace.mjs).
+  const diffWindow=useMemo(()=>workspaceTextWindow(diff.diff||diff.error||"No diff to show.",{limit:diffLimit,chunkSize:WORKSPACE_DIFF_CHUNK_CHARS}),[diff.diff,diff.error,diffLimit]);
   // One span per line keeps the text (and its textContent) identical while each line gets its own diff color.
   const diffLines=useMemo(()=>{const lines=diffWindow.text.split("\n"),kinds=diffLineKinds(lines);return lines.map((line,index)=><span key={index} className={"diff-line "+kinds[index]}>{line}{index<lines.length-1?"\n":""}</span>)},[diffWindow.text]);
   const rawUrl=file&&projectPath?"/api/workspace/raw?"+params({root:projectPath,path:file.path}):"";
@@ -378,6 +379,6 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     </div>:(diffError||diff.error)?<div className="changes-empty error"><FileDiff size={20}/><strong>Could not load changes</strong><span>{diffError||diff.error}</span></div>
       :!projectPath?<div className="changes-empty"><FileDiff size={20}/><strong>No project open</strong><span>Open a project to review its changes.</span></div>
       :!diffLoaded?<div className="changes-loading" role="status" aria-busy="true"><LoaderCircle size={18} aria-hidden="true"/><strong>Loading changes…</strong></div>
-      :<div className="changes-empty"><FileDiff size={20}/><strong>Working tree clean</strong><span>No unstaged changes to review.</span></div>)}
+      :<div className="changes-empty"><FileDiff size={20}/><strong>Working tree clean</strong><span>No changes to review.</span></div>)}
   </div>;
 }

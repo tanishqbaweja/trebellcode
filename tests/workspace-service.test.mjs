@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import { promisify } from "node:util";
 import {
@@ -15,6 +16,7 @@ import {
   environmentWorkspaceSearch,
   environmentWorkspaceTree,
   environmentWorkspaceWriteFile,
+  workspaceDiff,
   workspaceSearch,
   workspaceWriteFile,
 } from "../src/workspace.mjs";
@@ -76,7 +78,7 @@ function remoteEnvironment(){
       if(options.command==="cat")return {exitCode:0,stdout:"export const ok=1;\n",stderr:""};
       if(options.command==="git"&&options.args.includes("ls-files"))return {exitCode:0,stdout:"src/index.js\0README.md\0",stderr:""};
       if(options.command==="git"&&options.args[0]==="rev-parse")return {exitCode:0,stdout:"/srv/app\n",stderr:""};
-      if(options.command==="git"&&options.args[0]==="diff")return {exitCode:0,stdout:"+remote change\n",stderr:""};
+      if(options.command==="sh"&&options.args[0]==="-c"&&options.args[1].includes("git diff"))return {exitCode:0,stdout:"+remote change\n",stderr:""};
       if(options.command==="git"&&options.args[0]==="status")return {exitCode:0,stdout:" M src/index.js\n",stderr:""};
       throw new Error("unexpected remote command "+options.command+" "+options.args.join(" "));
     },
@@ -101,6 +103,7 @@ test("remote workspace tree, search, read, diff and write stay inside the select
   const diff=await environmentWorkspaceDiff("/srv/app",options);
   assert.equal(diff.isGit,true);
   assert.equal(diff.status," M src/index.js\n");
+  assert.equal(diff.diff,"+remote change\n");
   const saved=await environmentWorkspaceWriteFile("/srv/app/src/index.js","export const changed=2;\n",{...options,root:"/srv/app"});
   assert.equal(environments.writes[0].path,"/srv/app/src/index.js");
   assert.equal(saved.environmentId,"ssh-a");
@@ -225,4 +228,116 @@ test("the Files editor reads and saves a local file only inside the project's fo
     await symlink(dir,join(base,"project-link"),"junction");
     assert.equal((await environmentWorkspaceEditorFile(join(base,"project-link","src","a.js"),{root:join(base,"project-link")})).content,"b\n");
   }finally{await rm(base,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// A repository as an agent's turn leaves it, for the Diff tab: a committed file edited, an edit and a new file staged, and new files
+// git does not track yet (one with no newline at its end, an empty one, a binary one, one too large to preview, one whose name git
+// quotes), beside a file .gitignore leaves out.
+async function agentWorkRepository(prefix){
+  const dir=await mkdtemp(join(tmpdir(),prefix)),run=args=>execFileAsync("git",args,{cwd:dir,windowsHide:true});
+  await run(["init","-q","-b","main"]);await run(["config","user.email","diff@example.test"]);await run(["config","user.name","Diff Test"]);await run(["config","core.autocrlf","false"]);
+  await mkdir(join(dir,"src"));await writeFile(join(dir,"README.md"),"# Seed\n");await writeFile(join(dir,"src","app.js"),"export const answer = 42;\n");await writeFile(join(dir,".gitignore"),"*.log\n");
+  await run(["add","-A"]);await run(["commit","-qm","seed"]);
+  await writeFile(join(dir,"src","app.js"),"export const answer = 43;\n");
+  await writeFile(join(dir,"README.md"),"# Seeded\n");await writeFile(join(dir,"src","staged.js"),"export const staged = true;\n");await run(["add","README.md","src/staged.js"]);
+  const added={"src/from-agent.js":"export const fromAgent = true;\n","notes.txt":"one\ntwo","empty.txt":"","blob.bin":Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,0,0,0,13])};
+  for(const [path,content] of Object.entries(added))await writeFile(join(dir,path),content);
+  await writeFile(join(dir,"café notes.txt"),"caf\n");await writeFile(join(dir,"big.txt"),"x".repeat(600_000));await writeFile(join(dir,"debug.log"),"left out\n");
+  return {dir,run,added:Object.keys(added)};
+}
+const countingGit=()=>{const calls=[];return {calls,gitFn:(cwd,args,options)=>{calls.push(args.join(" "));return execFileAsync("git",args,{cwd,windowsHide:true,...options})}}};
+
+test("the Diff tab's read shows staged changes and each new file's lines as git diff shows a file added with git add -N, in two git processes",{timeout:60_000},async()=>{
+  const {dir,added}=await agentWorkRepository("trebell-workspace-diff-");
+  try{
+    const {calls,gitFn}=countingGit();
+    const read=await workspaceDiff(dir,{gitFn});
+    assert.equal(read.isGit,true);
+    // Each new file reads as git diff shows it once added with git add -N (to a copy of the index), but for git's index line.
+    const env={...process.env,GIT_INDEX_FILE:join(dir,".git","index-intent")};await copyFile(join(dir,".git","index"),env.GIT_INDEX_FILE);
+    await execFileAsync("git",["add","-N","--",...added],{cwd:dir,env,windowsHide:true});
+    const own=(await execFileAsync("git",["diff","--no-ext-diff","--no-color","HEAD","--",...added],{cwd:dir,env,windowsHide:true})).stdout.replace(/^index 0+\.\.[0-9a-f]+\n/gm,"");
+    const blocks=own.split(/(?=^diff --git )/m);
+    assert.equal(blocks.length,added.length);
+    for(const block of blocks)assert.ok(read.diff.includes(block),"the new file as git shows it:\n"+block);
+    // The edit and the new file staged show beside the edit that is not.
+    assert.match(read.diff,/\n-# Seed\n\+# Seeded\n/);
+    assert.match(read.diff,/diff --git a\/src\/staged\.js b\/src\/staged\.js\nnew file mode 100644\n[^]*?\n\+export const staged = true;\n/);
+    assert.match(read.diff,/\n-export const answer = 42;\n\+export const answer = 43;\n/);
+    assert.deepEqual(calls,["status --short","diff --no-ext-diff --no-color HEAD --"],"the status and one diff against HEAD; the new files are read directly");
+    // A name git quotes is shown as it is, a file over the Files view's 512 KB is named with its size, and an ignored file is left out.
+    assert.match(read.diff,/diff --git a\/café notes\.txt b\/café notes\.txt\nnew file mode 100644\n--- \/dev\/null\n\+\+\+ b\/café notes\.txt\n@@ -0,0 \+1 @@\n\+caf\n/);
+    assert.match(read.diff,/diff --git a\/big\.txt b\/big\.txt\nnew file mode 100644\nFile is too large to preview \(586 KB\)\n/);
+    assert.doesNotMatch(read.diff,/debug\.log/);
+    // The list is git status's, as it was.
+    assert.match(read.status,/^\?\? src\/from-agent\.js$/m);assert.match(read.status,/^\?\? "caf\\303\\251 notes\.txt"$/m);
+    // A new folder's files are listed by one more git process and shown in its place, its ignored files left out.
+    await mkdir(join(dir,"docs","guide"),{recursive:true});await writeFile(join(dir,"docs","guide","intro.md"),"# Intro\n");await writeFile(join(dir,"docs","trace.log"),"left out\n");
+    calls.length=0;
+    const folder=await workspaceDiff(dir,{gitFn});
+    assert.deepEqual(calls,["status --short","diff --no-ext-diff --no-color HEAD --","--literal-pathspecs ls-files --others --exclude-standard -z -- docs/"]);
+    assert.match(folder.diff,/\ndiff --git a\/docs\/guide\/intro\.md b\/docs\/guide\/intro\.md\nnew file mode 100644\n--- \/dev\/null\n\+\+\+ b\/docs\/guide\/intro\.md\n@@ -0,0 \+1 @@\n\+# Intro\n/);
+    assert.doesNotMatch(folder.diff,/trace\.log/);
+    assert.ok(folder.diff.indexOf("a/docs/guide/intro.md")<folder.diff.indexOf("a/empty.txt"),"the folder's files take its place in git status's order");
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+test("on a branch with no commit yet the Diff tab's read shows the staged files against the empty tree, and a plain folder says it is no repository",{timeout:30_000},async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-unborn-")),plain=await mkdtemp(join(tmpdir(),"trebell-workspace-plain-")),run=args=>execFileAsync("git",args,{cwd:dir,windowsHide:true});
+  try{
+    await run(["init","-q","-b","main"]);await run(["config","core.autocrlf","false"]);
+    await writeFile(join(dir,"staged.txt"),"staged\n");await run(["add","staged.txt"]);await writeFile(join(dir,"staged.txt"),"staged, then edited\n");await writeFile(join(dir,"new.txt"),"new\n");
+    const {calls,gitFn}=countingGit();
+    const read=await workspaceDiff(dir,{gitFn});
+    assert.equal(read.isGit,true);assert.equal(read.error,undefined);
+    assert.match(read.diff,/^diff --git a\/staged\.txt b\/staged\.txt\nnew file mode 100644\n[^]*?\n\+staged, then edited\n/);
+    assert.match(read.diff,/\ndiff --git a\/new\.txt b\/new\.txt\nnew file mode 100644\n--- \/dev\/null\n\+\+\+ b\/new\.txt\n@@ -0,0 \+1 @@\n\+new\n$/);
+    assert.equal(read.status,"AM staged.txt\n?? new.txt\n");
+    assert.deepEqual(calls,["status --short","diff --no-ext-diff --no-color HEAD --","diff --no-ext-diff --no-color 4b825dc642cb6eb9a060e54bf8d69288fbee4904 --"]);
+    assert.deepEqual(await workspaceDiff(plain),{cwd:plain,isGit:false,status:"",diff:"",error:"This folder is not a Git repository"});
+  }finally{for(const folder of [dir,plain])await rm(folder,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+test("the Diff tab's read shows 200 new files at most and counts the rest on a note line",{timeout:60_000},async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-many-")),run=args=>execFileAsync("git",args,{cwd:dir,windowsHide:true});
+  try{
+    await run(["init","-q","-b","main"]);
+    for(let index=0;index<203;index++)await writeFile(join(dir,"new-"+String(index).padStart(3,"0")+".txt"),"line "+index+"\n");
+    const read=await workspaceDiff(dir);
+    assert.equal((read.diff.match(/^diff --git /gm)||[]).length,200);
+    assert.ok(read.diff.endsWith("diff --git a/new-199.txt b/new-199.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new-199.txt\n@@ -0,0 +1 @@\n+line 199\n\\ 3 more new files are not shown.\n"),read.diff.slice(-200));
+    assert.equal(read.status.split("\n").filter(Boolean).length,203,"the list still names every one");
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// The shell a remote environment runs its commands in: sh, or on Windows the one Git for Windows ships.
+async function posixShell(){
+  if(process.platform!=="win32")return "sh";
+  const sh=join(dirname(dirname(dirname((await execFileAsync("git",["--exec-path"],{windowsHide:true})).stdout.trim()))),"bin","sh.exe");
+  return existsSync(sh)?sh:null;
+}
+test("a remote environment's Diff tab read shows its staged changes and new files from one session's git diff, and leaves its index as it was",{timeout:60_000},async t=>{
+  const shell=await posixShell();if(!shell){t.skip("no POSIX shell to run the remote script in");return}
+  const {dir,run,added}=await agentWorkRepository("trebell-workspace-remote-diff-"),unborn=await mkdtemp(join(tmpdir(),"trebell-workspace-remote-unborn-"));
+  try{
+    // An environment whose commands run here, through the shell a host would run them in.
+    const sessions=[],environments={
+      get:id=>id==="ssh-a"?{id:"ssh-a",name:"Build box",type:"ssh",cwd:dir}:null,
+      executeArgv:async(_id,{command,args,cwd})=>{sessions.push(command+" "+args[0]);return execFileAsync(command==="sh"?shell:command,args,{cwd,windowsHide:true,maxBuffer:8*1024*1024}).then(result=>({exitCode:0,...result}),error=>({exitCode:error.code,stdout:error.stdout||"",stderr:error.stderr||""}))},
+    };
+    const before=(await run(["status","--porcelain"])).stdout;
+    const read=await environmentWorkspaceDiff(dir,{environments,environmentId:"ssh-a"});
+    assert.equal(read.isGit,true);
+    assert.match(read.diff,/\n\+\+\+ b\/src\/from-agent\.js\n@@ -0,0 \+1 @@\n\+export const fromAgent = true;\n/);
+    for(const path of added)assert.match(read.diff,new RegExp("^diff --git a/"+path.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+" b/","m"),path);
+    assert.match(read.diff,/\nBinary files \/dev\/null and b\/blob\.bin differ\n/);
+    assert.match(read.diff,/\n-# Seed\n\+# Seeded\n/);assert.match(read.diff,/\n\+export const staged = true;\n/);assert.match(read.diff,/\n-export const answer = 42;\n\+export const answer = 43;\n/);
+    assert.doesNotMatch(read.diff,/debug\.log/);
+    assert.deepEqual(sessions,["git rev-parse","sh -c","git status"],"three sessions, as before: the new files come with the diff");
+    assert.equal((await run(["status","--porcelain"])).stdout,before,"the repository's own index is left as it was");
+    // A branch with no commit yet is compared with the empty tree.
+    await execFileAsync("git",["init","-q","-b","main"],{cwd:unborn,windowsHide:true});await writeFile(join(unborn,"first.txt"),"first\n");
+    const first=await environmentWorkspaceDiff(unborn,{environments,environmentId:"ssh-a"});
+    assert.match(first.diff,/^diff --git a\/first\.txt b\/first\.txt\nnew file mode 100644\n[^]*?\n\+first\n/);
+  }finally{for(const folder of [dir,unborn])await rm(folder,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

@@ -370,6 +370,50 @@ test("Changes for a folder that is not a Git repository says so in one line, and
   await shootBothModes(page,"workspace-changes-long-reason");
 });
 
+test("the Diff tab shows the lines of a file the agent created and of a staged change beside an unstaged one, and every changed file still takes a review comment",async({page,request})=>{
+  test.setTimeout(60_000);
+  const dir=await mkdtemp(join(tmpdir(),"trebell-diff-repo-"));folders.push(dir);
+  const git=args=>execFileSync("git",args,{cwd:dir,windowsHide:true,encoding:"utf8"});
+  git(["init","-q","-b","main"]);for(const [key,value] of [["user.email","diff@example.test"],["user.name","Diff Test"],["core.autocrlf","false"]])git(["config",key,value]);
+  await mkdir(join(dir,"src"));await writeFile(join(dir,"README.md"),"# Seed\n");await writeFile(join(dir,"src","app.js"),"export const answer = 42;\n");
+  git(["add","-A"]);git(["commit","-qm","seed"]);
+  // What an agent's turn leaves: a file it created and a new folder, which git does not track yet, a new file it staged and an edit.
+  await writeFile(join(dir,"src","from-agent.js"),"export const fromAgent = true;\nexport const lines = 2;\n");
+  await mkdir(join(dir,"docs"));await writeFile(join(dir,"docs","guide.md"),"# Guide\n");
+  await writeFile(join(dir,"src","staged.js"),"export const staged = true;\n");git(["add","src/staged.js"]);
+  await writeFile(join(dir,"src","app.js"),"export const answer = 43;\n");
+  await page.setViewportSize({width:1280,height:800});
+  const {right,top,inner}=await openProjectInspector(page,request,"Workspace new file diff",dir);
+  await top.getByRole("button",{name:"Diff",exact:true}).click();
+  const rows=right.locator(".changed-file-row"),preview=right.getByTestId("workspace-diff-preview"),row=path=>rows.filter({has:page.getByRole("button",{name:path,exact:true})});
+  const line=(kind,text)=>preview.locator(".diff-line."+kind,{hasText:text});
+  await expect(inner.getByRole("button",{name:/^Changes/})).toHaveText("Changes (4)");
+  await expect(row("src/from-agent.js").locator(".changed-file-code")).toHaveText("N");
+  // The created file's lines are added lines under a header that names it, as the new folder's file and the staged file are.
+  await expect(line("add","+export const fromAgent = true;")).toHaveCount(1);
+  await expect(line("add","+export const lines = 2;")).toHaveCount(1);
+  await expect(line("file","diff --git a/src/from-agent.js b/src/from-agent.js")).toHaveCount(1);
+  await expect(line("hunk","@@ -0,0 +1,2 @@")).toHaveCount(1);
+  await expect(line("add","+# Guide")).toHaveCount(1);
+  await expect(line("add","+export const staged = true;")).toHaveCount(1);
+  await expect(line("del","-export const answer = 42;")).toHaveCount(1);await expect(line("add","+export const answer = 43;")).toHaveCount(1);
+  await expect(preview).not.toContainText("No diff to show.");
+  // In a narrow window too.
+  await page.setViewportSize({width:900,height:800});
+  await line("add","+export const fromAgent = true;").scrollIntoViewIfNeeded();await expect(line("add","+export const fromAgent = true;")).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  await shootBothModes(page,"workspace-diff-new-file-lines");
+  // A file git tracks and the file the agent created each take a review comment, which goes to the composer as context.
+  const dialog=page.locator("dialog.inspector-text-prompt"),chips=page.getByTestId("context-chip");
+  for(const [path,name,comment] of [["src/app.js","app.js","Keep the answer at 43."],["src/from-agent.js","from-agent.js","Name the second export."]]){
+    await row(path).locator(".review-comment").click();
+    await expect(dialog).toContainText("Review comment for "+path);await expect(dialog.locator("textarea")).toBeFocused();
+    await page.keyboard.type(comment,{delay:10});await page.keyboard.press("Control+Enter");await expect(dialog).toHaveCount(0);
+    await expect(chips.filter({hasText:"Review: "+name})).toHaveCount(1);
+  }
+  await expect(page.getByTestId("composer")).toHaveValue(/Address the attached review comment\./);
+});
+
 test("a general chat keeps its Files view, with no Changes switch beside the disabled Diff tab",async({page,request})=>{
   test.setTimeout(35_000);
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});

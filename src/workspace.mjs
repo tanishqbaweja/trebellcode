@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, readlink, realpath, stat, writeFile } from "node:fs/promises";
 import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -157,20 +157,83 @@ export async function environmentWorkspaceTree(root,{depth=3,limit=500,environme
   return await remoteTree(environments,environmentId,root,{depth,limit})||workspaceTree(root,{depth,limit});
 }
 
-export async function workspaceDiff(root) {
+// The Diff tab shows the working tree against HEAD, so a staged change shows as well as an unstaged one. A branch with no commit yet
+// has no HEAD (git exits 128): the empty tree, SHA-1's or SHA-256's, which git knows without storing it, takes its place, and a
+// repository that fails with both too keeps HEAD's own failure.
+const EMPTY_TREES=["4b825dc642cb6eb9a060e54bf8d69288fbee4904","6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"];
+async function diffAgainstHead(diff){
+  try{return await diff("HEAD")}
+  catch(error){
+    if(error?.code!==128)throw error;
+    for(const tree of EMPTY_TREES){try{return await diff(tree)}catch{}}
+    throw error;
+  }
+}
+// git status --short C-quotes a path holding a space, a quote, a backslash, a control character or (by default) a non-ASCII letter,
+// whose UTF-8 bytes it writes in octal ("caf\303\251.txt"), as the UI's gitStatusPath reads it too.
+const C_ESCAPES={a:7,b:8,t:9,n:10,v:11,f:12,r:13,'"':34,"\\":92};
+function statusPath(text){
+  if(!text.startsWith('"'))return text;
+  const bytes=[];
+  for(let index=1;index<text.length&&text[index]!=='"';){
+    const octal=text[index]==="\\"?/^[0-7]{3}/.exec(text.slice(index+1,index+4)):null,escape=text[index]==="\\"?C_ESCAPES[text[index+1]]:undefined;
+    if(octal){bytes.push(parseInt(octal[0],8));index+=4}
+    else if(escape!==undefined){bytes.push(escape);index+=2}
+    else{const char=String.fromCodePoint(text.codePointAt(index));bytes.push(...Buffer.from(char));index+=char.length}
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+// git diff leaves out the files git does not track yet, which git status lists ("?? path", a new folder as "?? folder/"), so each one
+// is shown here as git diff shows a file added with git add -N: its lines added, a binary file (a NUL byte in its first 8000 bytes,
+// as git counts one, and only those are read) or a link by its target, which is not followed. Only a new folder's files take a git
+// process to list; the files are read directly, and no more text than the Files view's 512 KB each, 4 MB and 200 files in all.
+const NEW_FILE_BYTES=512_000,NEW_FILES_BYTES=4*1024*1024,NEW_FILES_MAX=200;
+async function readNewFile(path,size){
+  const handle=await open(path,"r");
+  try{
+    const head=Buffer.alloc(Math.min(size,8000)),{bytesRead}=await handle.read(head,0,head.length,0);
+    if(head.subarray(0,bytesRead).includes(0))return {binary:true};
+    return size>NEW_FILE_BYTES?{size}:{bytes:await handle.readFile()};
+  }finally{await handle.close()}
+}
+function newFileDiff(path,{mode="100644",bytes=null,binary=false,size=0}){
+  const head="diff --git a/"+path+" b/"+path+"\nnew file mode "+mode+"\n";
+  if(binary)return head+"Binary files /dev/null and b/"+path+" differ\n";
+  if(!bytes)return head+"File is too large to preview ("+Math.ceil(size/1024)+" KB)\n";
+  if(!bytes.length)return head;
+  const text=bytes.toString("utf8"),ends=text.endsWith("\n"),lines=(ends?text.slice(0,-1):text).split("\n");
+  return head+"--- /dev/null\n+++ b/"+path+"\n@@ -0,0 +1"+(lines.length===1?"":","+lines.length)+" @@\n"+lines.map(line=>"+"+line+"\n").join("")+(ends?"":"\\ No newline at end of file\n");
+}
+async function newFilesDiff(cwd,status,listFolders){
+  const entries=String(status||"").split(/\r?\n/).filter(line=>line.startsWith("?? ")).map(line=>statusPath(line.slice(3)));
+  if(!entries.length)return "";
+  // A new folder's files take its place in git status's order.
+  const folders=entries.filter(path=>path.endsWith("/")),listed=folders.length?String(await listFolders(folders)).split("\0").filter(path=>path&&!path.endsWith("/")):[];
+  const inside=folder=>{const base=resolve(cwd,folder)+sep;return listed.filter(path=>resolve(cwd,path).startsWith(base))};
+  const paths=entries.flatMap(path=>path.endsWith("/")?inside(path):[path]);
+  let out="",budget=NEW_FILES_BYTES,shown=0,index=0;
+  for(;index<paths.length&&shown<NEW_FILES_MAX&&budget>0;index++){
+    const path=paths[index],full=join(cwd,path),info=await lstat(full).catch(()=>null);
+    if(info?.isSymbolicLink()){const target=await readlink(full).catch(()=>null);if(target!==null){out+=newFileDiff(path,{mode:"120000",bytes:Buffer.from(target)});shown++}continue}
+    if(!info?.isFile())continue;
+    const read=await readNewFile(full,info.size).catch(()=>null);if(!read)continue;
+    out+=newFileDiff(path,{mode:process.platform!=="win32"&&info.mode&0o111?"100755":"100644",...read});shown++;budget-=read.bytes?.length||0;
+  }
+  // The rest are counted on a note line, as git notes "\ No newline at end of file".
+  const rest=paths.length-index;
+  return out+(rest>0?"\\ "+rest+" more new file"+(rest===1?" is":"s are")+" not shown.\n":"");
+}
+
+export async function workspaceDiff(root,{gitFn=null}={}) {
   const cwd = resolve(root || process.cwd());
+  // gitFn runs each git command (tests count them through it).
+  const git=(args,maxBuffer)=>gitFn?gitFn(cwd,args,{maxBuffer}):execFileAsync("git",args,{cwd,windowsHide:true,maxBuffer});
   try {
-    const { stdout, stderr } = await execFileAsync("git", ["diff","--no-ext-diff","--no-color"], {
-      cwd,
-      windowsHide: true,
-      maxBuffer: 4 * 1024 * 1024,
-    });
-    const { stdout: statusOut } = await execFileAsync("git", ["status","--short"], {
-      cwd,
-      windowsHide: true,
-      maxBuffer: 512 * 1024,
-    }).catch(() => ({stdout:""}));
-    return { cwd, isGit: true, status: statusOut, diff: stdout, stderr };
+    const statusRead=git(["status","--short"],512*1024).catch(()=>({stdout:""}));
+    const { stdout, stderr } = await diffAgainstHead(base=>git(["diff","--no-ext-diff","--no-color",base,"--"],4*1024*1024));
+    const { stdout: statusOut } = await statusRead;
+    const added=await newFilesDiff(cwd,statusOut,folders=>git(["--literal-pathspecs","ls-files","--others","--exclude-standard","-z","--",...folders],4*1024*1024).then(result=>result.stdout,()=>""));
+    return { cwd, isGit: true, status: statusOut, diff: stdout+added, stderr };
   } catch (error) {
     // Outside a Git repository git diff takes its arguments as two paths to compare and, given none, prints its whole usage and
     // exits 129: the folder is named as not a repository instead.
@@ -179,6 +242,17 @@ export async function workspaceDiff(root) {
   }
 }
 
+// A remote environment's new files are added to a copy of its index with git add -N, so git diff shows them in the same session, with
+// the staged and unstaged changes against HEAD (the empty tree on a branch with no commit yet); the copy is removed after.
+const REMOTE_DIFF_SCRIPT=[
+  "i=$(mktemp) || exit 1; trap 'rm -f \"$i\"' EXIT",
+  "x=$(git rev-parse --git-path index) || exit 1",
+  "if [ -f \"$x\" ]; then cp \"$x\" \"$i\" || exit 1; else rm -f \"$i\"; fi",
+  "GIT_INDEX_FILE=\"$i\" git add --intent-to-add -- :/ >/dev/null 2>&1",
+  "b=HEAD; git rev-parse -q --verify HEAD >/dev/null || b=$(git hash-object -t tree /dev/null)",
+  "GIT_INDEX_FILE=\"$i\" git diff --no-ext-diff --no-color \"$b\" --",
+].join("\n");
+
 export async function environmentWorkspaceDiff(root,{environments=null,environmentId=null}={}){
   const profile=remoteProfile(environments,environmentId);
   if(!profile)return workspaceDiff(root);
@@ -186,7 +260,7 @@ export async function environmentWorkspaceDiff(root,{environments=null,environme
   const inside=await environments.executeArgv(environmentId,{command:"git",args:["rev-parse","--show-toplevel"],cwd,timeoutMs:12000});
   if(inside.exitCode!==0)return {cwd,isGit:false,status:"",diff:"",error:(inside.stderr||inside.stdout||"Not a Git repository").trim(),environmentId};
   const [diff,status]=await Promise.all([
-    environments.executeArgv(environmentId,{command:"git",args:["diff","--no-ext-diff","--no-color"],cwd,timeoutMs:20000}),
+    environments.executeArgv(environmentId,{command:"sh",args:["-c",REMOTE_DIFF_SCRIPT],cwd,timeoutMs:20000}),
     environments.executeArgv(environmentId,{command:"git",args:["status","--short"],cwd,timeoutMs:12000}),
   ]);
   return {cwd,isGit:true,status:status.stdout||"",diff:diff.stdout||"",stderr:[diff.stderr,status.stderr].filter(Boolean).join("\n"),environmentId};
