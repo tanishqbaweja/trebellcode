@@ -4987,8 +4987,10 @@ export default function App(){
     const threadId=activeThread.id,starting=reviewStartsRef.current;if(starting.has(threadId))return;
     let result;try{starting.add(threadId);result=await rpc.request("review/start",{threadId,target:{type:"uncommittedChanges"}})}finally{starting.delete(threadId)}
     // A review runs only as the turn the harness started for it: an answer without one started nothing. Its step comes into view
-    // as a sent message does.
+    // as a sent message does, in the thread it was started for: another thread or a new task shown by then is left as it is (as
+    // adoptAutomaticTurn leaves it), and the review's thread shows its running turn when it is opened again.
     if(!result?.turn?.id)throw new Error(agentRuntimeLabel+" did not start a review.");
+    if(activeThreadRef.current?.id!==threadId)return result;
     followConversationEnd();setRunning(true);setActiveTurnId(result.turn.id);
     setEvents(prev=>[...prev,{id:"review-"+Date.now(),kind:"tool",title:"Reviewing uncommitted changes",status:"running",raw:result}]);
     return result;

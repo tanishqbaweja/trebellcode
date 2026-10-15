@@ -11,12 +11,18 @@ function gate(){let open=()=>{};const promise=new Promise(resolve=>{open=resolve
 
 // The page's socket to the relay goes through this proxy: refuse(message) names an error to answer a request with instead of the
 // relay, answer(message) a result, and hold(message) a promise the request waits for before it goes on to the relay (a harness slow
-// to answer). stop() stops the harness as far as the page can tell (its socket closes and every reconnect is turned away) until start().
+// to answer). What the relay sends goes on to the page, and answered lists the ids of the relay's answers the page has been given.
+// stop() stops the harness as far as the page can tell (its socket closes and every reconnect is turned away) until start().
 async function proxyRelay(page,harness){
-  const proxy={refuse:()=>null,answer:()=>undefined,hold:()=>null,stopped:false,sockets:[]};
+  const proxy={refuse:()=>null,answer:()=>undefined,hold:()=>null,answered:[],stopped:false,sockets:[]};
   await page.routeWebSocket(harness.wsUrl,ws=>{
     if(proxy.stopped){ws.close({code:1011,reason:"harness stopped"});return}
     const server=ws.connectToServer();proxy.sockets.push(ws);
+    server.onMessage(message=>{
+      let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
+      if(!proxy.sockets.includes(ws))return;
+      ws.send(message);if(parsed?.id!=null&&!parsed.method)proxy.answered.push(parsed.id);
+    });
     ws.onMessage(async message=>{
       let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
       if(parsed?.id!=null&&parsed.method){
@@ -35,10 +41,12 @@ async function proxyRelay(page,harness){
 // One thread per name, opened on the first. branch makes the project a Git repository on that branch with a change to review;
 // desktop stands in for the desktop app's bridge (its folder picker counts its calls), where window.prompt throws as it does there.
 // nativeDialogs lists every browser dialog the page opened (each is dismissed): the app asks in its own.
-async function openHeaderApp(page,{names=["Release checklist"],replies=[],branch=null,desktop=false}={}){
+async function openHeaderApp(page,{names=["Release checklist"],replies=[],branch=null,desktop=false,long=[]}={}){
   const nativeDialogs=[];page.on("dialog",dialog=>{nativeDialogs.push(dialog.type()+": "+dialog.message());dialog.dismiss().catch(()=>{})});
   const harness=await startRelayHarness({replies});
-  for(const name of names)harness.seedThread(name,[{user:"Prepare the "+name.toLowerCase(),items:[replyItem("seed-reply-"+harness.threads.length,"Ready when you are.")]}]);
+  // A thread named in long has 30 more turns, a conversation that scrolls (all of it in the first page of its history).
+  const more=name=>long.includes(name)?Array.from({length:30},(_,index)=>({user:"Check step "+(index+1)+" of the "+name.toLowerCase(),items:[replyItem("long-reply-"+index,"Step "+(index+1)+" is done: the ledger matches the bank export, the refunds reconcile and the report is filed.")]})):[];
+  for(const name of names)harness.seedThread(name,[{user:"Prepare the "+name.toLowerCase(),items:[replyItem("seed-reply-"+harness.threads.length,"Ready when you are.")]},...more(name)]);
   await routeRelayApp(page,harness);
   await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
@@ -447,6 +455,63 @@ test("a Review started at the end of the thread shows its running step above the
     }
     expect(turns).toHaveLength(2);
   }finally{await harness.close()}
+});
+
+// A harness slow to start a review: the person has opened another thread by the time it answers. That thread is left as it was:
+// no review step, nothing running, no Stop, and its place in the conversation kept. The review's own thread shows the review
+// running when it is opened again, and its reply when it ends.
+test("a Review the harness starts after another thread was opened leaves that thread as it was, and its own thread shows it running",async({page})=>{
+  test.setTimeout(150_000);
+  const done=[gate(),gate()];
+  const {harness,proxy,header}=await openHeaderApp(page,{names:["Release checklist","Payments history"],long:["Payments history"],branch:"main",replies:reviewReplies(done)});
+  const scroll=page.locator(".conversation-scroll"),composer=page.getByTestId("composer");
+  const review=header.getByRole("button",{name:"Review",exact:true}),stop=header.getByRole("button",{name:"Stop",exact:true});
+  const steps=page.locator(".tool-event").filter({hasText:"Reviewing uncommitted changes"});
+  const open=async name=>{
+    const row=page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");
+  };
+  const top=()=>scroll.evaluate(node=>Math.round(node.scrollTop)),distanceFromEnd=()=>scroll.evaluate(node=>Math.round(node.scrollHeight-node.clientHeight-node.scrollTop));
+  // Where the conversation rests once it has stopped moving (two reads in a row the same).
+  const restingTop=async()=>{let last=null;await expect.poll(async()=>{const now=await top(),same=now===last;last=now;return same},{intervals:[150]}).toBe(true);return last};
+  // The harness answers review/start once the test lets it.
+  let answer=gate(),reviewStart=null;
+  proxy.hold=message=>{if(message.method!=="review/start")return null;reviewStart=message.id;return answer.promise};
+  try{
+    for(const [index,mode] of ["dark","light"].entries()){
+      await switchMode(page,mode);
+      // Payments history read half way up, then the review asked for in Release checklist: Review clicked in dark, Enter on it in light.
+      await open("Payments history");
+      await expect.poll(()=>scroll.evaluate(node=>node.scrollHeight-node.clientHeight)).toBeGreaterThan(1200);
+      await scroll.evaluate(node=>{node.scrollTop=Math.round((node.scrollHeight-node.clientHeight)/2)});
+      await expect.poll(distanceFromEnd).toBeGreaterThan(400);
+      await open("Release checklist");
+      answer=gate();reviewStart=null;
+      if(mode==="dark")await review.click();else{await review.focus();await page.keyboard.press("Enter")}
+      await expect.poll(()=>reviewStart,{message:"review/start went out"}).not.toBe(null);
+      // The person opens Payments history again, back where they were reading, before the harness answers.
+      await open("Payments history");
+      await expect.poll(distanceFromEnd).toBeGreaterThan(400);
+      const at=await restingTop();
+      answer.open();
+      await expect.poll(()=>proxy.answered.includes(reviewStart),{message:"the page has the answer to review/start"}).toBe(true);
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      await expect(steps).toHaveCount(0);await expect(stop).toHaveCount(0);await expect(review).toBeEnabled();
+      await expect(composer).not.toHaveAttribute("placeholder","Queue a follow-up…");
+      expect(Math.abs(await top()-at),"Payments history stays where it was read").toBeLessThanOrEqual(2);
+      await page.waitForTimeout(400);
+      await expect(steps).toHaveCount(0);await expect(stop).toHaveCount(0);
+      expect(Math.abs(await top()-at),"Payments history stays where it was read").toBeLessThanOrEqual(2);
+      await page.screenshot({animations:"disabled",path:auditDir+"header-review-answered-in-another-thread-"+mode+"-1280x800.png"});
+      // Release checklist runs its review: Stop shows there, and the review's reply comes when it ends.
+      await open("Release checklist");
+      await expect(stop).toBeVisible();await expect(review).toBeDisabled();
+      done[index].open();
+      await expect(page.getByText("Review "+(index+1)+" found nothing to fix.")).toBeVisible({timeout:15_000});
+      await expect(stop).toHaveCount(0);
+    }
+    expect(harness.turns(harness.threads[0])).toHaveLength(3);expect(harness.turns(harness.threads[1])).toHaveLength(31);
+  }finally{answer.open();for(const reply of done)reply.open();await harness.close()}
 });
 
 test("the header gives the whole thread title and branch name on hover when it cuts them",async({page})=>{
