@@ -203,6 +203,51 @@ test("closing the Snooze dialog with Cancel, Escape or its close button gives fo
   }finally{await harness.close()}
 });
 
+// Six digits typed into the Until field's year, as a slip of the keyboard gives them (the year, then the next part's digits), leave a
+// four-digit year and go on to the next part: the hint names the date the field shows and Snooze snoozes the thread until then. The
+// year part used to take all six, a date shown that the dialog read as none ("Choose a date and time.").
+test("six digits typed into Snooze's Until year leave a four-digit year that the wake time names, and Snooze snoozes the thread until then",async({page})=>{
+  test.setTimeout(90_000);
+  const {harness,meta,id}=await openSidebarApp(page);
+  const dialog=snoozeDialog(page),hint=dialog.locator(".snooze-hint"),submit=dialog.getByRole("button",{name:"Snooze",exact:true}),until=dialog.getByLabel("Snooze until");
+  // From the field's first part to the one at index: the parts are in the order of the system's date format.
+  const toPart=async index=>{for(let step=0;step<6;step++)await page.keyboard.press("ArrowLeft");for(let step=0;step<index;step++)await page.keyboard.press("ArrowRight")};
+  try{
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      const row=await rowMenu(page,"Bulk three");await row.getByRole("button",{name:"Snooze…",exact:true}).click();
+      await expect(dialog).toBeVisible();
+      await dialog.getByRole("button",{name:"Until date & time",exact:true}).click();await expect(until).toBeFocused();
+      // The year part is the one whose ArrowUp changes the year; ArrowDown puts it back.
+      let year=-1;
+      for(let index=0;index<6&&year<0;index++){
+        await toPart(index);const before=(await until.inputValue()).split("-")[0];await page.keyboard.press("ArrowUp");
+        if((await until.inputValue()).split("-")[0]!==before)year=index;
+        await page.keyboard.press("ArrowDown");
+      }
+      expect(year).toBeGreaterThanOrEqual(0);
+      // 202712, then 275761 (past the last year the field took, 275760): the first four digits are the year.
+      for(const [digits,shown] of [["202712","2027"],["275761","2757"]]){
+        await toPart(year);await page.keyboard.type(digits,{delay:20});
+        await expect(hint).toHaveText(new RegExp("^Wakes .*\\b"+shown+"\\b.*\\.$"));await expect(hint).not.toHaveClass(/invalid/);await expect(submit).toBeEnabled();
+        await expect(until).toHaveValue(new RegExp("^"+shown+"-\\d\\d-\\d\\dT\\d\\d:\\d\\d$"));
+        await page.screenshot({animations:"disabled",path:auditDir+"sidebar-snooze-year-"+digits+"-typed-"+mode+"-1280x800.png"});
+      }
+      await shoot(page,"sidebar-snooze-six-digit-year");
+      await page.setViewportSize({width:700,height:800});await expect(hint).toBeInViewport();
+      await page.screenshot({animations:"disabled",path:auditDir+"sidebar-snooze-six-digit-year-"+mode+"-700x800.png"});
+      await page.setViewportSize({width:1280,height:800});
+      if(mode==="dark"){await dialog.getByRole("button",{name:"Cancel",exact:true}).click();await expect(dialog).toHaveCount(0);continue}
+      const value=await until.inputValue();
+      await submit.click();await expect(dialog).toHaveCount(0);
+      await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk two","Bulk four"]],["Snoozed",["Bulk three"]]]);
+      // The wake time saved is the date and time the field showed.
+      const saved=new Date(Number(meta[id("Bulk three")].snoozedUntil)),pad=part=>String(part).padStart(2,"0");
+      expect(saved.getFullYear()+"-"+pad(saved.getMonth()+1)+"-"+pad(saved.getDate())+"T"+pad(saved.getHours())+":"+pad(saved.getMinutes())).toBe(value);
+    }
+  }finally{await harness.close()}
+});
+
 test("a bulk Archive the harness refuses for every thread says its reason once and keeps the threads in view",async({page})=>{
   test.setTimeout(120_000);
   const list=Array.from({length:10},(_,index)=>"Payments refactor step "+String(index+1).padStart(2,"0")+" with the refund flow");
