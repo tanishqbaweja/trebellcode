@@ -194,3 +194,36 @@ test("turns loaded above a find hit in an item-paged thread carry the done pills
     await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-loaded-above-hit-1280x800.png"});
   }finally{await fixture.close()}
 });
+
+// Escape closes the find bar from its Previous and Next match buttons as from its field: after a click on one, and after the one in
+// use turns off at the first or the last match, clicked or pressed from the keyboard, in a wide window and a narrow one.
+test("Escape closes thread find after its Previous or Next match button was used, as it does from the find field",async({page})=>{
+  test.setTimeout(60_000);
+  const needle="tern-marker-614";
+  const fixture=await openNativeHistory(page,{turnCount:30,userText:index=>[12,20,27].includes(index)?`Turn ${index} notes the ${needle} here.`:`Routine Native history message ${index}.`});
+  try{
+    const find=page.getByTestId("thread-find-bar"),input=page.getByTestId("thread-find-input"),count=find.locator(".thread-find-count");
+    const previous=find.getByRole("button",{name:"Previous match"}),next=find.getByRole("button",{name:"Next match"});
+    const openFind=async()=>{await page.keyboard.press("Control+f");await expect(input).toBeFocused();await page.keyboard.type(needle,{delay:8});await expect(count).toHaveText("1 / 3",{timeout:10_000})};
+    for(const [mode,width] of [["dark",1280],["light",900]]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.setViewportSize({width,height:800});
+      // Next match clicked: the keyboard is on it, and Escape closes the bar.
+      await openFind();
+      await next.click();await expect(count).toHaveText("2 / 3");await expect(next).toBeFocused();
+      await page.keyboard.press("Escape");await expect(find).toBeHidden();
+      // Previous match clicked back to the first match, where it turns off under the pointer.
+      await openFind();
+      await next.click();await expect(count).toHaveText("2 / 3");
+      await previous.click();await expect(count).toHaveText("1 / 3");await expect(previous).toBeDisabled();
+      await page.keyboard.press("Escape");await expect(find).toBeHidden();
+      // From the keyboard: Tab from the field to Next match and Enter to the last match, where it turns off.
+      await openFind();
+      await page.keyboard.press("Tab");await expect(next).toBeFocused();
+      await page.keyboard.press("Enter");await expect(count).toHaveText("2 / 3");
+      await page.keyboard.press("Enter");await expect(count).toHaveText("3 / 3");await expect(next).toBeDisabled();
+      await page.screenshot({animations:"disabled",path:auditDir+`native-thread-find-last-match-${mode}-${width}x800.png`});
+      await page.keyboard.press("Escape");await expect(find).toBeHidden();
+      await page.screenshot({animations:"disabled",path:auditDir+`native-thread-find-closed-from-buttons-${mode}-${width}x800.png`});
+    }
+  }finally{await fixture.close()}
+});
