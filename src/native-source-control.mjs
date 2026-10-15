@@ -51,6 +51,10 @@ export function createNativeSourceControlExecutor({environments=null,environment
   const safeNames=command=>explicitNames||sourceControlEnvironmentKeys(command);
   return {
     secretValues:scope=>secretBroker.values(scope),
+    // A local executor's repositories are on this machine, so their Git info is read from their files (source-control-service),
+    // with the environment this executor's own commands get.
+    local:!(profile&&profile.type!=="local"),
+    environmentFor:command=>sourceControlEnvironment(environment,{platform,command,environmentNames:explicitNames}),
     async run(command,args,{cwd,timeout=120000,maxBuffer=8*1024*1024}={}){
       const executable=String(command||"").trim(),argv=Array.isArray(args)?args.map(String):[],limit=boundedOutput(maxBuffer),timeoutMs=boundedTimeout(timeout);
       if(profile&&profile.type!=="local"){

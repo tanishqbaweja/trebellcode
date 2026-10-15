@@ -6,6 +6,7 @@ import { mkdtemp,readFile,rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNativeSourceControl,createNativeSourceControlExecutor,sourceControlEnvironment,sourceControlEnvironmentKeys } from "../src/native-source-control.mjs";
+import { sourceControlGitInfo,withSourceControlExecutor } from "../src/source-control-service.mjs";
 
 const execFileAsync=promisify(execFile);
 async function git(cwd,args){return execFileAsync("git",args,{cwd,windowsHide:true,encoding:"utf8"})}
@@ -22,6 +23,27 @@ test("Native source control performs bounded local Git actions inside the active
     const body=await readFile(join(root,"README.md"),"utf8");assert.equal(body,"two\n");
     const subject=(await git(root,["log","-1","--pretty=%s"])).stdout.trim();assert.equal(subject,"Native source-control commit");
   }finally{await rm(root,{recursive:true,force:true})}
+});
+
+// Every Native git tool reads the repository's Git info, branch_create twice. Through a local executor it is read from the
+// repository's files, as the Git panel reads it, so it starts at most 2 git processes (7 ran one after another before), each
+// through the executor, and gives the model the same answer as a remote environment's git-only read.
+test("Native source control reads a local repository's Git info from its files with two git processes through its executor",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-source-control-info-"));
+  try{
+    await git(root,["init","-b","main"]);await git(root,["config","user.email","trebell-test@example.invalid"]);await git(root,["config","user.name","Trebell Test"]);
+    await writeFile(join(root,"README.md"),"one\n","utf8");await git(root,["add","README.md"]);await git(root,["commit","-m","seed"]);
+    await git(root,["branch","feature"]);await git(root,["remote","add","origin","https://example.invalid/team/repo.git"]);await writeFile(join(root,"notes.txt"),"new\n","utf8");
+    const executor=createNativeSourceControlExecutor({environment:{...process.env}});assert.equal(executor.local,true);
+    const counted=base=>{const calls=[];return {calls,executor:{...base,run:(command,args,options)=>{calls.push([command,...args].join(" "));return base.run(command,args,options)}}}};
+    const fast=counted(executor),info=await withSourceControlExecutor(fast.executor,()=>sourceControlGitInfo(root));
+    assert.equal(info.isGit,true);assert.equal(info.branch,"main");assert.deepEqual(info.branches,["feature","main"]);assert.deepEqual(info.status,[{code:"??",path:"notes.txt"}]);
+    assert.ok(fast.calls.length<=2,"git processes: "+fast.calls.join("; "));assert.ok(fast.calls.every(call=>call.startsWith("git ")),fast.calls.join("; "));
+    const full=counted({...executor,local:false}),fullInfo=await withSourceControlExecutor(full.executor,()=>sourceControlGitInfo(root));
+    assert.equal(full.calls.length,7,full.calls.join("; "));
+    const answer=value=>({isGit:value.isGit,root:value.root,branch:value.branch,upstream:value.upstream,branches:value.branches,status:value.status,statusHeader:value.statusHeader,remotes:value.remotes,worktrees:value.worktrees});
+    assert.deepEqual(answer(info),answer(fullInfo));
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("Native source-control executor keeps unrelated parent secrets out of Git subprocesses",async()=>{

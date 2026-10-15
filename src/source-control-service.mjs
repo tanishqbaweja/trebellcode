@@ -65,7 +65,11 @@ async function runStdin(command,args,input,{cwd,timeout=120000,maxBuffer=8*1024*
 }
 
 async function serviceGitInfo(cwd){
-  if(!currentExecutor())return localGitInfo(cwd);
+  const executor=currentExecutor();
+  if(!executor)return localGitInfo(cwd);
+  // A local executor's repository is read from its files, as the Git panel reads it: the git commands that are still needed (2
+  // where 7 ran one after another) go through the executor. A Native branch_create read the info twice, 15 git processes in all.
+  if(executor.local)return localGitInfo(cwd,{gitFn:(dir,args,{allowFailure=false}={})=>run("git",args,{cwd:dir,allowFailure}),env:executor.environmentFor?.("git")||process.env});
   const base=String(cwd||"").trim();
   const rootRes=await run("git",["rev-parse","--show-toplevel"],{cwd:base,allowFailure:true});
   if(!rootRes.ok)return {isGit:false,cwd:base,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]};
