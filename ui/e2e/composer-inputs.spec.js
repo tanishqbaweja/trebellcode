@@ -1,6 +1,7 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { mkdir,writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 
@@ -55,6 +56,16 @@ async function chooseFiles(page,files){
   await chooser.setFiles(files);
 }
 const chips=page=>page.locator(".attachment-shelf > span");
+const frames=page=>page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+// The text of each message "Composer thread" has, as the relay stores its turns.
+const sentTexts=harness=>harness.turns(harness.threads[0]).map(turn=>(turn.items.find(item=>item.type==="userMessage")?.content||[]).map(part=>part.text||"").join(""));
+// A key held down as a keyboard repeats it: the press, then five repeats about 33 ms apart. pressed() waits for what the press did
+// before the first repeat comes, as the keyboard waits about half a second.
+async function holdKey(page,key,pressed=async()=>{}){
+  await page.keyboard.down(key);await pressed();
+  for(let repeat=0;repeat<5;repeat++){await page.waitForTimeout(33);await page.keyboard.down(key)}
+  await page.keyboard.up(key);await frames(page);
+}
 
 test("a file over the attachment limit is refused at once by its name, and an accepted file shows as uploading until it is in",async({page},testInfo)=>{
   test.setTimeout(90_000);
@@ -349,6 +360,53 @@ test("/plan puts the plan prompt with what follows it in the composer, ready to 
     await expect(composer).toHaveValue("Create a clear execution plan, then carry it out. the release");
     await expect(composer).toBeFocused();
     await shootBoth(page,"plan-command",()=>expect(composer).toBeInViewport());
+  }finally{await harness.close()}
+});
+
+test("Enter held on a partial slash command completes it once, and its repeats neither run it nor send; a press of its own does",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Planned the release and carried it out."}]});
+  try{
+    const composer=page.getByTestId("composer"),menu=page.locator(".slash-menu"),users=page.locator(".user-bubble");
+    const plan="Create a clear execution plan, then carry it out. the release";
+    await composer.click();await page.keyboard.type("/pl",{delay:20});
+    await expect(menu.locator("button.active strong")).toHaveText("/plan");
+    // The press completes /plan. Its repeats would run it, and then send the plan prompt it puts in the composer.
+    await holdKey(page,"Enter",()=>expect(composer).toHaveValue("/plan "));
+    await page.keyboard.type("the release",{delay:15});
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page"]);
+    await expect(composer).toHaveValue("/plan the release");await expect(menu).toHaveCount(0);await expect(users).toHaveCount(1);
+    await shootBoth(page,"held-enter-slash-command",()=>expect(composer).toBeInViewport());
+    // A press of its own runs /plan, and the next sends the plan prompt.
+    await composer.click();await page.keyboard.press("Control+End");await page.keyboard.press("Enter");
+    await expect(composer).toHaveValue(plan);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Planned the release and carried it out.")).toBeVisible({timeout:15_000});
+    await expect(users).toHaveCount(2);await expect(users.last()).toContainText(plan);
+    expect(harness.turns(harness.threads[0])).toHaveLength(2);
+  }finally{await harness.close()}
+});
+
+test("Enter held on the @ file menu attaches the file once, and its repeats send nothing; a press of its own sends the message with it",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page,{replies:[{text:"The login redirect is fixed."}]});
+  try{
+    await mkdir(join(harness.repo,"src"),{recursive:true});
+    for(const name of ["login","logout"])await writeFile(join(harness.repo,"src",name+".js"),`export function ${name}(){}\n`);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),users=page.locator(".user-bubble"),context=page.getByTestId("context-chip");
+    await composer.click();await page.keyboard.type("Check @log",{delay:20});
+    await expect(menu.locator("button.active strong")).toHaveText("login.js");
+    // The press attaches login.js. Its repeats would send the message, only begun, with the file.
+    await holdKey(page,"Enter",async()=>{await expect(context).toHaveCount(1);await expect(composer).toHaveValue("Check @src/login.js ")});
+    await page.keyboard.type("for the redirect",{delay:15});
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page"]);
+    await expect(composer).toHaveValue("Check @src/login.js for the redirect");await expect(context).toContainText("login.js");await expect(users).toHaveCount(1);
+    await shootBoth(page,"held-enter-file-mention",()=>expect(composer).toBeInViewport());
+    // A press of its own sends it, with the file.
+    await composer.click();await page.keyboard.press("Control+End");await page.keyboard.press("Enter");
+    await expect(page.getByText("The login redirect is fixed.")).toBeVisible({timeout:15_000});
+    await expect(users).toHaveCount(2);await expect(users.last()).toContainText("Check @src/login.js for the redirect");
+    await expect(context).toHaveCount(0);expect(harness.turns(harness.threads[0])).toHaveLength(2);
   }finally{await harness.close()}
 });
 

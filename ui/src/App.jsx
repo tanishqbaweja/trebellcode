@@ -795,6 +795,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // The note about dictation goes once the draft is sent, and how the send went shows in its place.
   function sendDraft(send){setDictationAlert(null);send?.(prompt)}
   function keyDown(e){
+    // A held Enter acts once: only its press completes a command, picks a file or sends, so its repeats do not send what the press
+    // completed, or the message only begun with the file it picked.
+    if(e.key==="Enter"&&e.repeat&&!e.shiftKey){e.preventDefault();return}
     if(slashMenuOpen){
       if(e.key==="ArrowDown"){e.preventDefault();setSlashIndex((slashActive+1)%slashItems.length);return}
       if(e.key==="ArrowUp"){e.preventDefault();setSlashIndex((slashActive-1+slashItems.length)%slashItems.length);return}
