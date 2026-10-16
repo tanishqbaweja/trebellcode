@@ -13,9 +13,10 @@ import { askConfirm } from "../ask-dialog.js";
 let projectsOnScreen=null;
 // A card's save outlives the page that sent it too: the person can leave and come back before it answers. What it did shows on the
 // page on screen then. An action or hook editor whose save is on its way as they leave (editorSaves) shows again on the page they
-// come back to, still saving, until the save lands (editorsLeft). editorsSaved: what an editor's last save that landed sent, and the
-// id it saved, so Save pressed once that save closed it sends nothing, and an editor it left open updates what it saved.
-const editorSaves=new WeakSet(),editorsSaved=new WeakMap();let editorsLeft={action:null,hook:null};
+// come back to, still saving, until the save lands (editorsLeft). One whose save fails while no Projects page is on screen shows
+// there too, with what was typed, beside the failure (failureLeft). editorsSaved: what an editor's last save that landed sent, and
+// the id it saved, so Save pressed once that save closed it sends nothing, and an editor it left open updates what it saved.
+const editorSaves=new WeakSet(),editorsSaved=new WeakMap();let editorsLeft={action:null,hook:null},failureLeft=null;
 // An action's or a hook's fields as its editor holds them.
 const SCRIPT_FIELDS=["name","command","previewUrl","autoOpenPreview","runOnWorktreeCreate","waitForSetup"],HOOK_FIELDS=["name","event","command","failureMode","timeoutMs","actionsText"];
 function scriptFields(value){return {name:value.name||"",command:value.command||"",previewUrl:value.previewUrl||"",autoOpenPreview:Boolean(value.autoOpenPreview),runOnWorktreeCreate:Boolean(value.runOnWorktreeCreate),waitForSetup:Boolean(value.waitForSetup)}}
@@ -223,9 +224,10 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   // that action's row ("action:" and its id): at the end of a long action list it was out of view of the row.
   function cardArea(patch){return patch.scripts?"actions":patch.hooks?"hooks":"worktreeCleanup" in patch?"cleanup":"name" in patch||"icon" in patch?"identity":"overrides"}
   function failInCard(project,area,text){setError("");setCardError({id:project.id,area,text})}
-  // It is brought into view when it shows: under a control at the bottom of the window it would start below it.
+  // It is brought into view when it shows: under a control at the bottom of the window it would start below it. One a save said while
+  // no Projects page was on screen shows once the cards are listed.
   const cardErrorRef=useRef(null);
-  useEffect(()=>{if(cardError)cardErrorRef.current?.scrollIntoView({block:"nearest"})},[cardError]);
+  useEffect(()=>{if(cardError)cardErrorRef.current?.scrollIntoView({block:"nearest"})},[cardError,listState]);
   const cardAlert=(project,area)=>cardError?.id===project.id&&cardError.area===area&&<p ref={cardErrorRef} className="provider-status-error project-card-error" role="alert">{cardError.text}</p>;
   // A card's save names its project (id), so the server applies it to that project only: one still on its way when the person
   // removes the project reaches the server after the removal and is refused, instead of creating the project again under its
@@ -233,8 +235,10 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   // (removingRef) stays: Undo waits for the first and puts the second back with the project, so a setting changed or a name typed
   // just before Remove is not lost.
   const savesRef=useRef(new Map()),removingRef=useRef(new Set());
-  // The page a save reports to once it is answered: this one, or the one the person came back to after leaving it.
+  // The page a save reports to once it is answered: this one, or the one the person came back to after leaving it. A failure said
+  // while no Projects page is on screen waits for the next one (failureLeft).
   const onScreen=()=>projectsOnScreen?.current||screenRef.current;
+  function failSave(project,area,text){const page=projectsOnScreen?.current;if(page)page.failInCard(project,area,text);else failureLeft={id:project.id,area,text}}
   async function saveProject(project,patch,area=cardArea(patch)){
     setError("");setCardError(null);
     const saves=savesRef.current.get(project.id)||new Set(),entry={patch,gone:false};let settle=()=>{};entry.settled=new Promise(resolve=>{settle=resolve});
@@ -244,7 +248,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
       result=await api("/api/projects",{method:"POST",body:{id:project.id,path:project.path,environmentId:project.environmentId||null,...patch}});
     }catch(err){
       if(err?.status===404&&removingRef.current.has(project.id)){entry.gone=true;return null}
-      onScreen().failInCard(project,area,err.message||String(err));return null;
+      failSave(project,area,err.message||String(err));return null;
     }finally{if(!entry.gone)saves.delete(entry);entry.answered=true;settle()}
     const issues=[],page=onScreen();
     try{onProjectUpdated?.(result.project)}catch(err){issues.push("the local project view could not apply the saved update: "+(err.message||String(err))+".")}
@@ -451,9 +455,10 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   const screenRef=useRef(null);
   screenRef.current={showError:setError,placeRestored,onProjectUpdated,noteInCard:(project,area,text)=>setCardError({id:project.id,area,text}),freshRefresh,failInCard,partialSuccess,updateEditor:(kind,update)=>(kind==="hook"?setHookEditor:setEditor)(update)};
   // This is the page on screen from the commit that draws it. What a save did meanwhile to the editors kept for it (editorsLeft) is
-  // taken in then.
+  // taken in then, and so is a failure said while no Projects page was on screen.
   useLayoutEffect(()=>{
     const page=screenRef;projectsOnScreen=page;setEditor(editorsLeft.action);setHookEditor(editorsLeft.hook);
+    if(failureLeft){setCardError(failureLeft);failureLeft=null}
     return()=>{if(projectsOnScreen===page)projectsOnScreen=null};
   },[]);
 

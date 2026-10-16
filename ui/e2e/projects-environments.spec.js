@@ -738,6 +738,42 @@ test.describe("Adding an environment",()=>{
     }finally{hold.door.open()}
   });
 
+  // The person adds an environment while the server is slow and goes to Projects; the add fails while they are there. Back on
+  // Environments the page says why, with the form that failed, so they can add it again.
+  test("an Add that fails while the person is on another page is said when they come back, with the form that failed",async({page,request})=>{
+    await open(page,request);
+    const door=gate(),adds=[];
+    await page.route(/\/api\/environments$/,async route=>{
+      if(route.request().method()!=="POST")return route.fallback();
+      adds.push(route.request().postDataJSON()?.name);await door.promise;
+      return adds.length===1?json(route,{error:"Deliberate environment add failure"},500):route.fallback();
+    });
+    try{
+      await nav(page,"Environments").click();
+      await hostDiscovered(page);
+      const form=page.locator(".environment-create"),name=form.getByRole("textbox",{name:"Name",exact:true}),cwd=form.getByRole("textbox",{name:"Working directory",exact:true}),add=form.getByRole("button",{name:"Add environment",exact:true});
+      const listed=page.locator(".environment-list>div strong"),alert=page.locator(".environments-page>.inline-error");
+      await name.click();await page.keyboard.type("Failing box",{delay:15});
+      await cwd.click();await page.keyboard.type("C:\\code\\failing",{delay:15});
+      await add.click();
+      await expect.poll(()=>adds).toEqual(["Failing box"]);
+      await nav(page,"Projects").click();await expect(page.locator(".projects-page")).toBeVisible();
+      const failed=page.waitForResponse(response=>/\/api\/environments$/.test(response.url())&&response.request().method()==="POST");
+      door.open();await failed;await frames(page);await page.waitForTimeout(300);
+      await nav(page,"Environments").click();
+      await hostDiscovered(page);
+      await expect(alert,"the failure, on the page the person comes back to").toHaveText("Deliberate environment add failure");
+      await expect(name,"the form that failed").toHaveValue("Failing box");await expect(cwd).toHaveValue("C:\\code\\failing");
+      await expect(add).toBeEnabled();
+      await shootModes(page,"environment-add-failed-while-away",{show:form});
+      await add.click();
+      await expect(listed).toHaveText(["Local machine","Failing box"]);await expect(alert).toHaveCount(0);
+      await expect(name).toHaveValue("");
+      expect(adds).toEqual(["Failing box","Failing box"]);
+      expect((await listedEnvironments(request)).map(profile=>[profile.name,profile.cwd])).toEqual([["Failing box","C:\\code\\failing"]]);
+    }finally{door.open()}
+  });
+
   // Docker Desktop's own WSL distro runs its engine. Offline, host discovery answers as a fixed host whose wsl --list names one distro
   // beside Docker Desktop's (src/offline-e2e-host.mjs; with TREBELL_E2E_ALLOW_NETWORK=1 it asks this host), and Docker Desktop's
   // distro is neither listed as a WSL target nor offered in the Distribution picker.
@@ -1670,6 +1706,41 @@ test.describe("Saving an action or a hook",()=>{
     }finally{
       hold.door.open();await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],hooks:[]}});
     }
+  });
+
+  // The person saves a hook while the server is slow and goes to Usage; the save fails while they are there. Back on Projects the card
+  // says why, beside the hook's editor with what was typed, so the hook can be saved again.
+  test("a hook save that fails while the person is on another page is said on the card when they come back, beside its editor",async({page,request})=>{
+    const boot=await open(page,request);
+    const door=gate(),saves=[];
+    await page.route(/\/api\/projects$/,async route=>{
+      const body=route.request().method()==="POST"?route.request().postDataJSON():null;
+      if(!body?.hooks)return route.fallback();
+      saves.push(body.hooks.map(hook=>hook.name));await door.promise;
+      return saves.length===1?json(route,{error:"Deliberate hook save failure"},500):route.fallback();
+    });
+    try{
+      await openProjects(page);
+      const card=page.locator(".project-card.active"),editor=card.locator(".project-hook-editor"),rows=card.locator(".project-hook-row strong"),alert=card.locator(".project-hooks").getByRole("alert");
+      const name=editor.getByPlaceholder("Hook name (e.g. Lint gate)"),command=editor.getByPlaceholder("Command (e.g. npm run lint)"),save=editor.locator("button.primary");
+      await card.getByRole("button",{name:"Add hook",exact:true}).click();
+      await name.click();await page.keyboard.type("Failing hook",{delay:10});
+      await command.click();await page.keyboard.type("npm run failing",{delay:10});
+      await save.click();
+      await expect.poll(()=>saves.length).toBe(1);
+      await nav(page,"Usage").click();await expect(page.locator(".usage-page")).toBeVisible();
+      const failed=page.waitForResponse(response=>/\/api\/projects$/.test(response.url())&&response.request().method()==="POST");
+      door.open();await failed;await frames(page);await page.waitForTimeout(300);
+      await nav(page,"Projects").click();
+      await expect(alert,"the failure, on the card the person comes back to").toHaveText("Deliberate hook save failure");
+      await expect(name,"the hook's editor, with what was typed").toHaveValue("Failing hook");await expect(command).toHaveValue("npm run failing");
+      await expect(save).toHaveText(/^\s*Save hook\s*$/);await expect(save).not.toHaveAttribute("aria-disabled","true");
+      await expect(rows).toHaveCount(0);
+      await shootModes(page,"card-hook-failed-while-away",{show:editor});
+      await save.click();
+      await expect(rows).toHaveText(["Failing hook"]);await expect(editor).toHaveCount(0);await expect(alert).toHaveCount(0);
+      expect(saves).toEqual([["Failing hook"],["Failing hook"]]);
+    }finally{door.open();await request.post("/api/projects",{data:{path:boot.cwd,hooks:[]}})}
   });
 });
 

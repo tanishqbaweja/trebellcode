@@ -7,8 +7,8 @@ import { api } from "../api.js";
 let environmentsOnScreen=null;
 // An add outlives the page that sent it too ({draft, name}: the form as it was sent). The page the person comes back to before it
 // answers shows that form, is busy with it as the one they left was, and says it is adding it; once it lands the page on screen shows
-// what it did.
-let adding=null;
+// what it did. A failure said while no Environments page is on screen waits for the next one, with the form that failed (failureLeft).
+let adding=null,failureLeft=null;
 const BLANK_DRAFT={type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"",themeDirectory:""};
 const addingMessage=name=>({text:`Adding “${name}”…`,tone:"notice",adding:true});
 
@@ -39,11 +39,13 @@ export default function EnvironmentsPage({onOfferUndo}={}){
   // directory or a themes directory. The form starts over after an add, so a press after it (Enter twice or held) adds nothing.
   const emptyLocal=draft.type==="local"&&![draft.name,draft.cwd,draft.themeDirectory].some(value=>value.trim());
 
-  async function refresh({reportErrors=false}={}){
-    try{setData(await api("/api/environments"));setDiscovery("done");if(reportErrors)setMessageState(current=>current.adding?current:{text:"",tone:"notice"});return true}
+  // A read that reports its errors also clears what the page said before (clear), except that an add is on its way. The page's first
+  // read keeps what the page starts with: a failure said while no Environments page was on screen stays until the next action.
+  async function refresh({reportErrors=false,clear=reportErrors}={}){
+    try{setData(await api("/api/environments"));setDiscovery("done");if(clear)setMessageState(current=>current.adding?current:{text:"",tone:"notice"});return true}
     catch(error){setDiscovery(state=>state==="done"?"done":"failed");if(reportErrors)setError("Could not refresh environments: "+(error?.message||String(error)));return false}
   }
-  useEffect(()=>{refresh({reportErrors:true})},[]);
+  useEffect(()=>{refresh({reportErrors:true,clear:false})},[]);
 
   async function add(){
     const sent=draft,name=draft.name||({local:"Local machine",wsl:"WSL",ssh:"SSH"}[draft.type]);
@@ -53,7 +55,7 @@ export default function EnvironmentsPage({onOfferUndo}={}){
     catch(e){failure=e.message||String(e)}
     if(adding===record)adding=null;
     const page=environmentsOnScreen?.current;
-    if(page)await page.addLanded(record,failure);
+    if(page)await page.addLanded(record,failure);else if(failure)failureLeft={draft:sent,text:failure};
   }
   // What an add did, on the page on screen: a failure is said, with the form as it is; an add that went through is listed, and the
   // form starts over if it still holds what was sent (one the person changed meanwhile keeps their changes).
@@ -87,11 +89,12 @@ export default function EnvironmentsPage({onOfferUndo}={}){
   }
   const screenRef=useRef(null);
   screenRef.current={showError:setError,refresh,addLanded};
-  // This is the page on screen from the commit that draws it. An add it started busy with that landed while it was being drawn shows
-  // then.
+  // This is the page on screen from the commit that draws it. An add it started busy with that landed while it was being drawn, and
+  // a failure said while no Environments page was on screen, show then.
   useLayoutEffect(()=>{
     const page=screenRef;environmentsOnScreen=page;
-    if(startedWith&&adding!==startedWith)void addLanded(startedWith,null);
+    if(failureLeft){const left=failureLeft;failureLeft=null;setDraft(left.draft);setError(left.text);setBusyState("")}
+    else if(startedWith&&adding!==startedWith)void addLanded(startedWith,null);
     return()=>{if(environmentsOnScreen===page)environmentsOnScreen=null};
   },[]);
   async function setEnabled(id,enabled){
