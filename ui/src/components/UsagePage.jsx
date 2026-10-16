@@ -40,11 +40,13 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   function toggleEnvironment(id){
     setSelectedEnvironments(current=>current.includes(id)?current.filter(item=>item!==id):[...current,id]);
   }
-  async function refreshCodex(){
+  // `keep`: a read that the connection or the thread started, rather than the person, keeps what the last Use reset credit came to. A
+  // reset whose harness dropped on the way fails while the card is hidden for Codex connecting again, and still says so once it is back.
+  async function refreshCodex({keep=false}={}){
     // `answered` is false until a read on the current connection completes: the card mounts as Codex connects, a render before
     // this read starts, and must not claim the route returned no limits then.
     if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"){setCodex(current=>({...current,account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false,answered:false}));return}
-    setCodex(current=>({...current,loading:true,errors:{},notice:"",failure:""}));
+    setCodex(current=>({...current,loading:true,errors:{},...(keep?null:{notice:"",failure:""})}));
     const requests=[
       ["account",()=>rpc.request("account/read",{refreshToken:false})],
       ["rateLimits",()=>rpc.request("account/rateLimits/read",{excludeResetCreditDetails:false})],
@@ -92,7 +94,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   }
   async function refresh(){await Promise.all([refreshLocal(),refreshCodex(),refreshRuntimeUsage(),refreshEnvironments()])}
   useEffect(()=>{refreshLocal()},[days,selectedEnvironments.join("|")]);
-  useEffect(()=>{refreshCodex()},[rpc,rpcStatus,activeThread?.id,agentRuntime]);
+  useEffect(()=>{refreshCodex({keep:true})},[rpc,rpcStatus,activeThread?.id,agentRuntime]);
   useEffect(()=>{
     if(agentRuntime!=="codex"||rpcStatus!=="connected"||!rpc?.subscribeNotifications)return;
     let disposed=false,accountTimer=null,rateTimer=null,usageTimer=null;
