@@ -742,11 +742,17 @@ test("History asked for while a thread opened from it opens shows History, and t
     await page.getByRole("button",{name:"Usage",exact:true}).click();await expect(heading("Usage")).toBeVisible();
     await history.focus();await page.keyboard.press("Enter");
     await expect(heading("Thread history")).toBeVisible();await expect(history).toHaveClass(/active/);await expect(opening(page)).toHaveCount(0);
-    // The thread lands behind History, which stays.
-    release();await expect.poll(()=>harness.sent("thread/goal/get").filter(id=>id===BETA.thread.id).length).toBe(1);await page.waitForTimeout(500);
+    // The thread lands behind History, which stays, from the frame it lands in until the open has ended.
+    await watchHistory(page);const landed=landingOf(page,BETA);
+    release();await landed;await settle(page,harness);
+    expect(await historyLeft(page),"History left the screen, or the chat took it, once the thread landed").toBe(false);
     await expect(heading("Thread history")).toBeVisible();await expect(page.locator(".chat-workspace")).toHaveCount(0);await expect(row(page,BETA)).toHaveClass(/active/);
+    // It is the open thread: Threads shows it at once, with no opening state, from its one resume.
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    await expect(answer(page,BETA)).toBeVisible({timeout:1000});await expect(opening(page)).toHaveCount(0);await expect(headerTitle(page)).toHaveText("Payment retries");
+    expect(harness.resumes(BETA.thread.id),"resumes of the thread opened behind History").toBe(1);
     // A row picked in History now opens its thread in the chat, as before.
-    await historyRow("Flaky import").click();
+    await history.click();await historyRow("Flaky import").click();
     await expect(answer(page,GAMMA)).toBeVisible();await expect(headerTitle(page)).toHaveText("Flaky import");await expect(heading("Thread history")).toHaveCount(0);
   }finally{await harness.close()}
 });
