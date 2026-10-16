@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { attachCodexRelay } from "../../src/codex-relay.mjs";
 import { keepThreadMeta } from "./test-home.js";
-import { auditDir,startStreamingFixture } from "./native-stream-fixture.js";
+import { auditDir,gate,startStreamingFixture } from "./native-stream-fixture.js";
 
 // The parts of the app whose code loads after the first paint (lazy chunks), when that code cannot load: the UI was rebuilt or
 // updated under an open page, or the link to a remote Trebell server dropped. The browser keeps such a module as failed, so the
@@ -12,8 +12,9 @@ import { auditDir,startStreamingFixture } from "./native-stream-fixture.js";
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
 // A Codex app-server stand-in behind the real Codex relay, as guardian.spec.js builds it: one thread; send() pushes a message from
-// the harness to the page, and messages holds what the page sent it (its answers to the harness's requests among them).
-async function codexFixture(page){
+// the harness to the page, and messages holds what the page sent it (its answers to the harness's requests among them). recovery is
+// what /api/recovery answers (the turns a restart interrupted), and answer(message) can answer a request of the page's itself.
+async function codexFixture(page,{recovery={enabled:false,items:[]},answer=()=>undefined}={}){
   const thread={id:"lazy-chunk-fixture",name:"Lazy chunk fixture",preview:"Lazy chunks",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
   let socket=null;const messages=[];
   const upstreamHttp=createServer(),upstreamWss=new WebSocketServer({noServer:true}),sockets=new Set();
@@ -21,8 +22,9 @@ async function codexFixture(page){
   upstreamWss.on("connection",ws=>{
     sockets.add(ws);socket=ws;ws.on("close",()=>sockets.delete(ws));
     ws.on("message",data=>{
-      const message=JSON.parse(String(data));messages.push(message);if(message.id==null||!message.method)return;let result={};
-      if(message.method==="initialize")result={userAgent:"lazy-chunk-fixture"};
+      const message=JSON.parse(String(data));messages.push(message);if(message.id==null||!message.method)return;let result={};const answered=answer(message);
+      if(answered!==undefined)result=answered;
+      else if(message.method==="initialize")result={userAgent:"lazy-chunk-fixture"};
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
       else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
       else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null};
@@ -44,9 +46,13 @@ async function codexFixture(page){
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
   await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
-  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  const recoveryPosts=[];
+  await page.route(/\/api\/recovery$/,route=>{
+    if(route.request().method()!=="POST")return json(route,recovery);
+    recoveryPosts.push(route.request().postDataJSON());return json(route,{ok:true});
+  });
   return {
-    thread,messages,send:message=>socket.send(JSON.stringify(message)),
+    thread,messages,recoveryPosts,send:message=>socket.send(JSON.stringify(message)),
     async close(){relay.close();for(const item of sockets)try{item.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])},
   };
 }
@@ -214,5 +220,188 @@ test("a new task in a new worktree whose tool catalog cannot load makes no workt
     expect(await page.locator(".workspace-header").innerText(),"the view stays on the project").toBe(crumb);
     await expect(page.getByText("Worktree created",{exact:false})).toHaveCount(0);
     await appStays(page);
+  }finally{await fixture.close()}
+});
+
+// What the app does around a turn beyond showing it (turn-support.js: a send's repository context and new worktree, a send that is
+// a slash command, the agent's calls to Trebell's own tools, a completed turn's verification, the turns a restart interrupted) loads
+// at idle after the first paint (B11). A send made before then waits for it and starts with its repository context once it has come.
+test("a send made before the turn support has loaded waits for it and starts with its context",async({page})=>{
+  test.setTimeout(60_000);
+  const held=[];
+  await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>{held.push(route)});
+  const fixture=await startStreamingFixture(page,{providerTurn:async request=>({id:"support-late",provider:request.provider,model:request.model,text:"Started once the turn support came.",toolCalls:[],finishReason:"stop",usage:{}})});
+  try{
+    await expect.poll(()=>held.length,{message:"the turn support asked for at idle"}).toBe(1);
+    await fixture.open("Native streaming");
+    const packets=[];page.on("request",request=>{if(new URL(request.url()).pathname==="/api/context/packet")packets.push(request.method())});
+    await fixture.send("Start while the turn support is still on its way");
+    // The message shows at once, and the turn waits for the turn support: no context is asked for and no model is called until it comes.
+    await expect(page.locator(".user-row").filter({hasText:"Start while the turn support is still on its way"})).toBeVisible();
+    await page.waitForTimeout(500);expect(packets).toEqual([]);expect(fixture.requests).toHaveLength(0);
+    for(const route of held.splice(0))await route.continue();
+    await expect(page.getByText("Started once the turn support came.",{exact:true})).toBeVisible({timeout:10_000});
+    expect(packets).toEqual(["POST"]);expect(fixture.requests).toHaveLength(1);
+    await appStays(page);
+  }finally{for(const route of held)await route.continue().catch(()=>{});await fixture.close()}
+});
+
+// When the turn support cannot load, a send in the open thread still starts, without the repository context, and its activity says
+// why, as for a context the server could not make.
+test("a send whose turn support cannot load starts without repository context and says why",async({page})=>{
+  test.setTimeout(60_000);
+  let refused=0;
+  await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const fixture=await startStreamingFixture(page),shown=gate(),finish=gate();
+  try{
+    await expect.poll(()=>refused,{message:"the turn support asked for at idle"}).toBeGreaterThan(0);
+    const head="Answering without the repository context. ";
+    fixture.script.push(async(request,hook)=>{hook({type:"text",delta:head});shown.open();await finish.promise;return {id:"support-refused",provider:request.provider,model:request.model,text:head+"Done.",toolCalls:[],finishReason:"stop",usage:{}}});
+    await fixture.open("Native streaming");await fixture.send("Answer without the repository context");await shown.promise;
+    await expect(page.locator(".tool-event").filter({hasText:"Trebell repository context unavailable"})).toContainText("Trebell repository context unavailable: Part of Trebell could not load. Reload Trebell to get it back.");
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+"turn-support-cannot-load-dark-1280x800.png"});
+    finish.open();
+    await expect(page.locator(".history-assistant .assistant-message-text")).toContainText("Done.",{timeout:15_000});
+    await appStays(page);
+  }finally{finish.open();await fixture.close()}
+});
+
+// A New worktree send cannot make its worktree without the turn support: it fails and says so before anything is set up, and what
+// was typed is not lost.
+test("a new task in a new worktree whose turn support cannot load makes no worktree and keeps the message",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  let refused=0;
+  await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const fixture=await startStreamingFixture(page,{providerTurn:async request=>({id:"support-refused",provider:request.provider,model:request.model,text:"This should not start.",toolCalls:[],finishReason:"stop",usage:{}})});
+  const actions=[];
+  await page.route(/\/api\/git\/action$/,async route=>{const body=route.request().postDataJSON()||{};actions.push(body);await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,result:{worktree:body.path}})})});
+  try{
+    await expect.poll(()=>refused,{message:"the turn support asked for at idle"}).toBeGreaterThan(0);
+    await page.locator("select.workspace-mode").selectOption("worktree");
+    const before=fixture.threadStore.list("native").length;
+    await fixture.send("Start in a new worktree");
+    await expect(page.getByRole("alert").filter({hasText:"Not sent"})).toHaveText("Not sent: Part of Trebell could not load. Reload Trebell to get it back. Your draft is kept.",{timeout:10_000});
+    await expect(page.getByTestId("composer")).toHaveValue("Start in a new worktree");
+    expect(actions.filter(body=>body.action==="worktree-create"),"no worktree is made for a send that cannot start").toEqual([]);
+    expect(fixture.threadStore.list("native")).toHaveLength(before);
+    await appStays(page);
+  }finally{await fixture.close()}
+});
+
+// A harness waits on the answer to a call of Trebell's own tools: with the turn support unable to load, it is answered at once
+// with the reason, as a tool that fails is.
+test("a tool call whose turn support cannot load is answered with the reason, and the app stays",async({page})=>{
+  test.setTimeout(45_000);
+  let refused=0;
+  await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const fixture=await codexFixture(page);
+  try{
+    await openFixtureThread(page);
+    await expect.poll(()=>refused,{message:"the turn support asked for at idle"}).toBeGreaterThan(0);
+    fixture.send({id:"tool-call-now",method:"item/tool/call",params:{threadId:fixture.thread.id,turnId:"turn-tool",callId:"call-tool",namespace:"trebell_repo",tool:"search_symbols",arguments:{query:"relay"}}});
+    await expect.poll(()=>fixture.messages.find(message=>message.id==="tool-call-now"&&!message.method)?.result??null,{message:"the answer the harness got"}).toEqual({contentItems:[{type:"inputText",text:"Part of Trebell could not load. Reload Trebell to get it back."}],success:false});
+    await appStays(page);
+  }finally{await fixture.close()}
+});
+
+// What a person does to threads (thread-actions.js: pin, snooze, settle, archive, fork, delete, Undo, a move up or down) loads at
+// idle after the first paint too. A Pin made before then waits for it and pins the thread once it has come; with it unable to load,
+// the Pin says so in the sidebar and the thread stays where it was.
+const pinnedThreads=page=>page.locator(".thread-sections section").evaluateAll(sections=>{
+  const pinned=sections.find(section=>section.querySelector("h4 .thread-group-name")?.textContent==="Pinned");
+  return pinned?[...pinned.querySelectorAll(".thread-main")].map(node=>node.title):[];
+});
+async function pinFromMenu(page,name){
+  const row=page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
+  await row.hover();await row.locator(".thread-menu summary").click();
+  await row.getByRole("button",{name:"Pin",exact:true}).click();
+}
+test("a Pin made before the thread actions have loaded waits for them and pins the thread",async({page})=>{
+  test.setTimeout(60_000);
+  const held=[];
+  await page.route(/\/assets\/thread-actions-[^/]*\.js$/,route=>{held.push(route)});
+  const fixture=await startStreamingFixture(page);
+  try{
+    await expect.poll(()=>held.length,{message:"the thread actions asked for at idle"}).toBe(1);
+    await pinFromMenu(page,"Native streaming");
+    await page.waitForTimeout(500);expect(await pinnedThreads(page)).toEqual([]);
+    for(const route of held.splice(0))await route.continue();
+    await expect.poll(()=>pinnedThreads(page)).toEqual(["Native streaming"]);
+    await expect(page.getByTestId("thread-undo-toast").locator("span").first()).toHaveText("Thread pinned");
+    await appStays(page);
+  }finally{for(const route of held)await route.continue().catch(()=>{});await fixture.close()}
+});
+test("a Pin whose thread actions cannot load says so in the sidebar, and the thread stays where it was",async({page})=>{
+  test.setTimeout(60_000);
+  let refused=0;
+  await page.route(/\/assets\/thread-actions-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const fixture=await startStreamingFixture(page);
+  try{
+    await expect.poll(()=>refused,{message:"the thread actions asked for at idle"}).toBeGreaterThan(0);
+    await pinFromMenu(page,"Native streaming");
+    await expect(page.locator(".sidebar .sidebar-action-error")).toHaveText("Part of Trebell could not load. Reload Trebell to get it back.");
+    expect(await pinnedThreads(page)).toEqual([]);
+    await expect(page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native streaming"]')})).toBeVisible();
+    await appStays(page);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-actions-cannot-load-dark-1280x800.png"});
+  }finally{await fixture.close()}
+});
+
+// A send that starts with "/" may be a command, which the turn support runs (runSlashCommand). With it unable to load, the send
+// cannot tell a command from a message, so it is not made: it says why, and what was typed stays in the composer.
+test("a slash command whose turn support cannot load is not sent and keeps the draft",async({page})=>{
+  test.setTimeout(60_000);
+  let refused=0;
+  await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const fixture=await startStreamingFixture(page,{providerTurn:async request=>({id:"slash-refused",provider:request.provider,model:request.model,text:"This should not start.",toolCalls:[],finishReason:"stop",usage:{}})});
+  try{
+    await expect.poll(()=>refused,{message:"the turn support asked for at idle"}).toBeGreaterThan(0);
+    await fixture.open("Native streaming");
+    await fixture.send("/plan the release");
+    await expect(page.getByRole("alert").filter({hasText:"Not sent"})).toHaveText("Not sent: Part of Trebell could not load. Reload Trebell to get it back. Your draft is kept.",{timeout:10_000});
+    await expect(page.getByTestId("composer")).toHaveValue("/plan the release");
+    expect(fixture.requests,"nothing went to the model").toHaveLength(0);
+    await appStays(page);
+  }finally{await fixture.close()}
+});
+
+// The Codex turns a restart interrupted are continued once the app connects (continueInterruptedTurns), by the turn support, which
+// loads then when the server names some: a turn still running goes on, one that ended meanwhile is cleared, and one that may already
+// have done what it was doing is left to the person, whom the app tells.
+test("the Codex turns a restart interrupted are continued once the app connects, and one that may have acted is left to the person",async({page})=>{
+  test.setTimeout(45_000);
+  const turns={"interrupted-thread":{id:"turn-interrupted",status:"inProgress"},"finished-thread":{id:"turn-finished",status:"completed"}};
+  const fixture=await codexFixture(page,{
+    recovery:{enabled:true,items:[{threadId:"interrupted-thread",turnId:"turn-interrupted"},{threadId:"finished-thread",turnId:"turn-finished"}],blocked:[{message:"An interrupted browser click may already have happened. Inspect the page before continuing."}]},
+    answer:message=>message.method==="thread/turns/list"&&turns[message.params?.threadId]?{data:[turns[message.params.threadId]],nextCursor:null}:undefined,
+  });
+  try{
+    await page.goto("/");
+    await expect(page.getByTestId("app-action-error")).toHaveText("Restart recovery needs inspection: An interrupted browser click may already have happened. Inspect the page before continuing.");
+    await expect.poll(()=>fixture.messages.filter(message=>message.method==="turn/start").map(message=>[message.params?.threadId,message.params?.turnTrigger]),{message:"the turns the app continued"}).toEqual([["interrupted-thread","trebell-restart-continuation"]]);
+    await expect.poll(()=>fixture.recoveryPosts,{message:"the recoveries the app cleared"}).toEqual([{threadId:"finished-thread",action:"clear"}]);
+    await expect(page.getByRole("button",{name:/Lazy chunk fixture/})).toBeVisible();
+    await appStays(page);
+  }finally{await fixture.close()}
+});
+
+// With the turn support unable to load, a connect that finds turns a restart interrupted says it could not check them, continues
+// and clears none of them (the server keeps them for the next start), and the threads still load.
+test("restart recovery whose turn support cannot load says so, and the threads still load",async({page})=>{
+  test.setTimeout(45_000);
+  await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>route.abort("failed"));
+  const fixture=await codexFixture(page,{recovery:{enabled:true,items:[{threadId:"interrupted-thread",turnId:"turn-interrupted"}]}});
+  try{
+    await page.goto("/");
+    await expect(page.getByTestId("app-action-error")).toHaveText("Could not check restart recovery: Part of Trebell could not load. Reload Trebell to get it back.");
+    await expect(page.getByRole("button",{name:/Lazy chunk fixture/})).toBeVisible();
+    expect(fixture.messages.filter(message=>message.method==="turn/start"),"no turn continued").toEqual([]);
+    expect(fixture.recoveryPosts,"no recovery cleared or marked failed").toEqual([]);
+    await appStays(page);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+"restart-recovery-cannot-load-dark-1280x800.png"});
   }finally{await fixture.close()}
 });

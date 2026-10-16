@@ -46,8 +46,10 @@ test("one-shot Git text threads are never listed",()=>{
 
 test("App never prepends a thread without replacing an earlier copy of it",()=>{
   const app=readFileSync(join(root,"ui","src","App.jsx"),"utf8");
-  // setThreads(prev=>[thread,...prev]) duplicated the thread that thread/started had already listed.
-  const unguarded=[...app.matchAll(/setThreads\(\s*(\w+)\s*=>\s*\[\s*[\w.]+\s*,\s*\.\.\.\1\s*\]\s*\)/g)].map(match=>match[0]);
+  // setThreads(prev=>[thread,...prev]) duplicated the thread that thread/started had already listed. A fork lists its thread from
+  // the thread actions App loads after the first paint (thread-actions.js).
+  const actions=readFileSync(join(root,"ui","src","thread-actions.js"),"utf8");
+  const unguarded=[...(app+actions).matchAll(/setThreads\(\s*(\w+)\s*=>\s*\[\s*[\w.]+\s*,\s*\.\.\.\1\s*\]\s*\)/g)].map(match=>match[0]);
   assert.deepEqual(unguarded,[],"every prepend must drop an existing copy of the thread");
   assert.match(app,/method==="thread\/started"[\s\S]{0,240}isListedThread\(p\.thread\)\)setThreads\(prev=>prependThread\(prev,p\.thread\)\)/);
   // A new task's send lists the thread it made at once, whether or not that task is still the view shown (startTurn).

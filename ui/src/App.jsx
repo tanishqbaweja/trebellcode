@@ -38,7 +38,7 @@ import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
 import { createThreadTurnNotes } from "./thread-turn-notes.js";
 import { latestTurnRowsStart } from "./conversation-order.js";
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
-import { loadThreadListPages, nativeThreadSearchMatches, rankSearchHits, rankThreadSections, threadListParams, threadSectionOrderParams } from "./thread-list-query.js";
+import { nativeThreadSearchMatches, rankSearchHits, rankThreadSections, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary } from "./guardian-review.js";
 import { completedItemStatus } from "./tool-event-status.js";
@@ -54,17 +54,14 @@ import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
-import { bulkActionFailure, movedSectionRanks, orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadsInListOrder, undoOrder } from "./thread-order.js";
+import { sectionFirstThread, threadMoveAvailability, threadsInListOrder } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { startFocusPoll } from "./focus-poll.js";
 import { userVerificationAvailability } from "./user-verification.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
 import { repositoryFocusPaths } from "./context-focus.js";
-import { repositoryContextDeliveryPacket, repositoryContextEntries } from "./context-provenance.js";
 import { desktopBridgeToolAvailability } from "./desktop-tool-availability.js";
 import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
-import { contextTaskAnchor, contextTaskText } from "./context-task.js";
-import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
 import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openThreadTitleSource, sameCatalogSnapshot, threadCatalogRuntime, threadOwnerElsewhere, threadsFromCatalogMeta, threadTitle, threadKeptBySwitch } from "./thread-catalog.js";
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { finishedActivitySteps } from "./activity-details.js";
@@ -73,14 +70,11 @@ import { sidebarAutoCollapses } from "./sidebar-layout.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
 import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, modelProviderLabel } from "./provider-labels.js";
 import { specializedToolNamespaceNames, specializedToolSelection } from "./lazy-tool-exposure.js";
-import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
-import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
-import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
 import { configuredReasoningEffort, modelReasoningEffortKey, supportedReasoningEfforts } from "../../src/model-reasoning-effort.mjs";
 import { CODEX_STANDARD_SERVICE_TIER, configuredModelServiceTier, modelServiceTierKey, modelServiceTierLabel, supportedModelServiceTiers } from "../../src/model-service-tier.mjs";
 import { configuredModelOptions, modelOptionSettingsWith, supportedModelOptions } from "../../src/model-options.mjs";
 import { codexReasoningEffortLabel } from "../../src/codex-model-catalog.mjs";
-import { codexErrorNotice, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal, parseCodexGoalCommand } from "./codex-turn-options.js";
+import { codexErrorNotice, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal } from "./codex-turn-options.js";
 import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayHarness, relayThreadPreferredModel, serviceTierPickerTitle } from "./harness-turn-options.js";
 import ReasoningRow from "./components/ReasoningRow.jsx";
 import TurnActivityCard from "./components/TurnActivityCard.jsx";
@@ -129,7 +123,23 @@ const loadAskDialog=()=>askDialogLoad||=import("./ask-dialog.js").catch(error=>{
 });
 const askConfirm=(...args)=>loadAskDialog().then(dialog=>dialog.askConfirm(...args));
 const askText=(...args)=>loadAskDialog().then(dialog=>dialog.askText(...args));
-if(typeof window!=="undefined")requestAnimationFrame(()=>setTimeout(()=>(window.requestIdleCallback||(callback=>setTimeout(callback,200)))(()=>{loadSharedToolCatalog().catch(()=>{});loadAskDialog().catch(()=>{})},{timeout:2000})));
+// What App does around an agent's turn beyond showing it (turn-support.js: a send's repository context and new worktree, a send that
+// is a slash command or a project's recipe, the agent's calls to Trebell's own tools, a completed turn's verification, the turns a
+// restart interrupted) and what a person does to threads (thread-actions.js: pin, snooze, settle, archive, fork, delete, Undo, a move
+// up or down) load the same way: neither the first screen nor opening and reading a thread needs them. Each is kept once loaded
+// (turnSupport, threadActions), so what needs it runs at once, as before; what comes before the load waits for it, and what cannot
+// load it fails and says so.
+let turnSupport=null,turnSupportLoad=null,threadActions=null,threadActionsLoad=null;
+const loadTurnSupport=()=>turnSupportLoad||=import("./turn-support.js").then(module=>turnSupport=module,error=>{
+  turnSupportLoad=null;throw Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+});
+const loadThreadActions=()=>threadActionsLoad||=import("./thread-actions.js").then(module=>threadActions=module,error=>{
+  threadActionsLoad=null;throw Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+});
+// A send's context packet comes only from turn-support.js (prepareTurnContext), so a send with one has that module; one without
+// carries no repository context.
+function repositoryContextEntries(packet,options){return packet?turnSupport.repositoryContextEntries(packet,options):{}}
+if(typeof window!=="undefined")requestAnimationFrame(()=>setTimeout(()=>(window.requestIdleCallback||(callback=>setTimeout(callback,200)))(()=>{loadSharedToolCatalog().catch(()=>{});loadAskDialog().catch(()=>{});loadTurnSupport().catch(()=>{});loadThreadActions().catch(()=>{})},{timeout:2000})));
 
 // The command palette as it first appears while its code loads (on the first open only): its search box takes focus and the keys
 // typed straight after Ctrl+K, which would otherwise go into the composer it was opened from. seed hands the palette what was typed,
@@ -288,12 +298,6 @@ const HISTORY_RUNTIME_LABELS=Object.freeze({native:"Native",codex:"Codex",claude
 function agentRuntimeName(kind){return AGENT_RUNTIME_LABELS[kind]||String(kind||"")||"the agent harness"}
 // A model catalog belongs to its harness, and to the inference provider only when Trebell manages inference for that harness.
 function modelCatalogScope(runtime,provider){return String(runtime||"")+"\0"+(sharedRuntimeCapabilities(runtime).managedInference?String(provider||""):"")}
-
-async function recordBrowserVerificationEvidence(client,params,tool,result,success=true){
-  const threadId=String(params?.threadId||"").trim(),turnId=String(params?.turnId||"").trim();if(!client?.request||!threadId||!turnId)return;
-  const evidence=browserVerificationReceipt({tool,result,success,callId:params?.callId||params?.toolCallId||null});if(!evidence)return;
-  await client.request("thread/verification/evidence/record",{threadId,turnId,evidence}).catch(()=>null);
-}
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 // The GUI server keeps an attachment up to 50 MB and an image up to 10 MB. A larger file is refused from its size, which the browser
@@ -2291,49 +2295,17 @@ export default function App(){
     }
     return loadSkills(rpc,projectPath,true,{strict:true});
   }
+  // The turns a restart interrupted are continued by turn-support.js (continueInterruptedTurns): a connect waits for that module
+  // only when the server names some.
   async function recoverCodexAfterRestart(client){
     if(agentRuntime!=="codex")return;
-    let recovery;
+    let recovery,support;
     try{recovery=await api("/api/recovery")}
     catch(error){showActionError(error,"Could not check restart recovery");return}
-    if(!recovery?.enabled)return;
-    for(const item of recovery.blocked||[]){
-      const error=new Error(item.message||"Automatic restart continuation was blocked because an interrupted tool or action may already have completed. Inspect its real-world state before continuing.");
-      showActionError(error,"Restart recovery needs inspection");
-    }
-    if(!recovery.items?.length)return;
-    for(const item of recovery.items){
-      try{
-        await client.request("thread/resume",{threadId:item.threadId,excludeTurns:true});
-        let previous=null,recentError=null,legacyError=null;
-        try{
-          const recent=await client.request("thread/turns/list",{threadId:item.threadId,limit:20,sortDirection:"desc",itemsView:"notLoaded"});
-          previous=(recent?.data||[]).find(turn=>turn.id===item.turnId)||null;
-        }catch(error){recentError=error}
-        if(!previous){
-          try{
-            const legacy=await client.request("thread/read",{threadId:item.threadId,includeTurns:true});
-            previous=(legacy?.thread?.turns||[]).find(turn=>turn.id===item.turnId)||null;
-          }catch(error){legacyError=error}
-        }
-        if(!previous){
-          const detail=[recentError&&("recent turns: "+(recentError.message||String(recentError))),legacyError&&("thread read: "+(legacyError.message||String(legacyError)))].filter(Boolean).join(" · ");
-          throw new Error("Could not verify the interrupted turn before restart continuation"+(detail?": "+detail:"."));
-        }
-        if(previous&&["completed","failed","cancelled","interrupted"].includes(previous.status)){
-          try{await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"clear"}})}
-          catch(error){showActionError(error,"Could not clear completed restart recovery")}
-          continue;
-        }
-        await client.request("turn/start",{threadId:item.threadId,input:[],turnTrigger:"trebell-restart-continuation"});
-      }catch(error){
-        let markError=null;
-        try{await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"failed",message:error.message||String(error)}})}
-        catch(persistError){markError=persistError}
-        if(markError)showActionError(new Error((error?.message||String(error))+" · Could not record restart recovery failure: "+(markError?.message||String(markError))),"Could not safely recover interrupted thread");
-        else showActionError(error,"Could not safely recover interrupted thread");
-      }
-    }
+    if(!recovery?.enabled||!recovery.blocked?.length&&!recovery.items?.length)return;
+    try{support=await loadTurnSupport()}
+    catch(error){showActionError(error,"Could not check restart recovery");return}
+    await support.continueInterruptedTurns({client,recovery,showActionError});
   }
 
   function applyProviderInventory(update={}){
@@ -2744,104 +2716,11 @@ export default function App(){
       desktopNotify("App approval required",`${actor}: ${action}`);
       return;
     }
+    // Trebell's own tools answer from turn-support.js (answerToolCall). A call made before that module has loaded waits for it, and
+    // one that cannot load it answers the harness with the reason, as a tool that fails does.
     if(message.method==="item/tool/call"){
-      const p=message.params||{};
-      if(p.namespace==="trebell_browser"){
-        (async()=>{
-          try{
-            if(!window.trebellDesktop?.browser)throw new Error("Agent browser is only available in the desktop app.");
-            const {sharedToolResponseContent}=await loadSharedToolCatalog();
-            let result;
-            if(p.tool==="open")result=await window.trebellDesktop.browser.navigate(p.arguments?.url);
-            else if(p.tool==="back")result=await window.trebellDesktop.browser.back();
-            else if(p.tool==="forward")result=await window.trebellDesktop.browser.forward();
-            else if(p.tool==="reload")result=await window.trebellDesktop.browser.reload();
-            else if(p.tool==="snapshot")result=await window.trebellDesktop.browser.snapshot();
-            else if(p.tool==="click")result=await window.trebellDesktop.browser.click(p.arguments?.ref);
-            else if(p.tool==="type")result=await window.trebellDesktop.browser.type(p.arguments?.ref,p.arguments?.text);
-            else if(p.tool==="runtime")result=await window.trebellDesktop.browser.runtime();
-            else if(p.tool==="set_viewport")result=await window.trebellDesktop.browser.setViewport(p.arguments?.width,p.arguments?.height);
-            else if(p.tool==="screenshot"){
-              const shot=await window.trebellDesktop.browser.screenshot();
-              await recordBrowserVerificationEvidence(client,p,p.tool,shot,true);
-              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_browser",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({url:shot.url,title:shot.title,width:shot.width,height:shot.height})}]),success:true});
-              return;
-            }else throw new Error("Unknown Trebell browser tool: "+p.tool);
-            await recordBrowserVerificationEvidence(client,p,p.tool,result,true);
-            client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_browser",[{type:"inputText",text:JSON.stringify(result)}]),success:true});
-          }catch(error){
-            await recordBrowserVerificationEvidence(client,p,p.tool,null,false);
-            client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false});
-          }
-        })();
-        return;
-      }
-      if(p.namespace==="trebell_computer"){
-        (async()=>{
-          try{
-            if(!desktopBridgeToolAvailability(window.trebellDesktop).computer)throw new Error("Computer use is only available in the Windows desktop app.");
-            const args=p.arguments||{};
-            if(p.tool!=="screenshot"&&permissionMode!=="full")throw new Error("Desktop mouse and keyboard control requires Full access mode.");
-            const {sharedToolResponseContent}=await loadSharedToolCatalog();
-            if(p.tool==="screenshot"){
-              const shot=await window.trebellDesktop.computer.screenshot();
-              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_computer",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({width:shot.width,height:shot.height,displayId:shot.displayId,originX:shot.originX,originY:shot.originY,scaleFactor:shot.scaleFactor})}]),success:true});
-              return;
-            }
-            let result;
-            if(p.tool==="move")result=await window.trebellDesktop.computer.move(args.x,args.y);
-            else if(p.tool==="click")result=await window.trebellDesktop.computer.click(args);
-            else if(p.tool==="scroll")result=await window.trebellDesktop.computer.scroll(args.delta);
-            else if(p.tool==="type")result=await window.trebellDesktop.computer.type(args.text);
-            else if(p.tool==="key")result=await window.trebellDesktop.computer.key(args.key);
-            else throw new Error("Unknown Trebell computer tool: "+p.tool);
-            client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_computer",[{type:"inputText",text:JSON.stringify(result)}]),success:true});
-          }catch(error){
-            client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false});
-          }
-        })();
-        return;
-      }
-      if(p.namespace==="trebell_source_control"){
-        (async()=>{
-          try{
-            if(p.tool!=="link_pull_request")throw new Error("Unknown Trebell source-control tool: "+p.tool);
-            if(!activeThread?.id)throw new Error("A Trebell thread must be open before linking a pull request.");
-            const result=await linkPullRequestUrl(p.arguments?.url,"agent");
-            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify({linked:true,number:result?.link?.number,url:result?.link?.url})}],success:true});
-          }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
-        })();
-        return;
-      }
-      if(p.namespace==="trebell_repo"){
-        (async()=>{
-          try{
-            if(!projectPath)throw new Error("A workspace must be open before querying repository intelligence.");
-            const args=p.arguments||{},params=new URLSearchParams({path:projectPath});if(workspaceEnvironmentId)params.set("environmentId",workspaceEnvironmentId);
-            let result;
-            if(p.tool==="search_symbols"){params.set("q",String(args.query||""));if(args.limit!=null)params.set("limit",String(args.limit));result=await api("/api/context/symbols?"+params)}
-            else if(p.tool==="file_relations"){params.set("file",String(args.path||""));result=await api("/api/context/relations?"+params)}
-            else throw new Error("Unknown Trebell repository tool: "+p.tool);
-            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});
-          }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
-        })();
-        return;
-      }
-      if(p.namespace==="trebell_delegate"){
-        (async()=>{
-          try{
-            if(p.tool!=="delegate")throw new Error("Unknown Trebell delegation tool: "+p.tool);
-            if(!runtimeCapabilities.delegation||!runtimeCapabilities.dynamicTools)throw new Error("The active runtime cannot invoke Trebell delegation tools.");
-            const result=await delegateTask(p.arguments||{});
-            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify({
-              started:true,parentThreadId:result.parentThreadId,threadId:result.thread?.id||null,turnId:result.turnId||null,
-              cwd:result.workspace?.cwd||null,branch:result.workspace?.branch||null,isolation:result.spec?.isolation||null,permissions:result.spec?.permissions||null,model:result.spec?.model||null,budget:result.spec?.budget||null,
-            })}],success:true});
-          }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
-        })();
-        return;
-      }
-      client.respond(message.id,{contentItems:[{type:"inputText",text:"No client-defined dynamic tool is registered for "+(p.namespace||"default")+"/"+p.tool}],success:false});
+      const deps={client,message,permissionMode,activeThread,linkPullRequestUrl,projectPath,workspaceEnvironmentId,runtimeCapabilities,delegateTask,loadSharedToolCatalog};
+      loadTurnSupport().then(support=>support.answerToolCall(deps),error=>client.respond(message.id,{contentItems:[{type:"inputText",text:error.message}],success:false}));
       return;
     }
     if(permissionMode==="edits"&&message.method==="item/fileChange/requestApproval"){client.respond(message.id,{decision:"accept"});return}
@@ -2849,42 +2728,14 @@ export default function App(){
     if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,ownedRequest(message,client)]);desktopNotify("Approval required",message.params?.reason||message.params?.command||"Trebell Code is waiting for permission.");return}
     client.reject(message.id,-32601,"Unsupported Trebell client request: "+message.method);
   }
-  // An automatic repair or check runs as a new turn of the open thread: the window treats it as running from the moment the
-  // harness returns it (as startReview does), so the composer offers Stop with the "started" row, before turn/started arrives.
-  function adoptAutomaticTurn(threadId,started){
-    const turn=started?.started?started.turn:null;
-    if(turn?.id&&turn.status!=="completed"&&activeThreadRef.current?.id===threadId){setRunning(true);setActiveTurnId(turn.id)}
+  // A completed turn's verification is planned by turn-support.js (planCompletedTurnEvidence). A plan that cannot be made, also for
+  // want of that module, says so in the open thread's activity.
+  function verificationPlanFailed(threadId,turnId,error){
+    if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-plan-error-"+turnId,kind:"error",title:"Could not plan turn verification: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId}}]);
   }
-  async function planCompletedTurnEvidence(threadId,turnId){
+  function planCompletedTurnEvidence(threadId,turnId){
     if(!threadId||!turnId)return;
-    try{
-      const result=await requestTurnVerificationPlan({request:api,threadId,turnId});
-      const event=verificationPlanEvent(result,turnId);
-      if(event&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!==event.id),event]);
-      if(result?.record&&rpcRef.current){
-        const refreshed=await rpcRef.current.request("thread/continuity/get",{threadId}).catch(()=>null);
-        if(refreshed&&activeThreadRef.current?.id===threadId)setContinuity(refreshed.continuity||null);
-      }
-      if(result?.nextAction?.action==="repair"&&rpcRef.current){
-        try{
-          const repair=await maybeStartAutomaticVerificationRepair({rpc:rpcRef.current,threadId,result,seen:automaticVerificationRepairSeenRef.current});
-          adoptAutomaticTurn(threadId,repair);
-          if(repair.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-repair-"+repair.recordId),{id:"verification-auto-repair-"+repair.recordId,kind:"verification",title:"Automatic same-thread repair turn",status:"running",raw:{recordId:repair.recordId,turnId:repair.turn?.id||null}}]);
-        }catch(error){
-          if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-repair-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification repair stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null}}]);
-        }
-      }else if(result?.nextAction?.action==="verify"&&rpcRef.current){
-        try{
-          const continuation=await maybeStartAutomaticVerificationContinuation({rpc:rpcRef.current,threadId,result,seen:automaticVerificationContinuationSeenRef.current});
-          adoptAutomaticTurn(threadId,continuation);
-          if(continuation.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId),{id:"verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId,kind:"verification",title:"Automatic same-thread check turn · "+continuation.nextStepId,status:"running",raw:{recordId:continuation.recordId,nextStepId:continuation.nextStepId,turnId:continuation.turn?.id||null}}]);
-        }catch(error){
-          if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-continue-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification continuation stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null,nextStepId:result.nextAction?.nextStep?.id||null}}]);
-        }
-      }
-    }catch(error){
-      if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-plan-error-"+turnId,kind:"error",title:"Could not plan turn verification: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId}}]);
-    }
+    loadTurnSupport().then(support=>support.planCompletedTurnEvidence({activeThreadRef,rpcRef,setEvents,setContinuity,setRunning,setActiveTurnId,automaticVerificationRepairSeenRef,automaticVerificationContinuationSeenRef,verificationPlanFailed},threadId,turnId),error=>verificationPlanFailed(threadId,turnId,error));
   }
   // receivedAt: when the notification arrived. A notification held while its thread opens is handled later, and a turn it
   // starts or ends is still timed from when it really came.
@@ -3257,7 +3108,7 @@ export default function App(){
   // page is no longer on screen: it resolves to the note.
   function offerPageUndo(label,undo){offerThreadUndo(label,()=>Promise.resolve().then(undo).then(note=>{if(typeof note==="string"&&note)showActionError(new Error(note),"Undo")}).catch(error=>showActionError(error,"Undo failed")))}
   // A thread's Undo the harness refuses says so in the app's error toast, where the Undo was, naming the threads it could not put back
-  // (undoThreadActions): the open thread's conversation is about another thread.
+  // (thread-actions.js undoThreadActions): the open thread's conversation is about another thread.
   async function undoThreadAction(){
     const current=threadUndoRef.current;if(!current)return;
     clearThreadUndo();
@@ -3265,10 +3116,19 @@ export default function App(){
     catch(error){showActionError(error,"")}
   }
   useEffect(()=>()=>{if(threadUndoTimerRef.current)clearTimeout(threadUndoTimerRef.current)},[]);
-  // Where an undo puts the thread back: its section, and its place there only if it held one a person gave it (thread-order.js).
-  function captureThreadPlacement(thread){
-    return {section:thread.section||null,...threadPlacement(threads,thread,threadMeta),snoozedUntil:threadMeta[thread.id]?.snoozedUntil??null};
+  // The thread actions (thread-actions.js) read this render as App's own functions did. Once that module has loaded (from idle after
+  // the first paint) an action runs at once; one made before then waits for it, and one that cannot load it fails and says so where
+  // the action's own failure would.
+  function threadActionDeps(){
+    return {rpc,rpcStatus,agentRuntime,agentRuntimeLabel,sections,orderedSectionsRef,sectionTop,placementAnchor,threads,threadMeta,displayThreads,setThreads,setSearchResults,activeThread,setActiveThread,activeThreadRef,openingThreadRef,updateThreadMeta,loadThreads,newChat,leaveRemovedThread,openThread,offerThreadUndo,setSnoozeRequest,snoozeRequest,selectedThreadIds,setSelectedThreadIds,threadMovesRef,saveAppSettings,presetFor,permissionMode,model,provider,projectPath,askConfirm};
   }
+  function runThreadAction(name,args){return threadActions?threadActions[name](threadActionDeps(),...args):loadThreadActions().then(module=>module[name](threadActionDeps(),...args))}
+  function moveThread(...args){return runThreadAction("moveThread",args)}
+  function reversibleThreadAction(...args){return runThreadAction("reversibleThreadAction",args)}
+  function threadAction(...args){return runThreadAction("threadAction",args)}
+  function moveThreadOrder(...args){return runThreadAction("moveThreadOrder",args)}
+  function bulkAction(...args){return runThreadAction("bulkAction",args)}
+  function submitSnooze(...args){return runThreadAction("submitSnooze",args)}
   // The anchor only while it is still in that section when the undo runs (Codex refuses a thread to go before that is not in the
   // destination section); an undo made seconds later reads the list as it is then, not as it was when the thread moved. restored: the
   // threads an undo of several has put back so far (id -> section id), which the list may not show yet.
@@ -3278,182 +3138,9 @@ export default function App(){
     const anchor=threads.find(item=>item.id===id);
     return anchor&&(anchor.section?.id||null)===sectionId?anchor.id:null;
   });
-  // Back to its section: before the thread that followed it when it held a place a person gave it, at the end when it held the last
-  // one (entering a section with no thread to go before takes the place by recent activity, and a move within it with none goes to its
-  // end), and by recent activity when it held none, so a thread nobody moved still rises with its activity.
-  async function restoreSectionPlace(thread,snapshot,restored=null){
-    const sectionId=snapshot.section?.id||null,anchor=snapshot.placed?placementAnchor(snapshot,restored):null;
-    await rpc.request("thread/section/move",{threadId:thread.id,sectionId,beforeThreadId:anchor});
-    if(snapshot.placed&&!anchor)await rpc.request("thread/section/move",{threadId:thread.id,sectionId,beforeThreadId:null});
-  }
-  function restoreThreadLocally(thread,snapshot){
-    const restored={...thread,archived:false,section:snapshot.section||null,sectionEnteredAt:snapshot.section?Date.now()/1000:null};
-    setThreads(prev=>{
-      const without=prev.filter(item=>item.id!==thread.id);const beforeIndex=snapshot.beforeThreadId?without.findIndex(item=>item.id===snapshot.beforeThreadId):-1;
-      if(beforeIndex>=0)without.splice(beforeIndex,0,restored);else without.push(restored);return without;
-    });
-    if(activeThread?.id===thread.id)setActiveThread(restored);
-    return restored;
-  }
-  async function restoreThreadPlacement(thread,snapshot,restored=null){
-    if(!rpc||rpcStatus!=="connected")return;
-    await restoreSectionPlace(thread,snapshot,restored);restored?.set(thread.id,snapshot.section?.id||null);
-    restoreThreadLocally(thread,snapshot);await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null});
-    loadThreads(rpc);
-  }
   // The section's first thread as the list is now: a bulk action, auto-settle and snooze wake-up move threads from a loop whose list
   // is older, and a thread to go before must still be in the section.
   const sectionTop=useLatestCallback((sectionId,exceptId)=>sectionFirstThread(threads,sectionId,threadMeta,exceptId));
-  // A thread moved into or out of a section takes its place there by recent activity, as it always has (nobody put it anywhere), except
-  // in a Codex section a person ordered, where every thread holds its place: it goes first there. The list is read again for the places
-  // the runtime gave. With the harness away nothing moves, and the move fails so that no Undo or wake time stands for it.
-  async function moveThread(thread,destination){
-    if(!rpc||rpcStatus!=="connected")throw new Error(agentRuntimeLabel+" is not connected");
-    const target=destination==="active"?null:sections[destination==="pin"?"Pinned":destination==="snooze"?"Snoozed":destination==="settle"?"Settled":destination];
-    const first=target&&agentRuntime==="codex"&&orderedSectionsRef.current.includes(String(target.id))?sectionTop(target.id,thread.id):null;
-    await rpc.request("thread/section/move",{threadId:thread.id,sectionId:target?.id||null,beforeThreadId:first?.id||null});
-    const updated={...thread,section:target||null,sectionEnteredAt:target?Date.now()/1000:null,sectionRank:first?first.sectionRank-1:null,sectionPlaced:Boolean(first)};setThreads(prev=>prev.map(t=>t.id===thread.id?updated:t));if(activeThread?.id===thread.id)setActiveThread(updated);await updateThreadMeta(thread.id,{sectionName:target?.name||"Active"});
-    loadThreads(rpc);
-  }
-  // wasActive: the thread is the one the sidebar and header name, which is the thread still opening when there is one.
-  async function reversibleThreadAction(thread,action,{snoozeUntil=null,offerUndo=true}={}){
-    const snapshot=captureThreadPlacement(thread);const wasActive=String(openingThreadRef.current||activeThreadRef.current?.id||"")===String(thread.id);let label="Thread updated";let undo=null;
-    if(action==="pin"){
-      if(thread.section?.name==="Pinned")return null;
-      await moveThread(thread,"pin");label="Thread pinned";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
-    }else if(action==="settle"){
-      if(thread.section?.name==="Settled")return null;
-      await moveThread(thread,"settle");label="Thread settled";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
-    }else if(action==="active"){
-      const previous=thread.section?.name||"Active";if(previous==="Active"&&!snapshot.snoozedUntil)return null;
-      await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null});
-      label=previous==="Pinned"?"Thread unpinned":previous==="Snoozed"?"Thread woken":previous==="Settled"?"Thread restored":"Thread moved to Active";
-      undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
-    }else if(action==="snooze"){
-      if(!Number.isFinite(Number(snoozeUntil))||Number(snoozeUntil)<=Date.now())throw new Error("Choose a future snooze time.");
-      // The wake time is saved first, so the thread shows it as it lands in Snoozed; a move the harness refuses takes it back.
-      await updateThreadMeta(thread.id,{snoozedUntil:Number(snoozeUntil)});
-      try{await moveThread(thread,"snooze")}catch(error){await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null});throw error}
-      label="Thread snoozed";undo=restored=>restoreThreadPlacement(thread,snapshot,restored);
-    }else if(action==="archive"){
-      if(!rpc||rpcStatus!=="connected")throw new Error(agentRuntimeLabel+" is not connected");
-      // A thread still opening ends its open first, so that its answer cannot bring the archived thread back (nor save it un-archived).
-      if(openingThreadRef.current===String(thread.id))await newChat();
-      await rpc.request("thread/archive",{threadId:thread.id});await updateThreadMeta(thread.id,{archived:true});setThreads(prev=>prev.filter(t=>t.id!==thread.id));await leaveRemovedThread(thread.id);label="Thread archived";
-      undo=async(restored=null)=>{
-        const result=await rpc.request("thread/unarchive",{threadId:thread.id});
-        const restoredThread=result?.thread||thread;
-        // Unarchiving keeps a thread's section and its place there (Codex and the agent relay both do): it moves only if it came back elsewhere.
-        if((restoredThread.section?.id||null)!==(snapshot.section?.id||null))await restoreSectionPlace(thread,snapshot,restored);
-        restored?.set(thread.id,snapshot.section?.id||null);
-        await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null,archived:false,sectionName:snapshot.section?.name||"Active"});const shown=restoreThreadLocally(restoredThread,snapshot);
-        loadThreads(rpc);if(wasActive)await openThread(shown);
-      };
-    }else return null;
-    const result={label,undo,threadId:thread.id,title:titleOf(thread),anchorThreadId:snapshot.anchorThreadId,beforeThreadId:snapshot.beforeThreadId};if(offerUndo&&undo)offerThreadUndo(label,()=>undoThreadActions([result]));return result;
-  }
-  // An undo of several threads puts each back after the thread it goes before, when that one is put back too (thread-order.js). It
-  // tries every thread, as the action did, and the error names the ones the harness would not put back, each with its reason
-  // ("Could not put back “X”: …"). The verb is the Undo's for every action: an Un-settle's Undo toast reads "Thread restored", so
-  // "restore" would name the opposite of what failed there.
-  async function undoThreadActions(results){
-    const restored=new Map(),failed=[];
-    for(const result of undoOrder(results)){try{await result.undo?.(restored)}catch(error){failed.push({title:result.title,error})}}
-    if(failed.length)throw new Error(bulkActionFailure("put back",failed));
-  }
-  async function threadAction(thread,action){
-    if(action==="pin"||action==="settle"||action==="active"||action==="archive"){await reversibleThreadAction(thread,action);return}
-    if(action==="snooze"){setSnoozeRequest({threads:[thread],bulk:false});return}
-    if(action==="fork"){
-      if(!rpc)return;
-      const p=presetFor(permissionMode);
-      const result=await rpc.request("thread/fork",{threadId:thread.id,...(agentRuntime==="codex"?{}:{model:model||null}),...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd:thread.cwd||projectPath,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,threadSource:"trebell-code",excludeTurns:true});
-      if(result?.thread){setThreads(prev=>[result.thread,...prev.filter(t=>t.id!==result.thread.id)]);await openThread(result.thread)}
-      return;
-    }
-    if(action==="delete"){
-      // As Archive: with the harness away, the delete could not happen, so it is refused before it asks or leaves the thread.
-      if(!rpc||rpcStatus!=="connected")throw new Error(agentRuntimeLabel+" is not connected");
-      if(!await askConfirm("Delete “"+titleOf(thread)+"” permanently? This cannot be undone.",{confirm:"Delete thread"}))return;
-      if(openingThreadRef.current===String(thread.id))await newChat();
-      // A delete the harness refuses names the thread with its reason, as a bulk action's refusal does.
-      try{await rpc.request("thread/delete",{threadId:thread.id})}catch(error){throw new Error(bulkActionFailure("delete",[{title:titleOf(thread),error}]))}
-      setThreads(prev=>prev.filter(t=>t.id!==thread.id));
-      await leaveRemovedThread(thread.id);
-      return;
-    }
-  }
-  // Moves are written to the runtime one at a time, in the order a person makes them, and each shows at once: the sidebar takes the new
-  // order before the runtime answers, so a move made while an earlier one is still being written or read back starts from the order on
-  // screen. A move that fails drops the moves queued after it (they started from its order) and the list is read again. A listing read
-  // while moves are queued keeps the places on screen (loadThreads); the last move's own listing brings the runtime's.
-  // The move steps past the neighbour the sidebar shows (a search's results while one filters it), as the menu's enabled state says.
-  async function moveThreadOrder(thread,direction){
-    const move=threadMoveTarget(threads,thread,direction,threadMeta,displayThreads);if(!move)return;
-    const sectionId=thread.section?.id||null,ordering=agentRuntime==="codex"&&Boolean(sectionId)&&!thread.sectionPlaced;
-    const shown=threadOrderGroup(threads,thread,threadMeta).map(item=>item.id);
-    const places=movedSectionRanks(threads,thread,move.beforeThreadId,threadMeta,{placeAll:ordering});
-    const place=list=>list&&list.map(item=>places.has(item?.id)?{...item,...places.get(item.id)}:item);
-    setThreads(place);setSearchResults(place);
-    const queue=threadMovesRef.current,epoch=queue.epoch;queue.pending++;queue.made++;
-    const write=queue.tail.then(async()=>{
-      if(queue.epoch!==epoch)return;
-      if(ordering)await orderCodexSection(thread,sectionId,move.beforeThreadId,shown);
-      else await rpc.request("thread/section/move",{threadId:thread.id,sectionId,beforeThreadId:move.beforeThreadId});
-    });
-    queue.tail=write.catch(()=>{});
-    let failure=null;try{await write}catch(error){failure=error;queue.epoch++}
-    queue.pending--;
-    if(failure){
-      await loadThreads(rpc);
-      throw new Error("Could not move “"+titleOf(thread)+"”: "+String(failure?.message||failure||"Unknown error").replace(/[.\s]+$/,"")+".");
-    }
-    if(!queue.pending)await loadThreads(rpc,{strict:true});
-  }
-  // The first move in a Codex section shown by recent activity: Codex's order for it is the order threads entered it, so the section is
-  // first written in the order the sidebar showed (shown: ids, top first), with the move made, and is shown in Codex's order from then on.
-  // Only then is it saved as ordered: a write that fails part way leaves it shown by recent activity, and the next move writes it again.
-  // A failure names what could not be done to the section.
-  async function orderCodexSection(thread,sectionId,beforeThreadId,shown){
-    const name=thread.section?.name||sectionId,detail=error=>String(error?.message||error||"Unknown error").replace(/[.\s]+$/,"");
-    let listed;
-    try{listed=await loadThreadListPages(rpc,{params:threadSectionOrderParams(sectionId),maxPages:100})}
-    catch(error){throw new Error("the order of "+name+" could not be read ("+detail(error)+")")}
-    if(listed.truncated)throw new Error(name+" holds too many threads to order");
-    const members=listed.data.filter(item=>(item.section?.id||null)===sectionId);
-    const desired=orderedSectionWithMove(shown,members,thread.id,beforeThreadId);
-    for(const id of sectionOrderWrites(members.map(item=>item.id),desired))await rpc.request("thread/section/move",{threadId:id,sectionId,beforeThreadId:null});
-    const ordered=[...new Set([...orderedSectionsRef.current,String(sectionId)])];
-    try{await saveAppSettings({orderedThreadSections:ordered})}
-    catch(error){throw new Error("the new order of "+name+" could not be saved ("+detail(error)+")")}
-    orderedSectionsRef.current=ordered;
-  }
-  // A bulk action tries every thread, one at a time: the ones it changed share one Undo, and the ones the harness refused stay
-  // selected while the error names each with its reason (failed: {thread,title,error}).
-  async function eachThreadAction(list,act){
-    const results=[],failed=[];
-    for(const thread of list){try{const result=await act(thread);if(result)results.push(result)}catch(error){failed.push({thread,title:titleOf(thread),error})}}
-    return {results,failed};
-  }
-  async function bulkAction(action){
-    const selected=[...selectedThreadIds].map(id=>threads.find(thread=>thread.id===id)).filter(Boolean);if(!selected.length)return;
-    if(action==="snooze"){setSnoozeRequest({threads:selected,bulk:true});return}
-    const {results,failed}=await eachThreadAction(selected,thread=>reversibleThreadAction(thread,action,{offerUndo:false}));
-    setSelectedThreadIds(new Set(failed.map(item=>item.thread.id)));
-    if(results.length){const noun=results.length===1?"Thread":results.length+" threads";const verb=action==="pin"?"pinned":action==="settle"?"settled":action==="archive"?"archived":"updated";offerThreadUndo(noun+" "+verb,()=>undoThreadActions(results))}
-    if(failed.length)throw new Error(bulkActionFailure(action,failed));
-  }
-  // A thread the harness will not snooze keeps the dialog open on it, which says why: the open thread's activity is about another
-  // thread.
-  async function submitSnooze(until){
-    const request=snoozeRequest;if(!request)return;
-    const {results,failed}=await eachThreadAction(request.threads||[],thread=>reversibleThreadAction(thread,"snooze",{snoozeUntil:until,offerUndo:false}));
-    if(request.bulk)setSelectedThreadIds(new Set(failed.map(item=>item.thread.id)));
-    if(results.length){const label=results.length===1?"Thread snoozed":results.length+" threads snoozed";offerThreadUndo(label,()=>undoThreadActions(results))}
-    if(!failed.length){setSnoozeRequest(null);return}
-    setSnoozeRequest({...request,threads:failed.map(item=>item.thread)});
-    throw new Error(bulkActionFailure("snooze",failed));
-  }
 
   async function loadPersistentThreadData(threadId){
     const client=rpcRef.current;if(!client||!threadId)return {goal:null,continuity:null,pullRequests:[]};
@@ -3942,113 +3629,15 @@ export default function App(){
     await openThread(thread);
   }
   async function reloadActiveThread(){if(activeThread)await openThread(activeThread)}
-  async function monitorWorktreeSetup(sessionId,{timeoutMs=30*60_000}={}){
-    const started=Date.now();let consecutiveErrors=0;
-    while(Date.now()-started<timeoutMs){
-      let data;
-      try{data=await api("/api/terminal/sessions");consecutiveErrors=0}
-      catch(error){
-        consecutiveErrors++;
-        if(consecutiveErrors>=3){
-          const failure=new Error("Could not monitor worktree setup: "+(error?.message||String(error)));
-          setWorktreeSetup(prev=>prev?.sessionId===sessionId?{...prev,phase:"failed",detail:failure.message}:prev);
-          throw failure;
-        }
-        await new Promise(resolve=>setTimeout(resolve,700));continue;
-      }
-      const session=(data.sessions||[]).find(item=>item.id===sessionId);
-      if(session&&!session.running){
-        const failed=session.exitCode!==0;
-        setWorktreeSetup(prev=>prev?.sessionId===sessionId?{...prev,phase:failed?"failed":"done",detail:failed?`Setup exited with code ${session.exitCode??"unknown"}`:"Setup completed",exitCode:session.exitCode}:prev);
-        return {exitCode:session.exitCode};
-      }
-      await new Promise(resolve=>setTimeout(resolve,700));
-    }
-    setWorktreeSetup(prev=>prev?.sessionId===sessionId?{...prev,phase:"failed",detail:"Setup is still running after 30 minutes."}:prev);
-    return {timeout:true,exitCode:null};
-  }
-  async function waitForDetachedSetup(sessionId,{timeoutMs=30*60_000}={}){
-    const started=Date.now();let consecutiveErrors=0;
-    while(Date.now()-started<timeoutMs){
-      let data;
-      try{data=await api("/api/terminal/sessions");consecutiveErrors=0}
-      catch(error){
-        consecutiveErrors++;
-        if(consecutiveErrors>=3)throw new Error("Could not monitor background worktree setup: "+(error?.message||String(error)));
-        await new Promise(resolve=>setTimeout(resolve,700));continue;
-      }
-      const session=(data.sessions||[]).find(item=>item.id===sessionId);
-      if(session&&!session.running)return {exitCode:session.exitCode};
-      await new Promise(resolve=>setTimeout(resolve,700));
-    }
-    return {timeout:true,exitCode:null};
-  }
-
-  // owns: whether the view that asked for the worktree is still shown. One left meanwhile gets no worktree card, project or terminal
-  // of this worktree; the worktree is still made for the send.
-  async function prepareWorktree(basePath,modelId,{owns=null}={}){
+  // A send's new worktree, and a background send's, are made by turn-support.js: a send's in New worktree mode only, a background
+  // send's also when it asks for one (force).
+  async function prepareWorktree(basePath,modelId,options){
     if(workspaceMode!=="worktree")return basePath;
-    const card=next=>{if(!owns||owns())setWorktreeSetup(next)};
-    const info=await api("/api/git/info?path="+encodeURIComponent(basePath));
-    if(!info.isGit)throw new Error("New worktree mode requires a Git project.");
-    const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";
-    const stamp=Date.now().toString(36);
-    const branch="trebell/"+slug+"-"+stamp;
-    const path=info.root+"-trebell-"+slug+"-"+stamp;
-    card({phase:"creating",branch,path,scriptName:null,sessionId:null,detail:"Creating an isolated Git worktree"});
-    try{
-      const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});
-      const worktree=response.result?.worktree||path;
-      await touchProject(worktree,undefined,{owns});
-      const setup=response.result?.setup||null;
-      if(setup?.session?.id){
-        card({
-          phase:"running",
-          branch,
-          path:worktree,
-          scriptName:setup.scriptName||"Setup",
-          sessionId:setup.session.id,
-          waitForSetup:Boolean(setup.waitForSetup),
-          detail:setup.waitForSetup?"Agent will start after setup completes":"Setup is running in the background",
-        });
-        if(!owns||owns()){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:setup.session.id})),0)}
-        const completion=monitorWorktreeSetup(setup.session.id);
-        if(setup.waitForSetup){
-          const settled=await completion;
-          if(settled.timeout)throw new Error("Worktree setup is still running after 30 minutes. The agent was not started.");
-          if(settled.exitCode!==0)throw new Error(`Worktree setup failed with exit code ${settled.exitCode??"unknown"}. Fix the setup terminal, then retry.`);
-        }else{
-          completion.then(settled=>{
-            if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");
-            if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`);
-            setWorktreeSetup(current=>current?.sessionId===setup.session.id?{...current,phase:"done",detail:"Setup completed"}:current);
-          }).catch(error=>{
-            setWorktreeSetup(current=>current?.sessionId===setup.session.id?{...current,phase:"failed",detail:error?.message||String(error)}:current);
-            showActionError(error,"Background worktree setup needs attention");
-          });
-        }
-      }else{
-        card({phase:"done",branch,path:worktree,scriptName:null,sessionId:null,detail:"Worktree created"});
-      }
-      return worktree;
-    }catch(error){
-      card(prev=>({...prev,phase:"failed",detail:error.message||String(error)}));
-      if(error&&typeof error==="object")WORKTREE_CARD_ERRORS.add(error);
-      throw error;
-    }
+    return (await loadTurnSupport()).prepareWorktree({setWorktreeSetup,touchProject,setPanel,showActionError,worktreeCardErrors:WORKTREE_CARD_ERRORS},basePath,modelId,options);
   }
   async function prepareDetachedWorktree(basePath,modelId,{force=false,environmentId=workspaceEnvironmentId}={}){
     if(!force&&workspaceMode!=="worktree")return basePath;
-    const infoParams=new URLSearchParams({path:String(basePath)});if(environmentId)infoParams.set("environmentId",environmentId);
-    const info=await api("/api/git/info?"+infoParams);if(!info.isGit)throw new Error("Background worktree mode requires a Git project.");if(!info.branch)throw new Error("Background worktrees require a checked-out base branch; detached HEAD is not supported.");
-    const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";const stamp=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-    const branch="trebell/"+slug+"-"+stamp;const path=info.root+"-trebell-"+slug+"-"+stamp;
-    const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch,environmentId:environmentId||null}});const worktree=response.result?.worktree||path;
-    try{await api("/api/projects",{method:"POST",body:{path:worktree,environmentId:environmentId||null}})}
-    catch(error){showActionError(error,"Could not register background worktree")}
-    const setup=response.result?.setup||null;
-    if(setup?.session?.id&&setup.waitForSetup){const settled=await waitForDetachedSetup(setup.session.id);if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`)}
-    return worktree;
+    return (await loadTurnSupport()).prepareDetachedWorktree({showActionError},basePath,modelId,{environmentId});
   }
   function specializedToolAvailability({projectless=projectlessMode}={}){
     const desktopTools=desktopBridgeToolAvailability(window.trebellDesktop);
@@ -4147,42 +3736,21 @@ export default function App(){
       return {attempted:true,compacted:false,decision,error};
     }
   }
+  // A packet that could not be made, also for want of turn-support.js: the send goes on without it, and its activity says why.
+  async function contextUnavailable(thread,error,{background=false}={}){
+    const detail=error?.message||String(error)||"Unknown context error";
+    await updateThreadMeta(thread.id,{trebellContextError:{message:detail,at:Date.now(),runtime:agentRuntime}}).catch(()=>{});
+    if(!background)setEvents(prev=>[...prev,{id:"context-error-"+Date.now(),kind:"error",title:"Trebell repository context unavailable: "+detail,status:"error",raw:{error:detail}}]);
+    return null;
+  }
+  // The repository context a send carries is made by turn-support.js. Once that module has loaded (from idle after the first paint)
+  // the packet is asked for at once, while the send makes its checkpoint; a send made before then asks for it once the module has come.
   async function prepareTurnContext(thread,cwd,text,paths,{projectless=projectlessMode,background=false,ignoreUsage=false,ready=true}={}){
     if(projectless||bootstrap.mock||!thread?.id||!cwd)return null;
-    const usage=ignoreUsage?null:(threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null));
-    const previousTask=contextTaskRef.current.get(thread.id)||threadMeta[thread.id]?.trebellContext?.continuityTask||threadMeta[thread.id]?.trebellContext?.userTask||threadMeta[thread.id]?.trebellContext?.task||"";
-    const contextTask=contextTaskText(text,previousTask);
-    const continuityTask=contextTaskAnchor(text,previousTask);
-    try{
-      const request=api("/api/context/packet",{method:"POST",body:{
-        path:cwd,task:contextTask,focusPaths:paths||[],environmentId:workspaceEnvironmentId||null,
-        tokensUsed:usage?.last?.inputTokens??null,contextWindow:usage?.modelContextWindow??null,
-        deliveryProjection:agentRuntime==="native"?"seed":null,userTask:String(text||""),
-      }});request.catch(()=>{});
-      // A send asks for the packet while it makes its file checkpoint and uses it once the send gets here (ready): the packet's
-      // notice still follows the checkpoint's, and a send that fails before then (ready false) leaves no trace of it.
-      if(!await ready)return null;
-      const packet=await request;
-      if(packet.skipped){
-        const pressure={...(packet.budget||{}),at:Date.now(),skipped:true};
-        try{await updateThreadMeta(thread.id,{trebellContextPressure:pressure,trebellContextError:null},{strict:true})}
-        catch(error){showActionError(error,"Repository context was skipped but its inspector state could not be saved")}
-        if(!background)setEvents(prev=>[...prev,{id:"context-pressure-"+packet.id,kind:"context",title:"Trebell context skipped · preserving "+Number(pressure.reserveTokens||0).toLocaleString()+" tokens for the response",status:"done",raw:{contextId:packet.id,budget:packet.budget}}]);
-        return packet;
-      }
-      const deliveredPacket=repositoryContextDeliveryPacket(packet,{seedOnly:agentRuntime==="native"});
-      const stored={...deliveredPacket,userTask:String(text||""),queryTask:contextTask,continuityTask,runtime:agentRuntime,delivery:agentRuntime==="codex"?"additionalContext":"promptPreamble"};
-      try{await updateThreadMeta(thread.id,{trebellContext:stored,trebellContextError:null,trebellContextPressure:null},{strict:true})}
-      catch(error){showActionError(error,"Repository context was injected but its inspector state could not be saved")}
-      contextTaskRef.current.set(thread.id,continuityTask);
-      if(!background)setEvents(prev=>[...prev,{id:"context-"+deliveredPacket.id,kind:"context",title:`Trebell context · ${deliveredPacket.items?.length||0} file${(deliveredPacket.items?.length||0)===1?"":"s"} · ~${deliveredPacket.tokenEstimate||0} tokens`,status:"done",raw:{contextId:deliveredPacket.id,items:deliveredPacket.items?.length||0,tokenEstimate:deliveredPacket.tokenEstimate||0}}]);
-      return deliveredPacket;
-    }catch(error){
-      const detail=error?.message||String(error)||"Unknown context error";
-      await updateThreadMeta(thread.id,{trebellContextError:{message:detail,at:Date.now(),runtime:agentRuntime}}).catch(()=>{});
-      if(!background)setEvents(prev=>[...prev,{id:"context-error-"+Date.now(),kind:"error",title:"Trebell repository context unavailable: "+detail,status:"error",raw:{error:detail}}]);
-      return null;
-    }
+    let support=turnSupport;
+    if(!support)try{support=await loadTurnSupport()}
+    catch(error){if(!await ready)return null;return contextUnavailable(thread,error,{background})}
+    return support.prepareTurnContext({agentRuntime,activeThread,tokenUsage,threadMeta,workspaceEnvironmentId,threadTelemetryRef,contextTaskRef,updateThreadMeta,showActionError,setEvents,contextUnavailable},thread,cwd,text,paths,{background,ignoreUsage,ready});
   }
   function assertTurnModel(modelId){
     if(runtimeSwitchRef.current)throw new Error(`Trebell is switching to ${agentRuntimeName(runtimeSwitchRef.current.to)}; send again once it is ready.`);
@@ -4396,100 +3964,14 @@ export default function App(){
     Promise.all(launches).then(results=>import("./background-send-outcome.js").then(({settleModelFanout})=>settleModelFanout({results,fanout,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),error=>{if(results.some(item=>!item.ok))restoreFailedDraft(draft);showActionError(error,"Could not show how the multi-model run went")}));
     return true;
   }
-  // Codex /goal, run like T3 Code's runGoalCommand and the Codex TUI: /goal shows the goal, clear, pause and resume
-  // control it, and any other text sets a new goal and starts its first turn.
-  async function runCodexGoalCommand(command){
-    const threadId=activeThread?.id||null;
-    const note=(title,kind="tool")=>setEvents(prev=>[...prev,{id:"goal-command-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),kind,title,status:"done",raw:{}}]);
-    try{
-      if(command?.type==="set"){
-        if(running){note("Stop the running turn before setting a new goal.","error");return}
-        await startTurn(command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"}});
-        return;
-      }
-      if(!threadId||!rpc){note("No goal is set.");return}
-      const current=(await rpc.request("thread/goal/get",{threadId}))?.goal||null;setGoal(current);
-      if(command?.type==="clear"){const result=await rpc.request("thread/goal/clear",{threadId});setGoal(null);note(result?.cleared?"Goal cleared.":"No goal to clear.");return}
-      if(!current){note("No goal is set.");return}
-      if(command?.type==="pause"){const paused=await rpc.request("thread/goal/set",{threadId,status:"paused"});setGoal(paused?.goal||null);note("Goal paused. Send /goal resume to continue.");return}
-      if(command?.type==="resume"){
-        // A running turn already belongs to the thread, so the goal just turns active and Codex continues after it;
-        // otherwise a turn without new input continues the goal from the history.
-        if(running){const resumed=await rpc.request("thread/goal/set",{threadId,status:"active"});setGoal(resumed?.goal||null);note("Goal resumed.");return}
-        await startTurn("",[],model,null,null,null,{goalPatch:{status:"active"},goalResume:true});
-        return;
-      }
-      openRightPanel("goal");note(describeCodexGoal(current));
-    }catch(error){note("Could not run /goal: "+(error.message||String(error)),"error")}
-  }
+  // A send that starts with "/" may be a command rather than a message (a project's recipe or one of the composer's commands), which
+  // turn-support.js runs (runSlashCommand): true when it ran, "kept" when the composer keeps what it holds, false for text that names
+  // no command. A send made before that module has loaded waits for it; one that cannot load it is not sent, and the draft is kept.
   async function handleSpecial(text){
-    if(!text.startsWith("/"))return null;const [command,...rest]=text.split(/\s+/);
-    const recipe=(currentProject?.recipes||[]).find(item=>item.name===command);
-    if(recipe){
-      try{
-        const resolved=await api("/api/project-recipe/resolve",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,recipe:recipe.id||recipe.name,input:rest.join(" "),currentPermission:permissionMode,runtime:agentRuntime}});
-        const execution=resolved.execution;if(!execution)throw new Error("Recipe could not be resolved");
-        if(execution.model&&!models.includes(execution.model))throw new Error(`Recipe ${recipe.name} requires model ${execution.model}, which is not available in the active runtime.`);
-        await startTurn(execution.turnInput,attachments,execution.model||model,null,null,repositoryFocusPaths(attachments,contextChips),{
-          permissionModeOverride:execution.permissionMode,
-          additionalContext:{"trebell.recipe":{kind:"application",value:execution.context}},
-          goalPatch:execution.goalPatch,
-          toolAllowlist:execution.toolAllowlist,
-        });
-        if(execution.permissionMode&&execution.permissionMode!==permissionMode)setPermissionMode(execution.permissionMode);
-        setEvents(prev=>[...prev,{id:"recipe-"+Date.now(),kind:"tool",title:`Started project recipe ${recipe.name}`,status:"done",raw:{recipe:recipe.name,permissionMode:execution.permissionMode,model:execution.model||model,maxChildren:execution.goalPatch?.childAgentBudget??null}}]);
-      }catch(error){setEvents(prev=>[...prev,{id:"recipe-error-"+Date.now(),kind:"error",title:`Could not run ${recipe.name}: ${error.message||String(error)}`,status:"done",raw:{}}])}
-      return true;
-    }
-    if(command==="/compact"){
-      await compactContext();return true
-    }
-    if(command==="/ps"){
-      if(runtimeCapabilities.backgroundProcesses&&activeThread?.id)openRightPanel("runtime");
-      else setEvents(prev=>[...prev,{id:"ps-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose background process controls`,status:"done",raw:{}}]);
-      return true
-    }
-    if(command==="/stop"){
-      if(!runtimeCapabilities.backgroundProcesses||!activeThread?.id||!rpc){setEvents(prev=>[...prev,{id:"stop-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose background process controls`,status:"done",raw:{}}]);return true}
-      try{await rpc.request("thread/backgroundTerminals/clean",{threadId:activeThread.id});setEvents(prev=>[...prev,{id:"background-stop-"+Date.now(),kind:"tool",title:"Stopped agent background processes",status:"done",raw:{}}])}
-      catch(error){setEvents(prev=>[...prev,{id:"background-stop-error-"+Date.now(),kind:"error",title:"Could not stop background processes: "+(error.message||String(error)),status:"done",raw:{}}])}
-      return true
-    }
-    if(command==="/model"){openProviderSettings();return true}
-    if(command==="/terminal"){setPanel("terminal");return true}
-    if(command==="/diff"){openRightPanel("diff");return true}
-    if(command==="/git"){openRightPanel("source");return true}
-    if(command==="/preview"){openRightPanel("preview");return true}
-    if(command==="/agents"){if(runtimeCapabilities.delegation)openRightPanel("agents");else setEvents(prev=>[...prev,{id:"agents-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose delegated-agent controls`,status:"done",raw:{}}]);return true}
-    // /review is the header's Review, and a review that does not start says why the same way.
-    if(command==="/review"){await runUserAction(startReview,"Could not start review");return true}
-    if(command==="/feedback"){
-      if(agentRuntime!=="codex"||!activeThread?.id||!rpc){setEvents(prev=>[...prev,{id:"feedback-unavailable-"+Date.now(),kind:"error",title:"Codex feedback requires an existing Codex thread",status:"done",raw:{}}]);return true}
-      try{
-        const result=await rpc.request("feedback/upload",{classification:"bug",reason:rest.join(" ").trim()||null,threadId:activeThread.id,includeLogs:true});
-        setEvents(prev=>[...prev,{id:"feedback-"+Date.now(),kind:"tool",title:`Feedback uploaded${result?.threadId?` · ${result.threadId}`:""}`,status:"done",raw:result||{}}]);
-      }catch(error){setEvents(prev=>[...prev,{id:"feedback-error-"+Date.now(),kind:"error",title:"Feedback upload failed: "+(error.message||String(error)),status:"done",raw:{}}])}
-      return true;
-    }
-    if(command==="/goal"){
-      const goalCommand=parseCodexGoalCommand(text);
-      if(agentRuntime==="codex"){await runCodexGoalCommand(goalCommand);return true}
-      // Elsewhere /goal opens the thread's goal: pause, resume and clear change it as the Goal panel's buttons do, and any other text
-      // after it is the objective it sets. A goal is kept with a thread, so on New task the draft stays ("kept") and the composer says why.
-      const threadId=activeThread?.id,patch=goalCommand.type==="set"?{objective:goalCommand.objective,status:"active"}:goalCommand.type==="pause"?{status:"paused"}:goalCommand.type==="resume"?{status:"active"}:null;
-      if(!threadId){setComposerAlert({kind:"send",text:"A goal belongs to a thread. Send a first message to start one, then set its goal. Your draft is kept."});return "kept"}
-      if(patch||goalCommand.type==="clear"){
-        try{if(!rpc)throw new Error(agentRuntimeLabel+" is not connected yet");const result=await rpc.request(patch?"thread/goal/set":"thread/goal/clear",{threadId,...patch});if(activeThreadRef.current?.id===threadId)setGoal(patch&&result?.goal||null)}
-        catch(error){setComposerAlert({kind:"send",text:"Could not "+goalCommand.type+" the goal: "+sentenceText(error?.message||String(error))+" Your draft is kept."});return "kept"}
-      }
-      openRightPanel("goal");return true;
-    }
-    if(command==="/palette"){setPaletteOpen(true);return true}
-    if(command==="/new"){await newChat();return true}
-    if(command==="/clear"){await newChat();return true}
-    // /plan fills the composer with the plan prompt to send, which the composer keeps ("kept").
-    if(command==="/plan"){setPrompt("Create a clear execution plan, then carry it out. "+rest.join(" "));return "kept"}
-    return false;
+    if(!text.startsWith("/"))return null;
+    let support;try{support=await loadTurnSupport()}
+    catch(error){setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return "kept"}
+    return support.runSlashCommand({currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,running,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt,setGoal,setEvents,setComposerAlert},text);
   }
   async function compactContext(){
     if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
@@ -4991,7 +4473,7 @@ export default function App(){
     let result;try{starting.add(threadId);result=await rpc.request("review/start",{threadId,target:{type:"uncommittedChanges"}})}finally{starting.delete(threadId)}
     // A review runs only as the turn the harness started for it: an answer without one started nothing. Its step comes into view
     // as a sent message does, in the thread it was started for: another thread or a new task shown by then is left as it is (as
-    // adoptAutomaticTurn leaves it), and the review's thread shows its running turn when it is opened again.
+    // turn-support.js adoptAutomaticTurn leaves it), and the review's thread shows its running turn when it is opened again.
     if(!result?.turn?.id)throw new Error(agentRuntimeLabel+" did not start a review.");
     if(activeThreadRef.current?.id!==threadId)return result;
     followConversationEnd();setRunning(true);setActiveTurnId(result.turn.id);
