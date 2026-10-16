@@ -181,6 +181,9 @@
 :root:root .settings-page.redesigned-settings .runtime-profile-row em{flex:none;padding:3px 9px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-weight:600;font-style:normal;white-space:nowrap}
 :root:root .settings-page.redesigned-settings .runtime-profile-row>button.active em{border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:var(--acsoft);color:var(--ac)!important}
 :root:root .settings-page.redesigned-settings .runtime-profile-row>button:not(:first-child){flex:none;min-height:30px!important;padding:5px 11px!important;font-size:12px!important}
+/* A refused profile switch is said under the profile's row, as a harness row says its own. */
+:root:root .settings-page.redesigned-settings .runtime-profile-row:has(>.agent-runtime-option-error){flex-wrap:wrap;row-gap:4px}
+:root:root .settings-page.redesigned-settings .runtime-profile-row>.agent-runtime-option-error{flex:1 0 100%;margin:0;padding:0 0 4px 14px;font-size:11.5px!important;line-height:1.5!important;color:var(--err)!important;overflow-wrap:anywhere}
 /* The active harness and profile rows sit on an accent tint. In dark mode the muted status line falls under 4.5:1 there,
    so it steps up one tier (still quieter than the name above it), and the Active pill keeps its accent text and border but
    not its own tint, which doubled the row's and left the text at 4:1. */

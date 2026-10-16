@@ -12,8 +12,11 @@ const CATALOGS={
   claude:{agentRuntime:"claude",ready:true,models:["sonnet","opus"],defaultModel:"sonnet",metadata:{models:[{id:"sonnet",name:"Claude Fixture Sonnet",agent:"claude"},{id:"opus",name:"Claude Fixture Opus",agent:"claude"}]},error:null},
   opencode:{agentRuntime:"opencode",ready:true,models:["opencode/fixture-fast","opencode/fixture-large"],defaultModel:"opencode/fixture-fast",metadata:{models:[{id:"opencode/fixture-fast",name:"OpenCode Fixture Fast",agent:"opencode"},{id:"opencode/fixture-large",name:"OpenCode Fixture Large",agent:"opencode"}]},error:null},
   native:{provider:"openai",agentRuntime:"native",ready:true,models:["gpt-fixture"],defaultModel:"gpt-fixture",metadata:{provider:"openai",models:[{id:"gpt-fixture",name:"GPT Fixture",provider:"openai"}]},error:null},
+  codex:{agentRuntime:"codex",ready:true,models:["gpt-codex-fixture"],defaultModel:"gpt-codex-fixture",metadata:{models:[{id:"gpt-codex-fixture",name:"Codex Fixture",agent:"codex"}]},error:null},
 };
 const HARNESSES=[["claude","Claude Code","claude"],["opencode","OpenCode","http"],["native","Trebell Native","native"]];
+// The harnesses with Codex among them, whose window speaks to it on a socket of its own in the app (here the fixture's one socket).
+const WITH_CODEX=[["codex","Codex","codex"],...HARNESSES];
 
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
@@ -21,7 +24,7 @@ async function freePort(){const server=createServer();await new Promise((resolve
 // server has active when it arrives, so a stale-model send made while a switch is in flight lands in the new harness (the live F1 failure).
 // As the agent relay does, it lists the threads of the harness that runs, and tells a thread's turn to every window (emit), so a turn
 // still running after a switch is heard on the socket that replaced the one that started it. holdTurns: a promise the turns wait on
-// once started.
+// once started, or a function giving each turn the one it waits on as it starts (none: it ends at once).
 async function startAgentRelay(activeRuntime,{turnDelayMs=0,reconnectInitializeDelayMs=0,approvalTurns=false,holdTurns=null}={}){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),open=new Map(),requests=[],threads=[],responses=[],answers=new Map();let connections=0,lostReplies=0;
   const notify=value=>{for(const socket of open.values())if(socket.readyState===1)socket.send(JSON.stringify(value))};
@@ -47,7 +50,7 @@ async function startAgentRelay(activeRuntime,{turnDelayMs=0,reconnectInitializeD
           send({id:approvalId,method:"item/commandExecution/requestApproval",params:{threadId,turnId,itemId:"command-"+turnId,command:["git","status"],reason:"Approve the runtime switch fixture command"}});
           await answered;
         }
-        await holdTurns;
+        await (typeof holdTurns==="function"?holdTurns():holdTurns);
         const reply={id:"reply-"+turnId,type:"agentMessage",text:"Fixture reply from "+runtime};
         notify({method:"item/completed",params:{threadId,turnId,item:reply}});
         // The thread keeps the turn, as the relay stores it, so a reopen shows it.
@@ -80,15 +83,16 @@ async function startAgentRelay(activeRuntime,{turnDelayMs=0,reconnectInitializeD
 // request arrives, but the response (bundled bootstrap + catalog) and /api/models wait for the new runtime's catalog — live OpenCode
 // discovery took about 3.4 s. catalogGate(runtime) returns that wait; holdRuntimeReads delays GET /api/agent-runtimes (the CLI probes).
 // profileEditing lets Claude Code keep several profiles, so its active profile can be edited and saved ({action:"upsert"}). holdSelect()
-// gives the promise a refused switch (rejectSelect) waits on before it answers, in place of 300 ms.
-async function startHarness(page,{runtime="claude",catalogs=CATALOGS,catalogGate=null,turnDelayMs=0,reconnectInitializeDelayMs=0,rejectSelect="",holdSelect=null,approvalTurns=false,holdTurns=null,profileEditing=false}={}){
-  const server={runtime,versions:{},holdRuntimeReads:null,failRuntimeReads:"",counts:{bootstrap:0,models:0,select:0,upsert:0,runtimeReads:0,runtimeReadsDone:0,direct:0}};
+// gives the promise a refused switch (rejectSelect, server.rejectSelect once started) waits on before it answers, in place of 300 ms.
+// harnesses: the harness rows Settings lists; profiles: more profiles ({id,kind,displayName}) besides each harness's default one.
+async function startHarness(page,{runtime="claude",harnesses=HARNESSES,profiles=[],catalogs=CATALOGS,catalogGate=null,turnDelayMs=0,reconnectInitializeDelayMs=0,rejectSelect="",holdSelect=null,approvalTurns=false,holdTurns=null,profileEditing=false}={}){
+  const server={runtime,rejectSelect,selects:[],versions:{},holdRuntimeReads:null,failRuntimeReads:"",counts:{bootstrap:0,models:0,select:0,upsert:0,runtimeReads:0,runtimeReadsDone:0,direct:0}};
   const relay=await startAgentRelay(()=>server.runtime,{turnDelayMs,reconnectInitializeDelayMs,approvalTurns,holdTurns});
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const bootstrap=()=>({mock:false,provider:"openai",providerReady:true,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",agentRuntimeReady:true,appServerReady:true,wsUrl:relay.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const snapshot=()=>{
-    const statuses=HARNESSES.map(([kind,name])=>({id:kind+"-default",kind,name,available:true,installed:true,authenticated:true,version:server.versions[kind]||"1.0.0-fixture"}));
-    return {selectedRuntime:server.runtime,selectedInstanceId:server.runtime+"-default",definitions:HARNESSES.map(([id,name,protocol])=>({id,name,protocol,multipleInstances:profileEditing&&id==="claude"})),instances:statuses.map(({id,kind,name})=>({id,kind,displayName:name,enabled:true})),statuses};
+    const statuses=[...harnesses.map(([kind,name])=>({id:kind+"-default",kind,name})),...profiles.map(({id,kind,displayName})=>({id,kind,name:displayName}))].map(status=>({...status,available:true,installed:true,authenticated:true,version:server.versions[status.kind]||"1.0.0-fixture"}));
+    return {selectedRuntime:server.runtime,selectedInstanceId:server.runtime+"-default",definitions:harnesses.map(([id,name,protocol])=>({id,name,protocol,multipleInstances:profileEditing&&id==="claude"||profiles.some(profile=>profile.kind===id)})),instances:statuses.map(({id,kind,name})=>({id,kind,displayName:name,enabled:true})),statuses};
   };
   const catalog=async active=>{await catalogGate?.(active);return catalogs[active]};
   await keepThreadMeta(page);
@@ -106,8 +110,8 @@ async function startHarness(page,{runtime="claude",catalogs=CATALOGS,catalogGate
       const current=snapshot();return json(route,{instance:body.instance,...current,bootstrap:bootstrap(),catalog:await catalog(server.runtime)});
     }
     if(body.action!=="select")return json(route,{error:"Unexpected agent runtime action in the runtime switch fixture: "+body.action},400);
-    server.counts.select++;
-    if(rejectSelect){await (holdSelect?holdSelect():delay(300));return json(route,{error:rejectSelect},400)}
+    server.counts.select++;server.selects.push(body);
+    if(server.rejectSelect){const refusal=server.rejectSelect;await (holdSelect?holdSelect():delay(300));return json(route,{error:refusal},400)}
     server.runtime=body.runtime;
     const value=await catalog(server.runtime),current=snapshot();
     return json(route,{...current,selected:{runtime:server.runtime,instance:current.instances.find(item=>item.kind===server.runtime),status:current.statuses.find(item=>item.kind===server.runtime)},bootstrap:bootstrap(),catalog:value});
@@ -146,6 +150,20 @@ function composerExplanation(page){
   return page.locator(".composer-wrap").filter({has:page.getByTestId("composer")}).evaluate(node=>[node.textContent,node.querySelector('[data-testid="composer"]')?.placeholder,node.querySelector('[data-testid="send"]')?.title].filter(Boolean).join(" · "));
 }
 const agentRuntimePost=page=>page.waitForResponse(response=>/\/api\/agent-runtimes$/.test(new URL(response.url()).pathname)&&response.request().method()==="POST");
+// The light and dark toggle saves its setting in the page only.
+async function keepAppearance(page,server){
+  const saved={};
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return json(route,{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...saved})});
+}
+// The page in dark and light, as the header's theme button sets them, at each width; check() runs before each shot. It ends in dark.
+async function shootModes(page,name,{widths=[1280,700],check=async()=>{}}={}){
+  const html=page.locator("html"),toggle=async mode=>{if(await html.getAttribute("data-mode")!==mode){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(html).toHaveAttribute("data-mode",mode)}};
+  for(const mode of ["dark","light"]){
+    await toggle(mode);
+    for(const width of widths){await page.setViewportSize({width,height:800});await check();await page.screenshot({animations:"disabled",path:`${auditDir}${name}-${mode}-${width}x800.png`})}
+  }
+  await page.setViewportSize({width:1280,height:800});await toggle("dark");
+}
 function expectCatalogModels(relay){
   for(const call of relay.calls("thread/start","turn/start"))expect(CATALOGS[call.runtime].models,`${call.method} sent ${call.params.model} to ${call.runtime}`).toContain(call.params.model);
 }
@@ -415,6 +433,166 @@ test("a harness switch while a turn runs asks first, and the running task stays 
     await expect(picker).toContainText("Claude Fixture Sonnet",{timeout:15_000});
     await expect(page.getByText("Fixture reply from claude",{exact:true})).toBeVisible({timeout:15_000});
     expect(server.runtime).toBe("claude");expect(server.counts.direct).toBe(0);
+  }finally{release();await close()}
+});
+
+// A Codex turn does not run on through a switch as the agent relay's turns do: Codex is restarted when it is selected again, or another
+// of its profiles is, which ends its turns, and a window away from Codex hears nothing of them. So a switch away from Codex, or to
+// another Codex profile, while a Codex turn runs is refused on the row that was clicked, as opening another harness's thread is, also
+// from a new task while the turn runs on in its thread's row; once the turn has ended it goes through. The switch asked, and said the
+// task kept running in Codex, and coming back to Codex then ended it with no word.
+test("a switch away from Codex, or to another Codex profile, while a Codex turn runs is refused on the row clicked until the turn ends",async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:800});
+  let release=()=>{};const held=new Promise(resolve=>{release=resolve});
+  const {server,relay,close}=await startHarness(page,{runtime:"codex",harnesses:WITH_CODEX,profiles:[{id:"codex-work",kind:"codex",displayName:"Codex work"}],holdTurns:held});
+  await keepAppearance(page,server);
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker"),dialog=page.getByRole("dialog");
+    await expect(picker).toContainText("Codex Fixture");
+    await composer.click();await page.keyboard.type("Run a long Codex task",{delay:5});await page.keyboard.press("Enter");
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible({timeout:15_000});
+    const threadId=relay.calls("turn/start")[0].params.threadId,runningDot=page.locator(`.thread-row[data-thread-id="${threadId}"]`).getByRole("img",{name:"Running"});
+    await expect(runningDot).toBeVisible();
+    const said=target=>`Could not switch to ${target}: Codex is running “Runtime switch fixture”. Stop the running turn before switching ${target==="Codex work"?"Codex profiles":"agent runtimes"}.`;
+    const opencode=page.locator(".agent-runtime-option").filter({hasText:"OpenCode"}),switchOpenCode=opencode.locator("button").first(),work=page.locator(".runtime-profile-row").filter({hasText:"Codex work"});
+    await openHarnessSettings(page);
+    // OpenCode, with the mouse: refused on its row; nothing is asked and nothing switches.
+    await expect(switchOpenCode).toBeEnabled({timeout:10_000});await switchOpenCode.click();
+    await expect(opencode.getByRole("alert"),"the OpenCode row says why").toHaveText(said("OpenCode"));await expect(opencode.getByRole("alert")).toBeInViewport();
+    await expect(dialog).toHaveCount(0);expect(server.counts.select,"nothing switched").toBe(0);await expect(switchOpenCode.locator("em")).toHaveText("Switch");
+    // The Codex work profile, from the keyboard: refused on its own row, which says so in place of the OpenCode row.
+    const use=work.locator("button").first();await expect(use.locator("em")).toHaveText("Use");await use.focus();await page.keyboard.press("Enter");
+    await expect(work.getByRole("alert"),"the Codex work row says why").toHaveText(said("Codex work"));await expect(opencode.getByRole("alert")).toHaveCount(0);
+    await expect(dialog).toHaveCount(0);expect(server.counts.select).toBe(0);
+    await shootModes(page,"harness-switch-codex-running-refused",{widths:[1280,700],check:()=>expect(work.getByRole("alert")).toBeInViewport()});
+    // From a new task the turn still runs, as its row says: the switch away from Codex is refused the same way.
+    await page.getByRole("button",{name:"New task",exact:true}).click();await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);await expect(runningDot).toBeVisible();
+    await openHarnessSettings(page);await switchOpenCode.click();
+    await expect(opencode.getByRole("alert"),"from a new task, the OpenCode row says why").toHaveText(said("OpenCode"));expect(server.counts.select).toBe(0);
+    // Once the turn has ended, OpenCode is switched to without a word.
+    release();await expect(runningDot).toHaveCount(0,{timeout:15_000});
+    const switched=agentRuntimePost(page);await switchOpenCode.click();await switched;
+    await expect(dialog).toHaveCount(0);expect(server.counts.select).toBe(1);expect(server.runtime).toBe("opencode");
+    await expect(opencode.getByRole("alert")).toHaveCount(0);await expect(switchOpenCode.locator("em")).toHaveText("Active");
+  }finally{release();await close()}
+});
+
+// The other way: a window on Codex hears none of the agent relay's turns, so a switch to Codex while a Claude Code turn runs is refused
+// on the Codex row too, where its row would say "Running" after the turn had ended. Once the turn has ended, Codex is switched to.
+test("a switch to Codex while a Claude Code turn runs is refused on the Codex row until the turn ends",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  let release=()=>{};const held=new Promise(resolve=>{release=resolve});
+  const {server,relay,close}=await startHarness(page,{runtime:"claude",harnesses:WITH_CODEX,holdTurns:held});
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker"),dialog=page.getByRole("dialog");
+    await expect(picker).toContainText("Claude Fixture Sonnet");
+    await composer.click();await page.keyboard.type("Run a long Claude task",{delay:5});await page.keyboard.press("Enter");
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible({timeout:15_000});
+    const threadId=relay.calls("turn/start")[0].params.threadId,runningDot=page.locator(`.thread-row[data-thread-id="${threadId}"]`).getByRole("img",{name:"Running"});
+    await openHarnessSettings(page);
+    const codex=page.locator(".agent-runtime-option").filter({has:page.locator("strong",{hasText:/^Codex$/})}),switchCodex=codex.locator("button").first();
+    await expect(switchCodex).toBeEnabled({timeout:10_000});await switchCodex.click();
+    await expect(codex.getByRole("alert"),"the Codex row says why").toHaveText("Could not switch to Codex: Claude Code is running “Runtime switch fixture”. Stop the running turn before switching agent runtimes.");
+    await expect(codex.getByRole("alert")).toBeInViewport();await expect(dialog).toHaveCount(0);expect(server.counts.select,"nothing switched").toBe(0);
+    for(const width of [1280,700]){await page.setViewportSize({width,height:800});await expect(codex.getByRole("alert")).toBeInViewport();await page.screenshot({animations:"disabled",path:`${auditDir}harness-switch-to-codex-refused-${width}x800.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    release();await expect(runningDot).toHaveCount(0,{timeout:15_000});
+    const switched=agentRuntimePost(page);await switchCodex.click();await switched;
+    await expect(dialog).toHaveCount(0);expect(server.counts.select).toBe(1);expect(server.runtime).toBe("codex");
+    await page.getByRole("button",{name:"Threads",exact:true}).click();await expect(picker).toContainText("Codex Fixture",{timeout:15_000});
+  }finally{release();await close()}
+});
+
+// Opening a thread of another harness switches to that harness, and the switch waited only for the turn of the thread shown. A
+// Codex turn left running for a new task was ended on the way back to Codex, which restarts it, and a Claude Code turn left so kept
+// its row's Running dot in a window gone to Codex. When the switch crosses Codex, opening the thread now waits for those turns too,
+// says which one runs, and goes through once it has ended.
+test("opening another harness's thread waits for a turn left running for a new task when the switch crosses Codex",async({page})=>{
+  test.setTimeout(150_000);
+  await page.setViewportSize({width:1280,height:800});
+  // hold: what the next turn waits on once started (none: it ends at once). holdNext() holds the next turn and gives its release.
+  let hold=null;const holdNext=()=>{let release=()=>{};hold=new Promise(resolve=>{release=resolve});return release};
+  const releases=[];
+  const {server,relay,close}=await startHarness(page,{runtime:"claude",harnesses:WITH_CODEX,holdTurns:()=>hold});
+  await keepAppearance(page,server);
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker"),alert=page.getByTestId("composer-alert"),stop=page.getByRole("button",{name:"Stop",exact:true});
+    const newTask=page.getByRole("button",{name:"New task",exact:true}),row=id=>page.locator(`.thread-row[data-thread-id="${id}"]`);
+    const said=harness=>`Could not open “Runtime switch fixture”: ${harness} is running “Runtime switch fixture”. Stop the running turn before switching agent runtimes. Sending now starts a new task instead.`;
+    // A Claude Code thread whose turn has ended, then Codex.
+    await expect(picker).toContainText("Claude Fixture Sonnet");
+    await composer.click();await page.keyboard.type("A Claude Code task",{delay:5});await page.keyboard.press("Enter");
+    await expect(page.getByText("Fixture reply from claude",{exact:true})).toBeVisible({timeout:15_000});
+    const claudeThread=relay.calls("turn/start")[0].params.threadId;
+    let switched=agentRuntimePost(page);await selectHarness(page,"Codex");await switched;
+    await page.getByRole("button",{name:"Threads",exact:true}).click();await expect(picker).toContainText("Codex Fixture",{timeout:15_000});
+    // A Codex turn, left running for a new task: its row says it runs.
+    releases.push(holdNext());
+    await composer.click();await page.keyboard.type("Run a long Codex task",{delay:5});await page.keyboard.press("Enter");
+    await expect(stop).toBeVisible({timeout:15_000});
+    const codexThread=relay.calls("turn/start")[1].params.threadId,codexRunning=row(codexThread).getByRole("img",{name:"Running"});
+    await newTask.click();await expect(stop).toHaveCount(0);await expect(codexRunning).toBeVisible();
+    // The Claude Code thread, with the mouse: it does not open while the Codex turn runs, and the composer says why.
+    let selects=server.counts.select;
+    await row(claudeThread).locator(".thread-main").click();
+    await expect(alert,"opening the Claude Code thread says the Codex turn runs").toHaveText(said("Codex"));
+    expect(server.counts.select,"nothing switched").toBe(selects);
+    await expect(codexRunning).toBeVisible();await expect(picker).toContainText("Codex Fixture");await expect(row(claudeThread)).not.toHaveClass(/active/);
+    await shootModes(page,"harness-thread-open-waits-for-codex-turn",{widths:[1280,700],check:()=>expect(alert).toBeInViewport()});
+    // Once the Codex turn has ended, the thread opens, on Claude Code, from the keyboard.
+    releases.shift()();await expect(codexRunning).toHaveCount(0,{timeout:15_000});
+    switched=agentRuntimePost(page);await row(claudeThread).locator(".thread-main").focus();await page.keyboard.press("Enter");await switched;
+    await expect(picker).toContainText("Claude Fixture Sonnet",{timeout:15_000});expect(server.runtime).toBe("claude");expect(server.counts.select).toBe(selects+1);
+    await expect(row(claudeThread)).toHaveClass(/active/);await expect(page.getByText("Fixture reply from claude",{exact:true})).toBeVisible({timeout:15_000});
+    // The other way: a Claude Code turn left running for a new task holds the Codex thread back the same way.
+    await newTask.click();releases.push(holdNext());
+    await composer.click();await page.keyboard.type("Run a long Claude task",{delay:5});await page.keyboard.press("Enter");
+    await expect(stop).toBeVisible({timeout:15_000});
+    const claudeRunning=row(relay.calls("turn/start")[2].params.threadId).getByRole("img",{name:"Running"});
+    await newTask.click();await expect(stop).toHaveCount(0);await expect(claudeRunning).toBeVisible();
+    selects=server.counts.select;
+    await row(codexThread).locator(".thread-main").click();
+    await expect(alert,"opening the Codex thread says the Claude Code turn runs").toHaveText(said("Claude Code"));
+    expect(server.counts.select,"nothing switched").toBe(selects);await expect(claudeRunning).toBeVisible();await expect(picker).toContainText("Claude Fixture Sonnet");
+    releases.shift()();await expect(claudeRunning).toHaveCount(0,{timeout:15_000});
+    switched=agentRuntimePost(page);await row(codexThread).locator(".thread-main").click();await switched;
+    await expect(picker).toContainText("Codex Fixture",{timeout:15_000});expect(server.runtime).toBe("codex");
+    await expect(page.getByText("Fixture reply from codex",{exact:true})).toBeVisible({timeout:15_000});
+    expect(server.counts.direct).toBe(0);
+  }finally{for(const release of releases)release();await close()}
+});
+
+// Another profile of the harness that runs takes the view to a new task, as a switch does, and the turn runs on in the profile it
+// started in: Use asks first while the open thread's turn runs, as Switch does. It switched at once.
+test("Use on another Claude Code profile while the open thread's turn runs asks first, and Cancel keeps the profile",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  let release=()=>{};const held=new Promise(resolve=>{release=resolve});
+  const {server,relay,close}=await startHarness(page,{runtime:"claude",profiles:[{id:"claude-work",kind:"claude",displayName:"Claude work"}],holdTurns:held});
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),dialog=page.getByRole("dialog");
+    await expect(page.getByTestId("model-picker")).toContainText("Claude Fixture Sonnet");
+    await composer.click();await page.keyboard.type("Run a long Claude task",{delay:5});await page.keyboard.press("Enter");
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible({timeout:15_000});
+    await openHarnessSettings(page);
+    const use=page.locator(".runtime-profile-row").filter({hasText:"Claude work"}).locator("button").first();
+    await expect(use.locator("em")).toHaveText("Use",{timeout:10_000});await use.click();
+    await expect(dialog,"a question before the profile switch").toContainText("Switch to Claude work while Claude Code is running “Runtime switch fixture”? The task keeps running in Claude Code, and its thread stays in the sidebar.");
+    await expect(dialog.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+    for(const width of [1280,700]){await page.setViewportSize({width,height:800});await expect(dialog.getByRole("button",{name:"Switch to Claude work",exact:true})).toBeInViewport();await page.screenshot({animations:"disabled",path:`${auditDir}harness-profile-while-running-asks-${width}x800.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    await page.keyboard.press("Escape");await expect(dialog).toHaveCount(0);await expect(use).toBeFocused();expect(server.counts.select,"Cancel switches nothing").toBe(0);
+    // Asked again from the keyboard, Switch to Claude work goes through with that profile.
+    const switched=agentRuntimePost(page);
+    await page.keyboard.press("Enter");await expect(dialog).toBeVisible();
+    await page.keyboard.press("Tab");await expect(dialog.getByRole("button",{name:"Switch to Claude work",exact:true})).toBeFocused();await page.keyboard.press("Enter");
+    await switched;expect(server.selects.map(body=>[body.runtime,body.instanceId])).toEqual([["claude","claude-work"]]);
   }finally{release();await close()}
 });
 
