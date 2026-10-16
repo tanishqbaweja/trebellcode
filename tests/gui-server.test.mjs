@@ -1465,8 +1465,10 @@ test("a project action runs once at a time in its own terminal, and Stop ends it
 // A tray Quit and Restart & install close the GUI server while the window is still open (desktop/main.mjs before-quit and
 // beforeInstall), and the HTTP server's close waits for every socket on it. It waited for good on one nobody ends: the terminal
 // drawer's, or an upgrade no socket server takes, as the drawer's is when it opens again after the terminals' socket server has closed.
-// The app then stayed running, hidden and without its tray icon, and an install never started its installer.
-test("the GUI server's close finishes with the terminal drawer's socket open and an upgrade nobody answers, as a tray Quit or an install closes it",{timeout:90_000},async()=>{
+// The app then stayed running, hidden and without its tray icon, and an install never started its installer. The close is given
+// UNDER_LOAD_MS, as the desktop's tray-Quit test gives it a minute: it also stops the agent relay and the live terminal, whose worker
+// may take 15 s for each of its kill and shutdown calls on a busy machine, and one that never ends fails it however long it is given.
+test("the GUI server's close finishes with the terminal drawer's socket open and an upgrade nobody answers, as a tray Quit or an install closes it",{timeout:150_000},async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-close-with-terminal-"));
   await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",onboardingComplete:true}}));
   const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
@@ -1487,7 +1489,8 @@ test("the GUI server's close finishes with the terminal drawer's socket open and
     held.write(`GET /api/no-such/ws HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`);
     await until(()=>upgraded,"the server has the upgrade",10_000);
     closing=gui.close();
-    assert.equal(await Promise.race([closing.then(()=>"closed"),new Promise(resolve=>setTimeout(()=>resolve("still closing after 15 s"),15_000))]),"closed","the close finishes");
+    let bound=null;const overdue=new Promise(resolve=>{bound=setTimeout(()=>resolve(`still closing after ${UNDER_LOAD_MS/1000} s`),UNDER_LOAD_MS)});
+    assert.equal(await Promise.race([closing.then(()=>"closed"),overdue]).finally(()=>clearTimeout(bound)),"closed","the close finishes");
     await drawerClosed;
   }finally{
     drawer?.terminate();held?.destroy();
