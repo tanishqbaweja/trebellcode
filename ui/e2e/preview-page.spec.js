@@ -15,12 +15,12 @@ async function startSite(port=0){
 }
 
 // The desktop bridge as desktop/preload.cjs gives it, scripted: an agent browser with a history of its own that reports its state
-// after each move, as desktop/main.mjs does, and notes the calls the panel makes. Its page has two elements to inspect, and
-// window.closeAgentWindow() closes its window as a person does outside the panel, which the shell reports with its state. The window
-// it grants a recording is a canvas that keeps drawing, so the recorder encodes real frames.
+// after each move, as desktop/main.mjs does, and notes the calls the panel makes (and the sizes it is set to). Its page has two
+// elements to inspect, and window.closeAgentWindow() closes its window as a person does outside the panel, which the shell reports
+// with its state. The window it grants a recording is a canvas that keeps drawing, so the recorder encodes real frames.
 function scriptedAgentBrowser(){
-  const pages=[],listeners=new Set();let at=-1;window.agentBrowserCalls=[];
-  const current=()=>({open:at>=0,url:pages[at]||"",title:"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,width:1280,height:800});
+  const pages=[],listeners=new Set();let at=-1,size={width:1280,height:800};window.agentBrowserCalls=[];window.agentBrowserSizes=[];
+  const current=()=>({open:at>=0,url:pages[at]||"",title:"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,...size});
   const report=()=>{for(const listener of listeners)listener(current())};
   const call=(name,move=()=>{})=>async(...args)=>{window.agentBrowserCalls.push(name);move(...args);report();return current()};
   window.closeAgentWindow=()=>{pages.length=0;at=-1;report()};
@@ -32,6 +32,7 @@ function scriptedAgentBrowser(){
     forward:call("forward",()=>{if(at<pages.length-1)at++}),
     reload:call("reload"),
     snapshot:async()=>({url:pages[at]||"",title:"",elements:at<0?[]:[{ref:"e1",tag:"button",text:"Save profile",href:""},{ref:"e2",tag:"a",text:"Docs",href:pages[at]+"/docs"}]}),
+    setViewport:call("setViewport",(width,height)=>{size={width,height};window.agentBrowserSizes.push([width,height])}),
     armRecording:async()=>({ok:true,expiresAt:Date.now()+5000,sourceId:"window:1:0"}),
   }}});
   if(navigator.mediaDevices)navigator.mediaDevices.getDisplayMedia=async()=>{
@@ -57,7 +58,7 @@ async function openBrowserPanel(page,request){
   return {panel,address,frame:page.frameLocator('iframe[title="Trebell preview"]')};
 }
 
-// Types an address over the one in the bar, as a person does.
+// Types an address over the one in the bar (or a size over the one in a device toolbar field), as a person does.
 async function typeAddress(page,address,value){await address.click();await page.keyboard.press("Control+A");await page.keyboard.type(value,{delay:8})}
 
 // Dark and light screenshots at 1280x800 and 900 wide. The mode is switched with the header's appearance toggle at 1280: at 900 the
@@ -316,6 +317,29 @@ test("a double click on Attach context, or Enter pressed twice or held on it, at
     await expect(attached("Browser e2")).toHaveCount(2);
     await expect(attached("Browser e1"),"Enter held on Attach context attached e1 once more").toHaveCount(2);
   }finally{await site.close()}
+});
+
+// A width or height typed in the device toolbar applies when Enter is pressed, as the address bar's Enter opens the address and as
+// leaving the field does: Enter did nothing, and the size waited for the field to be left.
+test("Enter in the viewport width or height field sizes the agent browser, as leaving the field does",async({page,request})=>{
+  await page.addInitScript(scriptedAgentBrowser);
+  const {panel}=await openBrowserPanel(page,request);
+  const width=panel.getByRole("spinbutton",{name:"Viewport width"}),height=panel.getByRole("spinbutton",{name:"Viewport height"}),preset=panel.getByRole("combobox",{name:"Viewport preset"});
+  const size=()=>page.evaluate(()=>window.agentBrowserSizes.at(-1)||null);
+  await typeAddress(page,width,"390");await page.keyboard.press("Enter");
+  await expect.poll(size,"Enter in the width field sizes the agent browser").toEqual([390,800]);
+  await expect(width).toBeFocused();
+  await typeAddress(page,height,"844");await page.keyboard.press("Enter");
+  await expect.poll(size,"Enter in the height field sizes the agent browser").toEqual([390,844]);
+  await expect(preset,"the size typed is the Mobile preset's").toHaveValue("mobile");
+  // A width under the least the agent browser takes is raised to it, which the field shows.
+  await typeAddress(page,width,"50");await page.keyboard.press("Enter");
+  await expect(width).toHaveValue("320");await expect(preset).toHaveValue("custom");
+  await expect.poll(size).toEqual([320,844]);
+  await shots(page,"preview-viewport-width-enter");
+  // Leaving the field still applies what was typed.
+  await typeAddress(page,height,"700");await page.keyboard.press("Tab");
+  await expect.poll(size,"leaving the height field sizes the agent browser").toEqual([320,700]);
 });
 
 // An action's preview address opens the Browser on its page the first time the panel is drawn, whose part only loads then: from Open
