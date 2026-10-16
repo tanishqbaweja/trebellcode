@@ -581,6 +581,15 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
   // be scrolled to exactly.
   const cardsAt=useMemo(()=>{const counts=new Map();for(const map of [trailers.before,trailers.after])for(const [id,entries] of map){const cards=entries.filter(entry=>entry.kind==="card").length;if(cards)counts.set(id,(counts.get(id)||0)+cards)}return counts},[trailers]);
   const chunks=useMemo(()=>virtualized?conversationVirtualChunks(messages,{extraHeight:message=>58*(cardsAt.get(String(message.id))||0)}):[],[messages,virtualized,cardsAt]),forcedChunk=virtualized?conversationChunkIndexForMessage(chunks,activeFindItemId):-1,anchorChunk=virtualized?conversationChunkIndexForMessage(chunks,anchorItemId):-1;
+  // The chunks a selection reaches stay mounted too, the one a click left the caret in among them, so a Shift+click far below or a
+  // drag the view scrolls with holds the text of every turn it covers, where a placeholder would hold none.
+  const [selectedKeys,setSelectedKeys]=useState("");
+  useEffect(()=>{
+    if(!virtualized)return;
+    const update=()=>{const selection=getSelection();setSelectedKeys([...historyRef.current?.querySelectorAll("[data-virtual-chunk]")||[]].filter(node=>selection.containsNode(node,true)).map(node=>node.dataset.virtualChunk).join("\n"))};
+    document.addEventListener("selectionchange",update);return()=>document.removeEventListener("selectionchange",update);
+  },[virtualized]);
+  const selectedChunks=selectedKeys.split("\n");
   // A turn's card and end row, in their turns' order. A card has no message id: find, scroll anchors and citations pass it by.
   const renderTrailers=useCallback(entries=>(entries||[]).map(entry=>{
     if(entry.kind==="end")return <TurnOutcomeRow key={"turn-end:"+entry.turnId} turnId={entry.turnId} heading={entry.heading} outcomeLabel={entry.outcomeLabel} outcomeTone={entry.outcomeTone} message={entry.message} latest={entry.latest}/>;
@@ -610,7 +619,7 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
   // A thread that opens with turns that have no rows (a goal's first turn failing at once) starts with their cards and outcome rows.
   // A page that did not load says so under the button pressed, which stays there to try again, with the keyboard still on it.
   return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" aria-disabled={historyBusy||undefined} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button>{historyError?.at==="top"&&<p className="history-page-error" role="alert">{historyError.text}</p>}</div>}{renderTrailers(trailers.after.get(""))}{virtualized
-    ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
+    ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk||selectedChunks.includes(chunk.key)} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
 // threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.

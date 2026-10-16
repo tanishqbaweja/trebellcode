@@ -113,6 +113,52 @@ test("long conversations keep only nearby message chunks mounted",async({page})=
   }finally{await harness.close()}
 });
 
+test("a click in one turn, the wheel far down and a Shift+click in a later turn select every turn between, the ones scrolled past too",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const cwd=process.cwd(),now=Date.now()/1000,turns=makeTurns(300);
+  const thread={id:"long-select-thread",name:"Long selection",preview:"600 messages",cwd,model:"test/coding-fast",status:{type:"idle"},createdAt:now-600,updatedAt:now,turns};
+  const meta={[thread.id]:{projectless:true,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default",threadSnapshot:{id:thread.id,name:thread.name,preview:thread.preview,cwd,model:thread.model,createdAt:thread.createdAt,updatedAt:thread.updatedAt,status:{type:"idle"},runtime:"codex",provider:"openai"}}};
+  const harness=await startHarness(thread);
+  try{
+    await installFixtureRoutes(page,{thread,meta,harness,cwd});
+    await page.goto("/");await page.locator('.thread-main[title="Long selection"]').click();
+    await expect(page.locator('[data-message-id="assistant-299"]')).toBeVisible();
+    const scroll=page.locator(".conversation-scroll"),text=id=>page.locator(`[data-message-id="${id}"] :is(.user-bubble p,.assistant-message-text)`).first();
+    // The wheel as a person turns it: long turns until the row is on the page (its chunk mounts near the view), then short ones
+    // until it is in the upper half of the view, out of the composer's way.
+    const wheelTo=async(id,down)=>{
+      const where=()=>page.evaluate(id=>{const node=document.querySelector(`[data-message-id="${id}"]`),view=document.querySelector(".conversation-scroll").getBoundingClientRect();if(!node)return null;const top=node.getBoundingClientRect().top-view.top;return top>=0&&top<=view.height/2?"in":top<0?"above":"below"},id);
+      for(let step=0;step<300;step++){
+        const at=await where();if(at==="in")return;
+        const before=await scroll.evaluate(node=>node.scrollTop);
+        await page.mouse.wheel(0,at==="above"?-300:at==="below"?300:down?1200:-1200);await expect.poll(()=>scroll.evaluate(node=>node.scrollTop)).not.toBe(before);
+      }
+      throw new Error(id+" did not come into view");
+    };
+    // How many times the selection, or what was copied, names each turn from 148 to 192 ("User message N ·" and "Assistant message
+    // N ·"): twice for turns 150 to 190 and never for the others.
+    const named=text=>Object.fromEntries(Array.from({length:45},(_,index)=>[148+index,text.split(`message ${148+index} ·`).length-1]));
+    const expected=Object.fromEntries(Array.from({length:45},(_,index)=>[148+index,index>=2&&index<=42?2:0]));
+    // The wheel up to turn 150 and a click at the start of its message, then the wheel 40 turns down, past chunks of 32 rows that
+    // leave the page while out of view (turn 160's among them).
+    await scroll.hover();await wheelTo("user-150",false);
+    await text("user-150").click({position:{x:1,y:8}});
+    await scroll.hover();await wheelTo("assistant-190",true);
+    await expect(page.locator('[data-message-id="user-160"]')).toHaveCount(0);
+    // Shift+click at the end of turn 190's reply: the selection, and so a copy with Ctrl+C, hold turns 150 to 190 and no other.
+    const end=await text("assistant-190").boundingBox();
+    await text("assistant-190").click({modifiers:["Shift"],position:{x:end.width-3,y:end.height-5}});
+    await expect.poll(async()=>named(await page.evaluate(()=>String(getSelection())))).toEqual(expected);
+    await page.evaluate(()=>document.addEventListener("copy",()=>{window.__copied=String(getSelection())},{once:true}));
+    await page.keyboard.press("Control+c");
+    expect(named(await page.evaluate(()=>window.__copied||""))).toEqual(expected);
+    for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:`${auditDir}long-conversation-shift-click-selection-${mode}-1280x800.png`})}
+    // A click in the composer ends the selection, and the turns far from the view leave the page again.
+    await page.getByTestId("composer").click();await expect(page.locator('[data-message-id="user-160"]')).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
 test("the newest message stays in view when the view shrinks, and a view scrolled up stays where it was",async({page})=>{
   test.setTimeout(30_000);
   await page.setViewportSize({width:1280,height:800});
