@@ -555,7 +555,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     const current=Array.isArray(settings.customModels)?settings.customModels:[];
     await saveSetting({customModels:current.filter(candidate=>!(candidate.id===item.id&&candidate.runtime===item.runtime&&candidate.provider===item.provider))});
   }
+  // Each key sent runs its live check against the provider, so a key goes once a press: a press while it is on its way sends nothing,
+  // nor do Enter's repeats or the second click of a double click, which can come after a refusal has given the key back to the field.
+  const providerKeySendingRef=useRef(false);
   async function saveProviderKey(){
+    if(providerKeySendingRef.current)return;providerKeySendingRef.current=true;
     showProviderMessage("Saving…");
     try{
       const result=await api("/api/providers",{method:"POST",body:{provider:selected,apiKey}});
@@ -569,7 +573,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       const refused=(await loadProviders())?.providers?.find(item=>item.id===selected)?.keyCheck;
       showProviderMessage(refused?"":error.message,!refused);
       if(refused)await onProviderUpdated?.({provider:selected,agentRuntime:selectedAgent,refreshBootstrap:false});
-    }
+    }finally{providerKeySendingRef.current=false}
   }
   async function clearProviderKey(){
     showProviderMessage("Removing…");
@@ -902,10 +906,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           </select>
         </label>
         <label>API key
-          <input data-testid="provider-api-key" type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&apiKey.trim()){e.preventDefault();saveProviderKey()}}} placeholder={selectedStatus?.hasKey?"Saved key ••••••••":"Paste API key"}/>
+          <input data-testid="provider-api-key" type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&apiKey.trim()){e.preventDefault();if(!e.repeat)saveProviderKey()}}} placeholder={selectedStatus?.hasKey?"Saved key ••••••••":"Paste API key"}/>
         </label>
         <div className="provider-key-actions">
-          <button data-testid="save-provider-key" className="setting-action" onClick={saveProviderKey} disabled={!apiKey.trim()}>Save API key</button>
+          <button data-testid="save-provider-key" className="setting-action" onClick={e=>{if(e.detail<2)saveProviderKey()}} onKeyDown={e=>{if(e.repeat&&e.key==="Enter")e.preventDefault()}} disabled={!apiKey.trim()}>Save API key</button>
           {selectedStatus?.hasKey&&<button onClick={clearProviderKey}>Remove key</button>}
         </div>
         <p className="provider-note">{PROVIDER_NOTES[selected]||"Models are loaded from the selected provider when its API supports discovery."}</p>
