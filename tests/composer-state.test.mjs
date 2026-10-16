@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { isVideoAttachment, restoreQueuedDraft } from "../ui/src/composer-state.js";
 
-test("stopping restores queued text, attachments and context without duplicates",()=>{
+test("the draft set aside while a queued follow-up is edited comes back after the composer's text, attachments and context without duplicates",()=>{
   const restored=restoreQueuedDraft({
     prompt:"existing draft",
     attachments:["a.txt"],
