@@ -7,7 +7,24 @@ import { workspaceLabel } from "../workspace-label.js";
 import { askConfirm } from "../ask-dialog.js";
 import { ignorePressRest } from "./ThreadSidebar.jsx";
 
+const NOTE_KEYS=["completedWork","unresolvedFailures","importantDecisions","artifactsCreated","pendingNextActions"];
 function lines(value){return (Array.isArray(value)?value:[]).join("\n")}
+// The fields of a group (the goal's, the notes) as the person has them, kept against what they were last filled with from what the
+// thread saved (filled): a read of it again (every read and save answer brings new lists) or a change made elsewhere fills only
+// the fields still as they were filled, so what the person typed stays until it is saved. It stays while the panel is away too
+// (another tab, the panel closed) and comes back with it; another thread's panel starts afresh. A second run for what it has just
+// filled (StrictMode's) leaves the fields alone.
+const awayDrafts={};
+function useSavedFields(group,threadId,saved,fields,setters){
+  const filled=useRef(null),latest=useRef(fields);latest.current=fields;
+  useEffect(()=>{
+    let last=filled.current,current=fields;if(last===saved)return;
+    if(!last){const away=awayDrafts[group];awayDrafts[group]=null;if(away?.threadId===threadId)({filled:last,fields:current}=away)}
+    filled.current=saved;saved.forEach((value,index)=>setters[index](last&&current[index]!==last[index]?current[index]:value));
+  },[JSON.stringify(saved)]);
+  useEffect(()=>()=>{const last=filled.current,fields=latest.current;awayDrafts[group]=last&&fields.some((value,index)=>value!==last[index])?{threadId,filled:last,fields}:null},[]);
+  return filled;
+}
 function parseLines(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean)}
 function wholeNumber(value,label){
   const raw=String(value||"").trim();if(!raw)return null;
@@ -66,25 +83,10 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [repairStartedFor,setRepairStartedFor]=useState(null);
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
-  useEffect(()=>{
-    setObjective(goal?.objective||"");
-    setTokenBudget(goal?.tokenBudget==null?"":String(goal.tokenBudget));
-    setTimeBudget(goal?.timeBudgetMinutes==null?"":String(goal.timeBudgetMinutes));
-    setTurnBudget(goal?.turnBudget==null?"":String(goal.turnBudget));
-    setToolCallBudget(goal?.toolCallBudget==null?"":String(goal.toolCallBudget));
-    setChildAgentBudget(goal?.childAgentBudget==null?"":String(goal.childAgentBudget));
-    setCostBudgetUsd(goal?.costBudgetUsd==null?"":String(goal.costBudgetUsd));
-    setCompletionConditions(lines(goal?.completionConditions));
-    setConstraints(lines(goal?.constraints));
-    setValidationExpectations(lines(goal?.validationExpectations));
-  },[goal?.threadId,goal?.objective,goal?.tokenBudget,goal?.timeBudgetMinutes,goal?.turnBudget,goal?.toolCallBudget,goal?.childAgentBudget,goal?.costBudgetUsd,goal?.completionConditions,goal?.constraints,goal?.validationExpectations]);
-  useEffect(()=>{
-    setCompletedWork(lines(continuity?.notes?.completedWork));
-    setUnresolvedFailures(lines(continuity?.notes?.unresolvedFailures));
-    setImportantDecisions(lines(continuity?.notes?.importantDecisions));
-    setArtifactsCreated(lines(continuity?.notes?.artifactsCreated));
-    setPendingNextActions(lines(continuity?.notes?.pendingNextActions));
-  },[continuity?.notes?.completedWork,continuity?.notes?.unresolvedFailures,continuity?.notes?.importantDecisions,continuity?.notes?.artifactsCreated,continuity?.notes?.pendingNextActions]);
+  const goalFields=[objective,tokenBudget,timeBudget,turnBudget,toolCallBudget,childAgentBudget,costBudgetUsd,completionConditions,constraints,validationExpectations];
+  const goalFilled=useSavedFields("goal",thread?.id,[goal?.objective||"",...[goal?.tokenBudget,goal?.timeBudgetMinutes,goal?.turnBudget,goal?.toolCallBudget,goal?.childAgentBudget,goal?.costBudgetUsd].map(value=>value==null?"":String(value)),lines(goal?.completionConditions),lines(goal?.constraints),lines(goal?.validationExpectations)],goalFields,[setObjective,setTokenBudget,setTimeBudget,setTurnBudget,setToolCallBudget,setChildAgentBudget,setCostBudgetUsd,setCompletionConditions,setConstraints,setValidationExpectations]);
+  const notes=[completedWork,unresolvedFailures,importantDecisions,artifactsCreated,pendingNextActions];
+  const notesFilled=useSavedFields("notes",thread?.id,NOTE_KEYS.map(key=>lines(continuity?.notes?.[key])),notes,[setCompletedWork,setUnresolvedFailures,setImportantDecisions,setArtifactsCreated,setPendingNextActions]);
   useEffect(()=>{setDetailsOpen(false);setAdvancedBudgetOpen(false);setContinuityOpen(false);setVerificationOpen(false);setVerificationEvidence(null);setVerificationEvidenceError("");setRepairStatus("");setRepairStartedFor(null)},[thread?.id]);
   // A started repair holds the button until its turn ends or the thread records a newer verification, so one failure
   // is not repaired twice at once.
@@ -100,9 +102,10 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   },[rpc,rpcStatus,thread?.id,continuity?.verification?.updatedAt]);
   if(!thread?.id)return <div className="empty-state"><Target size={28}/><strong>No active thread</strong><span>Start or open a thread before setting a durable goal.</span></div>;
   if(rpcStatus!=="connected")return <div className="empty-state"><Target size={28}/><strong>Agent harness is reconnecting</strong><span>This thread's durable goal will be available again when the active harness reconnects.</span></div>;
-  async function setGoal(patch){
+  // sent: the fields as a save sent them, which are what the goal it answers was filled from; one typed into since stays as typed.
+  async function setGoal(patch,sent){
     if(!rpc)return;setBusy("save");setError("");
-    try{const result=await rpc.request("thread/goal/set",{threadId:thread.id,...patch});onGoal?.(result?.goal||null)}
+    try{const result=await rpc.request("thread/goal/set",{threadId:thread.id,...patch});if(sent)goalFilled.current=sent;onGoal?.(result?.goal||null)}
     // A Codex without goals refuses the goal as a method it does not have: said as such, not as Codex's error.
     catch(e){setError(codexGoalsMissing(e)?"Could not set the goal: this Codex does not support goals.":e.message||String(e))}finally{setBusy("")}
   }
@@ -117,7 +120,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     await setGoal({
       objective:text,status:goal?.status||"active",tokenBudget:nextTokenBudget,timeBudgetMinutes:nextTimeBudget,turnBudget:nextTurnBudget,toolCallBudget:nextToolCallBudget,childAgentBudget:nextChildAgentBudget,costBudgetUsd:nextCostBudgetUsd,
       completionConditions:parseLines(completionConditions),constraints:parseLines(constraints),validationExpectations:parseLines(validationExpectations),
-    });
+    },goalFields);
   }
   async function clear(){
     if(!rpc||!await askConfirm("Clear this thread goal?",{confirm:"Clear goal"}))return;setBusy("clear");setError("");
@@ -135,7 +138,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
         completedWork:parseLines(completedWork),unresolvedFailures:parseLines(unresolvedFailures),importantDecisions:parseLines(importantDecisions),
         artifactsCreated:parseLines(artifactsCreated),pendingNextActions:parseLines(pendingNextActions),
       });
-      onContinuity?.(result?.continuity||null);
+      notesFilled.current=notes;onContinuity?.(result?.continuity||null);
     }catch(e){setError(e.message||String(e))}finally{setBusy("")}
   }
   async function clearContinuity(){
@@ -159,7 +162,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const tokensUsed=Math.max(0,Number(goal?.tokensUsed)||0),timeUsedSeconds=Math.max(0,Number(goal?.timeUsedSeconds)||0);
   const guidanceCount=(goal?.completionConditions?.length||0)+(goal?.constraints?.length||0)+(goal?.validationExpectations?.length||0);
   const advancedBudgetCount=[goal?.turnBudget,goal?.toolCallBudget,goal?.childAgentBudget,goal?.costBudgetUsd].filter(value=>value!=null).length;
-  const continuityNoteCount=["completedWork","unresolvedFailures","importantDecisions","artifactsCreated","pendingNextActions"].reduce((sum,key)=>sum+(continuity?.notes?.[key]?.length||0),0);
+  const continuityNoteCount=NOTE_KEYS.reduce((sum,key)=>sum+(continuity?.notes?.[key]?.length||0),0);
   const verificationLabel=continuity?.verification?[continuity.verification.status,continuity.verification.risk].filter(Boolean).join(" · "):"No verification recorded";
   // The cell is narrow, so a folder shows by its own name (a root by its path); the full path is in the tooltip.
   const workspaceCwd=String(continuity?.workspace?.cwd||"");

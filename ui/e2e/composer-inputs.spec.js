@@ -430,6 +430,121 @@ test("a double click on the Goal panel's Pause pauses the goal once and one on R
   }finally{await harness.close()}
 });
 
+// The page's socket to the relay, passed through here; set it up before the app opens. hold(method) keeps that method's requests
+// until release() sends them on (a slow harness); drop() closes the socket and keeps the window from connecting again until back()
+// (a harness that goes away and comes back); answer(method,change) changes what the relay answers to that method from then on.
+async function relaySocket(page){
+  const sent=[],sockets=[],held=[],answers=new Map();let holding=null,away=false;
+  await page.routeWebSocket(/\/api\/agent\/ws$/,ws=>{
+    if(away){ws.close({code:1011,reason:"harness down"}).catch(()=>{});return}
+    const server=ws.connectToServer(),asked=new Map();sockets.push({ws,server});
+    ws.onMessage(message=>{
+      let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
+      if(parsed?.method){sent.push(parsed);if(parsed.id!=null)asked.set(parsed.id,parsed.method)}
+      if(parsed?.method&&parsed.method===holding)held.push(()=>server.send(message));else server.send(message);
+    });
+    server.onMessage(message=>{
+      let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
+      const change=parsed?.result&&answers.get(asked.get(parsed.id));
+      ws.send(change?JSON.stringify({...parsed,result:change(parsed.result)}):message);
+    });
+  });
+  return {
+    sent:method=>sent.filter(message=>message.method===method).map(message=>message.params||{}),
+    hold(method){holding=method},release(){holding=null;for(const send of held.splice(0))send()},
+    answer(method,change){answers.set(method,change)},
+    drop(){away=true;for(const {ws,server} of sockets.splice(0)){ws.close({code:1011,reason:"harness down"}).catch(()=>{});server.close().catch(()=>{})}},
+    back(){away=false},
+  };
+}
+// Two frames on: the page has drawn what it was last given, and has done what React does once it is drawn (its effects).
+const painted=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve)))));
+async function typeOver(page,field,text){await field.click();await page.keyboard.press("Control+A");await page.keyboard.type(text,{delay:15})}
+// The Goal panel opened from the header, with a goal set there that keeps a completion condition: every read of the goal, and
+// every save's answer, brings its lists anew.
+async function setGoalInPanel(page){
+  await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+  const panel=page.getByTestId("goal-panel"),objective=panel.getByLabel("Objective",{exact:true});
+  await objective.click();await page.keyboard.type("Make the login tests pass",{delay:15});
+  await panel.getByText("Completion & guardrails",{exact:true}).click();
+  await panel.getByLabel("Completion conditions",{exact:true}).click();await page.keyboard.type("Login tests pass",{delay:15});
+  await panel.getByRole("button",{name:"Set goal",exact:true}).click();await expect(panel.locator(".goal-status")).toHaveText("active");
+  return {panel,objective};
+}
+
+test("an unsaved Goal edit and note are still there after a look at Files and after the right panel is closed and opened again, until Update goal saves the edit",async({page})=>{
+  test.setTimeout(90_000);
+  const socket=await relaySocket(page);
+  const harness=await openComposerApp(page);
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const conditions=panel.getByLabel("Completion conditions",{exact:true}),done=panel.getByLabel("Completed work",{exact:true}),tabs=page.getByTestId("right-panel").locator(".context-panel-tab-scroll");
+    await typeOver(page,objective,"Make the login and signup tests pass");
+    await panel.getByText("Continuity state",{exact:true}).click();await done.click();await page.keyboard.type("Fixed the session refresh",{delay:15});
+    // A look at Files takes the panel away, and Goal brings it back as it was left.
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(panel).toHaveCount(0);
+    await tabs.getByRole("button",{name:"Goal",exact:true}).click();
+    await expect(objective).toHaveValue("Make the login and signup tests pass");await expect(conditions).toHaveValue("Login tests pass");
+    await panel.getByText("Continuity state",{exact:true}).click();await expect(done).toHaveValue("Fixed the session refresh");
+    // So does the right panel closed and opened again from the header.
+    await page.getByRole("button",{name:"Close right panel"}).click();await expect(panel).toHaveCount(0);
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    await expect(objective).toHaveValue("Make the login and signup tests pass");
+    await shootBoth(page,"goal-draft-after-files",()=>objective.scrollIntoViewIfNeeded());
+    // Update goal saves the edit, which the panel then shows as the goal.
+    await panel.getByRole("button",{name:"Update goal",exact:true}).click();
+    await expect.poll(()=>socket.sent("thread/goal/set").map(params=>params.objective)).toEqual(["Make the login tests pass","Make the login and signup tests pass"]);
+    await expect(panel.getByRole("button",{name:"Update goal",exact:true})).toBeEnabled();await expect(objective).toHaveValue("Make the login and signup tests pass");
+  }finally{await harness.close()}
+});
+
+test("an unsaved Goal edit and note are still there when the harness drops and comes back and the thread's goal is read again",async({page})=>{
+  test.setTimeout(90_000);
+  const socket=await relaySocket(page);
+  const harness=await openComposerApp(page);
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const done=panel.getByLabel("Completed work",{exact:true});
+    await typeOver(page,objective,"Make the login and signup tests pass");
+    await panel.getByText("Continuity state",{exact:true}).click();await done.click();await page.keyboard.type("Fixed the session refresh",{delay:15});
+    socket.drop();
+    await expect(page.getByTestId("right-panel")).toContainText("Agent harness is reconnecting");
+    // The window connects again and opens the thread again, which reads its goal: here with the tokens its turns used meanwhile,
+    // which the metrics show once that read is in.
+    socket.answer("thread/goal/get",result=>({...result,goal:{...result.goal,tokensUsed:1234}}));
+    socket.back();
+    await expect(panel.locator(".goal-metrics")).toContainText("1,234",{timeout:20_000});
+    await painted(page);
+    await expect(objective).toHaveValue("Make the login and signup tests pass");
+    await expect(panel.getByLabel("Completion conditions",{exact:true})).toHaveValue("Login tests pass");
+    await expect(done).toHaveValue("Fixed the session refresh");
+    await shootBoth(page,"goal-draft-after-reconnect",()=>objective.scrollIntoViewIfNeeded());
+  }finally{await harness.close()}
+});
+
+test("words typed on into the Objective while a slow save is on its way are still there when it lands, and Update goal then saves them",async({page})=>{
+  test.setTimeout(90_000);
+  const socket=await relaySocket(page);
+  const harness=await openComposerApp(page);
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const update=panel.getByRole("button",{name:"Update goal",exact:true}),objectives=()=>socket.sent("thread/goal/set").map(params=>params.objective);
+    await typeOver(page,objective,"Make the signup tests pass");
+    // The harness takes its time over the save, and the person goes on typing meanwhile.
+    socket.hold("thread/goal/set");
+    await update.click();await expect(update).toBeDisabled();
+    await objective.click();await page.keyboard.press("End");await page.keyboard.type(" on Firefox",{delay:15});
+    socket.release();
+    await expect(update).toBeEnabled();await painted(page);
+    await expect(objective).toHaveValue("Make the signup tests pass on Firefox");
+    expect(objectives()).toEqual(["Make the login tests pass","Make the signup tests pass"]);
+    await shootBoth(page,"goal-typed-on-during-save",()=>objective.scrollIntoViewIfNeeded());
+    await update.click();
+    await expect.poll(objectives).toEqual(["Make the login tests pass","Make the signup tests pass","Make the signup tests pass on Firefox"]);
+    await expect(update).toBeEnabled();await expect(objective).toHaveValue("Make the signup tests pass on Firefox");
+  }finally{await harness.close()}
+});
+
 test("removing an attachment chip from the keyboard moves focus to the next chip's remove button, then the one before, then the composer",async({page},testInfo)=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);
