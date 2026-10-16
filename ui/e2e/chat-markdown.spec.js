@@ -365,3 +365,49 @@ test("a reply's visualization whose file is missing says so by its file name in 
     }
   }finally{await harness.close();rmSync(fixtureFile,{force:true})}
 });
+
+// A chart card's head as a person sees it once a mode switch has finished fading the colours: whether its band is light or dark,
+// and each of its texts with its size and its contrast against the band.
+const readCardHead=head=>head.evaluate(async node=>{
+  await Promise.all(document.getAnimations().filter(animation=>animation instanceof CSSTransition).map(animation=>animation.finished.catch(()=>null)));
+  const rgb=value=>value.match(/[\d.]+/g).map(Number);
+  const luminance=channels=>channels.slice(0,3).reduce((sum,value,index)=>{value/=255;return sum+[0.2126,0.7152,0.0722][index]*(value<=0.03928?value/12.92:((value+0.055)/1.055)**2.4)},0);
+  let back=node;while(back.parentElement&&rgb(getComputedStyle(back).backgroundColor)[3]===0)back=back.parentElement;
+  const band=luminance(rgb(getComputedStyle(back).backgroundColor));
+  return {band:band>0.5?"light":band<0.2?"dark":"between",texts:[...node.querySelectorAll("strong,span")].map(item=>{
+    const style=getComputedStyle(item),[lighter,darker]=[luminance(rgb(style.color)),band].sort((a,b)=>b-a);
+    return {text:item.textContent,size:parseFloat(style.fontSize),contrast:Math.round((lighter+0.05)/(darker+0.05)*10)/10};
+  })};
+});
+
+// The chart card's head follows the mode the header switches to, as a code block's head does: a light band in light mode (it stayed
+// the one black band on a light page), its file name and label at the chat's small text size (11.5px and up) and readable against
+// it (4.5:1) in both modes.
+test("a reply's chart card head follows light and dark mode, its file name and label at the chat's small text size",async({page})=>{
+  test.setTimeout(45_000);
+  const text="Here is the chart.\n\n::codex-inline-vis{path=\"charts/latency.html\"}";
+  const thread={...fixtureThread("visualization-head","Visualization head fixture"),turns:[{id:"turn-1",status:"completed",items:[
+    {type:"userMessage",id:"user-1",content:[{type:"text",text:"Draw the latency chart."}]},{type:"agentMessage",id:"assistant-1",text}]}]};
+  const harness=await startHarness(thread);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    const saved={};
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(saved)})});
+    await page.route(/\/api\/visualization\?/,route=>route.fulfill({status:200,contentType:"text/html",body:"<!doctype html><meta charset=utf-8><body style=\"font:14px sans-serif\"><h1>Latency chart</h1></body>"}));
+    await openApp(page,{harness,thread});
+    const card=page.locator(".inline-visualization-card"),head=card.locator(".inline-visualization-head");
+    await expect(card.frameLocator("iframe").getByRole("heading",{name:"Latency chart"})).toBeVisible();
+    for(const mode of ["light","dark"]){
+      await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+      const look=await readCardHead(head);
+      expect(look.band,`the head's band in ${mode} mode`).toBe(mode);
+      expect(look.texts.map(item=>item.text)).toEqual(["latency.html","Interactive visualization"]);
+      for(const item of look.texts){
+        expect(item.size,`the size of "${item.text}" in ${mode} mode`).toBeGreaterThanOrEqual(11.5);
+        expect(item.contrast,`the contrast of "${item.text}" against the head in ${mode} mode`).toBeGreaterThanOrEqual(4.5);
+      }
+      await card.scrollIntoViewIfNeeded();
+      await page.screenshot({path:join(shotsDir,`chat-visualization-head-${mode}-1280x800.png`),animations:"disabled"});
+    }
+  }finally{await harness.close()}
+});
