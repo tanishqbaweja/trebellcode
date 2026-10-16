@@ -74,7 +74,7 @@ import { configuredReasoningEffort, modelReasoningEffortKey, supportedReasoningE
 import { CODEX_STANDARD_SERVICE_TIER, configuredModelServiceTier, modelServiceTierKey, modelServiceTierLabel, supportedModelServiceTiers } from "../../src/model-service-tier.mjs";
 import { configuredModelOptions, modelOptionSettingsWith, supportedModelOptions } from "../../src/model-options.mjs";
 import { codexReasoningEffortLabel } from "../../src/codex-model-catalog.mjs";
-import { codexErrorNotice, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal } from "./codex-turn-options.js";
+import { codexErrorNotice, codexGoalsMissing, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal } from "./codex-turn-options.js";
 import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayThreadPreferredModel, serviceTierPickerTitle } from "./harness-turn-options.js";
 import ReasoningRow from "./components/ReasoningRow.jsx";
 import TurnActivityCard from "./components/TurnActivityCard.jsx";
@@ -3278,7 +3278,7 @@ export default function App(){
       if(continuityResult.status==="fulfilled")setContinuity(continuityData?.continuity||null);
       if(attachmentResult.status==="fulfilled")setLinkedPullRequests(pullRequests||[]);
       const errors=[];
-      if(goalResult.status==="rejected")errors.push("goal: "+(goalResult.reason?.message||String(goalResult.reason)));
+      if(goalResult.status==="rejected"&&!codexGoalsMissing(goalResult.reason))errors.push("goal: "+(goalResult.reason?.message||String(goalResult.reason)));
       if(continuityResult.status==="rejected")errors.push("continuity: "+(continuityResult.reason?.message||String(continuityResult.reason)));
       if(attachmentResult.status==="rejected")errors.push("linked attachments: "+(attachmentResult.reason?.message||String(attachmentResult.reason)));
       if(errors.length)setEvents(prev=>[...prev,{id:"persistent-refresh-error-"+Date.now(),kind:"error",title:"Could not refresh saved thread data: "+errors.join(" · "),status:"error",raw:{errors}}]);
@@ -3434,7 +3434,8 @@ export default function App(){
       const [checkpointResult,goalResult,continuityResult,attachmentResult]=await Promise.all([checkpointPromise,goalPromise,continuityPromise,attachmentPromise]);
       cp=checkpointResult.value;goalData=goalResult.value;continuityData=continuityResult.value;attachmentData=attachmentResult.value;
       if(checkpointResult.error)persistentReadErrors.push("checkpoints: "+(checkpointResult.error.message||String(checkpointResult.error)));
-      if(goalResult.error)persistentReadErrors.push("goal: "+(goalResult.error.message||String(goalResult.error)));
+      // A Codex without goals has no goal to load, which is no error.
+      if(goalResult.error&&!codexGoalsMissing(goalResult.error))persistentReadErrors.push("goal: "+(goalResult.error.message||String(goalResult.error)));
       if(continuityResult.error)persistentReadErrors.push("continuity: "+(continuityResult.error.message||String(continuityResult.error)));
       if(attachmentResult.error)persistentReadErrors.push("linked attachments: "+(attachmentResult.error.message||String(attachmentResult.error)));
     }

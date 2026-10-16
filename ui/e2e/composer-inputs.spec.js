@@ -4,6 +4,7 @@ import { mkdir,writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
+import { routeCodexApp,startCodexHarness } from "./codex-history-harness.js";
 
 // What a person puts into the composer besides typed text (files, slash commands, dictation, the welcome suggestions), over a
 // Trebell Native thread on the real agent relay. Attachments go to the GUI server as they do in the app.
@@ -273,6 +274,55 @@ test("the Goal panel's Clear asks in the app's own dialog, never the browser's: 
     await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Clear goal",exact:true})).toBeFocused();await page.keyboard.press("Enter");
     await expect(status).toHaveText("not set");await expect(objective).toHaveValue("");
     expect(nativeDialogs).toEqual([]);
+  }finally{await harness.close()}
+});
+
+// A Codex app-server without goals (one from before them) answers every thread/goal/* request with Method not found.
+test("on a Codex without goals, /goal keeps the objective in the composer and says this Codex has no goals, never Codex's Method not found",async({page})=>{
+  test.setTimeout(90_000);
+  const thread={id:"codex-without-goals",name:"Codex without goals",preview:"Codex without goals",cwd:process.cwd(),status:{type:"idle"},model:"test/coding-fast",createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexHarness(thread,[]),goalRequests=[];
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
+    await page.routeWebSocket(harness.wsUrl,ws=>{
+      const server=ws.connectToServer();
+      ws.onMessage(message=>{
+        let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
+        if(parsed?.id!=null&&/^thread\/goal\//.test(parsed.method||"")){goalRequests.push(parsed.method);ws.send(JSON.stringify({id:parsed.id,error:{code:-32601,message:"Method not found: "+parsed.method}}));return}
+        server.send(message);
+      });
+    });
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Codex without goals"]')});
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert"),said="Could not set the goal: this Codex has no goals. Your draft is kept.";
+    await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");
+    await expect.poll(()=>goalRequests).toContain("thread/goal/get");
+    // The thread has no goal to load, which is no error.
+    await expect.soft(page.getByText(/Method not found/),"the opened thread shows no Method not found").toHaveCount(0);
+    // The person sets a goal with Enter: Codex refuses it, and the objective stays in the composer with the reason beside it.
+    await composer.click();await page.keyboard.type("/goal Ship the release",{delay:15});await page.keyboard.press("Enter");
+    await expect(alert).toHaveText(said);
+    await expect(composer).toHaveValue("/goal Ship the release");
+    // Then with the Send button: the same.
+    await page.getByTestId("send").click();
+    await expect.poll(()=>goalRequests.filter(method=>method==="thread/goal/set").length).toBe(2);
+    await expect(alert).toHaveText(said);await expect(composer).toHaveValue("/goal Ship the release");
+    await shootBoth(page,"goal-command-codex-without-goals",()=>expect(alert).toBeInViewport());
+    // A goal word is refused the same way, by what it was to do.
+    await composer.click();await page.keyboard.press("Control+A");await page.keyboard.type("/goal pause",{delay:15});await page.keyboard.press("Enter");
+    await expect(alert).toHaveText("Could not pause the goal: this Codex has no goals. Your draft is kept.");await expect(composer).toHaveValue("/goal pause");
+    // The Goal panel's Set goal says it too.
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    const panel=page.getByTestId("goal-panel");
+    await panel.getByLabel("Objective",{exact:true}).fill("Ship the release");await panel.getByRole("button",{name:"Set goal",exact:true}).click();
+    await expect(panel.locator(".inline-error")).toHaveText("Could not set the goal: this Codex has no goals.");
+    await shootBoth(page,"goal-panel-codex-without-goals",()=>expect(panel.locator(".inline-error")).toBeInViewport());
+    // No turn went to Codex, and no Method not found reached the window: not on opening the thread, not for /goal.
+    expect(harness.calls.filter(call=>call.method==="turn/start")).toEqual([]);
+    await expect(page.getByText(/Method not found/)).toHaveCount(0);
   }finally{await harness.close()}
 });
 

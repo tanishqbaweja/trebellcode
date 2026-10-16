@@ -82,6 +82,11 @@ export function codexGoalStatusLabel(status){return GOAL_STATUS_LABELS[status]||
 export function describeCodexGoal(goal){
   return goal?.objective?`Goal ${codexGoalStatusLabel(goal.status)}: ${goal.objective}`:"No goal is set.";
 }
+// A Codex without goals (an app-server from before them) refuses thread/goal/* as a method it does not have: "Invalid request:
+// unknown variant `thread/goal/get`, expected one of …", as Codex refuses any method it lacks, or JSON-RPC's Method not found.
+export function codexGoalsMissing(error){
+  return /method not found|unknown variant `?thread\/goal/i.test(error?.message);
+}
 
 // T3 codexErrorInfoCode: the camel-case code of a CodexErrorInfo (a string, or an object keyed by its variant).
 export function codexErrorInfoCode(value){

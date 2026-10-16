@@ -2,7 +2,7 @@ import React,{useEffect,useRef,useState} from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, Pause, Play, RefreshCw, Target, Trash2 } from "lucide-react";
 import { startSameThreadVerificationRepair } from "../verification-repair.js";
 import { verificationEvidenceMeta, verificationEvidenceSummary, verificationEvidenceView } from "../verification-evidence-view.js";
-import { codexGoalStatusLabel } from "../codex-turn-options.js";
+import { codexGoalStatusLabel, codexGoalsMissing } from "../codex-turn-options.js";
 import { workspaceLabel } from "../workspace-label.js";
 import { askConfirm } from "../ask-dialog.js";
 
@@ -98,7 +98,8 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   async function setGoal(patch){
     if(!rpc)return;setBusy("save");setError("");
     try{const result=await rpc.request("thread/goal/set",{threadId:thread.id,...patch});onGoal?.(result?.goal||null)}
-    catch(e){setError(e.message||String(e))}finally{setBusy("")}
+    // A Codex without goals refuses the goal as a method it does not have: said as such, not as Codex's error.
+    catch(e){setError(codexGoalsMissing(e)?"Could not set the goal: this Codex has no goals.":e.message||String(e))}finally{setBusy("")}
   }
   async function save(){
     const text=objective.trim();if(!text){setError("Enter an objective first.");return}

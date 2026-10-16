@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CODEX_MAX_INPUT_CHARS, codexErrorInfoCode, codexErrorNotice, codexGoalStatusLabel, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal, parseCodexGoalCommand, parseCodexRetryProgress, splitCodexAttachmentText } from "../ui/src/codex-turn-options.js";
+import { CODEX_MAX_INPUT_CHARS, codexErrorInfoCode, codexErrorNotice, codexGoalStatusLabel, codexGoalsMissing, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal, parseCodexGoalCommand, parseCodexRetryProgress, splitCodexAttachmentText } from "../ui/src/codex-turn-options.js";
 import { queuedSubmissionDraft } from "../ui/src/native-queue.js";
 import { modelReasoningEffortKey } from "../src/model-reasoning-effort.mjs";
 import { modelServiceTierKey } from "../src/model-service-tier.mjs";
@@ -58,6 +58,19 @@ test("/goal parses like the Codex TUI and T3 Code",()=>{
   assert.equal(describeCodexGoal({objective:"Ship it",status:"budgetLimited"}),"Goal budget limited: Ship it");
   assert.equal(describeCodexGoal(null),"No goal is set.");
   assert.equal(codexGoalStatusLabel("usageLimited"),"usage limited");
+});
+
+test("a Codex without goals is told by its refusal of thread/goal/*, not by any goal error",()=>{
+  const refused=(message,code)=>Object.assign(new Error(message),{rpcCode:code});
+  assert.equal(codexGoalsMissing(refused("Method not found: thread/goal/get",-32601)),true);
+  // How Codex 0.155.1's app-server answers a method it does not have.
+  assert.equal(codexGoalsMissing(refused("Invalid request: unknown variant `thread/goal/set`, expected one of `initialize`, `server/diagnostics`, `thread/start`",-32600)),true);
+  assert.equal(codexGoalsMissing(new Error("Method not found")),true);
+  assert.equal(codexGoalsMissing(refused("Unsupported goal status: done",-32602)),false);
+  assert.equal(codexGoalsMissing(refused("Invalid request: unknown variant `done`, expected one of `active`, `paused`",-32600)),false);
+  assert.equal(codexGoalsMissing(refused("thread not found: 0199",-32600)),false);
+  assert.equal(codexGoalsMissing(new Error("Codex relay disconnected")),false);
+  assert.equal(codexGoalsMissing(null),false);
 });
 
 test("Codex error notifications read like T3's: details first, limits and sign-in with a hint, retries keep the turn",()=>{

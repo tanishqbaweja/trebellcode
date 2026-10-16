@@ -5,7 +5,7 @@
 // it, so App loads this module at idle after the first paint (B11). Each function takes what it reads of App's render as deps, as
 // App's own functions read it.
 import { api } from "./api.js";
-import { describeCodexGoal, parseCodexGoalCommand } from "./codex-turn-options.js";
+import { codexGoalsMissing, describeCodexGoal, parseCodexGoalCommand } from "./codex-turn-options.js";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
 import { repositoryContextDeliveryPacket } from "./context-provenance.js";
@@ -205,13 +205,14 @@ export async function continueInterruptedTurns({client,recovery,showActionError}
 }
 
 // Codex /goal, run like T3 Code's runGoalCommand and the Codex TUI: /goal shows the goal, clear, pause and resume
-// control it, and any other text sets a new goal and starts its first turn.
-async function runCodexGoalCommand({activeThread,running,startTurn,attachments,model,contextChips,rpc,setGoal,openRightPanel,setEvents},command){
+// control it, and any other text sets a new goal and starts its first turn. One that cannot run keeps the draft ("kept") and
+// says why beside the composer, as /goal does on the other harnesses; a Codex without goals is said to have none.
+async function runCodexGoalCommand({activeThread,running,startTurn,attachments,model,contextChips,rpc,setGoal,openRightPanel,setEvents,setComposerAlert},command){
   const threadId=activeThread?.id||null;
   const note=(title,kind="tool")=>setEvents(prev=>[...prev,{id:"goal-command-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),kind,title,status:"done",raw:{}}]);
   try{
     if(command?.type==="set"){
-      if(running){note("Stop the running turn before setting a new goal.","error");return}
+      if(running){note("Stop the running turn before setting a new goal.","error");return "kept"}
       await startTurn(command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"}});
       return;
     }
@@ -228,7 +229,7 @@ async function runCodexGoalCommand({activeThread,running,startTurn,attachments,m
       return;
     }
     openRightPanel("goal");note(describeCodexGoal(current));
-  }catch(error){note("Could not run /goal: "+(error.message||String(error)),"error")}
+  }catch(error){setComposerAlert({kind:"send",text:"Could not "+command.type+" the goal: "+(codexGoalsMissing(error)?"this Codex has no goals.":sentenceText(error.message||String(error)))+" Your draft is kept."});return "kept"}
 }
 // A send that is a command rather than a message to the agent (App asks whenever a send starts with "/"): a project's recipe by its
 // name, or one of the composer's commands. It answers true when the command ran (the composer empties), "kept" when the composer
@@ -285,7 +286,7 @@ export async function runSlashCommand(deps,text){
   }
   if(command==="/goal"){
     const goalCommand=parseCodexGoalCommand(text);
-    if(agentRuntime==="codex"){await runCodexGoalCommand(deps,goalCommand);return true}
+    if(agentRuntime==="codex")return await runCodexGoalCommand(deps,goalCommand)||true;
     // Elsewhere /goal opens the thread's goal: pause, resume and clear change it as the Goal panel's buttons do, and any other text
     // after it is the objective it sets. A goal is kept with a thread, so on New task the draft stays ("kept") and the composer says why.
     const threadId=activeThread?.id,patch=goalCommand.type==="set"?{objective:goalCommand.objective,status:"active"}:goalCommand.type==="pause"?{status:"paused"}:goalCommand.type==="resume"?{status:"active"}:null;
