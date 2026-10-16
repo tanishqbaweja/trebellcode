@@ -26,6 +26,17 @@ export async function settleModelFanout({results,fanout,draft,saveFailureStash,r
   if(summary.length)addEvents(summary);
 }
 
+// What a failed launch's row opens to, instead of its data: what failed, the thread and folder to check, and where the draft went.
+function launchDetail(error,guard,draftLine){
+  const message=error?.message||String(error);
+  return [
+    guard?"Could not tell whether the task's "+(guard.phase==="turn"?"turn started":"thread was created")+": "+message:"Could not start the background task: "+message,
+    guard?.verificationError&&"Could not look for the task's thread: "+guard.verificationError,
+    guard?.threadId&&"Possible thread: "+guard.threadId,guard?.cwd&&"Folder: "+guard.cwd,guard?.model&&"Model: "+guard.model,
+    draftLine,
+  ].filter(Boolean).join("\n");
+}
+
 // A background task whose launch failed.
 export async function settleFailedBackgroundSend({error,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents}){
   const guard=error?.trebellUncertain;
@@ -36,14 +47,16 @@ export async function settleFailedBackgroundSend({error,draft,saveFailureStash,r
     const title=guard
       ?"Background may already be running."+possibleThread+" Check for an existing thread before retrying; draft stashed with warning."
       :"Background task failed; draft was stashed: "+(error.message||String(error));
-    addEvents([{id:"background-error-"+Date.now(),kind:"error",title,status:"done",raw:{uncertain:guard||null,error:error?.message||String(error)}}]);
+    const output=launchDetail(error,guard,"The draft was saved to Trebell stash"+(guard?", marked [CHECK EXISTING THREAD BEFORE RETRY].":"."));
+    addEvents([{id:"background-error-"+Date.now(),kind:"error",title,status:"done",output,raw:{uncertain:guard||null,error:error?.message||String(error)}}]);
     desktopNotify(guard?"Background task needs attention":"Background task failed",guard?"Check for an existing background thread before retrying. The draft was stashed with a warning.":"The draft was saved to Trebell stash.");
   }else{
     restoreFailedDraft(draft);
     const title=guard
       ?"Background may already be running."+possibleThread+" stash save also failed: "+stash.error+". Draft restored; check for an existing thread before retrying."
       :"Background task failed; stash save also failed, so the draft was restored to the composer: "+(error.message||String(error))+" · Stash error: "+stash.error;
-    addEvents([{id:"background-error-"+Date.now(),kind:"error",title,status:"done",raw:{taskError:error?.message||String(error),stashError:stash.error,uncertain:guard||null}}]);
+    const output=launchDetail(error,guard,"The draft could not be saved to Trebell stash, so it was restored to the composer: "+stash.error);
+    addEvents([{id:"background-error-"+Date.now(),kind:"error",title,status:"done",output,raw:{taskError:error?.message||String(error),stashError:stash.error,uncertain:guard||null}}]);
     desktopNotify(guard?"Background task needs attention":"Background task failed",guard?"The draft was restored. Check for an existing background thread before retrying.":"The draft could not be saved to Trebell stash, so it was restored to the composer.");
   }
 }

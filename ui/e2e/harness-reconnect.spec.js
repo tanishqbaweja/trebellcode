@@ -14,14 +14,16 @@ async function freePort(){
 }
 
 // A Codex-protocol harness whose transport can drop and refuse new connections for a while, like an app-server restart, or whose
-// server answers initialize with why it cannot reach the harness (refuse).
+// server answers initialize with why it cannot reach the harness (refuse). dropAt(method) closes the connection when a request of
+// that method comes, unanswered.
 async function startHarness(){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set(),requests=[];let accepting=true,connections=0,refusal=null;
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set(),requests=[];let accepting=true,connections=0,refusal=null,dropMethod=null;
   http.on("upgrade",(req,socket,head)=>{if(!accepting){socket.destroy();return}wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req))});
   wss.on("connection",ws=>{
     connections++;sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
     ws.on("message",raw=>{
       const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;requests.push(message);
+      if(message.method===dropMethod){ws.close();return}
       if(message.method==="initialize"&&refusal){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:refusal}}));return}
       let result={};
       if(message.method==="initialize")result={userAgent:"harness-reconnect-fixture"};
@@ -40,6 +42,7 @@ async function startHarness(){
     accept(){accepting=true},
     refuse(message){refusal=message},
     allow(){refusal=null},
+    dropAt(method){dropMethod=method},
     async close(){accepting=false;for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))},
   };
 }
@@ -202,5 +205,38 @@ test("before the harness has ever connected the thread list says it is waiting f
     harness.accept();
     await expect(empty).toHaveText("No threads yet.Start a task to create one.",{timeout:15_000});
     await expect(empty).not.toHaveAttribute("role","status");
+  }finally{await harness.close()}
+});
+
+// A background send whose connection drops once its turn was asked for may be running already. Its row opens to plain lines,
+// opened with a click or from the keyboard: what could not be told, the thread and folder to check, the model and where the draft
+// went, never the event's data, and they wrap in a narrow window.
+test("a background send cut off at turn/start opens to the thread to check and where its draft went, not to the event's data",async({page})=>{
+  test.setTimeout(45_000);
+  const harness=await startHarness();harness.dropAt("turn/start");let stashed=null;
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  try{
+    await routeCodexFixture(page,harness.wsUrl);
+    await page.route(/\/api\/general-workspace$/,route=>json(route,{path:process.cwd(),environmentId:null}));
+    await page.route(/\/api\/stashes$/,route=>{if(route.request().method()!=="POST")return json(route,{stashes:[]});stashed=route.request().postDataJSON();return json(route,{stash:{id:"reconnect-stash"}})});
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await page.getByRole("button",{name:"Projects",exact:true}).click();await page.locator(".general-chat-card").click();
+    await expect(page.locator(".composer-status")).toContainText("Ctrl/Cmd+Enter background");
+    const draft="Run the release checks in the background.";
+    await page.getByTestId("composer").click();await page.keyboard.type(draft,{delay:8});await page.keyboard.press("Control+Enter");
+    const row=page.locator(".tool-event").filter({hasText:"may already be running"}),summary=row.locator("summary"),body=row.locator(".tool-event-body");
+    await expect(summary).toContainText("Background may already be running. Possible thread: reconnect-thread.");
+    await expect.poll(()=>stashed?.text).toBe("[CHECK EXISTING THREAD BEFORE RETRY] "+draft);
+    const detail=["Could not tell whether the task's turn started: App-server disconnected","Possible thread: reconnect-thread","Folder: "+process.cwd(),"Model: test/coding-fast","The draft was saved to Trebell stash, marked [CHECK EXISTING THREAD BEFORE RETRY]."].join("\n");
+    await summary.click();
+    await expect(body.locator("pre")).toHaveCount(1);expect(await body.locator("pre").textContent()).toBe(detail);
+    await expect(body.locator(".tool-json")).toHaveCount(0);
+    await summary.click();await expect(body).toHaveCount(0);
+    await summary.focus();await page.keyboard.press("Enter");
+    await expect.poll(()=>body.locator("pre").textContent()).toBe(detail);
+    await page.setViewportSize({width:900,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await shootModes(page,"background-uncertain-row-opened");
   }finally{await harness.close()}
 });
