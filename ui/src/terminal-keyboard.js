@@ -5,9 +5,16 @@
 // action) stays open instead of closing as the keyboard leaves it, and keys typed in the composer stay there. A press in the drawer
 // asks for it again, as the control pressed may go with what it does (a tab's close button, Create terminal). A key held down counts
 // as the one press it began with.
-let presses=0,asked=0;
+let presses=0,asked=0,askedAt=0;
 if(typeof document!=="undefined")for(const type of ["pointerdown","keydown"])document.addEventListener(type,event=>{if(event.repeat)return;presses++;if(event.target?.closest?.(".terminal-drawer"))asked=presses},true);
-// Asked as the drawer opens, as App shows a terminal in it, and by Focus terminal: at once, so a press that comes after counts.
-export function askTerminalKeyboard(){asked=presses}
+// The presses so far, read as a project action's run is asked for: its answer, which shows the terminal up to a second later, asks
+// as of them, so a press made while the run starts counts too.
+export const terminalPresses=()=>presses;
+// Asked as App shows a terminal in the drawer, by Focus terminal and by the keys that start a terminal: at once, so a press that
+// comes after counts, or as of the presses read when a run was asked for (at).
+export function askTerminalKeyboard(at=presses){asked=at;askedAt=presses}
+// The drawer opening asks for it at once, unless App asked since the last press: a run's answer, which opens it, asked as of the
+// press that ran it.
+export function terminalDrawerOpened(node){if(node&&askedAt!==presses)asked=presses}
 // Whether the keyboard asked for can still go into the drawer: nothing was pressed outside it since.
 export const terminalKeyboardAsked=()=>presses===asked;

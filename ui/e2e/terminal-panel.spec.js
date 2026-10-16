@@ -439,6 +439,26 @@ test("Ctrl+` with the drawer closed puts the keyboard on New beside a stopped te
   }finally{await shell.close()}
 });
 
+// New terminal and Split given a condition that holds outside the drawer (Settings lets a shortcut's condition be changed) start a
+// terminal from the composer with the keyboard on its command line, as they do from inside the drawer.
+test("New terminal and Split pressed in the composer, where their condition lets them run, put the keyboard on the terminal they start",async({page,request})=>{
+  test.setTimeout(90_000);
+  const shell=await realTerminals(page);
+  try{
+    await request.post("/api/settings",{data:{keybindingRules:[{command:"terminalNew",key:"Ctrl+Alt+N",when:"terminalOpen && !modalOpen"},{command:"terminalSplit",key:"Ctrl+Alt+D",when:"terminalOpen && !modalOpen"}]}});
+    await page.setViewportSize({width:1280,height:800});
+    const {drawer}=await openTerminal(page,request);
+    const composer=page.getByTestId("composer"),active=drawer.locator(".terminal-pane.active"),input=active.locator(".terminal-command-line input");
+    await composer.click();await page.keyboard.press("Control+Alt+KeyN");
+    await expect(drawer.locator(".terminal-tab")).toHaveCount(2);await expect(active.locator(".terminal-screen")).toHaveText(PROMPT,{timeout:20_000});
+    await expect(input,"New terminal's command line takes the keyboard").toBeFocused();
+    await composer.click();await page.keyboard.press("Control+Alt+KeyD");
+    await expect(drawer.locator(".terminal-pane")).toHaveCount(2);await expect(active.locator(".terminal-screen")).toHaveText(PROMPT,{timeout:20_000});
+    await expect(input,"the split's command line takes the keyboard").toBeFocused();
+    expect(shell.terminals.list(null)).toHaveLength(3);
+  }finally{await shell.close();await request.post("/api/settings",{data:{keybindingRules:[]}})}
+});
+
 // The terminal worker can die under an open terminal (it crashed, or something ended it), and the terminal's shell ends with it. The
 // terminal then shows it stopped, and New starts a new worker: the command line used to take input that vanished, and New failed
 // after 15 s with "Terminal worker timed out" until the app restarted. The test ends only the worker its own manager started.

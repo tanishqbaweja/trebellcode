@@ -66,7 +66,7 @@ import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openTh
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { finishedActivitySteps } from "./activity-details.js";
 import { observeHeaderFit } from "./header-fit.js";
-import { askTerminalKeyboard,terminalKeyboardAsked } from "./terminal-keyboard.js";
+import { askTerminalKeyboard,terminalDrawerOpened,terminalKeyboardAsked,terminalPresses } from "./terminal-keyboard.js";
 import { sidebarAutoCollapses } from "./sidebar-layout.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
 import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, modelProviderLabel } from "./provider-labels.js";
@@ -2734,9 +2734,10 @@ export default function App(){
       else if(command==="terminal")setPanel(value=>value==="terminal"?null:"terminal");
       else if(command==="terminalFocus"){setPanel("terminal");focusTerminalDrawer()}
       else if(command==="composerFocus"){document.querySelector('[data-testid="composer"]')?.focus()}
-      else if(command==="terminalSplit"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-split",{detail:{direction:"horizontal"}})),0)}
-      else if(command==="terminalSplitVertical"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-split",{detail:{direction:"vertical"}})),0)}
-      else if(command==="terminalNew"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-new")),0)}
+      // The keys that start a terminal ask for its keyboard, pressed outside the drawer too (a condition set in Settings lets them).
+      else if(command==="terminalSplit"){setPanel("terminal");askTerminalKeyboard();setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-split",{detail:{direction:"horizontal"}})),0)}
+      else if(command==="terminalSplitVertical"){setPanel("terminal");askTerminalKeyboard();setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-split",{detail:{direction:"vertical"}})),0)}
+      else if(command==="terminalNew"){setPanel("terminal");askTerminalKeyboard();setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-new")),0)}
       else if(command==="terminalClose")window.dispatchEvent(new CustomEvent("trebell:terminal-close"));
       else if(command==="rightPanelClose"){setRightPanelOpen(false);setRightPanelMaximized(false)}
       else if(command==="rightPanelToggle")toggleRightPanel();
@@ -4667,23 +4668,26 @@ export default function App(){
     return result;
   }
   // An action that runs already is not started again: its terminal is shown (the server answers the same for a run it knows of). A
-  // run on its way (the first click of a double click, or the key pressed twice) is the one a second press waits for.
+  // run on its way (the first click of a double click, or the key pressed twice) is the one a second press waits for. starting holds
+  // the presses counted at the last press that asked for the run on its way: its answer asks for the terminal's keyboard as of them,
+  // so a press made elsewhere while the run starts keeps the keyboard where it went (terminal-keyboard.js).
   async function runProjectAction(script){
     if(!script||!projectPath)return;
     const key=actionRunKey(script),runningId=actionRuns[key],starting=actionStartsRef.current;
-    if(!runningId&&starting.has(key))return;
-    let result;
+    if(!runningId&&starting.has(key)){starting.set(key,terminalPresses());return}
+    let result,pressed=terminalPresses();
     if(runningId)result={alreadyRunning:true,session:{id:runningId,running:true}};
-    else try{starting.add(key);result=await api("/api/project-script/run",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,scriptId:script.id}})}finally{starting.delete(key)}
-    showActionRun(key,result);
+    else try{starting.set(key,pressed);result=await api("/api/project-script/run",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,scriptId:script.id}})}finally{pressed=starting.get(key);starting.delete(key)}
+    showActionRun(key,result,pressed);
     if(!result?.alreadyRunning&&script.previewUrl&&script.autoOpenPreview){openRightPanel("preview");requestPreview(script.previewUrl)}
     return result;
   }
   // A run's answer, from the header, the palette, a key or the action's Projects card: the action runs (the header's button shows it)
-  // and its terminal is shown, with the keyboard asked for now, not as the drawer hears of it (terminal-keyboard.js).
-  function showActionRun(key,result){
+  // and its terminal is shown, with the keyboard asked for as of the press that ran it (pressed; now for the Projects card), not as
+  // the drawer hears of it (terminal-keyboard.js).
+  function showActionRun(key,result,pressed){
     if(result?.session?.running)setActionRuns(current=>({...current,[key]:result.session.id}));
-    setSection("chat");setPanel("terminal");askTerminalKeyboard();
+    setSection("chat");setPanel("terminal");askTerminalKeyboard(pressed);
     setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0);
   }
   async function onProjectOpen(path,environmentId=null){
@@ -5001,7 +5005,7 @@ export default function App(){
   // answers (an answer that comes later never drops a run made meanwhile). A watch socket per running action hears its terminal end
   // (its command exited, or Stop), with none of its output; nothing is polled.
   const actionRunsKey=projectlessMode||!projectPath?"":(workspaceEnvironmentId||"")+"\0"+projectPath;
-  const actionRunKey=script=>actionRunsKey+"\0"+script.id,actionStartsRef=useRef(new Set()),scriptButtonRef=useRef(null);
+  const actionRunKey=script=>actionRunsKey+"\0"+script.id,actionStartsRef=useRef(new Map()),scriptButtonRef=useRef(null);
   // Stop goes with the run it ends (pressed, or the action ended on its own): a keyboard on it goes on from the action's button, not
   // from the top of the page.
   const scriptStopRef=useCallback(node=>()=>{if(document.activeElement===node)scriptButtonRef.current?.focus()},[]);
@@ -5278,7 +5282,7 @@ export default function App(){
   <Composer starting={!runtimeKnown} prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} alert={composerAlert} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(opening)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} transportReason={transportReason} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={configureProviderKey} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} uploadingFiles={uploadingFiles} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={composerSetPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} threadSettingsWait={openingShown} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={openingShown?null:tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={composerSetWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(headerThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(!openingShown&&activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={openingShown?null:threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelOption={composerModelOption} onModelPickerOpenChange={setModelPickerOpen} codexThread={agentRuntime==="codex"&&!openingShown&&activeThread?.id&&codexThreadState?.threadId===activeThread.id?codexThreadState:null} onCancelEdit={queuedEditId?composerCancelQueuedEdit:null}/>
 
           {/* The drawer opening asks for the keyboard its terminal takes as it comes up (terminal-keyboard.js). */}
-          {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer" ref={askTerminalKeyboard}>
+          {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer" ref={terminalDrawerOpened}>
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" {...layoutSeparatorProps("terminal")} onPointerDown={event=>beginLayoutResize("terminal",event)}/>
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
             <DeferredSurface label="Loading terminal…" compact><TerminalPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} onAttachExcerpt={attachExcerpt}/></DeferredSurface>

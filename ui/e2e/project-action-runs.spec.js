@@ -111,6 +111,8 @@ test("a double click on the header's action button starts the action once",async
     await button.click();await page.waitForTimeout(150);await button.click();
     await expect(button).toHaveAttribute("data-running","true");await expect(stop).toBeVisible();
     await expect(tabs.filter({hasText:"Dev server"})).toHaveCount(1,{timeout:15_000});
+    // The second click asks for the action's terminal as the first did, so its command line takes the keyboard as after one click.
+    await expect(page.getByTestId("drawer").locator(".terminal-pane.active .terminal-command-line input"),"the action's terminal takes the keyboard").toBeFocused();
     await page.waitForTimeout(800);
     await page.screenshot({animations:"disabled",path:proofShots+"F1-double-click-one-run.png"});
     console.log("runs sent:",started.length,"terminal tabs:",JSON.stringify(await tabs.allInnerTexts()));
