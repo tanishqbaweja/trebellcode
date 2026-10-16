@@ -146,6 +146,57 @@ test("Delete on a project action asks first, and Cancel keeps the action",async(
   }
 });
 
+test("Delete on a project hook asks first, and Cancel, Escape or a double click keeps the hook",async({page,request})=>{
+  test.setTimeout(45_000);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const hook=(id,name,command)=>({id,name,event:"verification.required",command,enabled:true,failureMode:"block",timeoutMs:30000,actions:[]});
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Confirm Hooks Workspace",activate:true,hooks:[hook("lint-gate","Lint gate","npm run lint"),hook("unit-gate","Unit gate","npm test")]}});
+  const savedHooks=async()=>((await (await request.get("/api/projects")).json()).projects||[]).find(project=>project.path===boot.cwd&&!project.environmentId)?.hooks?.map(item=>item.name)||[];
+  // The hooks each save the page sends leaves the project with.
+  const saves=[];page.on("request",sent=>{const body=sent.method()==="POST"&&/\/api\/projects$/.test(sent.url())?sent.postDataJSON():null;if(Array.isArray(body?.hooks))saves.push(body.hooks.map(item=>item.name))});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"Projects",exact:true}).click();
+    const hooks=page.locator(".project-card.active .project-hooks"),row=hooks.locator(".project-hook-row").filter({has:page.locator("strong",{hasText:/^Lint gate$/})});
+    const trash=row.getByRole("button",{name:"Delete hook",exact:true});
+    await trash.scrollIntoViewIfNeeded();await trash.click();
+    await expect(question(page)).toBeVisible();
+    await expect(question(page).locator("p")).toHaveText("Delete the hook “Lint gate”? This cannot be undone: its command and settings are lost.");
+    await expect(question(page).getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+    expect(saves,"nothing is saved while the question is open").toEqual([]);
+    await shootModes(page,"project-hook-delete-question");
+    await question(page).getByRole("button",{name:"Cancel",exact:true}).click();
+    await expect(question(page)).toHaveCount(0);
+    await expect(row).toBeVisible();
+    await expect(trash).toBeFocused();
+    // From the keyboard: Enter on the trash button asks, and Escape is a Cancel too.
+    await page.keyboard.press("Enter");
+    await expect(question(page)).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(question(page)).toHaveCount(0);
+    await expect(trash).toBeFocused();
+    // A double click asks once, and its second click answers nothing.
+    await trash.dblclick();
+    await expect(question(page)).toHaveCount(1);
+    await question(page).getByRole("button",{name:"Cancel",exact:true}).click();
+    await expect(row).toBeVisible();
+    expect(saves,"Cancel, Escape and a double click delete nothing").toEqual([]);
+    expect(await savedHooks()).toEqual(["Lint gate","Unit gate"]);
+    // The dialog's own button deletes it.
+    await trash.click();
+    await question(page).getByRole("button",{name:"Delete hook",exact:true}).click();
+    await expect(row).toHaveCount(0);
+    await expect(hooks.locator(".project-hook-row").filter({hasText:"Unit gate"})).toBeVisible();
+    await expect.poll(savedHooks).toEqual(["Unit gate"]);
+    expect(saves).toEqual([["Unit gate"]]);
+  }finally{
+    await request.post("/api/projects",{data:{path:boot.cwd,hooks:[]}});
+  }
+});
+
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
 test("Delete share on a shared plugin asks first, and Cancel keeps the share",async({page})=>{

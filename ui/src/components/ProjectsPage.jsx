@@ -484,7 +484,13 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     if(saved)setHookEditor(current=>current?.opened===opened?null:current);
   }
 
-  async function deleteHook(project,id){const saved=await saveProject(project,{hooks:(project.hooks||[]).filter(hook=>hook.id!==id)});if(saved&&hookEditor?.projectId===project.id&&hookEditor?.id===id)setHookEditor(null)}
+  // A deleted hook cannot be brought back either, so Delete asks first as Delete action does.
+  async function deleteHook(project,id){
+    const name=(project.hooks||[]).find(hook=>hook.id===id)?.name||"Lifecycle hook";
+    if(!await askConfirm(`Delete the hook “${name}”? This cannot be undone: its command and settings are lost.`,{confirm:"Delete hook"}))return;
+    const current=latestProject(project),saved=await saveProject(current,{hooks:(current.hooks||[]).filter(hook=>hook.id!==id)});
+    if(saved&&hookEditor?.projectId===project.id&&hookEditor?.id===id)setHookEditor(null);
+  }
 
   async function runScript(project,script){
     setBusy(true);setError("");setCardError(null);

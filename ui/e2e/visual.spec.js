@@ -750,7 +750,7 @@ test("project lifecycle hooks are explicit, editable, and visually readable",asy
   const row=card.locator(".project-hook-row");await expect(row).toContainText("Before source control");await expect(row).toContainText("push, git.commit");await expect(row.locator("b")).toHaveText("warn");expect(lastSaved.hooks[0].actions).toEqual(["push","git.commit"]);
   await page.setViewportSize({width:1280,height:800});const metrics=await card.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await row.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"project-lifecycle-hooks-dark-1280x800.png",fullPage:true});
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await expect.poll(()=>row.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");await page.screenshot({animations:"disabled",path:auditDir+"project-lifecycle-hooks-light-1280x800.png",fullPage:true});
-  await row.getByTitle("Delete hook").click();await expect(card.getByText("No automatic lifecycle hooks are installed for this project.")).toBeVisible();expect(lastSaved.hooks).toEqual([]);
+  await row.getByTitle("Delete hook").click();await page.locator("dialog.inspector-text-prompt").getByRole("button",{name:"Delete hook",exact:true}).click();await expect(card.getByText("No automatic lifecycle hooks are installed for this project.")).toBeVisible();expect(lastSaved.hooks).toEqual([]);
 });
 
 test("browser attach button uploads files without the desktop bridge",async({page,request})=>{
