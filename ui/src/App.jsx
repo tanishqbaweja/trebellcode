@@ -1621,22 +1621,19 @@ export default function App(){
   }
 
   useEffect(()=>{
-    if(!window.trebellDesktop?.zoom)return;
-    let disposed=false;
-    let factor=1;
-    window.trebellDesktop.zoom.get().then(result=>{if(!disposed&&Number.isFinite(Number(result?.factor)))factor=Number(result.factor)}).catch(()=>{});
+    const zoom=window.trebellDesktop?.zoom;if(!zoom)return;
+    // Each notch steps from the window's zoom as it is then, which the shell's zoom keys and Ctrl+0 change too (desktop/main.mjs);
+    // a notch that comes before the shell has answered the one before waits for it, so none is lost.
+    let steps=Promise.resolve();
     const onWheel=(event)=>{
       if(!event.ctrlKey&&!event.metaKey)return;
       event.preventDefault();
       const direction=Math.sign(Number(event.deltaY)||0);
       if(direction===0)return;
-      factor=Math.min(2.5,Math.max(0.7,Math.round((factor+(direction<0?0.1:-0.1))*100)/100));
-      window.trebellDesktop.zoom.set(factor).then(result=>{
-        if(!disposed&&Number.isFinite(Number(result?.factor)))factor=Number(result.factor);
-      }).catch(error=>showActionError(error,"Could not change desktop zoom"));
+      steps=steps.then(()=>zoom.get()).then(result=>zoom.set((Number(result?.factor)||1)+(direction<0?0.1:-0.1))).catch(error=>showActionError(error,"Could not change desktop zoom"));
     };
     window.addEventListener("wheel",onWheel,{capture:true,passive:false});
-    return()=>{disposed=true;window.removeEventListener("wheel",onWheel,{capture:true})};
+    return()=>window.removeEventListener("wheel",onWheel,{capture:true});
   },[]);
 
   useEffect(()=>{

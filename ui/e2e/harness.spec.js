@@ -547,3 +547,52 @@ test("the desktop window's controls are named Minimize, Maximize and Close, and 
   await minimize.click();await close.click();
   expect(await page.evaluate(()=>window.__windowCalls)).toEqual(["minimize","close"]);
 });
+
+// The desktop window's zoom as desktop/main.mjs keeps it: Ctrl+=, Ctrl+- and Ctrl+0 zoom the window in the shell before the page sees
+// them (its before-input-event), while Ctrl+wheel is the page's to step through the bridge, whose calls take a moment to answer.
+test("Ctrl+wheel zooms the desktop window a step from its zoom as it is, also after the zoom keys or Ctrl+0 changed it",async({page,request})=>{
+  await page.addInitScript(()=>{
+    window.__zoom=1;let previewKeys=false;
+    const zoomTo=value=>window.__zoom=Math.min(2.5,Math.max(0.7,Math.round(Number(value)*100)/100));
+    const answer=value=>new Promise(resolve=>setTimeout(()=>resolve({factor:value()}),40));
+    window.addEventListener("keydown",event=>{
+      const key=String(event.key).toLowerCase();if(previewKeys||!event.ctrlKey||!["=","+","-","0"].includes(key))return;
+      event.preventDefault();event.stopImmediatePropagation();
+      zoomTo(key==="0"?1:window.__zoom+(key==="-"?-0.1:0.1));
+    },true);
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{zoom:{
+      get:()=>answer(()=>window.__zoom),
+      set:factor=>answer(()=>zoomTo(factor)),
+      reset:()=>answer(()=>zoomTo(1)),
+      previewKeys:open=>{previewKeys=Boolean(open)},
+    }}});
+  });
+  await request.post("/api/settings",{data:{onboardingComplete:true,panelAnimationMs:0}});
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect(page.getByTestId("model-picker")).toBeEnabled({timeout:10_000});
+  const zoom=()=>page.evaluate(()=>window.__zoom);
+  // Notches of the mouse wheel with Ctrl held, over the conversation, as a person zooms.
+  const notches=async(direction,count=1)=>{await page.mouse.move(700,400);await page.keyboard.down("Control");for(let i=0;i<count;i++)await page.mouse.wheel(0,direction==="in"?-100:100);await page.keyboard.up("Control")};
+  await page.keyboard.press("Control+Equal");await page.keyboard.press("Control+Equal");
+  await expect.poll(zoom).toBe(1.2);
+  await notches("in");
+  await expect.poll(zoom,{message:"a notch in after Ctrl+= twice zooms in from 120%"}).toBe(1.3);
+  await page.keyboard.press("Control+Digit0");
+  await expect.poll(zoom).toBe(1);
+  await notches("in");
+  await expect.poll(zoom,{message:"the first notch in after Ctrl+0 zooms to 110%"}).toBe(1.1);
+  await notches("in");
+  await expect.poll(zoom).toBe(1.2);
+  await page.keyboard.press("Control+Minus");
+  await expect.poll(zoom).toBe(1.1);
+  await notches("in");
+  await expect.poll(zoom,{message:"a notch in after Ctrl+- zooms in from 110%"}).toBe(1.2);
+  await notches("out");
+  await expect.poll(zoom).toBe(1.1);
+  // Two notches that come faster than the shell answers both count.
+  await notches("in",2);
+  await expect.poll(zoom).toBe(1.3);
+  await page.keyboard.press("Control+Digit0");
+  await expect.poll(zoom).toBe(1);
+});
