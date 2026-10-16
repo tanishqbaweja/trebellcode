@@ -174,3 +174,49 @@ test("a Finish setup that fails leaves the keyboard on Finish setup in the dialo
     await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:true,agentRuntime:"codex"}});
   }
 });
+
+// A history scan that fails, from Rescan or as setup opens, says it could not scan, and Rescan tries again: it said the scan's error
+// under "No recent Codex or Claude history found for this workspace.", which that scan never found out. The scan is answered here, so
+// no real local history is read.
+test("a failed history scan says it could not scan, not that no history was found, and Rescan tries again",async({page,request})=>{
+  test.setTimeout(60_000);
+  // hold, when set, holds the next scan until it is resolved.
+  let fail=false,hold=null;
+  await page.route(/\/api\/history-import$/,async route=>{
+    if(route.request().method()!=="GET")return route.fallback();
+    if(hold){const held=hold;hold=null;await held}
+    return fail?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate history scan failure: EACCES reading sessions"})}):route.fulfill({json:{codexImportAvailable:true,sessions:[]}});
+  });
+  try{
+    await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:false,agentRuntime:"codex"}});
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const onboarding=page.getByTestId("onboarding"),step=onboarding.locator(".onboarding-history-step"),message=step.getByRole("status"),rescan=step.getByRole("button",{name:"Rescan",exact:true});
+    const none="No recent Codex or Claude history found for this workspace.",failed="Could not scan conversation history: Deliberate history scan failure: EACCES reading sessions";
+    for(const mode of ["dark","light"]){
+      await switchModeUnderSetup(page,request,mode);
+      await expect(step).toContainText(none);
+      fail=true;await rescan.click();
+      await expect(message).toContainText("Deliberate history scan failure: EACCES reading sessions");
+      await expect(step).not.toContainText(none);
+      await expect(message).toHaveText(failed);await expect(message).toHaveClass(/error/);
+      await expect(rescan).toBeEnabled();
+      await shootSetup(page,"history-scan-failed",mode);
+      // From the keyboard: it fails again and the keyboard stays on Rescan, and once the scan answers the step says what it found.
+      let release;hold=new Promise(resolve=>{release=resolve});
+      await rescan.focus();await page.keyboard.press("Enter");
+      await expect(step).toContainText("Looking for recent Codex and Claude conversations…");
+      release();
+      await expect(message).toHaveText(failed);await expect(rescan).toBeFocused();await expect(step).not.toContainText(none);
+      fail=false;await page.keyboard.press("Enter");
+      await expect(step).toContainText(none);await expect(message).toHaveCount(0);
+    }
+    // The first scan, as setup opens, fails the same way.
+    fail=true;await page.reload();
+    await expect(message).toHaveText(failed);await expect(step).not.toContainText(none);
+    fail=false;await rescan.click();
+    await expect(step).toContainText(none);await expect(message).toHaveCount(0);
+  }finally{
+    await request.post("/api/settings",{data:{...SETTINGS,onboardingComplete:true,agentRuntime:"codex"}});
+  }
+});
