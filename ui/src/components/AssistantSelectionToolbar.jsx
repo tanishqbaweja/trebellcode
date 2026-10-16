@@ -27,8 +27,11 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
         if(!nativeSelection||nativeSelection.isCollapsed||nativeSelection.rangeCount===0){clear();return}
         const range=nativeSelection.getRangeAt(0);
         const start=citationSource(range.startContainer,container);
-        const end=citationSource(range.endContainer,container);
-        if(!start||start!==end){clear();return}
+        if(!start){clear();return}
+        // A selection that takes nothing beyond the reply it starts in is the reply's, as a triple-click on its last paragraph,
+        // which ends at the start of what follows the reply (its outcome pill). One that ends in the reply leaves nothing beyond.
+        const beyond=range.cloneRange();beyond.setStart(start,start.childNodes.length);
+        if(beyond.toString().trim()){clear();return}
         const text=nativeSelection.toString().trim();
         if(!text){clear();return}
         const rect=range.getBoundingClientRect();

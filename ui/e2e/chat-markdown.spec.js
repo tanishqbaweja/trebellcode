@@ -138,6 +138,38 @@ test("an assistant reply renders its Markdown: code, emphasis, lists, links, a t
   }finally{await harness.close()}
 });
 
+// A triple-click selects a paragraph; on a reply's last one the selection ends at the start of the reply's done pill, past the reply.
+test("a triple-click on any paragraph of a reply, the last one too, offers Cite, and Cite takes that paragraph",async({page})=>{
+  test.setTimeout(60_000);
+  const PARAGRAPHS=["First paragraph about the session token.","Second paragraph about the refresh timer.","Third and last paragraph about signing out on a 401."];
+  const thread=fixtureThread("cite-paragraphs","Cite paragraphs fixture");thread.turns[0].items[1].text=PARAGRAPHS.join("\n\n");
+  const harness=await startHarness(thread);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,thread});
+    const reply=page.locator(".assistant-message-text").last(),paragraphs=reply.locator("p"),cite=page.getByTestId("assistant-selection-cite"),question=page.locator(".user-bubble p").first();
+    await expect(paragraphs).toHaveText(PARAGRAPHS);await expect(page.locator(".history-assistant .turn-outcome")).toBeVisible();
+    const tripleClick=async index=>{
+      // A click on the question first leaves nothing selected, and no Cite.
+      await question.click();await expect(cite).toHaveCount(0);
+      await paragraphs.nth(index).click({clickCount:3});
+      await expect.poll(()=>page.evaluate(()=>window.getSelection().toString().trim())).toBe(PARAGRAPHS[index]);
+      await expect(cite,"Cite after a triple-click on paragraph "+(index+1)).toBeVisible();
+    };
+    for(const index of [0,1,2])await tripleClick(index);
+    // At both widths and in both modes, over the last paragraph.
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await tripleClick(2);await page.screenshot({animations:"disabled",path:join(shotsDir,"chat-cite-triple-click-last-"+mode+"-"+width+"x800.png")})}
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1280,height:800});
+    // Cite takes the last paragraph, as a drag over its words does.
+    await tripleClick(2);await cite.click();
+    const chip=page.getByTestId("context-chip");
+    await expect(chip).toHaveCount(1);await expect(chip).toContainText("Assistant excerpt");await expect(chip).toContainText(PARAGRAPHS[2].length+" chars");
+  }finally{await harness.close()}
+});
+
 // A clipboard of the page's own: a write is refused, as a browser that blocks copying refuses it, until the test allows writes, which
 // it then records. Nothing reaches the machine's clipboard.
 async function pageClipboard(page){
