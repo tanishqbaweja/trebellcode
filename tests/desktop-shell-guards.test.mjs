@@ -330,11 +330,11 @@ test("a desktop action that fails says why in the app's own words, without Elect
     await window.keyboard.press("Enter");
     said.palette=await settledText(window.locator(".command-palette-error"));
     await window.keyboard.press("Escape");
-    // Import cookie JSON in the Browser panel, with a file that is not JSON.
+    // Import cookie JSON in the Browser panel, with a file that is not JSON: the panel's error line says why.
     await window.getByRole("button",{name:"Browser",exact:true}).first().click();
     await plan({paths:[cookies]});
     await window.locator(".agent-browser-toolbar button").filter({hasText:"Import cookie JSON"}).click();
-    said.cookies=await settledText(window.getByTestId("browser-cookie-status"));
+    said.cookies=await settledText(window.getByRole("alert").filter({hasText:"Cookie import failed"}));
     // A SnapShot whose files are gone by the time the app reads it, as the shell says a capture is ready.
     await window.getByRole("button",{name:/^New task/}).first().click();
     await app.evaluate(({BrowserWindow},origin)=>BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&item.webContents.getURL().startsWith(origin)).webContents.send("snapshot:captured",{id:"snapshot-0-gone"}),origin);

@@ -152,3 +152,49 @@ test("an action set to open its preview when it runs opens the Browser on the ac
     await page.screenshot({animations:"disabled",path:auditDir+"preview-action-header-first-open-dark.png"});
   }finally{if(boot)await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}});await site.close()}
 });
+
+// The agent browser's imports as desktop/preload.cjs gives them, scripted: the first Import cookie JSON is given a file that is not
+// JSON and fails with the shell's reason (desktop/main.mjs), the next imports, and Import profile skips and fails some cookies.
+function scriptedBrowserImports(reason){
+  window.__cookieImports=0;
+  Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{
+    state:async()=>({open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:1280,height:800}),
+    onState:()=>()=>{},
+    snapshot:async()=>({url:"",title:"",elements:[]}),
+    importCookies:async()=>{if(++window.__cookieImports===1)throw new Error(reason);return {ok:true,canceled:false,source:"file",imported:2,failed:0,errors:[]}},
+    importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",installed:true,running:false,profiles:[{id:"C:/Profiles/Work",name:"Work profile"}]}]}),
+    importProfile:async(sourceId,profileId)=>({ok:true,sourceId,profileId,profileName:"Work profile for the staging dashboards",imported:41,failed:3,skipped:12}),
+  }}});
+}
+
+test("a cookie import that fails says why in full, in the error colour and as an alert, and a long import notice wraps instead of being cut",async({page,request})=>{
+  const reason="cookies-exported-from-the-work-browser-profile-2026-10-15.json is not valid JSON.";
+  await page.addInitScript(scriptedBrowserImports,reason);
+  const {panel}=await openBrowserPanel(page,request);
+  await panel.getByRole("button",{name:"Import cookie JSON"}).click();
+  const failure=panel.getByText("Cookie import failed: "+reason,{exact:true});
+  await expect(failure).toBeVisible();
+  // All of it reads: the line wraps instead of cutting the reason off.
+  expect(await failure.evaluate(node=>node.scrollWidth-node.clientWidth),"none of the reason is cut off").toBeLessThanOrEqual(1);
+  // It is announced as the error it is, in the app's error colour in both modes.
+  await expect(panel.getByRole("alert").filter({hasText:"Cookie import failed"})).toHaveText("Cookie import failed: "+reason);
+  for(const mode of ["dark","light"]){
+    if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+    const colours=await failure.evaluate(node=>{const probe=document.createElement("span");probe.style.color="var(--err)";document.body.append(probe);const err=getComputedStyle(probe).color;probe.remove();return {shown:getComputedStyle(node).color,err}});
+    expect(colours.shown,`the failure is in the error colour in ${mode} mode`).toBe(colours.err);
+  }
+  await shots(page,"browser-cookie-import-failed");
+  // The next import that works replaces the failure with its notice.
+  await panel.getByRole("button",{name:"Import cookie JSON"}).click();
+  const notice=panel.getByTestId("browser-cookie-status");
+  await expect(notice).toHaveText("Imported 2 cookies");
+  await expect(notice).toHaveAttribute("role","status");
+  await expect(failure).toHaveCount(0);
+  // A notice too long for one line wraps, so all of it reads too.
+  await panel.getByRole("button",{name:"Import profile"}).click();
+  await panel.getByTestId("browser-profile-import").getByRole("button",{name:/Work profile/}).click();
+  await expect(notice).toHaveText("Imported 41 cookies from Work profile for the staging dashboards · 12 encrypted/partitioned skipped · 3 failed");
+  expect(await notice.evaluate(node=>node.scrollWidth-node.clientWidth),"none of the notice is cut off").toBeLessThanOrEqual(1);
+  await shots(page,"browser-profile-import-notice");
+});
