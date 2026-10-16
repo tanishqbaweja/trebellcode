@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { RESTORED_LIST_LIMIT, RESTORED_TEXT_LIMIT, activityRow, isCardItem, mergeLiveRow, restoredRow, settledRow } from "../ui/src/activity-item.js";
+import { cardRowsFromItemEntries } from "../ui/src/turn-activity.js";
 import { activityItemStatus } from "../ui/src/activity-details.js";
 import { dynamicToolLabel } from "../ui/src/tool-activity.js";
 
@@ -90,9 +91,14 @@ test("a compaction reads compacting while it runs and compacted once done, also 
   assert.equal(activityRow({id:"k",type:"contextCompaction"}).title,"Compacting context");
   assert.equal(activityRow({id:"k",type:"contextCompaction",status:"inProgress"}).title,"Compacting context");
   assert.equal(activityRow({id:"k",type:"contextCompaction",status:"completed"}).title,"Context compacted");
-  // Codex stores the item with no status: once its turn has ended, the turn's card reads it done and compacted.
-  const stored=activityRow({id:"k",type:"contextCompaction"},{turnId:"t1"});
-  assert.deepEqual(settledRow(stored),{...stored,status:"done",title:"Context compacted"});
+  // Codex stores the item with no status, and only once it compacted: read from the history of a turn that ended, it reads
+  // done and compacted.
+  const [stored]=cardRowsFromItemEntries([{turnId:"t1",item:{id:"k",type:"contextCompaction"}}]).t1;
+  assert.deepEqual({status:stored.status,title:stored.title},{status:"done",title:"Context compacted"});
+  // A live compaction still running when its turn ended (stopped, or failed) did not compact: settled, it reads done but not
+  // compacted.
+  const cut=activityRow({id:"k",type:"contextCompaction",status:"inProgress"},{turnId:"t1"});
+  assert.deepEqual(settledRow(cut),{...cut,status:"done",title:"Compacting context"});
 });
 
 test("a kept row holds bounded text: a command's output its end, other text its start, lists their first entries",()=>{

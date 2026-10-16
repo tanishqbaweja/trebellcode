@@ -3,7 +3,7 @@
 // the window already reads (item pages, turn pages, a find hit's turn) and from the live card once its turn ends; a turn with no
 // stored tool items has no card, nothing is guessed. Only the newest turn of an opened thread may be read once more, when the
 // first item page cut it (see App's openThreadInternal).
-import { activityRow, isCardItem, restoredRow, settledRow } from "./activity-item.js";
+import { activityRow, isCardItem, restoredRow, storedRow } from "./activity-item.js";
 import { toolEventFailed } from "./tool-event-status.js";
 
 const NO_ROWS=Object.freeze([]);
@@ -20,7 +20,7 @@ function addItem(rowsByTurn,ids,turnId,item,activeTurnId){
   if(!rowsByTurn[turnId]){rowsByTurn[turnId]=[];ids[turnId]=new Map()}
   if(!isCardItem(item)||item.id==null||item.id==="")return;
   const row=restoredRow(activityRow(item,{turnId}));
-  const kept=turnId===activeTurnId?row:settledRow(row),index=ids[turnId].get(String(item.id));
+  const kept=turnId===activeTurnId?row:storedRow(row),index=ids[turnId].get(String(item.id));
   if(index==null){ids[turnId].set(String(item.id),rowsByTurn[turnId].length);rowsByTurn[turnId].push(kept)}
   else rowsByTurn[turnId][index]=kept;
 }

@@ -1146,9 +1146,23 @@ export default function App(){
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
   // Clears only the live reply text (a withdrawn Native draft), leaving command, diff and tool streams as they are.
   function clearAssistantText(){assistantStreamSyncRef.current=EMPTY_ASSISTANT_STREAM;assistantStreamBufferRef.current?.reset();assistantTextRef.current="";activityTimelineRef.current?.setText("")}
-  // A live item's row. A compaction's takes the row that Compact and thread/compacted show for its thread, so one compaction is
-  // one row.
-  function liveItemRow(item,threadId,turnId){const row=activityRow(item,{turnId});if(item.type==="contextCompaction"&&threadId)row.id="context-compact-"+threadId;return row}
+  // A compaction's item row, under the item's own id as the thread's history names it, takes the place of the row Compact put up for
+  // its thread: one compaction is one row, and two in one turn are two. null when it has no such row to take.
+  function takeCompactionPlace(prev,row,threadId){
+    if(row.kind!=="contextCompaction"||prev.some(event=>event.id===row.id))return null;
+    const index=prev.findIndex(event=>event.id==="context-compact-"+threadId&&event.kind==="contextCompaction"&&event.status==="running");
+    return index<0?null:prev.map((event,at)=>at===index?row:event);
+  }
+  // The newest compaction row still running in the open thread's turn records (turnId's when given) ends as end says, so the card
+  // its turn keeps says how it ended: compacted, failed, or (its turn ended first) neither.
+  function endCompactionRecord(threadId,turnId,end){
+    const owner=String(threadId||activeThreadRef.current?.id||"");
+    for(const entry of [...liveItemRowsRef.current.values()].reverse()){
+      if(entry.threadId!==owner||(turnId&&entry.turnId!==String(turnId)))continue;
+      const row=[...entry.rows.values()].reverse().find(item=>item.kind==="contextCompaction"&&item.status==="running");
+      if(row){entry.rows.set(String(row.id),end(row));return}
+    }
+  }
   // The live card's steps for each turn of the open thread, merged as the list merges them (the list cannot be read while a
   // notification is handled): what a turn's own card takes once the turn ends (sealLiveTurn). Card items only.
   function trackLiveRow(threadId,turnId,row,{phase,streamed=""}={}){
@@ -2901,10 +2915,10 @@ export default function App(){
     }
     else if(message.method==="turn/plan/updated"&&isCurrent){const plan=(p.plan||[]).map((s,i)=>({id:"plan-"+i,kind:"plan",title:s.step||s.description||s.text||"Plan step",status:s.status==="completed"?"done":s.status==="inProgress"?"running":"pending",raw:s,turnId:p.turnId==null?null:String(p.turnId)}));setEvents(prev=>[...prev.filter(e=>e.kind!=="plan"),...plan])}
     else if(message.method==="item/started"&&p.item){
-      const item=liveItemRow(p.item,threadId,p.turnId);
+      const item=activityRow(p.item,{turnId:p.turnId});
       const isActivityItem=!["userMessage","agentMessage","sessionHandoff"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,{currentActivity:{id:item.id,kind:item.kind,title:item.title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
-      if(isCurrent&&isActivityItem)setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item]);
+      if(isCurrent&&isActivityItem)setEvents(prev=>takeCompactionPlace(prev,item,threadId)||[...prev.filter(e=>e.id!==item.id),item]);
       if(isCurrent&&isCardItem(p.item))trackLiveRow(threadId,p.turnId,item,{phase:"started"});
     }
     // A harness tool that is still running can name itself better as it goes (an ACP tool call first reports its bare tool
@@ -2936,7 +2950,7 @@ export default function App(){
         const itemId=String(p.item.id||"");
         if(itemId){liveExtrasRef.current.get(turnInfoKey(threadId,p.turnId))?.delete(itemId);if(isCurrent){mcpProgressRef.current.delete(itemId);activityTimelineRef.current?.clearMcpProgress(itemId)}}
       }
-      const item=liveItemRow({...p.item,status:completedItemStatus(p.item)},threadId,p.turnId);
+      const item=activityRow({...p.item,status:completedItemStatus(p.item)},{turnId:p.turnId});
       const completedAtMs=p.completedAtMs||Date.now();
       const isActivityItem=!["userMessage","agentMessage","sessionHandoff"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===item.id?null:current.currentActivity,lastActivity:{id:item.id,kind:item.kind,title:item.title,durationMs:p.item?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs}));
@@ -2952,7 +2966,10 @@ export default function App(){
         // A finished thought leaves the live activity for the conversation, where a reopened thread shows it too.
         if(p.item.type==="reasoning"){const thought=reasoningHistoryMessage(p.item,p.turnId,streamedCommandOutput);setEvents(prev=>prev.filter(e=>e.id!==item.id));if(thought)setMessages(prev=>prev.some(m=>m.id===thought.id)?prev:[...prev,thought])}
         else if(isActivityItem){
-          setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?mergeLiveRow(e,item,{phase:"completed",streamed:streamedCommandOutput}):e):[...prev,mergeLiveRow(null,item,{phase:"completed",streamed:streamedCommandOutput})]);
+          setEvents(prev=>{
+            if(prev.some(e=>e.id===item.id))return prev.map(e=>e.id===item.id?mergeLiveRow(e,item,{phase:"completed",streamed:streamedCommandOutput}):e);
+            const row=mergeLiveRow(null,item,{phase:"completed",streamed:streamedCommandOutput});return takeCompactionPlace(prev,row,threadId)||[...prev,row];
+          });
           if(isCardItem(p.item))trackLiveRow(threadId,p.turnId,item,{phase:"completed",streamed:streamedCommandOutput});
         }
       }
@@ -3071,7 +3088,16 @@ export default function App(){
       const at=Date.now(),id="context-compact-"+threadId;
       settleCompactionWaiter(threadId,null,{ok:true,source:"thread/compacted"});
       updateThreadTelemetry(threadId,{currentActivity:null,lastActivity:{id,kind:"contextCompaction",title:"Context compacted",completedAtMs:at},lastActivityAt:at,lastError:null});
-      if(isCurrent)setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Context compacted",status:"done",raw:p};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
+      // The compaction's row ends compacted: its item's (the newest still running, else the newest), or the one Compact put up; a
+      // harness that sends no item gets its row here. Its turn's record too, should the item not say so before the turn ends.
+      const compacted={kind:"contextCompaction",title:"Context compacted",status:"done"};
+      if(isCurrent){
+        endCompactionRecord(threadId,p.turnId,row=>({...row,...compacted}));
+        setEvents(prev=>{
+          const rows=prev.filter(item=>item.kind==="contextCompaction"),row=rows.findLast(item=>item.status==="running")||rows.at(-1);
+          return row?prev.map(item=>item===row?{...item,...compacted}:item):[...prev,{id,...compacted,raw:p,...(p.turnId?{turnId:String(p.turnId)}:{})}];
+        });
+      }
     }
     else if(message.method==="error"){
       // Codex sends {error:{message, codexErrorInfo, additionalDetails}, willRetry, turnId} (T3 Code reads it the same way);
@@ -4051,15 +4077,19 @@ export default function App(){
   async function compactContext(){
     if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
     if(!activeThread?.id||!rpc||leavingThread())return;
-    const id="context-compact-"+activeThread.id;
+    const threadId=activeThread.id,id="context-compact-"+threadId;
     // A new compaction's row has no turn until its item names one: the turn of the last compaction, kept, would take it away.
     setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{},turnId:null};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
     try{
       // Grok compacts in a turn of its own (its /compact command), which takes as long as the model needs.
       await requestThreadCompaction(activeThread.id,agentRuntime==="grok"?{timeoutMs:10*60_000}:undefined);
     }catch(error){
-      // The failure ends the compaction's own row, which no turn ends: it would say "Compacting context" beside its failure.
-      setEvents(prev=>upsertEvent(prev,{id,kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done",raw:{}}));
+      // The failure ends the compaction's own row, which no turn ends: it would say "Compacting context" beside its failure. That is
+      // its item's row once the item came (in its turn's record too, so the turn's card says it failed), else the one Compact put up.
+      const failed={kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done"};
+      if(activeThreadRef.current?.id!==threadId)return;
+      endCompactionRecord(threadId,null,row=>({...row,...failed}));
+      setEvents(prev=>{const row=prev.findLast(item=>item.kind==="contextCompaction"&&item.status==="running");return row?prev.map(item=>item===row?{...item,...failed}:item):upsertEvent(prev,{id,...failed,raw:{}})});
     }
   }
   async function dispatchSend(promptOverride=null){

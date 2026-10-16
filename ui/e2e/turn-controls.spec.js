@@ -525,6 +525,82 @@ for(const order of ["Codex","the agent relay"]){
   });
 }
 
+// Codex compacts by itself in the middle of a turn each time the context fills up: two compactions in one turn are two rows, live and
+// on the turn's card once the next turn starts, as the turn's history holds them (each compaction an item of its own).
+test("two compactions Codex makes in one turn are two rows, live and on the turn's card",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex compact"});
+  const rows=page.locator(".tool-event").filter({hasText:/Compacting context|Context compacted/});
+  try{
+    codex.holdTurns=true;
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toBeVisible();
+    const threadId=codex.thread.id;
+    for(const id of ["compaction-item-1","compaction-item-2"]){
+      codex.notify("item/started",{threadId,turnId:turn.id,item:{type:"contextCompaction",id}});
+      codex.notify("item/completed",{threadId,turnId:turn.id,item:{type:"contextCompaction",id}});
+      codex.notify("thread/compacted",{threadId,turnId:turn.id});
+    }
+    await expect(rows).toHaveCount(2);await expect(rows.locator("summary strong")).toHaveText(["Context compacted","Context compacted"]);
+    codex.holdTurns=false;await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+    await sendTyped(page,"Count again.");
+    await expect.poll(()=>codex.turns.length).toBe(2);const next=codex.turns[1];next.answer();next.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toHaveCount(2,{timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    const card=page.locator(`[data-testid=activity-card][data-turn-id="${turn.id}"]`);
+    await expect(card.locator(".activity-card-summary")).toContainText("2 steps");
+    if(await card.getAttribute("data-state")==="closed")await card.locator(".activity-card-head").click();
+    await expect(card.locator(".tool-event summary strong")).toHaveText(["Context compacted","Context compacted"]);
+    await card.scrollIntoViewIfNeeded();await shoot(page,"two-compactions-one-turn");
+  }finally{await codex.close()}
+});
+
+// A compaction that never completes says so, live and on its turn's card once the next turn starts: one stopped while it compacts
+// is not called compacted, and one Codex fails reads failed. Codex sends its item's start, then the interrupt's end or the error,
+// and never the item's completion or thread/compacted.
+for(const end of ["Stop","a Codex error"]){
+  test(`a compaction ended by ${end} before it completes never reads compacted, live or on its turn's card`,async({page})=>{
+    test.setTimeout(60_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Codex compact"});
+    // The compaction's row (Codex's error has a row of its own, which leaves with its turn).
+    const rows=page.locator(".tool-event").filter({hasText:/Compacting context|Context compact(ed|ion failed)/});
+    try{
+      await sendTyped(page,"Count from one to ten.");
+      await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+      await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+      await page.getByRole("button",{name:"Compact",exact:true}).click();
+      await expect.poll(()=>codex.calls.includes("thread/compact/start")).toBe(true);
+      const threadId=codex.thread.id,turnId="codex-compact-turn";
+      codex.notify("turn/started",{threadId,turn:{id:turnId,status:"inProgress",items:[]}});await expect(stop(page)).toBeVisible();
+      codex.notify("item/started",{threadId,turnId,item:{type:"contextCompaction",id:"compaction-item-1"}});
+      await expect(rows).toHaveCount(1);await expect(rows.locator("summary strong")).toHaveText("Compacting context");
+      if(end==="Stop"){
+        await stop(page).click();await expect.poll(()=>codex.interrupts).toEqual([{threadId,turnId}]);
+        codex.notify("turn/completed",{threadId,turn:{id:turnId,status:"interrupted",items:[]}});
+      }else{
+        codex.notify("error",{threadId,turnId,willRetry:false,error:{message:"Deliberate compaction failure"}});
+        await expect(rows.locator("summary strong")).toHaveText("Context compaction failed: Deliberate compaction failure");
+        codex.notify("turn/completed",{threadId,turn:{id:turnId,status:"failed",items:[],error:{message:"Deliberate compaction failure"}}});
+      }
+      await expect(stop(page)).toHaveCount(0);
+      const said=end==="Stop"?"Compacting context":"Context compaction failed: Deliberate compaction failure";
+      await expect(rows).toHaveCount(1);await expect(rows.locator("summary strong")).toHaveText(said);await expect(rows).not.toHaveClass(/status-running/);
+      // The next turn takes the live card; the compaction's turn keeps its one row on its own card, as it ended.
+      await sendTyped(page,"Count again.");
+      await expect.poll(()=>codex.turns.length).toBe(2);const next=codex.turns[1];next.answer();next.start();
+      await expect(page.getByText("Counting is done.",{exact:false})).toHaveCount(2,{timeout:10_000});await expect(stop(page)).toHaveCount(0);
+      const card=page.locator(`[data-testid=activity-card][data-turn-id="${turnId}"]`);
+      await expect(card.locator(".activity-card-summary")).toContainText("1 step");
+      await expect(card).toHaveAttribute("data-state","closed");await card.locator(".activity-card-head").click();
+      await expect(card.locator(".tool-event summary strong")).toHaveText(said);
+      await expect(page.locator(".tool-event").filter({hasText:"Context compacted"})).toHaveCount(0);
+      await card.scrollIntoViewIfNeeded();await shoot(page,"compact-ended-by-"+(end==="Stop"?"stop":"error"));
+    }finally{await codex.close()}
+  });
+}
+
 // Editing a queued follow-up in the composer sets the composer's draft aside: the draft comes back once the edit is saved, and Escape
 // ends an edit with the queued message as it was. Trebell Native keeps its queue in the relay; a Codex project thread keeps its own
 // in Trebell.

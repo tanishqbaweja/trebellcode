@@ -46,10 +46,16 @@ export function activityRow(item={},{turnId=null}={}){
 }
 
 // A step of a turn that has ended is not running any more: a harness that sends no status, a subtask stored as it started and
-// a tool cut off by a stop all read done, as the live card marks them when the turn completes. A compaction (Codex stores its
-// item with no status) then reads as compacted.
+// a tool cut off by a stop all read done, as the live card marks them when the turn completes. Its title stays: a compaction still
+// running when its turn ended (stopped, or failed) did not compact, so only one the thread's history stores (storedRow) reads so.
 export function settledRow(row){
-  return row?.status==="running"?{...row,status:"done",...(row.kind==="contextCompaction"&&{title:"Context compacted"})}:row;
+  return row?.status==="running"?{...row,status:"done"}:row;
+}
+// A stored step of a turn that has ended, read from the thread's history. Codex stores a compaction's item, with no status, only
+// once the compaction is done, so it reads as compacted.
+export function storedRow(row){
+  const settled=settledRow(row);
+  return settled!==row&&row.kind==="contextCompaction"?{...settled,title:"Context compacted"}:settled;
 }
 
 function cappedText(value){
