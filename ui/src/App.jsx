@@ -5036,10 +5036,11 @@ export default function App(){
   const appearanceToggleLabel=resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode";
   // One Open-in state for the row's picker and the menu's copy, so both open the editor last chosen in either, and an Open from
   // either replaces the failure the row's picker shows. The menu closes as Open runs, so a failure there is reported like the
-  // menu's other actions, not beside a picker that has gone.
+  // menu's other actions, not beside a picker that has gone: in the shell's own sentence, as the row's picker shows it, which
+  // already says what could not be opened ("Could not start Zed: …", "Could not open the folder: …").
   const headerOpenIn=useOpenInEditors(projectPath,viewSection==="chat"||viewSection==="new");
   const headerOpenInShown=!projectlessMode&&!workspaceRemote&&Boolean(projectPath)&&headerOpenIn.editors.length>0;
-  const openProjectFromMenu=()=>runUserAction(()=>headerOpenIn.open(),headerOpenIn.active?"Could not open in "+headerOpenIn.active.label:"Could not open externally");
+  const openProjectFromMenu=()=>runUserAction(()=>headerOpenIn.open(),"");
   const sidebarBulkAction=useLatestCallback(bulkAction);
   const sidebarCollapse=useLatestCallback(()=>setSidebarOpen(false));
   // A project's Undo on Projects can run after the person has left the page or opened another project (its toast outlives the

@@ -504,9 +504,10 @@ for(const mode of ["dark","light"])test(`a linked pull request opens its web pag
 // The header fixture for the narrow-window tests below: every header action there is (the branch, the desktop app's Open-in
 // picker, a project action, Review, the terminal and goal toggles), long names, prCount linked pull requests, and Stop while a
 // turn runs. The desktop bridge records each Open in window.__opens, answers it once window.__openHold (a promise, when set)
-// settles, and fails it while window.__openFails is set. others are more threads for the sidebar.
+// settles, and while window.__openFails is set fails it as the shell does for an editor whose program is gone (editorGone). others
+// are more threads for the sidebar.
 async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,running=true,editors=[{id:"vscode",label:"Visual Studio Code"}],others=[],settings={}}){
-  await page.addInitScript(editors=>{window.__opens=[];window.__openFails=false;Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors}),open:async(path,id)=>{window.__opens.push(id);await window.__openHold;if(window.__openFails)throw new Error("Deliberate open failure: the editor could not be started")}}}})},editors);
+  await page.addInitScript(editors=>{window.__opens=[];window.__openFails=false;Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors}),open:async(path,id)=>{window.__opens.push(id);await window.__openHold;if(window.__openFails)throw new Error("Could not start "+editors.find(editor=>editor.id===id).label+": it is no longer at D:\\Editors\\"+id+".exe.")}}}})},editors);
   const project={id:"header-project",name:"Billing reconciliation service with a very long project name",path:process.cwd(),environmentId:null,branch:"feature/reconcile-refunds-in-the-ledger-export",scripts:[{id:"dev-server",name:"Start the billing dev server",command:"npm run dev -- --port 4173"}],preferredScriptId:"dev-server"};
   const thread={id:"header-thread",name:"Investigate why the nightly billing reconciliation job double counts refunds in the ledger export",preview:"Refunds",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Why are refunds counted twice?"}]},{type:"agentMessage",id:"assistant-1",text:"Looking."}]}]};
   const prs=Array.from({length:prCount},(_,index)=>({url:"https://github.com/acme/billing/pull/"+(12345+index),number:12345+index,title:"Refund fix "+index,state:"open"}));
@@ -524,6 +525,8 @@ async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,ru
     return {harness,project,thread,header,title:header.locator(".thread-title-button strong"),more:header.getByRole("button",{name:"More actions",exact:true}),menu:page.getByTestId("header-overflow-menu")};
   }catch(error){await harness.close();throw error}
 }
+// The shell's sentence for an Open whose editor's program is gone (desktop/editor-discovery.mjs startEditor), as the fixture fails it.
+const editorGone=(label,id)=>`Could not start ${label}: it is no longer at D:\\Editors\\${id}.exe.`;
 async function startTurn(page,header){
   await page.getByTestId("composer").fill("Keep going.");await page.getByTestId("send").click();
   await expect(header.getByRole("button",{name:"Stop",exact:true})).toBeVisible();await settle(page);
@@ -832,7 +835,8 @@ for(const mode of ["dark","light"])test(`the command palette gives focus back to
 
 // The More actions menu's Open-in picker is the header's own: an editor chosen in either is the one both open, Open closes the
 // menu like its other actions, and a failed Open is reported once the menu has closed (the app's action error, as the menu's
-// other actions report theirs) instead of over the menu's next items. The row's picker still shows its own failure beside it.
+// other actions report theirs) instead of over the menu's next items, in the shell's own sentence as the row's picker shows it,
+// without a second "Could not open in" before it. The row's picker still shows its own failure beside it.
 // A click inside the menu never slides the narrow main column sideways under the frame's glow.
 for(const mode of ["dark","light"])test(`the More actions menu opens the editor the header's picker chose and reports a failed Open at 1180x800 in ${mode} mode`,async({page})=>{
   test.setTimeout(45_000);
@@ -865,7 +869,7 @@ for(const mode of ["dark","light"])test(`the More actions menu opens the editor 
     await page.evaluate(()=>{window.__openFails=true});
     await more.click();await menu.getByRole("button",{name:"Open",exact:true}).click();
     await expect(menu).toHaveCount(0);
-    await expect(toast).toHaveText("Could not open in Cursor: Deliberate open failure: the editor could not be started");
+    await expect(toast).toHaveText(editorGone("Cursor","cursor"));
     await expect(page.locator(".open-in-error")).toHaveCount(0);
     expect(await frameScroll()).toBe(0);
     await page.screenshot({path:join(shotsDir,`header-overflow-open-failed-${mode}-1180x800.png`),animations:"disabled"});
@@ -881,7 +885,7 @@ for(const mode of ["dark","light"])test(`the More actions menu opens the editor 
     await expect(rowPicker).toBeVisible();await expect(rowPicker.getByLabel("Choose external editor")).toHaveValue("cursor");
     await expect(rowOpen).toHaveAttribute("title","Open in Cursor");
     await rowOpen.click();
-    await expect(rowPicker.getByRole("alert")).toHaveText("Deliberate open failure: the editor could not be started");
+    await expect(rowPicker.getByRole("alert")).toHaveText(editorGone("Cursor","cursor"));
     await page.evaluate(()=>{window.__openFails=false});
     await rowOpen.click();
     await expect(rowPicker.getByRole("alert")).toHaveCount(0);
@@ -899,7 +903,7 @@ for(const mode of ["dark","light"])test(`the row's Open-in picker drops its fail
   const opens=()=>page.evaluate(()=>window.__opens);
   const rowPicker=header.locator(".workspace-header-actions>.open-in-wrap"),rowAlert=rowPicker.getByRole("alert"),toast=page.getByTestId("app-action-error");
   const togglePanel=async()=>{await page.getByTestId("right-panel-toggle").click();await settle(page)};
-  const failRowOpen=async()=>{await page.evaluate(()=>{window.__openFails=true});await rowPicker.locator(".open-in-picker>button").click();await expect(rowAlert).toHaveText("Deliberate open failure: the editor could not be started")};
+  const failRowOpen=async(label="Visual Studio Code",id="vscode")=>{await page.evaluate(()=>{window.__openFails=true});await rowPicker.locator(".open-in-picker>button").click();await expect(rowAlert).toHaveText(editorGone(label,id))};
   const openFromMenu=async()=>{await more.click();await menu.getByRole("button",{name:"Open",exact:true}).click();await expect(menu).toHaveCount(0)};
   try{
     // The fixture opens the inspector, which folds the picker into the menu at this width; with it closed the picker is in the row.
@@ -916,14 +920,14 @@ for(const mode of ["dark","light"])test(`the row's Open-in picker drops its fail
     // A later Open from the menu fails: the app names it, and the row does not show it again afterwards.
     await failRowOpen();
     await togglePanel();await openFromMenu();
-    await expect(toast).toHaveText("Could not open in Visual Studio Code: Deliberate open failure: the editor could not be started");
+    await expect(toast).toHaveText(editorGone("Visual Studio Code","vscode"));
     await togglePanel();await expect(rowPicker).toBeVisible();await expect(rowAlert).toHaveCount(0);
     // Another editor, chosen in the menu's copy.
     await failRowOpen();
     await togglePanel();await more.click();await menu.getByLabel("Choose external editor").selectOption("cursor");await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
     await togglePanel();await expect(rowPicker.getByLabel("Choose external editor")).toHaveValue("cursor");await expect(rowAlert).toHaveCount(0);
     // Another project, and the first one again.
-    await failRowOpen();
+    await failRowOpen("Cursor","cursor");
     await openThread(page,other.name);await expect(rowPicker).toBeVisible();await expect(rowAlert).toHaveCount(0);
     const box=await header.boundingBox();
     await page.screenshot({path:join(shotsDir,`header-open-in-row-other-project-${mode}-1180x800.png`),animations:"disabled",clip:{x:box.x,y:0,width:box.width,height:box.y+box.height+60}});
