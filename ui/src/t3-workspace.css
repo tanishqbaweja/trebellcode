@@ -173,8 +173,9 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .command-palette-error{b
 .suggestions button{height:31px;border:1px solid #272a2e;background:#121416;color:#8c9299;border-radius:8px;padding:0 10px;font-size:9px}
 .suggestions button:hover{background:#191b1e;border-color:#363a40;color:#cdd0d4}
 
-/* composer */
-.composer-wrap{position:absolute;left:50%;right:auto;bottom:18px;transform:translateX(-50%);width:min(calc(100% - 44px),780px);height:auto;min-height:106px;border:1px solid #2c3035;border-radius:22px;background:rgba(23,25,28,.95);backdrop-filter:blur(18px) saturate(115%);box-shadow:0 16px 38px -22px rgba(0,0,0,.78),inset 0 1px rgba(255,255,255,.025);padding:11px 12px 8px;z-index:12;container-type:inline-size}
+/* composer: centred by its margins, not a transform, as the toasts above it are placed from its box (overlays.css), which the desktop
+   app's Chromium takes before transforms */
+.composer-wrap{position:absolute;left:0;right:0;bottom:18px;margin-inline:auto;width:min(calc(100% - 44px),780px);height:auto;min-height:106px;border:1px solid #2c3035;border-radius:22px;background:rgba(23,25,28,.95);backdrop-filter:blur(18px) saturate(115%);box-shadow:0 16px 38px -22px rgba(0,0,0,.78),inset 0 1px rgba(255,255,255,.025);padding:11px 12px 8px;z-index:12;container-type:inline-size}
 .composer-wrap:focus-within{border-color:#3b3f46;box-shadow:0 16px 42px -22px rgba(0,0,0,.9),0 0 0 1px rgba(165,138,244,.08)}
 .composer-wrap textarea{width:100%;height:40px;min-height:40px;max-height:160px;resize:none;overflow-y:hidden;background:none;border:0;outline:0;padding:4px 7px 5px;color:#e2e4e7;font-size:12.5px;line-height:1.5}
 .composer-wrap textarea::placeholder{color:#676c73}

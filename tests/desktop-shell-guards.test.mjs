@@ -337,3 +337,56 @@ test("a desktop action that fails says why in the app's own words, without Elect
     await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }
 });
+
+// The toast of a chat action that failed shows just above the composer, centred on the composer where it shows, all of it in the window.
+// It is placed from the composer's box, which the desktop app's Chromium takes before transforms: a composer centred by translateX(-50%)
+// had the toast centred on its right edge, so at 1280 wide the toast ran off the window with its text cut (lane H, p109).
+test("a failed chat action's toast shows above the composer, centred on it and inside the window, at 1280 wide and narrower, zoomed and beside the right panel",{timeout:240_000},async t=>{
+  if(process.platform!=="win32")return t.skip("The desktop shell checks target the Windows desktop build.");
+  const dist=resolve(process.env.TREBELL_UI_DIST||join(packageRoot,"ui","dist"));
+  if(!existsSync(join(dist,"index.html")))return t.skip("The built UI is needed: npm run ui:build, or TREBELL_UI_DIST.");
+  const home=await mkdtemp(join(tmpdir(),"trebell-desktop-toast-"));
+  const guiPort=await freePort(),appPort=await freePort(),stub=join(home,"picker-plan.cjs"),notes=join(home,"notes-a.txt");let app=null;
+  await writeFile(stub,KEEP_OFF_SCREEN+PICKER_PLAN);await writeFile(notes,"Notes to attach\n");
+  const env={...process.env,TREBELL_HOME:home,TREBELL_TEST_HIDDEN:"1",TREBELL_GUI_MOCK:"1",TREBELL_UI_DIST:dist,TREBELL_GUI_PORT:String(guiPort),TREBELL_APP_SERVER_PORT:String(appPort),TREBELL_E2E_OFFLINE:"1",TREBELL_E2E_ALLOW_NETWORK:"0",CODEX_HOME:join(home,"codex"),CLAUDE_CONFIG_DIR:join(home,"claude"),OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const origin=`http://127.0.0.1:${guiPort}`;
+  try{
+    app=await electron.launch({args:["-r",stub,packageRoot],env});
+    const window=await app.firstWindow();for(let i=0;i<240&&!window.url().startsWith(origin);i++)await sleep(250);await window.waitForLoadState("load");
+    await fetch(origin+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({onboardingComplete:true,panelAnimationMs:0})});
+    await window.reload();
+    const plan=value=>app.evaluate((_electron,value)=>{globalThis.__pickerPlans.push(value)},value);
+    // The window's size and zoom as a person sets them: its edge, and Ctrl+= and Ctrl+0 through the window's input.
+    const resize=(width,height)=>app.evaluate(({BrowserWindow},{origin,width,height})=>BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&item.webContents.getURL().startsWith(origin)).setContentSize(width,height),{origin,width,height});
+    const press=code=>app.evaluate(({BrowserWindow},{origin,code})=>{const main=BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&item.webContents.getURL().startsWith(origin));for(const type of ["keyDown","keyUp"])main.webContents.sendInputEvent({type,keyCode:code,modifiers:["control"]})},{origin,code});
+    const attach=window.getByRole("button",{name:"Attach files"}).first(),toast=window.getByTestId("app-action-error");
+    // Attach files when the file picker cannot open, and where the toast shows once its text has settled.
+    const failedAttach=async()=>{
+      await plan({fails:"The file picker could not open."});await attach.click();
+      assert.equal(await settledText(toast),"Could not attach files: The file picker could not open.");
+      return window.evaluate(()=>{
+        const box=selector=>document.querySelector(selector)?.getBoundingClientRect()||null;
+        const shown=box("[data-testid=app-action-error]"),composer=box(".chat-workspace .composer-wrap"),chip=box(".chat-workspace .attachment-shelf>span");
+        return {left:Math.round(shown.left),right:Math.round(shown.right),window:innerWidth,offCentre:Math.round(Math.abs(shown.left+shown.width/2-(composer.left+composer.width/2))),above:shown.bottom<=Math.min(composer.top,chip?chip.top:Infinity)};
+      });
+    };
+    const seen={};
+    await window.getByRole("button",{name:/^New task/}).first().click();
+    await resize(1280,800);seen.window1280=await failedAttach();
+    // With a file on the shelf above the composer, the toast goes above the shelf.
+    await plan({paths:[notes]});await attach.click();await window.locator(".attachment-shelf>span").filter({hasText:"notes-a.txt"}).waitFor();
+    seen.shelf1280=await failedAttach();
+    await resize(1180,720);seen.window1180=await failedAttach();
+    // Zoomed to 150% the 1280 window lays out the app's narrow widths.
+    await resize(1280,800);for(let i=0;i<5;i++)await press("=");
+    seen.zoom150=await failedAttach();
+    await press("0");
+    await window.getByTestId("right-panel-toggle").first().click();await window.getByTestId("right-panel").waitFor();
+    seen.rightPanel1280=await failedAttach();
+    const fits=({left,right,window,offCentre,above})=>({inWindow:left>=0&&right<=window,centred:offCentre<=1,above});
+    const ok={inWindow:true,centred:true,above:true};
+    assert.deepEqual(Object.fromEntries(Object.entries(seen).map(([name,at])=>[name,fits(at)])),{window1280:ok,shelf1280:ok,window1180:ok,zoom150:ok,rightPanel1280:ok},"where the toast showed: "+JSON.stringify(seen));
+  }finally{
+    await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
+});
