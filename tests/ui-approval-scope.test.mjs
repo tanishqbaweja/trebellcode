@@ -56,8 +56,9 @@ test("App answers an approval on its own socket and drops requests of a replaced
   const resolve=app.slice(app.indexOf("function resolveApproval("),app.indexOf("function dropServerRequestsExcept("));
   assert.match(resolve,/const client=request\?\.client\|\|rpc;/);
   assert.doesNotMatch(resolve,/rpc\.respond\(/,"the current transport may be a newer socket that reuses the id");
-  // The connect notes a refusal by the server (see the transport's refusals) before the attempt fails.
-  assert.match(app,/await current\.connect\(\)(?:\.catch\([^\n]*?\}\))?;if\(disposed\)return;[^\n]*\n\s*\/\/[^\n]*\n\s*dropServerRequestsExcept\(current\);/,"a reconnect drops requests of the old socket");
+  // The connect notes a refusal by the server (see the transport's refusals) before the attempt fails. The note on the drop may
+  // take several lines, as it says what else the old socket's end takes with it.
+  assert.match(app,/await current\.connect\(\)(?:\.catch\([^\n]*?\}\))?;if\(disposed\)return;[^\n]*\n(?:\s*\/\/[^\n]*\n)+\s*dropServerRequestsExcept\(current\);/,"a reconnect drops requests of the old socket");
   assert.match(app,/client\?\.close\(\);dropServerRequestsExcept\(null\)\}/,"tearing the transport down drops its requests");
   assert.match(app,/onNotification:message=>notificationHandlerRef\.current\?\.\(message,current\)/,"resolved notifications know their socket");
 });
