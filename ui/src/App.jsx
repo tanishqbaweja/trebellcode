@@ -819,8 +819,8 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     if(e.key==="Escape"&&onCancelEdit){e.preventDefault();onCancelEdit();return}
     if(e.key==="Enter"&&!e.shiftKey){
       // Enter does what Send does: nothing while Send is off (a file still uploading, which the message would go without, a draft
-      // over the limit, a harness switch or a harness away), where the line under the composer says why.
-      if(sendOff){e.preventDefault();return}
+      // over the limit, a harness switch or a harness away), where the line under the composer says why. An app command still runs.
+      if(draftOff||messageOff&&!appCommand){e.preventDefault();return}
       if((e.ctrlKey||e.metaKey)&&canBackground){e.preventDefault();sendDraft(onBackgroundSend);return}
       if(!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();sendDraft(onSend);return}
     }
@@ -934,8 +934,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // model provider without a key is set up first, also one whose catalog lists its fixed model anyway (JustWorker, HCNSec).
   const configureLabel="Configure "+(modelProviderRuntime?providerLabel:agentRuntimeLabel),setupRequired=!starting&&!providerReady&&(!models.length||modelProviderRuntime);
   const modelBlocker=runtimeSwitchLabel||(modelReady&&!setupRequired)||running?"":modelsLoading?"Loading models…":modelError||"No models available — check Settings";
-  // Send is off, and Enter with it, while the draft cannot go; the line under the composer and Send's title say why.
-  const sendOff=!providerReady||!transportReady||Boolean(runtimeSwitchLabel)||Boolean(modelBlocker)||submitting||openingThread||!prompt.trim()||promptTooLong||uploadingFiles.length>0;
+  // Send is off, and Enter with it, while the draft cannot go; the line under the composer and Send's title say why. A message waits
+  // for the harness and a model (messageOff), but an app command typed out in full (/model, /palette) needs neither: Enter runs it.
+  const messageOff=!providerReady||!transportReady||Boolean(runtimeSwitchLabel)||Boolean(modelBlocker)||submitting||openingThread,draftOff=!prompt.trim()||promptTooLong||uploadingFiles.length>0;
+  const sendOff=messageOff||draftOff,typedCommand=/^\s*(\/\S+)/.exec(prompt)?.[1],appCommand=Boolean(typedCommand)&&SLASH_COMMANDS.some(([name])=>name===typedCommand);
   // A model provider with no key yet is a next step (Configure), so its status line is not shown as an error until a key
   // check fails, when the catalog says why instead.
   const providerKeyStep=setupRequired&&modelProviderRuntime&&modelError===MISSING_PROVIDER_KEY;

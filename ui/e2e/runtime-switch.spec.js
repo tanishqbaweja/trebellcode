@@ -746,6 +746,39 @@ test("an empty harness model catalog disables Send and tells the user to check S
   }finally{await close()}
 });
 
+// An app command typed out in full needs neither the harness nor a model, so Enter runs it while Send waits for a model, as it did
+// before Enter followed the disabled Send: /model opens the harness's model settings, /palette the command palette. A message still
+// goes nowhere and adds no failed card. Enter did nothing for the commands, and nothing said why.
+test("an app command typed out in full runs from Enter while Send waits for a model, and a message still waits without a card",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const catalogs={...CATALOGS,opencode:{...CATALOGS.opencode,models:[],defaultModel:null,metadata:{models:[]}}};
+  const {server,relay,close}=await startHarness(page,{runtime:"opencode",catalogs});
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send"),slashMenu=page.locator(".slash-menu");
+    await expect.poll(()=>composerExplanation(page)).toMatch(/No models available[^]*Settings/i);
+    // /model, typed out in full: the slash menu offers it, and Enter runs it.
+    await composer.click();await page.keyboard.type("/model",{delay:15});await expect(slashMenu).toContainText("Open model provider settings");await expect(send).toBeDisabled();
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:`${auditDir}app-command-while-no-model-typed-${width}x800.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("heading",{name:"Agent harness"}),"/model opens the harness's model settings").toBeVisible({timeout:10_000});
+    await page.screenshot({animations:"disabled",path:auditDir+"app-command-while-no-model-opened-settings-1280x800.png"});
+    // /palette opens the command palette; Escape closes it again.
+    await page.getByRole("button",{name:"Threads",exact:true}).click();await expect(composer).toHaveValue("");
+    await composer.click();await page.keyboard.type("/palette",{delay:15});await page.keyboard.press("Enter");
+    await expect(page.getByTestId("command-palette"),"/palette opens the command palette").toBeVisible({timeout:10_000});
+    await page.keyboard.press("Escape");await expect(page.getByTestId("command-palette")).toHaveCount(0);
+    // A message still waits for a model: nothing is sent, the draft stays, and no failed card repeats the line under the composer.
+    const draft="Summarize the OpenCode workspace.";
+    await composer.click();await page.keyboard.press("Control+A");await page.keyboard.type(draft,{delay:5});await page.keyboard.press("Enter");await page.waitForTimeout(500);
+    expect(relay.calls("thread/start","turn/start")).toEqual([]);expect(server.counts.direct).toBe(0);
+    await expect(composer).toHaveValue(draft);await expect(page.locator(".activity-card-failed")).toHaveCount(0);
+    await expect(page.getByText(/models are still loading|has no usable model|No OpenCode model is available/)).toHaveCount(0);
+  }finally{await close()}
+});
+
 test("a failed provider model catalog disables Send, shows the provider error and keeps the Configure action",async({page})=>{
   test.setTimeout(45_000);
   const providerError="OpenAI model catalog failed: 401 Incorrect API key provided";
