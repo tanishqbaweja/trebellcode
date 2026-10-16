@@ -1,5 +1,5 @@
 import { test,expect } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 
@@ -340,6 +340,29 @@ test("Enter in the viewport width or height field sizes the agent browser, as le
   // Leaving the field still applies what was typed.
   await typeAddress(page,height,"700");await page.keyboard.press("Tab");
   await expect.poll(size,"leaving the height field sizes the agent browser").toEqual([320,700]);
+});
+
+// The address bar draws an address as it was typed: JetBrains Mono's ligatures, with the Inter features the body sets, drew http://
+// as http: / in every address, in dark and in light. The bar is shot as the person sees it and again with the font's ligatures
+// turned off on the field, which draws each character as it is: the two must be the same.
+test("the address bar draws each address as typed, with both slashes of http://",async({page,request})=>{
+  test.setTimeout(60_000);
+  const {address}=await openBrowserPanel(page,request);
+  await page.evaluate(()=>document.fonts.load('11.5px "JetBrains Mono Variable"',"http://"));
+  for(const mode of ["dark","light"]){
+    if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+    for(const typed of ["http://127.0.0.1:5173/app","http://localhost:5173/app","https://example.com/docs","http://192.168.1.20:8080/"]){
+      await typeAddress(page,address,typed);await page.keyboard.press("Tab");await expect(address).not.toBeFocused();
+      const drawn=await address.screenshot({animations:"disabled"});
+      await address.evaluate(field=>{field.style.fontVariantLigatures="none"});
+      const asTyped=await address.screenshot({animations:"disabled"});
+      await address.evaluate(field=>{field.style.fontVariantLigatures=""});
+      if(!drawn.equals(asTyped))for(const [shown,body] of [["drawn",drawn],["as-typed",asTyped]])writeFileSync(test.info().outputPath(mode+"-"+shown+".png"),body);
+      expect(drawn.equals(asTyped),typed+" is drawn as typed in "+mode).toBe(true);
+    }
+  }
+  await shots(page,"preview-address-drawn-as-typed");
 });
 
 // An action's preview address opens the Browser on its page the first time the panel is drawn, whose part only loads then: from Open
