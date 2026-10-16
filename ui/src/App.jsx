@@ -1158,7 +1158,7 @@ export default function App(){
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyHoldRef=useRef(0);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
-  const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeRequestRef=useRef(Promise.resolve());const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
+  const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeRequestRef=useRef(Promise.resolve());const runtimeSettledRef=useRef(Promise.resolve());const runtimeLandedRef=useRef(null);const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
   modelsRef.current=models;modelRef.current=model;
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamSyncRef.current=EMPTY_ASSISTANT_STREAM;assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
@@ -1810,7 +1810,7 @@ export default function App(){
     // One batch: the runtime, its bootstrap, exactly one transport reconnect and (when bundled) its catalog land together. Nothing reconnects after the catalog.
     runtimeSwitchRef.current=null;modelCatalogScopeRef.current=modelCatalogScope(runtime,nextProvider);
     // A refusal Settings keeps for this harness is over: the switch went through (SettingsPage listens).
-    setRuntimeSwitch(null);runtimeAppliedSeqRef.current++;window.dispatchEvent(new CustomEvent("trebell:runtime-switched",{detail:runtime}));
+    setRuntimeSwitch(null);runtimeAppliedSeqRef.current++;landRuntime(pending,runtime);window.dispatchEvent(new CustomEvent("trebell:runtime-switched",{detail:runtime}));
     setSettings(previous=>({...previous,agentRuntime:runtime,agentRuntimeInstanceId:instanceId}));setRuntimeKnown(true);
     if(boot)setBootstrap(boot);
     setRuntimeTransportRevision(value=>value+1);
@@ -1840,24 +1840,43 @@ export default function App(){
     // The server moved before the error surfaced: follow it so the transport and the catalog match what actually runs. The new agentRuntime
     // (with the bootstrap set above) reconnects the transport once through the transport effect.
     const nextProvider=settings.modelProvider||boot?.provider||bootstrap.provider||DEFAULT_MODEL_PROVIDER;
-    modelCatalogScopeRef.current=modelCatalogScope(runtime,nextProvider);runtimeAppliedSeqRef.current++;
+    modelCatalogScopeRef.current=modelCatalogScope(runtime,nextProvider);runtimeAppliedSeqRef.current++;landRuntime(pending,runtime);
     setSettings(previous=>({...previous,agentRuntime:runtime,agentRuntimeInstanceId:boot?.agentRuntimeInstanceId||`${runtime}-default`}));setRuntimeKnown(true);
     const keptThread=threadOpenedDuringSwitch(pending,runtime);
     if(!keptThread&&(pending.resetThread||threadOwnerElsewhere(activeThreadRef.current,threadMeta[activeThreadRef.current?.id],runtime)))resetThreadView(runtime,boot?.runtimeCapabilities||sharedRuntimeCapabilities(runtime));
     refreshProviderModels({agentRuntime:runtime,provider:nextProvider,bootstrap:boot,refreshBootstrap:false,...(keptThread?.model?{preferredModel:keptThread.model}:{})}).catch(()=>{});
   }
+  // The harness a switch landed the app on, and the switch: agentRuntimeRef has it only once the app renders it, so rendered is what
+  // agentRuntimeRef had then. runningAgentRuntime is the harness the app runs, rendered or not.
+  function landRuntime(pending,runtime){runtimeLandedRef.current={id:pending.id,runtime,rendered:agentRuntimeRef.current}}
+  function runningAgentRuntime(){const landed=runtimeLandedRef.current;return landed&&landed.rendered===agentRuntimeRef.current?landed.runtime:agentRuntimeRef.current}
   // perform() runs the server request that switches (or reloads) the active harness. gate:false leaves sends ungated while it runs and only
   // applies its result (e.g. after an install). Either way the transport reconnects once, in completeRuntimeSwitch. The server takes these
   // requests one at a time in the order asked: one asked while another is on its way waits for that one's answer, so the harness the
   // server ends on is the last one asked for, which is the one the app applies.
+  // A reload (gate:false) is for the harness it names, and its answer can hold the harness list from before a switch. It decides once
+  // every switch asked so far has settled (landed, refused or replaced), and applies only when that harness is the one the app then runs
+  // and no switch asked after it has landed (that one reconnected). A switch that lands meanwhile, from Settings or by opening another
+  // harness's thread, keeps its transport and open thread; a switch refused leaves the harness to reload in use, and it reloads.
   async function switchAgentRuntime(target={},perform,{gate=true}={}){
-    let pending=gate?beginRuntimeSwitch(target):null,result;
+    const askedAt=runtimeSwitchSeqRef.current;
+    let pending=gate?beginRuntimeSwitch(target):null;
     const request=runtimeRequestRef.current.then(()=>perform());runtimeRequestRef.current=request.catch(()=>{});
-    try{result=await request}
-    catch(error){if(pending)await abortRuntimeSwitch(pending);throw error}
-    if(!pending)pending=beginRuntimeSwitch(target);
-    await completeRuntimeSwitch(pending,result);
-    return result;
+    const settled=(async()=>{
+      let result;
+      try{result=await request}
+      catch(error){if(pending)await abortRuntimeSwitch(pending);throw error}
+      if(!pending){
+        for(let all=null;all!==runtimeSettledRef.current;)await (all=runtimeSettledRef.current);
+        const runtime=String(result?.selectedRuntime||target.runtime||"");
+        if(runtime!==String(target.runtime||runtime)||runningAgentRuntime()!==runtime||(runtimeLandedRef.current?.id||0)>askedAt)return result;
+        pending=beginRuntimeSwitch(target);
+      }
+      await completeRuntimeSwitch(pending,result);
+      return result;
+    })();
+    if(gate)runtimeSettledRef.current=Promise.all([runtimeSettledRef.current,settled.catch(()=>{})]);
+    return settled;
   }
   useEffect(()=>{
     if(!initialLoaded||section!=="chat"||!providerReady||models.length||runtimeSwitchRef.current||modelsLoadingRef.current)return;
