@@ -275,17 +275,20 @@ test("a window closed before its load ends quits the app once the shutdown clean
 });
 
 // Loaded after KEEP_OFF_SCREEN, it makes the shell a packaged build with a scripted release feed: a check finds 9.9.9 and Download
-// update gets it, with nothing fetched; a check given a reason (feed.fails) fails with it, as electron-updater's does, through the error
-// event and the call's rejection. Restart & install then runs electron-updater's own quitAndInstall, which finds no installer on disk
-// and starts nothing: it says so through its error event and returns without throwing, as for an installer it cannot launch.
+// update gets it, with nothing fetched. A check given a feed's address (feed.failsAt) is electron-updater's own, against that feed:
+// it fails as the library does, through its error event and the call's rejection, with the library's own text. Restart & install then
+// runs electron-updater's own quitAndInstall, which finds no installer on disk and starts nothing: it says so through its error event
+// and returns without throwing, as for an installer it cannot launch.
 const packagedUpdate=root=>`
 Object.defineProperty(app,"isPackaged",{get:()=>true,configurable:true});
 app.getLoginItemSettings=()=>({openAtLogin:false,executableWillLaunchAtLogin:false,launchItems:[]});app.setLoginItemSettings=()=>{};
 const {autoUpdater}=require(require.resolve("electron-updater",{paths:[${JSON.stringify(root)}]}));
-const feed=globalThis.__updateFeed={checks:0,fails:null};
+const feed=globalThis.__updateFeed={checks:0,failsAt:null};
+const libraryCheck=autoUpdater.checkForUpdates;
 autoUpdater.checkForUpdates=async()=>{
-  feed.checks++;autoUpdater.emit("checking-for-update");
-  if(feed.fails){const error=new Error(feed.fails);feed.fails=null;autoUpdater.emit("error",error);throw error}
+  feed.checks++;
+  if(feed.failsAt){autoUpdater.setFeedURL({provider:"generic",url:feed.failsAt});feed.failsAt=null;return libraryCheck.call(autoUpdater)}
+  autoUpdater.emit("checking-for-update");
   autoUpdater.emit("update-available",{version:"9.9.9"});return {updateInfo:{version:"9.9.9"}};
 };
 autoUpdater.downloadUpdate=async()=>{autoUpdater.emit("download-progress",{percent:50,transferred:50,total:100});autoUpdater.emit("update-downloaded",{version:"9.9.9"});return []};
@@ -300,6 +303,10 @@ test("a Restart & install whose installer does not start brings the app back, sa
   if(!existsSync(join(dist,"index.html")))return t.skip("The built UI is needed: npm run ui:build, or TREBELL_UI_DIST.");
   const home=await mkdtemp(join(tmpdir(),"trebell-desktop-update-install-"));
   const guiPort=await freePort(),appPort=await freePort(),stub=join(home,"packaged-update.cjs");let app=null;
+  // Release feeds that fail: one where nothing answers, as offline, and one that answers 404 with headers, as GitHub does.
+  const noFeed=`http://127.0.0.1:${await freePort()}/`;
+  const missingFeed=createServer((_req,res)=>{res.writeHead(404,{"content-type":"text/plain; charset=utf-8","x-github-request-id":"E3A1:2B3C:4D5E6F"});res.end("Not Found")});
+  const missingFeedUrl=`http://127.0.0.1:${await listen(missingFeed)}/`;
   await writeFile(stub,KEEP_OFF_SCREEN+packagedUpdate(packageRoot));
   const env={...process.env,TREBELL_HOME:home,TREBELL_TEST_HIDDEN:"1",TREBELL_GUI_MOCK:"1",TREBELL_UI_DIST:dist,TREBELL_GUI_PORT:String(guiPort),TREBELL_APP_SERVER_PORT:String(appPort),TREBELL_E2E_OFFLINE:"1",TREBELL_E2E_ALLOW_NETWORK:"0",CODEX_HOME:join(home,"codex"),CLAUDE_CONFIG_DIR:join(home,"claude"),OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
   const origin=`http://127.0.0.1:${guiPort}`;
@@ -315,10 +322,18 @@ test("a Restart & install whose installer does not start brings the app back, sa
     const card=window.locator(".update-settings");
     const openUpdates=async()=>{await window.getByRole("button",{name:/^Settings/}).first().click();await window.getByRole("button",{name:/^General/}).first().click();await card.scrollIntoViewIfNeeded()};
     await openUpdates();
-    // A check that fails says why as the app's other errors do, then the next check finds 9.9.9 again.
-    await app.evaluate(()=>{globalThis.__updateFeed.fails="The release feed could not be read."});
-    await card.getByRole("button",{name:"Check now"}).click();
-    assert.equal(await settledText(card.locator(".provider-status-error")),"The release feed could not be read.","the reason, without Electron's \"Error invoking remote method\" before it");
+    // A check that fails says why as the app's other errors do, in words, instead of electron-updater's net:: code, or its HttpError's
+    // status line with the request and the response's headers. Then the next check finds 9.9.9 again.
+    const said=[],failure=card.locator(".provider-status-error");
+    for(const failsAt of [noFeed,missingFeedUrl]){
+      const before=said.at(-1)||"";
+      await app.evaluate((_electron,url)=>{globalThis.__updateFeed.failsAt=url},failsAt);
+      await card.getByRole("button",{name:"Check now"}).click();
+      // The last check's failure stays until this check starts.
+      for(let i=0;i<80&&[before,""].includes((await failure.innerText({timeout:1000}).catch(()=>"")).trim());i++)await sleep(250);
+      said.push(await settledText(failure));
+    }
+    assert.deepEqual(said,["Could not check for updates: there is no connection to the release server.","Could not check for updates: the release server answered 404 Not Found."],"the reason, in words");
     await card.getByRole("button",{name:"Check now"}).click();
     await card.getByRole("button",{name:"Download update"}).click();
     await card.getByRole("button",{name:"Restart & install"}).click();
@@ -337,7 +352,8 @@ test("a Restart & install whose installer does not start brings the app back, sa
     await window.locator(".window-close").click().catch(()=>{});
     assert.equal(await exited,true,"the window's Close quits the app");app=null;
   }finally{
-    await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+    await closeElectronApp(app);
+    missingFeed.closeAllConnections?.();await new Promise(resolve=>missingFeed.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }
 });
 

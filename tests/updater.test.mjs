@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { createUpdaterController } from "../desktop/updater-controller.mjs";
 
 const root=new URL("../",import.meta.url);
@@ -27,10 +28,37 @@ test("desktop updater enforces explicit download and install with executable sta
   scheduled();assert.deepEqual(updater.installCalls,[[false,true]]);
 });
 
-test("desktop updater surfaces check and download failures instead of leaving stale progress",async()=>{
-  const updater=new FakeUpdater(),controller=createUpdaterController({app:packagedApp(),autoUpdater:updater});controller.configure();
-  updater.checkError=new Error("check failed");await assert.rejects(()=>controller.check(),/check failed/);assert.equal(controller.getState().status,"error");assert.equal(controller.getState().error,"check failed");
-  updater.checkError=null;updater.emit("update-available",{version:"2.0.0"});updater.downloadError=new Error("download failed");await assert.rejects(()=>controller.download(),/download failed/);assert.equal(controller.getState().status,"error");assert.equal(controller.getState().error,"download failed");
+// electron-updater fails a check or a download with its own text: a net:: code, or an HttpError whose message is the status line, the
+// request and the response's headers, often inside a longer message with its stack. It says so through its error event, then rejects.
+const fromUpdater=createRequire(createRequire(import.meta.url).resolve("electron-updater"));
+const { createHttpError, newError }=fromUpdater("builder-util-runtime");
+const githubNotFound=()=>createHttpError({statusCode:404,statusMessage:"",headers:{server:"GitHub.com","content-type":"text/plain; charset=utf-8","x-github-request-id":"E3A1:2B3C:4D5E6F"}},"method: GET url: https://github.com/tanishqbaweja/trebellcode/releases.atom\n\nPlease double check that your authentication token is correct. Due to security reasons, actual status maybe not reported, but 404.\n");
+
+test("desktop updater says why a check or a download failed in the app's own words instead of electron-updater's text, and leaves no stale progress",async()=>{
+  const updater=new FakeUpdater(),states=[],controller=createUpdaterController({app:packagedApp(),autoUpdater:updater,onState:state=>states.push(state)});controller.configure();
+  const failing=error=>async()=>{updater.emit("checking-for-update");updater.emit("error",error);throw error};
+  const checks=[];
+  for(const error of [
+    new Error("net::ERR_INTERNET_DISCONNECTED"),
+    githubNotFound(),
+    newError(`Cannot find latest.yml in the latest release artifacts (https://github.com/tanishqbaweja/trebellcode/releases/download/v2.0.0/latest.yml): ${githubNotFound().stack}`,"ERR_UPDATER_CHANNEL_FILE_NOT_FOUND"),
+    newError(`Unable to find latest version on GitHub (https://github.com/tanishqbaweja/trebellcode/releases/latest), please ensure a production release exists: ${new Error("net::ERR_NAME_NOT_RESOLVED").stack}`,"ERR_UPDATER_LATEST_VERSION_NOT_FOUND"),
+  ]){
+    updater.checkForUpdates=failing(error);
+    const rejected=await controller.check().then(()=>"checked",failure=>failure.message);
+    checks.push({rejected,shown:controller.getState().error,status:controller.getState().status});
+  }
+  const offline="Could not check for updates: there is no connection to the release server.",notFound="Could not check for updates: the release server answered 404 Not Found.";
+  assert.deepEqual(checks,[offline,notFound,notFound,offline].map(said=>({rejected:said,shown:said,status:"error"})));
+  const downloads=[];
+  for(const error of [new Error("net::ERR_CONNECTION_RESET"),new Error('Cannot download "https://github.com/tanishqbaweja/trebellcode/releases/download/v2.0.0/Trebell-Code-Setup-2.0.0.exe", status 404: Not Found')]){
+    updater.emit("update-available",{version:"2.0.0"});
+    updater.downloadUpdate=async()=>{updater.emit("download-progress",{percent:42,transferred:420,total:1000});updater.emit("error",error);throw error};
+    const rejected=await controller.download().then(()=>"downloaded",failure=>failure.message);
+    downloads.push({rejected,shown:controller.getState().error,status:controller.getState().status});
+  }
+  assert.deepEqual(downloads,["Could not download the update: there is no connection to the release server.","Could not download the update: the release server answered 404 Not Found."].map(said=>({rejected:said,shown:said,status:"error"})));
+  assert.deepEqual(states.filter(state=>/net::|HttpError|Headers|https?:/.test(state.error||"")).map(state=>state.error),[],"no state shows electron-updater's own text");
 });
 
 test("desktop updater keeps a downloaded update retryable when pre-install cleanup fails",async()=>{

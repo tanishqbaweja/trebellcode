@@ -2,13 +2,32 @@ const INITIAL_STATE=Object.freeze({supported:false,status:"idle",currentVersion:
 
 function message(error){return error instanceof Error?error.message:String(error||"Unknown updater error")}
 
+// What a failed check or download says, as the app's other errors do: what could not be done, and why in words. electron-updater's
+// own text is a net:: code, or an HttpError's status line with the request and the response's headers, often inside a longer
+// message with a stack; it logs that itself.
+const LEADS={check:"Could not check for updates",download:"Could not download the update",install:"Could not install the update"};
+const HTTP_STATUS={401:"Unauthorized",403:"Forbidden",404:"Not Found",408:"Request Timeout",429:"Too Many Requests",500:"Internal Server Error",502:"Bad Gateway",503:"Service Unavailable",504:"Gateway Timeout"};
+function reason(error){
+  const text=message(error),net=/\bnet::(ERR_[A-Z0-9_]+)/.exec(text)?.[1];
+  if(net)return /^ERR_(CERT|SSL)_/.test(net)?"the release server's certificate was not accepted.":"there is no connection to the release server.";
+  const status=Number(error?.statusCode)||Number(/\bHttpError: (\d{3})\b/.exec(text)?.[1])||Number(/\bstatus (\d{3})\b/.exec(text)?.[1]);
+  if(status>=400)return `the release server answered ${status}${HTTP_STATUS[status]?" "+HTTP_STATUS[status]:""}.`;
+  if(error?.code==="ERR_UPDATER_NO_PUBLISHED_VERSIONS")return "no release has been published yet.";
+  if(error?.code==="ENOSPC")return "there is not enough free disk space.";
+  if(/sha512 checksum mismatch/i.test(text))return "the downloaded file did not match the release.";
+  const line=text.split("\n")[0].trim();
+  return !line?"no reason was given.":/[.!?]$/.test(line)?line:line+".";
+}
+const failureText=(lead,error)=>`${LEADS[lead]||"Could not update Trebell Code"}: ${reason(error)}`;
+
 export function createUpdaterController({app,autoUpdater,onState=()=>{},beforeInstall=async()=>{},scheduleInstall=fn=>setImmediate(fn),onInstallLaunchFailure=()=>{}}={}){
   if(!app)throw new Error("Updater controller requires app");
   if(!autoUpdater)throw new Error("Updater controller requires autoUpdater");
   let configured=false,state={...INITIAL_STATE};
   const snapshot=()=>({...state});
   const publish=(patch={})=>{state={...state,...patch,currentVersion:app.getVersion?.()||state.currentVersion};const next=snapshot();try{onState(next)}catch{}return next};
-  const fail=(error,{status="error"}={})=>publish({supported:Boolean(app.isPackaged),status,error:message(error)});
+  // The error event says what failed by the step under way; check and download name theirs, and reject with the same sentence.
+  const fail=(error,{status="error",lead={checking:"check",downloading:"download",installing:"install"}[state.status]}={})=>publish({supported:Boolean(app.isPackaged),status,error:failureText(lead,error)});
   const configure=()=>{
     if(configured)return snapshot();configured=true;
     if(!app.isPackaged)return publish({supported:false,status:"development",error:null});
@@ -23,13 +42,13 @@ export function createUpdaterController({app,autoUpdater,onState=()=>{},beforeIn
   };
   const check=async()=>{
     configure();if(!app.isPackaged)return publish({supported:false,status:"development",error:null});
-    try{await autoUpdater.checkForUpdates();return snapshot()}catch(error){fail(error);throw error}
+    try{await autoUpdater.checkForUpdates();return snapshot()}catch(error){throw new Error(fail(error,{lead:"check"}).error,{cause:error})}
   };
   const download=async()=>{
     configure();if(!app.isPackaged)throw new Error("Desktop updates are only available in packaged builds.");
     if(state.status!=="available")throw new Error("No downloadable update is currently available.");
     publish({status:"downloading",error:null,percent:0});
-    try{await autoUpdater.downloadUpdate();return snapshot()}catch(error){fail(error);throw error}
+    try{await autoUpdater.downloadUpdate();return snapshot()}catch(error){throw new Error(fail(error,{lead:"download"}).error,{cause:error})}
   };
   const recoverLaunchFailure=error=>{
     publish({status:"downloaded",error:"Could not install the update: the installer did not start."});
