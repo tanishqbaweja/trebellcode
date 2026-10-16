@@ -460,6 +460,8 @@ async function settles(read){let last;await expect.poll(async()=>{const now=awai
 // A setting opened from the search stays in view while the page around it settles. Project defaults shows its fields only once the
 // scoped settings answer (late here, as from a remote environment or a busy machine): they grew above Storage cleanup after its one
 // scroll and pushed it down until only the edge of its heading showed. A person who scrolls meanwhile keeps the place they scrolled to.
+// Enter held down repeats (after about half a second, then every 33 ms) while the card loads: its repeats carry on from the press that
+// opened the setting, and ended the follow as if they were a key of their own.
 test("a setting opened from the search stays in view when a card above it loads later, and a person's own scroll is left alone",async({page,request})=>{
   test.setTimeout(60_000);
   // Project defaults' read of the scoped settings waits while `hold` is set, until release().
@@ -475,23 +477,29 @@ test("a setting opened from the search stays in view when a card above it loads 
       await page.locator(".settings-nav").getByRole("button",{name:/General/}).click();hold=true;
       await search.click();await page.keyboard.type("storage",{delay:20});
       if(how==="Enter")await page.keyboard.press("Enter");
+      else if(how==="held Enter")await page.keyboard.down("Enter");
       else await page.getByTestId("settings-search-results").getByRole("button",{name:/Storage cleanup/}).click();
       await expect(storage).toHaveClass(/settings-search-hit/);
     };
     // With the keyboard and with the mouse, in dark and light, wide and narrow: the card above loads after the setting's scroll has
-    // ended, or while it is still on its way.
-    for(const [mode,width,how,late] of [["dark",1280,"Enter",true],["light",1280,"click",false],["dark",900,"Enter",true]]){
+    // ended, or while it is still on its way. Enter held down repeats (Playwright sends the next keydowns of a key still down as
+    // repeats) before the card loads and while it does, and is let go once it has.
+    for(const [mode,width,how,late] of [["dark",1280,"Enter",true],["light",1280,"click",false],["dark",900,"Enter",true],["light",900,"held Enter",true]]){
+      const held=how==="held Enter";
       await page.setViewportSize({width,height:800});await switchMode(page,mode);
       await open(how);
       if(late){
         await expect(storage).toBeInViewport({ratio:0.9});await settles(storageTop);
         await expect(fields).toHaveCount(0);
       }
+      if(held)for(let index=0;index<3;index++)await page.keyboard.down("Enter");
       release();
+      if(held)await page.keyboard.down("Enter");
       await expect(fields).toBeVisible();
+      if(held)await page.keyboard.up("Enter");
       await expect(storage,"Storage cleanup is still in view once Project defaults has grown above it").toBeInViewport({ratio:0.9});
       await settles(storageTop);await expect(storage).toBeInViewport({ratio:0.9});
-      await page.screenshot({animations:"disabled",path:shots+`search-result-stays-in-view-${how.toLowerCase()}-${mode}-${width}.png`});
+      await page.screenshot({animations:"disabled",path:shots+`search-result-stays-in-view-${how.toLowerCase().replace(" ","-")}-${mode}-${width}.png`});
     }
     // The person turns the wheel before the card above loads: the page stays where they put it.
     await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");

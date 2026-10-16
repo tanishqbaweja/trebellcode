@@ -102,15 +102,16 @@ const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Curso
 // A setting opened from the search stays in view while the page around it settles: a card above it that loads later (Project
 // defaults shows its fields once the scoped settings answer) grew after its one scroll and pushed it out of view. Each change of the
 // page's height scrolls to it again at once, before the change is painted (ending its first scroll if that is still on its way), so
-// it stays put on screen. The person's first scroll, click or key ends this (the second click of a double click on the result
-// carries on from the first), as do 10 s, so it never scrolls against them.
+// it stays put on screen. The person's first scroll, click or key ends this (the second click of a double click on the result, and
+// the repeats of a key held down, such as the Enter that opened the result, carry on from the first), as do 10 s, so it never
+// scrolls against them.
 let stopSettingFollow=null;
 function followSettingTarget(target){
   stopSettingFollow?.();
   const stage=target.closest(".settings-stage");if(!stage||typeof ResizeObserver==="undefined")return;
   let height=stage.offsetHeight;
   const observer=new ResizeObserver(()=>{if(!target.isConnected)stop();else if(stage.offsetHeight!==height){height=stage.offsetHeight;target.scrollIntoView({block:"center"})}});
-  const press=event=>{if(event.detail<2)stop()},inputs=["wheel","touchstart","mousedown","keydown"],timer=setTimeout(stop,10000);
+  const press=event=>{if(event.detail<2&&!event.repeat)stop()},inputs=["wheel","touchstart","mousedown","keydown"],timer=setTimeout(stop,10000);
   function stop(){observer.disconnect();clearTimeout(timer);for(const name of inputs)window.removeEventListener(name,press,true);if(stopSettingFollow===stop)stopSettingFollow=null}
   for(const name of inputs)window.addEventListener(name,press,true);
   observer.observe(stage);stopSettingFollow=stop;
