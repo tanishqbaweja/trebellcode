@@ -16,6 +16,13 @@ function historyKey(projectPath){return "trebell:browser-history:v1:"+String(pro
 function previewableUrl(value){try{const parsed=new URL(value);return /^https?:$/.test(parsed.protocol)&&Boolean(parsed.hostname)&&!parsed.hostname.includes("%")}catch{return false}}
 const INVALID_PREVIEW_URL="Enter a valid web address, such as http://localhost:3000.";
 function normalizedHistoryUrl(value){try{const parsed=new URL(value);if(!/^https?:$/.test(parsed.protocol))return null;parsed.username="";parsed.password="";return parsed.href}catch{return null}}
+// The shell answers an import that set none of the cookies it tried (a JSON array of entries that are not cookies) with its counts and
+// each cookie's reason, not a rejection. That import failed: what it says, with the first reason, or "" for one that set some.
+function noneSet(result,from=""){
+  const failed=Number(result?.failed)||0,skipped=Number(result?.skipped)||0,why=String(result?.errors?.[0]||"").replace(/\.\s*$/,"");
+  if(result?.imported||!failed)return "";
+  return (failed===1?"the cookie"+from+" could not be set":"none of the "+failed+" cookies"+from+" could be set")+(why?" ("+why+")":"")+(skipped?"; "+skipped+" encrypted or partitioned cookie"+(skipped===1?" was":"s were")+" skipped":"")+".";
+}
 
 export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAttachFile}){
   const [draft,setDraft]=useState("http://localhost:3000");
@@ -131,13 +138,14 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   async function inspect(){setBusy("inspect");try{const next=await window.trebellDesktop?.browser?.snapshot?.();setBrowserError("");setSnapshot(next);if(selectedRef&&!next?.elements?.some(el=>el.ref===selectedRef))setSelectedRef(null)}catch(error){setBrowserError(error?.message||String(error)||"Could not inspect Agent Browser.")}finally{setBusy("")}}
   async function capture(){setBusy("capture");try{const shot=await window.trebellDesktop?.browser?.screenshot?.();setBrowserError("");if(shot?.dataUrl)await onAttachImage?.(shot.dataUrl)}catch(error){setBrowserError(error?.message||String(error)||"Could not capture Agent Browser.")}finally{setBusy("")}}
   // An import's notice shows in the status line under the toolbar; what it could not do shows in the error line, as the panel's other
-  // failures do, in full and in the error colour.
+  // failures do, in full and in the error colour, and so does an import that set none of the cookies it tried (noneSet).
   async function importCookies(){
     setBusy("cookies");setCookieStatus("");setBrowserError("");
     try{
       const result=await window.trebellDesktop?.browser?.importCookies?.();
       if(!result){setBrowserError("Cookie import is unavailable in this build.");return}
       if(result.canceled){setCookieStatus("Cookie import canceled");return}
+      const none=noneSet(result);if(none){setBrowserError("Cookie import failed: "+none);return}
       setCookieStatus("Imported "+result.imported+" cookie"+(result.imported===1?"":"s")+(result.failed?" · "+result.failed+" failed":""));
     }catch(error){setBrowserError("Cookie import failed: "+String(error?.message||error))}
     finally{setBusy("")}
@@ -154,6 +162,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     setBusy("profile:"+profile.id);setCookieStatus("");setBrowserError("");
     try{
       const result=await browser.importProfile(source.id,profile.id);
+      const none=noneSet(result," from "+(result?.profileName||profile.name));if(none){setBrowserError("Profile import failed: "+none);return}
       setCookieStatus(`Imported ${result.imported||0} cookie${result.imported===1?"":"s"} from ${result.profileName||profile.name}${result.skipped?` · ${result.skipped} encrypted/partitioned skipped`:""}${result.failed?` · ${result.failed} failed`:""}`);
       setImportOpen(false);
     }catch(error){setBrowserError("Profile import failed: "+String(error?.message||error))}

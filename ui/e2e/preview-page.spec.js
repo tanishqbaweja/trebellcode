@@ -198,3 +198,49 @@ test("a cookie import that fails says why in full, in the error colour and as an
   expect(await notice.evaluate(node=>node.scrollWidth-node.clientWidth),"none of the notice is cut off").toBeLessThanOrEqual(1);
   await shots(page,"browser-profile-import-notice");
 });
+
+// The shell answers an import whose every cookie it refused with counts, not a rejection (desktop/main.mjs importBrowserCookies and
+// importBrowserProfile), and with each cookie's reason: the first Import cookie JSON is a JSON array of entries that are not cookies,
+// the next sets some of its cookies, and Import profile sets none of the cookies it tries and skips encrypted ones.
+function scriptedNoneImported(){
+  window.__cookieImports=0;
+  Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{
+    state:async()=>({open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:1280,height:800}),
+    onState:()=>()=>{},
+    snapshot:async()=>({url:"",title:"",elements:[]}),
+    importCookies:async()=>++window.__cookieImports===1
+      ?{ok:true,canceled:false,source:"file",imported:0,failed:3,errors:["Cookie name is required","Cookie name is required","Cookie needs a url or domain"]}
+      :{ok:true,canceled:false,source:"file",imported:2,failed:1,errors:["Cookie needs a url or domain"]},
+    importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",installed:true,running:false,profiles:[{id:"C:/Profiles/Work",name:"Work profile"}]}]}),
+    importProfile:async(sourceId,profileId)=>({ok:true,sourceId,profileId,profileName:"Work profile",imported:0,failed:2,skipped:5,errors:["Cookie needs a url or domain","Cookie needs a url or domain"]}),
+  }}});
+}
+
+test("an import that brought in none of its cookies says why in the error line, as an alert in the error colour, and one that brought in some stays a notice",async({page,request})=>{
+  await page.addInitScript(scriptedNoneImported);
+  const {panel}=await openBrowserPanel(page,request);
+  const notice=panel.getByTestId("browser-cookie-status");
+  // A JSON array of entries that are not cookies: the shell set none of them.
+  await panel.getByRole("button",{name:"Import cookie JSON"}).click();
+  const cookieFailure=panel.getByRole("alert").filter({hasText:"Cookie import failed"});
+  await expect(cookieFailure).toHaveText("Cookie import failed: none of the 3 cookies could be set (Cookie name is required).");
+  await expect(notice).toHaveCount(0);
+  for(const mode of ["dark","light"]){
+    if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+    const colours=await cookieFailure.evaluate(node=>{const probe=document.createElement("span");probe.style.color="var(--err)";document.body.append(probe);const err=getComputedStyle(probe).color;probe.remove();return {shown:getComputedStyle(node).color,err}});
+    expect(colours.shown,`the failure is in the error colour in ${mode} mode`).toBe(colours.err);
+  }
+  await shots(page,"browser-cookie-import-none-set");
+  // An import that set some of its cookies is a notice, and the failure before it is gone.
+  await panel.getByRole("button",{name:"Import cookie JSON"}).click();
+  await expect(notice).toHaveText("Imported 2 cookies · 1 failed");
+  await expect(notice).toHaveAttribute("role","status");
+  await expect(cookieFailure).toHaveCount(0);
+  // A profile import that set none of the cookies it tried.
+  await panel.getByRole("button",{name:"Import profile"}).click();
+  await panel.getByTestId("browser-profile-import").getByRole("button",{name:/Work profile/}).click();
+  await expect(panel.getByRole("alert").filter({hasText:"Profile import failed"})).toHaveText("Profile import failed: none of the 2 cookies from Work profile could be set (Cookie needs a url or domain); 5 encrypted or partitioned cookies were skipped.");
+  await expect(notice).toHaveCount(0);
+  await shots(page,"browser-profile-import-none-set");
+});
