@@ -397,6 +397,39 @@ test("/goal whose first turn does not start says what became of the goal: nothin
   }finally{await harness.close()}
 });
 
+// A person's double click on a button: two clicks at one spot, the second counted as a double click's. The relay answers the first
+// at once, so the button that comes up in its place (next) is under the pointer and ready when the second click comes.
+async function doubleClickAs(page,button,next){
+  const box=await button.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+  await page.mouse.down();await page.mouse.up();
+  await expect(next).toBeEnabled();
+  await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+}
+
+test("a double click on the Goal panel's Pause pauses the goal once and one on Resume resumes it once: the second click does nothing on the button that took its place",async({page})=>{
+  test.setTimeout(90_000);
+  const statuses=[];page.on("websocket",socket=>socket.on("framesent",frame=>{try{const message=JSON.parse(String(frame.payload));if(message?.method==="thread/goal/set")statuses.push(message.params?.status)}catch{}}));
+  const harness=await openComposerApp(page);
+  try{
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    const panel=page.getByTestId("goal-panel"),status=panel.locator(".goal-status"),button=name=>panel.getByRole("button",{name,exact:true});
+    await panel.getByLabel("Objective",{exact:true}).click();await page.keyboard.type("Make the login tests pass",{delay:15});
+    await button("Set goal").click();await expect(status).toHaveText("active");
+    // Resume comes up where Pause was as the first click's save answers; the second click leaves it there, ready, and the goal paused.
+    await doubleClickAs(page,button("Pause"),button("Resume"));
+    await expect(button("Resume")).toBeEnabled();await expect(status).toHaveText("paused");
+    expect(statuses).toEqual(["active","paused"]);
+    await shootBoth(page,"goal-pause-double-click",()=>expect(button("Resume")).toBeInViewport());
+    // The same for Resume, which Pause replaces.
+    await doubleClickAs(page,button("Resume"),button("Pause"));
+    await expect(button("Pause")).toBeEnabled();await expect(status).toHaveText("active");
+    expect(statuses).toEqual(["active","paused","active"]);
+    // A click of its own pauses the goal as before.
+    await button("Pause").click();await expect(status).toHaveText("paused");
+    expect(statuses).toEqual(["active","paused","active","paused"]);
+  }finally{await harness.close()}
+});
+
 test("removing an attachment chip from the keyboard moves focus to the next chip's remove button, then the one before, then the composer",async({page},testInfo)=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);

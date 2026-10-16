@@ -5,6 +5,7 @@ import { verificationEvidenceMeta, verificationEvidenceSummary, verificationEvid
 import { codexGoalStatusLabel, codexGoalsMissing } from "../codex-turn-options.js";
 import { workspaceLabel } from "../workspace-label.js";
 import { askConfirm } from "../ask-dialog.js";
+import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 function lines(value){return (Array.isArray(value)?value:[]).join("\n")}
 function parseLines(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean)}
@@ -31,6 +32,10 @@ function remainingTimeLabel(minutes){
 function moneyLabel(value){
   return "$"+Math.max(0,Number(value)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4});
 }
+// A press runs one of the goal's or the notes' buttons once, as a thread's menu item runs: the rest of it (the second click of a
+// double click, Enter held) does nothing, so it never lands on what took the button's place once its save answered (Resume where
+// Pause was, or Complete moved under it).
+function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
 
 // covered: another thread's opening state is up. The panel belongs to the thread being left, so it hides without unmounting: a
 // failed open brings it back with the drafts in it.
@@ -227,10 +232,10 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
         <label>Important decisions <span>(one per line)</span><textarea aria-label="Important decisions" value={importantDecisions} onChange={e=>setImportantDecisions(e.target.value)} placeholder={"Keep the public API backward compatible"}/></label>
         <label>Artifacts created <span>(one per line)</span><textarea aria-label="Artifacts created" value={artifactsCreated} onChange={e=>setArtifactsCreated(e.target.value)} placeholder={"Migration script\nRelease notes"}/></label>
         <label>Pending next actions <span>(one per line)</span><textarea aria-label="Pending next actions" value={pendingNextActions} onChange={e=>setPendingNextActions(e.target.value)} placeholder={"Run the final browser smoke test"}/></label>
-        <div className="goal-actions continuity-actions"><button type="button" className="primary" onClick={saveContinuity} disabled={!!busy}><RefreshCw size={12}/> Save continuity</button>{continuityNoteCount>0&&<button type="button" className="danger" onClick={clearContinuity} disabled={!!busy}><Trash2 size={12}/> Clear notes</button>}</div>
+        <div className="goal-actions continuity-actions" onClick={pressOnce}><button type="button" className="primary" onClick={saveContinuity} disabled={!!busy}><RefreshCw size={12}/> Save continuity</button>{continuityNoteCount>0&&<button type="button" className="danger" onClick={clearContinuity} disabled={!!busy}><Trash2 size={12}/> Clear notes</button>}</div>
       </div>
     </details>
-    <div className="goal-actions">
+    <div className="goal-actions" onClick={pressOnce}>
       <button className="primary" onClick={save} disabled={!!busy}><RefreshCw size={12}/> {goal?"Update goal":"Set goal"}</button>
       {goal?.status==="active"&&<button onClick={()=>setGoal({status:"paused"})} disabled={!!busy}><Pause size={12}/> Pause</button>}
       {goal&&goal.status!=="active"&&goal.status!=="complete"&&<button onClick={()=>setGoal({status:"active"})} disabled={!!busy}><Play size={12}/> Resume</button>}
