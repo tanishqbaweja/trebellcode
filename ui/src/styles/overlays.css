@@ -406,9 +406,12 @@ html:has(.composer-wrap :is(.file-mention-menu,.model-picker-menu,.slash-menu)) 
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card>small{color:var(--warn)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card.guardian-denial-card{background:linear-gradient(180deg,var(--warnt),transparent 72%),var(--bg2)!important;border-color:var(--warnb)!important;color:var(--tx1)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card .approval-actions button{background:var(--bg3)!important;border-color:var(--line2)!important;color:var(--tx1)!important}
-:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card .approval-actions button:hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+/* The generic hover skips the main button, as the dialogs' does above: it used to turn a hovered "Allow once" or "Allow anyway"
+   flat grey with dark text. "Allow once" keeps its fill and brightens (the base hover rule); "Allow anyway" deepens its tint. */
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card .approval-actions button:not(.approve):hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .approval-card .approval-actions button.approve{background:linear-gradient(135deg,var(--ac2),var(--ac))!important;border-color:transparent!important;color:#fff!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .guardian-denial-card .approval-actions button.approve{background:var(--errt)!important;border-color:var(--errb)!important;color:var(--err)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .inline-approval .guardian-denial-card .approval-actions button.approve:hover:not(:disabled){background:color-mix(in srgb,var(--err) 16%,transparent)!important}
 
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .file-mention-menu button:hover:not(.active){background:var(--bg3)!important;color:var(--tx0)!important}
 /* The generic light hover turned "Delete" grey; keep the danger tint it has in dark mode. */

@@ -44,6 +44,8 @@ async function startRequestHarness(threads){
     wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",
     // A server request as Codex sends it; answered resolves with the app's first answer.
     ask(method,params){const id=nextId++;const answered=new Promise(resolve=>waiting.set(String(id),resolve));socket.send(JSON.stringify({id,method,params}));return {id,answered}},
+    // A notification as Codex sends it.
+    notify(method,params){socket.send(JSON.stringify({method,params}))},
     answersTo:request=>answers.get(String(request.id))||[],
     async close(){relay.close();for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])},
   };
@@ -271,6 +273,46 @@ test("a double click on Allow once that moves a few pixels approves only the car
     expect(harness.answersTo(second),"the second click of the double click approved the next, unseen request").toHaveLength(0);
     await card("Publish the release to npm").getByRole("button",{name:"Allow once",exact:true}).click();
     expect(await second.answered).toEqual({decision:"accept"});
+  }finally{await harness.close()}
+});
+
+// A card's main button keeps its look under the pointer, as the dialogs' does: Allow once its accent fill and an auto review
+// denial's Allow anyway its red tint, a shade deeper, in light mode as in dark, while Deny and Dismiss turn a shade darker.
+test("under the pointer Allow once keeps its accent fill and Allow anyway its red tint, in light mode as in dark",async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  // A button's fill (its gradient, or its colour), text colour and filter, and whether a fill is a red tint.
+  const look=button=>button.evaluate(node=>{const style=getComputedStyle(node);return {fill:style.backgroundImage==="none"?style.backgroundColor:style.backgroundImage,text:style.color,filter:style.filter}});
+  const red=fill=>{const [r,g,b]=(fill.match(/[\d.]+/g)||[]).map(Number);return r>g&&r>b};
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    for(const pass of ["dark","light"]){
+      if(pass==="light")await toggleMode(page);
+      const request=harness.ask("item/commandExecution/requestApproval",{threadId:RELEASE.id,turnId:"turn-release",itemId:"tests-"+pass,command:["npm","test"],reason:"Run the unit tests"});
+      const card=page.locator(".inline-approval .approval-card").filter({hasText:"Run the unit tests"});await expect(card).toBeVisible();
+      const allow=card.getByRole("button",{name:"Allow once",exact:true}),deny=card.getByRole("button",{name:"Deny",exact:true});
+      await page.mouse.move(1,1);const accent=await look(allow),plain=await look(deny);
+      expect(accent.fill).toContain("gradient");
+      await allow.hover();
+      await expect.poll(()=>look(allow)).toEqual({...accent,filter:"brightness(1.1)"});
+      await page.screenshot({animations:"disabled",path:`${auditDir}agent-requests-allow-once-hovered-${pass}-1280x800.png`});
+      await deny.hover();await expect.poll(async()=>(await look(deny)).fill).not.toBe(plain.fill);
+      await deny.click();expect(await request.answered).toEqual({decision:"decline"});await expect(card).toHaveCount(0);
+
+      const startedAt=Date.now(),action={type:"command",source:"unifiedExec",command:"rm generated-"+pass+".tmp",cwd:process.cwd()};
+      harness.notify("item/autoApprovalReview/started",{threadId:RELEASE.id,turnId:"turn-release",startedAtMs:startedAt,reviewId:"review-"+pass,targetItemId:"cmd-"+pass,review:{status:"inProgress",riskLevel:null,userAuthorization:null,rationale:null},action});
+      harness.notify("item/autoApprovalReview/completed",{threadId:RELEASE.id,turnId:"turn-release",startedAtMs:startedAt,completedAtMs:startedAt+120,reviewId:"review-"+pass,targetItemId:"cmd-"+pass,decisionSource:"agent",review:{status:"denied",riskLevel:"high",userAuthorization:"low",rationale:"Deleting this file needs explicit user approval."},action});
+      const denial=page.getByTestId("guardian-denial-card");await expect(denial).toContainText("rm generated-"+pass+".tmp");
+      const anyway=denial.getByRole("button",{name:"Allow anyway",exact:true}),dismiss=denial.getByRole("button",{name:"Dismiss",exact:true});
+      await page.mouse.move(1,1);const tint=await look(anyway),quiet=await look(dismiss);
+      expect(red(tint.fill)).toBe(true);
+      await anyway.hover();
+      await expect.poll(async()=>{const now=await look(anyway);return {text:now.text,red:red(now.fill),deeper:now.fill!==tint.fill}}).toEqual({text:tint.text,red:true,deeper:true});
+      await page.screenshot({animations:"disabled",path:`${auditDir}agent-requests-allow-anyway-hovered-${pass}-1280x800.png`});
+      await dismiss.hover();await expect.poll(async()=>(await look(dismiss)).fill).not.toBe(quiet.fill);
+      await dismiss.click();await expect(denial).toHaveCount(0);
+    }
   }finally{await harness.close()}
 });
 
