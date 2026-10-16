@@ -698,7 +698,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     if(!window.trebellDesktop?.snapshots)return;
     setSnapshotMessage("Saving…");
     try{
-      const next=await window.trebellDesktop.snapshots.configure({...snapshotInfo,...patch});
+      // A save sends its own change and the shortcut in the field, which the main process merges into the saved settings, one save at
+      // a time. A switch shows the saved state until its save answers, so the whole card as shown, sent with a second switch's change,
+      // turned the first switch back.
+      const next=await window.trebellDesktop.snapshots.configure({shortcut:snapshotInfo.shortcut,...patch});
       setSnapshotInfo(next);setSnapshotMessage(next.enabled?"SnapShots ready.":"SnapShots disabled.");
     }catch(error){
       const primary=error?.message||String(error);

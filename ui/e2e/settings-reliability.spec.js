@@ -325,6 +325,63 @@ test("storage cleanup retention treats zero, negative and too-large days like th
   await page.locator(".storage-settings").screenshot({animations:"disabled",path:auditDir+"settings-storage-retention-failed-save-keeps-value.png"});
 });
 
+// A SnapShots switch flipped while another one's save is on its way keeps that other change: a switch shows the saved state until
+// its save answers, and each save sent the settings as they showed, so the second save turned the first switch back.
+test("SnapShots switches flipped while a save is on its way all stick, with the mouse or the keyboard",async({page,request})=>{
+  await page.addInitScript(()=>{
+    // As desktop/main.mjs takes snapshot:configure: one call at a time in the order sent, each merged into the saved settings
+    // (normalizeSnapshotConfig), and the shortcut registered while SnapShots is on. window.__snapshotsBusy holds every call, as a
+    // busy main process does.
+    const saved={enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false,playSound:true,sound:"soft-pop",flash:false,animations:true};
+    let main=Promise.resolve(),registered=null;window.__snapshotSaves=[];
+    const queued=fn=>(...args)=>{const call=main.then(()=>window.__snapshotsBusy).then(()=>fn(...args));main=call.catch(()=>{});return call};
+    const configure=queued(input=>{
+      for(const key of Object.keys(saved))if(key in input)saved[key]=typeof saved[key]==="boolean"?Boolean(input[key]):String(input[key]||saved[key]);
+      registered=saved.enabled?saved.shortcut:null;return {...saved,registered:Boolean(registered)};
+    });
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      snapshots:{
+        get:queued(()=>({...saved,registered:Boolean(registered),platform:"win32",pending:0})),
+        configure:(input={})=>{window.__snapshotSaves.push(input);return configure(input)},
+        pending:async()=>[],read:async id=>{throw new Error("ENOENT: snapshot "+id)},ack:async id=>({ok:true,id}),capture:async()=>({ok:true}),onCaptured:()=>()=>{},
+      },
+      background:{set:async()=>({ok:true})},
+    }});
+  });
+  await openSettings(page,request,"SnapShots Saves Workspace");
+  await page.getByRole("button",{name:/Desktop/}).click();
+  const card=page.locator(".snapshot-settings"),enable=card.getByLabel("Enable global SnapShot shortcut"),flash=card.getByLabel("Flash captured window"),animate=card.getByLabel("Animate capture feedback");
+  await expect(enable).not.toBeChecked();await expect(flash).not.toBeChecked();await expect(animate).toBeChecked();
+  const hold=()=>page.evaluate(()=>{window.__snapshotsBusy=new Promise(resolve=>{window.__snapshotsFree=resolve})});
+  const free=()=>page.evaluate(()=>window.__snapshotsFree());
+  const sent=()=>page.evaluate(()=>window.__snapshotSaves.length);
+  const shown=async()=>({enabled:await enable.isChecked(),flash:await flash.isChecked(),animations:await animate.isChecked()});
+  const main=()=>page.evaluate(()=>window.trebellDesktop.snapshots.get().then(({enabled,flash,animations,registered})=>({enabled,flash,animations,registered})));
+  // With the mouse: Enable, and Flash while Enable's save waits.
+  await hold();
+  await enable.click();
+  await expect(card).toContainText("Saving…");await expect(enable).not.toBeChecked();
+  await flash.click();
+  await expect.poll(sent,{message:"both saves were sent"}).toBe(2);
+  await free();
+  await expect(flash).toBeChecked();
+  await expect.poll(shown).toEqual({enabled:true,flash:true,animations:true});
+  await expect(card).toContainText("SnapShots ready.");
+  expect(await main()).toEqual({enabled:true,flash:true,animations:true,registered:true});
+  await shootModes(page,"snapshots-two-switches-during-save",{show:card});
+  // With the keyboard: Space on Flash, then Tab to Animate and Space, while Flash's save waits.
+  await hold();
+  await flash.focus();await page.keyboard.press("Space");
+  await expect(card).toContainText("Saving…");
+  await page.keyboard.press("Tab");await expect(animate).toBeFocused();await page.keyboard.press("Space");
+  await expect.poll(sent,{message:"both saves were sent"}).toBe(4);
+  await free();
+  await expect(animate).not.toBeChecked();
+  await expect.poll(shown).toEqual({enabled:true,flash:false,animations:false});
+  await expect(card).toContainText("SnapShots ready.");
+  expect(await main()).toEqual({enabled:true,flash:false,animations:false,registered:true});
+});
+
 // The scoped "After inactive days" field is typed in like any number: it saves once it is left, the whole number, as the Projects
 // card's own days field does. Saves are slowed as a busy disk or a remote environment slows them; a save on every keystroke came
 // back mid-typing and put an earlier keystroke's value in the field, so 365 was saved as 35.
