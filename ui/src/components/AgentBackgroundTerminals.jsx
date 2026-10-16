@@ -20,7 +20,8 @@ export default function AgentBackgroundTerminals({rpc,rpcStatus,threadId}){
     finally{if(!quiet)setLoading(false)}
   }
   useEffect(()=>{
-    if(!rpc||rpcStatus!=="connected"||!threadId){setItems([]);setError("");setActionError("");return}
+    // While the harness is away its last list stays, said to be so below: those processes may well still be running.
+    if(!rpc||rpcStatus!=="connected"||!threadId){setError("");setActionError("");return}
     let disposed=false;
     const load=async()=>{try{const next=await listThreadBackgroundTerminals(rpc,threadId);if(!disposed){setItems(next);setError("")}}catch(err){if(!disposed)setError(err.message||String(err))}};
     const poll=startVisibilityPoll(load,{intervalMs:4000});
@@ -40,11 +41,13 @@ export default function AgentBackgroundTerminals({rpc,rpcStatus,threadId}){
     finally{setBusy("")}
   }
 
+  const away=rpcStatus!=="connected",locked=away||!!busy;
   return <section className="agent-background-terminals" data-testid="agent-background-terminals">
-    <div className="agent-background-head"><div><SquareTerminal size={13}/><strong>Agent background processes</strong><span>{items.length}</span></div><div><button onClick={()=>refresh()} disabled={loading||!!busy} title="Refresh background processes"><RefreshCw size={11}/></button>{items.length>0&&<button onClick={clean} disabled={!!busy}><CircleStop size={11}/> Stop all</button>}</div></div>
+    <div className="agent-background-head"><div><SquareTerminal size={13}/><strong>Agent background processes</strong><span>{items.length}</span></div><div><button onClick={()=>refresh()} disabled={loading||locked} title="Refresh background processes"><RefreshCw size={11}/></button>{items.length>0&&<button onClick={clean} disabled={locked}><CircleStop size={11}/> Stop all</button>}</div></div>
+    {away&&<p className="agent-background-empty" role="status">Agent harness is not connected, so this thread's background processes cannot be checked or stopped.{items.length?" The processes it last listed are kept below.":""}</p>}
     {actionError&&<p className="agent-background-error">{actionError}</p>}
     {error&&error!==actionError&&<p className="agent-background-error">{error}</p>}
     {/* A failed Stop keeps the process list on screen under its error, so the other processes stay reachable. */}
-    {error&&!items.length?null:items.length?<div className="agent-background-list">{items.map(item=><div key={item.processId}><span><strong title={item.command||undefined}>{item.command||"Background command"}</strong><small title={item.cwd||undefined}>{item.cwd||""}</small>{backgroundTerminalResourceText(item)&&<em>{backgroundTerminalResourceText(item)}</em>}</span><button onClick={()=>terminate(item.processId)} disabled={!!busy}>{busy===item.processId?"Stopping…":"Stop"}</button></div>)}</div>:<p className="agent-background-empty">{loading?"Checking…":"No agent background processes."}</p>}
+    {items.length?<div className="agent-background-list">{items.map(item=><div key={item.processId}><span><strong title={item.command||undefined}>{item.command||"Background command"}</strong><small title={item.cwd||undefined}>{item.cwd||""}</small>{backgroundTerminalResourceText(item)&&<em>{backgroundTerminalResourceText(item)}</em>}</span><button onClick={()=>terminate(item.processId)} disabled={locked}>{busy===item.processId?"Stopping…":"Stop"}</button></div>)}</div>:error||away?null:<p className="agent-background-empty">{loading?"Checking…":"No agent background processes."}</p>}
   </section>;
 }

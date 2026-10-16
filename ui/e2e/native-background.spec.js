@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WebSocket } from "ws";
 import { attachAgentRelay } from "../../src/agent-relay.mjs";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
@@ -27,7 +28,8 @@ const providerReply=(request,id,{text="",toolCalls=[]}={})=>({id,provider:reques
 // Trebell Native on the real agent relay with one thread per name in one project, its provider answering in turn: the first
 // message sent starts two background processes and the next call says so. The page's socket to the relay passes through here:
 // hold(which) keeps the requests which(message) picks until release(which) sends them on (a slow harness) and resolves once their
-// answers are on the page and drawn; answered lists the requests the relay has answered.
+// answers are on the page and drawn; answered lists the requests the relay has answered; drop() closes the socket and keeps the
+// window from connecting again until back() (a harness that goes away and comes back).
 async function startNativeThreads(page,names){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-background-ui-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
@@ -39,9 +41,10 @@ async function startNativeThreads(page,names){
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const wsUrl=`ws://127.0.0.1:${relayPort}/api/agent/ws`,project={id:"native-background-threads-project",name:"Native Background Project",path:repo,environmentId:null,effectiveSettings:{}};
   const meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null,cwd:repo,runtime:"native",runtimeInstanceId:"native-default"}]));
-  const held=[],answered=[];let holding=null;
+  const sockets=[],held=[],answered=[];let holding=null,away=false;
   await page.routeWebSocket(wsUrl,ws=>{
-    const server=ws.connectToServer(),asked=new Map(),waiting=new Map();
+    if(away){ws.close({code:1011,reason:"harness down"}).catch(()=>{});return}
+    const server=ws.connectToServer(),asked=new Map(),waiting=new Map();sockets.push({ws,server});
     ws.onMessage(message=>{
       let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
       if(parsed?.method&&parsed.id!=null)asked.set(parsed.id,{method:parsed.method,threadId:parsed.params?.threadId||null});
@@ -91,6 +94,14 @@ async function startNativeThreads(page,names){
     },
     hold(which){holding=which},
     async release(which=()=>true){const going=held.filter(entry=>which(entry.message));held.splice(0,held.length,...held.filter(entry=>!going.includes(entry)));for(const entry of going)entry.send();await Promise.all(going.map(entry=>entry.answered));await painted(page)},
+    drop(){away=true;for(const {ws,server} of sockets.splice(0)){ws.close({code:1011,reason:"harness down"}).catch(()=>{});server.close().catch(()=>{})}},
+    back(){away=false},
+    // A client of the relay of its own, which the page's socket going away leaves alone.
+    async rpc(method,params){
+      const socket=new WebSocket(wsUrl);await new Promise((resolve,reject)=>{socket.once("open",resolve);socket.once("error",reject)});
+      try{return await new Promise((resolve,reject)=>{socket.on("message",raw=>{const message=JSON.parse(String(raw));if(message.id===1)message.error?reject(new Error(message.error.message)):resolve(message.result)});socket.send(JSON.stringify({id:1,method,params}))})}
+      finally{socket.close()}
+    },
     async close(){holding=null;for(const entry of held.splice(0))entry.send();await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true})},
   };
 }
@@ -175,6 +186,34 @@ test("a slow Refresh of the thread just left lists nothing under the thread open
     native.hold(null);await native.release();
     await native.open("Background thread A");
     await expect(rows).toHaveCount(2,{timeout:10_000});
+    await background.getByRole("button",{name:"Stop all"}).click();
+    await expect(background.locator(".agent-background-empty")).toHaveText("No agent background processes.",{timeout:10_000});
+  }finally{await native.close()}
+});
+
+test("while the harness is away, Runtime keeps the background processes it last listed and says it cannot check them",async({page})=>{
+  test.setTimeout(60_000);
+  const native=await startNativeThreads(page,["Background drop thread"]);
+  try{
+    const background=await native.open("Background drop thread"),rows=background.locator(".agent-background-list>div"),summary=native.panel.locator(".runtime-summary");
+    await native.startTwo();
+    await expect(rows).toHaveCount(2,{timeout:10_000});
+    await expect(summary).toContainText("Connected locally");
+    // The page's connection to the harness drops and stays down, while both processes go on running in the relay.
+    native.drop();
+    await expect(summary).not.toContainText("Connected locally");await painted(page);
+    expect((await native.rpc("thread/backgroundTerminals/list",{threadId:native.threads[0].id})).data).toHaveLength(2);
+    await expect(rows,"the list was emptied while the harness was away").toHaveCount(2);
+    await expect(background).not.toContainText("No agent background processes.");
+    await expect(background.getByRole("status")).toHaveText("Agent harness is not connected, so this thread's background processes cannot be checked or stopped. The processes it last listed are kept below.");
+    await expect(background.locator(".agent-background-head>div>span")).toHaveText("2");
+    for(const button of [background.getByTitle("Refresh background processes"),background.getByRole("button",{name:"Stop all"}),rows.nth(0).getByRole("button",{name:"Stop",exact:true}),rows.nth(1).getByRole("button",{name:"Stop",exact:true})])await expect(button).toBeDisabled();
+    await shootModes(page,background,"native-background-harness-away");
+    // Once the harness is back the list is current again, and Stop all stops both processes.
+    native.back();
+    await expect(summary).toContainText("Connected locally",{timeout:20_000});
+    await expect(background.getByRole("status")).toHaveCount(0);
+    await expect(rows).toHaveCount(2);
     await background.getByRole("button",{name:"Stop all"}).click();
     await expect(background.locator(".agent-background-empty")).toHaveText("No agent background processes.",{timeout:10_000});
   }finally{await native.close()}
