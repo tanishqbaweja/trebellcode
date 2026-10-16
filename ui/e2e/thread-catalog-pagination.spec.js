@@ -208,3 +208,55 @@ test("a History the runtime could not list says so with Retry, not that there is
     await expect(history.getByRole("alert")).toHaveCount(0);
   }finally{await harness.close()}
 });
+
+// History fails, the person presses Retry and goes to Settings before it answers, then comes back to History: it starts over. It
+// says it is loading, with no old failure and no Retrying they did not press on this visit, and a failure then is a first one again.
+test("a Retry left before it answers starts History over when it is shown again",async({page})=>{
+  test.setTimeout(45_000);
+  const now=Date.now()/1000,runtimeThread={id:"runtime-later",name:"Runtime later",preview:"Runtime later preview",cwd:process.cwd(),model:"claude-test",runtime:"claude",status:{type:"idle"},createdAt:now-20,updatedAt:now-2,turns:[]};
+  const harness=await startRuntimeHarness(runtimeThread);harness.control.listed=[];
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const json=body=>({status:200,contentType:"application/json",body:JSON.stringify(body)});
+  const releases=[];const holdNext=()=>{harness.control.hold=new Promise(resolve=>releases.push(resolve))};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill(json({mock:false,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"history-retry-left-fixture",runtimeCapabilities:{},activeEnvironmentId:null,activeEnvironment:null})));
+    await page.route(/\/api\/state$/,route=>route.fulfill(json({settings,projects:[],threadMeta:{}})));
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")settings={...settings,...route.request().postDataJSON()};return route.fulfill(json(settings))});
+    await page.route(/\/api\/models$/,route=>route.fulfill(json({agentRuntime:"claude",ready:true,models:["claude-test"],metadata:{agentRuntime:"claude",models:[{id:"claude-test",name:"Claude Test",agent:"Claude Code"}]}})));
+    await page.route(/\/api\/projects$/,route=>route.fulfill(json({projects:[]})));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill(json({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill(json({enabled:false,items:[]})));
+    await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>route.fulfill(json(route.request().method()==="POST"?route.request().postDataJSON()?.patch||{}:{threadMeta:{},nextCursor:null})));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    harness.control.listError="Deliberate thread list failure";
+    const historyButton=page.getByRole("button",{name:"History",exact:true});
+    await historyButton.click();
+    const history=page.locator(".history-page"),alert=history.getByRole("alert");
+    await expect(alert).toHaveText(/^Could not load thread history: Deliberate thread list failure/);
+    // Retry, held, and Settings before it answers.
+    let lists=harness.control.lists;holdNext();
+    await alert.getByRole("button",{name:"Retry",exact:true}).click();
+    await expect(alert.getByRole("button",{name:"Retrying…",exact:true})).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await page.getByRole("button",{name:"Settings",exact:true}).click();await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
+    // History again, its first page held: it says it is loading, and nothing of the visit before.
+    lists=harness.control.lists;holdNext();
+    await historyButton.click();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await expect(history.getByText("Loading thread history…",{exact:true}),"History shown again says it is loading").toBeVisible();
+    await expect(alert,"no failure from the visit before").toHaveCount(0);
+    await expect(history.getByRole("button",{name:"Retrying…"}),"no Retrying the person did not press on this visit").toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"polish/history/history-retry-left-loading-dark-1280.png"});
+    // That read fails too: the failure is a first one, not a second, with Retry ready.
+    for(const release of releases.splice(0))release();
+    await expect(alert).toHaveText(/^Could not load thread history: Deliberate thread list failure/);
+    await expect(alert.getByRole("button",{name:"Retry",exact:true})).toBeVisible();
+    // And Retry, answered now, lists the thread.
+    harness.control.listError=null;harness.control.listed=[runtimeThread];
+    await alert.getByRole("button",{name:"Retry",exact:true}).click();
+    await expect(history.getByRole("button",{name:/Runtime later/})).toBeVisible();
+    await expect(history.getByRole("alert")).toHaveCount(0);
+  }finally{for(const release of releases.splice(0))release();await harness.close()}
+});

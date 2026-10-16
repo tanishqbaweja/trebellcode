@@ -2104,16 +2104,17 @@ export default function App(){
   // A turn/start reply can carry a turn that already ended (a harness that answers after the run); that one is not running.
   function turnStillRuns(turn){const status=String(turn?.status||"");return !status||status==="inProgress"||status==="running"}
   useEffect(()=>{
-    if(section!=="history")return;
+    // A Retry still reading when History is left ends there: History shown again starts over.
+    if(section!=="history"){setThreadHistory(current=>current.retrying?{...current,retrying:false}:current);return}
     let cancelled=false;
     if(!rpc||rpcStatus!=="connected"){
-      setThreadHistory(current=>({...current,runtime:"all",items:threads,nextCursor:null,loading:false,error:"",olderError:""}));
+      setThreadHistory(current=>({...current,runtime:"all",items:threads,nextCursor:null,loading:false,retrying:false,error:"",olderError:""}));
       return;
     }
     const sourceKey=[agentRuntime,settings.agentRuntimeInstanceId||"",bootstrap.wsUrl||""].join("\0");
-    // A first page that failed says so with Retry, which marks the history loading: its failure stays until the list answers, so the
-    // keyboard stays on Retry, and one that fails again says it still could not, as a new message (failures keys it).
-    setThreadHistory(current=>({...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:current.runtimeSource===sourceKey?current.runtimeExhausted:false,items:mergeThreadCatalog(current.items?.length?current.items:threads,[],{threadMeta}),nextCursor:current.runtimeSource===sourceKey&&current.runtimeExhausted?null:(current.nextCursor||null),loading:true,error:current.loading?current.error:"",olderError:""}));
+    // A first page that failed says so with Retry (retrying): its failure stays until the list answers, so the keyboard stays on
+    // Retry, and one that fails again says it still could not, as a new message (failures keys it).
+    setThreadHistory(current=>({...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:current.runtimeSource===sourceKey?current.runtimeExhausted:false,items:mergeThreadCatalog(current.items?.length?current.items:threads,[],{threadMeta}),nextCursor:current.runtimeSource===sourceKey&&current.runtimeExhausted?null:(current.nextCursor||null),loading:true,error:current.retrying?current.error:"",olderError:""}));
     rpc.request("thread/list",threadListParams(100)).then(result=>{
       if(cancelled)return;
       const incoming=result?.data||[];rememberThreadCatalog(incoming);
@@ -2121,11 +2122,11 @@ export default function App(){
       setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
       setThreadHistory(current=>{
         const sameSource=current.runtimeSource===sourceKey,alreadyExhausted=sameSource&&current.runtimeExhausted,nextCursor=result?.nextCursor||null;
-        return {...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:alreadyExhausted||!nextCursor,items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:alreadyExhausted?null:nextCursor,loading:false,error:""};
+        return {...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:alreadyExhausted||!nextCursor,items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:alreadyExhausted?null:nextCursor,loading:false,retrying:false,error:""};
       });
     }).catch(error=>{
       if(cancelled)return;
-      setThreadHistory(current=>({...current,runtime:"all",items:current.items?.length?current.items:threads,loading:false,error:error?.message||String(error),failures:current.error?(current.failures||1)+1:1}));
+      setThreadHistory(current=>({...current,runtime:"all",items:current.items?.length?current.items:threads,loading:false,retrying:false,error:error?.message||String(error),failures:current.error?(current.failures||1)+1:1}));
     });
     return()=>{cancelled=true};
   },[section,rpc,rpcStatus,agentRuntime,provider,threadHistory.retries]);
@@ -5225,7 +5226,7 @@ export default function App(){
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
       {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
-          {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert"><span key={threadHistory.failures}>{threadHistory.failures>1?"Still could not":"Could not"} load thread history: {threadHistory.error}</span><button type="button" className="tb-btn tb-btn--sm" aria-disabled={threadHistory.loading||undefined} onClick={()=>setThreadHistory(current=>current.loading?current:{...current,loading:true,retries:(current.retries||0)+1})}>{threadHistory.loading?"Retrying…":"Retry"}</button></div>}
+          {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert"><span key={threadHistory.failures}>{threadHistory.failures>1?"Still could not":"Could not"} load thread history: {threadHistory.error}</span><button type="button" className="tb-btn tb-btn--sm" aria-disabled={threadHistory.retrying||undefined} onClick={()=>setThreadHistory(current=>current.loading?current:{...current,loading:true,retrying:true,retries:(current.retries||0)+1})}>{threadHistory.retrying?"Retrying…":"Retry"}</button></div>}
           {threadHistory.items.length?threadHistory.items.map(t=>{const owner=threadCatalogRuntime(t,threadMeta[t.id]||{},agentRuntime)||agentRuntime;return <button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><div><strong title={titleOf(t)}>{titleOf(t)}</strong><span title={t.preview||t.cwd||undefined}>{t.preview||t.cwd}</span></div><em className="history-runtime-chip" title={"Owned by "+agentRuntimeName(owner)}>{HISTORY_RUNTIME_LABELS[owner]||owner}</em><time dateTime={isoDateTime(t.updatedAt)} title={fullDateTime(t.updatedAt)}>{compactDateTime(t.updatedAt)}</time></button>}):!threadHistory.error&&<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newTask,"Could not start a new thread")}>Start a new task</button>}</div>}
           {threadHistory.olderError&&!threadHistory.loading&&<div className="history-load-error provider-status-error" role="alert">Could not load older threads: {threadHistory.olderError}</div>}{(threadHistory.nextCursor||threadCatalogCursor)&&<div className="history-page-control history-load-more"><button type="button" aria-disabled={threadHistory.loading||undefined} onClick={()=>loadOlderThreadHistory()}>{threadHistory.loading?"Loading older threads…":"Load older threads"}</button></div>}
         </div></div>}
