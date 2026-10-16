@@ -417,6 +417,47 @@ for(const mode of MODES){
   });
 }
 
+// A browser that cannot read subgrid (Chromium before 117, Safari before 16) drops that declaration. Each row then takes the
+// columns declared before it: its title, chip and time in columns of its own, as before rows took the page's. Here the page's
+// stylesheets are read again with the subgrid value made one the browser cannot read, as such a browser reads them: the History base
+// rule's icon column (36px) must not take the title, at 1280 or in a narrow window.
+test("History rows keep a title column, then the chip and the time, where a browser cannot read subgrid",async({page})=>{
+  const now=Date.now()/1000,thread=(id,name,ago)=>({id,name,preview:"Preview of "+name.toLowerCase(),cwd:process.cwd(),createdAt:now-ago-60,updatedAt:now-ago,turns:[]});
+  const threads=[...Array.from({length:3},(_,i)=>thread("today-"+i,"Today thread "+(i+1),i*60)),...Array.from({length:2},(_,i)=>thread("older-"+i,"Older thread "+(i+1),86400*(3+i)))];
+  const fixture=await startCodex(threads);
+  try{
+    const rows=await openCodexHistory(page,fixture,threads);
+    const unread=await page.evaluate(async()=>{
+      let count=0;
+      for(const link of [...document.querySelectorAll('link[rel="stylesheet"]')]){
+        const text=await (await fetch(link.href)).text();
+        if(!/grid-template-columns:\s*subgrid/.test(text))continue;
+        const style=document.createElement("style");style.textContent=text.replace(/grid-template-columns:\s*subgrid/g,()=>{count++;return "grid-template-columns:unread-subgrid"});
+        link.after(style);link.disabled=true;
+      }
+      return count;
+    });
+    expect(unread,"subgrid declarations read as a browser without subgrid reads them").toBeGreaterThan(0);
+    expect(await rows.first().evaluate(row=>getComputedStyle(row).gridTemplateColumns),"a row's columns with subgrid unread").not.toContain("subgrid");
+    for(const width of [1280,600]){
+      await page.setViewportSize({width,height:800});await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+      await page.screenshot({animations:"disabled",path:shots+`history-no-subgrid-dark-${width}.png`});
+      const layout=await page.evaluate(()=>[...document.querySelectorAll(".history-thread-row")].map(row=>{
+        const box=row.getBoundingClientRect(),text=row.querySelector(":scope>div").getBoundingClientRect(),chip=row.querySelector(":scope>em"),time=row.querySelector(":scope>time").getBoundingClientRect();
+        const chipBox=getComputedStyle(chip).display==="none"?null:chip.getBoundingClientRect(),before=chipBox||text;
+        return {title:row.querySelector("strong").textContent,textWidth:Math.round(text.width),rowWidth:Math.round(box.width),chip:chipBox?Math.round(chipBox.left)>=Math.round(text.right):"hidden",time:Math.round(time.left)>=Math.round(before.right),timeToEdge:Math.round(box.right-time.right)};
+      }));
+      console.log("HISTORY-NO-SUBGRID "+width+" "+JSON.stringify(layout));
+      for(const row of layout){
+        expect(row.textWidth,`the title column of "${row.title}" at ${width}`).toBeGreaterThan(row.rowWidth/3);
+        expect(row.chip,`the chip after the title in "${row.title}" at ${width}`).toBe(width===600?"hidden":true);
+        expect(row.time,`the time after the chip in "${row.title}" at ${width}`).toBe(true);
+        expect(row.timeToEdge,`the time at the row's end in "${row.title}" at ${width}`).toBeLessThanOrEqual(20);
+      }
+    }
+  }finally{await fixture.close()}
+});
+
 // ============ Agents fleet (a Codex app-server behind the real relay) ============
 const LONG_AGENT="Investigate the flaky reconciliation job across every payments microservice and summarise the root cause in detail";
 async function startFleet(children){

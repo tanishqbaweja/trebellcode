@@ -890,10 +890,11 @@
 
 /* History: one card of divider rows, the owning harness as a chip, and a compact absolute time (full date in the tooltip). The
    rows take their columns from the page (subgrid), so every chip and time sits where the widest row's does: a row dated "12 Oct"
-   lines up with one dated "Today 12:20". Where a button cannot be a subgrid, each row lays out its own columns, as before. */
+   lines up with one dated "Today 12:20". A browser that does not read subgrid keeps the columns declared before it, and one where
+   a button cannot be a subgrid places the row's parts in the columns of grid-auto-columns: each row lays out its own, as before. */
 :root:root .secondary-page .history-page{gap:0;grid-template-columns:minmax(0,1fr) auto auto}
 :root:root .secondary-page .history-page>*{grid-column:1/-1}
-:root:root .secondary-page .history-page>.history-thread-row{grid-template-columns:subgrid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr) auto auto;gap:14px;padding:11px 16px!important;border-width:0 1px 1px!important;border-style:solid!important;border-color:var(--line)!important;border-radius:0!important;background:var(--pg-card,var(--bg1))!important;box-shadow:none!important}
+:root:root .secondary-page .history-page>.history-thread-row{grid-template-columns:minmax(0,1fr) auto auto;grid-template-columns:subgrid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr) auto auto;gap:14px;padding:11px 16px!important;border-width:0 1px 1px!important;border-style:solid!important;border-color:var(--line)!important;border-radius:0!important;background:var(--pg-card,var(--bg1))!important;box-shadow:none!important}
 :root:root .secondary-page .history-page>.history-thread-row:first-of-type{border-top-width:1px!important;border-top-left-radius:var(--r-l)!important;border-top-right-radius:var(--r-l)!important}
 :root:root .secondary-page .history-page>.history-thread-row:last-of-type{border-bottom-left-radius:var(--r-l)!important;border-bottom-right-radius:var(--r-l)!important}
 :root:root .secondary-page .history-page>.history-thread-row:hover{border-color:var(--line)!important;background:var(--bg2)!important}
@@ -909,6 +910,7 @@
 :root:root .secondary-page .history-page>.history-load-error{margin-top:12px!important}
 @media (max-width:640px){
   :root:root .secondary-page .history-page{grid-template-columns:minmax(0,1fr) auto}
+  :root:root .secondary-page .history-page>.history-thread-row{grid-template-columns:minmax(0,1fr) auto;grid-template-columns:subgrid}
   :root:root .secondary-page .history-page>.history-thread-row>em.history-runtime-chip{display:none}
   :root:root .secondary-page .history-page>.history-thread-row time{grid-column:auto}
 }
