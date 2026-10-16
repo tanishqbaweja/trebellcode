@@ -12,8 +12,9 @@ const json=(route,value)=>route.fulfill({status:200,contentType:"application/jso
 // fail. messageOnlyPages leaves every item but messages and thoughts out of the item pages, as Codex builds without tool items do;
 // timeline then serves every item on thread/timeline/list, in one page. calls logs every request. A step can start a turn of
 // the harness's own, with no user message, as a goal continuing does. onItemsPage runs once with the newest turn's tools when the
-// first item page of a thread is asked for, before it is answered: what Codex does while the app opens the thread.
-export async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinity,pageItems=null,outcomeTurns=Infinity,failTurnItems=false,messageOnlyPages=false,timeline=false,onItemsPage=null}={}){
+// first item page of a thread is asked for, before it is answered: what Codex does while the app opens the thread. others are
+// more threads, listed after it, that open idle with no history.
+export async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinity,pageItems=null,outcomeTurns=Infinity,failTurnItems=false,messageOnlyPages=false,timeline=false,onItemsPage=null,others=[]}={}){
   const turns=[...seed],calls=[];let socket=null,interrupt=null,userSteps=0;
   const paged=items=>messageOnlyPages?items.filter(item=>["userMessage","agentMessage","reasoning"].includes(item.type)):items;
   const emit=message=>socket?.send(JSON.stringify(message));
@@ -38,9 +39,11 @@ export async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinit
     socket=ws;ws.on("message",raw=>{
       const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
       const params=message.params||{};let result={},after=null;calls.push({method:message.method,params});
+      const other=others.find(entry=>entry.id===params.threadId);
+      if(other&&["thread/resume","thread/items/list","thread/turns/list","thread/timeline/list"].includes(message.method)){ws.send(JSON.stringify({id:message.id,result:message.method==="thread/resume"?{thread:{...other,turns:[],historyMode:"paginated"},itemsBackwardsCursor:null,turnsBackwardsCursor:null}:{data:[],nextCursor:null,backwardsCursor:null}}));return}
       if(message.method==="thread/items/list"&&!params.turnId&&onItemsPage){const hook=onItemsPage;onItemsPage=null;hook(toolsFor(turns.at(-1)))}
       if(message.method==="initialize")result={userAgent:"turn-failure-codex-fixture"};
-      else if(message.method==="thread/list")result={data:[{...thread,turns:[]}],nextCursor:null};
+      else if(message.method==="thread/list")result={data:[{...thread,turns:[]},...others.map(entry=>({...entry,turns:[]}))],nextCursor:null};
       else if(message.method==="thread/resume")result=params.excludeTurns===false?{thread:{...thread,turns}}:{thread:{...thread,turns:[],historyMode:"paginated"},itemsBackwardsCursor:turns.length?"items@0":null,turnsBackwardsCursor:turns.length?"turns@0":null};
       else if(message.method==="thread/items/list"&&params.turnId){
         if(failTurnItems){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"This turn's items could not be read."}}));return}
@@ -74,16 +77,16 @@ export async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinit
   const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   return {
-    wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",turns,calls,
+    wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",turns,calls,others,
     async close(){relay.close();try{socket?.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])},
   };
 }
 
-// The app's own API answered for a Codex window on the harness, with the thread outside any project.
+// The app's own API answered for a Codex window on the harness, with its threads outside any project.
 export async function routeCodexApp(page,harness,thread){
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"};
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"turn-failure-codex",activeEnvironmentId:null,activeEnvironment:null}));
-  await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:Object.fromEntries([thread,...(harness.others||[])].map(entry=>[entry.id,{projectless:true,environmentId:null}]))}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
   await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,{projects:[]}));
   await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?route.request().postDataJSON()?.patch||{}:{projectless:true,environmentId:null}));

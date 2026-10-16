@@ -979,6 +979,10 @@ export default function App(){
   // The anchor row of an older page landing now: its virtual chunk mounts with the page, so the anchor is placed exactly.
   const [historyAnchorItemId,setHistoryAnchorItemId]=useState(null);
   const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
+  // The MCP progress of each running turn, by item id, and its diff (under ""), by thread and turn, kept whether the thread shows or
+  // not: the harness's history has neither, so a thread opened again while the turn runs gets them back on its live card. The
+  // turn's end drops them.
+  const liveExtrasRef=useRef(new Map());
   // assistantStreamSyncRef: how much of the live reply is shown, so a Native draft delta lands where its offset says.
   const assistantStreamBufferRef=useRef(null);const assistantStreamSyncRef=useRef(EMPTY_ASSISTANT_STREAM);
   // Per thread and turn: the mode this window sent the turn with, and how and how fast it ended (see turn-outcome.js).
@@ -1135,6 +1139,9 @@ export default function App(){
     const id=String(row.id),next=mergeLiveRow(entry.rows.get(id)||null,row,{phase,streamed});
     if(phase==="started")entry.rows.delete(id);
     entry.rows.set(id,next);
+  }
+  function keepLiveExtra(threadId,turnId,id,value){
+    const key=turnInfoKey(threadId,turnId),extras=liveExtrasRef.current;if(key)extras.set(key,(extras.get(key)||new Map()).set(id,value));
   }
   // Stored steps of the running turn (older than any live one) go in front of its live rows, in the list and in the record above:
   // the turn running when the thread opened, or one that starts again under its id (the relay's restart recovery).
@@ -2856,6 +2863,7 @@ export default function App(){
         if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:recordTurnCompletion(prev[outcomeKey],{status:outcomeStatus,durationMs,completedAt:completedAtMs/1000,error})}));
       }
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});markThreadTurn(threadId,false);
+      liveExtrasRef.current.delete(turnInfoKey(threadId,completedTurnId));
       // A queued turn that ends without having started takes its send with it.
       if(completedTurnId&&pendingSendsRef.current.get(String(threadId||""))?.turnId===String(completedTurnId))pendingSendsRef.current.delete(String(threadId||""));
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
@@ -2902,9 +2910,9 @@ export default function App(){
         commandOutputRef.current.delete(commandId);
         activityTimelineRef.current?.clearCommandOutput(commandId);
       }
-      if(isCurrent&&p.item.type==="mcpToolCall"){
+      if(p.item.type==="mcpToolCall"){
         const itemId=String(p.item.id||"");
-        if(itemId){mcpProgressRef.current.delete(itemId);activityTimelineRef.current?.clearMcpProgress(itemId)}
+        if(itemId){liveExtrasRef.current.get(turnInfoKey(threadId,p.turnId))?.delete(itemId);if(isCurrent){mcpProgressRef.current.delete(itemId);activityTimelineRef.current?.clearMcpProgress(itemId)}}
       }
       const item=activityRow({...p.item,status:completedItemStatus(p.item)},{turnId:p.turnId});
       const completedAtMs=p.completedAtMs||Date.now();
@@ -2967,14 +2975,16 @@ export default function App(){
     else if(message.method==="item/reasoning/summaryPartAdded"&&isCurrent&&p.itemId&&Number(p.summaryIndex)>0)commandStreamBufferRef.current?.push(p.itemId,"\n\n");
     else if(message.method==="item/mcpToolCall/progress"){
       if(threadId)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?{...current.currentActivity,title:p.message||current.currentActivity.title}:current.currentActivity,lastActivityAt:Date.now()}),{render:rightPanelOpen&&rightPanelTab==="agents"});
-      if(isCurrent&&p.itemId){
+      if(p.itemId){
         const id=String(p.itemId),progress={title:p.message||"MCP progress",raw:p};
-        mcpProgressRef.current.set(id,progress);activityTimelineRef.current?.setMcpProgress(id,progress);
+        keepLiveExtra(threadId,p.turnId,id,progress);
+        if(isCurrent){mcpProgressRef.current.set(id,progress);activityTimelineRef.current?.setMcpProgress(id,progress)}
       }
     }
-    else if(message.method==="turn/diff/updated"&&isCurrent){
+    else if(message.method==="turn/diff/updated"){
       const id="diff-"+String(p.turnId||activeTurnId||threadId||"current"),event={id,kind:"fileChange",title:"Workspace diff updated",status:"done",raw:p.diff||p,turnId:p.turnId?String(p.turnId):null};
-      diffEventBufferRef.current?.push(id,event);
+      keepLiveExtra(threadId,p.turnId,"",event);
+      if(isCurrent)diffEventBufferRef.current?.push(id,event);
     }
     else if(message.method==="thread/tokenUsage/updated"){
       updateThreadTelemetry(threadId,{tokenUsage:p.tokenUsage||null,lastActivityAt:Date.now()});
@@ -3364,6 +3374,9 @@ export default function App(){
     // The composer's note goes with the view it was about: another thread shown, or this one opening after all, ends it; the thread
     // shown opening again (a reconnect) keeps a note about its failed send or about another thread that did not open.
     activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    // The turn that still runs (resumedTurnId) gets back on its live card the MCP progress and the diff it had, those sent while the
+    // thread was not shown among them; its stored steps go in front of the diff (seedLiveRows).
+    for(const [id,value] of liveExtrasRef.current.get(turnInfoKey(thread.id,resumedTurnId))||[])if(id){mcpProgressRef.current.set(id,value);activityTimelineRef.current?.setMcpProgress(id,value)}else setEvents(prev=>upsertEvent(prev,value));
     // A send of this thread that failed while another view was shown gives its draft and its note back here (dispatchSend).
     // A thread whose own Codex app-server died says so, in one row: its resumes name the death until its next turn, under one id.
     const appServerExit=resumed?.trebellAppServerExit;if(appServerExit?.id)setEvents(prev=>upsertEvent(prev,{id:"app-server-exit-"+appServerExit.id,kind:"error",title:appServerExitText(appServerExit),status:"done",raw:appServerExit}));

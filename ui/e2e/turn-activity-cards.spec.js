@@ -651,6 +651,43 @@ test("a Codex thread opened while its turn runs shows the running step running o
   }finally{await harness.close()}
 });
 
+test("a Codex thread left while its turn runs shows, back on it, the MCP progress and the turn's diff that came meanwhile",async({page})=>{
+  test.setTimeout(90_000);
+  const thread=codexThread("codex-away-progress","Build and test"),other=codexThread("codex-away-other","Docs review"),turnDiff=line=>`diff --git a/app.js b/app.js\n--- a/app.js\n+++ b/app.js\n@@ -1 +1 @@\n-old line\n+${line}\n`;
+  let live=null;
+  const harness=await startCodexHarness(thread,[
+    // The turn browses with an MCP tool that reports its progress, and changes a file; it runs on until the test ends it.
+    (turn,tools)=>{
+      const emit=(method,params)=>tools.emit({method,params:{threadId:tools.threadId,turnId:turn.id,...params}}),browse={id:"mcp-"+turn.id,type:"mcpToolCall",server:"browser",tool:"navigate",status:"inProgress"};
+      live={turn,tools,emit,browse};thread.status={type:"active",activeFlags:[]};turn.items.push(browse);
+      tools.emit({method:"turn/started",params:{threadId:tools.threadId,turn:{...turn,items:[]}}});
+      emit("item/started",{item:{...browse}});emit("item/mcpToolCall/progress",{itemId:browse.id,message:"Browser progress 1/4"});emit("turn/diff/updated",{diff:turnDiff("first change")});
+    },
+  ],{others:[other]});
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Build and test");
+    await page.getByTestId("composer").fill("Build and test the app");await page.getByTestId("send").click();
+    const card=liveCard(page),browsing=card.locator(".tool-event.kind-mcpToolCall"),diff=card.locator(".tool-event.kind-fileChange");
+    await expect(browsing.locator("summary strong")).toHaveText("Browser progress 1/4",{timeout:10_000});await expect(diff).toHaveCount(1);
+    // The person reads another thread. Meanwhile the browsing goes on, the diff grows, and Codex names the thread, whose row takes
+    // the name once all of it has come.
+    await openThreadRow(page,"Docs review");await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
+    for(const step of [2,3,4])live.emit("item/mcpToolCall/progress",{itemId:live.browse.id,message:`Browser progress ${step}/4`});
+    live.emit("turn/diff/updated",{diff:turnDiff("second change while away")});
+    thread.name="Build and test the app";live.tools.emit({method:"thread/name/updated",params:{threadId:thread.id,name:thread.name}});
+    // Back on it, the live card shows the newest progress and the newest diff, each on one row.
+    await openThreadRow(page,"Build and test the app");await expect(page.getByRole("button",{name:"Stop"})).toBeVisible();
+    await expect.poll(async()=>({progress:await browsing.locator("summary strong").allTextContents(),diffs:await diff.count()})).toEqual({progress:["Browser progress 4/4"],diffs:1});
+    await diff.locator("summary").click();await expect(diff).toContainText("second change while away");
+    await auditCards(page,"returned-running-progress",card.locator(".activity-card-head"));
+    // The turn goes on as before: the next progress shows on the same row, and its end settles it.
+    live.emit("item/mcpToolCall/progress",{itemId:live.browse.id,message:"Browser progress 5/5"});await expect(browsing.locator("summary strong")).toHaveText("Browser progress 5/5");
+    live.emit("item/completed",{item:{...live.browse,status:"completed"}});thread.status={type:"idle"};live.tools.finish("completed");
+    await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);await expect(browsing).toHaveCount(1);await expect(browsing.locator("summary em")).toHaveText("done");
+  }finally{await harness.close()}
+});
+
 test("a Codex turn running when its thread opens that fails while the thread opens shows each step and the failure once, nothing running",async({page})=>{
   test.setTimeout(60_000);
   const thread={...codexThread("codex-open-failing","Codex open failing"),status:{type:"active",activeFlags:[]}};
