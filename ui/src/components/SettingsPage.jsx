@@ -583,25 +583,40 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     const current=Array.isArray(settings.customModels)?settings.customModels:[];
     await saveSetting({customModels:current.filter(candidate=>!(candidate.id===item.id&&candidate.runtime===item.runtime&&candidate.provider===item.provider))});
   }
-  // Each key sent runs its live check against the provider, so a key goes once a press: a press while it is on its way sends nothing,
-  // nor do Enter's repeats or the second click of a double click, which can come after a refusal has given the key back to the field.
-  const providerKeySendingRef=useRef(false);
-  async function saveProviderKey(){
-    if(providerKeySendingRef.current)return;providerKeySendingRef.current=true;
+  // Each key sent runs its live check against the provider, and the server checks one key at a time (a refused key puts back the one
+  // stored before it), so a key goes once a press. Enter's repeats and the second click of a double click send nothing, as they can
+  // come after a refusal has given the key back to the field, nor does a press while that key is on its way. Another key pressed
+  // meanwhile goes once that one has answered, so the key sent last is the one checked. What follows an answer (the providers read
+  // again, and the app's catalog, which can wait 12 s on the provider) holds back no press.
+  const providerKeySendRef=useRef({sending:null,next:null,seq:0});
+  function saveProviderKey(){
+    const send=providerKeySendRef.current,press={provider:selected,key:apiKey};
+    if(!send.sending)sendProviderKey(press);
+    else send.next=press.provider===send.sending.provider&&press.key===send.sending.key?null:press;
+  }
+  async function sendProviderKey({provider,key}){
+    const send=providerKeySendRef.current,seq=++send.seq;send.sending={provider,key};
     showProviderMessage("Saving…");
+    let result=null,failure=null;
+    try{result=await api("/api/providers",{method:"POST",body:{provider,apiKey:key}})}catch(error){failure=error}
+    const next=send.next;send.sending=send.next=null;
+    if(result)setProviderInfo(result);
+    if(next)return sendProviderKey(next);
     try{
-      const result=await api("/api/providers",{method:"POST",body:{provider:selected,apiKey}});
-      setApiKey("");
-      setProviderInfo(result);
+      if(failure)throw failure;
+      // A key typed into the field while this one was on its way stays there.
+      setApiKey(current=>current===key?"":current);
       showProviderMessage(result.ready?"API key saved. Harness ready.":"API key saved.");
-      await onProviderUpdated?.({provider:result.selected||selected,agentRuntime:result.agentRuntime||selectedAgent,catalog:result,refreshBootstrap:false});
+      await onProviderUpdated?.({provider:result.selected||provider,agentRuntime:result.agentRuntime||selectedAgent,catalog:result,refreshBootstrap:false});
     }catch(error){
       // A refused key check comes back with the provider's status, which says why; other failures show their own message.
-      // The app's catalog then says why too, so the composer shows the failed check instead of a first step.
-      const refused=(await loadProviders())?.providers?.find(item=>item.id===selected)?.keyCheck;
+      // The app's catalog then says why too, so the composer shows the failed check instead of a first step. A key sent since says
+      // how it went instead.
+      const refused=(await loadProviders())?.providers?.find(item=>item.id===provider)?.keyCheck;
+      if(seq!==send.seq)return;
       showProviderMessage(refused?"":error.message,!refused);
-      if(refused)await onProviderUpdated?.({provider:selected,agentRuntime:selectedAgent,refreshBootstrap:false});
-    }finally{providerKeySendingRef.current=false}
+      if(refused)await onProviderUpdated?.({provider,agentRuntime:selectedAgent,refreshBootstrap:false});
+    }
   }
   async function clearProviderKey(){
     showProviderMessage("Removing…");

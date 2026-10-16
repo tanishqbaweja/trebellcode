@@ -53,12 +53,14 @@ async function startNativeRelay(){
 
 // The GUI server's side for Trebell Native on one provider. Without a key the catalog has no models (a fixed-model provider
 // still lists its model) and its error asks for a key, or says why the last key typed was refused, as ProviderManager.models
-// answers; refuseKey makes a typed key fail its check the way the GUI server's checkKey reports it (server.refuseKey changes it
-// later), and keyCheckMs holds each answer that long, as the live check against the provider takes its time. reasoningEfforts are
-// the saved Thinking levels, and a level picked in the composer is saved into them.
+// answers; refuseKey makes a typed key fail its check the way the GUI server's checkKey reports it (true, or a test of the key;
+// server.refuseKey changes it later), and keyCheckMs holds each answer that long, as the live check against the provider takes its
+// time. server.checks keeps each key checked, with when it was sent and answered. server.modelsMs holds each /api/models answer that
+// long, as the GUI server lists the models live from the provider with the key it has, for up to 12 s. reasoningEfforts are the saved
+// Thinking levels, and a level picked in the composer is saved into them.
 const STATIC_MODELS={justworker:["claude-opus-4-8"],hcnsec:["glm-5.3"]};
 async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false,keyCheckMs=0,reasoningEfforts={}}){
-  const server={provider,hasKey,keyCheck:null,posts:[],refuseKey,reasoningEfforts:{...reasoningEfforts}};
+  const server={provider,hasKey,keyCheck:null,posts:[],checks:[],refuseKey,modelsMs:0,reasoningEfforts:{...reasoningEfforts}};
   const relay=await startNativeRelay();
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:server.provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",modelReasoningEfforts:server.reasoningEfforts});
   const bootstrap=()=>({mock:false,provider:server.provider,providerReady:server.hasKey,agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeReady:true,appServerReady:true,wsUrl:relay.wsUrl,cwd:process.cwd(),platform:process.platform,version:"native-providers-fixture",activeEnvironmentId:null,activeEnvironment:null});
@@ -77,13 +79,15 @@ async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models
     if(patch.modelReasoningEfforts)server.reasoningEfforts={...patch.modelReasoningEfforts};
     return json(route,settings());
   });
-  await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,catalog()));
+  await page.route(/\/api\/models(?:\?.*)?$/,async route=>{if(server.modelsMs)await new Promise(resolve=>setTimeout(resolve,server.modelsMs));return json(route,catalog())});
   await page.route(/\/api\/agent-runtimes(?:\?.*)?$/,route=>route.request().method()==="GET"?json(route,runtimes()):json(route,{error:"No harness change is expected in this fixture"},400));
   await page.route(/\/api\/providers$/,async route=>{
     if(route.request().method()==="GET")return json(route,providers());
-    const body=route.request().postDataJSON()||{};server.posts.push({provider:body.provider,apiKey:Boolean(String(body.apiKey||"").trim())});
+    const body=route.request().postDataJSON()||{},key=String(body.apiKey||"").trim();server.posts.push({provider:body.provider,apiKey:Boolean(key)});
+    const check={key,sentAt:Date.now(),answeredAt:null};server.checks.push(check);
     if(keyCheckMs)await new Promise(resolve=>setTimeout(resolve,keyCheckMs));
-    if(server.refuseKey){server.keyCheck={status:402,message:REFUSAL,at:new Date().toISOString()};return json(route,{error:PROVIDER_NAMES[server.provider]+" API key check failed: "+REFUSAL},400)}
+    check.answeredAt=Date.now();
+    if(typeof server.refuseKey==="function"?server.refuseKey(key):server.refuseKey){server.keyCheck={status:402,message:REFUSAL,at:new Date().toISOString()};return json(route,{error:PROVIDER_NAMES[server.provider]+" API key check failed: "+REFUSAL},400)}
     server.hasKey=Boolean(String(body.apiKey||"").trim());server.keyCheck=null;
     return json(route,{...providers(),agentRuntime:"native",...catalog()});
   });
@@ -250,6 +254,80 @@ for(const mode of MODES)test(`Enter held in the API key field or on Save API key
     await expect(providerStatus).toContainText("API key saved. Harness ready.");await expect(keyField).toHaveValue("");
     expect.soft(sentSince(),"keys sent for a click, the second click of a double click after its refusal, and Enter").toBe(2);
     expect(server.posts,"one key sent for each press of its own").toHaveLength(6);
+  }finally{await close()}
+});
+
+// Presses of their own while a key is checked: Enter let go and pressed again, or Enter and then a click on Save API key, send that
+// key no second time. Another key pressed meanwhile is sent once the first has answered, as the server checks one key at a time,
+// so the key sent last is the one checked; it was dropped with nothing said, and the first key's refusal showed next to it.
+for(const mode of MODES)test(`a press while a key is checked sends that key no second time and sends another key once it has answered (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  const {server,relay,close}=await startNativeHarness(page,{provider:"openai",mode,models:["gpt-fixture"],defaultModel:"gpt-fixture",keyCheckMs:900,refuseKey:key=>key!=="sk-fixture-corrected"});
+  try{
+    await openGeneralChat(page,relay);
+    await composerWrap(page).getByRole("button",{name:"Configure OpenAI API",exact:true}).click();
+    const keyField=page.getByTestId("provider-api-key"),save=page.getByTestId("save-provider-key"),providerStatus=page.getByTestId("provider-status");
+    await expect(keyField).toBeFocused();
+    const refused="OpenAI API · key check failed · "+REFUSAL;
+    let counted=0;const sentSince=()=>{const count=server.posts.length-counted;counted=server.posts.length;return count};
+    await page.keyboard.type("sk-fixture-pressed-twice",{delay:15});
+    await keyField.press("Enter");await expect(providerStatus).toContainText("Saving…");
+    await keyField.press("Enter");
+    await expect(providerStatus).toHaveText(refused,{timeout:10_000});await expect(keyField).toHaveValue("sk-fixture-pressed-twice");
+    expect.soft(sentSince(),"keys sent for Enter, let go and pressed again while the key is checked").toBe(1);
+    await keyField.press("Enter");await expect(providerStatus).toContainText("Saving…");
+    await save.click();
+    await expect(providerStatus).toHaveText(refused,{timeout:10_000});
+    expect.soft(sentSince(),"keys sent for Enter and then a click on Save API key while the key is checked").toBe(1);
+    // A mistyped key, then the corrected one while the first is checked.
+    await keyField.fill("sk-fixture-mistyped");await keyField.press("Enter");await expect(providerStatus).toContainText("Saving…");
+    await keyField.fill("sk-fixture-corrected");await keyField.press("Enter");
+    expect.soft(server.posts.length-counted,"the corrected key waits for the mistyped one's answer").toBe(1);
+    await expect.soft(providerStatus,"the corrected key is checked and saved").toContainText("API key saved. Harness ready.",{timeout:10_000});
+    await expect.soft(keyField).toHaveValue("");
+    expect.soft(sentSince(),"keys sent for a key and another one pressed while it is checked").toBe(2);
+    const [mistyped,corrected]=server.checks.slice(-2);
+    expect.soft([mistyped?.key,corrected?.key]).toEqual(["sk-fixture-mistyped","sk-fixture-corrected"]);
+    expect.soft(corrected&&corrected.sentAt>=mistyped.answeredAt,"the corrected key is sent once the mistyped one has answered").toBe(true);
+    await providerStatus.scrollIntoViewIfNeeded();await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-key-second-press-${mode}.png`});
+    expect(server.posts,"one key sent for each press of its own, and the corrected key").toHaveLength(4);
+  }finally{await close()}
+});
+
+// What follows a refusal held the next press back: the providers are read again and the app reloads its catalog, which the GUI
+// server lists live from the provider with the key stored before, for up to 12 s. Until that answered, Enter in the field or a click
+// on Save API key sent nothing and showed nothing, and a corrected key sent then was dropped next to the old refusal.
+for(const mode of MODES)test(`a press right after a refused key sends it at once while the catalog is still loading (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  const {server,relay,close}=await startNativeHarness(page,{provider:"openai",mode,hasKey:true,models:["gpt-fixture"],defaultModel:"gpt-fixture",keyCheckMs:900});
+  try{
+    await openGeneralChat(page,relay);
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    await expect(page.getByTestId("provider-settings-card")).toBeVisible();
+    const keyField=page.getByTestId("provider-api-key"),save=page.getByTestId("save-provider-key"),providerStatus=page.getByTestId("provider-status");
+    await expect(providerStatus).toHaveText("OpenAI API · ready");
+    // A saved key, and a new one the provider refuses; each catalog read after a refusal takes 8 s.
+    server.refuseKey=true;server.modelsMs=8000;
+    const refused="OpenAI API · key check failed · "+REFUSAL;
+    await keyField.fill("sk-fixture-refused");await keyField.press("Enter");
+    await expect(providerStatus).toContainText("Saving…");await expect(providerStatus).toHaveText(refused,{timeout:10_000});
+    expect(server.posts).toHaveLength(1);
+    await keyField.press("Enter");
+    await expect(providerStatus,"Enter right after the refusal sends the key again").toContainText("Saving…",{timeout:2_000});
+    await expect.poll(()=>server.posts.length).toBe(2);
+    await expect(providerStatus).toHaveText(refused,{timeout:10_000});
+    await save.click();
+    await expect(providerStatus,"a click on Save API key right after the refusal sends the key again").toContainText("Saving…",{timeout:2_000});
+    await expect.poll(()=>server.posts.length).toBe(3);
+    await expect(providerStatus).toHaveText(refused,{timeout:10_000});
+    server.refuseKey=false;
+    await keyField.fill("sk-fixture-corrected");await keyField.press("Enter");
+    await expect(providerStatus,"a corrected key right after the refusal is sent").toContainText("Saving…",{timeout:2_000});
+    await expect(providerStatus).toHaveText("OpenAI API · ready · API key saved. Harness ready.",{timeout:10_000});
+    await expect(keyField).toHaveValue("");
+    expect(server.posts).toHaveLength(4);
+    await providerStatus.scrollIntoViewIfNeeded();await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-key-sent-again-after-refusal-${mode}.png`});
   }finally{await close()}
 });
 
