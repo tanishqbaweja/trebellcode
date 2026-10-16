@@ -31,6 +31,8 @@ let lastAgentRuntimeInfo=null;
 // The section open when Settings was last left: coming back (from the sidebar, Ctrl+, or Back to Settings) opens it again.
 // It lives as long as the window, so a fresh start opens General.
 let lastSettingsSection="general";
+// The last refused harness switch ({kind,text}): Settings opened again says it on the row that was clicked, as it did before.
+let lastSwitchRefusal=null;
 // A shortcut or condition being typed is a draft. It is saved when the field is left or Enter is pressed, and only once it can work,
 // so a half-typed "Ctrl+" or "threadOpen &&" never replaces the one in use. A draft that cannot work stays in the field, marked
 // invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited. A saved
@@ -93,10 +95,13 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
 }
 const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity"];
 
-// runningTask: the title of the open thread while its turn runs, else empty.
-export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTask="",runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
+// runningTask: the title of the open thread while its turn runs, else empty. onActionError(error,label) says a failure in the app's alert.
+export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTask="",onActionError,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
   const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||lastSettingsSection);
   useEffect(()=>{lastSettingsSection=settingsSection},[settingsSection]);
+  // Whether the harness rows are on screen: Settings left, or another of its sections open, they are not.
+  const agentsShownRef=useRef(false);
+  useEffect(()=>{agentsShownRef.current=settingsSection==="agents";return()=>{agentsShownRef.current=false}},[settingsSection]);
   const [settingsSearch,setSettingsSearch]=useState("");
   const [workspaceScope,setWorkspaceScope]=useState({environmentId:settings.activeEnvironmentId||"local",projectId:""});
   const [workspaceScopeCatalog,setWorkspaceScopeCatalog]=useState({environmentData:{profiles:[]},projects:[]});
@@ -128,7 +133,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [agentMessageTarget,setAgentMessageTarget]=useState(null);
   const [agentMessageError,setAgentMessageError]=useState(false);
   // A refused switch is said on the row that was clicked ({kind,text}); the status line sits under the whole list, out of view.
-  const [switchRefusal,setSwitchRefusal]=useState(null);
+  const [switchRefusal,keepSwitchRefusal]=useState(()=>lastSwitchRefusal);
+  const setSwitchRefusal=value=>{lastSwitchRefusal=value;keepSwitchRefusal(value)};
   const [providerMessageError,setProviderMessageError]=useState(false);
   const [savingInstance,setSavingInstance]=useState(false);
   const showAgentMessage=(text,error=false)=>{setAgentMessage(text);setAgentMessageError(Boolean(error));setSwitchRefusal(null)};
@@ -261,8 +267,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       setAgentInfo(result);
       showAgentMessage(`${result.selected?.status?.name||kind} selected.`);
     }catch(error){
-      // The selection falls back to the harness that is still active; the refusal is said on the row of the harness that was clicked.
+      // The selection falls back to the harness that is still active; the refusal is said on the row of the harness that was clicked,
+      // and in the app's alert when that row is not on screen any more (the person went back to the chat while it was refused).
       setAgentMessageTarget(null);showAgentMessage("");setSwitchRefusal({kind,text:`Could not switch to ${name(kind)}: ${error.message}`});
+      if(!agentsShownRef.current)onActionError?.(error,"Could not switch to "+name(kind));
     }
     finally{setAgentSelectionOverride(null)}
   }
@@ -831,7 +839,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           const actionText=active?(incompatible||unverified?"Needs setup":"Active"):status?.available?(incompatible||unverified?"Needs setup":"Switch"):status?.installed?"Not ready":"Not installed";
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(def.id,status.id)}>
             <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em className={"is-"+String(actionText).toLowerCase().replace(/\s+/g,"-")}>{actionText}</em>
-          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id,status?.installed?"Update":"Install")}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}{switchRefusal?.kind===def.id&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}</div>;
+          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id,status?.installed?"Update":"Install")}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}{switchRefusal?.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}</div>;
         })}</div>
         {selectedAgentDefinition?.multipleInstances!==false&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>

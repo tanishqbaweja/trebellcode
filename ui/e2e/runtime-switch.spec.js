@@ -79,8 +79,9 @@ async function startAgentRelay(activeRuntime,{turnDelayMs=0,reconnectInitializeD
 // The GUI server side of a harness switch, mirroring POST /api/agent-runtimes {action:"select"}: the active runtime changes as soon as the
 // request arrives, but the response (bundled bootstrap + catalog) and /api/models wait for the new runtime's catalog — live OpenCode
 // discovery took about 3.4 s. catalogGate(runtime) returns that wait; holdRuntimeReads delays GET /api/agent-runtimes (the CLI probes).
-// profileEditing lets Claude Code keep several profiles, so its active profile can be edited and saved ({action:"upsert"}).
-async function startHarness(page,{runtime="claude",catalogs=CATALOGS,catalogGate=null,turnDelayMs=0,reconnectInitializeDelayMs=0,rejectSelect="",approvalTurns=false,holdTurns=null,profileEditing=false}={}){
+// profileEditing lets Claude Code keep several profiles, so its active profile can be edited and saved ({action:"upsert"}). holdSelect()
+// gives the promise a refused switch (rejectSelect) waits on before it answers, in place of 300 ms.
+async function startHarness(page,{runtime="claude",catalogs=CATALOGS,catalogGate=null,turnDelayMs=0,reconnectInitializeDelayMs=0,rejectSelect="",holdSelect=null,approvalTurns=false,holdTurns=null,profileEditing=false}={}){
   const server={runtime,versions:{},holdRuntimeReads:null,failRuntimeReads:"",counts:{bootstrap:0,models:0,select:0,upsert:0,runtimeReads:0,runtimeReadsDone:0,direct:0}};
   const relay=await startAgentRelay(()=>server.runtime,{turnDelayMs,reconnectInitializeDelayMs,approvalTurns,holdTurns});
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
@@ -106,7 +107,7 @@ async function startHarness(page,{runtime="claude",catalogs=CATALOGS,catalogGate
     }
     if(body.action!=="select")return json(route,{error:"Unexpected agent runtime action in the runtime switch fixture: "+body.action},400);
     server.counts.select++;
-    if(rejectSelect){await delay(300);return json(route,{error:rejectSelect},400)}
+    if(rejectSelect){await (holdSelect?holdSelect():delay(300));return json(route,{error:rejectSelect},400)}
     server.runtime=body.runtime;
     const value=await catalog(server.runtime),current=snapshot();
     return json(route,{...current,selected:{runtime:server.runtime,instance:current.instances.find(item=>item.kind===server.runtime),status:current.statuses.find(item=>item.kind===server.runtime)},bootstrap:bootstrap(),catalog:value});
@@ -321,12 +322,49 @@ test("a refused harness switch says why on the harness row that was clicked, in 
       await expect(refusal).toHaveText("Could not switch to OpenCode: OpenCode could not start: fixture launcher failed");
       await expect(refusal).toBeInViewport();
       await expect(row.locator("button em")).toHaveText("Switch");
-      // Said once: the status line under the list does not repeat it.
-      await expect(page.getByTestId("agent-runtime-message")).toHaveCount(0);
+      // Said once: neither the status line under the list nor the app's alert repeats it.
+      await expect(page.getByTestId("agent-runtime-message")).toHaveCount(0);await expect(page.getByTestId("app-action-error")).toHaveCount(0);
       for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(refusal).toBeInViewport();await page.screenshot({animations:"disabled",path:`${auditDir}harness-switch-refused-on-its-row-${pass}-${width}x800.png`})}
       await page.setViewportSize({width:1280,height:800});
     }
   }finally{await close()}
+});
+
+// A refusal that comes once the person has gone back to the chat is said there, in the app's alert, and Settings opened again still
+// says it on the row that was clicked: it was said on that row only, and lost with it, so whoever had left Settings saw it nowhere.
+test("a harness switch refused after the person left Settings is said in the chat and kept on its row",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  let answer=null,refuse=()=>{};const arm=()=>{answer=new Promise(resolve=>{refuse=resolve})};arm();
+  const {server,relay,close}=await startHarness(page,{runtime:"claude",rejectSelect:"OpenCode could not start: fixture launcher failed",holdSelect:()=>answer});
+  // The light and dark toggle saves its setting in the page only.
+  const saved={};
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return json(route,{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...saved})});
+  try{
+    await openGeneralChat(page,relay);
+    const picker=page.getByTestId("model-picker"),alert=page.getByTestId("app-action-error"),text="Could not switch to OpenCode: OpenCode could not start: fixture launcher failed";
+    const row=page.locator(".agent-runtime-option").filter({hasText:"OpenCode"});
+    await expect(picker).toContainText("Claude Fixture Sonnet");
+    for(const pass of ["dark","light"]){
+      if(pass==="light"){await expect(alert).toHaveCount(0,{timeout:10_000});arm();await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      const rejected=agentRuntimePost(page),asked=server.counts.select;
+      await selectHarness(page,"OpenCode");
+      await expect.poll(()=>server.counts.select).toBe(asked+1);
+      // Back to the chat (the brand button) before the answer comes.
+      await page.getByRole("button",{name:"Threads",exact:true}).click();await expect(page.getByTestId("composer")).toBeVisible();await expect(row).toHaveCount(0);
+      refuse();expect((await rejected).status()).toBe(400);
+      // Soft, so that the old build also shows what Settings says once it is opened again.
+      await expect.soft(alert,"the chat says the switch was refused").toHaveText(text);
+      await expect(picker).toContainText("Claude Fixture Sonnet",{timeout:10_000});
+      if(await alert.count()){await expect(alert).toBeInViewport();await page.screenshot({animations:"disabled",path:`${auditDir}harness-switch-refused-in-chat-${pass}-1280x800.png`})}
+      await openHarnessSettings(page);
+      const refusal=row.getByRole("alert");
+      await expect(refusal,"back in Settings, the OpenCode row says why").toHaveText(text);await expect(refusal).toBeInViewport();
+      await expect(row.locator("button em")).toHaveText("Switch");
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(refusal).toBeInViewport();await page.screenshot({animations:"disabled",path:`${auditDir}harness-switch-refused-kept-on-its-row-${pass}-${width}x800.png`})}
+      await page.setViewportSize({width:1280,height:800});
+    }
+  }finally{refuse();await close()}
 });
 
 // A switch asked for while the open thread's turn runs asks first and says what becomes of the task: Cancel (Escape) leaves the
