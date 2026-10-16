@@ -223,6 +223,35 @@ for(const mode of MODES)test(`the model menu opens on the checked model far down
   }finally{await close()}
 });
 
+for(const mode of MODES)test(`a model picked in the model menu with Enter or a click gives the keyboard back to the composer, and Escape gives it to the picker (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  const models=Array.from({length:30},(_,index)=>`gpt-fixture-${String(index).padStart(2,"0")}`);
+  const {relay,close}=await startNativeHarness(page,{provider:"openai",mode,hasKey:true,models,defaultModel:"gpt-fixture-00"});
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker"),menu=page.locator(".model-picker-menu"),search=page.getByTestId("model-picker-search"),options=menu.locator(":scope > button");
+    await composer.click();await page.keyboard.type("Draft for the release",{delay:15});
+    // From the keyboard: Tab to the picker, Enter opens the menu on its search, the search narrows it, ArrowDown and Enter pick.
+    for(let step=0;step<12&&!await picker.evaluate(node=>node===document.activeElement);step++)await page.keyboard.press("Tab");
+    await expect(picker).toBeFocused();
+    await page.keyboard.press("Enter");await expect(search).toBeFocused();
+    await page.keyboard.type("fixture-07",{delay:15});await expect(options).toHaveCount(1);
+    await page.keyboard.press("ArrowDown");await expect(options.first()).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(menu).toHaveCount(0);await expect(picker).toContainText(/gpt-fixture-07/i);await expect(composer).toBeFocused();
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await settle(page);await expect(composer).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+`native-provider-model-picked-keyboard-${mode}-${width}x800.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    await page.keyboard.type(" today",{delay:15});await expect(composer).toHaveValue("Draft for the release today");
+    // With the mouse, the model clicked gives the keyboard back to the composer too.
+    await picker.click();await expect(search).toBeFocused();
+    await options.filter({hasText:/gpt-fixture-03/i}).click();
+    await expect(menu).toHaveCount(0);await expect(picker).toContainText(/gpt-fixture-03/i);await expect(composer).toBeFocused();
+    // Escape keeps the model and gives the keyboard back to the picker.
+    await picker.click();await expect(search).toBeFocused();await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);await expect(picker).toBeFocused();await expect(picker).toContainText(/gpt-fixture-03/i);
+  }finally{await close()}
+});
+
 for(const mode of MODES)test(`a Thinking level the model does not offer reads and runs as the provider default, and a level it offers is sent (${mode})`,async({page})=>{
   test.setTimeout(60_000);
   // Saved while the picker still offered Extra High for gpt-5. The picker went on showing it and every turn sent it, which the
