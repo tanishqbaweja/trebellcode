@@ -1081,7 +1081,7 @@ export default function App(){
   // The composer's draft set aside while a queued follow-up is edited there (editQueued): it comes back once the edit ends.
   const [queueEditDraft,setQueueEditDraft]=useState(null);
   // The queue shown and what Trebell keeps of each thread, as of the last render: what a send that ended reads its follow-up's thread
-  // queue from (clearQueuedDispatch), not the copy it took when it began.
+  // queue from (queueNow), not the copy it took when it began.
   const queueNowRef=useRef(null);queueNowRef.current={queued,threadMeta};
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSectionState]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [uploadingFiles,setUploadingFiles]=useState([]); const [contextChips,setContextChips]=useState([]);
@@ -2798,14 +2798,15 @@ export default function App(){
       try{
         if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
         await startTurn(next.text,next.attachments,next.model||model,null,null,repositoryFocusPaths(next.attachments,next.contextChips));
-        const remaining=dispatching.filter(item=>item.id!==next.id);
-        if(threadId)await persistLocalQueue(threadId,remaining);else setQueued(remaining);
+        // Its turn exists: only it leaves the queue, as that is now (queueNow). Writing it back from this send's copy would drop a
+        // follow-up queued meanwhile, here and below.
+        await persistLocalQueue(threadId,queueNow(threadId).filter(item=>item.id!==next.id));
       }catch(error){
         // Stop ended it before its turn existed: the queue is left as it is, this follow-up first, held (stop()), and only its dispatch
-        // mark goes (clearQueuedDispatch). Writing it back from this send's copy would drop a follow-up queued meanwhile.
+        // mark goes (clearQueuedDispatch).
         if(error?.trebellSendStopped){setEvents([]);clearQueuedDispatch(threadId,next.id);return}
-        const failed=dispatching.map(item=>item.id===next.id?{...item,dispatchingAt:null,autoStartFailed:true}:item);
-        try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}
+        const failed=queueNow(threadId).map(item=>item.id===next.id?{...item,dispatchingAt:null,autoStartFailed:true}:item);
+        try{await persistLocalQueue(threadId,failed)}catch{setQueued(failed)}
         // As a send that fails: no turn exists to show it on, so why goes beside the composer, under the queue that keeps the
         // follow-up, never onto the last turn's card (a worktree that could not be set up says why in its own card).
         setEvents([]);if(!(error&&typeof error==="object"&&WORKTREE_CARD_ERRORS.has(error)))setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error?.message||String(error)||"the harness refused the turn")});
@@ -3194,11 +3195,14 @@ export default function App(){
     if(activeThreadRef.current?.id===threadId)setQueued(stored);
     return stored;
   }
+  // A thread's queue as it is now (queueNowRef): what a send that ended writes its follow-up back into, by id, whether its turn
+  // started, its start failed or Stop ended it, so a follow-up queued while it was on its way stays.
+  function queueNow(threadId){const {queued:shown,threadMeta:meta}=queueNowRef.current;return !threadId||activeThreadRef.current?.id===threadId?shown:meta[threadId]?.trebellQueue||[]}
   // A follow-up whose send Stop ended before its turn existed is not on its way any more: its dispatch mark goes, by id, from its
   // thread's queue as that is now, so a follow-up queued meanwhile stays, and the thread opened again reads it queued, not as a send
   // that may have started (hydratePersistedQueue's retry needed), and starts it with the rest of the queue.
   function clearQueuedDispatch(threadId,id){
-    const {queued:shown,threadMeta:meta}=queueNowRef.current,current=!threadId||activeThreadRef.current?.id===threadId?shown:meta[threadId]?.trebellQueue||[];
+    const current=queueNow(threadId);
     if(current.some(item=>item.id===id&&item.dispatchingAt))persistLocalQueue(threadId,current.map(item=>item.id===id?{...item,dispatchingAt:null}:item)).catch(error=>showActionError(error,"Could not save the queued follow-ups"));
   }
   async function persistThreadWorkspaceContext(thread,cwd=thread?.cwd,extra={},{strict=false}={}){
@@ -4321,20 +4325,23 @@ export default function App(){
     await validateAttachmentPaths(item.attachments||[]);
     if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
       await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});
-      await persistLocalQueue(activeThread.id,queued.filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
+      await persistLocalQueue(activeThread.id,queueNow(activeThread.id).filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
     }
     if(running)return;
     const threadId=activeThread?.id||null,dispatching=queued.map(q=>q.id===item.id?{...q,dispatchingAt:Date.now(),autoStartFailed:false}:q);
     if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
+    // Until what became of it is written, the queue does not start it as well (localQueueStartRef), as it would once a start that
+    // failed has stopped the thread running.
+    localQueueStartRef.current=item.id;
     try{
       await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips));
-      const remaining=dispatching.filter(q=>q.id!==item.id);if(threadId)await persistLocalQueue(threadId,remaining);else setQueued(remaining);
+      await persistLocalQueue(threadId,queueNow(threadId).filter(q=>q.id!==item.id));
     }catch(error){
       // Stop ended it before its turn existed: it stays in its place in the queue, which is left as it is but for its dispatch mark, as
-      // when the queue starts it.
+      // when the queue starts it. A start that failed marks only it to retry, in the queue as that is now (queueNow).
       if(error?.trebellSendStopped){clearQueuedDispatch(threadId,item.id);return}
-      const failed=dispatching.map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:true}:q);try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}throw error;
-    }
+      const failed=queueNow(threadId).map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:true}:q);try{await persistLocalQueue(threadId,failed)}catch{setQueued(failed)}throw error;
+    }finally{if(localQueueStartRef.current===item.id)localQueueStartRef.current=null}
   }
   // A queued follow-up is edited in the composer and stays queued as it was until the edit is saved (dispatchSend) or Escape ends it
   // (cancelQueuedEdit); the composer's draft is set aside meanwhile.

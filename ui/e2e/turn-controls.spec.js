@@ -149,9 +149,9 @@ for(const action of ["Delete","Archive"]){
 // (startedAt null). A started turn streams its reply and completes unless turn/interrupt ends it first, and as codex-cli 0.162
 // does, an interrupt for a turn not started yet is refused ("no active turn to interrupt"). interruptDelayMs holds the interrupt's
 // answer (Codex answers once the turn has stopped), interruptError refuses every interrupt with that message, the turn going on,
-// compactError fails thread/compact/start with that message, and holdTurns keeps a turn running after its reply until it is set
-// false. project makes the thread a project thread, whose follow-ups wait in
-// Trebell's own queue (Codex's queue, codex.queue, holds only General chats'); settings adds to the app's settings.
+// compactError fails thread/compact/start with that message, holdTurns keeps a turn running after its reply until it is set
+// false, and steerHold, a gate, holds turn/steer's answer until it opens. project makes the thread a project thread, whose
+// follow-ups wait in Trebell's own queue (Codex's queue, codex.queue, holds only General chats'); settings adds to the app's settings.
 // names: several threads, the first opened. Each turn is its thread's; turn.fail refuses its turn/start, and a thread with a started
 // turn still running resumes active, with its turns. modes: the collaboration modes Codex lists. capabilities: the runtime's
 // capabilities, when they are not Codex's own. codex.calls: the methods the app asked for, in order.
@@ -193,6 +193,7 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
         return;
       }
       if(message.method==="thread/compact/start"&&codex.compactError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.compactError}}));return}
+      if(message.method==="turn/steer"&&codex.steerHold){codex.steerHold.promise.then(()=>respond({}));return}
       if(message.method==="turn/interrupt"){
         codex.interrupts.push({...params});const turn=codex.turns.find(item=>item.id===params.turnId);
         if(codex.interruptError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.interruptError}}));return}
@@ -460,6 +461,85 @@ for(const when of ["a turn Codex runs","a turn Codex has queued"]){
       await expect(page.locator(".user-bubble").filter({hasText:"Queued alpha"})).toBeVisible();
       await expect(page.locator(".queued-message p")).toHaveText(["Queued beta"]);await expect(labels).toHaveText(["Queued"]);
       expect(codex.interrupts).toHaveLength(1);
+    }finally{await codex.close()}
+  });
+}
+
+// A follow-up queued while the one before it is on its way, before that one's turn exists, stays queued behind it when that send
+// ends, whether Codex starts its turn or refuses it, as the queue starts it and as Send now or its shortcut sends it: the send
+// writes back only its own follow-up, into the queue as it is by then. A turn that starts takes out only the follow-up it sent,
+// and the next starts by itself when that turn ends; a start that fails marks only its follow-up to retry, and the queue goes on
+// once Send now has sent it. A follow-up Send now steers into the running turn leaves the queue the same way.
+for(const outcome of ["starts","fails"]){
+  test(`a follow-up queued while the one before it is on its way stays queued when that one's turn ${outcome==="starts"?"starts":"fails to start"}`,async({page})=>{
+    test.setTimeout(90_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Queue on its way",project:true});
+    const queue=page.locator(".queued-message p"),labels=page.locator(".queued-message>span"),sent=text=>page.locator(".user-bubble").filter({hasText:text});
+    const sendNow=text=>page.locator(".queued-message").filter({hasText:text}).getByRole("button",{name:"Send now"});
+    try{
+      // A follow-up's send waits on its repository context while context is a gate not yet open.
+      let context=null;await page.route(/\/api\/context\/packet$/,async route=>{await context?.promise;await route.fallback()});
+      codex.holdTurns=true;
+      await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+      await expect(stop(page)).toBeVisible();
+      await sendTyped(page,"Queued alpha");await expect(queue).toHaveText(["Queued alpha"]);
+      // The turn ends and the queue starts alpha, whose send waits on its context while beta is queued.
+      context=gate();codex.holdTurns=false;
+      await expect(sent("Queued alpha")).toBeVisible({timeout:10_000});codex.holdTurns=true;
+      await sendTyped(page,"Queued beta");await expect(queue).toHaveText(["Queued alpha","Queued beta"]);
+      context.open();await expect.poll(()=>codex.turns.length).toBe(2);
+      if(outcome==="starts"){
+        codex.turns[1].answer();codex.turns[1].start();
+        // alpha's turn runs, and beta waits behind it.
+        await expect(sent("Queued alpha")).toBeVisible();await expect(queue).toHaveText(["Queued beta"]);await expect(labels).toHaveText(["Queued"]);
+        await shoot(page,"queued-while-on-its-way-turn-starts");
+        // Send now steers beta into alpha's turn; gamma, queued while that is on its way, stays.
+        codex.steerHold=gate();await sendNow("Queued beta").click();
+        await expect.poll(()=>codex.calls.filter(method=>method==="turn/steer").length).toBe(1);
+        await sendTyped(page,"Queued gamma");await expect(queue).toHaveText(["Queued beta","Queued gamma"]);
+        codex.steerHold.open();
+        await expect(sent("Queued beta")).toBeVisible();await expect(queue).toHaveText(["Queued gamma"]);
+        // Stopped, the queue waits; the shortcut sends gamma, whose send waits on its context while delta is queued.
+        await stop(page).click();
+        await expect(stop(page)).toHaveCount(0,{timeout:10_000});await expect(labels).toHaveText(["Queued · held after Stop"]);
+        context=gate();await composer(page).click();await page.keyboard.press("Control+Shift+Enter");
+        await expect(sent("Queued gamma")).toBeVisible();
+        await sendTyped(page,"Queued delta");await expect(queue).toHaveText(["Queued gamma","Queued delta"]);
+        context.open();await expect.poll(()=>codex.turns.length).toBe(3);codex.turns[2].answer();codex.turns[2].start();
+        await expect(queue).toHaveText(["Queued delta"]);await expect(labels).toHaveText(["Queued"]);
+        // delta starts by itself once gamma's turn ends.
+        codex.holdTurns=false;
+        await expect.poll(()=>codex.turns.length,{timeout:15_000}).toBe(4);codex.turns[3].answer();codex.turns[3].start();
+        await expect(sent("Queued delta")).toBeVisible();await expect(page.locator(".queued-message")).toHaveCount(0);
+        await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+      }else{
+        codex.turns[1].fail("Deliberate queued start failure");
+        // Only alpha is marked to retry, and beta waits behind it.
+        await expect(page.getByTestId("composer-alert")).toHaveText("Queued follow-up not sent: Deliberate queued start failure.");
+        await expect(queue).toHaveText(["Queued alpha","Queued beta"]);await expect(labels).toHaveText(["Queued · retry needed","Queued"]);
+        await expect(sent("Queued alpha")).toHaveCount(0);
+        await shoot(page,"queued-while-on-its-way-start-fails");
+        // Send now sends alpha again, whose send waits on its context while gamma is queued, and Codex refuses it again.
+        context=gate();await sendNow("Queued alpha").click();
+        await expect(sent("Queued alpha")).toBeVisible();
+        await sendTyped(page,"Queued gamma");await expect(queue).toHaveText(["Queued alpha","Queued beta","Queued gamma"]);
+        context.open();await expect.poll(()=>codex.turns.length).toBe(3);codex.turns[2].fail("Deliberate queued start failure");
+        await expect(page.getByTestId("app-action-error")).toHaveText("Could not send queued follow-up: Deliberate queued start failure");
+        await expect(queue).toHaveText(["Queued alpha","Queued beta","Queued gamma"]);await expect(labels).toHaveText(["Queued · retry needed","Queued","Queued"]);
+        // Nothing starts it again by itself.
+        await page.waitForTimeout(800);expect(codex.turns).toHaveLength(3);
+        // Sent now once more, it runs, and beta and gamma start by themselves after it.
+        await sendNow("Queued alpha").click();
+        await expect.poll(()=>codex.turns.length).toBe(4);codex.turns[3].answer();codex.turns[3].start();
+        await expect(sent("Queued alpha")).toBeVisible();await expect(queue).toHaveText(["Queued beta","Queued gamma"]);await expect(labels).toHaveText(["Queued","Queued"]);
+        codex.holdTurns=false;
+        await expect.poll(()=>codex.turns.length,{timeout:15_000}).toBe(5);codex.turns[4].answer();codex.turns[4].start();
+        await expect(sent("Queued beta")).toBeVisible();await expect(queue).toHaveText(["Queued gamma"]);
+        await expect.poll(()=>codex.turns.length,{timeout:15_000}).toBe(6);codex.turns[5].answer();codex.turns[5].start();
+        await expect(sent("Queued gamma")).toBeVisible();await expect(page.locator(".queued-message")).toHaveCount(0);
+        await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+      }
     }finally{await codex.close()}
   });
 }
