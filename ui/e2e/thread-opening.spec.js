@@ -164,6 +164,20 @@ const answer=(page,saved,index=1)=>page.getByText(`${saved.thread.name} answer $
 const userItem=(id,text)=>({id,type:"userMessage",content:[{type:"text",text}]});
 const commandItem=(id,command,{status="completed"}={})=>({id,type:"commandExecution",command,cwd:process.cwd(),status,aggregatedOutput:status==="completed"?"ok\n":"",exitCode:status==="completed"?0:null});
 const steps=(page,text)=>page.locator(".conversation-column .tool-event").filter({hasText:text});
+// The request an open sends once its thread has replaced the view: it saves the thread's workspace (cwd, section) in its meta.
+const landingOf=(page,saved)=>page.waitForRequest(sent=>sent.method()==="POST"&&/\/api\/thread-meta$/.test(sent.url())&&sent.postDataJSON()?.threadId===saved.thread.id&&Object.prototype.hasOwnProperty.call(sent.postDataJSON()?.patch||{},"sectionName"),{timeout:15_000});
+// Waits until neither the page nor the harness has had a request for `quiet` ms (at most 8 s): an open's last reads are answered and
+// what waited on it has run.
+async function settle(page,harness,quiet=400){
+  let last=Date.now(),count=harness.server.requests.length;const bump=()=>{last=Date.now()};
+  page.on("request",bump);page.on("requestfinished",bump);
+  try{for(const end=Date.now()+8000;Date.now()<end&&Date.now()-last<quiet;){await page.waitForTimeout(50);const now=harness.server.requests.length;if(now!==count){count=now;last=Date.now()}}}
+  finally{page.off("request",bump);page.off("requestfinished",bump)}
+  await frames(page,3);
+}
+// From watchHistory until historyLeft, every frame notes whether History was off screen or the chat on screen.
+const watchHistory=page=>page.evaluate(()=>{const run=window.__historyWatch=(window.__historyWatch||0)+1;window.__historyLeft=false;const sample=()=>{if(window.__historyWatch!==run)return;if(!document.querySelector(".history-page")||document.querySelector(".chat-workspace"))window.__historyLeft=true;requestAnimationFrame(sample)};requestAnimationFrame(sample)});
+const historyLeft=page=>page.evaluate(()=>{window.__historyWatch++;return window.__historyLeft});
 async function start(page,harness){
   await page.goto("/");
   await expect(row(page,ALPHA)).toBeVisible({timeout:15_000});
@@ -734,6 +748,40 @@ test("History asked for while a thread opened from it opens shows History, and t
     // A row picked in History now opens its thread in the chat, as before.
     await historyRow("Flaky import").click();
     await expect(answer(page,GAMMA)).toBeVisible();await expect(headerTitle(page)).toHaveText("Flaky import");await expect(heading("Thread history")).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+// Back and Forward through History: Release checklist open, History, Payment retries opened from it, Back to History (Release checklist
+// reopens behind it), then Forward to Payment retries, which takes a while to open over History. History asked for meanwhile shows,
+// and once the thread has opened behind it the step leaves the view there instead of taking it to the chat.
+test("History asked for while a Back or Forward opens a thread from History shows History, and the step leaves it there",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
+  const heading=name=>page.getByRole("heading",{name,exact:true}),history=page.getByRole("button",{name:"History",exact:true});
+  const historyRow=name=>page.locator(".history-thread-row").filter({hasText:name});
+  const shortcut=async keys=>{await page.evaluate(()=>document.activeElement?.blur?.());await page.keyboard.press(keys)};
+  try{
+    await start(page,harness);await openRow(page,ALPHA);
+    await history.click();await expect(historyRow("Payment retries")).toBeVisible({timeout:15_000});
+    await historyRow("Payment retries").click();await expect(answer(page,BETA)).toBeVisible();
+    await shortcut("Control+BracketLeft");
+    await expect(heading("Thread history")).toBeVisible();await expect(row(page,ALPHA)).toHaveClass(/active/);
+    await expect.poll(()=>harness.resumes(ALPHA.thread.id)).toBe(2);await settle(page,harness);
+    const release=harness.hold(BETA.thread.id);
+    await shortcut("Control+BracketRight");
+    await expect.poll(()=>harness.resumes(BETA.thread.id)).toBe(2);
+    await expect(opening(page)).toBeVisible();await expect(heading("Thread history")).toHaveCount(0);
+    await history.click();
+    await expect(heading("Thread history")).toBeVisible();await expect(history).toHaveClass(/active/);await expect(opening(page)).toHaveCount(0);
+    await watchHistory(page);const landed=landingOf(page,BETA);
+    release();await landed;await settle(page,harness);
+    expect(await historyLeft(page),"History left the screen, or the chat took it, once the step's thread opened").toBe(false);
+    await expect(heading("Thread history")).toBeVisible();await expect(page.locator(".chat-workspace")).toHaveCount(0);await expect(row(page,BETA)).toHaveClass(/active/);
+    for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:`${auditDir}thread-opening-history-during-forward-${mode}-1600x980.png`})}
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    await expect(answer(page,BETA)).toBeVisible({timeout:1000});await expect(opening(page)).toHaveCount(0);await expect(headerTitle(page)).toHaveText("Payment retries");
+    expect(harness.resumes(BETA.thread.id)).toBe(2);
   }finally{await harness.close()}
 });
 

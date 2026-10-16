@@ -2708,9 +2708,9 @@ export default function App(){
       else if(command==="files")openRightPanel("files");
       else if(command==="source")openRightPanel("source");
       else if(command==="goal"&&activeThread?.id&&!openingPending)openRightPanel("goal");
-      else if(command==="projects")setSection("projects");
-      else if(command==="settings")setSection("settings");
-      else if(command==="environments")setSection("environments");
+      else if(command==="projects")navigateSection("projects");
+      else if(command==="settings")navigateSection("settings");
+      else if(command==="environments")navigateSection("environments");
       else if(command==="steerQueued"&&queued.length)runUserAction(()=>sendQueuedNow(queued[0]),"Could not send queued follow-up");
       else if(command==="undoThreadAction")undoThreadAction();
       else if(command==="copyReference")runUserAction(copyActiveReference,"Copy failed");
@@ -4740,15 +4740,19 @@ export default function App(){
   // The header toggle and its key reopen the panel on the tab it was closed on (the toggle used to reopen it on Files); a General
   // chat, which has no Git or repository changes, reopens it on Files.
   function toggleRightPanel(){if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel(projectlessMode&&["diff","source"].includes(rightPanelTab)?"files":rightPanelTab||"files")}
+  // A page the person asks for (a destination, its shortcut, the palette or a crumb). While a Back or Forward still opens its thread,
+  // that is a move of their own, which wins over the step (showNavigationEntry): the page the step's open covers too, which changes
+  // no location the navigation effect could see.
   function navigateSection(next){
+    const step=navigationHistoryRef.current.applying;if(step&&!step.moved){step.moved=true;step.wake?.()}
     if(next==="source"){openRightPanel("source");return}
     if(next==="preview"){openRightPanel("preview");return}
     if(next==="agents"){openRightPanel("agents");return}
     setSection(next);
   }
-  const openProviderSettings=useCallback(()=>{setSettingsEntry({section:"agents",target:"agents-provider",nonce:Date.now()});setSection("settings")},[]);
+  const openProviderSettings=useCallback(()=>{setSettingsEntry({section:"agents",target:"agents-provider",nonce:Date.now()});navigateSection("settings")},[]);
   // The composer's Configure buttons ask for the provider's API key, so they land in its field.
-  const configureProviderKey=useCallback(()=>{setSettingsEntry({section:"agents",target:"agents-provider",focus:"provider-api-key",nonce:Date.now()});setSection("settings")},[]);
+  const configureProviderKey=useCallback(()=>{setSettingsEntry({section:"agents",target:"agents-provider",focus:"provider-api-key",nonce:Date.now()});navigateSection("settings")},[]);
   useEffect(()=>{if(section!=="settings")setSettingsEntry(null)},[section]);
   // At 900px and below the inspector is an overlay drawer over the main column. Opening a full page closes it (the page would
   // otherwise sit mostly under it); Escape and a click on the dimmed area close it too, and focus moves into the drawer when it
@@ -5006,7 +5010,7 @@ export default function App(){
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:shortcutHint(commandKey("newChat")),onRun:newTask},
     {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
     ...(window.trebellDesktop?.pickDirectory?[{id:"folder",label:"Open workspace folder",detail:projectPath||"Choose a local folder",onRun:pickWorkspace}]:[]),
-    {id:"projects",label:"Recent projects",detail:"Switch checkouts or clone a repository",onRun:()=>setSection("projects")},
+    {id:"projects",label:"Recent projects",detail:"Switch checkouts or clone a repository",onRun:()=>navigateSection("projects")},
     {id:"files",label:"Files",detail:"Browse and edit the workspace",onRun:()=>openRightPanel("files")},
     ...(!projectlessMode?[{id:"diff",label:"Changes",detail:"Inspect the current Git diff",onRun:()=>openRightPanel("diff")},{id:"git",label:"Source control",detail:gitInfo?.branch||"Git and pull requests",onRun:()=>openRightPanel("source")}]:[]),
     ...(!projectlessMode?[{id:"context",label:"Trebell context",detail:"Inspect repository context supplied to the latest turn",onRun:()=>openRightPanel("context")}]:[]),
@@ -5018,10 +5022,10 @@ export default function App(){
     ...(runtimeCapabilities.delegation?[{id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")}]:[]),
     ...(paletteThread?[{id:"goal",label:"Thread goal",detail:goal?.objective||"Set a durable objective",onRun:()=>openRightPanel("goal")}]:[]),
     ...(paletteThread&&gitInfo?.isGit?[{id:"review",label:"Review changes",detail:`Ask ${agentRuntimeLabel} to review uncommitted changes`,onRun:()=>startReview()}]:[]),
-    ...(runtimeCapabilities.harnessTools?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>setSection("tools")}]:[]),
-    {id:"environments",label:"Environments",detail:"Local, WSL and SSH",onRun:()=>setSection("environments")},
-    {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>setSection("usage")},
-    {id:"licenses",label:"Open source licenses",detail:"Third-party packages and installed license notices",onRun:()=>setSection("licenses")},
+    ...(runtimeCapabilities.harnessTools?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>navigateSection("tools")}]:[]),
+    {id:"environments",label:"Environments",detail:"Local, WSL and SSH",onRun:()=>navigateSection("environments")},
+    {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>navigateSection("usage")},
+    {id:"licenses",label:"Open source licenses",detail:"Third-party packages and installed license notices",onRun:()=>navigateSection("licenses")},
     // Cycle appearance mode and Cycle theme step on to the next choice, whatever it is, so no single row here offers their keys.
     {id:"appearance-system",label:"Appearance: System",detail:"Follow the operating system light/dark setting",onRun:()=>saveAppSettings({appearanceMode:"system"})},
     {id:"appearance-light",label:"Appearance: Light",detail:"Use light appearance",onRun:()=>saveAppSettings({appearanceMode:"light"})},
@@ -5030,7 +5034,7 @@ export default function App(){
     {id:"theme-midnight",label:"Theme: Midnight",detail:"Cooler deep-blue Trebell palette",onRun:()=>saveAppSettings({appearance:"midnight"})},
     {id:"theme-black",label:"Theme: Black",detail:"OLED-friendly black Trebell palette",onRun:()=>saveAppSettings({appearance:"black"})},
     ...(settings.customThemes||[]).map(theme=>({id:"theme-custom:"+theme.id,label:"Theme: "+theme.name,detail:`Custom ${theme.appearance||"dark"} theme`,onRun:()=>saveAppSettings({appearance:theme.id})})),
-    {id:"settings",label:"Settings",detail:window.trebellDesktop?"Providers, permissions and desktop behavior":"Providers, permissions and workspace behavior",onRun:()=>setSection("settings")},
+    {id:"settings",label:"Settings",detail:window.trebellDesktop?"Providers, permissions and desktop behavior":"Providers, permissions and workspace behavior",onRun:()=>navigateSection("settings")},
     ...(paletteThread&&messages.length?[{id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread}]:[]),
   ]:null;
 
@@ -5132,7 +5136,7 @@ export default function App(){
               {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title={withKey("Open sidebar",sidebarShortcuts.sidebarToggle)}><PanelLeftOpen size={14}/></button>}
               {/* The crumb opens Projects, in the desktop app too (its folder picker is on Projects and in the palette), and nothing beside
                   it looks like a menu. It goes with the chat view, so focus goes to the Projects heading instead of falling to the page. */}
-              <button className={"project-crumb"+(crumbProjectless?" projectless":"")} onClick={()=>{setSection("projects");requestAnimationFrame(focusShownView)}} title={crumbProjectless?"No project · choose a project":projectLabel+" · Projects and workspaces"}>{crumbProjectless?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button>
+              <button className={"project-crumb"+(crumbProjectless?" projectless":"")} onClick={()=>{navigateSection("projects");requestAnimationFrame(focusShownView)}} title={crumbProjectless?"No project · choose a project":projectLabel+" · Projects and workspaces"}>{crumbProjectless?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button>
               <span>/</span>
               {/* Renaming needs a thread: before the first message the title is plain text, not a button that does nothing. A thread
                   still opening keeps the button, disabled, so a quick open does not flash it away and back. The pull requests, Review,
@@ -5210,7 +5214,7 @@ export default function App(){
         {PAGE_CRUMBS[section]&&(()=>{const [CrumbIcon,crumbLabel]=PAGE_CRUMBS[section];return <header className="workspace-header page-topbar" data-testid="page-topbar">
           <div className="workspace-breadcrumb">
             {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title={withKey("Open sidebar",sidebarShortcuts.sidebarToggle)}><PanelLeftOpen size={14}/></button>}
-            {section==="licenses"&&<><a href="#settings" className="project-crumb page-crumb-back" onClick={event=>{event.preventDefault();setSection("settings")}} aria-label="Back to Settings" title="Back to Settings"><ChevronLeft size={14} aria-hidden="true"/><span>Settings</span></a><span>/</span></>}
+            {section==="licenses"&&<><a href="#settings" className="project-crumb page-crumb-back" onClick={event=>{event.preventDefault();navigateSection("settings")}} aria-label="Back to Settings" title="Back to Settings"><ChevronLeft size={14} aria-hidden="true"/><span>Settings</span></a><span>/</span></>}
             <span className="page-crumb"><CrumbIcon size={14} aria-hidden="true"/><strong>{crumbLabel}</strong>{section==="settings"&&settingsSectionLabel&&<><ChevronRight size={12} aria-hidden="true"/><em>{settingsSectionLabel}</em></>}</span>
           </div>
           <div className="workspace-header-actions">
@@ -5224,7 +5228,7 @@ export default function App(){
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage onOfferUndo={offerPageUndo}/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>navigateSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
           {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert"><span key={threadHistory.failures}>{threadHistory.failures>1?"Still could not":"Could not"} load thread history: {threadHistory.error}</span><button type="button" className="tb-btn tb-btn--sm" aria-disabled={threadHistory.retrying||undefined} onClick={()=>setThreadHistory(current=>current.loading?current:{...current,loading:true,retrying:true,retries:(current.retries||0)+1})}>{threadHistory.retrying?"Retrying…":"Retry"}</button></div>}
           {threadHistory.items.length?threadHistory.items.map(t=>{const owner=threadCatalogRuntime(t,threadMeta[t.id]||{},agentRuntime)||agentRuntime;return <button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><div><strong title={titleOf(t)}>{titleOf(t)}</strong><span title={t.preview||t.cwd||undefined}>{t.preview||t.cwd}</span></div><em className="history-runtime-chip" title={"Owned by "+agentRuntimeName(owner)}>{HISTORY_RUNTIME_LABELS[owner]||owner}</em><time dateTime={isoDateTime(t.updatedAt)} title={fullDateTime(t.updatedAt)}>{compactDateTime(t.updatedAt)}</time></button>}):!threadHistory.error&&<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newTask,"Could not start a new thread")}>Start a new task</button>}</div>}
