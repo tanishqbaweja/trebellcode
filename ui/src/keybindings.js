@@ -36,7 +36,7 @@ export const KEYBINDING_COMMANDS=[
   {id:"projects",label:"Projects",defaultKey:"Ctrl+Shift+P",defaultWhen:"!modalOpen"},
   {id:"settings",label:"Settings",defaultKey:"Ctrl+,",defaultWhen:"!modalOpen"},
   {id:"environments",label:"Environments",defaultKey:"Ctrl+Shift+E",defaultWhen:"!modalOpen"},
-  {id:"steerQueued",label:"Send oldest queued message now",defaultKey:"Ctrl+Shift+Enter",defaultWhen:"threadOpen && running && !modalOpen"},
+  {id:"steerQueued",label:"Send oldest queued message now",defaultKey:"Ctrl+Shift+Enter",defaultWhen:"threadOpen && (running || queueHeld) && !modalOpen"},
   {id:"undoThreadAction",label:"Undo recent thread action",defaultKey:"Mod+Z",defaultWhen:"undoAvailable && !textInputFocus && !modalOpen"},
   {id:"copyReference",label:"Copy Link or Thread ID",defaultKey:"Mod+Shift+C",defaultWhen:"(threadOpen || pullRequestOpen) && !terminalFocus && !modalOpen"},
   {id:"copyPullRequestNumber",label:"Copy Number",defaultKey:"Mod+Shift+K",defaultWhen:"pullRequestOpen && !terminalFocus && !modalOpen"},
@@ -111,7 +111,7 @@ export function evaluateWhen(expression,context={}){
 }
 
 // The contexts the app sets for each key press (the keydown handler in App.jsx). A rule whose condition names any other does not run.
-export const KEYBINDING_CONTEXTS=["chatFocus","codexRuntime","threadSearch","terminalFocus","terminalOpen","previewFocus","modelPickerOpen","textInputFocus","projectOpen","threadOpen","running","modalOpen","rightPanelOpen","sidebarOpen","undoAvailable","pullRequestOpen","desktop"];
+export const KEYBINDING_CONTEXTS=["chatFocus","codexRuntime","threadSearch","terminalFocus","terminalOpen","previewFocus","modelPickerOpen","textInputFocus","projectOpen","threadOpen","running","queueHeld","modalOpen","rightPanelOpen","sidebarOpen","undoAvailable","pullRequestOpen","desktop"];
 
 // Why the resolver cannot read a condition, or "" when it can. It skips a condition it cannot read.
 function whenSyntaxProblem(expression){

@@ -47,9 +47,12 @@ test("resolver skips a matching key when its when clause is false",()=>{
   assert.equal(resolveKeybinding(event("p",{ctrlKey:true}),settings,{projectOpen:true,modalOpen:true}),null);
 });
 
-test("queued follow-up shortcut resolves only for a running thread",()=>{
+test("queued follow-up shortcut resolves for a running thread, and for one whose queue a Stop holds",()=>{
   assert.equal(resolveKeybinding(event("Enter",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,running:true,modalOpen:false}),"steerQueued");
   assert.equal(resolveKeybinding(event("Enter",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,running:false,modalOpen:false}),null);
+  // Idle after a Stop, the held follow-ups go only as the person sends them: the oldest with this shortcut too.
+  assert.equal(resolveKeybinding(event("Enter",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,running:false,queueHeld:true,modalOpen:false}),"steerQueued");
+  assert.equal(resolveKeybinding(event("Enter",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,running:false,queueHeld:true,modalOpen:true}),null);
 });
 
 test("main sidebar toggle matches Ctrl+B outside modals",()=>{

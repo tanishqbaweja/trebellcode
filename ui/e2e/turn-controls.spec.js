@@ -364,7 +364,8 @@ test("the Stop shortcut pressed before and after Codex names the turn sends one 
 // composer keeps only the draft typed there, in Trebell's own queue (a project thread's) as in Codex's (a General chat's). Codex
 // sends the stopped turn's turn/completed before it answers the interrupt. Trebell's queue goes on once the thread runs a turn
 // again: the draft, sent, runs first, and the first follow-up starts when it ends. A Stop while that follow-up is on its way, before
-// its turn exists, leaves it queued as it was too, with a follow-up queued meanwhile, and Send now still sends it.
+// its turn exists, leaves it queued as it was too, with a follow-up queued meanwhile: away and back it reads held as the others do,
+// not as a send to retry, and it starts with the queue when the next turn ends.
 for(const kind of ["Trebell","Codex"]){
   test(`Stop with follow-ups in ${kind}'s queue starts none of them and leaves them queued, and the composer keeps only the draft`,async({page})=>{
     test.setTimeout(90_000);
@@ -401,9 +402,29 @@ for(const kind of ["Trebell","Codex"]){
         await page.waitForTimeout(800);
         expect(codex.turns).toHaveLength(2);
         await expect(page.locator(".queued-message p")).toHaveText(["Queued alpha","Queued beta","Queued gamma"]);await expect(composer(page)).toHaveValue("");
-        await page.locator(".queued-message").filter({hasText:"Queued alpha"}).getByRole("button",{name:"Send now"}).click();
-        await expect.poll(()=>codex.turns.length).toBe(3);codex.turns[2].answer();
+        // Away and back, the follow-up whose send the Stop ended reads held with the others, not as a send that may have started.
+        const labels=page.locator(".queued-message>span");
+        await newTask(page).click();await expectIdleNewTask(page);
+        await threadRow(page,"Stop with a queue").locator(".thread-main").click();
+        await expect(page.locator(".queued-message p")).toHaveText(["Queued alpha","Queued beta","Queued gamma"],{timeout:10_000});
+        await expect(labels).toHaveText(Array(3).fill("Queued · held after Stop"));
+        // A message sent runs the thread again, and the queue goes on when its turn ends, that follow-up first.
+        await sendTyped(page,"One more task.");
+        await expect.poll(()=>codex.turns.length).toBe(3);codex.turns[2].answer();codex.turns[2].start();
+        await expect.poll(()=>codex.turns.length,{timeout:15_000}).toBe(4);codex.holdTurns=true;codex.turns[3].answer();codex.turns[3].start();
         await expect(alphaSent).toBeVisible();await expect(page.locator(".queued-message p")).toHaveText(["Queued beta","Queued gamma"]);
+        await expect(labels).toHaveText(["Queued","Queued"]);
+        // Stopped again, the queue waits for the person and says so; the shortcut that sends the oldest follow-up now sends it then, as
+        // Send now does, and the rest of the queue goes on after it.
+        await stop(page).click();
+        await expect(stop(page)).toHaveCount(0,{timeout:10_000});await expect(stopping(page)).toHaveCount(0);
+        await expect(labels).toHaveText(["Queued · held after Stop","Queued · held after Stop"]);
+        await page.waitForTimeout(800);expect(codex.turns).toHaveLength(4);
+        await composer(page).click();await page.keyboard.press("Control+Shift+Enter");
+        await expect.poll(()=>codex.turns.length).toBe(5);codex.turns[4].answer();codex.turns[4].start();
+        await expect(page.locator(".user-bubble").filter({hasText:"Queued beta"})).toBeVisible();
+        await expect(page.locator(".queued-message p")).toHaveText(["Queued gamma"]);await expect(labels).toHaveText(["Queued"]);
+        await expect(composer(page)).toHaveValue("");
       }
     }finally{await codex.close()}
   });
