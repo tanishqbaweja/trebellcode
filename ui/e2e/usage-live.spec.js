@@ -91,10 +91,11 @@ test("Usage page refreshes native Codex account and quota updates live",async({p
 });
 
 // A Codex app-server behind the real relay for the Usage page. `control.rateLimits` answers the limits read with a quota and a
-// reset credit ("quota"), with the window reset and the credit spent ("spent"), with no limits ("none"), or fails it ("fail").
-// Using the reset credit fails, or with `control.consume` "drop" the harness drops its connection on it without an answer, once,
-// and then resets the window; `control.consumes` counts the tries. With `control.holdInit` the handshake waits in
-// `control.heldInit`, so the app stays connecting until those answers are sent.
+// reset credit ("quota"), with the window reset and the credit spent ("spent"), with no limits ("none"), or fails it ("fail");
+// `control.rateReads` counts those reads. Using the reset credit fails, or with `control.consume` "drop" the harness drops its
+// connection on it without an answer, once, and then resets the window; with "reset" it resets the window. `control.consumes`
+// counts the tries. With `control.holdInit` the handshake waits in `control.heldInit`, so the app stays connecting until those
+// answers are sent. drop() closes the harness's connections, as an app-server restart does.
 async function startUsageFixture(control){
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
@@ -104,6 +105,7 @@ async function startUsageFixture(control){
       const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
       const send=payload=>ws.send(JSON.stringify({id:message.id,...payload})),fail=reason=>send({error:{code:-32000,message:reason}});
       if(message.method==="account/rateLimits/read"){
+        control.rateReads=(control.rateReads||0)+1;
         if(control.rateLimits==="fail")return fail("Deliberate rate-limit read failure");
         const spent=control.rateLimits==="spent";
         return send({result:control.rateLimits==="none"?{rateLimits:null}:{rateLimits:{limitId:"main",limitName:"Coding quota",primary:{usedPercent:spent?0:30,resetsAt:Math.floor(Date.now()/1000)+3600}},rateLimitResetCredits:{availableCount:spent?0:1,credits:spent?[]:[{id:"credit-1",status:"available"}]}}});
@@ -127,7 +129,7 @@ async function startUsageFixture(control){
   const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
   const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
-  return {wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",async close(){relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}};
+  return {wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",drop(){for(const socket of sockets)try{socket.terminate()}catch{}},async close(){relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}};
 }
 // Opens the Usage page on Codex (or on `runtime`), answering /api/usage with `usage(route)` and, when given, the subscription
 // limits read with `runtimeUsage(route)`.
@@ -361,6 +363,30 @@ test("a reset credit whose harness dropped on the way says it could not be used 
     await expect(codexCard).toContainText("Rate-limit window reset.");await expect(codexCard).toContainText("100% left");
     await expect(failure).toHaveCount(0);await expect(codexCard).not.toContainText("reset credit available");
     expect(control.consumes).toBe(2);
+  }finally{await fixture.close()}
+});
+
+// A reset credit used: the card says the window was reset. The harness then drops its connection; once Codex is connected again and
+// the card has read the account again on its own, it still says what that Use reset credit came to.
+test("what Use reset credit came to stays once Codex has connected again and the card has read the account on its own",async({page})=>{
+  test.setTimeout(60_000);
+  const control={rateLimits:"quota",consume:"reset"};const fixture=await startUsageFixture(control);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openUsage(page,fixture.wsUrl,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(emptyUsage)}));
+    const codexCard=page.getByTestId("codex-account-usage"),question=page.locator("dialog.inspector-text-prompt");
+    await expect(codexCard).toContainText("1 reset credit available");
+    await codexCard.getByRole("button",{name:"Use reset credit"}).click();
+    await question.getByRole("button",{name:"Use reset credit",exact:true}).click();
+    await expect(codexCard).toContainText("Rate-limit window reset.");await expect(codexCard).toContainText("100% left");
+    const reads=control.rateReads;
+    fixture.drop();
+    await expect.poll(()=>control.rateReads,{message:"the card reads the limits again once Codex is connected again",timeout:15_000}).toBeGreaterThan(reads);
+    await expect(codexCard).toContainText("100% left");await expect(codexCard.getByText("Loading live Codex account limits…")).toHaveCount(0);
+    await page.waitForTimeout(300);
+    await expect(codexCard,"the notice of the reset, after the card read the account on its own").toContainText("Rate-limit window reset.");
+    await expect(codexCard.getByRole("alert")).toHaveCount(0);
+    expect(control.consumes).toBe(1);
   }finally{await fixture.close()}
 });
 

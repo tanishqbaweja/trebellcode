@@ -40,8 +40,9 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   function toggleEnvironment(id){
     setSelectedEnvironments(current=>current.includes(id)?current.filter(item=>item!==id):[...current,id]);
   }
-  // `keep`: a read that the connection or the thread started, rather than the person, keeps what the last Use reset credit came to. A
-  // reset whose harness dropped on the way fails while the card is hidden for Codex connecting again, and still says so once it is back.
+  // `keep`: a read the person did not ask for (Codex connected again, another thread, a harness switched back) keeps what the last Use
+  // reset credit came to, its notice or its failure, until Refresh, Clear local history or another Use reset credit. A reset whose
+  // harness dropped on the way fails while the card is hidden for Codex connecting again, and still says so once it is back.
   async function refreshCodex({keep=false}={}){
     // `answered` is false until a read on the current connection completes: the card mounts as Codex connects, a render before
     // this read starts, and must not claim the route returned no limits then.
@@ -55,7 +56,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     ];
     const results=await Promise.all(requests.map(async([key,run])=>{try{return [key,await run(),null]}catch(err){return [key,null,err?.message||String(err)]}}));
     setCodex(current=>{
-      const next={...current,errors:{},loading:false,notice:"",answered:true};
+      const next={...current,errors:{},loading:false,notice:keep?current.notice:"",answered:true};
       for(const [key,value,failure] of results){
         if(failure)next.errors[key]=failure;
         else next[key]=value;
