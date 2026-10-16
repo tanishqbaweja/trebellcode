@@ -196,7 +196,9 @@ test("turns loaded above a find hit in an item-paged thread carry the done pills
 });
 
 // Escape closes the find bar from its Previous and Next match buttons as from its field: after a click on one, and after the one in
-// use turns off at the first or the last match, clicked or pressed from the keyboard, in a wide window and a narrow one.
+// use turns off at the first or the last match, clicked or pressed from the keyboard, in a wide window and a narrow one. The button
+// that turns off keeps the keyboard, so Space there (a button's own key) does nothing: it types nothing into the field, and the bar
+// stays at the match it shows.
 test("Escape closes thread find after its Previous or Next match button was used, as it does from the find field",async({page})=>{
   test.setTimeout(60_000);
   const needle="tern-marker-614";
@@ -215,15 +217,43 @@ test("Escape closes thread find after its Previous or Next match button was used
       await openFind();
       await next.click();await expect(count).toHaveText("2 / 3");
       await previous.click();await expect(count).toHaveText("1 / 3");await expect(previous).toBeDisabled();
+      await page.keyboard.press("Space");await page.waitForTimeout(400);
+      await expect(input).toHaveValue(needle);await expect(count).toHaveText("1 / 3");await expect(previous).toBeFocused();
       await page.keyboard.press("Escape");await expect(find).toBeHidden();
       // From the keyboard: Tab from the field to Next match and Enter to the last match, where it turns off.
       await openFind();
       await page.keyboard.press("Tab");await expect(next).toBeFocused();
       await page.keyboard.press("Enter");await expect(count).toHaveText("2 / 3");
       await page.keyboard.press("Enter");await expect(count).toHaveText("3 / 3");await expect(next).toBeDisabled();
+      await page.keyboard.press("Space");await page.waitForTimeout(400);
+      await expect(input).toHaveValue(needle);await expect(count).toHaveText("3 / 3");await expect(next).toBeFocused();
       await page.screenshot({animations:"disabled",path:auditDir+`native-thread-find-last-match-${mode}-${width}x800.png`});
       await page.keyboard.press("Escape");await expect(find).toBeHidden();
       await page.screenshot({animations:"disabled",path:auditDir+`native-thread-find-closed-from-buttons-${mode}-${width}x800.png`});
     }
+  }finally{await fixture.close()}
+});
+
+// More matches than a page (50) of them: Next match pressed from the keyboard at the last match of the page loads the next page with
+// the keyboard still on it, and goes on from there to the very last match, where it turns off and Space on it changes nothing.
+test("Next match keeps the keyboard while the next page of matches loads and at the very last match",async({page})=>{
+  test.setTimeout(90_000);
+  const needle="plover-marker-731";
+  // Two matches a turn in 26 turns: 52.
+  const fixture=await openNativeHistory(page,{turnCount:30,userText:index=>index<26?`Turn ${index} has ${needle} and ${needle} again.`:`Routine Native history message ${index}.`});
+  try{
+    const find=page.getByTestId("thread-find-bar"),input=page.getByTestId("thread-find-input"),count=find.locator(".thread-find-count"),next=find.getByRole("button",{name:"Next match"});
+    await page.keyboard.press("Control+f");await expect(input).toBeFocused();await page.keyboard.type(needle,{delay:8});
+    await expect(count).toHaveText("1 / 50+",{timeout:10_000});
+    // Tab from the field to Next match: Previous match, off at the first match, is out of Tab's order.
+    await page.keyboard.press("Tab");await expect(next).toBeFocused();
+    for(let index=2;index<=50;index++){await page.keyboard.press("Enter");await expect(count).toHaveText(`${index} / 50+`)}
+    // The last match of the page: Enter loads the next page, and the keyboard stays on Next match through the load.
+    await page.keyboard.press("Enter");await expect(count).toHaveText("51 / 52",{timeout:10_000});await expect(next).toBeFocused();
+    await page.keyboard.press("Enter");await expect(count).toHaveText("52 / 52");await expect(next).toBeDisabled();
+    await page.keyboard.press("Space");await page.waitForTimeout(400);
+    await expect(input).toHaveValue(needle);await expect(count).toHaveText("52 / 52");await expect(next).toBeFocused();
+    await page.screenshot({animations:"disabled",path:auditDir+"native-thread-find-last-of-two-pages-1280x800.png"});
+    await page.keyboard.press("Escape");await expect(find).toBeHidden();
   }finally{await fixture.close()}
 });

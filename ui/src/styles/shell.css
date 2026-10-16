@@ -229,7 +229,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .chat-workspace .thread-find-bar input::placeholder{color:var(--tx3)}
 .chat-workspace .thread-find-count{font:10.5px var(--mono);color:var(--tx3)}
 .chat-workspace .thread-find-bar button{width:28px;height:28px;border-radius:7px;color:var(--tx2);font-size:13px}
-.chat-workspace .thread-find-bar button:hover:not(:disabled){background:var(--bg3);color:var(--tx0)}
+.chat-workspace .thread-find-bar button:hover:not(:disabled,[aria-disabled="true"]){background:var(--bg3);color:var(--tx0)}
 .chat-workspace .thread-find-snippet{padding:6px 9px;border-radius:8px;background:var(--bg2);color:var(--tx2);font-size:11.5px}
 .chat-workspace .thread-find-snippet mark{background:color-mix(in srgb,var(--ac) 30%,transparent);color:var(--tx0)}
 
