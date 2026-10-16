@@ -18,7 +18,9 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // Then by what App does around a turn beyond showing it (turn-support.js) and what a person does to threads (thread-actions.js),
 // which moved out of the first bundle, to load at idle after the first paint, when it stood at 199.9 KB gzip with seven UI fix
 // lanes still to add to it, to give them 8 KB gzip of room: its headroom is 6.8 / 1.4 KB.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:731.5,gzipKB:238.1}};
+// Then by what lane F's fixes to Projects, Environments, Usage and setup add to the lazy chunks, 3.6 / 1.6 KB, which took them
+// 0.3 / 1.1 KB over it: its headroom stays 3.3 / 0.5 KB, as on main before lane F.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:735.1,gzipKB:239.7}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
