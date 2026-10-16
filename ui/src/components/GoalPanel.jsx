@@ -99,7 +99,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     if(!rpc)return;setBusy("save");setError("");
     try{const result=await rpc.request("thread/goal/set",{threadId:thread.id,...patch});onGoal?.(result?.goal||null)}
     // A Codex without goals refuses the goal as a method it does not have: said as such, not as Codex's error.
-    catch(e){setError(codexGoalsMissing(e)?"Could not set the goal: this Codex has no goals.":e.message||String(e))}finally{setBusy("")}
+    catch(e){setError(codexGoalsMissing(e)?"Could not set the goal: this Codex does not support goals.":e.message||String(e))}finally{setBusy("")}
   }
   async function save(){
     const text=objective.trim();if(!text){setError("Enter an objective first.");return}

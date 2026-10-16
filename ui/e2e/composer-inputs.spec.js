@@ -278,7 +278,7 @@ test("the Goal panel's Clear asks in the app's own dialog, never the browser's: 
 });
 
 // A Codex app-server without goals (one from before them) answers every thread/goal/* request with Method not found.
-test("on a Codex without goals, /goal keeps the objective in the composer and says this Codex has no goals, never Codex's Method not found",async({page})=>{
+test("on a Codex without goals, /goal keeps the objective in the composer and says this Codex does not support goals, never Codex's Method not found",async({page})=>{
   test.setTimeout(90_000);
   const thread={id:"codex-without-goals",name:"Codex without goals",preview:"Codex without goals",cwd:process.cwd(),status:{type:"idle"},model:"test/coding-fast",createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
   const harness=await startCodexHarness(thread,[]),goalRequests=[];
@@ -297,7 +297,7 @@ test("on a Codex without goals, /goal keeps the objective in the composer and sa
     await page.goto("/");
     const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Codex without goals"]')});
     await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
-    const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert"),said="Could not set the goal: this Codex has no goals. Your draft is kept.";
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert"),said="Could not set the goal: this Codex does not support goals. Your draft is kept.";
     await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");
     await expect.poll(()=>goalRequests).toContain("thread/goal/get");
     // The thread has no goal to load, which is no error.
@@ -313,16 +313,87 @@ test("on a Codex without goals, /goal keeps the objective in the composer and sa
     await shootBoth(page,"goal-command-codex-without-goals",()=>expect(alert).toBeInViewport());
     // A goal word is refused the same way, by what it was to do.
     await composer.click();await page.keyboard.press("Control+A");await page.keyboard.type("/goal pause",{delay:15});await page.keyboard.press("Enter");
-    await expect(alert).toHaveText("Could not pause the goal: this Codex has no goals. Your draft is kept.");await expect(composer).toHaveValue("/goal pause");
+    await expect(alert).toHaveText("Could not pause the goal: this Codex does not support goals. Your draft is kept.");await expect(composer).toHaveValue("/goal pause");
     // The Goal panel's Set goal says it too.
     await page.getByRole("button",{name:"Thread goal",exact:true}).click();
     const panel=page.getByTestId("goal-panel");
     await panel.getByLabel("Objective",{exact:true}).fill("Ship the release");await panel.getByRole("button",{name:"Set goal",exact:true}).click();
-    await expect(panel.locator(".inline-error")).toHaveText("Could not set the goal: this Codex has no goals.");
+    await expect(panel.locator(".inline-error")).toHaveText("Could not set the goal: this Codex does not support goals.");
     await shootBoth(page,"goal-panel-codex-without-goals",()=>expect(panel.locator(".inline-error")).toBeInViewport());
     // No turn went to Codex, and no Method not found reached the window: not on opening the thread, not for /goal.
     expect(harness.calls.filter(call=>call.method==="turn/start")).toEqual([]);
     await expect(page.getByText(/Method not found/)).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+// /goal on a Codex with goals sets the goal, paused until its first turn has started, then starts that turn. When the turn does not
+// start, the note says what became of the goal: a Stop before it started keeps the draft with no note, as a send does; a turn Codex
+// refuses leaves the goal set, and says why the turn did not start; a turn Codex has not answered may still start, so the note says to
+// look at the conversation first. Each said "Could not set the goal", though the goal was set. A resume whose turn Codex refuses
+// leaves the goal paused, so it still says the resume did not go through.
+test("/goal whose first turn does not start says what became of the goal: nothing on a Stop, set on a refusal, may still start unanswered",async({page})=>{
+  test.setTimeout(120_000);
+  const thread={id:"codex-goal-turns",name:"Codex goal turns",preview:"Codex goal turns",cwd:process.cwd(),status:{type:"idle"},model:"test/coding-fast",createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexHarness(thread,[]),goalSets=[],turnStarts=[];
+  // hold-goal: thread/goal/set waits for releaseGoal(); refuse-turn: Codex refuses turn/start; silent-turn: turn/start is never answered.
+  // The goal last set is the one thread/goal/get gives.
+  let mode="hold-goal",releaseGoal=()=>{},lastGoal=null;
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
+    await page.routeWebSocket(harness.wsUrl,ws=>{
+      const server=ws.connectToServer();
+      ws.onMessage(message=>{
+        let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
+        if(parsed?.id!=null&&parsed.method==="thread/goal/set"){
+          goalSets.push(parsed.params);
+          const at=Math.floor(Date.now()/1000),goal={threadId:thread.id,objective:parsed.params.objective||lastGoal?.objective||"Ship the release",status:parsed.params.status||"active",tokenBudget:null,tokensUsed:0,timeUsedSeconds:0,createdAt:at,updatedAt:at};
+          const answer=()=>{lastGoal=goal;ws.send(JSON.stringify({id:parsed.id,result:{goal}}))};
+          if(mode==="hold-goal"){releaseGoal=answer;return}
+          answer();return;
+        }
+        if(parsed?.id!=null&&parsed.method==="thread/goal/get"&&lastGoal){ws.send(JSON.stringify({id:parsed.id,result:{goal:lastGoal}}));return}
+        if(parsed?.id!=null&&parsed.method==="turn/start"){
+          turnStarts.push(parsed.params);
+          if(mode==="refuse-turn"){ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:"The model is overloaded"}}));return}
+          if(mode==="silent-turn")return;
+        }
+        server.send(message);
+      });
+    });
+    await page.clock.install();
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Codex goal turns"]')});
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert"),stop=page.getByRole("button",{name:"Stop",exact:true}),draft="/goal Ship the release";
+    await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");
+    // Stop while Codex sets the goal: the goal is set (paused), no turn starts, and the draft stays with no note.
+    await composer.click();await page.keyboard.type(draft,{delay:15});await page.keyboard.press("Enter");
+    await expect.poll(()=>goalSets.length).toBe(1);await expect(stop).toBeVisible();await stop.click();
+    releaseGoal();
+    await expect(stop).toHaveCount(0,{timeout:10_000});await expect(composer).toHaveValue(draft);
+    await page.waitForTimeout(500);
+    // Soft, so that the old build also shows what the other two say.
+    await expect.soft(alert,"a Stop says nothing went wrong").toHaveCount(0);
+    expect(turnStarts,"no turn started after the Stop").toEqual([]);
+    // Codex refuses the goal's first turn: the goal is set, and the note says why its turn did not start.
+    mode="refuse-turn";await composer.click();await page.keyboard.press("End");await page.keyboard.press("Enter");
+    await expect.poll(()=>turnStarts.length).toBe(1);
+    await expect.soft(alert,"a refused first turn").toHaveText("The goal is set, but its first turn did not start: The model is overloaded. Your draft is kept.");
+    await expect(composer).toHaveValue(draft);
+    await shootBoth(page,"goal-command-turn-refused",()=>expect(alert).toBeInViewport());
+    // Codex does not answer the goal's first turn: it may still start, so the note says to look at the conversation before sending again.
+    mode="silent-turn";await composer.click();await page.keyboard.press("End");await page.keyboard.press("Enter");
+    await expect.poll(()=>turnStarts.length).toBe(2);
+    await page.clock.fastForward("10:01");
+    await expect.soft(alert,"an unanswered first turn").toHaveText("Codex has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.");
+    await expect(composer).toHaveValue(draft);
+    // /goal resume whose turn Codex refuses: the goal stays paused, so the resume did not go through.
+    mode="refuse-turn";await composer.click();await page.keyboard.press("Control+A");await page.keyboard.type("/goal resume",{delay:15});await page.keyboard.press("Enter");
+    await expect.poll(()=>turnStarts.length).toBe(3);
+    await expect(alert,"a resume whose turn Codex refused").toHaveText("Could not resume the goal: The model is overloaded. Your draft is kept.");await expect(composer).toHaveValue("/goal resume");
+    expect(goalSets.map(params=>params.status),"each /goal set the goal paused until its turn starts").toEqual(["paused","paused","paused","paused"]);
   }finally{await harness.close()}
 });
 

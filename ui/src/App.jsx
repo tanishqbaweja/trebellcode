@@ -3975,7 +3975,7 @@ export default function App(){
       let goalContext=null;
       if(goalPatch){
         if(goalActivation)codexGoalActivationRef.current=goalActivation;
-        const goalResult=await rpc.request("thread/goal/set",{threadId:thread.id,...goalPatch,...(goalActivation?{status:"paused"}:{})});
+        const goalResult=await rpc.request("thread/goal/set",{threadId:thread.id,...goalPatch,...(goalActivation?{status:"paused"}:{})});pendingSend.goalSet=true;
         if(activeThreadRef.current?.id===thread.id)setGoal(goalResult?.goal||null);
         // The goal's guidance loads only for this first turn of a Codex goal (goal-context.js); should it not load, the send fails as
         // any other send does after the goal is set.
@@ -4004,6 +4004,8 @@ export default function App(){
     }catch(error){
       if(pendingSends.get(pendingSend.threadId)===pendingSend)pendingSends.delete(pendingSend.threadId);
       if(pendingSend.stopped&&error&&typeof error==="object")error.trebellSendStopped=true;
+      // A failure after the goal was set says so (runCodexGoalCommand): the goal stays set.
+      if(pendingSend.goalSet&&error&&typeof error==="object")error.trebellGoalSet=true;
       if(error&&typeof error==="object")error.trebellSendThreadId=pendingSend.threadId;
       reached(false);setMessages(prev=>prev.filter(message=>message.id!==clientId));
       // A send that ends while another view is shown leaves that view as it is.

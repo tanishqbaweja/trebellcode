@@ -206,8 +206,8 @@ export async function continueInterruptedTurns({client,recovery,showActionError}
 
 // Codex /goal, run like T3 Code's runGoalCommand and the Codex TUI: /goal shows the goal, clear, pause and resume
 // control it, and any other text sets a new goal and starts its first turn. One that cannot run keeps the draft ("kept") and
-// says why beside the composer, as /goal does on the other harnesses; a Codex without goals is said to have none.
-async function runCodexGoalCommand({activeThread,running,startTurn,attachments,model,contextChips,rpc,setGoal,openRightPanel,setEvents,setComposerAlert},command){
+// says why beside the composer, as /goal does on the other harnesses; a Codex without goals is said not to support them.
+async function runCodexGoalCommand({activeThread,running,startTurn,attachments,model,contextChips,rpc,agentRuntimeLabel,setGoal,openRightPanel,setEvents,setComposerAlert},command){
   const threadId=activeThread?.id||null;
   const note=(title,kind="tool")=>setEvents(prev=>[...prev,{id:"goal-command-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),kind,title,status:"done",raw:{}}]);
   try{
@@ -229,7 +229,16 @@ async function runCodexGoalCommand({activeThread,running,startTurn,attachments,m
       return;
     }
     openRightPanel("goal");note(describeCodexGoal(current));
-  }catch(error){setComposerAlert({kind:"send",text:"Could not "+command.type+" the goal: "+(codexGoalsMissing(error)?"this Codex has no goals.":sentenceText(error.message||String(error)))+" Your draft is kept."});return "kept"}
+  }catch(error){
+    // A Stop before the goal's first turn started keeps the draft with no note, as a send does (dispatchSend). A request Codex has not
+    // answered may still go through, and a new goal whose first turn did not start stays set (paused): each is said as it is.
+    if(error?.trebellSendStopped)return "kept";
+    const reason=codexGoalsMissing(error)?"this Codex does not support goals.":sentenceText(error.message||String(error));
+    setComposerAlert({kind:"send",text:error?.rpcTimedOut&&error.trebellGoalSet?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again."
+      :error?.rpcTimedOut&&command.type!=="show"?agentRuntimeLabel+" has not answered, so the goal may still change. Your draft is kept; check the Goal panel before sending it again."
+      :(command.type==="set"&&error?.trebellGoalSet?"The goal is set, but its first turn did not start: ":"Could not "+command.type+" the goal: ")+reason+" Your draft is kept."});
+    return "kept";
+  }
 }
 // A send that is a command rather than a message to the agent (App asks whenever a send starts with "/"): a project's recipe by its
 // name, or one of the composer's commands. It answers true when the command ran (the composer empties), "kept" when the composer
