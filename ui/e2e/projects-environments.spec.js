@@ -685,6 +685,38 @@ test.describe("Adding an environment",()=>{
     await shootModes(page,"environment-added-once",{show:form});
   });
 
+  // The person adds an environment while the server is slow, goes to Projects and comes back before it answers, and waits. The
+  // page they come back to is busy with the add, as the one they left was, so typing it again cannot add it twice, and it lists
+  // the environment once the add lands, without a Refresh.
+  test("an Add that lands after the person left Environments and came back is listed without Refresh, and the page is busy with it until then",async({page,request})=>{
+    await open(page,request);
+    const door=gate(),adds=[];
+    await page.route(/\/api\/environments$/,async route=>{if(route.request().method()!=="POST")return route.fallback();adds.push(route.request().postDataJSON()?.name);await door.promise;return route.fallback()});
+    try{
+      await nav(page,"Environments").click();
+      await hostDiscovered(page);
+      const form=page.locator(".environment-create"),name=form.getByRole("textbox",{name:"Name",exact:true}),add=form.getByRole("button",{name:"Add environment",exact:true});
+      const listed=page.locator(".environment-list>div strong"),refresh=page.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true});
+      await name.click();await page.keyboard.type("Slow box",{delay:15});
+      await add.click();
+      await expect.poll(()=>adds).toEqual(["Slow box"]);
+      await nav(page,"Projects").click();await expect(page.locator(".projects-page")).toBeVisible();
+      await nav(page,"Environments").click();
+      await hostDiscovered(page);
+      await expect(listed,"the environment is not listed while its add is on its way").toHaveText(["Local machine"]);
+      await name.click();await page.keyboard.type("Slow box",{delay:15});
+      await expect.soft(refresh,"Refresh while the add is on its way").toBeDisabled();
+      await expect.soft(add,"Add environment while the add is on its way").toBeDisabled();
+      door.open();
+      await expect(listed,"the environment once its add has landed, with no Refresh").toHaveText(["Local machine","Slow box"]);
+      await expect(refresh).toBeEnabled();
+      await expect(name,"the form starts over once the add lands, as on the page it was sent from").toHaveValue("");
+      expect(adds,"environments sent to be added").toEqual(["Slow box"]);
+      expect((await listedEnvironments(request)).map(profile=>profile.name)).toEqual(["Slow box"]);
+      await shootModes(page,"environment-added-after-return",{show:page.locator(".environment-list")});
+    }finally{door.open()}
+  });
+
   // Docker Desktop's own WSL distro runs its engine. Offline, host discovery answers as a fixed host whose wsl --list names one distro
   // beside Docker Desktop's (src/offline-e2e-host.mjs; with TREBELL_E2E_ALLOW_NETWORK=1 it asks this host), and Docker Desktop's
   // distro is neither listed as a WSL target nor offered in the Distribution picker.
@@ -1487,6 +1519,39 @@ test.describe("Saving an action or a hook",()=>{
       await expect.poll(saved).toEqual([["Quick hook",1000]]);
     }finally{
       await request.post("/api/projects",{data:{path:boot.cwd,hooks:[]}});
+    }
+  });
+
+  // The person saves a hook while the server is slow, goes to Usage and comes back before it answers, and waits. The page they come
+  // back to shows the hook's editor still saving, as the one they left did, so Save hook pressed again sends nothing; once the save
+  // lands, the editor closes and the card lists the hook, without a Refresh.
+  test("a hook save that lands after the person left Projects and came back is listed on the card without Refresh, and its editor shows until then",async({page,request})=>{
+    const boot=await open(page,request);
+    const hold=await holdCardSaves(page);
+    try{
+      await openProjects(page);
+      const card=page.locator(".project-card.active"),editor=card.locator(".project-hook-editor"),rows=card.locator(".project-hook-row strong");
+      const name=editor.getByPlaceholder("Hook name (e.g. Lint gate)"),save=editor.getByRole("button",{name:"Save hook",exact:true});
+      await card.getByRole("button",{name:"Add hook",exact:true}).click();
+      await name.click();await page.keyboard.type("Slow hook",{delay:10});
+      await editor.getByPlaceholder("Command (e.g. npm run lint)").click();await page.keyboard.type("npm run slow",{delay:10});
+      await save.click();
+      await expect.poll(()=>hold.saves).toEqual(["hooks"]);
+      await nav(page,"Usage").click();await expect(page.locator(".usage-page")).toBeVisible();
+      const listed=page.waitForResponse(response=>/\/api\/projects$/.test(response.url())&&response.request().method()==="GET");
+      await nav(page,"Projects").click();await listed;
+      await expect(card).toBeVisible();await expect(rows,"the hook is not listed while its save is on its way").toHaveCount(0);
+      await expect.soft(name,"the editor of the save on its way, with what was typed").toHaveValue("Slow hook");
+      if(await save.count()){await shootModes(page,"card-hook-saving-after-return",{show:editor});await save.click()}
+      hold.door.open();
+      await expect(rows,"the hook once its save has landed, with no Refresh").toHaveText(["Slow hook"]);
+      await expect(editor,"the editor once its save has landed").toHaveCount(0);
+      expect(await savedNames(request,boot,"hooks")).toEqual(["Slow hook"]);
+      expect(hold.saves,"saves sent").toEqual(["hooks"]);
+      await expect(page.locator(".projects-page").getByRole("alert")).toHaveCount(0);
+      await shootModes(page,"card-hook-saved-after-return",{show:card.locator(".project-hooks")});
+    }finally{
+      hold.door.open();await request.post("/api/projects",{data:{path:boot.cwd,hooks:[]}});
     }
   });
 });

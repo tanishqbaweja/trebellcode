@@ -5,13 +5,17 @@ import { api } from "../api.js";
 // The Environments page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves
 // on, or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.
 let environmentsOnScreen=null;
+// An add outlives the page that sent it too: the page the person comes back to before it answers is busy with it, as the one they
+// left was, and the page on screen shows what it did once it lands.
+let adding=null;
+const BLANK_DRAFT={type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"",themeDirectory:""};
 
 export default function EnvironmentsPage({onOfferUndo}={}){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
-  const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"",themeDirectory:""});
+  const [draft,setDraft]=useState(BLANK_DRAFT);
   // Every button is disabled while an action runs, which drops the keyboard on the page body; once the page is idle again it goes
   // back to the button that started the action, if that is still there (a removed environment's row is not).
-  const [busy,setBusyState]=useState("");
+  const [busy,setBusyState]=useState(()=>adding?"add":"");
   const busyFocusRef=useRef(null);
   const setBusy=value=>{if(value&&!busyFocusRef.current)busyFocusRef.current=document.activeElement;setBusyState(value)};
   useEffect(()=>{if(busy)return;const button=busyFocusRef.current;busyFocusRef.current=null;if(button&&button!==document.body&&button.isConnected&&!button.disabled&&document.activeElement===document.body)button.focus()},[busy]);
@@ -40,12 +44,13 @@ export default function EnvironmentsPage({onOfferUndo}={}){
 
   async function add(){
     setBusy("add");setMessage("");
+    const page=()=>environmentsOnScreen?.current||screenRef.current;
     try{
       const body={...draft,port:Number.isInteger(portNumber)?portNumber:22,name:draft.name||({local:"Local machine",wsl:"WSL",ssh:"SSH"}[draft.type])};
-      await api("/api/environments",{method:"POST",body});
-      setDraft({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"",themeDirectory:""});
-      await refresh();
-    }catch(e){setError(e.message)}finally{setBusy("")}
+      await (adding=api("/api/environments",{method:"POST",body}));
+      page().startOver();
+      await page().refresh();
+    }catch(e){page().showError(e.message)}finally{adding=null;page().idle()}
   }
   // The listed profile is the whole saved environment, and POST /api/environments keeps its id, so Undo puts back the same
   // environment: projects that use it find it again.
@@ -68,7 +73,7 @@ export default function EnvironmentsPage({onOfferUndo}={}){
     await environmentsOnScreen?.current?.refresh({reportErrors:true});
   }
   const screenRef=useRef(null);
-  screenRef.current={showError:setError,refresh};
+  screenRef.current={showError:setError,refresh,startOver:()=>setDraft(BLANK_DRAFT),idle:()=>setBusy("")};
   useEffect(()=>{const page=screenRef;environmentsOnScreen=page;return()=>{if(environmentsOnScreen===page)environmentsOnScreen=null}},[]);
   async function setEnabled(id,enabled){
     setBusy("enabled:"+id);setMessage("");

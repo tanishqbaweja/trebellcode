@@ -11,6 +11,11 @@ import { askConfirm } from "../ask-dialog.js";
 // The Projects page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves on,
 // or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.
 let projectsOnScreen=null;
+// A card's save outlives the page that sent it too: the person can leave and come back before it answers. What it did shows on the
+// page on screen then, and an action or hook editor whose save is on its way as they leave (editorSaves) shows again on the page
+// they come back to, still saving, until the save closes it (editorsLeft).
+const editorSaves=new WeakSet();let editorsLeft={};
+const editorLeft=kind=>editorSaves.has(editorsLeft[kind]?.opened)?editorsLeft[kind]:null;
 // How long an Undo of a removal waits for the card saves still on their way before it puts the project back without them.
 const UNDO_SAVE_WAIT_MS=4000;
 // What card saves change, named as the card names it: "Permissions, name".
@@ -74,8 +79,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   const [environmentData,setEnvironmentData]=useState({profiles:[]});
   // What the page is busy with: true, or "general" or "clone" while that one starts. Only the one starting reads "Starting…".
   const [busy,setBusy]=useState(false);
-  const [editor,setEditor]=useState(null);
-  const [hookEditor,setHookEditor]=useState(null);
+  const [editor,setEditor]=useState(()=>editorLeft("action"));
+  const [hookEditor,setHookEditor]=useState(()=>editorLeft("hook"));
   const [error,setError]=useState("");
   // A failure of a card's own control is said in that card, at the end of the part the control is in (cardAlert), where the person
   // is looking: at the top of the page it was out of view of every card but the first. The page's own failures stay at its top.
@@ -210,6 +215,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   // (removingRef) stays: Undo waits for the first and puts the second back with the project, so a setting changed or a name typed
   // just before Remove is not lost.
   const savesRef=useRef(new Map()),removingRef=useRef(new Set());
+  // The page a save reports to once it is answered: this one, or the one the person came back to after leaving it.
+  const onScreen=()=>projectsOnScreen?.current||screenRef.current;
   async function saveProject(project,patch,area=cardArea(patch)){
     setError("");setCardError(null);
     const saves=savesRef.current.get(project.id)||new Set(),entry={patch,gone:false};let settle=()=>{};entry.settled=new Promise(resolve=>{settle=resolve});
@@ -219,12 +226,12 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
       result=await api("/api/projects",{method:"POST",body:{id:project.id,path:project.path,environmentId:project.environmentId||null,...patch}});
     }catch(err){
       if(err?.status===404&&removingRef.current.has(project.id)){entry.gone=true;return null}
-      failInCard(project,area,err.message||String(err));return null;
+      onScreen().failInCard(project,area,err.message||String(err));return null;
     }finally{if(!entry.gone)saves.delete(entry);entry.answered=true;settle()}
-    const issues=[];
+    const issues=[],page=onScreen();
     try{onProjectUpdated?.(result.project)}catch(err){issues.push("the local project view could not apply the saved update: "+(err.message||String(err))+".")}
-    const refreshed=await freshRefresh({reportErrors:true});if(!refreshed)issues.push("the project list could not refresh. The last valid project data is still shown.");
-    partialSuccess("Project settings were saved",issues);
+    const refreshed=await page.freshRefresh({reportErrors:true});if(!refreshed)issues.push("the project list could not refresh. The last valid project data is still shown.");
+    page.partialSuccess("Project settings were saved",issues);
     return result.project||project;
   }
   async function openProject(project){
@@ -422,13 +429,16 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     await refreshAfterSuccess("Project was restored");
   }
   const screenRef=useRef(null);
-  screenRef.current={showError:setError,placeRestored,onProjectUpdated,noteInCard:(project,area,text)=>setCardError({id:project.id,area,text})};
+  screenRef.current={showError:setError,placeRestored,onProjectUpdated,noteInCard:(project,area,text)=>setCardError({id:project.id,area,text}),freshRefresh,failInCard,partialSuccess,closeEditors:close=>{setEditor(close);setHookEditor(close)}};
   useEffect(()=>{const page=screenRef;projectsOnScreen=page;return()=>{if(projectsOnScreen===page)projectsOnScreen=null}},[]);
 
   // Each editor opened is its own (opened). Its save on its way (Save pressed with Enter twice or held, or double-clicked) is the one
   // a second press waits for: the second sends nothing, nor does a press once it is saved. When the save lands it closes the editor
-  // it saved, not one the person opened since (after Cancel or another Edit).
-  const editorSavesRef=useRef(new WeakSet());
+  // it saved, not one the person opened since (after Cancel or another Edit), on the page on screen. The editors still saving as this
+  // page goes are the next one's.
+  const editorsRef=useRef(null);editorsRef.current={action:editor,hook:hookEditor};
+  useEffect(()=>()=>{const saving=value=>editorSaves.has(value?.opened)?value:null;editorsLeft={action:saving(editorsRef.current.action),hook:saving(editorsRef.current.hook)}},[]);
+  function closeSaved(opened){const close=current=>current?.opened===opened?null:current;editorsLeft={action:close(editorsLeft.action),hook:close(editorsLeft.hook)};onScreen().closeEditors(close)}
   function editScript(project,script=null){
     const value=script||blankScript();
     setEditor({
@@ -446,7 +456,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
 
   async function submitScript(project){
     if(!editor?.command.trim())return;
-    const opened=editor.opened,saving=editorSavesRef.current;if(saving.has(opened))return;
+    const opened=editor.opened,saving=editorSaves;if(saving.has(opened))return;
     const item={
       id:editor.id||crypto.randomUUID(),
       name:editor.name.trim()||"Project action",
@@ -461,7 +471,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
       : [...project.scripts,item];
     let saved=null;
     try{saving.add(opened);saved=await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId||item.id})}finally{if(!saved)saving.delete(opened)}
-    if(saved)setEditor(current=>current?.opened===opened?null:current);
+    if(saved)closeSaved(opened);
   }
 
   // A deleted action cannot be brought back, so Delete asks first, in the app's dialog; Cancel keeps it. The list saved without it is
@@ -480,11 +490,11 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
 
   async function submitHook(project){
     if(!hookEditor?.command.trim())return;
-    const opened=hookEditor.opened,saving=editorSavesRef.current;if(saving.has(opened))return;
+    const opened=hookEditor.opened,saving=editorSaves;if(saving.has(opened))return;
     const event=hookEditor.event,item={id:hookEditor.id||crypto.randomUUID(),name:hookEditor.name.trim()||hookEventLabel(event),event,command:hookEditor.command.trim(),enabled:true,failureMode:event==="source-control.after"?"warn":hookEditor.failureMode,timeoutMs:Math.max(1000,Math.min(300000,Number(hookEditor.timeoutMs)||30000)),actions:event.startsWith("source-control.")?hookEditor.actionsText.split(",").map(value=>value.trim()).filter(Boolean):[]};
     const hooks=hookEditor.id?(project.hooks||[]).map(hook=>hook.id===hookEditor.id?item:hook):[...(project.hooks||[]),item];let saved=null;
     try{saving.add(opened);saved=await saveProject(project,{hooks})}finally{if(!saved)saving.delete(opened)}
-    if(saved)setHookEditor(current=>current?.opened===opened?null:current);
+    if(saved)closeSaved(opened);
   }
 
   // A deleted hook cannot be brought back either, so Delete asks first as Delete action does.
