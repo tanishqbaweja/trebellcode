@@ -410,10 +410,16 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .history-page-control button{height:30px;padding:0 12px;border:1px solid var(--line2);border-radius:99px;background:var(--bg2);color:var(--tx1);font-size:12px}
 .conversation-column .history-page-control button:hover:not(:disabled){background:var(--bg3);color:var(--tx0)}
 /* Turns not loaded between a find hit and the newest pages: a dashed break with their count, whose button loads them. */
-.conversation-column .history-page-control.history-gap{align-items:center;gap:12px;margin:4px 0 22px}
+.conversation-column .history-page-control.history-gap{align-items:center;gap:0 12px;margin:4px 0 22px}
 .conversation-column .history-page-control.history-gap::before,.conversation-column .history-page-control.history-gap::after{content:"";flex:1;min-width:16px;border-top:1px dashed var(--line2)}
 .conversation-column .history-page-control.history-gap button{display:inline-flex;align-items:center;gap:6px;flex:none}
 .conversation-column .history-page-control.history-gap .history-gap-load{color:var(--ac);font-weight:600}
+/* Busy, a history button only says so (aria-disabled), as Load older threads does, so the keyboard stays on it to press it again
+   once its page fails; it takes no pointer meanwhile. */
+.conversation-column .history-page-control button[aria-disabled="true"]{opacity:.55;pointer-events:none}
+/* A page that did not load: the failure on a line of its own under the button pressed (after the gap's dashes too). */
+.conversation-column .history-page-control{flex-wrap:wrap}
+.conversation-column .history-page-control .history-page-error{order:1;flex-basis:100%;margin:8px 0 0;font-size:12.5px;line-height:1.5;color:var(--err);text-align:center;overflow-wrap:anywhere}
 
 /* Queued follow-ups and inline approvals line up with the assistant text column. */
 .conversation-column .inline-approval{margin:8px 0 22px 39px}

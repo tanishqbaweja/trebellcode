@@ -560,7 +560,7 @@ const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,roo
 // the card's events change around them). turnOrder: the thread's turn ids, oldest first, where a turn without rows ends.
 // turnActivity: the open thread's activity card of every turn (turn-activity.js); liveCardTurnId: the one the live card shows,
 // which has no card here; newestTurnId: the turn whose card is open until the person closes it.
-const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,activeFindItemId=null,anchorItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null,cardFailedTurns="",turnOrder=null,turnActivity=null,liveCardTurnId=null,newestTurnId=null,onToggleLayout=null}){
+const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,historyGap=null,loadingGap=false,onLoadGap,historyBusy=false,historyError=null,activeFindItemId=null,anchorItemId=null,scrollContainerRef=null,harnessLabel="",turnInfo=null,cardTurnId=null,cardFailedTurns="",turnOrder=null,turnActivity=null,liveCardTurnId=null,newestTurnId=null,onToggleLayout=null}){
   const historyRef=useRef(null);
   const virtualized=shouldVirtualizeConversation(messages);
   // The rows of the live card's turn read below the card (shell.css orders the rows after this marker). A turn that started
@@ -591,7 +591,7 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
   // or goes.
   const renderMessage=useCallback(message=>{const id=String(message.id),decoration=decorations.get(id);return <React.Fragment key={message.id}>
     {/* The turns not loaded between a detached find hit and the newest pages are marked where they belong, and load from there. */}
-    {historyGap&&id===String(historyGap.beforeId)&&<div className="history-page-control history-gap" data-testid="history-gap"><button type="button" disabled={historyBusy} onClick={onLoadGap}>{loadingGap?"Loading turns…":<>{historyGapLabel(historyGap.missing)}<span className="history-gap-load">· Load</span></>}</button></div>}
+    {historyGap&&id===String(historyGap.beforeId)&&<div className="history-page-control history-gap" data-testid="history-gap"><button type="button" aria-disabled={historyBusy||undefined} onClick={onLoadGap}>{loadingGap?"Loading turns…":<>{historyGapLabel(historyGap.missing)}<span className="history-gap-load">· Load</span></>}</button>{historyError?.at==="gap"&&<p className="history-page-error" role="alert">{historyError.text}</p>}</div>}
     {renderTrailers(trailers.before.get(id))}
     <ConversationMessageRow
       message={message}
@@ -606,9 +606,10 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
       outcomeTone={decoration?.outcomeTone||""}
     />
     {renderTrailers(trailers.after.get(id))}
-  </React.Fragment>},[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations,trailers,renderTrailers,historyGap,historyBusy,loadingGap,onLoadGap]);
+  </React.Fragment>},[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations,trailers,renderTrailers,historyGap,historyBusy,historyError,loadingGap,onLoadGap]);
   // A thread that opens with turns that have no rows (a goal's first turn failing at once) starts with their cards and outcome rows.
-  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={historyBusy} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{renderTrailers(trailers.after.get(""))}{virtualized
+  // A page that did not load says so under the button pressed, which stays there to try again, with the keyboard still on it.
+  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" aria-disabled={historyBusy||undefined} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button>{historyError?.at==="top"&&<p className="history-page-error" role="alert">{historyError.text}</p>}</div>}{renderTrailers(trailers.after.get(""))}{virtualized
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
@@ -3481,7 +3482,9 @@ export default function App(){
     const cursor=above?detached.cursor:historyPage.nextCursor;if(!cursor)return Promise.resolve();
     const itemPaging=!above&&Boolean(historyPage.itemPaging),detachedIds=new Set((detached?.ids||[]).map(String));
     const windowTurnIds=[...new Set(messages.filter(message=>!detachedIds.has(String(message.id))).map(message=>message.turnId).filter(Boolean).map(String))];
-    setHistoryPage(current=>current.threadId===threadId?{...current,loading:detached&&!above?"gap":"top"}:current);
+    // at: the button that loads, where a failure is said (Conversation), and which stays there to try again.
+    const at=detached&&!above?"gap":"top";
+    setHistoryPage(current=>current.threadId===threadId?{...current,loading:at,error:null}:current);
     const run=(async()=>{
       try{
         const page=itemPaging
@@ -3523,7 +3526,7 @@ export default function App(){
         if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));storeCards(itemPaging?itemPageBoundaryTurnId(page?.data||[],nextCursor):undefined);
         setHistoryPage(current=>({threadId,nextCursor,paginated:true,itemPaging,itemHistory:current.threadId===threadId&&Boolean(current.itemHistory),loading:false,detached:null}));
       }catch(error){
-        if(activeThreadRef.current?.id===threadId){setHistoryPage(current=>current.threadId===threadId?{...current,loading:false}:current);setEvents(prev=>[...prev,{id:"history-page-error-"+Date.now(),kind:"error",title:"Could not load earlier messages: "+(error.message||String(error)),status:"done",raw:{}}])}
+        setHistoryPage(current=>current.threadId===threadId?{...current,loading:false,error:{at,text:(at==="gap"?"Could not load these turns: ":"Could not load earlier messages: ")+(error.message||String(error))}}:current);
       }
     })();
     historyLoadRef.current=run;run.then(()=>{if(historyLoadRef.current===run)historyLoadRef.current=null});
@@ -3545,11 +3548,12 @@ export default function App(){
     if(stale())return;
     if(missing&&!missing.count&&!missing.more){
       setMessages(current=>mergeHistoryMessages(found,current.filter(message=>!detachedIds.has(String(message.id)))));
-      setHistoryPage(current=>current.threadId===threadId?{...current,nextCursor:earlierCursor,itemPaging:false,detached:null}:current);
+      setHistoryPage(current=>current.threadId===threadId?{...current,nextCursor:earlierCursor,itemPaging:false,detached:null,error:null}:current);
       return;
     }
+    // What the buttons load changes with the hit, so a failure said at them before goes.
     setMessages(current=>detachHistoryTurn(current,detached?.ids,found));
-    setHistoryPage(current=>current.threadId===threadId?{...current,detached:{ids:found.map(message=>String(message.id)),turnIds:turnId?[turnId]:[],cursor:earlierCursor,missing}}:current);
+    setHistoryPage(current=>current.threadId===threadId?{...current,detached:{ids:found.map(message=>String(message.id)),turnIds:turnId?[turnId]:[],cursor:earlierCursor,missing},error:null}:current);
   }
   function openThreadFind(){
     if(!runtimeCapabilities.threadSearch||!activeThreadRef.current?.id)return;
@@ -5078,7 +5082,7 @@ export default function App(){
           {!openingOverPage&&<div className={"conversation-scroll"+(openingShown?" opening-covered":"")} ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               {worktreeSetup&&<LazySlot><WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/></LazySlot>}
-              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={shownTurnOrder} turnActivity={shownTurnActivity} liveCardTurnId={liveCardTurnId} newestTurnId={newestTurnId} onToggleLayout={activityCardToggleLayout}/>
+              <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} historyError={historyPage.error} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={shownTurnOrder} turnActivity={shownTurnActivity} liveCardTurnId={liveCardTurnId} newestTurnId={newestTurnId} onToggleLayout={activityCardToggleLayout}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout}/>
               {guardianDenials.map(review=><LazySlot key={review.reviewId}><div className="inline-approval"><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div></LazySlot>)}
               {shownApproval&&<div className="inline-approval"><ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}

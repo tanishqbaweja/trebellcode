@@ -262,3 +262,96 @@ test("Codex thread history opens from bounded item pages and loads older items o
     await expect(page.getByRole("button",{name:"Load earlier messages"})).toHaveCount(0);
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });
+
+// A Codex thread of 20 turns that opens at turns 11-20, whose older item page fails while failOlder is above 0, with find hits in
+// turns 3, 15 and 18 (turn 3 lies apart from the turns loaded, behind a gap of 7).
+async function openFailingCodexHistory(page){
+  const thread={id:"history-failure-fixture",name:"Failing history fixture",preview:"Older pages fail",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-1000,updatedAt:Date.now()/1000,turns:[]};
+  const latest=Array.from({length:10},(_,index)=>turn(index+11)),older=Array.from({length:10},(_,index)=>turn(index+1)),fixture={failOlder:0};
+  const upstreamHttp=createServer(),upstreamWss=new WebSocketServer({noServer:true}),sockets=new Set();
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data)),params=message.params||{};if(message.id==null||!message.method)return;let result={};
+      if(message.method==="thread/items/list"&&params.cursor==="older-items"&&fixture.failOlder>0){fixture.failOlder--;ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"The history page could not be read."}}));return}
+      const direct=String(params.cursor||"").match(/^cursor-turn-(\d+)$/);
+      if(message.method==="initialize")result={userAgent:"history-failure-fixture"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:"latest-items",turnsBackwardsCursor:"latest-turn"};
+      else if(message.method==="thread/items/list")result=params.turnId?{data:entries([turn(Number(String(params.turnId).replace("turn-","")))]),nextCursor:null}:params.cursor==="older-items"?{data:entries(older).reverse(),nextCursor:null,backwardsCursor:"older-items"}:{data:entries(latest).reverse(),nextCursor:"older-items",backwardsCursor:"latest-items"};
+      else if(message.method==="thread/turns/list")result=direct&&params.sortDirection==="asc"?{data:Array.from({length:21-Number(direct[1])},(_,index)=>turn(Number(direct[1])+index)),nextCursor:null}:direct?{data:[turn(Number(direct[1]))],nextCursor:null}:{data:[],nextCursor:null,backwardsCursor:"older-anchor"};
+      else if(message.method==="thread/searchOccurrences")result={data:[3,15,18].map(index=>({turnId:"turn-"+index,itemId:(index===3?"user-":"assistant-")+index,snippet:`Message ${index} needle history`,snippetMatchRange:{start:11,end:17},turnCursor:"cursor-turn-"+index})),nextCursor:null};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
+      else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
+      else if(["thread/attachment/list","thread/queue/list","thread/timeline/list","threadSection/list","skills/list","collaborationMode/list"].includes(message.method))result={data:[],nextCursor:null};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachCodexRelay(relayHttp,{targetUrl:`ws://127.0.0.1:${upstreamPort}`});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  fixture.close=async()=>{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])};
+  try{
+    const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+    await keepThreadMeta(page);
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/codex/ws`,cwd:process.cwd(),platform:process.platform,version:"history-failure-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}}));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await page.getByRole("button",{name:/Failing history fixture/}).click();await expect(page.getByText(/Assistant Message 20 history/)).toBeVisible({timeout:10_000});
+  }catch(error){await fixture.close();throw error}
+  return fixture;
+}
+const shootBothModes=async(page,name)=>{for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await frames(page,3);await page.screenshot({animations:"disabled",path:`${auditDir}${name}-${mode}-${page.viewportSize().width}x${page.viewportSize().height}.png`})}};
+
+test("Load earlier messages that fails says so under it, in view, and loads the page when pressed again",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await openFailingCodexHistory(page);
+  try{
+    const scroller=page.locator(".conversation-scroll"),earlier=page.getByRole("button",{name:"Load earlier messages",exact:true}),failures=page.locator(".conversation-history [role=alert]");
+    // The wheel up to the top and a click there, which fails: the failure is said under the button, in view, and the button is there
+    // to press again, with the keyboard still on it. Nothing of it goes to a turn's card at the end of the thread, out of view.
+    await scroller.hover();for(let notch=0;notch<60&&await scroller.evaluate(node=>node.scrollTop>0);notch++)await page.mouse.wheel(0,-20_000);
+    await expect(earlier).toBeInViewport();
+    fixture.failOlder=1;await earlier.click();
+    const topFailure=page.locator(".history-page-control").filter({has:earlier}).getByRole("alert");
+    await expect(topFailure).toHaveText("Could not load earlier messages: The history page could not be read.");
+    await expect(topFailure).toBeInViewport();await expect(earlier).toBeEnabled();await expect(earlier).toBeFocused();
+    await expect(page.locator("[data-testid=activity-card]")).toHaveCount(0);await expect(page.locator(".tool-event")).toHaveCount(0);
+    await shootBothModes(page,"history-earlier-page-failed");await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    await earlier.click();
+    await expect(page.locator('[data-message-id="user-1"]')).toBeAttached();await expect(failures).toHaveCount(0);
+    await expect(earlier).toHaveCount(0);
+  }finally{await fixture.close()}
+});
+
+test("a history gap whose turns fail to load says so under it, keeps the keyboard on it, and loads them on Enter again",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await openFailingCodexHistory(page);
+  try{
+    const scroller=page.locator(".conversation-scroll"),failures=page.locator(".conversation-history [role=alert]");
+    // A find hit in turn 3 leaves a gap above turn 11. A click on its button fails: the gap says so under it and stays, with the
+    // keyboard on its button, and Enter loads the turns.
+    await page.getByTestId("composer").click();await page.keyboard.press("Control+f");await page.keyboard.type("needle",{delay:20});
+    const gap=page.getByTestId("history-gap");await expect(gap).toContainText("7 turns not loaded");
+    await page.keyboard.press("Escape");await expect(page.getByTestId("thread-find-bar")).toBeHidden();
+    fixture.failOlder=1;await gap.getByRole("button").click();
+    const gapFailure=gap.getByRole("alert");
+    await expect(gapFailure).toHaveText("Could not load these turns: The history page could not be read.");
+    await expect(gapFailure).toBeInViewport();await expect(gap.getByRole("button")).toContainText("7 turns not loaded");await expect(gap.getByRole("button")).toBeFocused();
+    await expect(page.locator("[data-testid=activity-card]")).toHaveCount(0);await expect(page.locator(".tool-event")).toHaveCount(0);
+    await shootBothModes(page,"history-gap-failed");
+    // In a narrow window the failure wraps under the gap, with no sideways scroll.
+    await page.setViewportSize({width:700,height:800});await gap.scrollIntoViewIfNeeded();
+    await expect(gapFailure).toBeInViewport();expect(await scroller.evaluate(node=>node.scrollWidth-node.clientWidth)).toBeLessThanOrEqual(1);
+    await shootBothModes(page,"history-gap-failed");await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    await page.keyboard.press("Enter");
+    await expect(gap).toHaveCount(0);await expect(failures).toHaveCount(0);
+    expect((await page.locator("[data-message-id]").evaluateAll(nodes=>nodes.map(node=>node.dataset.messageId))).slice(0,4)).toEqual(["user-1","assistant-1","user-2","assistant-2"]);
+  }finally{await fixture.close()}
+});
