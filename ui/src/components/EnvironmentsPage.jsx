@@ -27,6 +27,9 @@ export default function EnvironmentsPage({onOfferUndo}={}){
   // A TCP port is a whole number from 1 to 65535; anything else would be saved and only fail at connect time.
   const portNumber=String(draft.port).trim()===""?NaN:Number(draft.port);
   const portInvalid=draft.type==="ssh"&&!(Number.isInteger(portNumber)&&portNumber>=1&&portNumber<=65535);
+  // An empty Local form would add only a second "Local machine" under the host's own, so Add environment waits for a name, a working
+  // directory or a themes directory. The form starts over after an add, so a press after it (Enter twice or held) adds nothing.
+  const emptyLocal=draft.type==="local"&&![draft.name,draft.cwd,draft.themeDirectory].some(value=>value.trim());
 
   async function refresh({reportErrors=false}={}){
     try{setData(await api("/api/environments"));setDiscovery("done");if(reportErrors)setMessage("");return true}
@@ -116,7 +119,7 @@ export default function EnvironmentsPage({onOfferUndo}={}){
         {draft.type==="wsl"&&<label>Distribution<select value={draft.distro} onChange={e=>setDraft(d=>({...d,distro:e.target.value}))}><option value="">Default WSL distro</option>{(data.capabilities?.wsl?.distros||[]).map(x=><option key={x}>{x}</option>)}</select></label>}
         {draft.type!=="local"&&<label>Codex executable<input value={draft.codexPath} onChange={e=>setDraft(d=>({...d,codexPath:e.target.value}))} placeholder={"Default codex on the host's PATH"}/></label>}
         {draft.type==="ssh"&&<><label>Host<input value={draft.host} onChange={e=>setDraft(d=>({...d,host:e.target.value}))} placeholder="dev.example.com"/></label><div className="environment-two"><label>User<input value={draft.user} onChange={e=>setDraft(d=>({...d,user:e.target.value}))}/></label><label>Port<input type="number" min="1" max="65535" aria-invalid={portInvalid?"true":undefined} value={draft.port} onChange={e=>setDraft(d=>({...d,port:e.target.value}))}/></label></div>{portInvalid&&<p className="environment-field-error" role="alert">Port must be a whole number from 1 to 65535.</p>}<label>Identity file<input value={draft.identityFile} onChange={e=>setDraft(d=>({...d,identityFile:e.target.value}))} placeholder={"C:\\Users\\me\\.ssh\\id_ed25519"}/></label></>}
-        <button className="primary" onClick={add} disabled={!!busy||(draft.type==="ssh"&&!draft.host.trim())||portInvalid}><Plus size={13}/> Add environment</button>
+        <button className="primary" onClick={add} disabled={!!busy||emptyLocal||(draft.type==="ssh"&&!draft.host.trim())||portInvalid}><Plus size={13}/> Add environment</button>
       </section>
       <section className="capability-card">
         <div className="capability-card-head"><span><Server size={15}/><strong>Host capabilities</strong></span></div>

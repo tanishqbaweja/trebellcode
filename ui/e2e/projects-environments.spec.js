@@ -652,6 +652,39 @@ test.describe("Adding an environment",()=>{
     await shootModes(page,"environment-codex-executable-empty",{show:codex});
   });
 
+  // Enter on Add environment adds what was typed and the form starts over. Enter pressed again, or held, once the environment is
+  // listed lands on that empty Local form, which would only add a second "Local machine" under the host's own: it adds nothing.
+  test("Add environment pressed again from the keyboard adds one environment, and an empty Local form adds none",async({page,request})=>{
+    await open(page,request);
+    const adds=[];page.on("request",sent=>{if(sent.method()==="POST"&&/\/api\/environments$/.test(sent.url()))adds.push(sent.postDataJSON()?.name)});
+    await nav(page,"Environments").click();
+    await hostDiscovered(page);
+    const form=page.locator(".environment-create"),name=form.getByRole("textbox",{name:"Name",exact:true}),add=form.getByRole("button",{name:"Add environment",exact:true});
+    const listed=page.locator(".environment-list>div strong"),refresh=page.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true}),added=[];
+    for(const [mode,box] of [["dark","Twice box"],["light","Held box"]]){
+      await switchMode(page,mode);
+      await name.click();await page.keyboard.type(box,{delay:15});
+      await tabTo(page,add);
+      if(mode==="dark")await page.keyboard.press("Enter");else await page.keyboard.down("Enter");
+      // The environment is listed and the page is idle again: every button is disabled while an add runs.
+      await expect(listed.filter({hasText:box})).toHaveCount(1);await expect(refresh).toBeEnabled();await frames(page);
+      if(mode==="dark")await page.keyboard.press("Enter");
+      else{for(let repeat=0;repeat<8;repeat++)await page.keyboard.down("Enter");await page.keyboard.up("Enter")}
+      added.push(box);
+      // Refresh waits for an add still running, then reads the list again.
+      await refresh.click();
+      await expect(listed).toHaveText(["Local machine",...added]);
+      expect(adds,"environments sent to be added").toEqual(added);
+      await expect(name).toHaveValue("");
+      await expect(add,"an empty Local form adds nothing").toBeDisabled();
+    }
+    // A WSL environment needs nothing typed: its default distribution is a choice of its own.
+    const type=form.getByRole("combobox",{name:"Type"});
+    if(await type.locator("option[value=wsl]").isEnabled()){await type.selectOption("wsl");await expect(add).toBeEnabled();await type.selectOption("local");await expect(add).toBeDisabled()}
+    expect((await listedEnvironments(request)).map(profile=>profile.name)).toEqual(added);
+    await shootModes(page,"environment-added-once",{show:form});
+  });
+
   // Docker Desktop's own WSL distro runs its engine. Offline, host discovery answers as a fixed host whose wsl --list names one distro
   // beside Docker Desktop's (src/offline-e2e-host.mjs; with TREBELL_E2E_ALLOW_NETWORK=1 it asks this host), and Docker Desktop's
   // distro is neither listed as a WSL target nor offered in the Distribution picker.

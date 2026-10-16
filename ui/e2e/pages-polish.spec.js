@@ -558,8 +558,10 @@ for(const [width,height] of [[1600,980],[1280,800],[900,800]])for(const mode of 
     for(const label of ["Projects","History","Usage","Environments"]){await nav(page,label).click();await check(label.toLowerCase())}
     await quieter("Environments field label",page.locator(".environments-page .environment-create>label"),page.locator(".environments-page .environment-create select"));
     await quieter("Environments card sub-line",page.locator(".environments-page .capability-card span").filter({hasText:/^This machine$/}),page.locator(".environments-page .capability-card strong").filter({hasText:/^Local$/}));
-    // A primary button keeps its white label readable while hovered, when its fill brightens.
+    // A primary button keeps its white label readable while hovered, when its fill brightens: Add environment, which a name typed
+    // in its empty Local form makes pressable.
     const add=page.locator(".environments-page .environment-create .primary");
+    await page.locator(".environments-page .environment-create").getByRole("textbox",{name:"Name",exact:true}).fill("Contrast box");
     await add.hover();
     await add.evaluate(el=>{for(const animation of el.getAnimations())animation.finish()});
     await expect.poll(()=>add.evaluate(el=>getComputedStyle(el).filter)).toContain("brightness");
