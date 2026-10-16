@@ -454,6 +454,97 @@ test("the scoped After inactive days field keeps every digit typed and saves the
   }
 });
 
+// Waits until the page stops moving: what read() reads is the same twice in a row.
+async function settles(read){let last;await expect.poll(async()=>{const now=await read(),same=now===last;last=now;return same},{intervals:[150]}).toBe(true)}
+
+// A setting opened from the search stays in view while the page around it settles. Project defaults shows its fields only once the
+// scoped settings answer (late here, as from a remote environment or a busy machine): they grew above Storage cleanup after its one
+// scroll and pushed it down until only the edge of its heading showed. A person who scrolls meanwhile keeps the place they scrolled to.
+test("a setting opened from the search stays in view when a card above it loads later, and a person's own scroll is left alone",async({page,request})=>{
+  test.setTimeout(60_000);
+  // Project defaults' read of the scoped settings waits while `hold` is set, until release().
+  let hold=true;const held=[],release=()=>{hold=false;for(const resolve of held.splice(0))resolve()};
+  await page.route(/\/api\/scoped-settings\?/,async route=>{if(hold)await new Promise(resolve=>held.push(resolve));await route.continue().catch(()=>{})});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openSettings(page,request,"Search Reveal Workspace");
+    const search=page.getByRole("textbox",{name:"Search settings"}),storage=page.locator('[data-setting-target="workspace-storage"]');
+    const fields=page.getByTestId("scoped-settings-card").getByLabel("Default model"),scroller=page.locator(".secondary-page");
+    const storageTop=async()=>Math.round((await storage.boundingBox()).y);
+    const open=async how=>{
+      await page.locator(".settings-nav").getByRole("button",{name:/General/}).click();hold=true;
+      await search.click();await page.keyboard.type("storage",{delay:20});
+      if(how==="Enter")await page.keyboard.press("Enter");
+      else await page.getByTestId("settings-search-results").getByRole("button",{name:/Storage cleanup/}).click();
+      await expect(storage).toHaveClass(/settings-search-hit/);
+    };
+    // With the keyboard and with the mouse, in dark and light, wide and narrow: the card above loads after the setting's scroll has
+    // ended, or while it is still on its way.
+    for(const [mode,width,how,late] of [["dark",1280,"Enter",true],["light",1280,"click",false],["dark",900,"Enter",true]]){
+      await page.setViewportSize({width,height:800});await switchMode(page,mode);
+      await open(how);
+      if(late){
+        await expect(storage).toBeInViewport({ratio:0.9});await settles(storageTop);
+        await expect(fields).toHaveCount(0);
+      }
+      release();
+      await expect(fields).toBeVisible();
+      await expect(storage,"Storage cleanup is still in view once Project defaults has grown above it").toBeInViewport({ratio:0.9});
+      await settles(storageTop);await expect(storage).toBeInViewport({ratio:0.9});
+      await page.screenshot({animations:"disabled",path:shots+`search-result-stays-in-view-${how.toLowerCase()}-${mode}-${width}.png`});
+    }
+    // The person turns the wheel before the card above loads: the page stays where they put it.
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+    await open("Enter");
+    await expect(storage).toBeInViewport({ratio:0.9});await settles(storageTop);
+    const box=await storage.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+20);
+    for(let notch=0;notch<3;notch++)await page.mouse.wheel(0,-100);
+    const scrolled=()=>scroller.evaluate(node=>node.scrollTop);
+    await settles(scrolled);const place=await scrolled();
+    release();
+    await expect(fields).toBeVisible();
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    expect(await scrolled(),"the page stays where the person scrolled it").toBe(place);
+    await page.screenshot({animations:"disabled",path:shots+"search-result-person-scrolled-dark-1280.png"});
+  }finally{release()}
+});
+
+// The search results give way to the categories as one opens, so the second click of a double click on a result landed on the
+// category under the pointer and opened General instead of the setting. In a narrow window the categories scroll away with the
+// page, and the cards above the setting pass under the pointer instead. The setting also stays in view as Project defaults, above
+// it, loads later.
+test("a double click on a Settings search result opens that setting and keeps it in view, and its second click presses nothing",async({page,request})=>{
+  let hold=true;const held=[],release=()=>{hold=false;for(const resolve of held.splice(0))resolve()};
+  await page.route(/\/api\/scoped-settings\?/,async route=>{if(hold)await new Promise(resolve=>held.push(resolve));await route.continue().catch(()=>{})});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openSettings(page,request,"Search Double Click Workspace");
+    const storage=page.locator('[data-setting-target="workspace-storage"]'),fields=page.getByTestId("scoped-settings-card").getByLabel("Default model");
+    // What the page asks the server to do (the mode button saves the mode).
+    const posts=[];page.on("request",sent=>{if(sent.method()==="POST")posts.push(new URL(sent.url()).pathname)});
+    for(const [mode,width] of [["dark",1280],["light",900]]){
+      await page.setViewportSize({width,height:800});await switchMode(page,mode);
+      await page.locator(".settings-nav").getByRole("button",{name:/General/}).click();hold=true;
+      await page.getByRole("textbox",{name:"Search settings"}).click();await page.keyboard.type("storage",{delay:20});
+      const box=await page.getByTestId("settings-search-results").getByRole("button",{name:/Storage cleanup/}).boundingBox();
+      await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+      // The first click opens the setting; the second comes as the page answers it, at the same place.
+      await page.mouse.down();await page.mouse.up();
+      await expect(storage).toHaveClass(/settings-search-hit/);
+      await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+      await expect(page.locator(".settings-section-head h2")).toHaveText("Workspace");
+      await expect(page.locator(".settings-nav button[aria-current=page]")).toContainText("Workspace");
+      await expect(storage).toBeInViewport({ratio:0.9});
+      release();
+      await expect(fields).toBeVisible();
+      await expect(storage,"Storage cleanup is still in view once Project defaults has grown above it").toBeInViewport({ratio:0.9});
+      await settles(async()=>Math.round((await storage.boundingBox()).y));await expect(storage).toBeInViewport({ratio:0.9});
+      expect(posts.filter(path=>path!=="/api/settings"),"the second click pressed nothing").toEqual([]);
+      await page.screenshot({animations:"disabled",path:shots+`search-result-double-click-${mode}-${width}.png`});
+    }
+  }finally{release()}
+});
+
 test("failed saves from inline settings controls stay in the alert without unhandled rejections",async({page,request})=>{
   const pageErrors=[];
   page.on("pageerror",error=>pageErrors.push(String(error?.message||error)));
