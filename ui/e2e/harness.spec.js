@@ -494,3 +494,56 @@ test("onboarding can import matching local conversation history",async({page,req
   await onboarding.getByRole("button",{name:"Finish setup"}).click();
   await expect(onboarding).toBeHidden();
 });
+
+// The desktop window's own controls, with the bridge as desktop/preload.cjs gives it: the shell says each change of the window's
+// maximised state, however it came (the Maximize button, a double click on the title bar, Win+Up, a snap), and the window keeps it
+// across a reload of the page.
+test("the desktop window's controls are named Minimize, Maximize and Close, and Maximize turns into Restore while the window is maximised",async({page,request})=>{
+  await page.addInitScript(()=>{
+    window.__windowCalls=[];const listeners=new Set();let maximized=sessionStorage.getItem("e2e-window-maximized")==="1";
+    window.__maximizeWindow=value=>{maximized=value;sessionStorage.setItem("e2e-window-maximized",value?"1":"0");for(const listener of listeners)listener(value)};
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      minimize:()=>window.__windowCalls.push("minimize"),
+      maximize:()=>{window.__windowCalls.push("maximize");setTimeout(()=>window.__maximizeWindow(!maximized),30)},
+      close:()=>window.__windowCalls.push("close"),
+      maximized:async()=>maximized,
+      onMaximized:listener=>{listeners.add(listener);return()=>listeners.delete(listener)},
+    }});
+  });
+  await request.post("/api/settings",{data:{onboardingComplete:true,panelAnimationMs:0}});
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  const controls=page.locator(".window-controls-pinned");
+  const minimize=controls.getByRole("button",{name:"Minimize",exact:true}),maximize=controls.getByRole("button",{name:"Maximize",exact:true});
+  const restore=controls.getByRole("button",{name:"Restore",exact:true}),close=controls.getByRole("button",{name:"Close",exact:true});
+  // A screen reader names them for what they do, not by the glyphs drawn on them.
+  await expect(minimize).toBeVisible();await expect(maximize).toBeVisible();await expect(close).toBeVisible();
+  await expect(restore).toHaveCount(0);
+  const maximizeGlyph=await maximize.textContent();
+  // Maximize clicked: once the window is maximised the button is Restore, with its own glyph and tooltip.
+  await maximize.click();
+  await expect(restore).toBeVisible();await expect(maximize).toHaveCount(0);
+  await expect(restore).toHaveAttribute("title","Restore");
+  expect(await restore.textContent(),"Restore shows the restore glyph, not Maximize's").not.toBe(maximizeGlyph);
+  // From the keyboard: Tab from the composer to Restore, Enter restores the window and Space maximises it again.
+  await page.getByTestId("composer").click();
+  for(let i=0;i<40&&!await restore.evaluate(node=>node===document.activeElement);i++)await page.keyboard.press("Tab");
+  await expect(restore).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(maximize).toBeFocused();await expect(maximize).toHaveAttribute("title","Maximize");
+  await expect.poll(async()=>await maximize.textContent()).toBe(maximizeGlyph);
+  await page.keyboard.press("Space");
+  await expect(restore).toBeFocused();
+  await shootBothModes(page,"desktop-window-controls-restore");
+  // Restored and maximised by the system, not the button (Win+Down, a double click on the title bar): the button follows the window.
+  await page.evaluate(()=>window.__maximizeWindow(false));
+  await expect(maximize).toBeVisible();
+  await page.evaluate(()=>window.__maximizeWindow(true));
+  await expect(restore).toBeVisible();
+  // A reload while the window is maximised starts with Restore.
+  await page.reload();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect(restore).toBeVisible();await expect(maximize).toHaveCount(0);
+  await minimize.click();await close.click();
+  expect(await page.evaluate(()=>window.__windowCalls)).toEqual(["minimize","close"]);
+});

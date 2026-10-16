@@ -656,6 +656,14 @@ function UndoCountdown({expiresAt}){
   useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),250);return()=>clearInterval(timer)},[expiresAt]);
   return <em aria-hidden="true">{Math.max(1,Math.ceil((Number(expiresAt)-now)/1000))}s</em>;
 }
+// The desktop window's own buttons, named for what they do. Maximize is Restore while the window is maximised, however it got there
+// (this button, a double click on the title bar, Win+Up, a snap): the shell says each change (desktop/main.mjs).
+function WindowControls({desktop}){
+  const [maximized,setMaximized]=useState(false);
+  useEffect(()=>{let live=true;desktop.maximized?.().then(value=>{if(live)setMaximized(Boolean(value))},()=>{});const off=desktop.onMaximized?.(value=>setMaximized(Boolean(value)));return()=>{live=false;off?.()}},[desktop]);
+  const middle=maximized?"Restore":"Maximize";
+  return <div className="window-controls window-controls-pinned"><button onClick={()=>desktop.minimize()} title="Minimize" aria-label="Minimize">—</button><button onClick={()=>desktop.maximize()} title={middle} aria-label={middle}>{maximized?"❐":"□"}</button><button className="window-close" onClick={()=>desktop.close()} title="Close" aria-label="Close">×</button></div>;
+}
 
 // Scrolls a menu just enough to show its keyboard-highlighted row (without scrolling anything around the menu).
 function keepActiveOptionVisible(menu){
@@ -5307,7 +5315,7 @@ export default function App(){
       {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")+(viewSection!=="chat"?" secondary-surface-error":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     </div>
 
-    {window.trebellDesktop?.minimize&&window.trebellDesktop?.maximize&&window.trebellDesktop?.close&&<div className="window-controls window-controls-pinned"><button onClick={()=>window.trebellDesktop.minimize()} title="Minimize">—</button><button onClick={()=>window.trebellDesktop.maximize()} title="Maximize">□</button><button className="window-close" onClick={()=>window.trebellDesktop.close()} title="Close">×</button></div>}
+    {window.trebellDesktop?.minimize&&window.trebellDesktop?.maximize&&window.trebellDesktop?.close&&<WindowControls desktop={window.trebellDesktop}/>}
     {elicitations.length>0&&(()=>{const verification=userVerificationAvailability({runtime:agentRuntime,remote:Boolean(workspaceEnvironmentId)});return <LazySlot><McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={verification.available} verificationUnavailableReason={verification.reason}/></LazySlot>})()}
     {!elicitations.length&&questions[0]&&<LazySlot><QuestionModal key={questions[0].id} request={questions[0]} threadLabel={requestThreadLabel(questions[0])} waiting={questions.length-1} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={(room,keep)=>pickFiles("",{room,keep})}/></LazySlot>}
     {snoozeRequest&&<LazySlot><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)} focusFallback={focusShownView}/></LazySlot>}

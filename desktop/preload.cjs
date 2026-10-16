@@ -10,6 +10,13 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
   minimize: () => ipcRenderer.send("window:minimize"),
   maximize: () => ipcRenderer.send("window:maximize"),
   close: () => ipcRenderer.send("window:close"),
+  // Whether the window is maximised, and each change of it however it came, so the page's Maximize can say Restore.
+  maximized: () => invoke("window:maximized"),
+  onMaximized: (handler) => {
+    const listener=(_event,maximized)=>handler(Boolean(maximized));
+    ipcRenderer.on("window:maximized",listener);
+    return () => ipcRenderer.removeListener("window:maximized",listener);
+  },
   platform: process.platform,
   pickDirectory: () => invoke("workspace:pickDirectory"),
   pickFiles: () => invoke("workspace:pickFiles"),

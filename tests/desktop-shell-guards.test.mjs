@@ -139,6 +139,20 @@ test("the desktop shell keeps its window and bridge to the app, and its notifica
       await window.evaluate(()=>window.trebellDesktop.zoom.reset());
     });
 
+    // The page's Maximize turns into Restore while the window is maximised, however it got there: the page's button, or the system (a
+    // double click on the title bar, Win+Up, a snap), which only the window's own maximize and unmaximize tell. Both are stubbed, so
+    // the hidden window is not shown.
+    await t.test("the window tells the page when it is maximised and when it is restored",async()=>{
+      await stubMainWindow("globalThis.__maximized=false;main.isMaximized=()=>globalThis.__maximized;main.maximize=()=>{globalThis.__maximized=true;main.emit('maximize')};main.unmaximize=()=>{globalThis.__maximized=false;main.emit('unmaximize')};");
+      await window.evaluate(()=>{window.__maximizedSaid=[];window.trebellDesktop.onMaximized(value=>window.__maximizedSaid.push(value))});
+      assert.equal(await window.evaluate(()=>window.trebellDesktop.maximized()),false,"not maximised at first");
+      await window.evaluate(()=>window.trebellDesktop.maximize());await sleep(300);
+      assert.equal(await window.evaluate(()=>window.trebellDesktop.maximized()),true,"maximised by the page's Maximize");
+      await stubMainWindow("main.unmaximize();");await sleep(300);
+      assert.equal(await window.evaluate(()=>window.trebellDesktop.maximized()),false,"restored by the system");
+      assert.deepEqual(await window.evaluate(()=>window.__maximizedSaid),[true,false],"the page is told of both");
+    });
+
     // Last: it runs the shutdown cleanup. Both quits are recorded instead of performed, and each before-quit listener gets a
     // stand-in event. The cleanup gets up to a minute: on a busy machine stopping the server's processes takes longer than 15 s.
     // A terminal is open in the drawer, which the cleanup used to wait on for good, so the app stayed running, hidden and without its

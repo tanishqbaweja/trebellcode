@@ -826,6 +826,9 @@ async function createWindow(){
     if(process.argv.includes("--background")&&backgroundEnabled){ensureTray();return}
     windowRef?.show();
   });
+  // The page's Maximize turns into Restore while the window is maximised, however it got there: the button, a double click on the
+  // title bar, Win+Up or a snap.
+  for(const name of ["maximize","unmaximize"])windowRef.on(name,()=>{try{if(windowRef&&!windowRef.isDestroyed())windowRef.webContents.send("window:maximized",windowRef.isMaximized())}catch{}});
   windowRef.on("close",(event)=>{
     if(backgroundEnabled&&!quitting){event.preventDefault();windowRef?.hide();ensureTray()}
   });
@@ -858,6 +861,7 @@ if(!lock){
     windowRef.isMaximized() ? windowRef.unmaximize() : windowRef.maximize();
   });
   listen("window:close",()=>windowRef?.close());
+  handle("window:maximized",()=>Boolean(windowRef?.isMaximized()));
   handle("desktop:background:get",()=>({enabled:backgroundEnabled,...backgroundLoginSettings()}));
   handle("desktop:background:set",(_event,value)=>({enabled:setBackgroundEnabled(value)}));
   handle("desktop:update:get",()=>configureUpdater());
