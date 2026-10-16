@@ -555,7 +555,7 @@ for(const kind of ["question","app request"]){
 }
 
 // A required multi-select left empty is refused as an empty required field is, by its name, from the mouse and from the keyboard;
-// once an option is chosen the form goes with it.
+// once an option is chosen the form goes with it. The field is marked in both modes: its title and its unchosen options in red.
 test("an app form refuses a required multi-select left empty, saying it is required as it does for an empty required field",async({page})=>{
   test.setTimeout(45_000);
   await page.setViewportSize({width:1280,height:800});
@@ -565,6 +565,13 @@ test("an app form refuses a required multi-select left empty, saying it is requi
     const modal=page.getByTestId("mcp-elicitation"),targets=modal.getByRole("group",{name:"Targets"}),submit=modal.getByRole("button",{name:"Submit",exact:true}),alert=modal.getByRole("alert");
     const focused=()=>page.evaluate(()=>{const node=document.activeElement;return (node?.type==="checkbox"?node.closest("label"):node)?.textContent?.trim()});
     const tabTo=async name=>{for(let index=0;index<12&&await focused()!==name;index++)await page.keyboard.press("Tab");expect(await focused()).toBe(name)};
+    // How the refused field shows: marked, its title in the error colour, and each option left unchosen outlined in the error line.
+    const marking=()=>targets.evaluate(group=>{
+      const probe=document.createElement("span");probe.style.cssText="border:1px solid var(--errb);color:var(--err)";group.append(probe);
+      const errLine=getComputedStyle(probe).borderTopColor,errText=getComputedStyle(probe).color;probe.remove();
+      const field=group.closest(".mcp-field"),title=field?.querySelector(".mcp-field-label");
+      return {marked:Boolean(field?.classList.contains("invalid")),title:Boolean(title)&&getComputedStyle(title).color===errText,options:[...group.querySelectorAll("label")].map(label=>getComputedStyle(label).borderTopColor===errLine)};
+    });
     for(const [pass,width] of [["dark",1280],["light",900]]){
       if(pass==="light")await toggleMode(page);
       await page.setViewportSize({width,height:800});
@@ -573,6 +580,7 @@ test("an app form refuses a required multi-select left empty, saying it is requi
       if(pass==="dark"){
         await submit.click();
         await expect(alert).toHaveText("Targets is required");await expect(modal.locator(".mcp-field.invalid")).toContainText("Targets");
+        await expect.poll(marking).toEqual({marked:true,title:true,options:[true,true]});
         expect(harness.answersTo(form)).toHaveLength(0);
         await shoot(page,"app-form-required-multiselect");
         // Chosen and taken back, it is refused again; chosen, the form goes.
@@ -583,6 +591,8 @@ test("an app form refuses a required multi-select left empty, saying it is requi
         // From the keyboard: Enter on Submit, then Space on an option and Enter on Submit again.
         await tabTo("Submit");await page.keyboard.press("Enter");
         await expect(alert).toHaveText("Targets is required");expect(harness.answersTo(form)).toHaveLength(0);
+        // Marked as in dark mode: the light theme's option line does not hide the error line.
+        await expect.poll(marking).toEqual({marked:true,title:true,options:[true,true]});
         await shoot(page,"app-form-required-multiselect");await page.setViewportSize({width,height:800});
         await tabTo("web");await page.keyboard.press("Space");await expect(targets.getByRole("checkbox",{name:"web"})).toBeChecked();
         await tabTo("Submit");await page.keyboard.press("Enter");
