@@ -378,8 +378,10 @@ async function ensureAgentBrowser({show=false}={}){
   const webRequest=contents.session.webRequest;
   webRequest.onErrorOccurred(details=>pushBounded("networkFailures",{url:String(details?.url||"").slice(0,1000),method:String(details?.method||""),error:String(details?.error||"").slice(0,500),resourceType:String(details?.resourceType||""),at:Date.now()}));
   webRequest.onCompleted(details=>{const status=Number(details?.statusCode)||0;if(status>=400)pushBounded("networkFailures",{url:String(details?.url||"").slice(0,1000),method:String(details?.method||""),statusCode:status,resourceType:String(details?.resourceType||""),at:Date.now()})});
+  // A popup opens in place, as the agent works on one page at a time, when it is a web page. Another (javascript:, about:blank, data:)
+  // would put a blank or made-up page in place of the agent's, so it is refused, as Chromium refuses a file: popup itself.
   contents.setWindowOpenHandler(({url})=>{
-    if(agentBrowser===browser&&!browser.isDestroyed())browser.loadURL(url).catch(()=>{});
+    if(/^https?:\/\//i.test(url)&&agentBrowser===browser&&!browser.isDestroyed())browser.loadURL(url).catch(()=>{});
     return {action:"deny"};
   });
   const publishState=()=>{

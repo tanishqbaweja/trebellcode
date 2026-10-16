@@ -123,3 +123,49 @@ test("the agent browser draws a page that sets no background on white, in its wi
     assert.ok(lightness(pixels.ink)<200,`its heading is drawn in black on it, not in rgb(${pixels.ink})`);
   }finally{await desktop.done()}
 });
+
+// A page's popup loads in place in the agent browser, as the agent works on one page at a time, when it is a web page. A popup of
+// another kind (javascript:, about:blank, data:) is refused, as Chromium refuses a file: popup itself, so the agent's page stays.
+const POPUP_START="<!doctype html><title>Popup start</title><style>button,a{display:block;margin:12px;font-size:16px}</style>"+
+  "<button id='script' onclick=\"window.open('javascript:document.title=&quot;script ran&quot;');document.body.dataset.opened=this.id\">window.open javascript</button>"+
+  "<button id='blank' onclick=\"window.open();document.body.dataset.opened=this.id\">window.open blank</button>"+
+  "<button id='data' onclick=\"window.open('data:text/html,<h1>made-up page</h1>');document.body.dataset.opened=this.id\">window.open data</button>"+
+  "<a id='web' href='/next' target='_blank'>next page</a>";
+test("a page's popup that is not a web page leaves the agent browser on its page, and a web page's popup opens in it",{timeout:90_000},async()=>{
+  if(process.platform!=="win32")return test.skip("Desktop browser runtime fixture currently targets the Windows desktop build.");
+  const desktop=await startDesktop({"/":POPUP_START,"/next":"<!doctype html><title>Popup next</title><h1>next page</h1>"});
+  try{
+    const {app,window,site,gui}=desktop,start=site+"/";
+    // The agent window's page (its address, title, whether it loads and the last button clicked on it) and how many windows there are.
+    const agent=()=>app.evaluate(async({BrowserWindow},gui)=>{
+      const windows=BrowserWindow.getAllWindows().filter(item=>!item.isDestroyed()),contents=windows.find(item=>!item.webContents.getURL().startsWith(gui)).webContents;
+      const opened=await Promise.race([contents.executeJavaScript("document.body?.dataset.opened||''"),new Promise(resolve=>setTimeout(()=>resolve("?"),1000))]).catch(()=>"?");
+      return {url:contents.getURL(),title:contents.getTitle(),loading:contents.isLoading(),opened,windows:windows.length};
+    },gui);
+    const until=async ok=>{let state;for(const end=Date.now()+5000;;await sleep(100)){state=await agent();if(ok(state)||Date.now()>end)return state}};
+    // A left click at an element's middle through the agent window's own input, as a person clicking in the shown window.
+    const click=selector=>app.evaluate(async({BrowserWindow},{gui,selector})=>{
+      const contents=BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&!item.webContents.getURL().startsWith(gui)).webContents;
+      const rect=JSON.parse(await contents.executeJavaScript(`JSON.stringify(document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect())`));
+      const x=Math.round(rect.x+rect.width/2),y=Math.round(rect.y+rect.height/2);
+      contents.sendInputEvent({type:"mouseMove",x,y});
+      for(const type of ["mouseDown","mouseUp"])contents.sendInputEvent({type,x,y,button:"left",clickCount:1});
+    },{gui,selector});
+    // Open agent browser on the page, as the Browser panel's button does, and click each popup button there.
+    const outcomes={};
+    for(const id of ["script","blank","data"]){
+      await window.evaluate(url=>window.trebellDesktop.browser.navigate(url),start);
+      await click("#"+id);
+      const {url,title,opened,windows}=await until(state=>(state.opened===id||state.url!==start)&&!state.loading);
+      outcomes[id]={url,title,opened,windows};
+    }
+    const stayed=opened=>({url:start,title:"Popup start",opened,windows:2});
+    assert.deepEqual(outcomes,{script:stayed("script"),blank:stayed("blank"),data:stayed("data")},"each popup is refused and the page stays");
+    // A link to a web page with a new-window target opens in the agent's window, and the Browser panel follows it there.
+    await window.evaluate(url=>window.trebellDesktop.browser.navigate(url),start);
+    await click("#web");
+    const next=await until(state=>state.url===site+"/next"&&!state.loading);
+    assert.deepEqual({url:next.url,title:next.title,windows:next.windows},{url:site+"/next",title:"Popup next",windows:2});
+    assert.equal((await window.evaluate(()=>window.trebellDesktop.browser.state())).url,site+"/next");
+  }finally{await desktop.done()}
+});
