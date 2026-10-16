@@ -33,3 +33,45 @@ test("sidebar destination names are never cut at any sidebar width",async({page,
   await page.setViewportSize({width:1280,height:800});
   await page.locator(".sidebar").screenshot({animations:"disabled",path:auditDir+"sidebar-destinations-258px-1280x800.png"});
 });
+
+// With Codex there are six secondary destinations (Browser, Agents, History, Usage, Tools, Environments). Wherever their names
+// give way to icons (a sidebar of 236px or less: the 196px one of a window 900px wide or less, the 224px one up to 1120px, one
+// dragged that narrow; and any sidebar in a window under 720px tall) the icons are one row, so Environments is not left alone on
+// a second row under the others.
+test("with Codex the destination icons stay one row in a 900px window and wherever the names give way to icons",async({page,request})=>{
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{},panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  await page.setViewportSize({width:900,height:800});
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  const nav=page.getByRole("navigation",{name:"Destinations"}),icons=nav.locator(".sidebar-nav-secondary>button");
+  await expect(icons).toHaveCount(6);
+  // The icons as the rows they sit in, top to bottom, each by its name, marked when the sidebar's edge cuts it.
+  const rows=()=>icons.evaluateAll(buttons=>{
+    const edge=buttons[0].parentElement.getBoundingClientRect().right,rows=new Map();
+    for(const button of buttons){const box=button.getBoundingClientRect(),top=Math.round(box.top);rows.set(top,[...(rows.get(top)||[]),button.getAttribute("aria-label")+(box.right>edge+1?" (cut)":"")])}
+    return [...rows.values()];
+  });
+  const oneRow=[["Browser","Agents","History","Usage","Tools","Environments"]];
+  await expect.poll(rows,{message:"the icons in the 196px sidebar of a 900px window"}).toEqual(oneRow);
+  await page.locator(".sidebar").screenshot({animations:"disabled",path:auditDir+"sidebar-destinations-codex-icons-900x800.png"});
+  // Environments opens from that row.
+  const environments=nav.getByRole("button",{name:"Environments",exact:true});
+  await environments.click();
+  await expect(environments).toHaveAttribute("aria-current","page");
+  await page.setViewportSize({width:1000,height:800});
+  await expect.poll(rows,{message:"the icons in the 224px sidebar of a 1000px window"}).toEqual(oneRow);
+  // At 1280 the names show until the person drags the sidebar as narrow as it goes.
+  await page.setViewportSize({width:1280,height:800});
+  await expect.poll(rows,{message:"the names in the 258px sidebar"}).not.toEqual(oneRow);
+  let handle=await page.getByTestId("sidebar-resizer").boundingBox();
+  await page.mouse.move(handle.x+3,handle.y+200);await page.mouse.down();await page.mouse.move(handle.x-57,handle.y+200,{steps:5});await page.mouse.up();
+  await expect.poll(async()=>Math.round((await page.locator(".sidebar").boundingBox()).width)).toBe(210);
+  await expect.poll(rows,{message:"the icons in a sidebar dragged to 210px"}).toEqual(oneRow);
+  await page.locator(".sidebar").screenshot({animations:"disabled",path:auditDir+"sidebar-destinations-codex-icons-210px-1280x800.png"});
+  // Dragged wide again, a window under 720px tall still shows them as one row of icons.
+  handle=await page.getByTestId("sidebar-resizer").boundingBox();
+  await page.mouse.move(handle.x+3,handle.y+200);await page.mouse.down();await page.mouse.move(handle.x+93,handle.y+200,{steps:5});await page.mouse.up();
+  await page.setViewportSize({width:1280,height:700});
+  await expect.poll(rows,{message:"the icons in a 1280x700 window"}).toEqual(oneRow);
+});

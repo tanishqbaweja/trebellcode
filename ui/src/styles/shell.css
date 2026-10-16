@@ -821,15 +821,16 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 }
 
 /* Secondary destinations as one row of icon buttons in short windows and narrow sidebars: their names stay in aria-label and
-   the tooltip, and the thread list gets the height back. */
+   the tooltip, and the thread list gets the height back. The icons share the row whatever their number, so Codex's six fit the
+   196px sidebar of a narrow window instead of leaving Environments alone on a second row. */
 @media (max-height:720px){
-  .sidebar .sidebar-nav-secondary{grid-template-columns:repeat(auto-fit,minmax(30px,1fr));gap:2px;padding-top:4px}
+  .sidebar .sidebar-nav-secondary{grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:2px;padding-top:4px}
   .sidebar .sidebar-nav-secondary .sidebar-utility{min-height:30px;padding:0;justify-content:center}
   .sidebar .sidebar-nav-secondary .sidebar-utility>span{display:none}
   .sidebar .sidebar-nav-secondary .sidebar-utility.panel-open::after{position:absolute;top:4px;right:calc(50% - 13px);margin:0}
 }
 @container tbsidebar (max-width:236px){
-  .sidebar .sidebar-nav-secondary{grid-template-columns:repeat(auto-fit,minmax(30px,1fr));gap:2px;padding-top:4px}
+  .sidebar .sidebar-nav-secondary{grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:2px;padding-top:4px}
   .sidebar .sidebar-nav-secondary .sidebar-utility{min-height:30px;padding:0;justify-content:center}
   .sidebar .sidebar-nav-secondary .sidebar-utility>span{display:none}
   .sidebar .sidebar-nav-secondary .sidebar-utility.panel-open::after{position:absolute;top:4px;right:calc(50% - 13px);margin:0}
