@@ -627,13 +627,18 @@ for(const [width,height] of [[1180,800],[1280,800]])for(const mode of ["dark","l
 });
 
 // A project action that runs while the header has folded it away keeps its Stop in reach: More actions holds a Stop item for it,
-// beside the action's own item (which says it is running and shows its terminal), as the row does with its Stop button.
-test("a running project action folded into More actions is stopped from there, where its Stop sits beside it",async({page})=>{
+// beside the action's own item (which says it is running and shows its terminal), as the row does with its Stop button. More
+// actions opened again while the action's terminal is still coming up (the drawer lists its terminals late here) stays open as that
+// terminal shows, with the keyboard where the person left it, and takes the click: the terminal took the keyboard as it came up,
+// which closed the menu under the pointer. The same holds for the menu opened with the keyboard.
+test("a running project action folded into More actions is stopped from there, where its Stop sits beside it, and More actions opened while its terminal comes up stays open",async({page})=>{
   test.setTimeout(60_000);
   const {harness,project,header,more,menu}=await openHeaderFixture(page,{width:1180,running:false});
-  const script=project.scripts[0],runs=[],sockets=new Set();
+  const script=project.scripts[0],runs=[],sockets=new Set(),drawer=page.getByTestId("drawer");
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   const session=run=>({id:run.id,name:script.name,cwd:project.path,environmentId:null,environmentName:"Local machine",environmentType:"local",cols:120,rows:32,running:run.running,exitCode:run.running?null:1,createdAt:Date.now(),updatedAt:Date.now(),buffer:""});
+  // hold() keeps the drawer's next listing of its terminals until listed() is called.
+  let listing=Promise.resolve(),listed=()=>{};const hold=()=>{listing=new Promise(resolve=>listed=resolve)};
   try{
     // The server's side of a run: it answers with the terminal it started, which runs until Stop.
     await page.route(/\/api\/project-script\/run$/,route=>{const run={id:"folded-run-"+(runs.length+1),running:true};runs.push(run);return json(route,{ok:true,script,session:session(run),previewUrl:null})});
@@ -642,7 +647,7 @@ test("a running project action folded into More actions is stopped from there, w
       if(run){run.running=false;for(const ws of sockets)ws.send(JSON.stringify({type:"exit",exitCode:1,signal:null}))}
       return json(route,{ok:true,session:run?session(run):null});
     });
-    await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>route.request().method()==="GET"?json(route,{sessions:runs.map(session)}):route.fallback());
+    await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,async route=>{if(route.request().method()!=="GET")return route.fallback();await listing;return json(route,{sessions:runs.map(session)})});
     await page.route(/\/api\/project-script\/runs(?:\?.*)?$/,route=>json(route,{runs:{}}));
     await page.routeWebSocket(/\/api\/terminal\/ws\?/,ws=>{
       const url=new URL(ws.url()),run=runs.find(item=>item.id===url.searchParams.get("session"));sockets.add(ws);ws.onClose(()=>sockets.delete(ws));
@@ -655,9 +660,15 @@ test("a running project action folded into More actions is stopped from there, w
     while(width>760&&await control.getAttribute("data-folded")==null){width-=40;await page.setViewportSize({width,height:800});await settle(page)}
     await expect(control).toHaveAttribute("data-folded",/.*/);
     const runItem=menu.getByRole("button",{name:new RegExp("^"+script.name)}),stopItem=menu.getByRole("button",{name:"Stop "+script.name});
-    await more.click();await expect(stopItem).toHaveCount(0);await runItem.click();
+    await more.click();await expect(stopItem).toHaveCount(0);hold();await runItem.click();
     await expect(control).toHaveAttribute("data-running","true");
     await expect(header.getByRole("button",{name:"Stop "+script.name,exact:true})).toBeHidden();
+    // The run opened the drawer, whose terminal is still coming up when the menu is opened again.
+    await expect(drawer).toContainText("Loading terminal…");
+    await more.click();await expect(menu).toBeVisible();
+    listed();await expect(drawer.locator(".terminal-tab")).toHaveCount(1);await settle(page);
+    await expect(menu,"More actions stays open as the action's terminal comes up").toBeVisible();await expect(more,"the keyboard stays on More actions").toBeFocused();
+    await menu.getByRole("button",{name:"Switch to light mode",exact:true}).click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
     for(const mode of ["dark","light"]){
       if(await page.locator("html").getAttribute("data-mode")!==mode){await more.click();await menu.getByRole("button",{name:/^Switch to (light|dark) mode$/}).click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
       await more.click();
@@ -666,6 +677,15 @@ test("a running project action folded into More actions is stopped from there, w
       await page.screenshot({path:join(shotsDir,"header-overflow-action-stop-"+mode+"-"+width+"x800.png"),animations:"disabled"});
       await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
     }
+    // From the keyboard, with the drawer closed: the action's item (it runs already) shows its terminal again, and More actions
+    // opened with Enter while that terminal comes up stays open too.
+    await drawer.getByRole("button",{name:"Close terminal",exact:true}).click();await expect(drawer).toHaveCount(0);
+    hold();await more.focus();await page.keyboard.press("Enter");await tabToMenuItem(page,menu,new RegExp("^"+script.name));await page.keyboard.press("Enter");
+    await expect(drawer).toContainText("Loading terminal…");await expect(more).toBeFocused();
+    await page.keyboard.press("Enter");await expect(menu).toBeVisible();
+    listed();await expect(drawer.locator(".terminal-tab")).toHaveCount(1);await settle(page);
+    await expect(menu,"More actions opened with Enter stays open as the terminal comes up").toBeVisible();await expect(more,"the keyboard stays on More actions").toBeFocused();
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
     await more.click();await stopItem.click();
     await expect(control).not.toHaveAttribute("data-running","true");
     expect(runs.map(run=>run.running)).toEqual([false]);

@@ -2,6 +2,7 @@ import React,{useEffect,useLayoutEffect,useRef,useState} from "react";
 import { Columns2, Plus, Rows2, SquareTerminal, X, Paperclip } from "lucide-react";
 import { api,wsUrl } from "../api.js";
 import { createTerminalScreen,TERMINAL_SCROLLBACK_CHARS,TERMINAL_SCROLLBACK_LINES } from "../terminal-screen.js";
+import { terminalKeyboardAsked } from "../terminal-keyboard.js";
 
 const MAX_SPLIT_PANES=4;
 const RECONNECTING="Terminal is reconnecting. Try again in a moment.";
@@ -106,7 +107,9 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     for(const id of paneIds){const node=outputRefs.current.get(id);if(node)observer.observe(node)}
     return()=>observer.disconnect();
   },[paneIds.join("|")]);
-  useEffect(()=>{if(activeId)setTimeout(()=>inputRefs.current.get(activeId)?.focus(),0)},[activeId,focusTick]);
+  // The active terminal's command line takes the keyboard, unless something outside the drawer was pressed since it was asked for
+  // (terminal-keyboard.js): the terminals listed late keep a menu opened meanwhile open.
+  useEffect(()=>{if(activeId)setTimeout(()=>{if(terminalKeyboardAsked())inputRefs.current.get(activeId)?.focus()},0)},[activeId,focusTick]);
   // The active session tab stays in view when more tabs are open than the header row can show.
   useEffect(()=>{tabListRef.current?.querySelector("button.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"})},[activeId,sessions.length]);
   // The tab list shows once the sessions are listed.

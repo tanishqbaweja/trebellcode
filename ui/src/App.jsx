@@ -66,6 +66,7 @@ import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openTh
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { finishedActivitySteps } from "./activity-details.js";
 import { observeHeaderFit } from "./header-fit.js";
+import { askTerminalKeyboard,terminalKeyboardAsked } from "./terminal-keyboard.js";
 import { sidebarAutoCollapses } from "./sidebar-layout.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
 import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, modelProviderLabel } from "./provider-labels.js";
@@ -197,14 +198,15 @@ function focusShownView(){
 // Focus for a person who opened the terminal from the palette, which would otherwise give it back to where the palette was opened
 // from, or with Focus terminal (Ctrl+`): the open terminal's command line, else Create terminal (or New, beside a stopped one), once
 // the drawer's content shows (its sessions listed: TerminalPanel reads as loading until then) and the palette has gone. Focus
-// already in the drawer (the terminal panel's own, as a running terminal comes up) stays. The ring shows where the keyboard went
-// (data-ring, until it leaves): the browser draws none for focus a script moves after a mouse click and a shortcut with Ctrl.
+// already in the drawer (the terminal panel's own, as a running terminal comes up) stays, and so does focus a press outside the
+// drawer put elsewhere meanwhile (terminal-keyboard.js). The ring shows where the keyboard went (data-ring, until it leaves): the
+// browser draws none for focus a script moves after a mouse click and a shortcut with Ctrl.
 function focusTerminalDrawer(){
-  const started=performance.now();
+  const started=performance.now();askTerminalKeyboard();
   const attempt=()=>{
     const drawer=document.querySelector('[data-testid="command-palette"]')?null:document.querySelector(".terminal-drawer");
     const target=drawer&&(drawer.querySelector(".terminal-pane.active .terminal-command-line input:not(:disabled)")||drawer.querySelector(".terminal-empty button")||drawer.querySelector(".terminal-new"));
-    if(target){if(!drawer.contains(document.activeElement)){target.dataset.ring="";target.onblur=()=>delete target.dataset.ring;target.focus({preventScroll:true})}return}
+    if(target){if(!drawer.contains(document.activeElement)&&terminalKeyboardAsked()){target.dataset.ring="";target.onblur=()=>delete target.dataset.ring;target.focus({preventScroll:true})}return}
     if(performance.now()-started<4000)requestAnimationFrame(attempt);
   };
   requestAnimationFrame(attempt);
@@ -4678,10 +4680,10 @@ export default function App(){
     return result;
   }
   // A run's answer, from the header, the palette, a key or the action's Projects card: the action runs (the header's button shows it)
-  // and its terminal is shown.
+  // and its terminal is shown, with the keyboard asked for now, not as the drawer hears of it (terminal-keyboard.js).
   function showActionRun(key,result){
     if(result?.session?.running)setActionRuns(current=>({...current,[key]:result.session.id}));
-    setSection("chat");setPanel("terminal");
+    setSection("chat");setPanel("terminal");askTerminalKeyboard();
     setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0);
   }
   async function onProjectOpen(path,environmentId=null){
@@ -5252,7 +5254,7 @@ export default function App(){
 
           {!openingOverPage&&<div className={"conversation-scroll"+(openingShown?" opening-covered":"")} ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
-              {worktreeSetup&&<LazySlot><WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/></LazySlot>}
+              {worktreeSetup&&<LazySlot><WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");askTerminalKeyboard();if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/></LazySlot>}
               <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} historyError={historyPage.error} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={shownTurnOrder} turnActivity={shownTurnActivity} liveCardTurnId={liveCardTurnId} newestTurnId={newestTurnId} onToggleLayout={activityCardToggleLayout}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout}/>
               {guardianDenials.map(review=><LazySlot key={review.reviewId}><div className="inline-approval"><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div></LazySlot>)}
@@ -5275,7 +5277,8 @@ export default function App(){
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":currentProject.cloneJob.status==="cancelling"?"Stopping the clone…":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{currentProject.cloneJob.status==="running"&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{currentProject.cloneJob.status==="running"?Math.round(currentProject.cloneJob.progress||0)+"%":""}</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
   <Composer starting={!runtimeKnown} prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} alert={composerAlert} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(opening)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} transportReason={transportReason} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={configureProviderKey} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} uploadingFiles={uploadingFiles} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={composerSetPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} threadSettingsWait={openingShown} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={openingShown?null:tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={composerSetWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(headerThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(!openingShown&&activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={openingShown?null:threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelOption={composerModelOption} onModelPickerOpenChange={setModelPickerOpen} codexThread={agentRuntime==="codex"&&!openingShown&&activeThread?.id&&codexThreadState?.threadId===activeThread.id?codexThreadState:null} onCancelEdit={queuedEditId?composerCancelQueuedEdit:null}/>
 
-          {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
+          {/* The drawer opening asks for the keyboard its terminal takes as it comes up (terminal-keyboard.js). */}
+          {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer" ref={askTerminalKeyboard}>
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" {...layoutSeparatorProps("terminal")} onPointerDown={event=>beginLayoutResize("terminal",event)}/>
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
             <DeferredSurface label="Loading terminal…" compact><TerminalPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} onAttachExcerpt={attachExcerpt}/></DeferredSurface>
