@@ -148,8 +148,9 @@ for(const action of ["Delete","Archive"]){
 // (turn/started) and lets the answer go, in either order, as Codex sends them; an answer before the turn started names it queued
 // (startedAt null). A started turn streams its reply and completes unless turn/interrupt ends it first, and as codex-cli 0.162
 // does, an interrupt for a turn not started yet is refused ("no active turn to interrupt"). interruptDelayMs holds the interrupt's
-// answer (Codex answers once the turn has stopped), compactError fails thread/compact/start with that message, and holdTurns keeps
-// a turn running after its reply until it is set false. project makes the thread a project thread, whose follow-ups wait in
+// answer (Codex answers once the turn has stopped), interruptError refuses every interrupt with that message, the turn going on,
+// compactError fails thread/compact/start with that message, and holdTurns keeps a turn running after its reply until it is set
+// false. project makes the thread a project thread, whose follow-ups wait in
 // Trebell's own queue (Codex's queue, codex.queue, holds only General chats'); settings adds to the app's settings.
 // names: several threads, the first opened. Each turn is its thread's; turn.fail refuses its turn/start, and a thread with a started
 // turn still running resumes active, with its turns. modes: the collaboration modes Codex lists. capabilities: the runtime's
@@ -194,6 +195,7 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
       if(message.method==="thread/compact/start"&&codex.compactError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.compactError}}));return}
       if(message.method==="turn/interrupt"){
         codex.interrupts.push({...params});const turn=codex.turns.find(item=>item.id===params.turnId);
+        if(codex.interruptError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.interruptError}}));return}
         if(turn&&!turn.started){ws.send(JSON.stringify({id:message.id,error:{code:-32600,message:"no active turn to interrupt"}}));return}
         setTimeout(()=>{if(turn?.status==="inProgress")end(turn,"interrupted");respond({})},codex.interruptDelayMs);return;
       }
@@ -426,6 +428,38 @@ for(const kind of ["Trebell","Codex"]){
         await expect(page.locator(".queued-message p")).toHaveText(["Queued gamma"]);await expect(labels).toHaveText(["Queued"]);
         await expect(composer(page)).toHaveValue("");
       }
+    }finally{await codex.close()}
+  });
+}
+
+// A Stop that fails holds nothing: the turn goes on, its follow-ups in Trebell's queue read queued as before, and the first starts by
+// itself when the turn ends. Codex refuses the interrupt for a turn it runs (stop()), or for the turn it had queued once it starts it
+// (the Stop waited for turn/started).
+for(const when of ["a turn Codex runs","a turn Codex has queued"]){
+  test(`a Stop that fails for ${when} leaves Trebell's queue to start by itself when the turn ends`,async({page})=>{
+    test.setTimeout(60_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Stop that fails",project:true});
+    try{
+      codex.holdTurns=true;codex.interruptError="Deliberate interrupt failure";
+      await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;
+      turn.answer();if(when==="a turn Codex runs")turn.start();
+      await expect(composer(page)).toHaveAttribute("placeholder","Queue a follow-up…");
+      for(const text of ["Queued alpha","Queued beta"]){await sendTyped(page,text);await expect(page.locator(".queued-message").filter({hasText:text})).toHaveCount(1)}
+      const labels=page.locator(".queued-message>span");
+      await stop(page).click();
+      if(when==="a turn Codex has queued"){await expect(stopping(page)).toBeVisible();expect(codex.interrupts).toEqual([]);turn.start()}
+      await expect(page.getByTestId("app-action-error")).toHaveText("Could not stop turn: Deliberate interrupt failure");
+      expect(codex.interrupts).toEqual([{threadId:codex.thread.id,turnId:turn.id}]);
+      // The turn runs on with its Stop, and the follow-ups wait for it as before the Stop.
+      await expect(stop(page)).toBeVisible();await expect(stopping(page)).toHaveCount(0);
+      await expect(labels).toHaveText(["Queued","Queued"]);
+      await shoot(page,"stop-failed-"+(when==="a turn Codex runs"?"running":"queued")+"-turn");
+      codex.holdTurns=false;
+      await expect.poll(()=>codex.turns.length,{timeout:15_000}).toBe(2);codex.holdTurns=true;codex.turns[1].answer();codex.turns[1].start();
+      await expect(page.locator(".user-bubble").filter({hasText:"Queued alpha"})).toBeVisible();
+      await expect(page.locator(".queued-message p")).toHaveText(["Queued beta"]);await expect(labels).toHaveText(["Queued"]);
+      expect(codex.interrupts).toHaveLength(1);
     }finally{await codex.close()}
   });
 }
@@ -954,8 +988,10 @@ test("Edit on another queued follow-up waits while one is being edited, so the u
 
 // A double click on a queued follow-up's Remove takes out that follow-up only. The first click removes it once the queue has answered,
 // and the next follow-up comes up in its place under the pointer, where the second click lands: the rest of the press does nothing,
-// as on a thread's menu. Enter held on Remove takes out one follow-up too, and a click of its own still removes. In Codex's queue (a
-// General chat's) and Trebell's own (a project thread's) alike.
+// as on a thread's menu. In Codex's queue (a General chat's) and Trebell's own (a project thread's) alike. Enter held on Remove
+// takes out one follow-up: in Codex's queue the row waits for Codex's answer with the keyboard on it, and the key's repeats send no
+// second thread/queue/delete for it; in Trebell's the row goes at once and the keyboard leaves with it. A click of its own still
+// removes.
 for(const kind of ["Codex","Trebell"]){
   test(`a double click or Enter held on Remove in ${kind}'s queue removes only the follow-up it was aimed at`,async({page})=>{
     test.setTimeout(90_000);
