@@ -24,7 +24,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   const [days,setDays]=useState(30);const [data,setData]=useState({records:[],total:{},models:{},runtimes:{},daily:{}});const [loading,setLoading]=useState(true);const [error,setError]=useState("");
   const [shownQuery,setShownQuery]=useState(null);const usageRequest=useRef(0);
   const [clearing,setClearing]=useState(false);
-  const [codex,setCodex]=useState(()=>({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:agentRuntime==="codex"&&Boolean(rpc)&&rpcStatus==="connected",notice:"",failure:"",answered:false}));
+  const [codex,setCodex]=useState(()=>({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:agentRuntime==="codex"&&Boolean(rpc)&&rpcStatus==="connected",notice:"",failure:"",unknownReset:null,answered:false}));
   const [runtimeUsage,setRuntimeUsage]=useState(()=>({data:null,loading:SUBSCRIPTION_RUNTIMES.includes(agentRuntime),error:""}));
   const [environmentData,setEnvironmentData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null});
   const [environmentError,setEnvironmentError]=useState("");
@@ -43,6 +43,9 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   // `keep`: a read the person did not ask for (Codex connected again, another thread, a harness switched back) keeps what the last Use
   // reset credit came to, its notice or its failure, until Refresh, Clear local history or another Use reset credit. A reset whose
   // harness dropped on the way fails while the card is hidden for Codex connecting again, and still says so once it is back.
+  // unknownReset: a reset sent that no answer came for (the harness dropped, or did not answer in time) may have been used all the
+  // same. The card says it cannot tell until a read of the limits shows whether that credit is still there: then it says the credit
+  // could not be used, or that it was.
   async function refreshCodex({keep=false}={}){
     // `answered` is false until a read on the current connection completes: the card mounts as Codex connects, a render before
     // this read starts, and must not claim the route returned no limits then.
@@ -60,6 +63,12 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       for(const [key,value,failure] of results){
         if(failure)next.errors[key]=failure;
         else next[key]=value;
+      }
+      const tried=current.unknownReset,credits=next.errors.rateLimits?null:next.rateLimits?.rateLimitResetCredits;
+      if(tried&&credits){
+        const unused=tried.creditId?(credits.credits||[]).some(item=>item.id===tried.creditId&&item.status==="available"):tried.available>0&&Number(credits.availableCount)>=tried.available;
+        next.unknownReset=null;
+        if(unused)next.failure=failureText("Could not use the reset credit",tried.error);else{next.failure="";next.notice="The reset credit was used."}
       }
       return next;
     });
@@ -163,13 +172,18 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   }
   async function resetCodexLimit(creditId=null){
     if(!rpc||!await askConfirm("Use one earned Codex reset credit now? This can reset an eligible rate-limit window.",{confirm:"Use reset credit",tone:"primary"}))return;
-    setCodex(current=>({...current,loading:true,notice:"",failure:""}));
+    const tried={creditId:creditId||null,available:Number(codex.rateLimits?.rateLimitResetCredits?.availableCount)||0};
+    setCodex(current=>({...current,loading:true,notice:"",failure:"",unknownReset:null}));
     try{
       const result=await rpc.request("account/rateLimitResetCredit/consume",{idempotencyKey:crypto.randomUUID(),creditId:creditId||null});
       const labels={reset:"Rate-limit window reset.",nothingToReset:"No current window is eligible for a reset.",noCredit:"No reset credit is available.",alreadyRedeemed:"That reset was already completed."};
       await refreshCodex();
       setCodex(current=>({...current,notice:labels[result?.outcome]||String(result?.outcome||"Reset request completed.")}));
-    }catch(err){setCodex(current=>({...current,loading:false,failure:failureText("Could not use the reset credit",err)}))}
+    }catch(err){
+      // Codex refused it (its answer is the reason), or no answer came: then the credit may have been used all the same.
+      if(err?.trebellRpcResponse)setCodex(current=>({...current,loading:false,failure:failureText("Could not use the reset credit",err)}));
+      else setCodex(current=>({...current,loading:false,failure:failureText("Could not tell whether the reset credit was used",err),unknownReset:{...tried,error:err}}));
+    }
   }
   const codexLimits=codexRateLimitEntries(codex.rateLimits);
   const codexSummary=codex.usage?.summary||null;

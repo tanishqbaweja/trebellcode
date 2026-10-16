@@ -93,9 +93,10 @@ test("Usage page refreshes native Codex account and quota updates live",async({p
 // A Codex app-server behind the real relay for the Usage page. `control.rateLimits` answers the limits read with a quota and a
 // reset credit ("quota"), with the window reset and the credit spent ("spent"), with no limits ("none"), or fails it ("fail");
 // `control.rateReads` counts those reads. Using the reset credit fails, or with `control.consume` "drop" the harness drops its
-// connection on it without an answer, once, and then resets the window; with "reset" it resets the window. `control.consumes`
-// counts the tries. With `control.holdInit` the handshake waits in `control.heldInit`, so the app stays connecting until those
-// answers are sent. drop() closes the harness's connections, as an app-server restart does.
+// connection on it without an answer, once, and then resets the window; with "apply-drop" it uses the credit and resets the window,
+// then drops its connection before it answers; with "reset" it resets the window. `control.consumes` counts the tries. With
+// `control.holdInit` the handshake waits in `control.heldInit`, so the app stays connecting until those answers are sent. drop()
+// closes the harness's connections, as an app-server restart does.
 async function startUsageFixture(control){
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
@@ -113,6 +114,7 @@ async function startUsageFixture(control){
       if(message.method==="account/rateLimitResetCredit/consume"){
         control.consumes=(control.consumes||0)+1;
         if(control.consume==="drop"){control.consume="reset";return ws.terminate()}
+        if(control.consume==="apply-drop"){control.consume="reset";control.rateLimits="spent";return ws.terminate()}
         if(control.consume==="reset"){control.rateLimits="spent";return send({result:{outcome:"reset"}})}
         return fail("Deliberate reset credit failure");
       }
@@ -363,6 +365,33 @@ test("a reset credit whose harness dropped on the way says it could not be used 
     await expect(codexCard).toContainText("Rate-limit window reset.");await expect(codexCard).toContainText("100% left");
     await expect(failure).toHaveCount(0);await expect(codexCard).not.toContainText("reset credit available");
     expect(control.consumes).toBe(2);
+  }finally{await fixture.close()}
+});
+
+// The harness uses the reset credit, then drops its connection before its answer reaches the app. Once Codex is connected again
+// the card reads the limits: the window is reset and the credit gone, so it says the credit was used, and nothing beside
+// "100% left" claims it could not be.
+test("a reset credit used by a harness that dropped before answering is said to be used once the card is back, not refused",async({page})=>{
+  test.setTimeout(60_000);
+  const control={rateLimits:"quota",consume:"apply-drop"};const fixture=await startUsageFixture(control);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openUsage(page,fixture.wsUrl,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(emptyUsage)}));
+    const codexCard=page.getByTestId("codex-account-usage"),question=page.locator("dialog.inspector-text-prompt"),use=codexCard.getByRole("button",{name:"Use reset credit"});
+    await expect(codexCard).toContainText("1 reset credit available");await expect(codexCard).toContainText("70% left");
+    await use.click();
+    await question.getByRole("button",{name:"Use reset credit",exact:true}).click();
+    await expect.poll(()=>control.consumes).toBe(1);
+    await expect(codexCard,"the card back, with the limits read again").toContainText("100% left",{timeout:15_000});
+    await expect(codexCard.getByRole("alert"),"a claim beside 100% left that the credit could not be used").toHaveCount(0);
+    await expect(codexCard).not.toContainText("reset credit available");
+    await expect(codexCard,"the card says the credit was used").toContainText("The reset credit was used.");
+    await codexCard.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-reset-credit-used-then-dropped-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-reset-credit-used-then-dropped-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    expect(control.consumes).toBe(1);
   }finally{await fixture.close()}
 });
 
