@@ -65,10 +65,12 @@
 /* Small secondary button (tb-btn--sm) for in-card actions. */
 :root:root .projects-page :is(.project-identity-toggle button,.project-icon-actions button,.project-image-button,.project-icon-draft button,.project-actions-head button,.project-config-hint button,.project-import-list button,.project-clone-status button,.project-action-editor button,.project-hook-editor button),
 :root:root :is(.usage-page,.capabilities-page,.environments-page) :is(.capability-actions button,.capability-list button,.capability-inline-actions button,.plugin-search-controls button,.plugin-detail-head button,.plugin-detail-skills button,.app-detail-head button,.app-detail .setting-action,.connector-runtime-summary button,.mcp-resource button,.mcp-tool button,.environment-list button,.reset-credit-row button),
-:root:root .preview-page :is(.preview-discovery-head button,.agent-browser-toolbar button,.browser-device-toolbar button,.annotation-actions button){height:30px!important;min-height:30px!important;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 11px!important;border:1px solid var(--line2)!important;border-radius:var(--r-s)!important;background:var(--bg3)!important;color:var(--tx1)!important;font-size:11.5px!important;font-weight:550;line-height:1;white-space:nowrap;cursor:pointer;box-shadow:none!important;transition:background-color .15s,color .15s,border-color .15s,filter .15s}
+:root:root .preview-page :is(.preview-discovery-head button,.agent-browser-toolbar button,.browser-device-toolbar button,.annotation-actions button),
+:root:root .secondary-page .history-page .history-load-error>button{height:30px!important;min-height:30px!important;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 11px!important;border:1px solid var(--line2)!important;border-radius:var(--r-s)!important;background:var(--bg3)!important;color:var(--tx1)!important;font-size:11.5px!important;font-weight:550;line-height:1;white-space:nowrap;cursor:pointer;box-shadow:none!important;transition:background-color .15s,color .15s,border-color .15s,filter .15s}
 :root:root .projects-page :is(.project-identity-toggle button,.project-icon-actions button,.project-image-button,.project-icon-draft button,.project-actions-head button,.project-config-hint button,.project-import-list button,.project-clone-status button,.project-action-editor button,.project-hook-editor button):hover:not(:disabled),
 :root:root :is(.usage-page,.capabilities-page,.environments-page) :is(.capability-actions button,.capability-list button,.capability-inline-actions button,.plugin-search-controls button,.plugin-detail-head button,.plugin-detail-skills button,.app-detail-head button,.app-detail .setting-action,.connector-runtime-summary button,.mcp-resource button,.mcp-tool button,.environment-list button,.reset-credit-row button):hover:not(:disabled),
-:root:root .preview-page :is(.preview-discovery-head button,.agent-browser-toolbar button,.browser-device-toolbar button,.annotation-actions button):hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .preview-page :is(.preview-discovery-head button,.agent-browser-toolbar button,.browser-device-toolbar button,.annotation-actions button):hover:not(:disabled),
+:root:root .secondary-page .history-page .history-load-error>button:hover:not([aria-disabled="true"]){background:var(--bg4)!important;color:var(--tx0)!important}
 
 /* Primary button (tb-btn--primary). */
 :root:root .projects-page .project-page-actions>button.project-add-local,
@@ -316,9 +318,13 @@
 :root:root .projects-page .project-window-empty>small{font-size:12px;line-height:1.5;color:var(--tx2)}
 /* Before the list first answers: a quiet loading line in the empty state's place, and a failed first read with its Retry. */
 :root:root .projects-page .project-window-loading>span{font-weight:500;color:var(--tx2)}
-:root:root .projects-page .project-load-error{display:flex;align-items:center;justify-content:space-between;gap:12px;white-space:normal}
+:root:root .projects-page .project-load-error,
+:root:root .secondary-page .history-page .history-load-error:has(>button){display:flex;align-items:center;justify-content:space-between;gap:12px;white-space:normal}
 /* A legacy rule sets 9px on any button in an error banner. */
-:root:root .projects-page .project-load-error>button{flex:none;min-height:30px;font-size:12px!important}
+:root:root .projects-page .project-load-error>button,
+:root:root .secondary-page .history-page .history-load-error>button{flex:none;min-height:30px;font-size:12px!important}
+/* History's legacy span rules are for its rows (small, grey, one line): the banner's message keeps the banner's own text. */
+:root:root .secondary-page .history-page .history-load-error>span{display:block;margin:0;font-size:inherit!important;color:inherit!important;white-space:inherit;overflow:visible}
 :root:root .projects-page .project-window-footer{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:12px;padding:4px 0 0!important}
 :root:root .projects-page .project-window-footer span{font-family:var(--mono);font-size:11px!important;color:var(--tx2)!important}
 
