@@ -14,8 +14,9 @@ const RELEASE={id:"requests-release",name:"Release checklist",preview:"Release",
 const DEPLOY={id:"requests-deploy",name:"Deploy notes",preview:"Deploy",historyMode:"paginated",cwd:process.cwd(),createdAt:now-40,updatedAt:now-10,turns:[]};
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
+// calls: the methods the app asked for, in order.
 async function startRequestHarness(threads){
-  let socket=null,nextId=5000;const answers=new Map(),waiting=new Map(),sockets=new Set();
+  let socket=null,nextId=5000;const answers=new Map(),waiting=new Map(),sockets=new Set(),calls=[];
   const upstreamHttp=createServer(),wss=new WebSocketServer({noServer:true});
   upstreamHttp.on("upgrade",(req,raw,head)=>wss.handleUpgrade(req,raw,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
@@ -24,7 +25,7 @@ async function startRequestHarness(threads){
       const message=JSON.parse(String(data));
       if(message.id!=null&&!message.method){const id=String(message.id);answers.set(id,[...(answers.get(id)||[]),message.result]);waiting.get(id)?.(message.result);waiting.delete(id);return}
       if(message.id==null||!message.method)return;
-      const params=message.params||{};let result={};
+      const params=message.params||{};let result={};calls.push(message.method);
       if(message.method==="initialize")result={userAgent:"agent-requests-fixture"};
       else if(message.method==="thread/list")result={data:threads,nextCursor:null};
       else if(message.method==="thread/resume")result={thread:threads.find(thread=>thread.id===params.threadId)||threads[0],itemsBackwardsCursor:null,turnsBackwardsCursor:null};
@@ -46,14 +47,15 @@ async function startRequestHarness(threads){
     ask(method,params){const id=nextId++;const answered=new Promise(resolve=>waiting.set(String(id),resolve));socket.send(JSON.stringify({id,method,params}));return {id,answered}},
     // A notification as Codex sends it.
     notify(method,params){socket.send(JSON.stringify({method,params}))},
-    answersTo:request=>answers.get(String(request.id))||[],
+    answersTo:request=>answers.get(String(request.id))||[],calls,
     async close(){relay.close();for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])},
   };
 }
-async function routeFixture(page,harness){
+// settings adds to the app's settings.
+async function routeFixture(page,harness,settings={}){
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   // The settings the header's light and dark toggle saves stay in the page, so the shared e2e server keeps its own.
-  const saved={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const saved={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...settings};
   await keepThreadMeta(page);
   await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return json(route,saved)});
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"agent-requests-fixture",activeEnvironmentId:null,activeEnvironment:null}));
@@ -456,6 +458,35 @@ test("Escape cancels an app request as its X does, and pressed twice or held dow
       await expect(modal).toHaveCount(0);expect(await link.answered).toEqual(cancelled);
       for(const request of [write,form,remove,rename,link])expect(harness.answersTo(request)).toHaveLength(1);
     }
+  }finally{await harness.close()}
+});
+
+// The Escape that answers the last request goes no further: with Stop running thread bound to Escape, the Escape that dismisses the
+// question a running turn asked, or cancels its app request, does not stop the turn as well. With no request open, Escape stops it.
+test("Escape that answers the last request runs no shortcut bound to Escape as well, so the turn that asked keeps running",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness,{keybindingRules:[{command:"threadStop",key:"Escape"}]});await page.goto("/");await openThread(page,"Release checklist");
+    const stop=page.getByRole("button",{name:"Stop",exact:true}),interrupts=()=>harness.calls.filter(method=>method==="turn/interrupt");
+    const questionModal=page.locator(".question-modal"),appModal=page.getByTestId("mcp-elicitation");
+    // A person reads a request before pressing Escape on it.
+    const read=()=>page.waitForTimeout(600);
+    harness.notify("turn/started",{threadId:RELEASE.id,turn:{id:"turn-asking",status:"inProgress",items:[]}});await expect(stop).toBeVisible();
+    const asked=harness.ask("item/tool/requestUserInput",{threadId:RELEASE.id,turnId:"turn-asking",itemId:"q-go",questions:[{id:"go",header:"go",question:"Go ahead with the release?",options:[{label:"yes"},{label:"no"}],allowMultiple:false}]});
+    await expect(questionModal).toContainText("Go ahead with the release?");await read();await page.keyboard.press("Escape");
+    await expect(questionModal).toHaveCount(0);expect(await asked.answered).toEqual({answers:{}});
+    await page.waitForTimeout(600);
+    expect(interrupts(),"the Escape that dismissed the question stopped the turn too").toEqual([]);await expect(stop).toBeVisible();
+    const app=harness.ask("mcpServer/elicitation/request",{threadId:RELEASE.id,serverName:"fixture_app",mode:"form",message:"Approve the fixture change?",requestedSchema:{type:"object",properties:{}},_meta:{codex_approval_kind:"mcp_tool_call",connector_name:"Fixture App",tool_title:"Write fixture",tool_name:"fixture_action"}});
+    await expect(appModal).toContainText("Write fixture");await read();await page.keyboard.press("Escape");
+    await expect(appModal).toHaveCount(0);expect(await app.answered).toEqual({action:"cancel",content:null,_meta:null});
+    await page.waitForTimeout(600);
+    expect(interrupts(),"the Escape that cancelled the app request stopped the turn too").toEqual([]);await expect(stop).toBeVisible();
+    // With no request open, Escape is the person's shortcut: it stops the turn.
+    await page.keyboard.press("Escape");
+    await expect.poll(interrupts).toEqual(["turn/interrupt"]);
   }finally{await harness.close()}
 });
 

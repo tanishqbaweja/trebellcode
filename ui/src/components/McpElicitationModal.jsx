@@ -58,6 +58,8 @@ function useModalFocus(ref,active,focusOnOpen=true){
 // Escape answers the dialog as its X does, with the keyboard in it or on the page behind it, but not in another open modal (the app's
 // own <dialog> questions keep their Escape). Only a press of its own counts, so the next request, which comes up in its place, waits
 // for the person: a held key's repeats, and a press within the double-click time (500 ms) of the Escape before it, answer nothing.
+// The Escape it takes goes no further, as the palette's and the menus' do: a shortcut bound to Escape does not run too once the
+// last request is answered.
 let lastEscape=-1e9;
 function useEscapeToCancel(ref,active,cancelRef){
   useEffect(()=>{
@@ -66,7 +68,7 @@ function useEscapeToCancel(ref,active,cancelRef){
       if(event.key!=="Escape"||event.defaultPrevented)return;
       const owner=document.activeElement?.closest?.('[aria-modal="true"],dialog[open]');
       if(owner&&owner!==node)return;
-      event.preventDefault();
+      event.preventDefault();event.stopPropagation();
       const again=event.repeat||event.timeStamp-lastEscape<500;lastEscape=event.timeStamp;
       if(!again)cancelRef.current?.(event);
     };
