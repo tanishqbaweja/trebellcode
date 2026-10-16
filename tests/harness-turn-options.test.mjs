@@ -25,6 +25,13 @@ test("a reopened relay thread keeps its saved model when the catalog lands",()=>
   assert.equal(relayThreadPreferredModel("opencode",null,"opencode/default"),"opencode/default");
 });
 
+// A Native thread opened before the catalog came (a fan-out child, or a thread opened right after a restart) shows its own model once it
+// comes, not the composer's first pick, and a follow-up goes to that model.
+test("a reopened Native thread keeps its saved model when the catalog lands",()=>{
+  assert.equal(relayThreadPreferredModel("native",{model:"model-c"},"model-a"),"model-c");
+  assert.equal(relayThreadPreferredModel("native",{},"model-a"),"model-a");
+});
+
 test("each harness's turn carries the access level and only the composer choices it takes",()=>{
   const choices={permissionMode:"edits",reasoningEffort:"high",serviceTier:"fast",modelOptions:{context:"1m",thinking:"true"}};
   assert.deepEqual(harnessTurnOptions("claude",choices),{permissionProfile:"edits",reasoningEffort:"high",serviceTier:"fast"});

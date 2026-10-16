@@ -12,42 +12,119 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { ContextEngine } from "../../src/context-engine.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
+import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 
 const execFileAsync=promisify(execFile),auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 async function git(cwd,args){return execFileAsync("git",args,{cwd,windowsHide:true,encoding:"utf8"})}
+const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+const modelName=id=>"Model "+id.slice(-1).toUpperCase();
+const catalog=models=>({models,metadata:{provider:"agentrouter",models:models.map(id=>({id,name:modelName(id),provider:"agentrouter",agent:"Trebell Native"}))}});
 
-test("Trebell Native multi-model fan-out launches real isolated worktrees and provider turns",async({page})=>{
-  test.setTimeout(55_000);
+// Trebell Native on the real relay in a real Git repository, with the provider scripted: every turn answers "Completed <model>." and
+// providerCalls keeps the model and provider of each (the completion gate is answered apart). worktrees: the fan-out's own, real ones.
+async function startNativeFanout(page,{models}){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-fanout-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   await git(repo,["init"]);await git(repo,["config","user.email","trebell-test@example.invalid"]);await git(repo,["config","user.name","Trebell Test"]);await writeFile(join(repo,"README.md"),"seed\n","utf8");await git(repo,["add","README.md"]);await git(repo,["commit","-m","seed"]);const baseBranch=(await git(repo,["branch","--show-current"])).stdout.trim();
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),providerCalls=[],worktrees=[];
-  const nativeProviderTurn=async request=>{providerCalls.push({model:request.model,provider:request.provider});await new Promise(resolve=>setTimeout(resolve,80));return{id:"native-fanout-"+request.model,provider:request.provider,model:request.model,text:`Completed ${request.model}.`,toolCalls:[],finishReason:"stop",usage:{}}};
+  const nativeProviderTurn=async request=>{
+    if(request.metadata?.completionGate||request.responseJsonSchema?.name==="trebell_completion_gate")return{id:"native-fanout-gate",provider:request.provider,model:request.model,text:JSON.stringify({status:"complete",progress:"improved",edit_support:"unsupported",mutation_safety:"allowed",recovery_mode:"none",constraint_audit:[],unresolved:[],reason:"The fixture turn did what it was asked."}),toolCalls:[],finishReason:"stop",usage:{}};
+    providerCalls.push({model:request.model,provider:request.provider});await new Promise(resolve=>setTimeout(resolve,80));return{id:"native-fanout-"+request.model,provider:request.provider,model:request.model,text:`Completed ${request.model}.`,toolCalls:[],finishReason:"stop",usage:{}};
+  };
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"visual-fixture"});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const project={id:"native-fanout-project",name:"Native Fan-out Project",path:repo,environmentId:null,effectiveSettings:{defaultWorkspaceMode:"current"}},metaByThread={};
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"auto",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:metaByThread})}));
+  await page.route(/\/api\/models$/,route=>json(route,catalog(models)));
+  await page.route(/\/api\/projects(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({project:{...project,id:"project-"+worktrees.length,path:body.path,environmentId:body.environmentId||null}})})}return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})})});
+  await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,cwd:repo,root:repo,branch:baseBranch,branches:[baseBranch],status:[],remotes:[],worktrees:[{path:repo,branch:baseBranch}]})}));
+  await page.route(/\/api\/git\/action$/,async route=>{const body=route.request().postDataJSON();expect(body.action).toBe("worktree-create");await git(repo,["worktree","add","-b",body.branch,body.path,"HEAD"]);worktrees.push(body.path);return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,result:{worktree:body.path,info:{root:body.path,branch:body.branch}}})})});
+  await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();metaByThread[body.threadId]={...(metaByThread[body.threadId]||{}),...(body.patch||{})};return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(metaByThread[body.threadId])})}const id=new URL(route.request().url()).searchParams.get("threadId");return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(metaByThread[id]||{})})});
+  await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().method()==="POST"?{supported:false}:{checkpoints:[]})}));
+  await page.route(/\/api\/context\/packet$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"native-fanout-context",skipped:true,budget:{mode:"skip",pressure:"normal",reserveTokens:1024,maxTokens:0,maxFiles:0}})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  // The light and dark toggle saves its setting in the page only.
+  const saved={};await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return json(route,saved)});
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:280,rightPanelWidth:460,terminalHeight:330})));
+  return {
+    repo,baseBranch,threadStore,providerCalls,worktrees,
+    async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));for(const path of [...worktrees].reverse())await git(repo,["worktree","remove","--force",path]).catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})},
+  };
+}
+
+test("Trebell Native multi-model fan-out launches real isolated worktrees and provider turns",async({page})=>{
+  test.setTimeout(55_000);
+  const fanout=await startNativeFanout(page,{models:["model-a","model-b"]}),{threadStore,providerCalls,worktrees}=fanout;
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
-    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"auto",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:metaByThread})}));
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["model-a","model-b"],metadata:{provider:"agentrouter",models:[{id:"model-a",name:"Model A",provider:"agentrouter",agent:"Trebell Native"},{id:"model-b",name:"Model B",provider:"agentrouter",agent:"Trebell Native"}]}})}));
-    await page.route(/\/api\/projects(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({project:{...project,id:"project-"+worktrees.length,path:body.path,environmentId:body.environmentId||null}})})}return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})})});
-    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,cwd:repo,root:repo,branch:baseBranch,branches:[baseBranch],status:[],remotes:[],worktrees:[{path:repo,branch:baseBranch}]})}));
-    await page.route(/\/api\/git\/action$/,async route=>{const body=route.request().postDataJSON();expect(body.action).toBe("worktree-create");await git(repo,["worktree","add","-b",body.branch,body.path,"HEAD"]);worktrees.push(body.path);return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,result:{worktree:body.path,info:{root:body.path,branch:body.branch}}})})});
-    await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();metaByThread[body.threadId]={...(metaByThread[body.threadId]||{}),...(body.patch||{})};return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(metaByThread[body.threadId])})}const id=new URL(route.request().url()).searchParams.get("threadId");return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(metaByThread[id]||{})})});
-    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().method()==="POST"?{supported:false}:{checkpoints:[]})}));
-    await page.route(/\/api\/context\/packet$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"native-fanout-context",skipped:true,budget:{mode:"skip",pressure:"normal",reserveTokens:1024,maxTokens:0,maxFiles:0}})}));
-    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:280,rightPanelWidth:460,terminalHeight:330})));
-    await page.goto("/");await expect(page.locator(".branch-control")).toContainText(baseBranch,{timeout:10_000});
+    await page.goto("/");await expect(page.locator(".branch-control")).toContainText(fanout.baseBranch,{timeout:10_000});
     const picker=page.getByTestId("model-picker");await picker.click();const menu=page.locator(".model-picker-menu");await expect(menu).toContainText("Shift-click to select multiple models");await menu.getByRole("button",{name:/Model B/}).click({modifiers:["Shift"]});await expect(picker).toContainText("2 models");
     const composer=page.getByTestId("composer");await composer.fill("Run this task with both Native models");await page.getByTestId("send").click();
     await expect.poll(()=>worktrees.length,{timeout:10_000}).toBe(2);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(2);expect(new Set(providerCalls.map(call=>call.model))).toEqual(new Set(["model-a","model-b"]));expect(providerCalls.every(call=>call.provider==="agentrouter")).toBe(true);
     const threads=threadStore.list("native");expect(threads).toHaveLength(2);expect(new Set(threads.map(thread=>thread.cwd)).size).toBe(2);expect(threads.every(thread=>worktrees.includes(thread.cwd))).toBe(true);for(const path of worktrees)await expect.poll(async()=>{try{await stat(path);return true}catch{return false}}).toBe(true);
     await expect(page.locator(".thread-row")).toHaveCount(2);await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".app-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"native-multimodel-fanout-1280x800.png",fullPage:true});
-  }finally{
-    await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));for(const path of [...worktrees].reverse())await git(repo,["worktree","remove","--force",path]).catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
-  }
+  }finally{await fanout.close()}
+});
+
+// The fan-out's threads each run on their own model. Opened, one shows that model in its picker, not the composer's pick of several,
+// and a follow-up sent there goes to it: the follow-up went to the first model picked, which the relay then made the thread's model.
+test("a follow-up in a Native fan-out thread goes to that thread's own model, the one its picker shows",async({page})=>{
+  test.setTimeout(90_000);
+  const fanout=await startNativeFanout(page,{models:["model-a","model-b","model-c"]}),{threadStore,providerCalls}=fanout;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.locator(".branch-control")).toContainText(fanout.baseBranch,{timeout:10_000});
+    const picker=page.getByTestId("model-picker"),menu=page.locator(".model-picker-menu"),composer=page.getByTestId("composer");
+    await picker.click();await menu.getByRole("button",{name:/Model B/}).click({modifiers:["Shift"]});await menu.getByRole("button",{name:/Model C/}).click({modifiers:["Shift"]});
+    await expect(picker).toContainText("3 models");await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    await composer.click();await page.keyboard.type("Add a health check endpoint",{delay:5});await page.keyboard.press("Enter");
+    await expect.poll(()=>providerCalls.length,{timeout:20_000}).toBe(3);await expect(page.locator(".thread-row")).toHaveCount(3);
+    // Each worktree, and so each thread's folder, is named after its model (prepareDetachedWorktree).
+    const threadOf=model=>threadStore.list("native").find(thread=>thread.cwd.includes("-"+model+"-"));
+    for(const model of ["model-c","model-b"]){
+      const row=page.locator(".thread-row").filter({hasText:model}),id=threadOf(model)?.id;expect(id,"the "+model+" thread").toBeTruthy();
+      // The model-c thread is opened with a click, the model-b one from the keyboard.
+      if(model==="model-c")await row.locator(".thread-main").click();else{await row.locator(".thread-main").focus();await page.keyboard.press("Enter")}
+      await expect(row).toHaveClass(/active/);
+      // Soft, so that the old build also shows where the follow-up went.
+      await expect.soft(picker,"the picker of the "+model+" thread").toHaveText(modelName(model),{timeout:10_000});
+      const sent=providerCalls.length;
+      await composer.click();await page.keyboard.type("Follow up in this thread",{delay:5});await page.keyboard.press("Enter");
+      await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(sent+1);
+      expect(providerCalls.at(-1).model,"the model the follow-up in the "+model+" thread went to").toBe(model);
+      const reply=page.locator(".history-assistant").filter({hasText:"Completed "+model+"."}).last();
+      await expect(reply.getByTestId("assistant-heading")).toContainText(modelName(model),{timeout:15_000});
+      // The thread keeps its model: its sidebar row still names it, and so does the relay.
+      expect(threadStore.get(id).model).toBe(model);await expect(row).toContainText(model);await expect(picker).toHaveText(modelName(model));
+      for(const mode of model==="model-c"?["dark","light"]:[]){
+        if(mode==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+        await page.screenshot({animations:"disabled",path:`${auditDir}native-fanout-follow-up-own-model-${mode}-1280x800.png`});
+      }
+    }
+  }finally{await fanout.close()}
+});
+
+// A Native thread opened while no session of its own runs (Trebell restarted since its last turn) starts one on the thread's model,
+// not the composer's: the open asked for the composer's model, and the relay made it the thread's before anything was sent.
+test("a Native thread reopened after a restart keeps its own model in the picker and for its next turn",async({page})=>{
+  test.setTimeout(60_000);
+  const models=[];const harness=await startRelayHarness({replies:[request=>{models.push(request.model);return{text:"Answered with "+request.model+"."}}]});
+  try{
+    const thread=harness.seedThread("Health check endpoint",[{user:"Add a health check endpoint",items:[replyItem("seed-reply-c","Added the endpoint.")]}]);harness.threadStore.update(thread.id,{model:"model-c"});
+    await routeRelayApp(page,harness);
+    await page.route(/\/api\/models$/,route=>json(route,catalog(["model-a","model-b","model-c"])));
+    await page.goto("/");
+    const picker=page.getByTestId("model-picker"),composer=page.getByTestId("composer"),row=page.locator(".thread-row").filter({hasText:"Health check endpoint"});
+    await expect(picker).toHaveText("Model A",{timeout:15_000});
+    // Opened with a double click: the second click waits for the open the first began.
+    await row.locator(".thread-main").dblclick();await expect(row).toHaveClass(/active/);await expect(page.getByText("Added the endpoint.")).toBeVisible({timeout:15_000});
+    // Soft, so that the old build also shows where the follow-up went.
+    await expect.soft(picker,"the picker of the reopened thread").toHaveText("Model C");expect.soft(harness.threadStore.get(thread.id).model,"the thread's model once it is open").toBe("model-c");
+    await composer.click();await page.keyboard.type("Follow up in this thread",{delay:5});await page.keyboard.press("Enter");
+    await expect.poll(()=>models.length,{timeout:15_000}).toBe(1);expect(models[0],"the model the follow-up went to").toBe("model-c");
+    await expect(page.getByText("Answered with model-c.")).toBeVisible({timeout:15_000});expect(harness.threadStore.get(thread.id).model).toBe("model-c");await expect(picker).toHaveText("Model C");
+  }finally{await harness.close()}
 });
 
 // A multi-model run where one model cannot start: its rows open to words, as a failed background launch's row does, not to the

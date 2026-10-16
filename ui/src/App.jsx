@@ -75,7 +75,7 @@ import { CODEX_STANDARD_SERVICE_TIER, configuredModelServiceTier, modelServiceTi
 import { configuredModelOptions, modelOptionSettingsWith, supportedModelOptions } from "../../src/model-options.mjs";
 import { codexReasoningEffortLabel } from "../../src/codex-model-catalog.mjs";
 import { codexErrorNotice, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal } from "./codex-turn-options.js";
-import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayHarness, relayThreadPreferredModel, serviceTierPickerTitle } from "./harness-turn-options.js";
+import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayThreadPreferredModel, serviceTierPickerTitle } from "./harness-turn-options.js";
 import ReasoningRow from "./components/ReasoningRow.jsx";
 import TurnActivityCard from "./components/TurnActivityCard.jsx";
 import { reasoningHistoryMessage } from "./reasoning-text.js";
@@ -3397,8 +3397,9 @@ export default function App(){
     // An open or a new task asked for since this one began owns the view: this one does not resume a thread nobody waits for.
     if(openSeqRef.current!==token)return thread;
     if(connectedClient){
-      // A harness thread resumes on its own model (T3 keeps each thread's model selection); the composer then shows that model.
-      const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,...(agentRuntime==="native"?{model:model||null,modelProvider:provider}:{}),cwd:thread.cwd||null},()=>{if(openSeqRef.current===token)holdThreadNotifications(token,thread.id)});
+      // A harness thread resumes on its own model (T3 keeps each thread's model selection); the composer then shows that model. A
+      // Native thread asks for its own too: a session it starts runs on the model asked for, which became the thread's.
+      const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,...(agentRuntime==="native"?{model:thread.model||model||null,modelProvider:provider}:{}),cwd:thread.cwd||null},()=>{if(openSeqRef.current===token)holdThreadNotifications(token,thread.id)});
       const checkpointPromise=api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).then(value=>({value,error:null}),error=>({value:null,error}));
       const goalPromise=client.request("thread/goal/get",{threadId:thread.id}).then(value=>({value,error:null}),error=>({value:null,error}));
       const continuityPromise=client.request("thread/continuity/get",{threadId:thread.id}).then(value=>({value,error:null}),error=>({value:null,error}));
@@ -3474,7 +3475,7 @@ export default function App(){
       activeThreadRef.current=resumed.thread;resumedOnRef.current={threadId:resumed.thread.id,client};pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
       if(runtimeCapabilities.collaborationModes&&resumed.collaborationMode?.mode&&collaborationModes.some(item=>item.mode===resumed.collaborationMode.mode))setCollaborationMode(resumed.collaborationMode.mode);
       if(agentRuntime==="codex")applyCodexThreadSettings(resumed.thread.id,resumed);
-      else if(relayHarness(agentRuntime)&&resumed.thread.model&&modelsRef.current.includes(resumed.thread.model)){setModel(resumed.thread.model);setSelectedModels([resumed.thread.model])}
+      else if(resumed.thread.model&&modelsRef.current.includes(resumed.thread.model)){setModel(resumed.thread.model);setSelectedModels([resumed.thread.model])}
       if(resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
         const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
