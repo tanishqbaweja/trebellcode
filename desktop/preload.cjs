@@ -1,42 +1,48 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+// A call the shell could not do rejects with the shell's own words, as the app shows its other errors: Electron puts
+// "Error invoking remote method '<channel>': Error: " before them, which the app would show as it is.
+const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args).catch(error => {
+  throw new Error(String(error?.message || error).replace(/^Error invoking remote method '[^']*': (?:[A-Za-z]*Error: )?/, ""));
+});
+
 contextBridge.exposeInMainWorld("trebellDesktop", {
   minimize: () => ipcRenderer.send("window:minimize"),
   maximize: () => ipcRenderer.send("window:maximize"),
   close: () => ipcRenderer.send("window:close"),
   platform: process.platform,
-  pickDirectory: () => ipcRenderer.invoke("workspace:pickDirectory"),
-  pickFiles: () => ipcRenderer.invoke("workspace:pickFiles"),
+  pickDirectory: () => invoke("workspace:pickDirectory"),
+  pickFiles: () => invoke("workspace:pickFiles"),
   openIn: {
-    list: () => ipcRenderer.invoke("workspace:editors"),
-    open: (path,editorId) => ipcRenderer.invoke("workspace:openIn", {path,editorId}),
+    list: () => invoke("workspace:editors"),
+    open: (path,editorId) => invoke("workspace:openIn", {path,editorId}),
   },
   notify: (payload) => ipcRenderer.send("desktop:notify", payload),
-  captureScreen: () => ipcRenderer.invoke("desktop:screenshot"),
-  captureWindow: () => ipcRenderer.invoke("desktop:window:screenshot"),
+  captureScreen: () => invoke("desktop:screenshot"),
+  captureWindow: () => invoke("desktop:window:screenshot"),
   computer: {
-    screenshot: () => ipcRenderer.invoke("computer:screenshot"),
-    move: (x,y) => ipcRenderer.invoke("computer:move", {x,y}),
-    click: (payload) => ipcRenderer.invoke("computer:click", payload),
-    scroll: (delta) => ipcRenderer.invoke("computer:scroll", {delta}),
-    type: (text) => ipcRenderer.invoke("computer:type", {text}),
-    key: (key) => ipcRenderer.invoke("computer:key", {key}),
+    screenshot: () => invoke("computer:screenshot"),
+    move: (x,y) => invoke("computer:move", {x,y}),
+    click: (payload) => invoke("computer:click", payload),
+    scroll: (delta) => invoke("computer:scroll", {delta}),
+    type: (text) => invoke("computer:type", {text}),
+    key: (key) => invoke("computer:key", {key}),
   },
   zoom: {
-    get: () => ipcRenderer.invoke("desktop:zoom:get"),
-    set: (factor) => ipcRenderer.invoke("desktop:zoom:set", factor),
-    reset: () => ipcRenderer.invoke("desktop:zoom:reset"),
+    get: () => invoke("desktop:zoom:get"),
+    set: (factor) => invoke("desktop:zoom:set", factor),
+    reset: () => invoke("desktop:zoom:reset"),
     previewKeys: (open) => ipcRenderer.send("desktop:zoom:preview-keys", Boolean(open)),
   },
   background: {
-    get: () => ipcRenderer.invoke("desktop:background:get"),
-    set: (enabled) => ipcRenderer.invoke("desktop:background:set", enabled),
+    get: () => invoke("desktop:background:get"),
+    set: (enabled) => invoke("desktop:background:set", enabled),
   },
   updates: {
-    get: () => ipcRenderer.invoke("desktop:update:get"),
-    check: () => ipcRenderer.invoke("desktop:update:check"),
-    download: () => ipcRenderer.invoke("desktop:update:download"),
-    install: () => ipcRenderer.invoke("desktop:update:install"),
+    get: () => invoke("desktop:update:get"),
+    check: () => invoke("desktop:update:check"),
+    download: () => invoke("desktop:update:download"),
+    install: () => invoke("desktop:update:install"),
     onState: (handler) => {
       const listener=(_event,payload)=>handler(payload);
       ipcRenderer.on("desktop:update:state",listener);
@@ -44,12 +50,12 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
     },
   },
   snapshots: {
-    get: () => ipcRenderer.invoke("snapshot:get"),
-    configure: (config) => ipcRenderer.invoke("snapshot:configure", config),
-    pending: () => ipcRenderer.invoke("snapshot:pending"),
-    read: (id) => ipcRenderer.invoke("snapshot:read", id),
-    ack: (id) => ipcRenderer.invoke("snapshot:ack", id),
-    capture: () => ipcRenderer.invoke("snapshot:capture"),
+    get: () => invoke("snapshot:get"),
+    configure: (config) => invoke("snapshot:configure", config),
+    pending: () => invoke("snapshot:pending"),
+    read: (id) => invoke("snapshot:read", id),
+    ack: (id) => invoke("snapshot:ack", id),
+    capture: () => invoke("snapshot:capture"),
     onCaptured: (handler) => {
       const listener=(_event,payload)=>handler(payload);
       ipcRenderer.on("snapshot:captured",listener);
@@ -57,27 +63,27 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
     },
   },
   browser: {
-    navigate: (url) => ipcRenderer.invoke("browser:navigate", url),
-    show: () => ipcRenderer.invoke("browser:show"),
-    state: () => ipcRenderer.invoke("browser:state"),
-    back: () => ipcRenderer.invoke("browser:history", "back"),
-    forward: () => ipcRenderer.invoke("browser:history", "forward"),
-    reload: () => ipcRenderer.invoke("browser:history", "reload"),
-    setViewport: (width,height) => ipcRenderer.invoke("browser:viewport", {width,height}),
-    armRecording: () => ipcRenderer.invoke("browser:recording:arm"),
+    navigate: (url) => invoke("browser:navigate", url),
+    show: () => invoke("browser:show"),
+    state: () => invoke("browser:state"),
+    back: () => invoke("browser:history", "back"),
+    forward: () => invoke("browser:history", "forward"),
+    reload: () => invoke("browser:history", "reload"),
+    setViewport: (width,height) => invoke("browser:viewport", {width,height}),
+    armRecording: () => invoke("browser:recording:arm"),
     onState: (handler) => {
       const listener=(_event,payload)=>handler(payload);
       ipcRenderer.on("browser:state",listener);
       return () => ipcRenderer.removeListener("browser:state",listener);
     },
-    snapshot: () => ipcRenderer.invoke("browser:snapshot"),
-    click: (ref) => ipcRenderer.invoke("browser:click", ref),
-    type: (ref,text) => ipcRenderer.invoke("browser:type", {ref,text}),
-    screenshot: () => ipcRenderer.invoke("browser:screenshot"),
-    runtime: () => ipcRenderer.invoke("browser:runtime"),
-    importCookies: (payload) => ipcRenderer.invoke("browser:importCookies", payload),
-    importSources: () => ipcRenderer.invoke("browser:importSources"),
-    importProfile: (sourceId,profileId) => ipcRenderer.invoke("browser:importProfile", {sourceId,profileId}),
-    close: () => ipcRenderer.invoke("browser:close"),
+    snapshot: () => invoke("browser:snapshot"),
+    click: (ref) => invoke("browser:click", ref),
+    type: (ref,text) => invoke("browser:type", {ref,text}),
+    screenshot: () => invoke("browser:screenshot"),
+    runtime: () => invoke("browser:runtime"),
+    importCookies: (payload) => invoke("browser:importCookies", payload),
+    importSources: () => invoke("browser:importSources"),
+    importProfile: (sourceId,profileId) => invoke("browser:importProfile", {sourceId,profileId}),
+    close: () => invoke("browser:close"),
   },
 });

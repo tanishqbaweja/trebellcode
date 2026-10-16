@@ -29,6 +29,11 @@ async function closeElectronApp(app){
   }
 }
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+// What locator says once it has stopped changing, as a person reads it: a message the shell sends can be followed at once by another.
+async function settledText(locator){
+  let last="";for(let same=0,i=0;same<3&&i<80;i++){await sleep(250);const now=(await locator.innerText({timeout:1000}).catch(()=>"")).replace(/\s+/g," ").trim();same=now&&now===last?same+1:0;last=now}
+  return last;
+}
 
 // One hidden launch checks the desktop shell's guards and its notification, file-manager, second-launch and quit paths, each as
 // its own subtest. Nothing is shown: show and focus are stubbed where a path would call them, and the tray's Quit is reached
@@ -97,7 +102,7 @@ test("the desktop shell keeps its window and bridge to the app, and its notifica
     await t.test("Open in File Explorer reports a folder that did not open",async()=>{
       await app.evaluate(({shell})=>{shell.openPath=async()=>"Access is denied."});
       const opened=await window.evaluate(path=>window.trebellDesktop.openIn.open(path,"file-manager").then(()=>"ok",error=>"refused: "+error.message),home);
-      assert.match(opened,/^refused: .*Could not open the folder: Access is denied\./,opened);
+      assert.equal(opened,"refused: Could not open the folder: Access is denied.","the shell's own words, without Electron's \"Error invoking remote method\" before them");
     });
 
     await t.test("a second launch shows the window, also one hidden in the tray",async()=>{
@@ -208,14 +213,19 @@ test("a plain start shows the window once it has painted, at its saved zoom, als
 });
 
 // Loaded after KEEP_OFF_SCREEN, it makes the shell a packaged build with a scripted release feed: a check finds 9.9.9 and Download
-// update gets it, with nothing fetched. Restart & install then runs electron-updater's own quitAndInstall, which finds no installer on
-// disk and starts nothing: it says so through its error event and returns without throwing, as for an installer it cannot launch.
+// update gets it, with nothing fetched; a check given a reason (feed.fails) fails with it, as electron-updater's does, through the error
+// event and the call's rejection. Restart & install then runs electron-updater's own quitAndInstall, which finds no installer on disk
+// and starts nothing: it says so through its error event and returns without throwing, as for an installer it cannot launch.
 const packagedUpdate=root=>`
 Object.defineProperty(app,"isPackaged",{get:()=>true,configurable:true});
 app.getLoginItemSettings=()=>({openAtLogin:false,executableWillLaunchAtLogin:false,launchItems:[]});app.setLoginItemSettings=()=>{};
 const {autoUpdater}=require(require.resolve("electron-updater",{paths:[${JSON.stringify(root)}]}));
-const feed=globalThis.__updateFeed={checks:0};
-autoUpdater.checkForUpdates=async()=>{feed.checks++;autoUpdater.emit("checking-for-update");autoUpdater.emit("update-available",{version:"9.9.9"});return {updateInfo:{version:"9.9.9"}}};
+const feed=globalThis.__updateFeed={checks:0,fails:null};
+autoUpdater.checkForUpdates=async()=>{
+  feed.checks++;autoUpdater.emit("checking-for-update");
+  if(feed.fails){const error=new Error(feed.fails);feed.fails=null;autoUpdater.emit("error",error);throw error}
+  autoUpdater.emit("update-available",{version:"9.9.9"});return {updateInfo:{version:"9.9.9"}};
+};
 autoUpdater.downloadUpdate=async()=>{autoUpdater.emit("download-progress",{percent:50,transferred:50,total:100});autoUpdater.emit("update-downloaded",{version:"9.9.9"});return []};
 `;
 
@@ -243,6 +253,11 @@ test("a Restart & install whose installer does not start brings the app back, sa
     const card=window.locator(".update-settings");
     const openUpdates=async()=>{await window.getByRole("button",{name:/^Settings/}).first().click();await window.getByRole("button",{name:/^General/}).first().click();await card.scrollIntoViewIfNeeded()};
     await openUpdates();
+    // A check that fails says why as the app's other errors do, then the next check finds 9.9.9 again.
+    await app.evaluate(()=>{globalThis.__updateFeed.fails="The release feed could not be read."});
+    await card.getByRole("button",{name:"Check now"}).click();
+    assert.equal(await settledText(card.locator(".provider-status-error")),"The release feed could not be read.","the reason, without Electron's \"Error invoking remote method\" before it");
+    await card.getByRole("button",{name:"Check now"}).click();
     await card.getByRole("button",{name:"Download update"}).click();
     await card.getByRole("button",{name:"Restart & install"}).click();
     const reloaded=window.waitForEvent("load",{timeout:60_000}).then(()=>true,()=>false);
@@ -258,7 +273,66 @@ test("a Restart & install whose installer does not start brings the app back, sa
     // The window's Close quits the app, as it does when no update was tried.
     const child=app.process(),exited=new Promise(resolve=>{const timer=setTimeout(()=>resolve(false),60_000);child.once("exit",()=>{clearTimeout(timer);resolve(true)})});
     await window.locator(".window-close").click().catch(()=>{});
-    assert.equal(await exited,true,"the window's Close quits the app");
+    assert.equal(await exited,true,"the window's Close quits the app");app=null;
+  }finally{
+    await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
+});
+
+// Loaded after KEEP_OFF_SCREEN: each file or folder picker the shell opens takes the next plan, the paths picked or the reason it
+// could not open.
+const PICKER_PLAN=`
+const pickerPlans=globalThis.__pickerPlans=[];
+dialog.showOpenDialog=async()=>{const plan=pickerPlans.shift()||{paths:[]};if(plan.fails)throw new Error(plan.fails);return {canceled:!plan.paths.length,filePaths:plan.paths}};
+`;
+
+// What the shell could not do reads as the app's other errors do: the app's or the shell's own sentence with the reason, without
+// Electron's "Error invoking remote method '<channel>': Error:" before it and without raw ENOENT or JSON parser text (lane H, p109-p114).
+test("a desktop action that fails says why in the app's own words, without Electron's wrapper or raw system text",{timeout:240_000},async t=>{
+  if(process.platform!=="win32")return t.skip("The desktop shell checks target the Windows desktop build.");
+  const dist=resolve(process.env.TREBELL_UI_DIST||join(packageRoot,"ui","dist"));
+  if(!existsSync(join(dist,"index.html")))return t.skip("The built UI is needed: npm run ui:build, or TREBELL_UI_DIST.");
+  const home=await mkdtemp(join(tmpdir(),"trebell-desktop-errors-"));
+  const guiPort=await freePort(),appPort=await freePort(),stub=join(home,"picker-plan.cjs"),cookies=join(home,"cookies-bad.json");let app=null;
+  await writeFile(stub,KEEP_OFF_SCREEN+PICKER_PLAN);await writeFile(cookies,"{ this is not json");
+  const env={...process.env,TREBELL_HOME:home,TREBELL_TEST_HIDDEN:"1",TREBELL_GUI_MOCK:"1",TREBELL_UI_DIST:dist,TREBELL_GUI_PORT:String(guiPort),TREBELL_APP_SERVER_PORT:String(appPort),TREBELL_E2E_OFFLINE:"1",TREBELL_E2E_ALLOW_NETWORK:"0",CODEX_HOME:join(home,"codex"),CLAUDE_CONFIG_DIR:join(home,"claude"),OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const origin=`http://127.0.0.1:${guiPort}`;
+  try{
+    app=await electron.launch({args:["-r",stub,packageRoot],env});
+    const window=await app.firstWindow();for(let i=0;i<240&&!window.url().startsWith(origin);i++)await sleep(250);await window.waitForLoadState("load");
+    await fetch(origin+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({onboardingComplete:true,panelAnimationMs:0})});
+    await window.reload();
+    const plan=value=>app.evaluate((_electron,value)=>{globalThis.__pickerPlans.push(value)},value);
+    const said={};
+    // Attach files, when the file picker cannot open.
+    await window.getByRole("button",{name:/^New task/}).first().click();
+    await plan({fails:"The file picker could not open."});
+    await window.getByRole("button",{name:"Attach files"}).first().click();
+    said.attach=await settledText(window.getByTestId("app-action-error"));
+    // The palette's Open workspace folder, when the folder picker cannot open: the palette stays open with the reason.
+    await window.keyboard.press("Control+K");await window.getByTestId("command-palette").waitFor();
+    await window.keyboard.type("Open workspace folder");
+    await plan({fails:"The folder picker could not open."});
+    await window.keyboard.press("Enter");
+    said.palette=await settledText(window.locator(".command-palette-error"));
+    await window.keyboard.press("Escape");
+    // Import cookie JSON in the Browser panel, with a file that is not JSON.
+    await window.getByRole("button",{name:"Browser",exact:true}).first().click();
+    await plan({paths:[cookies]});
+    await window.locator(".agent-browser-toolbar button").filter({hasText:"Import cookie JSON"}).click();
+    said.cookies=await settledText(window.getByTestId("browser-cookie-status"));
+    // A SnapShot whose files are gone by the time the app reads it, as the shell says a capture is ready.
+    await window.getByRole("button",{name:/^New task/}).first().click();
+    await app.evaluate(({BrowserWindow},origin)=>BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&item.webContents.getURL().startsWith(origin)).webContents.send("snapshot:captured",{id:"snapshot-0-gone"}),origin);
+    const activity=window.getByTestId("activity-card").last();await activity.waitFor();
+    if(await activity.getAttribute("data-state")==="closed")await activity.locator(".activity-card-head").click();
+    said.snapshot=await settledText(activity.locator(".tool-event.kind-error summary strong").last());
+    assert.deepEqual(said,{
+      attach:"Could not attach files: The file picker could not open.",
+      palette:"The folder picker could not open.",
+      cookies:"Cookie import failed: cookies-bad.json is not valid JSON.",
+      snapshot:"Could not attach the SnapShot: The capture is no longer on disk.",
+    });
   }finally{
     await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }

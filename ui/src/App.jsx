@@ -1654,7 +1654,7 @@ export default function App(){
         }
         setSection("chat");await snapshots.ack(id);
       }catch(error){
-        setEvents(prev=>[...prev,{id:"snapshot-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{snapshotId:id}}]);
+        setEvents(prev=>[...prev,{id:"snapshot-error-"+Date.now(),kind:"error",title:"Could not attach the SnapShot: "+(error.message||String(error)),status:"done",raw:{snapshotId:id}}]);
       }finally{handling.delete(id)}
     };
     snapshots.pending().then(items=>{for(const item of items||[])attachCapture(item.id)}).catch(error=>showActionError(error,"Could not load pending SnapShots"));

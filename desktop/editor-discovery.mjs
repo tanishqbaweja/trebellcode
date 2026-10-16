@@ -224,7 +224,9 @@ export function listEditors({refresh=false,now=Date.now,discover=discoverEditors
 // already starts a console program with no console window.
 export function startEditor(editor,path,{spawnFn=spawn}={}){
   return new Promise((resolve,reject)=>{
-    const fail=error=>reject(new Error("Could not start "+editor.label+": "+(error?.message||String(error))));
+    // In words, not spawn's own "spawn <path> ENOENT": a program that is gone, or one that cannot be run directly.
+    const reason=error=>error?.code==="ENOENT"?`it is no longer at ${editor.executable}.`:error?.code?`${editor.executable} could not be run.`:(error?.message||String(error));
+    const fail=error=>reject(new Error("Could not start "+editor.label+": "+reason(error)));
     let child;
     try{child=spawnFn(editor.executable,[path],{detached:true,stdio:"ignore"})}catch(error){fail(error);return}
     child.once("error",fail);

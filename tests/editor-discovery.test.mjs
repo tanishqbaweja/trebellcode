@@ -79,9 +79,10 @@ test("an editor that cannot be started is reported instead of answered as opened
   await opening;assert.equal(started.unrefed,true);
   assert.deepEqual(launches,[["/opt/zed",["/repo"],{detached:true,stdio:"ignore"}]],"no windowsHide: a GUI editor's first ShowWindow would take its SW_HIDE");
   const missing=child();
+  // The reason is said in words, not as spawn's "spawn <path> ENOENT" (lane H, p110: Open in Zed after Zed.exe was removed).
   await assert.rejects(startEditor({label:"Visual Studio Code",executable:"D:\\VS Code\\bin\\code"},"D:\\repo",{spawnFn:()=>{setImmediate(()=>missing.emit("error",Object.assign(new Error("spawn D:\\VS Code\\bin\\code ENOENT"),{code:"ENOENT"})));return missing}}),
-    /Could not start Visual Studio Code: spawn .* ENOENT/);
-  await assert.rejects(startEditor({label:"Cursor",executable:"C:\\Cursor\\cursor.cmd"},"C:\\repo",{spawnFn:()=>{throw Object.assign(new Error("spawn EINVAL"),{code:"EINVAL"})}}),/Could not start Cursor: spawn EINVAL/);
+    {message:"Could not start Visual Studio Code: it is no longer at D:\\VS Code\\bin\\code."});
+  await assert.rejects(startEditor({label:"Cursor",executable:"C:\\Cursor\\cursor.cmd"},"C:\\repo",{spawnFn:()=>{throw Object.assign(new Error("spawn EINVAL"),{code:"EINVAL"})}}),{message:"Could not start Cursor: C:\\Cursor\\cursor.cmd could not be run."});
 });
 
 // On Windows a child that is not detached sits in the opener's kill-on-close job, so quitting Trebell would end the editor it opened.

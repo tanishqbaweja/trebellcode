@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, Notification, Tray, Menu, nativeImage, desktopCapturer, screen, clipboard, globalShortcut } from "electron";
 import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { createGuiServer } from "../src/gui-server.mjs";
@@ -138,7 +138,12 @@ function pendingSnapshots(){
   for(const name of readdirSync(dir)){if(!name.endsWith(".json"))continue;try{const meta=JSON.parse(readFileSync(join(dir,name),"utf8"));const paths=snapshotPaths(meta.id);if(existsSync(paths.png))items.push(meta)}catch{}}
   return items.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
 }
-function readSnapshot(id){const paths=snapshotPaths(id);const meta=JSON.parse(readFileSync(paths.json,"utf8"));const data=readFileSync(paths.png);return {...meta,dataBase64:data.toString("base64")}}
+// A SnapShot whose files went before the app read them (removed, or pruned past the newest 20) is said in words, not as ENOENT.
+function readSnapshot(id){
+  const paths=snapshotPaths(id);let meta,data;
+  try{meta=JSON.parse(readFileSync(paths.json,"utf8"));data=readFileSync(paths.png)}catch(error){throw new Error(error?.code==="ENOENT"?"The capture is no longer on disk.":"The capture could not be read.")}
+  return {...meta,dataBase64:data.toString("base64")};
+}
 function ackSnapshot(id){const paths=snapshotPaths(id);for(const path of [paths.json,paths.png])try{unlinkSync(path)}catch{}return {ok:true,id}}
 let brandIconCache=null;
 function brandIconDataUrl(){
@@ -258,7 +263,8 @@ async function importBrowserCookies(payload={}){
   if(!cookies){
     const picked=await dialog.showOpenDialog(windowRef,{title:"Import cookies into Trebell Agent Browser",properties:["openFile"],filters:[{name:"Cookie JSON",extensions:["json"]},{name:"All files",extensions:["*"]}]});
     if(picked.canceled||!picked.filePaths[0])return {ok:false,canceled:true,imported:0,failed:0,errors:[]};
-    const parsed=JSON.parse(readFileSync(picked.filePaths[0],"utf8"));
+    const file=picked.filePaths[0];let parsed;
+    try{parsed=JSON.parse(readFileSync(file,"utf8"))}catch(error){throw new Error(error instanceof SyntaxError?`${basename(file)} is not valid JSON.`:`${basename(file)} could not be read.`)}
     cookies=Array.isArray(parsed)?parsed:(Array.isArray(parsed?.cookies)?parsed.cookies:null);
     source="file";
   }
