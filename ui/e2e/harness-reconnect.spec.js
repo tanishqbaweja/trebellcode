@@ -228,7 +228,7 @@ test("a background send cut off at turn/start opens to the thread to check and w
     const row=page.locator(".tool-event").filter({hasText:"may already be running"}),summary=row.locator("summary"),body=row.locator(".tool-event-body");
     await expect(summary).toContainText("Background may already be running. Possible thread: reconnect-thread.");
     await expect.poll(()=>stashed?.text).toBe("[CHECK EXISTING THREAD BEFORE RETRY] "+draft);
-    const detail=["Could not tell whether the task's turn started: App-server disconnected","Possible thread: reconnect-thread","Folder: "+process.cwd(),"Model: test/coding-fast","The draft was saved to Trebell stash, marked [CHECK EXISTING THREAD BEFORE RETRY]."].join("\n");
+    const detail=["Could not tell whether the task's turn started: Codex disconnected","Possible thread: reconnect-thread","Folder: "+process.cwd(),"Model: test/coding-fast","The draft was saved to Trebell stash, marked [CHECK EXISTING THREAD BEFORE RETRY]."].join("\n");
     await summary.click();
     await expect(body.locator("pre")).toHaveCount(1);expect(await body.locator("pre").textContent()).toBe(detail);
     await expect(body.locator(".tool-json")).toHaveCount(0);
