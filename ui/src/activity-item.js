@@ -31,7 +31,8 @@ export function activityRow(item={},{turnId=null}={}){
   if(type==="reasoning")title="Reasoning";
   if(type==="imageView")title="Viewing image";
   if(type==="imageGeneration")title="Generating image";
-  if(type==="contextCompaction")title="Compacting context";
+  // A compaction that ended reads as thread/compacted names it.
+  if(type==="contextCompaction")title=activityItemStatus(item)==="done"?"Context compacted":"Compacting context";
   if(type==="enteredReviewMode")title="Reviewing changes";
   if(type==="exitedReviewMode")title="Finished review";
   // A command's output, or the text a Trebell tool answered with (Native's repository searches answer with their hits
@@ -45,9 +46,10 @@ export function activityRow(item={},{turnId=null}={}){
 }
 
 // A step of a turn that has ended is not running any more: a harness that sends no status, a subtask stored as it started and
-// a tool cut off by a stop all read done, as the live card marks them when the turn completes.
+// a tool cut off by a stop all read done, as the live card marks them when the turn completes. A compaction (Codex stores its
+// item with no status) then reads as compacted.
 export function settledRow(row){
-  return row?.status==="running"?{...row,status:"done"}:row;
+  return row?.status==="running"?{...row,status:"done",...(row.kind==="contextCompaction"&&{title:"Context compacted"})}:row;
 }
 
 function cappedText(value){

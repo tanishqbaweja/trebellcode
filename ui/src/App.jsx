@@ -1140,6 +1140,9 @@ export default function App(){
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
   // Clears only the live reply text (a withdrawn Native draft), leaving command, diff and tool streams as they are.
   function clearAssistantText(){assistantStreamSyncRef.current=EMPTY_ASSISTANT_STREAM;assistantStreamBufferRef.current?.reset();assistantTextRef.current="";activityTimelineRef.current?.setText("")}
+  // A live item's row. A compaction's takes the row that Compact and thread/compacted show for its thread, so one compaction is
+  // one row.
+  function liveItemRow(item,threadId,turnId){const row=activityRow(item,{turnId});if(item.type==="contextCompaction"&&threadId)row.id="context-compact-"+threadId;return row}
   // The live card's steps for each turn of the open thread, merged as the list merges them (the list cannot be read while a
   // notification is handled): what a turn's own card takes once the turn ends (sealLiveTurn). Card items only.
   function trackLiveRow(threadId,turnId,row,{phase,streamed=""}={}){
@@ -2888,7 +2891,7 @@ export default function App(){
     }
     else if(message.method==="turn/plan/updated"&&isCurrent){const plan=(p.plan||[]).map((s,i)=>({id:"plan-"+i,kind:"plan",title:s.step||s.description||s.text||"Plan step",status:s.status==="completed"?"done":s.status==="inProgress"?"running":"pending",raw:s,turnId:p.turnId==null?null:String(p.turnId)}));setEvents(prev=>[...prev.filter(e=>e.kind!=="plan"),...plan])}
     else if(message.method==="item/started"&&p.item){
-      const item=activityRow(p.item,{turnId:p.turnId});
+      const item=liveItemRow(p.item,threadId,p.turnId);
       const isActivityItem=!["userMessage","agentMessage","sessionHandoff"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,{currentActivity:{id:item.id,kind:item.kind,title:item.title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
       if(isCurrent&&isActivityItem)setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item]);
@@ -2923,7 +2926,7 @@ export default function App(){
         const itemId=String(p.item.id||"");
         if(itemId){liveExtrasRef.current.get(turnInfoKey(threadId,p.turnId))?.delete(itemId);if(isCurrent){mcpProgressRef.current.delete(itemId);activityTimelineRef.current?.clearMcpProgress(itemId)}}
       }
-      const item=activityRow({...p.item,status:completedItemStatus(p.item)},{turnId:p.turnId});
+      const item=liveItemRow({...p.item,status:completedItemStatus(p.item)},threadId,p.turnId);
       const completedAtMs=p.completedAtMs||Date.now();
       const isActivityItem=!["userMessage","agentMessage","sessionHandoff"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===item.id?null:current.currentActivity,lastActivity:{id:item.id,kind:item.kind,title:item.title,durationMs:p.item?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs}));
@@ -4031,7 +4034,8 @@ export default function App(){
     if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
     if(!activeThread?.id||!rpc||leavingThread())return;
     const id="context-compact-"+activeThread.id;
-    setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{}};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
+    // A new compaction's row has no turn until its item names one: the turn of the last compaction, kept, would take it away.
+    setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{},turnId:null};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
     try{
       // Grok compacts in a turn of its own (its /compact command), which takes as long as the model needs.
       await requestThreadCompaction(activeThread.id,agentRuntime==="grok"?{timeoutMs:10*60_000}:undefined);

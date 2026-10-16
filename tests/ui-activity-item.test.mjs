@@ -86,6 +86,15 @@ test("a step of an ended turn is not running any more; other statuses stay",()=>
   assert.equal(settledRow(null),null);
 });
 
+test("a compaction reads compacting while it runs and compacted once done, also from a stored item with no status",()=>{
+  assert.equal(activityRow({id:"k",type:"contextCompaction"}).title,"Compacting context");
+  assert.equal(activityRow({id:"k",type:"contextCompaction",status:"inProgress"}).title,"Compacting context");
+  assert.equal(activityRow({id:"k",type:"contextCompaction",status:"completed"}).title,"Context compacted");
+  // Codex stores the item with no status: once its turn has ended, the turn's card reads it done and compacted.
+  const stored=activityRow({id:"k",type:"contextCompaction"},{turnId:"t1"});
+  assert.deepEqual(settledRow(stored),{...stored,status:"done",title:"Context compacted"});
+});
+
 test("a kept row holds bounded text: a command's output its end, other text its start, lists their first entries",()=>{
   const long="x".repeat(RESTORED_TEXT_LIMIT)+"TAIL",row=activityRow({id:"c",type:"commandExecution",command:"build",status:"completed",aggregatedOutput:"HEAD"+long,exitCode:0});
   const kept=restoredRow(row);
