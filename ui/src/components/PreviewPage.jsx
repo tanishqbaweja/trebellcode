@@ -30,7 +30,7 @@ const kept={draft:"http://localhost:3000",url:"",snapshot:null,selectedRef:null,
 // A recording goes on while another tab is open or the panel is closed, and comes back with the panel, as it records the agent
 // browser's window, not the panel: it used to end unsaved when the panel went. It is noted here once it has started, so the panel
 // finds it on coming back even if it went while the recording was starting.
-const recorderRef={current:null,since:0},streamRef={current:null},chunksRef={current:[]};
+const recorderRef={current:null,since:0,stopping:false},streamRef={current:null},chunksRef={current:[]};
 // A press records or stops once, as a thread's menu item runs: the rest of it (the second click of a double click, Enter held) does
 // nothing. Record and Stop are one button, so the second click landed on the Stop of the recording the first click had started once
 // the shell armed it, and stopped it at once.
@@ -203,8 +203,10 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
       recorder.start(250);recorderRef.current=recorder;recorderRef.since=Date.now();setRecording(true);
     }finally{setBusy("")}
   }
+  // A recording is saved once: Stop pressed again while it is being saved (Enter pressed twice, or Stop in the panel opened again)
+  // saves nothing more. It used to save it again.
   async function stopRecording(){
-    const recorder=recorderRef.current;if(!recorder)return;setBusy("recording-stop");
+    const recorder=recorderRef.current;if(!recorder||recorderRef.stopping)return;recorderRef.stopping=true;setBusy("recording-stop");
     try{
       const stopped=new Promise((resolve,reject)=>{
         let settled=false;
@@ -222,7 +224,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
       if(onAttachFile){const ext=type.includes("mp4")?"mp4":"webm";await onAttachFile(new File([blob],`browser-recording-${Date.now()}.${ext}`,{type}),{kind:"browser",label:"Browser recording",detail:`${recordingSeconds}s · ${(blob.size/1024/1024).toFixed(1)} MB`})}
     }finally{
       for(const track of streamRef.current?.getTracks?.()||[])try{track.stop()}catch{}
-      recorderRef.current=null;streamRef.current=null;chunksRef.current=[];setRecording(false);setBusy("");
+      recorderRef.current=null;recorderRef.stopping=false;streamRef.current=null;chunksRef.current=[];setRecording(false);setBusy("");
     }
   }
   async function attachElement(element,note=""){

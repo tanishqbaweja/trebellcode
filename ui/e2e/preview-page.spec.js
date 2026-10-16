@@ -155,6 +155,9 @@ test("a recording goes on while the person looks at another tab or closes the pa
   }finally{await site.close()}
 });
 
+// The server is slow to store what the page attaches ("text" or "blob") until store() is called, as one slow to answer is.
+async function slowStore(page,kind){let store=()=>{};const stored=new Promise(resolve=>{store=resolve});await page.route("**/api/attachments/"+kind,async route=>{await stored;await route.continue()});return store}
+
 // Opens the agent browser on the site's /rec page, with Record in the device toolbar.
 async function openRecorder(page,request,site){
   await page.addInitScript(scriptedAgentBrowser);
@@ -163,6 +166,33 @@ async function openRecorder(page,request,site){
   await expect(frame.locator("h1")).toHaveText("Page /rec");
   return {panel,record:panel.locator(".browser-device-toolbar button.recording"),saved:page.getByTestId("context-chip").filter({hasText:"Browser recording"})};
 }
+
+// A double click on Stop, or Enter pressed twice or held on it, saves the recording once and says nothing went wrong: the second
+// press came while the first was saving it (Enter pressed twice while the server was slow to store it), and saved it again or, when
+// the first had taken what was recorded, said the recording produced no video; and the repeats of Enter held came once it was saved,
+// on Record, and started another. Each check of what a stop did waits for the next recording to run a second, so a second save has
+// landed.
+test("a double click on Stop, or Enter pressed twice or held on it, saves the recording once",async({page,request})=>{
+  test.setTimeout(60_000);
+  const site=await startSite();
+  try{
+    const {panel,record,saved}=await openRecorder(page,request,site);
+    const presses=["double click","Enter pressed twice","Enter held"],status=panel.locator('[data-testid="browser-cookie-status"], .browser-action-error');
+    for(const [index,how] of [...presses,"click"].entries()){
+      await record.click();
+      await expect(record,index?"after the "+presses[index-1]+" on Stop, Record starts a recording":undefined).toHaveText(/Stop [1-9]\d*s/);
+      await expect(saved,index?"the "+presses[index-1]+" on Stop saved the recording once":undefined).toHaveCount(index);
+      await expect(status,index?"the "+presses[index-1]+" on Stop says nothing went wrong":undefined).toHaveCount(0);
+      if(how==="double click")await record.dblclick({delay:60});
+      else if(how==="Enter pressed twice"){const store=await slowStore(page,"blob");await record.focus();await page.keyboard.press("Enter");await page.keyboard.press("Enter");store()}
+      else if(how==="Enter held"){await record.focus();await page.keyboard.down("Enter");await expect(record).toHaveText(/Record/);await page.keyboard.down("Enter");await page.keyboard.down("Enter");await page.keyboard.up("Enter")}
+      else await record.click();
+      await expect(record).toHaveText(/Record/);
+      if(!index)await shots(page,"preview-stop-double-click-saves-once");
+    }
+    await expect(saved).toHaveCount(presses.length+1);await expect(status).toHaveCount(0);
+  }finally{await site.close()}
+});
 
 // A double click on Record starts one recording, which goes on: once the shell had armed it, the second click landed on Stop, which
 // stopped it at once and attached a recording of no length.
