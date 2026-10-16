@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
+import { connect } from "node:net";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -222,6 +223,53 @@ test("a plain start shows the window once it has painted, at its saved zoom, als
     assert.deepEqual((await calls()).filter(call=>call!=="did-finish-load"),["ready-to-show","show at 120%"],"the window shows once it has painted, at its saved zoom");
   }finally{
     release();await closeElectronApp(app);
+    images.closeAllConnections?.();await new Promise(resolve=>images.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
+});
+
+// Loaded after KEEP_OFF_SCREEN: the GUI server's close and the quit that goes through (will-quit) are written, in the order they come,
+// to TREBELL_TEST_QUIT_LOG, which a test reads once the app has quit.
+const QUIT_LOG=`
+const {appendFileSync}=require("node:fs");const http=require("node:http");
+const note=text=>{try{appendFileSync(process.env.TREBELL_TEST_QUIT_LOG,text+"\\n")}catch{}};
+const serverClose=http.Server.prototype.close;
+http.Server.prototype.close=function(...args){if(this.address()?.port===Number(process.env.TREBELL_GUI_PORT)){note("GUI server close");this.once("close",()=>note("GUI server closed"))}return serverClose.apply(this,args)};
+app.on("will-quit",()=>note("will-quit"));
+`;
+
+// The window shows once it has painted, which can be before its load ends, so a person can close it then: with Background off (the
+// default) its × or Alt+F4 quits the app. Electron rejects the load of a window that is gone, and the start's failure path took that
+// for a failed start and quit again, which went through at once while the shutdown cleanup was still closing the GUI server and the
+// terminals, Codex app-servers and event journal with it. Here the page's load waits on a held image, and an upgrade nobody answers
+// holds the GUI server's close for its 1 s cut.
+test("a window closed before its load ends quits the app once the shutdown cleanup has closed the GUI server",{timeout:120_000},async t=>{
+  if(process.platform!=="win32")return t.skip("The desktop shell checks target the Windows desktop build.");
+  const home=await mkdtemp(join(tmpdir(),"trebell-desktop-close-loading-"));
+  let release=()=>{};const released=new Promise(resolve=>{release=resolve});
+  const images=createServer(async(_req,res)=>{await released;res.writeHead(200,{"content-type":"image/svg+xml"});res.end('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>')});
+  const imagePort=await listen(images),guiPort=await freePort(),appPort=await freePort();let app=null,held=null;
+  const dist=join(home,"ui-dist"),stub=join(home,"keep-off-screen.cjs"),quitLog=join(home,"quit.log");
+  await mkdir(dist,{recursive:true});
+  await writeFile(join(dist,"index.html"),`<!doctype html><title>Trebell Code</title><main>${"The window shows while an image is still loading. ".repeat(8)}</main><img src="http://127.0.0.1:${imagePort}/held.svg" alt="">`);
+  await writeFile(stub,KEEP_OFF_SCREEN+QUIT_LOG);
+  // A start as the installed app's: no --background, Background off (a fresh home makes no tray), and the shell's own show path.
+  const env={...process.env,TREBELL_HOME:home,TREBELL_TEST_HIDDEN:"0",TREBELL_GUI_MOCK:"1",TREBELL_UI_DIST:dist,TREBELL_GUI_PORT:String(guiPort),TREBELL_APP_SERVER_PORT:String(appPort),TREBELL_TEST_QUIT_LOG:quitLog,TREBELL_E2E_OFFLINE:"1",TREBELL_E2E_ALLOW_NETWORK:"0",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  try{
+    app=await electron.launch({args:["-r",stub,packageRoot],env});
+    const calls=()=>app.evaluate(()=>globalThis.__startCalls.slice());
+    for(let i=0;i<240&&!(await calls()).some(call=>call.startsWith("show"));i++)await sleep(250);
+    assert.deepEqual((await calls()).filter(call=>call.startsWith("show")||call==="did-finish-load"),["show at 100%"],"the window shows and its load has not ended");
+    held=connect(guiPort,"127.0.0.1");held.on("error",()=>{});await new Promise(resolve=>held.once("connect",resolve));
+    held.write(`GET /api/no-such/ws HTTP/1.1\r\nHost: 127.0.0.1:${guiPort}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`);
+    await sleep(500);
+    // The window's ×, as the page's own button sends it.
+    const child=app.process(),exited=new Promise(resolve=>{if(child.exitCode!=null)return resolve(true);const timer=setTimeout(()=>resolve(false),60_000);child.once("exit",()=>{clearTimeout(timer);resolve(true)})});
+    const window=await app.firstWindow();await window.evaluate(()=>window.trebellDesktop.close()).catch(()=>{});
+    assert.equal(await exited,true,"the window's Close quits the app");app=null;
+    const said=(await readFile(quitLog,"utf8").catch(()=>"")).split("\n").filter(Boolean);
+    assert.deepEqual(said,["GUI server close","GUI server closed","will-quit"],"the app quits once the GUI server has closed");
+  }finally{
+    release();held?.destroy();await closeElectronApp(app);
     images.closeAllConnections?.();await new Promise(resolve=>images.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }
 });

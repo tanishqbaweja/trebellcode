@@ -833,7 +833,11 @@ async function createWindow(){
     if(backgroundEnabled&&!quitting){event.preventDefault();windowRef?.hide();ensureTray()}
   });
   windowRef.on("closed",()=>{windowRef=null;});
-  await windowRef.loadURL(gui.url);
+  // The window can be closed while it loads, now that it shows on its first paint: Electron then rejects its load, which is no failed
+  // start. The quit that close starts is the shutdown's own (window-all-closed), and a second one from the start's failure path would
+  // go through at once, while the cleanup was still closing the GUI server.
+  const contents=windowRef.webContents;
+  await windowRef.loadURL(gui.url).catch(error=>{if(!contents.isDestroyed())throw error});
 }
 
 // The bridge answers only the app's own pages (defence in depth next to the window's navigation guard): a call from any other
