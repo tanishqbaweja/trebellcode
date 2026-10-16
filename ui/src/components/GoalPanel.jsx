@@ -19,7 +19,7 @@ function useSavedFields(group,threadId,saved,fields,setters){
   const filled=useRef(null),latest=useRef(fields);latest.current=fields;
   useEffect(()=>{
     let last=filled.current,current=fields;if(last===saved)return;
-    if(!last){const away=awayDrafts[group];awayDrafts[group]=null;if(away?.threadId===threadId)({filled:last,fields:current}=away)}
+    if(!last){const away=awayDrafts[group];awayDrafts[group]=null;if(threadId&&away?.threadId===threadId)({filled:last,fields:current}=away)}
     filled.current=saved;saved.forEach((value,index)=>setters[index](last&&current[index]!==last[index]?current[index]:value));
   },[JSON.stringify(saved)]);
   useEffect(()=>()=>{const last=filled.current,fields=latest.current;awayDrafts[group]=last&&fields.some((value,index)=>value!==last[index])?{threadId,filled:last,fields}:null},[]);

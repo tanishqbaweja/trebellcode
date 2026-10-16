@@ -545,6 +545,19 @@ test("words typed on into the Objective while a slow save is on its way are stil
   }finally{await harness.close()}
 });
 
+test("the Goal panel left open on New task says no thread is open, and the thread opened again shows its goal",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page);
+  try{
+    const {objective}=await setGoalInPanel(page);
+    const rightPanel=page.getByTestId("right-panel"),row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Composer thread"]')});
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await expect(rightPanel).toContainText("No active thread");await expect(rightPanel.getByRole("alert")).toHaveCount(0);
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(objective).toHaveValue("Make the login tests pass");
+  }finally{await harness.close()}
+});
+
 test("a budget the Goal panel refuses says why in its bar, right above the Update goal pressed, as an alert, and a budget it takes clears it",async({page})=>{
   test.setTimeout(90_000);
   const socket=await relaySocket(page);
