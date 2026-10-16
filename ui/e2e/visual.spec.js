@@ -4354,7 +4354,7 @@ test("environments page says it is checking the host until discovery answers",as
   await expect(pending).toContainText("Checking for distributions…");
   await expect(page.locator(".capability-list")).not.toContainText("Unavailable");
   await expect(page.locator(".capabilities-toolbar p")).toContainText("on this host, inside WSL");
-  await expect(page.locator(".environment-list")).not.toContainText("LOCAL ·");
+  await expect(page.locator(".capability-card").filter({has:page.getByText("Configured environments",{exact:true})}).getByRole("status")).toHaveText("Loading environments…");await expect(page.locator("body")).not.toContainText("LOCAL ·");
   await page.setViewportSize({width:1280,height:800});
   await page.screenshot({animations:"disabled",path:auditDir+"environments-discovery-pending-1280x800.png",fullPage:true});
   release();
