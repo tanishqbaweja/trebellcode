@@ -596,6 +596,79 @@ test("Use on another Claude Code profile while the open thread's turn runs asks 
   }finally{release();await close()}
 });
 
+// A refusal that comes while Settings, opened again, shows the harness rows is said on the row that was clicked there, once. Settings
+// left and opened again before the answer came showed it nowhere on the row, and the app's alert said it over Settings. With Settings
+// on another of its sections as it comes, no harness row is on screen, so the alert says it, and the row does once shown.
+test("a refused switch answered after Settings was opened again is said on its row there, not in the app's alert",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  let answer=null,refuse=()=>{};const arm=()=>{answer=new Promise(resolve=>{refuse=resolve})};arm();
+  const {server,relay,close}=await startHarness(page,{runtime:"claude",rejectSelect:"OpenCode could not start: fixture launcher failed",holdSelect:()=>answer});
+  await keepAppearance(page,server);
+  try{
+    await openGeneralChat(page,relay);
+    const alert=page.getByTestId("app-action-error"),text="Could not switch to OpenCode: OpenCode could not start: fixture launcher failed";
+    const row=page.locator(".agent-runtime-option").filter({hasText:"OpenCode"}),refusal=row.getByRole("alert");
+    await expect(page.getByTestId("model-picker")).toContainText("Claude Fixture Sonnet");
+    let rejected=agentRuntimePost(page);
+    await selectHarness(page,"OpenCode");await expect.poll(()=>server.counts.select).toBe(1);
+    // Back to the chat, and Settings again, before the answer comes.
+    await page.getByRole("button",{name:"Threads",exact:true}).click();await expect(row).toHaveCount(0);
+    await openHarnessSettings(page);await expect(row).toBeVisible();await expect(refusal).toHaveCount(0);
+    refuse();expect((await rejected).status()).toBe(400);
+    await expect(refusal,"the OpenCode row on screen says why").toHaveText(text);await expect(refusal).toBeInViewport();
+    await expect(row.locator("button em")).toHaveText("Switch");
+    await page.waitForTimeout(500);await expect(alert,"said once, on its row: the app's alert does not repeat it over Settings").toHaveCount(0);
+    await shootModes(page,"harness-switch-refused-after-reopen",{widths:[1280,900],check:()=>expect(refusal).toBeInViewport()});
+    // Asked again, and Settings left for its General section before the answer: the alert says it, and the row once shown again.
+    arm();rejected=agentRuntimePost(page);await row.locator("button").first().click();await expect.poll(()=>server.counts.select).toBe(2);
+    await page.getByRole("navigation",{name:"Settings categories"}).getByRole("button",{name:/General/}).click();await expect(row).toHaveCount(0);
+    refuse();expect((await rejected).status()).toBe(400);
+    await expect(alert,"with no harness row on screen, the app's alert says why").toHaveText(text);
+    await page.getByRole("navigation",{name:"Settings categories"}).getByRole("button",{name:/Agents & models/}).click();await expect(refusal).toHaveText(text);
+  }finally{refuse();await close()}
+});
+
+// A refusal kept for a harness ends once a switch to that harness has gone through, also one the app made by opening one of its
+// threads: Settings said "Could not switch to OpenCode" on its row at every visit after OpenCode had since worked.
+test("a kept switch refusal ends once a switch to its harness goes through, also by opening one of its threads",async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {server,relay,close}=await startHarness(page,{runtime:"claude"});
+  try{
+    await openGeneralChat(page,relay);
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker"),row=page.locator(".agent-runtime-option").filter({hasText:"OpenCode"}),threads=page.getByRole("button",{name:"Threads",exact:true});
+    // A Claude Code thread, then an OpenCode one.
+    await expect(picker).toContainText("Claude Fixture Sonnet");
+    await composer.fill("A Claude Code task");await composer.press("Enter");
+    await expect(page.getByText("Fixture reply from claude",{exact:true})).toBeVisible({timeout:15_000});
+    const claudeThread=relay.calls("turn/start")[0].params.threadId;
+    let switched=agentRuntimePost(page);await selectHarness(page,"OpenCode");await switched;
+    await threads.click();await expect(picker).toContainText("OpenCode Fixture Fast",{timeout:15_000});
+    await composer.fill("An OpenCode task");await composer.press("Enter");
+    await expect(page.getByText("Fixture reply from opencode",{exact:true})).toBeVisible({timeout:15_000});
+    const opencodeThread=relay.calls("turn/start")[1].params.threadId;
+    switched=agentRuntimePost(page);await selectHarness(page,"Claude Code");await switched;
+    // OpenCode is refused: its row says why.
+    server.rejectSelect="OpenCode is installed but not authenticated";
+    const rejected=agentRuntimePost(page);await selectHarness(page,"OpenCode");expect((await rejected).status()).toBe(400);
+    await expect(row.getByRole("alert")).toHaveText("Could not switch to OpenCode: OpenCode is installed but not authenticated");
+    // Signed in, the person opens the OpenCode thread, which switches to OpenCode, then the Claude Code one, which switches back.
+    server.rejectSelect="";
+    await threads.click();
+    await page.locator(`.thread-row[data-thread-id="${opencodeThread}"] .thread-main`).click();
+    await expect(picker).toContainText("OpenCode Fixture",{timeout:15_000});expect(server.runtime).toBe("opencode");
+    await expect(page.getByText("Fixture reply from opencode",{exact:true})).toBeVisible({timeout:15_000});
+    await page.locator(`.thread-row[data-thread-id="${claudeThread}"] .thread-main`).click();
+    await expect(picker).toContainText("Claude Fixture Sonnet",{timeout:15_000});expect(server.runtime).toBe("claude");
+    await expect(page.getByText("Fixture reply from claude",{exact:true})).toBeVisible({timeout:15_000});
+    // Settings no longer says OpenCode could not be switched to.
+    await openHarnessSettings(page);
+    await expect(row.locator("button em")).toHaveText("Switch");await expect(row.getByRole("alert"),"the refusal OpenCode has since outlived").toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-switch-refusal-ended-1280x800.png"});
+  }finally{await close()}
+});
+
 // A failed switch, or a failed save of the active profile, must not touch the harness that stays active: its socket, the running
 // turn and the approval it waits on carry on (the server rejects an answer that arrives on another socket, and sends the session's
 // next approval to the socket that created it).

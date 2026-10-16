@@ -31,9 +31,13 @@ let lastAgentRuntimeInfo=null;
 // The section open when Settings was last left: coming back (from the sidebar, Ctrl+, or Back to Settings) opens it again.
 // It lives as long as the window, so a fresh start opens General.
 let lastSettingsSection="general";
-// The last refused harness switch ({kind,instanceId,profile,text}): Settings opened again says it on the row that was clicked (a
-// profile's row for a profile), as it did before.
-let lastSwitchRefusal=null;
+// The last refused harness switch ({kind,instanceId,profile,text}), said on the row that was clicked (a profile's row for a profile),
+// and the Settings pages that show it: a refusal that comes once Settings was left, or left and opened again, reaches the page on
+// screen. agentRowsShown counts the pages with the harness rows open; with none, the refusal is said in the app's alert. A switch to
+// that harness that went through since, also one the app made (opening one of its threads), ends it.
+let lastSwitchRefusal=null,agentRowsShown=0;const switchRefusalViews=new Set();
+function keepSwitchRefusal(value){lastSwitchRefusal=value;for(const show of switchRefusalViews)show(value)}
+if(typeof window!=="undefined")window.addEventListener("trebell:runtime-switched",event=>{if(lastSwitchRefusal&&lastSwitchRefusal.kind===event.detail)keepSwitchRefusal(null)});
 // A shortcut or condition being typed is a draft. It is saved when the field is left or Enter is pressed, and only once it can work,
 // so a half-typed "Ctrl+" or "threadOpen &&" never replaces the one in use. A draft that cannot work stays in the field, marked
 // invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited. A saved
@@ -101,9 +105,8 @@ const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Curso
 export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTasks=[],onActionError,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
   const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||lastSettingsSection);
   useEffect(()=>{lastSettingsSection=settingsSection},[settingsSection]);
-  // Whether the harness rows are on screen: Settings left, or another of its sections open, they are not.
-  const agentsShownRef=useRef(false);
-  useEffect(()=>{agentsShownRef.current=settingsSection==="agents";return()=>{agentsShownRef.current=false}},[settingsSection]);
+  // The harness rows are on screen while this page shows Agents & models (agentRowsShown).
+  useEffect(()=>{if(settingsSection!=="agents")return;agentRowsShown++;return()=>{agentRowsShown--}},[settingsSection]);
   const [settingsSearch,setSettingsSearch]=useState("");
   const [workspaceScope,setWorkspaceScope]=useState({environmentId:settings.activeEnvironmentId||"local",projectId:""});
   const [workspaceScopeCatalog,setWorkspaceScopeCatalog]=useState({environmentData:{profiles:[]},projects:[]});
@@ -134,10 +137,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [agentMessage,setAgentMessage]=useState("");
   const [agentMessageTarget,setAgentMessageTarget]=useState(null);
   const [agentMessageError,setAgentMessageError]=useState(false);
-  // A refused switch is said on the row that was clicked ({kind,instanceId,profile,text}); the status line sits under the whole
-  // list, out of view.
-  const [switchRefusal,keepSwitchRefusal]=useState(()=>lastSwitchRefusal);
-  const setSwitchRefusal=value=>{lastSwitchRefusal=value;keepSwitchRefusal(value)};
+  // A refused switch is said on the row that was clicked (lastSwitchRefusal); the status line sits under the whole list, out of view.
+  const [switchRefusal,showSwitchRefusal]=useState(()=>lastSwitchRefusal),setSwitchRefusal=keepSwitchRefusal;
+  useEffect(()=>{switchRefusalViews.add(showSwitchRefusal);showSwitchRefusal(lastSwitchRefusal);return()=>{switchRefusalViews.delete(showSwitchRefusal)}},[]);
   const [providerMessageError,setProviderMessageError]=useState(false);
   const [savingInstance,setSavingInstance]=useState(false);
   const showAgentMessage=(text,error=false)=>{setAgentMessage(text);setAgentMessageError(Boolean(error));setSwitchRefusal(null)};
@@ -281,9 +283,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       showAgentMessage(`${result.selected?.status?.name||kind} selected.`);
     }catch(error){
       // The selection falls back to the harness that is still active; the refusal is said on the row that was clicked, and in the
-      // app's alert when that row is not on screen any more (the person went back to the chat while it was refused).
+      // app's alert when no harness rows are on screen as it comes (the person went back to the chat, or to another section).
       setAgentMessageTarget(null);showAgentMessage("");setSwitchRefusal({kind,instanceId,profile,text:`Could not switch to ${target}: ${error.message}`});
-      if(!agentsShownRef.current)onActionError?.(error,"Could not switch to "+target);
+      if(!agentRowsShown)onActionError?.(error,"Could not switch to "+target);
     }
     finally{setAgentSelectionOverride(null)}
   }

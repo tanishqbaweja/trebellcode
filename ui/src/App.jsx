@@ -1807,7 +1807,8 @@ export default function App(){
     const preferredModel=keptThread?.model||(runtime===pending.from?pending.previous.model:(pendingThread?.model||""));
     // One batch: the runtime, its bootstrap, exactly one transport reconnect and (when bundled) its catalog land together. Nothing reconnects after the catalog.
     runtimeSwitchRef.current=null;modelCatalogScopeRef.current=modelCatalogScope(runtime,nextProvider);
-    setRuntimeSwitch(null);runtimeAppliedSeqRef.current++;
+    // A refusal Settings keeps for this harness is over: the switch went through (SettingsPage listens).
+    setRuntimeSwitch(null);runtimeAppliedSeqRef.current++;window.dispatchEvent(new CustomEvent("trebell:runtime-switched",{detail:runtime}));
     setSettings(previous=>({...previous,agentRuntime:runtime,agentRuntimeInstanceId:instanceId}));setRuntimeKnown(true);
     if(boot)setBootstrap(boot);
     setRuntimeTransportRevision(value=>value+1);
