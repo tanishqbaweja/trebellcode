@@ -15,7 +15,8 @@ async function startSite(port=0){
 }
 
 // The desktop bridge as desktop/preload.cjs gives it, scripted: an agent browser with a history of its own that reports its state
-// after each move, as desktop/main.mjs does, and notes the calls the panel makes.
+// after each move, as desktop/main.mjs does, and notes the calls the panel makes. The window it grants a recording is a canvas that
+// keeps drawing, so the recorder encodes real frames.
 function scriptedAgentBrowser(){
   const pages=[],listeners=new Set();let at=-1;window.agentBrowserCalls=[];
   const current=()=>({open:at>=0,url:pages[at]||"",title:"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,width:1280,height:800});
@@ -28,7 +29,13 @@ function scriptedAgentBrowser(){
     forward:call("forward",()=>{if(at<pages.length-1)at++}),
     reload:call("reload"),
     snapshot:async()=>({url:pages[at]||"",title:"",elements:[]}),
+    armRecording:async()=>({ok:true,expiresAt:Date.now()+5000,sourceId:"window:1:0"}),
   }}});
+  if(navigator.mediaDevices)navigator.mediaDevices.getDisplayMedia=async()=>{
+    const canvas=document.createElement("canvas");canvas.width=320;canvas.height=200;const context=canvas.getContext("2d");let frame=0;
+    const draw=()=>{context.fillStyle=`hsl(${frame++*7%360} 60% 50%)`;context.fillRect(0,0,320,200)};draw();setInterval(draw,33);
+    return canvas.captureStream(30);
+  };
 }
 
 async function openBrowserPanel(page,request){
@@ -109,6 +116,39 @@ test("an address where nothing answers says so instead of showing a blank frame,
     await panel.getByRole("button",{name:"Preview",exact:true}).click();
     await expect(frame.locator("h1")).toHaveText("Page /");
     await expect(notice).toHaveCount(0);
+  }finally{await site.close()}
+});
+
+// A recording records the agent browser's window, not the panel, so it goes on while the person looks at another tab or closes the
+// panel (with its X, opening it again with Ctrl+Alt+B, or with Escape in a narrow window), and Stop then saves it. A look at Files
+// used to end it unsaved: back on Browser the button read Record, and nothing said so.
+test("a recording goes on while the person looks at another tab or closes the panel, and Stop then saves it",async({page,request})=>{
+  const site=await startSite();
+  try{
+    await page.addInitScript(scriptedAgentBrowser);
+    const {panel,address,frame}=await openBrowserPanel(page,request);
+    const tabs=panel.locator(".context-panel-tab-scroll"),record=panel.locator(".browser-device-toolbar button.recording"),saved=page.getByTestId("context-chip").filter({hasText:"Browser recording"});
+    await typeAddress(page,address,site.url+"/rec");await panel.getByRole("button",{name:"Open agent browser"}).click();
+    await expect(frame.locator("h1")).toHaveText("Page /rec");
+    await record.click();
+    await expect(record).toHaveText(/Stop [1-9]\d*s/);
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(address).toHaveCount(0);
+    await tabs.getByRole("button",{name:"Browser",exact:true}).click();
+    await expect(record,"back on Browser after a look at Files, the recording is still going").toHaveText(/Stop \d+s/);
+    await panel.getByRole("button",{name:"Close right panel"}).click();await expect(panel).toHaveCount(0);
+    await page.keyboard.press("Control+Alt+B");
+    await expect(record,"after the panel was closed and opened again with Ctrl+Alt+B").toHaveText(/Stop \d+s/);
+    // In a narrow window the panel lies over the conversation, and Escape closes it.
+    await page.setViewportSize({width:900,height:800});
+    await expect(page.getByTestId("inspector-scrim")).toBeVisible();
+    await page.keyboard.press("Escape");await expect(panel).toHaveCount(0);
+    await page.getByTestId("right-panel-toggle").first().click();
+    await expect(record,"after Escape closed the panel in a narrow window").toHaveText(/Stop \d+s/);
+    await shots(page,"preview-recording-goes-on-after-files-tab");
+    await expect(saved).toHaveCount(0);
+    await record.click();
+    await expect(saved,"Stop saves the recording once").toHaveCount(1);
+    await expect(record).toHaveText(/Record/);
   }finally{await site.close()}
 });
 

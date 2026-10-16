@@ -23,6 +23,10 @@ function noneSet(result,from=""){
   if(result?.imported||!failed)return "";
   return (failed===1?"the cookie"+from+" could not be set":"none of the "+failed+" cookies"+from+" could be set")+(why?" ("+why+")":"")+(skipped?"; "+skipped+" encrypted or partitioned cookie"+(skipped===1?" was":"s were")+" skipped":"")+".";
 }
+// A recording goes on while another tab is open or the panel is closed, and comes back with the panel, as it records the agent
+// browser's window, not the panel: it used to end unsaved when the panel went. It is noted here once it has started, so the panel
+// finds it on coming back even if it went while the recording was starting.
+const recorderRef={current:null,since:0},streamRef={current:null},chunksRef={current:[]};
 
 export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAttachFile}){
   const [draft,setDraft]=useState("http://localhost:3000");
@@ -46,11 +50,10 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   const [unanswered,setUnanswered]=useState("");
   const [viewport,setViewport]=useState({width:1280,height:800});
   const [history,setHistory]=useState([]);
-  const [recording,setRecording]=useState(false);
-  const [recordingSince,setRecordingSince]=useState(0);
+  const [recording,setRecording]=useState(Boolean(recorderRef.current));
   const [recordingSeconds,setRecordingSeconds]=useState(0);
   const [previewZoom,setPreviewZoom]=useState(1);
-  const recorderRef=useRef(null);const streamRef=useRef(null);const chunksRef=useRef([]);const urlInputRef=useRef(null);
+  const urlInputRef=useRef(null);
 
   function remember(nextUrl,title=""){
     const normalized=normalizedHistoryUrl(nextUrl);if(!normalized)return;
@@ -84,9 +87,8 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   },[projectPath]);
   useEffect(()=>{
     if(!recording){setRecordingSeconds(0);return}
-    const tick=()=>setRecordingSeconds(Math.max(0,Math.floor((Date.now()-recordingSince)/1000)));tick();const timer=setInterval(tick,500);return()=>clearInterval(timer);
-  },[recording,recordingSince]);
-  useEffect(()=>()=>{try{if(recorderRef.current?.state!=="inactive")recorderRef.current.stop()}catch{};for(const track of streamRef.current?.getTracks?.()||[])track.stop()},[]);
+    const tick=()=>setRecordingSeconds(Math.max(0,Math.floor((Date.now()-recorderRef.since)/1000)));tick();const timer=setInterval(tick,500);return()=>clearInterval(timer);
+  },[recording]);
   // An address asked for before the panel was drawn (an action's Open preview opens the panel and asks at once) is shown as it opens.
   useEffect(()=>{
     const open=next=>{
@@ -186,9 +188,9 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
       await browser.armRecording();
       const stream=await navigator.mediaDevices.getDisplayMedia({audio:false,video:{frameRate:{ideal:30,max:30}}});streamRef.current=stream;
       const choices=["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm","video/mp4;codecs=avc1"];
-      const mimeType=choices.find(type=>MediaRecorder.isTypeSupported(type))||"";const recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined);chunksRef.current=[];recorderRef.current=recorder;
+      const mimeType=choices.find(type=>MediaRecorder.isTypeSupported(type))||"";const recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined);chunksRef.current=[];
       recorder.ondataavailable=event=>{if(event.data?.size)chunksRef.current.push(event.data)};
-      recorder.start(250);setRecordingSince(Date.now());setRecording(true);
+      recorder.start(250);recorderRef.current=recorder;recorderRef.since=Date.now();setRecording(true);
     }finally{setBusy("")}
   }
   async function stopRecording(){
