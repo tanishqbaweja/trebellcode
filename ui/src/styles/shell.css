@@ -493,12 +493,18 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* Room for focus rings inside the clipped left group. */
 .composer-wrap .composer-left{gap:7px;padding:4px;margin:-4px}
 .composer-wrap .composer-right{gap:6px}
+/* The left group asks for the width its pickers' values need. Where they and the right group do not fit on one row (Thinking and
+   Speed beside a project's workspace picker in a 900 or 700 wide window), the right group goes under them, at the right as in the
+   stacked layout below, and pickers that do not fit beside each other wrap: none is cut to "Thinking…" or "Speed · …". */
+.composer-wrap .composer-bar{flex-wrap:wrap;row-gap:6px}
+.composer-wrap .composer-left{flex:1 1 auto;flex-wrap:wrap}
+.composer-wrap .composer-right{margin-left:auto}
 /* Narrow composer (inspector open at 1280, small windows): the legacy container query stacks the left group above
    the right group (e2e specs rely on that order). Keep the pills compact so the left group stays on one row where
    possible, and keep the model picker at its natural width next to voice and send instead of stretching it. */
 @container (max-width:600px){
   .composer-wrap .composer-bar{row-gap:6px}
-  .composer-wrap .composer-left{gap:6px}
+  .composer-wrap .composer-left{flex:none;gap:6px}
   .composer-wrap .composer-left>select{flex:0 1 auto;min-width:0;max-width:150px;padding:0 23px 0 9px;background-position:right 7px center;font-size:11.5px}
   .composer-wrap .model-picker-wrap{flex:0 1 auto;min-width:0;max-width:none}
   .composer-wrap .model-picker-button{width:auto;max-width:100%}
