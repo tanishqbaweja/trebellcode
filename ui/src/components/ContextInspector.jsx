@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from "react";
+import React,{useState} from "react";
 import { api } from "../api.js";
 import { asSentence } from "../inspector-labels.js";
 
@@ -36,7 +36,6 @@ function ContextExplorer({root,environmentId=null}){
   const [viewData,setViewData]=useState(null);
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
-  useEffect(()=>{setMode("symbols");setQuery("");setResults([]);setSearched(false);setSelected(null);setRelations(null);setPreview(null);setDiagnostics(null);setFixes(null);setView(null);setViewData(null);setBusy("");setError("")},[root,environmentId]);
   if(!root)return null;
   const params=extra=>{const value=new URLSearchParams({path:root,...extra});if(environmentId)value.set("environmentId",environmentId);return value};
   const modeMeta={
@@ -175,6 +174,9 @@ function ContextExplorer({root,environmentId=null}){
 }
 
 export default function ContextInspector({packet=null,error=null,pressure=null,remote=false,root=null,environmentId=null}){
+  // The explorer is the open project's: another project or environment starts it afresh, so a search or an opened row still on
+  // its way for the one left lands nowhere.
+  const explorer=<ContextExplorer key={(environmentId||"")+"\n"+(root||"")} root={root} environmentId={environmentId}/>;
   if(!packet)return <div className="context-inspector empty">
     <section className="context-inspector-hero">
       <span>Trebell Context Engine</span>
@@ -183,7 +185,7 @@ export default function ContextInspector({packet=null,error=null,pressure=null,r
         ?"The latest turn skipped repository injection to preserve about "+Number(pressure.reserveTokens||0).toLocaleString()+" tokens for the model response."
         :"Send a repository task and Trebell will build a bounded structural context packet before the model starts.")}</p>
     </section>
-    <ContextExplorer root={root} environmentId={environmentId}/>
+    {explorer}
   </div>;
 
   const items=Array.isArray(packet.items)?packet.items:[],highest=Math.max(0,...items.map(item=>Number(item.score)||0));
@@ -207,7 +209,7 @@ export default function ContextInspector({packet=null,error=null,pressure=null,r
       </div>
     </section>
 
-    <ContextExplorer root={root} environmentId={environmentId}/>
+    {explorer}
 
     <section className="context-inspector-list" aria-label="Selected repository context">
       <div className="context-inspector-section-head"><strong>Selected context</strong><span>why Trebell included it</span></div>
