@@ -1617,6 +1617,42 @@ test.describe("Saving an action or a hook",()=>{
       hold.door.open();await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],hooks:[]}});
     }
   });
+
+  // An action and a hook already saved: Edit, a new command, Save; while that save is on its way, Cancel and Edit again on the same
+  // row, whose editor shows the command from before the save, and only the name is changed there. Once the save lands that editor
+  // shows the command saved, and saving it keeps that command instead of putting the old one back.
+  test("an editor opened again on an action or hook while its save is on its way takes what was saved, so saving it keeps that change",async({page,request})=>{
+    const boot=await open(page,request);
+    await request.post("/api/projects",{data:{path:boot.cwd,scripts:[{id:"dev-action",name:"Dev",command:"npm run dev",previewUrl:null,autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false}],preferredScriptId:"dev-action",hooks:[{id:"lint-hook",name:"Lint",event:"verification.required",command:"npm run lint",enabled:true,failureMode:"block",timeoutMs:30000,actions:[]}]}});
+    const hold=await holdCardSaves(page);
+    try{
+      await openProjects(page);
+      const card=page.locator(".project-card.active");
+      for(const [kind,listKey,placeholder,before,after,renamed] of [["action","scripts","Action name (e.g. Dev server)","npm run dev","npm run dev:fast","Dev fast"],["hook","hooks","Hook name (e.g. Lint gate)","npm run lint","npm run lint:strict","Lint strict"]]){
+        const editor=card.locator(`.project-${kind}-editor`),row=card.locator(`.project-${kind}-row`).first(),edit=row.getByRole("button",{name:"Edit "+kind,exact:true}),save=editor.locator("button.primary");
+        const name=editor.getByPlaceholder(placeholder),command=editor.getByPlaceholder(kind==="action"?"Command (e.g. npm run dev)":"Command (e.g. npm run lint)");
+        hold.door=gate();const sent=hold.saves.length;
+        await edit.click();await expect(command).toHaveValue(before);
+        await command.click();await page.keyboard.press("Control+A");await page.keyboard.type(after,{delay:10});
+        await save.click();
+        await expect.poll(()=>hold.saves.length).toBe(sent+1);
+        await editor.getByRole("button",{name:"Cancel",exact:true}).click();await expect(editor).toHaveCount(0);
+        await edit.click();
+        await expect(command,"the editor opened again shows the row as listed before the save lands").toHaveValue(before);
+        await name.click();await page.keyboard.press("Control+A");await page.keyboard.type(renamed,{delay:10});
+        hold.door.open();
+        await expect(row,"the row once the save has landed").toContainText(after);
+        await expect(command,`the ${kind} editor opened again takes the command saved`).toHaveValue(after);
+        await expect(name,"and keeps the name typed in it").toHaveValue(renamed);
+        if(kind==="action")await shootModes(page,"card-action-reopened-editor-rebased",{show:editor});
+        await save.click();await expect(editor).toHaveCount(0);
+        expect(hold.saves.length).toBe(sent+2);
+        await expect.poll(async()=>((await listedProjects(request)).find(project=>project.path===boot.cwd)?.[listKey]||[]).map(item=>[item.name,item.command]),{message:`the ${kind} saved from the editor opened again`}).toEqual([[renamed,after]]);
+      }
+    }finally{
+      hold.door.open();await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],hooks:[]}});
+    }
+  });
 });
 
 test.describe("Renaming a project",()=>{

@@ -23,13 +23,15 @@ function hookFields(value){return {name:value.name||"",event:value.event||"verif
 const fieldsOf=(editor,names)=>Object.fromEntries(names.map(name=>[name,editor[name]]));
 const sameFields=(editor,fields,names)=>names.every(name=>editor[name]===fields[name]);
 // A save that lands closes the editor it saved, unless the person changed it since Save was pressed: it then stays open on what was
-// saved with their change, so its Save updates that action or hook. Any other editor stays as it is.
+// saved with their change, so its Save updates that action or hook. An editor opened on the same action or hook while the save was on
+// its way was filled from the list before it: it takes what was saved in the fields the person has not changed, so saving it does not
+// put the old values back. Any other editor stays as it is.
 function editorLanded(names,{opened,projectId,sent,id,saved}){
   return current=>{
     if(!current||current.projectId!==projectId)return current;
     const onSaved=reference=>Object.fromEntries(names.map(name=>[name,current[name]===reference[name]?saved[name]:current[name]]));
-    if(current.opened===opened)return sameFields(current,sent,names)?null:{...current,...onSaved(sent),id,saving:false};
-    return current;
+    if(current.opened===opened)return sameFields(current,sent,names)?null:{...current,...onSaved(sent),id,base:saved,saving:false};
+    return current.id&&current.id===id?{...current,...onSaved(current.base||saved),base:saved}:current;
   };
 }
 // How long an Undo of a removal waits for the card saves still on their way before it puts the project back without them.
@@ -482,7 +484,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   const withItem=(list=[],id,item)=>list.some(entry=>entry.id===id)?list.map(entry=>entry.id===id?item:entry):[...list,item];
   function editScript(project,script=null){
     const fields=scriptFields(script||blankScript());
-    setEditor({opened:{},projectId:project.id,id:script?.id||null,...fields});
+    setEditor({opened:{},projectId:project.id,id:script?.id||null,...fields,base:fields});
   }
 
   function submitScript(project){
@@ -510,7 +512,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   }
 
   function editHook(project,hook=null){
-    const fields=hookFields(hook||blankHook());setHookEditor({opened:{},projectId:project.id,id:hook?.id||null,...fields});
+    const fields=hookFields(hook||blankHook());setHookEditor({opened:{},projectId:project.id,id:hook?.id||null,...fields,base:fields});
   }
 
   function submitHook(project){
