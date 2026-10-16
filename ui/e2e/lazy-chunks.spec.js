@@ -225,16 +225,25 @@ test("a new task in a new worktree whose tool catalog cannot load makes no workt
 
 // What the app does around a turn beyond showing it (turn-support.js: a send's repository context and new worktree, a send that is
 // a slash command, the agent's calls to Trebell's own tools, a completed turn's verification, the turns a restart interrupted) loads
-// at idle after the first paint (B11). A send made before then waits for it and starts with its repository context once it has come.
+// at idle after the first paint (B11). A send made before then waits for it and starts with its repository context once it has come:
+// the server's packet (here a seed naming the fixture's session.js) shows in the activity and reaches the model with the message.
 test("a send made before the turn support has loaded waits for it and starts with its context",async({page})=>{
   test.setTimeout(60_000);
-  const held=[];
+  const held=[],userTexts=[];
   await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>{held.push(route)});
-  const fixture=await startStreamingFixture(page,{providerTurn:async request=>({id:"support-late",provider:request.provider,model:request.model,text:"Started once the turn support came.",toolCalls:[],finishReason:"stop",usage:{}})});
+  const fixture=await startStreamingFixture(page,{providerTurn:async request=>{
+    userTexts.push(JSON.stringify(request.messages?.find(item=>item.role==="user")?.content||""));
+    return {id:"support-late",provider:request.provider,model:request.model,text:"Started once the turn support came.",toolCalls:[],finishReason:"stop",usage:{}};
+  }});
+  const packets=[];
+  await page.route(/\/api\/context\/packet$/,route=>{packets.push(route.request().method());return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    id:"held-context",root:fixture.repo,task:"Start while the turn support is still on its way",generatedAt:Date.now(),tokenEstimate:120,maxTokens:2800,instructionInjection:"",untrustedInjection:"",injection:"",
+    items:[{path:"session.js",score:90,reasons:["defines task-related symbol: SessionManager"],symbols:[{name:"SessionManager",kind:"class",line:1}],tokenEstimate:40}],
+    budget:{mode:"focused",pressure:"normal",maxTokens:2800,maxFiles:12},stats:{},
+  })})});
   try{
     await expect.poll(()=>held.length,{message:"the turn support asked for at idle"}).toBe(1);
     await fixture.open("Native streaming");
-    const packets=[];page.on("request",request=>{if(new URL(request.url()).pathname==="/api/context/packet")packets.push(request.method())});
     await fixture.send("Start while the turn support is still on its way");
     // The message shows at once, and the turn waits for the turn support: no context is asked for and no model is called until it comes.
     await expect(page.locator(".user-row").filter({hasText:"Start while the turn support is still on its way"})).toBeVisible();
@@ -242,6 +251,31 @@ test("a send made before the turn support has loaded waits for it and starts wit
     for(const route of held.splice(0))await route.continue();
     await expect(page.getByText("Started once the turn support came.",{exact:true})).toBeVisible({timeout:10_000});
     expect(packets).toEqual(["POST"]);expect(fixture.requests).toHaveLength(1);
+    await expect(page.locator(".tool-event").filter({hasText:"Trebell context ·"})).toContainText(/Trebell context · 1 file · ~\d+ tokens/);
+    expect(userTexts,"the turn reached the model once").toHaveLength(1);
+    expect(userTexts[0],"the turn carried the repository seed").toContain("Trebell repository seed");
+    expect(userTexts[0]).toContain("session.js — defines task-related symbol: SessionManager | symbols: class SessionManager");
+    await appStays(page);
+  }finally{for(const route of held)await route.continue().catch(()=>{});await fixture.close()}
+});
+
+// A slash command sent before the turn support has come waits for it too, and runs once it is in: /plan fills the composer with the
+// plan prompt to send, and nothing goes to the model.
+test("a slash command sent before the turn support has loaded waits for it and runs",async({page})=>{
+  test.setTimeout(60_000);
+  const held=[];
+  await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>{held.push(route)});
+  const fixture=await startStreamingFixture(page,{providerTurn:async request=>({id:"slash-late",provider:request.provider,model:request.model,text:"This should not start.",toolCalls:[],finishReason:"stop",usage:{}})});
+  try{
+    await expect.poll(()=>held.length,{message:"the turn support asked for at idle"}).toBe(1);
+    await fixture.open("Native streaming");
+    await fixture.send("/plan the release");
+    await page.waitForTimeout(500);
+    await expect(page.getByTestId("composer")).toHaveValue("/plan the release");
+    for(const route of held.splice(0))await route.continue();
+    await expect(page.getByTestId("composer")).toHaveValue("Create a clear execution plan, then carry it out. the release",{timeout:10_000});
+    await expect(page.getByRole("alert").filter({hasText:"Not sent"})).toHaveCount(0);
+    expect(fixture.requests,"nothing went to the model").toHaveLength(0);
     await appStays(page);
   }finally{for(const route of held)await route.continue().catch(()=>{});await fixture.close()}
 });
@@ -306,6 +340,41 @@ test("a tool call whose turn support cannot load is answered with the reason, an
   }finally{await fixture.close()}
 });
 
+// A call that comes before the turn support has loaded waits for it, and is answered once it is in (here the answer for a tool no one
+// registered, which only the turn support gives).
+test("a tool call made before the turn support has loaded waits for it and is answered",async({page})=>{
+  test.setTimeout(45_000);
+  const held=[];
+  await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>{held.push(route)});
+  const fixture=await codexFixture(page);
+  const answer=()=>fixture.messages.find(message=>message.id==="tool-call-held"&&!message.method)?.result??null;
+  try{
+    await openFixtureThread(page);
+    await expect.poll(()=>held.length,{message:"the turn support asked for at idle"}).toBe(1);
+    fixture.send({id:"tool-call-held",method:"item/tool/call",params:{threadId:fixture.thread.id,turnId:"turn-tool",callId:"call-held",namespace:"fixture_tools",tool:"echo",arguments:{}}});
+    await page.waitForTimeout(500);expect(answer(),"no answer before the turn support came").toBeNull();
+    for(const route of held.splice(0))await route.continue();
+    await expect.poll(answer,{message:"the answer the harness got"}).toEqual({contentItems:[{type:"inputText",text:"No client-defined dynamic tool is registered for fixture_tools/echo"}],success:false});
+    await appStays(page);
+  }finally{for(const route of held)await route.continue().catch(()=>{});await fixture.close()}
+});
+
+// A completed turn's verification is planned by the turn support. With it unable to load, the open thread's activity says the plan
+// could not be made, and why.
+test("a completed turn whose turn support cannot load says its verification could not be planned",async({page})=>{
+  test.setTimeout(45_000);
+  let refused=0;
+  await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const fixture=await codexFixture(page);
+  try{
+    await openFixtureThread(page);
+    await expect.poll(()=>refused,{message:"the turn support asked for at idle"}).toBeGreaterThan(0);
+    fixture.send({method:"turn/completed",params:{threadId:fixture.thread.id,turn:{id:"turn-unplanned",status:"completed",completedAt:Date.now()/1000}}});
+    await expect(page.locator(".tool-event").filter({hasText:"Could not plan turn verification"})).toContainText("Could not plan turn verification: Part of Trebell could not load. Reload Trebell to get it back.");
+    await appStays(page);
+  }finally{await fixture.close()}
+});
+
 // What a person does to threads (thread-actions.js: pin, snooze, settle, archive, fork, delete, Undo, a move up or down) loads at
 // idle after the first paint too. A Pin made before then waits for it and pins the thread once it has come; with it unable to load,
 // the Pin says so in the sidebar and the thread stays where it was.
@@ -348,6 +417,30 @@ test("a Pin whose thread actions cannot load says so in the sidebar, and the thr
     await page.setViewportSize({width:1280,height:800});
     await page.screenshot({animations:"disabled",path:auditDir+"thread-actions-cannot-load-dark-1280x800.png"});
   }finally{await fixture.close()}
+});
+// An action made before the thread actions have come reads the thread open when it runs: the open thread pinned before the person
+// opened another is pinned once they come, and the thread opened meanwhile stays the open one, marked in the sidebar and named in
+// the header.
+test("a Pin made before the thread actions have loaded leaves open the thread opened meanwhile",async({page})=>{
+  test.setTimeout(60_000);
+  const held=[];
+  await page.route(/\/assets\/thread-actions-[^/]*\.js$/,route=>{held.push(route)});
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Native streaming",preview:"Live reply"},{name:"Opened meanwhile",preview:"Second thread"}]});
+  try{
+    await expect.poll(()=>held.length,{message:"the thread actions asked for at idle"}).toBe(1);
+    await fixture.open("Native streaming");
+    await pinFromMenu(page,"Native streaming");
+    await fixture.open("Opened meanwhile");
+    await expect(page.locator(".thread-title-button strong")).toHaveText("Opened meanwhile");
+    for(const route of held.splice(0))await route.continue();
+    await expect.poll(()=>pinnedThreads(page)).toEqual(["Native streaming"]);
+    await expect(page.getByTestId("thread-undo-toast").locator("span").first()).toHaveText("Thread pinned");
+    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Opened meanwhile");
+    await expect(page.locator(".thread-title-button strong")).toHaveText("Opened meanwhile");
+    await appStays(page);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-actions-pin-before-load-other-open-dark-1280x800.png"});
+  }finally{for(const route of held)await route.continue().catch(()=>{});await fixture.close()}
 });
 
 // A send that starts with "/" may be a command, which the turn support runs (runSlashCommand). With it unable to load, the send
@@ -404,4 +497,23 @@ test("restart recovery whose turn support cannot load says so, and the threads s
     await page.setViewportSize({width:1280,height:800});
     await page.screenshot({animations:"disabled",path:auditDir+"restart-recovery-cannot-load-dark-1280x800.png"});
   }finally{await fixture.close()}
+});
+
+// A turn a restart interrupted that may already have done what it was doing is only told to the person, which needs none of the turn
+// support: a connect that finds only such turns says so, and the threads load, while the turn support is still on its way (its script
+// is held for the whole test).
+test("restart recovery that only needs inspection says so and the threads load while the turn support is on its way",async({page})=>{
+  test.setTimeout(45_000);
+  const held=[];
+  await page.route(/\/assets\/turn-support-[^/]*\.js$/,route=>{held.push(route)});
+  const fixture=await codexFixture(page,{recovery:{enabled:true,items:[],blocked:[{message:"An interrupted browser click may already have happened. Inspect the page before continuing."}]}});
+  try{
+    await page.goto("/");
+    await expect(page.getByTestId("app-action-error")).toHaveText("Restart recovery needs inspection: An interrupted browser click may already have happened. Inspect the page before continuing.");
+    await expect(page.getByRole("button",{name:/Lazy chunk fixture/})).toBeVisible();
+    expect(fixture.recoveryPosts,"nothing cleared or marked failed").toEqual([]);
+    await appStays(page);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({animations:"disabled",path:auditDir+"restart-recovery-needs-inspection-dark-1280x800.png"});
+  }finally{for(const route of held)await route.continue().catch(()=>{});await fixture.close()}
 });

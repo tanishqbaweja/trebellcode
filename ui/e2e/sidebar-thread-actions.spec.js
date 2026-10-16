@@ -345,6 +345,29 @@ test("a bulk Pin that pins one of the threads offers Undo for â€œThread pinnedâ€
   }finally{await harness.close()}
 });
 
+// The thread actions' code loads at idle after the first paint (thread-actions.js, B11). A bulk Pin made before it has come pins, once
+// it is in, the threads that were selected when Pin was clicked, though the selection changed meanwhile.
+test("a bulk Pin made before the thread actions have loaded pins the threads selected at the click once they come",async({page})=>{
+  test.setTimeout(60_000);
+  const held=[];
+  await page.route(/\/assets\/thread-actions-[^/]*\.js$/,route=>{held.push(route)});
+  const {harness}=await openSidebarApp(page);
+  try{
+    await expect.poll(()=>held.length,{message:"the thread actions asked for at idle"}).toBe(1);
+    await selectThreads(page,["Bulk one","Bulk two"]);
+    await bulkBar(page).getByRole("button",{name:"Pin",exact:true}).click();
+    // Nothing moves before the code comes, and the person selects another thread instead (ticking it first: with none selected the
+    // bulk bar would close).
+    for(const name of ["Bulk three","Bulk one","Bulk two"])await threadRow(page,name).locator(".thread-select").click();
+    await expect(bulkBar(page).locator("span")).toHaveText("1 selected");
+    expect(await groups(page)).toEqual([["Active",names]]);
+    for(const route of held.splice(0))await route.continue();
+    await expect.poll(()=>groups(page)).toEqual([["Pinned",["Bulk one","Bulk two"]],["Active",["Bulk three","Bulk four"]]]);
+    await expect(undoToast(page)).toContainText("2 threads pinned");
+    await shoot(page,"sidebar-bulk-pin-before-actions-load");
+  }finally{for(const route of held)await route.continue().catch(()=>{});await harness.close()}
+});
+
 test("a bulk action that changes every selected thread leaves keyboard focus on Thread actions as the bulk bar goes",async({page})=>{
   test.setTimeout(60_000);
   const {harness}=await openSidebarApp(page);

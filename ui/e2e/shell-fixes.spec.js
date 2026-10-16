@@ -1533,6 +1533,34 @@ test("on Codex a move shows at once, and one made while an earlier move is still
   }finally{await harness.close()}
 });
 
+// The thread actions' code loads at idle after the first paint (thread-actions.js, B11). Moves made before it has come run once it is
+// in, each as a click made then: from the order the move before gave the list. So two Move up clicks take a thread up two places, as
+// they do once the code is in (the test above): the first writes Pinned in the order shown with the move, the second is Codex's own.
+test("on Codex two Move up clicks made before the thread actions have loaded take the thread up two places once they come",async({page})=>{
+  test.setTimeout(60_000);
+  const threads=orderThreads(),meta=Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}]));
+  const held=[];
+  await page.route(/\/assets\/thread-actions-[^/]*\.js$/,route=>{held.push(route)});
+  const harness=await startCodexHarness(threads,orderSections),menu=rowMenu(page),moves=sectionMoves(harness);
+  const pinned=async()=>(await sidebarGroups(page)).find(group=>group[0]==="Pinned")?.[1];
+  const move=async(name,label)=>(await menu(name)).getByRole("button",{name:label,exact:true}).click();
+  try{
+    await openApp(page,{harness,threads,meta});
+    await expect.poll(pinned).toEqual(["Pinned gamma","Pinned beta","Pinned alpha"]);
+    await expect.poll(()=>held.length,{message:"the thread actions asked for at idle"}).toBe(1);
+    await move("Pinned alpha","Move up");await move("Pinned alpha","Move up");
+    // Nothing moves until the code comes.
+    await page.waitForTimeout(500);expect(await pinned()).toEqual(["Pinned gamma","Pinned beta","Pinned alpha"]);expect(moves()).toEqual([]);
+    for(const route of held.splice(0))await route.continue();
+    await expect.poll(pinned,{timeout:5000}).toEqual(["Pinned alpha","Pinned gamma","Pinned beta"]);
+    await expect.poll(()=>harness.order.get("0198-pinned"),{timeout:10_000}).toEqual(["pinned-alpha","pinned-gamma","pinned-beta"]);
+    expect(moves()).toEqual([{threadId:"pinned-alpha",sectionId:"0198-pinned",beforeThreadId:null},{threadId:"pinned-beta",sectionId:"0198-pinned",beforeThreadId:null},{threadId:"pinned-alpha",sectionId:"0198-pinned",beforeThreadId:"pinned-gamma"}]);
+    // Once the list is read back, it shows what Codex keeps.
+    await page.waitForTimeout(1000);expect(await pinned()).toEqual(["Pinned alpha","Pinned gamma","Pinned beta"]);
+    await page.screenshot({path:join(shotsDir,"sidebar-codex-moves-before-actions-load-1600x980.png"),animations:"disabled",clip:{x:0,y:0,width:520,height:640}});
+  }finally{for(const route of held)await route.continue().catch(()=>{});await harness.close()}
+});
+
 test("on Codex a move made while a section's first ordering is still being written waits for it, and both hold",async({page})=>{
   test.setTimeout(60_000);
   const sections=orderSections.slice(0,3),base={cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-90000,turns:[]};

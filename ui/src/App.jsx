@@ -2295,14 +2295,20 @@ export default function App(){
     }
     return loadSkills(rpc,projectPath,true,{strict:true});
   }
-  // The turns a restart interrupted are continued by turn-support.js (continueInterruptedTurns): a connect waits for that module
-  // only when the server names some.
+  // The turns a restart interrupted. One that may already have done what it was doing is left to the person, whom the app tells at
+  // once, with no module to wait for; the others are continued by turn-support.js (continueInterruptedTurns), which a connect waits
+  // for only when the server names some.
   async function recoverCodexAfterRestart(client){
     if(agentRuntime!=="codex")return;
     let recovery,support;
     try{recovery=await api("/api/recovery")}
     catch(error){showActionError(error,"Could not check restart recovery");return}
-    if(!recovery?.enabled||!recovery.blocked?.length&&!recovery.items?.length)return;
+    if(!recovery?.enabled)return;
+    for(const item of recovery.blocked||[]){
+      const error=new Error(item.message||"Automatic restart continuation was blocked because an interrupted tool or action may already have completed. Inspect its real-world state before continuing.");
+      showActionError(error,"Restart recovery needs inspection");
+    }
+    if(!recovery.items?.length)return;
     try{support=await loadTurnSupport()}
     catch(error){showActionError(error,"Could not check restart recovery");return}
     await support.continueInterruptedTurns({client,recovery,showActionError});
@@ -3117,12 +3123,26 @@ export default function App(){
   }
   useEffect(()=>()=>{if(threadUndoTimerRef.current)clearTimeout(threadUndoTimerRef.current)},[]);
   // The thread actions (thread-actions.js) read this render as App's own functions did. Once that module has loaded (from idle after
-  // the first paint) an action runs at once; one made before then waits for it, and one that cannot load it fails and says so where
-  // the action's own failure would.
+  // the first paint) an action runs at once, and one that cannot load it fails and says so where the action's own failure would. The
+  // ones made before then wait for it and run once it is in, in the order they were made, each as a click made then would: from the
+  // render that follows the one before it (flushSync), on the thread or the threads selected when it was made, as the sidebar shows
+  // them then (or the open thread as it is then, for a key on the open thread). So two Move up clicks take a thread up two places,
+  // and an action reads the thread open then.
   function threadActionDeps(){
     return {rpc,rpcStatus,agentRuntime,agentRuntimeLabel,sections,orderedSectionsRef,sectionTop,placementAnchor,threads,threadMeta,displayThreads,setThreads,setSearchResults,activeThread,setActiveThread,activeThreadRef,openingThreadRef,updateThreadMeta,loadThreads,newChat,leaveRemovedThread,openThread,offerThreadUndo,setSnoozeRequest,snoozeRequest,selectedThreadIds,setSelectedThreadIds,threadMovesRef,saveAppSettings,presetFor,permissionMode,model,provider,projectPath,askConfirm};
   }
-  function runThreadAction(name,args){return threadActions?threadActions[name](threadActionDeps(),...args):loadThreadActions().then(module=>module[name](threadActionDeps(),...args))}
+  const latestThreadActionDeps=useLatestCallback(threadActionDeps),queuedThreadActionsRef=useRef(Promise.resolve());
+  function runThreadAction(name,args){
+    if(threadActions)return threadActions[name](threadActionDeps(),...args);
+    const openThen=activeThread,selectedThen=selectedThreadIds,started=queuedThreadActionsRef.current.then(loadThreadActions).then(module=>{
+      const deps={...latestThreadActionDeps(),selectedThreadIds:selectedThen},[thread,...rest]=args,id=thread?.id;let action;
+      const shown=id==null?thread:thread===openThen?(deps.activeThread?.id===id?deps.activeThread:thread):deps.displayThreads.find(item=>item.id===id)||deps.threads.find(item=>item.id===id)||thread;
+      flushSync(()=>{action=module[name](deps,...(id==null?args:[shown,...rest]))});
+      return [action];
+    });
+    queuedThreadActionsRef.current=started.catch(()=>{});
+    return started.then(([action])=>action);
+  }
   function moveThread(...args){return runThreadAction("moveThread",args)}
   function reversibleThreadAction(...args){return runThreadAction("reversibleThreadAction",args)}
   function threadAction(...args){return runThreadAction("threadAction",args)}

@@ -1,8 +1,8 @@
-// What a person does to threads in the sidebar, the header's thread menu, the keyboard and the Agents page: pin, snooze, settle, wake,
-// archive, fork and delete a thread, the same for several selected at once, Undo, and moving a thread up or down its section (and
-// what App does the same way on its own: waking a snoozed thread, settling a merged one). The first screen shows the threads but
-// changes none of them, so App loads this module at idle after the first paint, and an action made before then waits for it (B11).
-// Each function takes what it reads of App's render as deps, as App's own functions read it.
+// What a person does to threads from the sidebar's row menu and bulk bar, the keyboard, the Agents page and the Snooze dialog: pin,
+// snooze, settle, wake, archive, fork and delete a thread, the same for several selected at once, Undo, and moving a thread up or down
+// its section (and what App does the same way on its own: waking a snoozed thread, settling a merged one). Drawing the first screen
+// changes no thread, so App loads this module at idle after the first paint (B11), and an action made before then waits for it, App's
+// own wake and settle at startup among them. Each function takes what it reads of App's render as deps, as App's own functions read it.
 import { bulkActionFailure, movedSectionRanks, orderedSectionWithMove, sectionOrderWrites, threadMoveTarget, threadOrderGroup, threadPlacement, undoOrder } from "./thread-order.js";
 import { loadThreadListPages, threadSectionOrderParams } from "./thread-list-query.js";
 import { threadTitle } from "./thread-catalog.js";

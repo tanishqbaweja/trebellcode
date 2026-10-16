@@ -167,14 +167,10 @@ export async function planCompletedTurnEvidence(deps,threadId,turnId){
 }
 
 // The Codex turns a restart interrupted (recovery: /api/recovery's answer, which App reads on every connect and hands on only when it
-// names some): each is continued unless it ended meanwhile, and one that may already have done its work is left to the person.
+// names turns to continue): each is continued unless it ended meanwhile. App itself tells the person of a turn that may already have
+// done its work, which is left to them.
 export async function continueInterruptedTurns({client,recovery,showActionError}){
-  for(const item of recovery.blocked||[]){
-    const error=new Error(item.message||"Automatic restart continuation was blocked because an interrupted tool or action may already have completed. Inspect its real-world state before continuing.");
-    showActionError(error,"Restart recovery needs inspection");
-  }
-  if(!recovery.items?.length)return;
-  for(const item of recovery.items){
+  for(const item of recovery.items||[]){
     try{
       await client.request("thread/resume",{threadId:item.threadId,excludeTurns:true});
       let previous=null,recentError=null,legacyError=null;
