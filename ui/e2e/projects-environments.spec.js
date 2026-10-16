@@ -92,6 +92,9 @@ async function tabTo(page,target){
   await expect(target).toBeFocused();
 }
 const frames=page=>page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+// A click with the mouse in the middle of target, as a person clicks a button that says it is busy (aria-disabled), which
+// Playwright's own click would wait on.
+async function clickAt(page,target){const box=await target.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2)}
 
 // Each test leaves only the main project, under its own name, and no saved environments.
 test.afterEach(async({request})=>{
@@ -1545,7 +1548,7 @@ test.describe("Saving an action or a hook",()=>{
     try{
       await openProjects(page);
       const card=page.locator(".project-card.active"),editor=card.locator(".project-hook-editor"),rows=card.locator(".project-hook-row strong");
-      const name=editor.getByPlaceholder("Hook name (e.g. Lint gate)"),save=editor.getByRole("button",{name:"Save hook",exact:true});
+      const name=editor.getByPlaceholder("Hook name (e.g. Lint gate)"),save=editor.getByRole("button",{name:"Save hook",exact:true}),saving=editor.locator("button.primary");
       await card.getByRole("button",{name:"Add hook",exact:true}).click();
       await name.click();await page.keyboard.type("Slow hook",{delay:10});
       await editor.getByPlaceholder("Command (e.g. npm run lint)").click();await page.keyboard.type("npm run slow",{delay:10});
@@ -1556,7 +1559,11 @@ test.describe("Saving an action or a hook",()=>{
       await nav(page,"Projects").click();await listed;
       await expect(card).toBeVisible();await expect(rows,"the hook is not listed while its save is on its way").toHaveCount(0);
       await expect.soft(name,"the editor of the save on its way, with what was typed").toHaveValue("Slow hook");
-      if(await save.count()){await shootModes(page,"card-hook-saving-after-return",{show:editor});await save.click()}
+      // Save hook says the save is on its way, as on the page it was pressed on, and pressed again it sends nothing.
+      await expect(saving,"Save hook on the page come back to, while its save is on its way").toHaveText(/^\s*Saving…\s*$/);
+      await expect(saving).toHaveAttribute("aria-disabled","true");
+      await shootModes(page,"card-hook-saving-after-return",{show:editor});
+      await saving.scrollIntoViewIfNeeded();await clickAt(page,saving);
       hold.door.open();
       await expect(rows,"the hook once its save has landed, with no Refresh").toHaveText(["Slow hook"]);
       await expect(editor,"the editor once its save has landed").toHaveCount(0);
@@ -1566,6 +1573,48 @@ test.describe("Saving an action or a hook",()=>{
       await shootModes(page,"card-hook-saved-after-return",{show:card.locator(".project-hooks")});
     }finally{
       hold.door.open();await request.post("/api/projects",{data:{path:boot.cwd,hooks:[]}});
+    }
+  });
+
+  // The person saves a new action, sees a typo while the save is on its way and fixes it. Save action says it is saving, and pressed
+  // then it sends nothing; once the first save lands the editor stays open with the fix, and Save then saves the fix into the action
+  // the first save added, not a second one. The same for a hook.
+  test("an action or hook changed while its save is on its way stays open with the change, and Save then updates what was saved",async({page,request})=>{
+    const boot=await open(page,request);
+    const hold=await holdCardSaves(page);
+    try{
+      await openProjects(page);
+      const card=page.locator(".project-card.active");
+      for(const [kind,listKey,placeholder,typo,fixed] of [["action","scripts","Action name (e.g. Dev server)","npm run dve","npm run dev"],["hook","hooks","Hook name (e.g. Lint gate)","npm run lnit","npm run lint"]]){
+        const editor=card.locator(`.project-${kind}-editor`),rows=card.locator(`.project-${kind}-row strong`),save=editor.locator("button.primary");
+        const name=editor.getByPlaceholder(placeholder),command=editor.getByPlaceholder(kind==="action"?"Command (e.g. npm run dev)":"Command (e.g. npm run lint)");
+        hold.door=gate();const sent=hold.saves.length,label=kind==="action"?"Dev server":"Lint gate";
+        await card.getByRole("button",{name:"Add "+kind,exact:true}).click();
+        await name.click();await page.keyboard.type(label,{delay:10});
+        await command.click();await page.keyboard.type(typo,{delay:10});
+        await save.click();
+        await expect.poll(()=>hold.saves.length).toBe(sent+1);
+        // The fix, typed while the save is on its way: Save says it is saving and sends nothing.
+        await command.click();await page.keyboard.press("Control+A");await page.keyboard.type(fixed,{delay:10});
+        await expect.soft(save,`Save ${kind} while its save is on its way`).toHaveText(/^\s*Saving…\s*$/);
+        await expect.soft(save).toHaveAttribute("aria-disabled","true");
+        if(kind==="action")await shootModes(page,"card-action-saving-changed",{show:editor});
+        await clickAt(page,save);
+        hold.door.open();
+        // The save has landed once the card lists it, and what it did to its editor is drawn a frame or two later.
+        await expect(rows).toHaveText([label]);await frames(page);await frames(page);
+        await expect(editor,`the ${kind} editor of a save that lands after it was changed`).toHaveCount(1);
+        await expect(command,"the fix typed while it saved").toHaveValue(fixed);
+        await expect(save).toHaveText(new RegExp(`^\\s*Save ${kind}\\s*$`));await expect(save).not.toHaveAttribute("aria-disabled","true");
+        expect(hold.saves.length,"saves sent while the first was on its way").toBe(sent+1);
+        await save.click();
+        await expect(editor).toHaveCount(0);
+        expect(hold.saves.length).toBe(sent+2);
+        await expect(rows).toHaveText([label]);
+        await expect.poll(async()=>((await listedProjects(request)).find(project=>project.path===boot.cwd)?.[listKey]||[]).map(item=>[item.name,item.command]),{message:`one ${kind}, with the fix`}).toEqual([[label,fixed]]);
+      }
+    }finally{
+      hold.door.open();await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],hooks:[]}});
     }
   });
 });

@@ -80,15 +80,17 @@
 :root:root .agents-page .delegate-submit,
 :root:root .preview-page .annotation-actions button.primary{border-color:transparent!important;background:var(--acfill)!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow)!important}
 :root:root .projects-page .project-page-actions>button.project-add-local:hover:not(:disabled),
-:root:root .projects-page :is(.project-action-editor,.project-hook-editor) button.primary:hover:not(:disabled),
+:root:root .projects-page :is(.project-action-editor,.project-hook-editor) button.primary:hover:not(:disabled,[aria-disabled="true"]),
 :root:root .environments-page .environment-create .primary:hover:not(:disabled),
 :root:root .secondary-page .history-page .history-empty button:hover:not(:disabled),
 :root:root .agents-page .delegate-submit:hover:not(:disabled),
 :root:root .preview-page .annotation-actions button.primary:hover:not(:disabled){filter:brightness(1.1);background:var(--acfill)!important;color:#fff!important}
 
-/* Disabled buttons, every page. Load older threads only says it is busy (aria-disabled), so the keyboard stays on it while it loads. */
+/* Disabled buttons, every page. Load older threads, and Save action or Save hook while they save, only say they are busy
+   (aria-disabled), so the keyboard stays on them. */
 :root:root :is(.projects-page,.history-page,.usage-page,.capabilities-page,.environments-page,.licenses-page,.agents-page,.preview-page) button:disabled,
-:root:root .history-page .history-load-more button[aria-disabled="true"]{opacity:.5;cursor:default;box-shadow:none!important;filter:none}
+:root:root .history-page .history-load-more button[aria-disabled="true"],
+:root:root .projects-page :is(.project-action-editor,.project-hook-editor) button.primary[aria-disabled="true"]{opacity:.5;cursor:default;box-shadow:none!important;filter:none}
 
 /* Fields (tb-input / tb-select). */
 :root:root .projects-page :is(.clone-card input,.clone-card select,.project-overrides select,.project-identity-editor input:not([type="color"]):not([type="file"]),.project-cleanup select,.project-cleanup input[type="number"],.project-action-editor>input,.project-hook-editor>input,.project-hook-editor>select,.project-hook-options input,.project-hook-options select),

@@ -12,10 +12,26 @@ import { askConfirm } from "../ask-dialog.js";
 // or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.
 let projectsOnScreen=null;
 // A card's save outlives the page that sent it too: the person can leave and come back before it answers. What it did shows on the
-// page on screen then, and an action or hook editor whose save is on its way as they leave (editorSaves) shows again on the page
-// they come back to, still saving, until the save closes it (editorsLeft).
-const editorSaves=new WeakSet();let editorsLeft={};
-const editorLeft=kind=>editorSaves.has(editorsLeft[kind]?.opened)?editorsLeft[kind]:null;
+// page on screen then. An action or hook editor whose save is on its way as they leave (editorSaves) shows again on the page they
+// come back to, still saving, until the save lands (editorsLeft). editorsSaved: what an editor's last save that landed sent, and the
+// id it saved, so Save pressed once that save closed it sends nothing, and an editor it left open updates what it saved.
+const editorSaves=new WeakSet(),editorsSaved=new WeakMap();let editorsLeft={action:null,hook:null};
+// An action's or a hook's fields as its editor holds them.
+const SCRIPT_FIELDS=["name","command","previewUrl","autoOpenPreview","runOnWorktreeCreate","waitForSetup"],HOOK_FIELDS=["name","event","command","failureMode","timeoutMs","actionsText"];
+function scriptFields(value){return {name:value.name||"",command:value.command||"",previewUrl:value.previewUrl||"",autoOpenPreview:Boolean(value.autoOpenPreview),runOnWorktreeCreate:Boolean(value.runOnWorktreeCreate),waitForSetup:Boolean(value.waitForSetup)}}
+function hookFields(value){return {name:value.name||"",event:value.event||"verification.required",command:value.command||"",failureMode:value.failureMode||"block",timeoutMs:Number(value.timeoutMs)||30000,actionsText:(value.actions||[]).join(", ")}}
+const fieldsOf=(editor,names)=>Object.fromEntries(names.map(name=>[name,editor[name]]));
+const sameFields=(editor,fields,names)=>names.every(name=>editor[name]===fields[name]);
+// A save that lands closes the editor it saved, unless the person changed it since Save was pressed: it then stays open on what was
+// saved with their change, so its Save updates that action or hook. Any other editor stays as it is.
+function editorLanded(names,{opened,projectId,sent,id,saved}){
+  return current=>{
+    if(!current||current.projectId!==projectId)return current;
+    const onSaved=reference=>Object.fromEntries(names.map(name=>[name,current[name]===reference[name]?saved[name]:current[name]]));
+    if(current.opened===opened)return sameFields(current,sent,names)?null:{...current,...onSaved(sent),id,saving:false};
+    return current;
+  };
+}
 // How long an Undo of a removal waits for the card saves still on their way before it puts the project back without them.
 const UNDO_SAVE_WAIT_MS=4000;
 // What card saves change, named as the card names it: "Permissions, name".
@@ -79,8 +95,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   const [environmentData,setEnvironmentData]=useState({profiles:[]});
   // What the page is busy with: true, or "general" or "clone" while that one starts. Only the one starting reads "Starting…".
   const [busy,setBusy]=useState(false);
-  const [editor,setEditor]=useState(()=>editorLeft("action"));
-  const [hookEditor,setHookEditor]=useState(()=>editorLeft("hook"));
+  const [editor,setEditor]=useState(()=>editorsLeft.action);
+  const [hookEditor,setHookEditor]=useState(()=>editorsLeft.hook);
   const [error,setError]=useState("");
   // A failure of a card's own control is said in that card, at the end of the part the control is in (cardAlert), where the person
   // is looking: at the top of the page it was out of view of every card but the first. The page's own failures stay at its top.
@@ -431,49 +447,56 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     await refreshAfterSuccess("Project was restored");
   }
   const screenRef=useRef(null);
-  screenRef.current={showError:setError,placeRestored,onProjectUpdated,noteInCard:(project,area,text)=>setCardError({id:project.id,area,text}),freshRefresh,failInCard,partialSuccess,closeEditors:close=>{setEditor(close);setHookEditor(close)}};
-  useEffect(()=>{const page=screenRef;projectsOnScreen=page;return()=>{if(projectsOnScreen===page)projectsOnScreen=null}},[]);
+  screenRef.current={showError:setError,placeRestored,onProjectUpdated,noteInCard:(project,area,text)=>setCardError({id:project.id,area,text}),freshRefresh,failInCard,partialSuccess,updateEditor:(kind,update)=>(kind==="hook"?setHookEditor:setEditor)(update)};
+  // This is the page on screen from the commit that draws it. What a save did meanwhile to the editors kept for it (editorsLeft) is
+  // taken in then.
+  useLayoutEffect(()=>{
+    const page=screenRef;projectsOnScreen=page;setEditor(editorsLeft.action);setHookEditor(editorsLeft.hook);
+    return()=>{if(projectsOnScreen===page)projectsOnScreen=null};
+  },[]);
 
   // Each editor opened is its own (opened). Its save on its way (Save pressed with Enter twice or held, or double-clicked) is the one
-  // a second press waits for: the second sends nothing, nor does a press once it is saved. When the save lands it closes the editor
-  // it saved, not one the person opened since (after Cancel or another Edit), on the page on screen. The editors still saving as this
-  // page goes are the next one's.
+  // a second press waits for: the second sends nothing, and Save says it is saving (aria-disabled, so the keyboard stays on it). What
+  // the save did reaches the editors wherever they are shown when it is answered (settleEditors): on the page on screen, and in those
+  // kept for the next one. The editors still saving as this page goes are the next one's.
   const editorsRef=useRef(null);editorsRef.current={action:editor,hook:hookEditor};
   useEffect(()=>()=>{const saving=value=>editorSaves.has(value?.opened)?value:null;editorsLeft={action:saving(editorsRef.current.action),hook:saving(editorsRef.current.hook)}},[]);
-  function closeSaved(opened){const close=current=>current?.opened===opened?null:current;editorsLeft={action:close(editorsLeft.action),hook:close(editorsLeft.hook)};onScreen().closeEditors(close)}
+  function settleEditors(kind,update){editorsLeft={...editorsLeft,[kind]:update(editorsLeft[kind])};projectsOnScreen?.current?.updateEditor(kind,update)}
+  // Sends an editor's action or hook (item, with the list saved as patch(id, item)) once: a press while its save is on its way sends
+  // nothing, and so does one with nothing changed since its last save landed, which closes it as that save did. A save that fails
+  // leaves the editor open with what was typed.
+  async function saveEditor(kind,editorValue,project,names,itemOf,patchOf,fieldsOfItem){
+    const opened=editorValue.opened;if(editorSaves.has(opened))return;
+    const landed=editorsSaved.get(opened),sent=fieldsOf(editorValue,names);
+    if(landed&&sameFields(editorValue,landed.sent,names)){settleEditors(kind,current=>current?.opened===opened?null:current);return}
+    const id=landed?.id||editorValue.id||crypto.randomUUID(),item=itemOf(id);
+    editorSaves.add(opened);settleEditors(kind,current=>current?.opened===opened?{...current,saving:true}:current);
+    let saved=null;
+    try{saved=await saveProject(project,patchOf(id,item))}finally{editorSaves.delete(opened)}
+    if(!saved){settleEditors(kind,current=>current?.opened===opened?{...current,saving:false}:current);return}
+    editorsSaved.set(opened,{sent,id});
+    settleEditors(kind,editorLanded(names,{opened,projectId:project.id,sent,id,saved:fieldsOfItem(item)}));
+  }
+  // The list with item in its place, or added: an action or hook saved since its editor opened (or one the list no longer has) is
+  // the one this save updates.
+  const withItem=(list=[],id,item)=>list.some(entry=>entry.id===id)?list.map(entry=>entry.id===id?item:entry):[...list,item];
   function editScript(project,script=null){
-    const value=script||blankScript();
-    setEditor({
-      opened:{},
-      projectId:project.id,
-      id:value.id||null,
-      name:value.name||"",
-      command:value.command||"",
-      previewUrl:value.previewUrl||"",
-      autoOpenPreview:Boolean(value.autoOpenPreview),
-      runOnWorktreeCreate:Boolean(value.runOnWorktreeCreate),
-      waitForSetup:Boolean(value.waitForSetup),
-    });
+    const fields=scriptFields(script||blankScript());
+    setEditor({opened:{},projectId:project.id,id:script?.id||null,...fields});
   }
 
-  async function submitScript(project){
+  function submitScript(project){
     if(!editor?.command.trim())return;
-    const opened=editor.opened,saving=editorSaves;if(saving.has(opened))return;
-    const item={
-      id:editor.id||crypto.randomUUID(),
-      name:editor.name.trim()||"Project action",
-      command:editor.command.trim(),
-      previewUrl:editor.previewUrl.trim()||null,
-      autoOpenPreview:Boolean(editor.autoOpenPreview),
-      runOnWorktreeCreate:Boolean(editor.runOnWorktreeCreate),
-      waitForSetup:Boolean(editor.runOnWorktreeCreate&&editor.waitForSetup),
-    };
-    const scripts=editor.id
-      ? project.scripts.map(script=>script.id===editor.id?item:script)
-      : [...project.scripts,item];
-    let saved=null;
-    try{saving.add(opened);saved=await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId||item.id})}finally{if(!saved)saving.delete(opened)}
-    if(saved)closeSaved(opened);
+    const value=editor;
+    return saveEditor("action",value,project,SCRIPT_FIELDS,id=>({
+      id,
+      name:value.name.trim()||"Project action",
+      command:value.command.trim(),
+      previewUrl:value.previewUrl.trim()||null,
+      autoOpenPreview:Boolean(value.autoOpenPreview),
+      runOnWorktreeCreate:Boolean(value.runOnWorktreeCreate),
+      waitForSetup:Boolean(value.runOnWorktreeCreate&&value.waitForSetup),
+    }),(id,item)=>({scripts:withItem(project.scripts,id,item),preferredScriptId:project.preferredScriptId||id}),scriptFields);
   }
 
   // A deleted action cannot be brought back, so Delete asks first, in the app's dialog; Cancel keeps it. The list saved without it is
@@ -487,16 +510,13 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   }
 
   function editHook(project,hook=null){
-    const value=hook||blankHook();setHookEditor({opened:{},projectId:project.id,id:value.id||null,name:value.name||"",event:value.event||"verification.required",command:value.command||"",failureMode:value.failureMode||"block",timeoutMs:Number(value.timeoutMs)||30000,actionsText:(value.actions||[]).join(", ")});
+    const fields=hookFields(hook||blankHook());setHookEditor({opened:{},projectId:project.id,id:hook?.id||null,...fields});
   }
 
-  async function submitHook(project){
+  function submitHook(project){
     if(!hookEditor?.command.trim())return;
-    const opened=hookEditor.opened,saving=editorSaves;if(saving.has(opened))return;
-    const event=hookEditor.event,item={id:hookEditor.id||crypto.randomUUID(),name:hookEditor.name.trim()||hookEventLabel(event),event,command:hookEditor.command.trim(),enabled:true,failureMode:event==="source-control.after"?"warn":hookEditor.failureMode,timeoutMs:Math.max(1000,Math.min(300000,Number(hookEditor.timeoutMs)||30000)),actions:event.startsWith("source-control.")?hookEditor.actionsText.split(",").map(value=>value.trim()).filter(Boolean):[]};
-    const hooks=hookEditor.id?(project.hooks||[]).map(hook=>hook.id===hookEditor.id?item:hook):[...(project.hooks||[]),item];let saved=null;
-    try{saving.add(opened);saved=await saveProject(project,{hooks})}finally{if(!saved)saving.delete(opened)}
-    if(saved)closeSaved(opened);
+    const value=hookEditor,event=value.event;
+    return saveEditor("hook",value,project,HOOK_FIELDS,id=>({id,name:value.name.trim()||hookEventLabel(event),event,command:value.command.trim(),enabled:true,failureMode:event==="source-control.after"?"warn":value.failureMode,timeoutMs:Math.max(1000,Math.min(300000,Number(value.timeoutMs)||30000)),actions:event.startsWith("source-control.")?value.actionsText.split(",").map(text=>text.trim()).filter(Boolean):[]}),(id,item)=>({hooks:withItem(project.hooks,id,item)}),hookFields);
   }
 
   // A deleted hook cannot be brought back either, so Delete asks first as Delete action does.
@@ -630,7 +650,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
             <label><input type="checkbox" checked={editor.runOnWorktreeCreate} onChange={e=>setEditor({...editor,runOnWorktreeCreate:e.target.checked})}/> Run automatically when Trebell creates a worktree</label>
             <label><input type="checkbox" checked={editor.waitForSetup} disabled={!editor.runOnWorktreeCreate} onChange={e=>setEditor({...editor,waitForSetup:e.target.checked})}/> Wait for setup to finish before starting the agent</label>
             <label><input type="checkbox" checked={editor.autoOpenPreview} disabled={!editor.previewUrl.trim()} onChange={e=>setEditor({...editor,autoOpenPreview:e.target.checked})}/> Open preview when this action runs</label>
-            <div><button className="primary" disabled={!editor.command.trim()} onClick={()=>submitScript(p)}><Check size={12}/> Save action</button><button onClick={()=>setEditor(null)}><X size={12}/> Cancel</button></div>
+            <div><button className="primary" disabled={!editor.command.trim()} aria-disabled={editor.saving||undefined} onClick={()=>submitScript(p)}><Check size={12}/> {editor.saving?"Saving…":"Save action"}</button><button onClick={()=>setEditor(null)}><X size={12}/> Cancel</button></div>
           </div>}
           {cardAlert(p,"actions")}
         </div>
@@ -647,7 +667,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
             <input value={hookEditor.command} onChange={e=>setHookEditor({...hookEditor,command:e.target.value})} placeholder="Command (e.g. npm run lint)"/>
             {hookEditor.event.startsWith("source-control.")&&<input value={hookEditor.actionsText} onChange={e=>setHookEditor({...hookEditor,actionsText:e.target.value})} placeholder="Optional actions: push, git.commit (blank = all)"/>}
             <div className="project-hook-options"><label>Timeout (seconds)<input type="number" min="1" max="300" value={hookEditor.timeoutText??Math.round(hookEditor.timeoutMs/1000)} onChange={e=>setHookEditor({...hookEditor,timeoutText:e.target.value,timeoutMs:hookTimeoutMs(e.target.value)})} onBlur={()=>setHookEditor(current=>current&&{...current,timeoutText:undefined})}/></label>{hookEditor.event==="source-control.before"&&<label>On failure<select value={hookEditor.failureMode} onChange={e=>setHookEditor({...hookEditor,failureMode:e.target.value})}><option value="block">Block mutation</option><option value="warn">Warn and continue</option></select></label>}</div>
-            <div><button className="primary" disabled={!hookEditor.command.trim()} onClick={()=>submitHook(p)}><Check size={12}/> Save hook</button><button onClick={()=>setHookEditor(null)}><X size={12}/> Cancel</button></div>
+            <div><button className="primary" disabled={!hookEditor.command.trim()} aria-disabled={hookEditor.saving||undefined} onClick={()=>submitHook(p)}><Check size={12}/> {hookEditor.saving?"Saving…":"Save hook"}</button><button onClick={()=>setHookEditor(null)}><X size={12}/> Cancel</button></div>
           </div>}
           {cardAlert(p,"hooks")}
         </div>
