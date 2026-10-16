@@ -148,6 +148,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [installingAgent,setInstallingAgent]=useState(null);
   const [authenticatingAgent,setAuthenticatingAgent]=useState(null);
   const [instanceDraft,setInstanceDraft]=useState(null);
+  // The approved variables as typed, while their field is being edited. The list is made from them at each change and shows, one name
+  // a line, once the field is left: shown at each key, it took a new line or a comma away as soon as it was typed. Another window
+  // coming to the front leaves the focus on the field (activeElement), so the text stays as typed meanwhile.
+  const [environmentKeysText,setEnvironmentKeysText]=useState(null);
   const [modelDraft,setModelDraft]=useState({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});
   const [customModelEditorOpen,setCustomModelEditorOpen]=useState(false);
   // What the custom model form has to say (a draft it refuses, or that the model was saved), said in its own card under the form and
@@ -290,6 +294,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     finally{setAgentSelectionOverride(null)}
   }
   function editInstance(instance=null){
+    setEnvironmentKeysText(null);
     setInstanceDraft(instance?{...instance}:{
       id:`${selectedAgent}-${crypto.randomUUID()}`,kind:selectedAgent,displayName:`${(agentInfo?.definitions||[]).find(item=>item.id===selectedAgent)?.name||selectedAgent} profile`,binaryPath:"",homePath:"",serverUrl:"",autoCompactWindow:"",
     });
@@ -876,7 +881,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           {instanceDraft.kind==="codex"&&<><label>Shadow home path<input value={instanceDraft.shadowHomePath||""} onChange={e=>setInstanceDraft({...instanceDraft,shadowHomePath:e.target.value})} placeholder="Optional account-specific home, e.g. ~/.codex_personal"/></label><p>Optional. Keeps this account's <code>auth.json</code> private while sharing sessions, config, skills, plugins and worktrees from the CODEX_HOME above. Use the same CODEX_HOME across compatible accounts.</p></>}
           {instanceDraft.kind==="claude"&&<><label>Auto-compact after<input type="number" min="100000" max="1000000" step="1000" value={instanceDraft.autoCompactWindow??""} onChange={e=>setInstanceDraft({...instanceDraft,autoCompactWindow:e.target.value})} placeholder="Claude default"/></label><p>Optional. Compact automatically after 100,000–1,000,000 tokens. Leave blank to use Claude Code's default threshold.</p></>}
           {instanceDraft.kind==="opencode"&&<label>Existing OpenCode server URL<input value={instanceDraft.serverUrl||""} onChange={e=>setInstanceDraft({...instanceDraft,serverUrl:e.target.value})} placeholder="Optional, e.g. http://127.0.0.1:4096"/></label>}
-          <label>Approved inherited environment variables<textarea value={(instanceDraft.approvedEnvironmentKeys||[]).join("\n")} onChange={e=>setInstanceDraft({...instanceDraft,approvedEnvironmentKeys:e.target.value.split(/\r?\n|,/).map(value=>value.trim()).filter(Boolean)})} placeholder={"One variable name per line\nExample: HTTPS_PROXY"}/></label>
+          <label>Approved inherited environment variables<textarea value={environmentKeysText??(instanceDraft.approvedEnvironmentKeys||[]).join("\n")} onChange={e=>{setEnvironmentKeysText(e.target.value);setInstanceDraft({...instanceDraft,approvedEnvironmentKeys:e.target.value.split(/\r?\n|,/).map(value=>value.trim()).filter(Boolean)})}} onBlur={e=>{if(document.activeElement!==e.target)setEnvironmentKeysText(null)}} placeholder={"One variable name per line\nExample: HTTPS_PROXY"}/></label>
           <p>Trebell passes only a safe OS baseline, this runtime's own credential variables, and the names listed here. Values are read from the parent process at launch time and are not stored in the profile.</p>
           <div className="provider-key-actions"><button className="setting-action" onClick={saveInstance} disabled={savingInstance} aria-busy={savingInstance?"true":undefined}>{savingInstance&&<RefreshCw size={12} className="spin" aria-hidden="true"/>}Save profile</button><button onClick={()=>setInstanceDraft(null)}>Cancel</button></div>
         </div>}

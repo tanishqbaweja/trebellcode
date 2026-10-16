@@ -164,6 +164,15 @@ async function shootModes(page,name,{widths=[1280,700],check=async()=>{}}={}){
   }
   await page.setViewportSize({width:1280,height:800});await toggle("dark");
 }
+// The light and dark toggle saves its setting in the page only, over startHarness's fixed settings.
+async function keepModeSaves(page){
+  const saved={};
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return json(route,{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...saved})});
+}
+async function switchMode(page,mode){
+  const html=page.locator("html");if(await html.getAttribute("data-mode")===mode)return;
+  await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(html).toHaveAttribute("data-mode",mode);
+}
 function expectCatalogModels(relay){
   for(const call of relay.calls("thread/start","turn/start"))expect(CATALOGS[call.runtime].models,`${call.method} sent ${call.params.model} to ${call.runtime}`).toContain(call.params.model);
 }
@@ -666,6 +675,46 @@ test("a kept switch refusal ends once a switch to its harness goes through, also
     await openHarnessSettings(page);
     await expect(row.locator("button em")).toHaveText("Switch");await expect(row.getByRole("alert"),"the refusal OpenCode has since outlived").toHaveCount(0);
     await page.screenshot({animations:"disabled",path:auditDir+"harness-switch-refusal-ended-1280x800.png"});
+  }finally{await close()}
+});
+
+// Names typed into Approved inherited environment variables stay as they are typed: the list was made again from the box at each
+// key and shown one name per line, so a new line or a comma was gone at once and the next name ran on ("HTTPS_PROXYNO_PROXY").
+test("names typed one per line or split by commas into Approved inherited environment variables stay as typed and save as a list",async({page})=>{
+  test.setTimeout(60_000);
+  const {close}=await startHarness(page,{runtime:"claude",profileEditing:true});
+  await keepModeSaves(page);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await openHarnessSettings(page);
+    const editor=page.locator(".runtime-profile-editor"),keys=editor.getByRole("textbox",{name:"Approved inherited environment variables"});
+    const ways=[
+      {name:"enter",mode:"dark",typed:"HTTPS_PROXY\nNO_PROXY",async type(){
+        await page.keyboard.type("HTTPS_PROXY",{delay:15});await page.keyboard.press("Enter");await expect(keys).toHaveValue("HTTPS_PROXY\n");
+        // Another window coming to the front blurs the box but leaves the focus on it: the text stays as typed.
+        await keys.dispatchEvent("focusout");await expect(keys).toBeFocused();await expect(keys).toHaveValue("HTTPS_PROXY\n");
+        await page.keyboard.type("NO_PROXY",{delay:15});
+      }},
+      {name:"comma",mode:"dark",typed:"HTTPS_PROXY, NO_PROXY",async type(){await page.keyboard.type("HTTPS_PROXY,",{delay:15});await expect(keys).toHaveValue("HTTPS_PROXY,");await page.keyboard.type(" NO_PROXY",{delay:15})}},
+      {name:"shift-enter",mode:"light",typed:"HTTPS_PROXY\nNO_PROXY",async type(){await page.keyboard.type("HTTPS_PROXY",{delay:15});await page.keyboard.press("Shift+Enter");await expect(keys).toHaveValue("HTTPS_PROXY\n");await page.keyboard.type("NO_PROXY",{delay:15})}},
+    ];
+    for(const way of ways){
+      await switchMode(page,way.mode);
+      await page.getByRole("button",{name:"Add profile",exact:true}).click();
+      await expect(keys).toHaveValue("");
+      await keys.click();await way.type();
+      await expect(keys,way.name).toHaveValue(way.typed);
+      // Left, the box shows the list it saves, one name per line.
+      if(way.name==="comma"){await page.keyboard.press("Tab");await expect(editor.getByRole("button",{name:"Save profile",exact:true})).toBeFocused();await expect(keys).toHaveValue("HTTPS_PROXY\nNO_PROXY")}
+      await keys.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:`${auditDir}harness-profile-environment-keys-${way.name}-${way.mode}-1280x800.png`});
+      const posted=agentRuntimePost(page);
+      await editor.getByRole("button",{name:"Save profile",exact:true}).click();
+      const response=await posted;expect(response.status()).toBe(200);
+      expect(response.request().postDataJSON().instance.approvedEnvironmentKeys,way.name).toEqual(["HTTPS_PROXY","NO_PROXY"]);
+      await expect(editor).toHaveCount(0);
+    }
   }finally{await close()}
 });
 
