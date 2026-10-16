@@ -470,6 +470,7 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,threadI
       for(const [key,value] of entries||[]){const id=String(key||""),text=String(value||"");if(id&&text)next.set(id,(next.get(id)||"")+text)}
       return next;
     }),
+    setCommandOutput:(key,text)=>setCommandOutputs(previous=>{const id=String(key||"");if(!id)return previous;const next=new Map(previous);next.set(id,String(text||""));return next}),
     clearCommandOutput:key=>setCommandOutputs(previous=>{const id=String(key||"");if(!previous.has(id))return previous;const next=new Map(previous);next.delete(id);return next}),
     setMcpProgress:(key,progress)=>setMcpProgress(previous=>{const id=String(key||"");if(!id)return previous;const next=new Map(previous);next.set(id,progress);return next}),
     clearMcpProgress:key=>setMcpProgress(previous=>{const id=String(key||"");if(!previous.has(id))return previous;const next=new Map(previous);next.delete(id);return next}),
@@ -2936,6 +2937,13 @@ export default function App(){
         const next=prev.slice();next[index]=merged;return next;
       });
       if(isCurrent&&isCardItem(p.item))trackLiveRow(threadId,p.turnId,item,{phase:"progress"});
+      // A running command's progress (the agent relay's ACP steps) carries its whole output so far, after the delta it adds: that
+      // replaces what streamed, which lacks what came before the thread was shown again, so the open step shows all of it as it goes.
+      const full=p.item.type==="commandExecution"&&typeof p.item.aggregatedOutput==="string"?p.item.aggregatedOutput:"";
+      if(isCurrent&&full&&item.status==="running"){
+        const commandId=String(p.item.id);commandStreamBufferRef.current?.flushKey(commandId);
+        if(full.length>(commandOutputRef.current.get(commandId)||"").length){commandOutputRef.current.set(commandId,full);activityTimelineRef.current?.setCommandOutput(commandId,full)}
+      }
     }
     else if(message.method==="item/completed"&&p.item){
       let streamedCommandOutput="";

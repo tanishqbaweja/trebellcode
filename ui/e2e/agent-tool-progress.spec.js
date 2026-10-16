@@ -11,7 +11,9 @@ import { keepThreadMeta } from "./test-home.js";
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 async function listen(server){await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));return server.address().port}
 
-test("non-Codex ACP command progress streams visibly while the step runs and terminal tool calls settle",async({page})=>{
+// The step's later output shows as it comes, also when the thread was left for a new task and opened again while the step ran: the
+// step comes back with the output the relay stored for it, and what comes after goes on from there.
+for(const away of [false,true])test(`non-Codex ACP command progress streams visibly while the step runs${away?", after its thread is left and opened again,":""} and terminal tool calls settle`,async({page})=>{
   test.setTimeout(40_000);
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-progress-"));
   const fixture=join(root,"fake-acp-progress.mjs");
@@ -20,7 +22,7 @@ import { existsSync } from "node:fs";
 import readline from "node:readline";
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));let sessionId="fixture-session";
 // The command ends once the test writes "finish" beside this file, so it runs for as long as the test looks at the step.
-const finished=()=>new Promise(resolve=>{const check=()=>existsSync(new URL("./finish",import.meta.url))?resolve():setTimeout(check,50);check()});
+const finished=(name="finish")=>new Promise(resolve=>{const check=()=>existsSync(new URL("./"+name,import.meta.url))?resolve():setTimeout(check,50);check()});
 function send(value){process.stdout.write(JSON.stringify(value)+"\n")}
 async function handle(message){
   if(!message.method||message.id==null)return;
@@ -29,7 +31,8 @@ async function handle(message){
   if(message.method==="session/set_model"||message.method==="session/close")return send({jsonrpc:"2.0",id:message.id,result:{}});
   if(message.method==="session/prompt"){
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"tool_call",toolCallId:"cmd-stream",title:"Fixture build",kind:"execute",status:"in_progress",rawOutput:"phase one\n"}}});
-    await delay(700);
+    // The second phase comes once the test writes "next" beside this file.
+    await finished("next");
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:"cmd-stream",title:"Fixture build",kind:"execute",status:"in_progress",rawOutput:"phase one\nphase two\n"}}});
     await finished();
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:"cmd-stream",title:"Fixture build",kind:"execute",status:"completed",rawOutput:"phase one\nphase two\ndone\n"}}});
@@ -70,22 +73,31 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     await page.getByRole("button",{name:/ACP progress fixture/}).click();
     const composer=page.getByTestId("composer");await expect(composer).toBeEnabled();await composer.fill("Run the fixture command");await page.getByTestId("send").click();
     const streamed=page.locator(".tool-event").filter({hasText:"Fixture build"});await expect(streamed).toBeVisible();await streamed.locator("summary").click();
-    await expect(streamed).toContainText("phase one");await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"agent-tool-progress-running-1280x800.png",fullPage:true});
+    const shot=name=>page.screenshot({animations:"disabled",path:auditDir+`agent-tool-progress-${name}${away?"-reopened":""}-1280x800.png`,fullPage:true});
+    await expect(streamed).toContainText("phase one");await page.setViewportSize({width:1280,height:800});await shot("running");
+    const body=streamed.locator(".tool-event-body"),status=streamed.locator("summary em");
+    if(away){
+      // A new task, and back to the thread while its step runs: the step shows the output stored for it, still running.
+      await page.getByRole("button",{name:"New task",exact:true}).click();await expect(streamed).toHaveCount(0);
+      await page.locator(".thread-row .thread-main").first().click();
+      await expect(streamed).toBeVisible({timeout:10_000});await expect(status).toHaveText("running");
+      await streamed.locator("summary").click();await expect(body).toContainText("phase one");
+    }
     // The later output shows as it comes, while the step still runs, and the step closed and opened again from the keyboard
     // shows all of it.
-    const body=streamed.locator(".tool-event-body"),status=streamed.locator("summary em");
-    await expect(body).toContainText("phase two");await expect(status).toHaveText("running");
+    await writeFile(join(root,"next"),"");
+    await expect(body).toContainText(/phase one\s+phase two/);await expect(status).toHaveText("running");
     await streamed.locator("summary").click();await expect(body).toHaveCount(0);
     await streamed.locator("summary").focus();await page.keyboard.press("Enter");
     await expect(body).toContainText(/phase one\s+phase two/);await expect(status).toHaveText("running");
-    await page.screenshot({animations:"disabled",path:auditDir+"agent-tool-progress-streamed-1280x800.png",fullPage:true});
+    await shot("streamed");
     await writeFile(join(root,"finish"),"");
     await expect(streamed.locator("summary")).toContainText("done");await expect(body).toContainText(/phase two\s+done/);
     const quick=page.locator(".tool-event").filter({hasText:"Quick check"});await expect(quick.locator("summary")).toContainText("done");
     await expect(page.locator(".assistant-message-text")).toContainText("Fixture finished.");
     await expect(page.locator(".tool-event.kind-commandExecution")).toHaveCount(2);
     await expect(page.locator(".tool-event").filter({hasText:"Agent activity"})).toHaveCount(0);
-    await page.screenshot({animations:"disabled",path:auditDir+"agent-tool-progress-complete-1280x800.png",fullPage:true});
+    await shot("complete");
   }finally{
     await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
   }
