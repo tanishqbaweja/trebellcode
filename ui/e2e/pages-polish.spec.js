@@ -274,8 +274,9 @@ function historyThreads(count,{long=false}={}){
   const now=Date.now()/1000;
   return Array.from({length:count},(_,i)=>({id:"polish-thread-"+i,name:i===0&&long?LONG_TITLE:"Polish thread "+i,preview:i===0&&long?LONG_PREVIEW:"Preview of thread "+i,cwd:process.cwd(),createdAt:now-1000-i*60,updatedAt:now-i*60,turns:[]}));
 }
-// answers: results for further methods, or {error} for a method that fails.
-async function startCodex(threads,{answers={}}={}){
+// answers: results for further methods, or {error} for a method that fails. older: the threads of the page after the first, which
+// then says there is one.
+async function startCodex(threads,{answers={},older=[]}={}){
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
@@ -285,7 +286,7 @@ async function startCodex(threads,{answers={}}={}){
       const m=message.method;let result={};
       if(answers[m]?.error){try{ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:answers[m].error}}))}catch{}return}
       if(answers[m])result=answers[m];
-      else if(m==="thread/list")result={data:threads,nextCursor:null};
+      else if(m==="thread/list")result=message.params?.cursor==="older-page"?{data:older,nextCursor:null}:{data:threads,nextCursor:older.length?"older-page":null};
       else if(m==="thread/resume"||m==="thread/read")result={thread:threads.find(t=>t.id===message.params?.threadId)||threads[0],itemsBackwardsCursor:null,turnsBackwardsCursor:null};
       else if(m==="initialize")result={userAgent:"polish-fixture"};
       else if(["threadSection/list","thread/loaded/list","thread/attachment/list","thread/queue/list","app/list","permissionProfile/list","hooks/list","experimentalFeature/list","plugin/share/list","collaborationMode/list","skills/list"].includes(m))result={data:[],nextCursor:null};
@@ -382,6 +383,36 @@ for(const mode of MODES){
       await page.screenshot({animations:"disabled",path:shots+`history-row-focus-second-${mode}-900.png`});
       await page.keyboard.press("Enter");
       await expect(page.locator("main")).toContainText("Polish thread 1",{timeout:5000});
+    }finally{await fixture.close()}
+  });
+}
+
+// Today's rows read "Today 12:20" and older ones a date ("Oct 12"), which is shorter: after Load older threads every chip still
+// starts and ends, and every time ends, at the same x in all the rows, at 1280 and 900, and in a narrow window, where the chip is
+// hidden, the times still end at the same x.
+for(const mode of MODES){
+  test(`History rows from today and from days before keep the chip and the time in columns (${mode})`,async({page})=>{
+    const now=Date.now()/1000,thread=(id,name,ago)=>({id,name,preview:"Preview of "+name.toLowerCase(),cwd:process.cwd(),createdAt:now-ago-60,updatedAt:now-ago,turns:[]});
+    const today=Array.from({length:4},(_,i)=>thread("today-"+i,"Today thread "+(i+1),i*60)),older=Array.from({length:3},(_,i)=>thread("older-"+i,"Older thread "+(i+1),86400*(3+i)));
+    const fixture=await startCodex(today,{older});
+    try{
+      const rows=await openCodexHistory(page,fixture,today,{mode});
+      await page.getByRole("button",{name:"Load older threads"}).click();
+      await expect(rows).toHaveCount(7);
+      const dates=await rows.locator("time").allTextContents();
+      expect(dates[0]).toMatch(/^Today /);expect(dates[6]).not.toMatch(/^(Today|Yesterday) /);
+      for(const width of [1280,900,600]){
+        await page.setViewportSize({width,height:800});await rows.last().scrollIntoViewIfNeeded();
+        await page.screenshot({animations:"disabled",path:shots+`history-older-dates-${mode}-${width}.png`});
+        const edges=await page.evaluate(()=>{
+          const rows=[...document.querySelectorAll(".history-thread-row")];
+          const xs=(selector,side)=>[...new Set(rows.map(row=>{const el=row.querySelector(selector);return getComputedStyle(el).display==="none"?"hidden":Math.round(el.getBoundingClientRect()[side])}))];
+          return {"title left":xs("strong","left"),"chip left":xs("em","left"),"chip right":xs("em","right"),"time right":xs("time","right")};
+        });
+        console.log("HISTORY-DATES "+mode+" "+width+" "+JSON.stringify(edges)+" "+JSON.stringify(dates));
+        for(const [edge,xs] of Object.entries(edges))expect(xs,`${edge} at ${width}: ${xs.join(", ")}`).toHaveLength(1);
+        if(width===600)expect(edges["chip left"]).toEqual(["hidden"]);
+      }
     }finally{await fixture.close()}
   });
 }

@@ -886,9 +886,12 @@
   :root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar>div:first-child{flex-basis:100%}
 }
 
-/* History: one card of divider rows, the owning harness as a chip, and a compact absolute time (full date in the tooltip). */
-:root:root .secondary-page .history-page{gap:0}
-:root:root .secondary-page .history-page>.history-thread-row{grid-template-columns:minmax(0,1fr) auto auto;gap:14px;padding:11px 16px!important;border-width:0 1px 1px!important;border-style:solid!important;border-color:var(--line)!important;border-radius:0!important;background:var(--pg-card,var(--bg1))!important;box-shadow:none!important}
+/* History: one card of divider rows, the owning harness as a chip, and a compact absolute time (full date in the tooltip). The
+   rows take their columns from the page (subgrid), so every chip and time sits where the widest row's does: a row dated "12 Oct"
+   lines up with one dated "Today 12:20". Where a button cannot be a subgrid, each row lays out its own columns, as before. */
+:root:root .secondary-page .history-page{gap:0;grid-template-columns:minmax(0,1fr) auto auto}
+:root:root .secondary-page .history-page>*{grid-column:1/-1}
+:root:root .secondary-page .history-page>.history-thread-row{grid-template-columns:subgrid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr) auto auto;gap:14px;padding:11px 16px!important;border-width:0 1px 1px!important;border-style:solid!important;border-color:var(--line)!important;border-radius:0!important;background:var(--pg-card,var(--bg1))!important;box-shadow:none!important}
 :root:root .secondary-page .history-page>.history-thread-row:first-of-type{border-top-width:1px!important;border-top-left-radius:var(--r-l)!important;border-top-right-radius:var(--r-l)!important}
 :root:root .secondary-page .history-page>.history-thread-row:last-of-type{border-bottom-left-radius:var(--r-l)!important;border-bottom-right-radius:var(--r-l)!important}
 :root:root .secondary-page .history-page>.history-thread-row:hover{border-color:var(--line)!important;background:var(--bg2)!important}
@@ -898,12 +901,12 @@
 /* A focused row draws its ring just inside its own edges. Drawn outside them, the next row (painted after it, and white in
    light mode) covered the ring's bottom edge. */
 :root:root .secondary-page .history-page>.history-thread-row:focus-visible{outline-offset:-2px}
-:root:root .secondary-page .history-page>.history-thread-row>em.history-runtime-chip{height:20px;display:inline-flex;align-items:center;padding:0 8px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10.5px/1 var(--mono);font-style:normal;white-space:nowrap}
+:root:root .secondary-page .history-page>.history-thread-row>em.history-runtime-chip{justify-self:start;height:20px;display:inline-flex;align-items:center;padding:0 8px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10.5px/1 var(--mono);font-style:normal;white-space:nowrap}
 :root:root .secondary-page .history-page>.history-thread-row time{min-width:9ch;text-align:right}
 :root:root .secondary-page .history-page>.history-load-more,
 :root:root .secondary-page .history-page>.history-load-error{margin-top:12px!important}
 @media (max-width:640px){
-  :root:root .secondary-page .history-page>.history-thread-row{grid-template-columns:minmax(0,1fr) auto}
+  :root:root .secondary-page .history-page{grid-template-columns:minmax(0,1fr) auto}
   :root:root .secondary-page .history-page>.history-thread-row>em.history-runtime-chip{display:none}
   :root:root .secondary-page .history-page>.history-thread-row time{grid-column:auto}
 }
