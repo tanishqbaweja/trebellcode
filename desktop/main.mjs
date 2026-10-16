@@ -807,8 +807,10 @@ async function createWindow(){
   // The app window only ever shows the app: a file or link dropped outside the composer, or a link without a new-window
   // target, would otherwise replace the app and hand that page the desktop bridge. Reloads and the app's own routes pass.
   windowRef.webContents.on("will-navigate",(event,url)=>{if(!isAppUrl(url,gui?.url))event.preventDefault()});
-  await windowRef.loadURL(gui.url);
-  setMainZoomFactor(loadDesktopPrefs().zoomFactor||1,{persist:false});
+  // The window shows on its first paint (ready-to-show), which often comes before its load ends: the GUI server runs in this busy
+  // process, so the awaited loadURL answers late, and a handler set up after it missed the paint and never showed the window. All the
+  // shown window needs is set up before the load, and the saved zoom is set as the page commits, before it paints.
+  windowRef.webContents.once("did-navigate",()=>setMainZoomFactor(loadDesktopPrefs().zoomFactor||1,{persist:false}));
   windowRef.once("ready-to-show",()=>{
     if(process.env.TREBELL_TEST_HIDDEN==="1")return;
     if(process.argv.includes("--background")&&backgroundEnabled){ensureTray();return}
@@ -818,6 +820,7 @@ async function createWindow(){
     if(backgroundEnabled&&!quitting){event.preventDefault();windowRef?.hide();ensureTray()}
   });
   windowRef.on("closed",()=>{windowRef=null;});
+  await windowRef.loadURL(gui.url);
 }
 
 // The bridge answers only the app's own pages (defence in depth next to the window's navigation guard): a call from any other

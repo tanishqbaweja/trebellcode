@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -152,5 +152,51 @@ test("the desktop shell keeps its window and bridge to the app, and its notifica
   }finally{
     await closeElectronApp(app);
     fixture.closeAllConnections?.();await new Promise(resolve=>fixture.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
+});
+
+// Loaded with -r before the shell, it keeps a start that runs the shell's own show path off the screen: each window's show, and the
+// calls that would bring one up, are recorded instead of done, with the window's first paint (ready-to-show), its load's end
+// (did-finish-load) and the zoom it shows at. The dialogs, links, notifications and shortcuts a start could reach answer without the desktop.
+const KEEP_OFF_SCREEN=`"use strict";
+const {app,dialog,shell,Notification,globalShortcut}=require("electron");
+const calls=globalThis.__startCalls=[];
+app.on("browser-window-created",(_event,win)=>{
+  for(const name of ["show","showInactive","focus","minimize","maximize","restore","moveTop","flashFrame","setAlwaysOnTop","setFullScreen"])win[name]=()=>{calls.push(name==="show"?"show at "+Math.round(win.webContents.getZoomFactor()*100)+"%":name)};
+  win.once("ready-to-show",()=>calls.push("ready-to-show"));
+  win.webContents.once("did-finish-load",()=>calls.push("did-finish-load"));
+});
+dialog.showOpenDialog=async()=>({canceled:true,filePaths:[]});dialog.showMessageBox=async()=>({response:0,checkboxChecked:false});dialog.showErrorBox=()=>{};
+shell.openExternal=async()=>{};shell.openPath=async()=>"";Notification.prototype.show=function(){};globalShortcut.register=()=>false;
+`;
+
+// The shell shows its window on the window's first paint (ready-to-show), which often comes before the page's load ends: the GUI server
+// runs in the shell's own busy main process. A handler set up only after the awaited load missed it, so a plain start never showed its
+// window (14 of 15 starts in lane H). Here the page paints at once and its load waits on an image held until that paint has come.
+test("a plain start shows the window once it has painted, at its saved zoom, also when it paints before its load ends",{timeout:120_000},async t=>{
+  if(process.platform!=="win32")return t.skip("The desktop shell checks target the Windows desktop build.");
+  const home=await mkdtemp(join(tmpdir(),"trebell-desktop-start-show-"));
+  let release=()=>{};const released=new Promise(resolve=>{release=resolve});
+  const images=createServer(async(_req,res)=>{await released;res.writeHead(200,{"content-type":"image/svg+xml"});res.end('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>')});
+  const imagePort=await listen(images),guiPort=await freePort(),appPort=await freePort();let app=null;
+  const dist=join(home,"ui-dist"),stub=join(home,"keep-off-screen.cjs");
+  await mkdir(dist,{recursive:true});await mkdir(join(home,"desktop"),{recursive:true});
+  await writeFile(join(dist,"index.html"),`<!doctype html><title>Trebell Code</title><main>${"The first screen paints while an image is still loading. ".repeat(8)}</main><img src="http://127.0.0.1:${imagePort}/held.svg" alt="">`);
+  await writeFile(join(home,"desktop","desktop-prefs.json"),JSON.stringify({zoomFactor:1.2}));
+  await writeFile(stub,KEEP_OFF_SCREEN);
+  // A start as the installed app's: no --background, Background off (a fresh home makes no tray), and the shell's own show path.
+  const env={...process.env,TREBELL_HOME:home,TREBELL_TEST_HIDDEN:"0",TREBELL_GUI_MOCK:"1",TREBELL_UI_DIST:dist,TREBELL_GUI_PORT:String(guiPort),TREBELL_APP_SERVER_PORT:String(appPort),TREBELL_E2E_OFFLINE:"1",TREBELL_E2E_ALLOW_NETWORK:"0",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  try{
+    app=await electron.launch({args:["-r",stub,packageRoot],env});
+    const calls=()=>app.evaluate(()=>globalThis.__startCalls.slice());
+    for(let i=0;i<240&&!(await calls()).includes("ready-to-show");i++)await sleep(250);
+    assert.deepEqual((await calls()).filter(call=>call==="ready-to-show"||call==="did-finish-load"),["ready-to-show"],"the window has painted and its load has not ended");
+    release();
+    for(let i=0;i<120&&!(await calls()).includes("did-finish-load");i++)await sleep(250);
+    for(let i=0;i<8&&!(await calls()).some(call=>call.startsWith("show"));i++)await sleep(250);
+    assert.deepEqual((await calls()).filter(call=>call!=="did-finish-load"),["ready-to-show","show at 120%"],"the window shows once it has painted, at its saved zoom");
+  }finally{
+    release();await closeElectronApp(app);
+    images.closeAllConnections?.();await new Promise(resolve=>images.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }
 });
