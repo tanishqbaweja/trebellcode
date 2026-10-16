@@ -490,6 +490,70 @@ test("Escape that answers the last request runs no shortcut bound to Escape as w
   }finally{await harness.close()}
 });
 
+// The agent's question and the app request a test asks; an app request shows its tool's title.
+const askQuestion=(harness,id,text)=>harness.ask("item/tool/requestUserInput",{threadId:RELEASE.id,turnId:"turn-"+RELEASE.id,itemId:"q-"+id,questions:[{id,header:id,question:text,options:[{label:"yes"},{label:"no"}],allowMultiple:false}]});
+const askApproval=(harness,title)=>harness.ask("mcpServer/elicitation/request",{threadId:RELEASE.id,serverName:"fixture_app",mode:"form",message:"Approve the fixture change?",requestedSchema:{type:"object",properties:{}},_meta:{codex_approval_kind:"mcp_tool_call",connector_name:"Fixture App",tool_title:title,tool_name:"fixture_action"}});
+
+// An Escape answers only a request the person has had time to see: pressed twice on an app request, its second press leaves the
+// agent's question that comes up after it waiting. Read, the question is dismissed by the next Escape.
+test("Escape pressed twice on an app request leaves the agent's question that comes up after it waiting",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const questionModal=page.locator(".question-modal"),appModal=page.getByTestId("mcp-elicitation"),read=()=>page.waitForTimeout(600);
+    for(const [pass,width] of [["dark",1280],["light",900]]){
+      if(pass==="light")await toggleMode(page);
+      await page.setViewportSize({width,height:800});
+      // A question first, read and dismissed.
+      const first=askQuestion(harness,"first-"+pass,"Which branch should I use?");
+      await expect(questionModal).toContainText("Which branch should I use?");await read();await page.keyboard.press("Escape");
+      expect(await first.answered).toEqual({answers:{}});
+      // Escape twice on an app request with a question waiting behind it: the request is cancelled, and the question waits.
+      const app=askApproval(harness,"Write fixture "+pass),behind=askQuestion(harness,"behind-"+pass,"Should I tag the release?");
+      await expect(appModal).toContainText("Write fixture "+pass);await read();
+      await page.keyboard.press("Escape");await page.keyboard.press("Escape");
+      expect(await app.answered).toEqual({action:"cancel",content:null,_meta:null});
+      await page.waitForTimeout(600);
+      expect(harness.answersTo(behind),"the second Escape dismissed the question that came up after the app request").toHaveLength(0);
+      await expect(questionModal).toContainText("Should I tag the release?");
+      await shoot(page,"question-after-app-request-escape-twice");await page.setViewportSize({width,height:800});
+      await page.keyboard.press("Escape");expect(await behind.answered).toEqual({answers:{}});await expect(questionModal).toHaveCount(0);
+      for(const request of [first,app,behind])expect(harness.answersTo(request)).toHaveLength(1);
+    }
+  }finally{await harness.close()}
+});
+
+// An Escape pressed just as a request comes up, well after any Escape before it, was meant for what was there before: it answers
+// nothing. Read, the request is answered by the next Escape.
+for(const kind of ["question","app request"]){
+  test(`Escape pressed just as ${kind==="question"?"an agent's question":"an app request"} comes up answers nothing, and once it is read the next Escape answers it`,async({page})=>{
+    test.setTimeout(60_000);
+    await page.setViewportSize({width:1280,height:800});
+    const harness=await startRequestHarness([RELEASE,DEPLOY]);
+    try{
+      await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+      const modal=kind==="question"?page.locator(".question-modal"):page.getByTestId("mcp-elicitation");
+      const answered=kind==="question"?{answers:{}}:{action:"cancel",content:null,_meta:null};
+      for(const [pass,width] of [["dark",1280],["light",900]]){
+        if(pass==="light")await toggleMode(page);
+        await page.setViewportSize({width,height:800});
+        await page.waitForTimeout(600);
+        const text=(kind==="question"?"Is the changelog ready? ":"Publish changelog ")+pass;
+        const sudden=kind==="question"?askQuestion(harness,"sudden-"+pass,text):askApproval(harness,text);
+        await modal.filter({hasText:text}).waitFor();await page.keyboard.press("Escape");
+        await page.waitForTimeout(600);
+        expect(harness.answersTo(sudden),"an Escape pressed as the request came up answered it unseen").toHaveLength(0);
+        await expect(modal).toContainText(text);
+        await shoot(page,(kind==="question"?"question":"app-request")+"-after-stray-escape");await page.setViewportSize({width,height:800});
+        await page.keyboard.press("Escape");expect(await sudden.answered).toEqual(answered);await expect(modal).toHaveCount(0);
+        expect(harness.answersTo(sudden)).toHaveLength(1);
+      }
+    }finally{await harness.close()}
+  });
+}
+
 // A required multi-select left empty is refused as an empty required field is, by its name, from the mouse and from the keyboard;
 // once an option is chosen the form goes with it.
 test("an app form refuses a required multi-select left empty, saying it is required as it does for an empty required field",async({page})=>{
