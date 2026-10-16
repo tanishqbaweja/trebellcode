@@ -182,9 +182,9 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // handshake waits too, so the app stays connecting until `releaseInit()`. The skills list (which the app reads for the composer
 // and the Tools page) answers `control.skills` as it stands when it answers: "empty", "listed" (one skill) or "fail", or what
 // `control.skillsByCwd` names for the workspace read, and waits while `holdSkills` is set, until `releaseSkills()`. It lists
-// `threads` and resumes them.
+// `threads` and resumes them, and the account's shared plugins as `control.shared` holds them.
 async function startHeldMcpFixture({threads=[]}={}){
-  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[]};
+  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[]};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
   const skill={name:"release-notes",description:"Draft release notes from merged pull requests",path:"/home/test/.codex/skills/release-notes/SKILL.md",scope:"user",enabled:true,interface:{displayName:"Release notes"}};
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
@@ -212,7 +212,8 @@ async function startHeldMcpFixture({threads=[]}={}){
       else if(message.method==="permissionProfile/list")result={data:full?[{id:"workspace-write",description:"Edit files in the workspace",allowed:true}]:[]};
       else if(message.method==="experimentalFeature/list")result={data:full?[{name:"step_model_switching",displayName:"Step model switching",description:"Switch models between steps of a running turn.",enabled:false}]:[]};
       else if(message.method==="thread/list")result={data:threads.map(thread=>({...thread,turns:[]})),nextCursor:null};
-      else if(["threadSection/list","collaborationMode/list","app/list","hooks/list","plugin/share/list","thread/loaded/list"].includes(message.method))result={data:[],nextCursor:null};
+      else if(message.method==="plugin/share/list")result={data:control.shared,nextCursor:null};
+      else if(["threadSection/list","collaborationMode/list","app/list","hooks/list","thread/loaded/list"].includes(message.method))result={data:[],nextCursor:null};
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="thread/continuity/get")result={continuity:null};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
@@ -577,4 +578,31 @@ test("Tools Skills card drops the previous workspace's skills while the next wor
     await expect(claim).toBeVisible();await expect(badge).toHaveText("0");await expect(failure).toHaveCount(0);await expect(rows).toHaveCount(0);
     expect(fixture.control.skillCwds.at(-1)).toBe(workspaceB);
   }finally{fixture.releaseSkills();await fixture.close()}
+});
+
+// A shared plugin's name reads in full in its row. Beside the share's four actions it ended in an ellipsis with nothing to hover:
+// "lane-g-shared-plugin-wi…", and even a short name sharing its row with a version, "lane-g-sh…".
+test("Tools Shared plugins shows each plugin's whole name beside its actions, in dark and light, wide and narrow",async({page})=>{
+  test.setTimeout(45_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  const share=(id,name,version)=>({plugin:{id,name,...(version?{version}:{}),remotePluginId:"remote-"+id,shareContext:{remotePluginId:"remote-"+id,discoverability:"PRIVATE",shareUrl:"https://plugins.example.invalid/share/"+id,creatorName:"Lane G"}},localPluginPath:null});
+  fixture.control.shared=[share("long","lane-g-shared-plugin-with-a-longer-name"),share("short","lane-g-shared","2.0.0")];
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    const card=page.locator(".capabilities-page .capability-card").filter({has:page.getByText("Shared plugins",{exact:true})}).first();
+    const rows=card.locator(".shared-plugin-list>div"),names=rows.locator("strong");
+    await expect(names).toHaveText(["lane-g-shared-plugin-with-a-longer-name","lane-g-shared"]);
+    await expect(rows.first().getByRole("button",{name:"Delete share",exact:true})).toBeVisible();
+    for(const width of [1280,900])for(const mode of ["dark","light"]){
+      await page.setViewportSize({width,height:800});await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      await card.scrollIntoViewIfNeeded();
+      // All of each name shows: nothing of it is clipped, and the short one is not broken over two lines. The actions stay in the row.
+      const shown=await names.evaluateAll(nodes=>nodes.map(node=>{const range=document.createRange();range.selectNodeContents(node);return {whole:node.scrollWidth<=node.clientWidth&&node.scrollHeight<=node.clientHeight,lines:range.getClientRects().length}}));
+      expect(shown.map(name=>name.whole),`each name shows whole at ${width} px in ${mode}`).toEqual([true,true]);
+      expect(shown[1].lines,"the short name stays on one line").toBe(1);
+      expect(await rows.evaluateAll(nodes=>nodes.every(node=>node.scrollWidth<=node.clientWidth))).toBe(true);
+      await page.screenshot({animations:"disabled",path:auditDir+`tools-shared-plugin-names-${mode}-${width}x800.png`,fullPage:false});
+    }
+  }finally{await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });

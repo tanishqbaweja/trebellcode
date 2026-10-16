@@ -532,6 +532,11 @@
 :root:root .capabilities-page .capability-card>:is(.provider-status-error,.capability-status):not(:last-child){margin-bottom:10px!important}
 
 :root:root .capabilities-page .mcp-server-row{flex-wrap:wrap}
+/* A shared plugin's name reads in full: when it and the share's actions do not fit on one line, the actions go under it, on the
+   right, and a name longer than the row wraps instead of ending in an ellipsis. */
+:root:root .capabilities-page .shared-plugin-list>div{flex-wrap:wrap}
+:root:root .capabilities-page .shared-plugin-list>div>.capability-inline-actions{margin-left:auto}
+:root:root .capabilities-page .shared-plugin-list strong{white-space:normal;overflow-wrap:anywhere}
 /* Once a server's resources and tools are expanded, or an import history row is opened to list its failures, the list grows
    instead of nesting a scroll area around them. */
 :root:root .capabilities-page .capability-list:has(.mcp-server-details[open],>details[open]){max-height:none}
