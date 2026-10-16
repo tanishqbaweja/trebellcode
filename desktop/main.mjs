@@ -392,7 +392,9 @@ async function ensureAgentBrowser({show=false}={}){
     try{targetContents.send("browser:state",browserState(browser))}catch{}
   };
   for(const event of ["did-navigate","did-navigate-in-page","did-start-loading","did-stop-loading","page-title-updated"])contents.on(event,publishState);
-  browser.on("closed",()=>{if(agentBrowser===browser)agentBrowser=null;});
+  // Its window closed, by the panel's Close or outside the panel (a person closes it), is told to the app as the agent browser closed,
+  // unless another has taken its place, so the panel drops the gone page's elements. It used to be forgotten without a word.
+  browser.on("closed",()=>{if(agentBrowser===browser)agentBrowser=null;if(!agentBrowser)try{liveWindowWebContents(windowRef)?.send("browser:state",browserState())}catch{}});
   return browser;
 }
 

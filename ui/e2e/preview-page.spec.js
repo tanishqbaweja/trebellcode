@@ -15,12 +15,15 @@ async function startSite(port=0){
 }
 
 // The desktop bridge as desktop/preload.cjs gives it, scripted: an agent browser with a history of its own that reports its state
-// after each move, as desktop/main.mjs does, and notes the calls the panel makes. Its page has two elements to inspect. The window it
-// grants a recording is a canvas that keeps drawing, so the recorder encodes real frames.
+// after each move, as desktop/main.mjs does, and notes the calls the panel makes. Its page has two elements to inspect, and
+// window.closeAgentWindow() closes its window as a person does outside the panel, which the shell reports with its state. The window
+// it grants a recording is a canvas that keeps drawing, so the recorder encodes real frames.
 function scriptedAgentBrowser(){
   const pages=[],listeners=new Set();let at=-1;window.agentBrowserCalls=[];
   const current=()=>({open:at>=0,url:pages[at]||"",title:"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,width:1280,height:800});
-  const call=(name,move=()=>{})=>async(...args)=>{window.agentBrowserCalls.push(name);move(...args);for(const listener of listeners)listener(current());return current()};
+  const report=()=>{for(const listener of listeners)listener(current())};
+  const call=(name,move=()=>{})=>async(...args)=>{window.agentBrowserCalls.push(name);move(...args);report();return current()};
+  window.closeAgentWindow=()=>{pages.length=0;at=-1;report()};
   Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{
     state:async()=>current(),
     onState:listener=>{listeners.add(listener);return()=>listeners.delete(listener)},
@@ -189,6 +192,36 @@ test("the Browser panel comes back as it was left after a look at another tab or
     await page.getByTestId("right-panel-toggle").first().click();
     await asLeft("after the panel was closed and opened again");
     await shots(page,"preview-panel-as-left-after-files-tab");
+  }finally{await site.close()}
+});
+
+// An agent browser whose window closes outside the panel (the person closes it, which the shell reports with its state) takes its
+// page's elements with it, as the panel's own Close does, so Attach context can no longer attach one; so does one that closes while
+// the panel is on another tab. They used to stay listed, and Attach context attached the gone page's element.
+test("an agent browser closed outside the panel takes its page's elements with it, so none of them can be attached",async({page,request})=>{
+  const site=await startSite();
+  try{
+    await page.addInitScript(scriptedAgentBrowser);
+    const {panel,address}=await openBrowserPanel(page,request);
+    const tabs=panel.locator(".context-panel-tab-scroll"),elements=panel.locator(".browser-elements button"),attach=panel.getByRole("button",{name:"Attach context",exact:true});
+    const none=panel.getByText("Open the agent browser and inspect the page to see model-addressable elements.");
+    const chooseElement=async()=>{
+      await panel.getByRole("button",{name:"Open agent browser"}).click();await panel.getByRole("button",{name:"Inspect elements"}).click();
+      await elements.filter({hasText:"Save profile"}).click();await expect(attach).toBeVisible();
+    };
+    await typeAddress(page,address,site.url+"/rec");
+    await chooseElement();
+    await page.evaluate(()=>window.closeAgentWindow());
+    await expect(elements,"the gone page's elements are no longer listed").toHaveCount(0);
+    await expect(attach).toHaveCount(0);await expect(none).toBeVisible();
+    await expect(page.getByTestId("context-chip").filter({hasText:"Browser e1"})).toHaveCount(0);
+    await shots(page,"preview-agent-window-closed-outside");
+    // The window closes while the panel is on Files.
+    await chooseElement();
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(address).toHaveCount(0);
+    await page.evaluate(()=>window.closeAgentWindow());
+    await tabs.getByRole("button",{name:"Browser",exact:true}).click();
+    await expect(none,"closed while the panel was on Files").toBeVisible();await expect(elements).toHaveCount(0);await expect(attach).toHaveCount(0);
   }finally{await site.close()}
 });
 

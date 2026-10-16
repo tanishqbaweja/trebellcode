@@ -70,6 +70,14 @@ test("desktop isolated browser reports bounded runtime failures and responsive v
       const reopened=await window.evaluate(async url=>{await window.trebellDesktop.browser.navigate(url);return window.trebellDesktop.browser.state()},`http://127.0.0.1:${fixturePort}/clean?reopen=${iteration}`);
       assert.equal(reopened.open,true);assert.match(reopened.url,/\/clean\?reopen=/);
     }
+    // Its window closed outside the panel (a person closes it) is reported to the app as the agent browser closed, as the panel's
+    // own Close leaves it, so the panel drops the gone page's elements.
+    await window.evaluate(()=>{window.__browserStates=[];window.trebellDesktop.browser.onState(state=>window.__browserStates.push(state))});
+    await app.evaluate(({BrowserWindow},site)=>BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&item.webContents.getURL().startsWith(site)).close(),`http://127.0.0.1:${fixturePort}/`);
+    let states=[];
+    for(let i=0;i<40&&!states.some(state=>state.open===false);i++){await new Promise(resolve=>setTimeout(resolve,100));states=await window.evaluate(()=>window.__browserStates)}
+    assert.deepEqual(states.at(-1),{open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:null,height:null},"the app hears the agent browser closed: "+JSON.stringify(states));
+    assert.equal((await window.evaluate(()=>window.trebellDesktop.browser.state())).open,false);
   }finally{
     await closeElectronApp(app);
     fixture.closeAllConnections?.();await new Promise(resolve=>fixture.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
