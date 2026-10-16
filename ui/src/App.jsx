@@ -3501,6 +3501,9 @@ export default function App(){
       if(runtimeCapabilities.collaborationModes&&resumed.collaborationMode?.mode&&collaborationModes.some(item=>item.mode===resumed.collaborationMode.mode))setCollaborationMode(resumed.collaborationMode.mode);
       if(agentRuntime==="codex")applyCodexThreadSettings(resumed.thread.id,resumed);
       else if(resumed.thread.model&&modelsRef.current.includes(resumed.thread.model)){setModel(resumed.thread.model);setSelectedModels([resumed.thread.model])}
+      // An open thread never fans out: a pick of several models (one made for a new task) gives way to the one model a follow-up goes
+      // to, also when the catalog does not list the thread's own, so the picker names it.
+      const sendModel=modelRef.current;setSelectedModels(current=>current.length>1?(sendModel?[sendModel]:[]):current);
       if(resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
         const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);

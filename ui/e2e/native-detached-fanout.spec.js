@@ -182,3 +182,36 @@ test("a multi-model run with a model that cannot start opens its rows to what fa
     await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));for(const path of [...worktrees].reverse())await git(repo,["worktree","remove","--force",path]).catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
   }
 });
+
+// A thread whose own model the catalog does not list (one made under another provider, or on a model the provider no longer lists)
+// cannot go on with it: its follow-up goes to the composer's one model. Opened, it shows that model in its picker, never the pick of
+// several models made for a new task, which an open thread does not send to: the picker said "3 models" and the follow-up went to
+// the first.
+test("a Native thread whose model the catalog does not list shows the one model its follow-up goes to, not the composer's several",async({page})=>{
+  test.setTimeout(60_000);
+  const models=[];const harness=await startRelayHarness({replies:[request=>{models.push(request.model);return{text:"Answered with "+request.model+"."}}]});
+  try{
+    const thread=harness.seedThread("Health check endpoint",[{user:"Add a health check endpoint",items:[replyItem("seed-reply-z","Added the endpoint.")]}]);harness.threadStore.update(thread.id,{model:"model-z"});
+    await routeRelayApp(page,harness);
+    await page.route(/\/api\/models$/,route=>json(route,catalog(["model-a","model-b","model-c"])));
+    // A Git project, where a new task can fan out to several models.
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:true,cwd:harness.repo,root:harness.repo,branch:"main",branches:["main"],status:[],remotes:[],worktrees:[{path:harness.repo,branch:"main"}]}));
+    const saved={};await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return json(route,saved)});
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const picker=page.getByTestId("model-picker"),menu=page.locator(".model-picker-menu"),composer=page.getByTestId("composer"),row=page.locator(".thread-row").filter({hasText:"Health check endpoint"});
+    await expect(picker).toHaveText("Model A",{timeout:15_000});
+    await picker.click();await menu.getByRole("button",{name:/Model B/}).click({modifiers:["Shift"]});await menu.getByRole("button",{name:/Model C/}).click({modifiers:["Shift"]});
+    await expect(picker).toContainText("3 models");await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(page.getByText("Added the endpoint.")).toBeVisible({timeout:15_000});
+    await expect(picker,"the picker of a thread whose model the catalog does not list").toHaveText("Model A");
+    for(const mode of ["dark","light"]){
+      if(mode==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(picker).toHaveText("Model A");await page.screenshot({animations:"disabled",path:`${auditDir}native-unlisted-model-thread-picker-${mode}-${width}x800.png`})}
+    }
+    await page.setViewportSize({width:1280,height:800});
+    await composer.click();await page.keyboard.type("Follow up in this thread",{delay:5});await page.keyboard.press("Enter");
+    await expect.poll(()=>models.length,{timeout:15_000}).toBe(1);expect(models[0],"the model the follow-up went to, the one its picker named").toBe("model-a");
+    await expect(page.getByText("Answered with model-a.")).toBeVisible({timeout:15_000});await expect(picker).toHaveText("Model A");
+  }finally{await harness.close()}
+});
