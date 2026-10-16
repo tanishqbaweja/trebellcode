@@ -93,7 +93,8 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
 }
 const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity"];
 
-export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
+// runningTask: the title of the open thread while its turn runs, else empty.
+export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTask="",runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
   const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||lastSettingsSection);
   useEffect(()=>{lastSettingsSection=settingsSection},[settingsSection]);
   const [settingsSearch,setSettingsSearch]=useState("");
@@ -248,6 +249,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     }finally{if(seq===agentInfoSeqRef.current)setAgentInfoRefreshing(false)}
   }
   async function selectAgentRuntime(kind,instanceId=null){
+    const name=id=>(agentInfo?.definitions||[]).find(item=>item.id===id)?.name||id;
+    // Another harness picked while the open thread's turn runs asks first, and says what becomes of the task: it runs on in its own
+    // harness, and its thread stays in the sidebar. The switch went through at once, and the task left the screen without a word.
+    if(runningTask&&kind!==selectedAgent&&!await askConfirm(`Switch to ${name(kind)} while ${name(selectedAgent)} is running “${runningTask}”? The task keeps running in ${name(selectedAgent)}, and its thread stays in the sidebar.`,{confirm:"Switch to "+name(kind),tone:"primary"}))return;
     setAgentSelectionOverride(kind);
     setAgentMessageTarget(kind);
     showAgentMessage("Switching…");
@@ -257,7 +262,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       showAgentMessage(`${result.selected?.status?.name||kind} selected.`);
     }catch(error){
       // The selection falls back to the harness that is still active; the refusal is said on the row of the harness that was clicked.
-      setAgentMessageTarget(null);showAgentMessage("");setSwitchRefusal({kind,text:`Could not switch to ${(agentInfo?.definitions||[]).find(item=>item.id===kind)?.name||kind}: ${error.message}`});
+      setAgentMessageTarget(null);showAgentMessage("");setSwitchRefusal({kind,text:`Could not switch to ${name(kind)}: ${error.message}`});
     }
     finally{setAgentSelectionOverride(null)}
   }

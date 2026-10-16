@@ -184,12 +184,14 @@ async function openProjectGitPanel(page,relay){
   await expect(right.getByPlaceholder("Commit message")).toBeVisible({timeout:10_000});
   return right;
 }
-async function selectHarness(page,name){
+// running: the open thread's turn runs, so the switch asks first, and the person goes on with it.
+async function selectHarness(page,name,{running=false}={}){
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeVisible();
   const option=page.locator(".agent-runtime-option").filter({hasText:name}).locator("button").first();
   await expect(option).toBeEnabled({timeout:10_000});await option.click();
+  if(running)await page.getByRole("dialog").getByRole("button",{name:"Switch to "+name,exact:true}).click();
   await expect(page.locator(".agent-runtime-option").filter({hasText:name}).getByText("Active",{exact:true})).toBeVisible({timeout:15_000});
 }
 const backToThreads=page=>page.getByRole("button",{name:"Threads",exact:true}).click();
@@ -335,7 +337,7 @@ test("a harness switch drops the previous socket's open approval, and the new ha
     await expect(approval).toContainText("git log -n 5",{timeout:15_000});
     const first=relay.calls("turn/start")[0].connection;
 
-    await selectHarness(page,"Cursor");
+    await selectHarness(page,"Cursor",{running:true});
     await backToThreads(page);
     // The relay failed the Antigravity request when its socket closed, so nothing may answer it any more: it leaves the screen.
     await expect.poll(()=>relay.failed,{timeout:10_000}).toEqual([{connection:first,id:"agent-1"}]);
