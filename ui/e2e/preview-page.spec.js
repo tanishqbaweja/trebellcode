@@ -15,8 +15,8 @@ async function startSite(port=0){
 }
 
 // The desktop bridge as desktop/preload.cjs gives it, scripted: an agent browser with a history of its own that reports its state
-// after each move, as desktop/main.mjs does, and notes the calls the panel makes. The window it grants a recording is a canvas that
-// keeps drawing, so the recorder encodes real frames.
+// after each move, as desktop/main.mjs does, and notes the calls the panel makes. Its page has two elements to inspect. The window it
+// grants a recording is a canvas that keeps drawing, so the recorder encodes real frames.
 function scriptedAgentBrowser(){
   const pages=[],listeners=new Set();let at=-1;window.agentBrowserCalls=[];
   const current=()=>({open:at>=0,url:pages[at]||"",title:"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,width:1280,height:800});
@@ -28,7 +28,7 @@ function scriptedAgentBrowser(){
     back:call("back",()=>{if(at>0)at--}),
     forward:call("forward",()=>{if(at<pages.length-1)at++}),
     reload:call("reload"),
-    snapshot:async()=>({url:pages[at]||"",title:"",elements:[]}),
+    snapshot:async()=>({url:pages[at]||"",title:"",elements:at<0?[]:[{ref:"e1",tag:"button",text:"Save profile",href:""},{ref:"e2",tag:"a",text:"Docs",href:pages[at]+"/docs"}]}),
     armRecording:async()=>({ok:true,expiresAt:Date.now()+5000,sourceId:"window:1:0"}),
   }}});
   if(navigator.mediaDevices)navigator.mediaDevices.getDisplayMedia=async()=>{
@@ -149,6 +149,46 @@ test("a recording goes on while the person looks at another tab or closes the pa
     await record.click();
     await expect(saved,"Stop saves the recording once").toHaveCount(1);
     await expect(record).toHaveText(/Record/);
+  }finally{await site.close()}
+});
+
+// What the Browser panel shows stays while the person looks at another tab or closes the panel, and comes back as it was left: the
+// address as typed, the page previewed with Back to the one before, the agent browser's elements with the one chosen and the note
+// begun on it, and the zoom. It used to come back as at first (http://localhost:3000, No preview open) while the agent browser still
+// showed the page.
+test("the Browser panel comes back as it was left after a look at another tab or with the panel closed and opened again",async({page,request})=>{
+  const site=await startSite();
+  try{
+    await page.addInitScript(scriptedAgentBrowser);
+    const {panel,address,frame}=await openBrowserPanel(page,request);
+    const tabs=panel.locator(".context-panel-tab-scroll"),elements=panel.locator(".browser-elements button"),annotation=panel.getByTestId("preview-annotation"),note=annotation.getByRole("textbox");
+    await typeAddress(page,address,site.url+"/first");await page.keyboard.press("Enter");
+    await expect(frame.locator("h1")).toHaveText("Page /first");
+    await typeAddress(page,address,site.url+"/second");await panel.getByRole("button",{name:"Open agent browser"}).click();
+    await expect(frame.locator("h1")).toHaveText("Page /second");
+    await panel.getByRole("button",{name:"Inspect elements"}).click();
+    await elements.filter({hasText:"Save profile"}).click();
+    await page.keyboard.press("Control+Equal");
+    await expect(address).toHaveAttribute("title","Preview zoom 110%");
+    await note.click();await page.keyboard.type("Make this say Save changes.",{delay:8});
+    await typeAddress(page,address,site.url+"/typed-not-sent");
+    const asLeft=async how=>{
+      await expect(address,how).toHaveValue(site.url+"/typed-not-sent");
+      await expect(address).toHaveAttribute("title","Preview zoom 110%");
+      await expect(frame.locator("h1")).toHaveText("Page /second");
+      await expect(panel.getByTitle("Back",{exact:true})).toBeEnabled();
+      await expect(panel.getByRole("button",{name:"Open in browser"})).toBeVisible();
+      await expect(elements).toHaveCount(2);
+      await expect(annotation).toContainText("Annotate e1");
+      await expect(note).toHaveValue("Make this say Save changes.");
+    };
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(address).toHaveCount(0);
+    await tabs.getByRole("button",{name:"Browser",exact:true}).click();
+    await asLeft("after a look at Files");
+    await panel.getByRole("button",{name:"Close right panel"}).click();await expect(panel).toHaveCount(0);
+    await page.getByTestId("right-panel-toggle").first().click();
+    await asLeft("after the panel was closed and opened again");
+    await shots(page,"preview-panel-as-left-after-files-tab");
   }finally{await site.close()}
 });
 

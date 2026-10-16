@@ -23,19 +23,22 @@ function noneSet(result,from=""){
   if(result?.imported||!failed)return "";
   return (failed===1?"the cookie"+from+" could not be set":"none of the "+failed+" cookies"+from+" could be set")+(why?" ("+why+")":"")+(skipped?"; "+skipped+" encrypted or partitioned cookie"+(skipped===1?" was":"s were")+" skipped":"")+".";
 }
+// What the panel shows is kept while another tab is open or the panel is closed, and comes back with it: a look at Files used to
+// reset it while the agent browser still showed the page.
+const kept={draft:"http://localhost:3000",url:"",snapshot:null,selectedRef:null,annotation:"",shown:{pages:[],at:-1},previewZoom:1};
 // A recording goes on while another tab is open or the panel is closed, and comes back with the panel, as it records the agent
 // browser's window, not the panel: it used to end unsaved when the panel went. It is noted here once it has started, so the panel
 // finds it on coming back even if it went while the recording was starting.
 const recorderRef={current:null,since:0},streamRef={current:null},chunksRef={current:[]};
 
 export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAttachFile}){
-  const [draft,setDraft]=useState("http://localhost:3000");
-  const [url,setUrl]=useState("");
+  const [draft,setDraft]=useState(kept.draft);
+  const [url,setUrl]=useState(kept.url);
   const [key,setKey]=useState(0);
-  const [snapshot,setSnapshot]=useState(null);
+  const [snapshot,setSnapshot]=useState(kept.snapshot);
   const [busy,setBusy]=useState("");
-  const [selectedRef,setSelectedRef]=useState(null);
-  const [annotation,setAnnotation]=useState("");
+  const [selectedRef,setSelectedRef]=useState(kept.selectedRef);
+  const [annotation,setAnnotation]=useState(kept.annotation);
   const [lastAttached,setLastAttached]=useState("");
   const [cookieStatus,setCookieStatus]=useState("");
   const [browserImports,setBrowserImports]=useState(null);
@@ -46,14 +49,15 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   const [urlError,setUrlError]=useState("");
   // Back and Forward step through the addresses this preview has shown, as a browser's do; the agent browser keeps its own
   // history. They used to step the agent browser and show its page, so Back after typing an address went to an older agent page.
-  const [shown,setShown]=useState({pages:[],at:-1});
+  const [shown,setShown]=useState(kept.shown);
   const [unanswered,setUnanswered]=useState("");
   const [viewport,setViewport]=useState({width:1280,height:800});
   const [history,setHistory]=useState([]);
   const [recording,setRecording]=useState(Boolean(recorderRef.current));
   const [recordingSeconds,setRecordingSeconds]=useState(0);
-  const [previewZoom,setPreviewZoom]=useState(1);
+  const [previewZoom,setPreviewZoom]=useState(kept.previewZoom);
   const urlInputRef=useRef(null);
+  useEffect(()=>{Object.assign(kept,{draft,url,snapshot,selectedRef,annotation,shown,previewZoom})});
 
   function remember(nextUrl,title=""){
     const normalized=normalizedHistoryUrl(nextUrl);if(!normalized)return;
