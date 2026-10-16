@@ -520,7 +520,8 @@ const ConversationMessageRow=memo(function ConversationMessageRow({message,activ
   const parsed=useMemo(()=>message.role==="user"||message.role==="handoff"?null:parseVisualizationMessage(message.text),[message.role,message.text]);
   if(message.role==="reasoning")return <ReasoningRow id={message.id} messageId={message.id} text={message.text}/>;
   if(message.role==="handoff")return <SessionHandoffRow message={message}/>;
-  if(message.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="user-bubble"><p>{message.text}</p>{allowRevert&&message.turnId&&<button className="message-action" onClick={()=>onEditFromHere(message)}>Edit from here</button>}</div></div>;
+  // A message sent with files names them under its text, as the composer's chips did.
+  if(message.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="user-bubble"><p>{message.text}</p>{message.attachments?.length>0&&<div className="user-attachments">{message.attachments.map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/><bdi>{attachmentDisplayName(path)}</bdi></span>)}</div>}{allowRevert&&message.turnId&&<button className="message-action" onClick={()=>onEditFromHere(message)}>Edit from here</button>}</div></div>;
   return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text chat-markdown" data-assistant-citation-source={message.id}><ChatMarkdown text={parsed.text}/></div>}{(parsed?.visualizations||[]).map((visualization,index)=><InlineVisualization key={(visualization.path||visualization.file)+":"+index} visualization={visualization} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})}/>)}{outcomeLabel&&<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/>}</div></div>;
 },sameConversationMessageRowProps);
 // How a turn that failed, was stopped or completed before any reply ended (turn-outcome.js turnTrailers), where its reply would
@@ -2986,7 +2987,7 @@ export default function App(){
         if(p.item.type==="userMessage"&&String(p.item.clientId||"").startsWith("trebell-queue-")){
           const draft=queuedSubmissionDraft({input:p.item.content||[]}),id=p.item.clientId,itemId=p.item.id?String(p.item.id):null;
           // History that already has the message lists it by its item id (a held completion replayed over a fresh history).
-          setMessages(prev=>prev.some(message=>message.id===id||(itemId&&String(message.id)===itemId))?prev:[...prev,{id,role:"user",text:draft.draftText||draft.text,turnId:p.turnId||null}]);
+          setMessages(prev=>prev.some(message=>message.id===id||(itemId&&String(message.id)===itemId))?prev:[...prev,{id,role:"user",text:draft.draftText||draft.text,attachments:draft.attachments,turnId:p.turnId||null}]);
         }
         if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);resetAssistantStream()}
         // A fresh session took over a conversation the harness lost: the turn says so in its own row (a reload reads it from the turn).
@@ -3942,12 +3943,12 @@ export default function App(){
     }
     const shown=()=>activeThreadRef.current?.id===thread.id;
     // The live card leaves the last turn here: until the new turn starts it lists only this send's notices, under no turn's name.
-    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);
-    if(shown()){if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,{id:clientId,role:"user",text}])}setCardTurnId(null);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true)}
+    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),sentMessage={id:clientId,role:"user",text,attachments:paths};
+    if(shown()){if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,sentMessage])}setCardTurnId(null);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true)}
     // Until turn/start answers the send has no turn for Stop to name, and a harness that has to start first can take a minute: Stop
     // meanwhile marks this send stopped (stop()), so it sends nothing more, and a turn the harness started before the Stop reached it
     // is stopped as soon as it is named.
-    const pendingSend={threadId:String(thread.id),requested:false,stopped:false,interrupted:false,view:sendView,message:goalResume?null:{id:clientId,role:"user",text}},pendingSends=pendingSendsRef.current;pendingSends.set(pendingSend.threadId,pendingSend);
+    const pendingSend={threadId:String(thread.id),requested:false,stopped:false,interrupted:false,view:sendView,message:goalResume?null:sentMessage},pendingSends=pendingSendsRef.current;pendingSends.set(pendingSend.threadId,pendingSend);
     // The context packet only reads files, so the server builds it while the checkpoint is made and the goal set; reached says the
     // send got to it.
     let reached=()=>{};const contextReady=prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted,ready:new Promise(resolve=>{reached=resolve})});
@@ -4166,7 +4167,7 @@ export default function App(){
     // such queue, and the draft starts a thread of its own.
     if(running&&activeThread?.id){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
-      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,turnId:activeTurnId}])}catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);throw error}return}
+      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,attachments:draft.attachments,turnId:activeTurnId}])}catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);throw error}return}
       if(runtimeCapabilities.nativeQueue&&rpc&&activeThread&&queueMode!=="local"){
         try{
           if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips))return;
@@ -4255,7 +4256,7 @@ export default function App(){
         try{
           await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});
           await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:originalInput});
-          setQueued(prev=>prev.filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,turnId:activeTurnId}]);return;
+          setQueued(prev=>prev.filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
         }catch(error){
           let restored;
           try{
@@ -4275,12 +4276,12 @@ export default function App(){
       if(running)return;
       const result=await rpc.request("thread/queue/start",{threadId:activeThread.id,queuedSubmissionId:item.id});const turnId=result?.turn?.id||null;
       setRunning(Boolean(turnId));setActiveTurnId(turnId);setQueued(prev=>prev.filter(q=>q.id!==item.id));
-      if(turnId){followConversationEnd();setMessages(prev=>[...prev,{id:item.clientUserMessageId||("queue-start-"+item.id),role:"user",text:item.draftText||item.text,turnId}])}return;
+      if(turnId){followConversationEnd();setMessages(prev=>[...prev,{id:item.clientUserMessageId||("queue-start-"+item.id),role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId}])}return;
     }
     await validateAttachmentPaths(item.attachments||[]);
     if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
       await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});
-      await persistLocalQueue(activeThread.id,queued.filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}]);return;
+      await persistLocalQueue(activeThread.id,queued.filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
     }
     if(running)return;
     const threadId=activeThread?.id||null,dispatching=queued.map(q=>q.id===item.id?{...q,dispatchingAt:Date.now(),autoStartFailed:false}:q);

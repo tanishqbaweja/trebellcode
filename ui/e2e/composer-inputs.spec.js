@@ -381,6 +381,38 @@ test("an attachment chip removed with the mouse leaves focus in the composer, so
   }finally{await harness.close()}
 });
 
+// A screenshot as a person pastes it: a PNG drawn in the page, handed over in the paste event's files.
+const pasteImage=(page,name)=>page.getByTestId("composer").evaluate(async(node,name)=>{
+  const canvas=document.createElement("canvas");canvas.width=64;canvas.height=40;const pen=canvas.getContext("2d");pen.fillStyle="#3b82f6";pen.fillRect(0,0,64,40);
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/png")),data=new DataTransfer();data.items.add(new File([blob],name,{type:"image/png"}));
+  node.dispatchEvent(new ClipboardEvent("paste",{clipboardData:data,bubbles:true,cancelable:true}));
+},name);
+
+test("a message sent with a pasted screenshot and a long pasted log names both files under its text, as the composer's chips did",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page,{replies:[{text:"I see the blue screenshot and the pasted log."}]});
+  try{
+    const composer=page.getByTestId("composer"),bubble=page.locator(".user-bubble").last(),files=bubble.locator(".user-attachments > span");
+    await composer.click();await page.keyboard.type("Here is what I see",{delay:15});
+    // The screenshot and a log too long for the draft each become a chip; the draft stays as typed.
+    await pasteImage(page,"screenshot.png");await expect(chips(page)).toHaveText(["screenshot.png"]);
+    await pasteText(page,"GET /login 500 after the token refresh\n".repeat(1300));
+    await expect(chips(page)).toHaveText(["screenshot.png","pasted-context.txt"]);await expect(composer).toHaveValue("Here is what I see");
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("I see the blue screenshot and the pasted log.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(chips(page)).toHaveCount(0);
+    // The message names the files that went with it, as the composer's chips did, under its text.
+    await expect(bubble.locator("p")).toHaveText("Here is what I see");
+    await expect(files).toHaveText(["screenshot.png","pasted-context.txt"]);
+    await expect(files.first().locator("svg")).toBeVisible();
+    // Each chip stays inside the message, at both widths and in both modes.
+    await shootBoth(page,"sent-message-files",async()=>{
+      const [frame,chipBoxes]=await Promise.all([bubble.boundingBox(),files.evaluateAll(nodes=>nodes.map(node=>{const {left,right,top,bottom}=node.getBoundingClientRect();return {left,right,top,bottom}}))]);
+      for(const chip of chipBoxes)expect(chip.left>=frame.x&&chip.right<=frame.x+frame.width&&chip.top>=frame.y&&chip.bottom<=frame.y+frame.height,JSON.stringify({chip,frame})).toBe(true);
+    });
+  }finally{await harness.close()}
+});
+
 test("removing a context chip from the keyboard moves focus to the chip before it, then to the composer",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);
