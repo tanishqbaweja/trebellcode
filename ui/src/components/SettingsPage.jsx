@@ -208,6 +208,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const appRuntime=runtimeKnown?settings.agentRuntime:null;
   const selectedAgent=agentSelectionOverride||(runtimeKnown?appRuntime||runtime?.agentRuntime||agentInfo?.selectedRuntime:agentInfo?.selectedRuntime||runtime?.agentRuntime)||"codex";
   const switchingAgent=Boolean(agentSelectionOverride);
+  // The harness this page shows in use, a switch on its way included, for an install that ends after a switch: the install's own
+  // render is the one from when it began.
+  const selectedAgentRef=useRef(selectedAgent);selectedAgentRef.current=selectedAgent;
   // The app owns a harness switch end to end: it clears the old models and gates sends before the request, then applies the confirmed runtime with one reconnect.
   const switchRuntime=onAgentRuntimeSwitch||((target,perform)=>perform());
   // The profile the server runs comes from settings, which the app keeps current through every switch. agentInfo can be the snapshot cached on an
@@ -289,7 +292,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     try{
       const result=await switchRuntime({runtime:kind,instanceId,resetThread:true},()=>api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:kind,instanceId}}));
       setAgentInfo(result);
-      showAgentMessage(`${result.selected?.status?.name||kind} selected.`);
+      // Said for this harness, also when an install that ended meanwhile said its own for the harness it installed.
+      setAgentMessageTarget(kind);showAgentMessage(`${result.selected?.status?.name||kind} selected.`);
     }catch(error){
       // The selection falls back to the harness that is still active; the refusal is said on the row that was clicked, and in the
       // app's alert when no harness rows are on screen as it comes (the person went back to the chat, or to another section).
@@ -351,11 +355,13 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     try{
       const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"install",runtime:kind,environmentId:settings.activeEnvironmentId||null}});
       // Reinstalling the active harness reloads it once the install finishes; the transport stays usable during the install itself.
-      if(kind===selectedAgent)await switchRuntime({runtime:result.selectedRuntime||kind,instanceId:result.selectedInstanceId||null,resetThread:true},async()=>result,{gate:false});
+      // Active when it finishes, as the server's answer and this page both say then: a harness switched to meanwhile, here or by
+      // opening its thread, keeps its transport and open thread. What the install did is said for the harness it installed.
+      if((result.selectedRuntime||kind)===kind&&selectedAgentRef.current===kind)await switchRuntime({runtime:result.selectedRuntime||kind,instanceId:result.selectedInstanceId||null,resetThread:true},async()=>result,{gate:false});
       setAgentInfo(result);
       const status=result.installed?.status;
-      showAgentMessage(status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.");
-    }catch(error){showAgentMessage(error.message,true)}finally{setInstallingAgent(null)}
+      setAgentMessageTarget(kind);showAgentMessage(status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.");
+    }catch(error){setAgentMessageTarget(kind);showAgentMessage(error.message,true)}finally{setInstallingAgent(null)}
   }
   async function authenticateAgentRuntime(kind,instanceId){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind);if(!definition?.canAuthenticate)return;

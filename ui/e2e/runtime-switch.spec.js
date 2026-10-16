@@ -85,19 +85,23 @@ async function startAgentRelay(activeRuntime,{turnDelayMs=0,reconnectInitializeD
 // profileEditing lets Claude Code keep several profiles, so its active profile can be edited and saved ({action:"upsert"}). holdSelect()
 // gives the promise a refused switch (rejectSelect, server.rejectSelect once started) waits on before it answers, in place of 300 ms.
 // harnesses: the harness rows Settings lists; profiles: more profiles ({id,kind,displayName}) besides each harness's default one.
-async function startHarness(page,{runtime="claude",harnesses=HARNESSES,profiles=[],catalogs=CATALOGS,catalogGate=null,turnDelayMs=0,reconnectInitializeDelayMs=0,rejectSelect="",holdSelect=null,approvalTurns=false,holdTurns=null,profileEditing=false}={}){
-  const server={runtime,rejectSelect,selects:[],versions:{},holdRuntimeReads:null,failRuntimeReads:"",counts:{bootstrap:0,models:0,select:0,upsert:0,runtimeReads:0,runtimeReadsDone:0,direct:0}};
+// installs offers Install or Update on Claude Code and OpenCode ({action:"install"}): holdInstall holds each install until it settles,
+// failInstall is the error the next one fails with, and holdInstallAnswer holds its answer once the harness list in it is taken, as
+// gui-server can still be reading the catalog it bundles when a switch lands. server.holdSelect holds a selection before the server takes it.
+// threadMeta is the saved thread metadata the app starts with.
+async function startHarness(page,{runtime="claude",harnesses=HARNESSES,profiles=[],catalogs=CATALOGS,catalogGate=null,turnDelayMs=0,reconnectInitializeDelayMs=0,rejectSelect="",holdSelect=null,approvalTurns=false,holdTurns=null,profileEditing=false,installs=false,threadMeta={}}={}){
+  const server={runtime,rejectSelect,selects:[],versions:{},holdRuntimeReads:null,failRuntimeReads:"",holdInstall:null,holdInstallAnswer:null,failInstall:"",holdSelect:null,counts:{bootstrap:0,models:0,select:0,upsert:0,install:0,runtimeReads:0,runtimeReadsDone:0,direct:0}};
   const relay=await startAgentRelay(()=>server.runtime,{turnDelayMs,reconnectInitializeDelayMs,approvalTurns,holdTurns});
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const bootstrap=()=>({mock:false,provider:"openai",providerReady:true,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",agentRuntimeReady:true,appServerReady:true,wsUrl:relay.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const snapshot=()=>{
     const statuses=[...harnesses.map(([kind,name])=>({id:kind+"-default",kind,name})),...profiles.map(({id,kind,displayName})=>({id,kind,name:displayName}))].map(status=>({...status,available:true,installed:true,authenticated:true,version:server.versions[status.kind]||"1.0.0-fixture"}));
-    return {selectedRuntime:server.runtime,selectedInstanceId:server.runtime+"-default",definitions:harnesses.map(([id,name,protocol])=>({id,name,protocol,multipleInstances:profileEditing&&id==="claude"||profiles.some(profile=>profile.kind===id)})),instances:statuses.map(({id,kind,name})=>({id,kind,displayName:name,enabled:true})),statuses};
+    return {selectedRuntime:server.runtime,selectedInstanceId:server.runtime+"-default",definitions:harnesses.map(([id,name,protocol])=>({id,name,protocol,multipleInstances:profileEditing&&id==="claude"||profiles.some(profile=>profile.kind===id),...(installs&&(id==="claude"||id==="opencode")?{installable:true,packageName:id==="opencode"?"opencode-ai":"@anthropic-ai/claude-code"}:{})})),instances:statuses.map(({id,kind,name})=>({id,kind,displayName:name,enabled:true})),statuses};
   };
   const catalog=async active=>{await catalogGate?.(active);return catalogs[active]};
   await keepThreadMeta(page);
   await page.route(/\/api\/bootstrap$/,route=>{server.counts.bootstrap++;return json(route,bootstrap())});
-  await page.route(/\/api\/state$/,route=>json(route,{settings:settings(),projects:[],threadMeta:{}}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:settings(),projects:[],threadMeta}));
   await page.route(/\/api\/settings$/,route=>json(route,settings()));
   await page.route(/\/api\/models(?:\?.*)?$/,async route=>{server.counts.models++;const value=await catalog(server.runtime);return json(route,value,value.error?503:200)});
   await page.route(/\/api\/agent-runtimes(?:\?.*)?$/,async route=>{
@@ -109,8 +113,18 @@ async function startHarness(page,{runtime="claude",harnesses=HARNESSES,profiles=
       if(raw!=null&&String(raw).trim()!==""&&(!Number.isInteger(value)||value<100_000||value>1_000_000)){await delay(300);return json(route,{error:"Claude auto-compact threshold must be an integer between 100000 and 1000000 tokens"},400)}
       const current=snapshot();return json(route,{instance:body.instance,...current,bootstrap:bootstrap(),catalog:await catalog(server.runtime)});
     }
+    if(body.action==="install"){
+      // As gui-server answers an install: the harness list as it is when the install ends, with the bootstrap and catalog only when the
+      // harness installed is the one that runs then.
+      server.counts.install++;await server.holdInstall;
+      if(server.failInstall){const error=server.failInstall;server.failInstall="";return json(route,{error},400)}
+      server.versions[body.runtime]="1.1.0-updated";
+      const current=snapshot(),active=body.runtime===server.runtime,refresh=active?{bootstrap:bootstrap(),catalog:await catalog(server.runtime)}:{};
+      await server.holdInstallAnswer;
+      return json(route,{installed:{ok:true,runtime:body.runtime,status:current.statuses.find(item=>item.kind===body.runtime)},...current,...refresh});
+    }
     if(body.action!=="select")return json(route,{error:"Unexpected agent runtime action in the runtime switch fixture: "+body.action},400);
-    server.counts.select++;server.selects.push(body);
+    server.counts.select++;server.selects.push(body);await server.holdSelect;
     if(server.rejectSelect){const refusal=server.rejectSelect;await (holdSelect?holdSelect():delay(300));return json(route,{error:refusal},400)}
     server.runtime=body.runtime;
     const value=await catalog(server.runtime),current=snapshot();
@@ -773,6 +787,164 @@ test("names typed one per line or split by commas into Approved inherited enviro
       await expect(editor).toHaveCount(0);
     }
   }finally{await close()}
+});
+
+// An update that ends after the person switched to another harness, in Settings or by opening that harness's thread from the sidebar,
+// is the update of the harness it was for: the harness switched to keeps its transport and the thread open on it. The install compared
+// the harness it updated with the one in use when it began, so it reloaded the harness switched to, which closed its thread.
+const harnessRow=(page,name)=>page.locator(".agent-runtime-option").filter({hasText:name});
+const installAnswer=page=>page.waitForResponse(response=>/\/api\/agent-runtimes$/.test(new URL(response.url()).pathname)&&response.request().postDataJSON()?.action==="install");
+// In Settings: Update on OpenCode, the harness in use, which runs while server.holdInstall holds it.
+async function updateOpenCode(page){
+  await openHarnessSettings(page);
+  await harnessRow(page,"OpenCode").getByRole("button",{name:"Update",exact:true}).click();
+  await page.getByRole("dialog").getByRole("button",{name:"Update OpenCode",exact:true}).click();
+  await expect(harnessRow(page,"OpenCode").getByRole("button",{name:"Installing…",exact:true})).toBeDisabled();
+}
+// Update on OpenCode, and a switch to Claude Code in Settings while the update runs.
+async function updateOpenCodeThenSwitchToClaude(page){
+  await updateOpenCode(page);
+  await harnessRow(page,"Claude Code").locator("button").first().click();
+  await expect(page.getByTestId("agent-runtime-message")).toHaveText("· Claude Code selected.");
+}
+async function ask(page,text){await page.getByTestId("composer").click();await page.keyboard.type(text,{delay:8});await page.keyboard.press("Enter")}
+const SAVED_CLAUDE_THREAD={id:"claude-saved-thread",name:"Saved Claude Code task",preview:"Saved Claude Code task",cwd:process.cwd(),model:"sonnet",runtime:"claude",status:{type:"idle"},createdAt:Date.now()/1000-100,updatedAt:Date.now()/1000-50,turns:[]};
+const SWITCHES_DURING_UPDATE=[
+  // The switch in Settings, then a new thread in General chat.
+  {id:"settings-switch",name:"a switch to Claude Code in Settings",started:1,async switch(page){
+    await updateOpenCodeThenSwitchToClaude(page);
+    await page.getByRole("button",{name:"Projects",exact:true}).click();await page.locator(".general-chat-card").click();
+  }},
+  // A saved Claude Code thread opened from the sidebar, which switches to Claude Code on its own.
+  {id:"sidebar-thread",name:"opening a Claude Code thread from the sidebar",started:0,threadMeta:{[SAVED_CLAUDE_THREAD.id]:{projectless:true,environmentId:null,runtime:"claude",runtimeInstanceId:"claude-default",threadSnapshot:{...SAVED_CLAUDE_THREAD,provider:"claude"}}},async switch(page){
+    await updateOpenCode(page);
+    await page.locator(`.thread-row[data-thread-id="${SAVED_CLAUDE_THREAD.id}"] .thread-main`).click();
+    await expect(page.locator(".sidebar-provider strong")).toContainText("Claude Code");
+    await expect(page.getByTestId("model-picker")).toContainText("Claude Fixture Sonnet");
+  }},
+];
+for(const way of SWITCHES_DURING_UPDATE){
+  test(`an update that ends after ${way.name} leaves the thread open on Claude Code, and its transport, alone`,async({page})=>{
+    test.setTimeout(90_000);
+    const {server,relay,close}=await startHarness(page,{runtime:"opencode",installs:true,threadMeta:way.threadMeta||{}});
+    let releaseInstall=()=>{};server.holdInstall=new Promise(resolve=>{releaseInstall=resolve});
+    const replies=page.locator(".assistant-message-text"),asked=["What changes once OpenCode is updated?","And what stays the same?"];
+    try{
+      await page.setViewportSize({width:1280,height:800});
+      await openGeneralChat(page,relay);
+      await way.switch(page);
+      // A thread on Claude Code, with its answer, open when the OpenCode update ends.
+      await ask(page,asked[0]);
+      await expect(replies).toHaveText(["Fixture reply from claude"],{timeout:15_000});
+      const sockets=relay.connections(),bootstraps=server.counts.bootstrap,installed=installAnswer(page);
+      releaseInstall();await installed;
+      // The thread is still open with its answer and goes on there, on the same transport.
+      await ask(page,asked[1]);
+      await expect(replies).toHaveText(["Fixture reply from claude","Fixture reply from claude"],{timeout:15_000});
+      await expect(page.locator(".user-bubble p")).toHaveText(asked);
+      const [first,next]=relay.calls("turn/start");
+      expect(next.params.threadId).toBe(first.params.threadId);expect(relay.calls("thread/start")).toHaveLength(way.started);
+      expect([first.connection,next.connection]).toEqual([sockets,sockets]);
+      expect(relay.connections(),"the update opened no new socket").toBe(sockets);expect(server.counts.bootstrap).toBe(bootstraps);
+      await keepModeSaves(page);
+      for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:`${auditDir}harness-update-after-${way.id}-thread-stays-${mode}-1280x800.png`})}
+      // Settings has OpenCode updated and Claude Code still in use.
+      await openHarnessSettings(page);
+      await expect(harnessRow(page,"Claude Code").getByText("Active",{exact:true})).toBeVisible();
+      await expect(harnessRow(page,"OpenCode")).toContainText("1.1.0-updated");
+      await expect(harnessRow(page,"OpenCode").getByRole("button",{name:"Update",exact:true})).toBeEnabled();
+      expect(server.runtime).toBe("claude");expect(server.counts.install).toBe(1);
+    }finally{releaseInstall();await close()}
+  });
+}
+
+// Settings left open through the update says how it went for the harness it updated, a failure too, and Claude Code, switched to
+// meanwhile, stays in use on its transport.
+test("an update that ends after a switch, with Settings still open, is said for the harness it updated and leaves the other harness running",async({page})=>{
+  test.setTimeout(90_000);
+  const {server,relay,close}=await startHarness(page,{runtime:"opencode",installs:true});
+  let releaseInstall=()=>{};server.holdInstall=new Promise(resolve=>{releaseInstall=resolve});
+  const message=page.getByTestId("agent-runtime-message"),claude=harnessRow(page,"Claude Code"),opencode=harnessRow(page,"OpenCode");
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openGeneralChat(page,relay);
+    const loaded=relay.connections();
+    await updateOpenCodeThenSwitchToClaude(page);
+    // The switch's own socket is the one open when the update ends.
+    const sockets=loaded+1,bootstraps=server.counts.bootstrap;await expect.poll(()=>relay.openConnections()).toEqual([sockets]);
+    let installed=installAnswer(page);
+    releaseInstall();await installed;
+    await expect(message).toHaveText("· OpenCode installed and ready.");
+    await expect(claude.getByText("Active",{exact:true})).toBeVisible();await expect(opencode).toContainText("1.1.0-updated");
+    await page.screenshot({animations:"disabled",path:auditDir+"harness-update-after-switch-said-in-settings-1280x800.png"});
+    // A question asked next reaches Claude Code on that socket.
+    await page.getByRole("button",{name:"Projects",exact:true}).click();await page.locator(".general-chat-card").click();
+    await ask(page,"Is Claude Code still answering?");
+    await expect(page.locator(".assistant-message-text")).toHaveText(["Fixture reply from claude"],{timeout:15_000});
+    expect(relay.calls("turn/start").map(call=>[call.runtime,call.connection])).toEqual([["claude",sockets]]);
+    expect(relay.connections(),"the update opened no new socket").toBe(sockets);expect(server.counts.bootstrap).toBe(bootstraps);
+    // An update that fails after a switch says so for OpenCode, not on Claude Code's line as if Claude Code had failed.
+    await openHarnessSettings(page);
+    await opencode.locator("button").first().click();await expect(message).toHaveText("· OpenCode selected.");
+    await expect.poll(()=>relay.openConnections()).toEqual([sockets+1]);
+    server.holdInstall=new Promise(resolve=>{releaseInstall=resolve});server.failInstall="Could not install opencode-ai";
+    await updateOpenCodeThenSwitchToClaude(page);
+    const switched=sockets+2;await expect.poll(()=>relay.openConnections()).toEqual([switched]);
+    installed=installAnswer(page);
+    releaseInstall();await installed;
+    await expect(message).toHaveText("· OpenCode: Could not install opencode-ai");
+    await expect(message).toHaveAttribute("role","alert");
+    await expect(claude.getByText("Active",{exact:true})).toBeVisible();await expect(opencode.getByRole("button",{name:"Update",exact:true})).toBeEnabled();
+    await keepModeSaves(page);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:`${auditDir}harness-update-failed-after-switch-${mode}-1280x800.png`})}
+    expect(relay.connections()).toBe(switched);expect(server.runtime).toBe("claude");expect(server.counts.install).toBe(2);
+  }finally{releaseInstall();await close()}
+});
+
+// An update whose answer comes once a switch has landed, or while one is on its way, leaves the harness switched to in use: that
+// answer has the harness list from before the switch, and the install reloaded the harness it updated over the one switched to.
+test("an update whose answer comes after or during a switch made with the keyboard leaves the harness switched to in use",async({page})=>{
+  test.setTimeout(90_000);
+  const {server,relay,close}=await startHarness(page,{runtime:"opencode",installs:true});
+  const gate=()=>{let open=()=>{};const held=new Promise(resolve=>{open=resolve});return {held,open}};
+  let install=gate(),answer=gate(),select=gate();server.holdInstall=install.held;server.holdInstallAnswer=answer.held;
+  const message=page.getByTestId("agent-runtime-message"),claude=harnessRow(page,"Claude Code"),opencode=harnessRow(page,"OpenCode");
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openGeneralChat(page,relay);
+    // The update ends with OpenCode in use, and its answer is still on its way when Enter on Claude Code's row switches.
+    await updateOpenCode(page);
+    install.open();await expect.poll(()=>server.versions.opencode).toBe("1.1.0-updated");
+    await claude.locator("button").first().press("Enter");
+    await expect(message).toHaveText("· Claude Code selected.");
+    let installed=installAnswer(page);answer.open();await installed;
+    await expect(message).toContainText("OpenCode installed and ready.");
+    await expect(claude.getByText("Active",{exact:true})).toBeVisible();
+    await expect(message).toHaveText("· OpenCode installed and ready.");
+    await expect(opencode).toContainText("1.1.0-updated");await expect(opencode.getByRole("button",{name:"Update",exact:true})).toBeEnabled();
+    // Back on OpenCode, the next update's answer comes while the switch to Claude Code waits for the server.
+    await opencode.locator("button").first().click();await expect(message).toHaveText("· OpenCode selected.");
+    install=gate();server.holdInstall=install.held;server.holdInstallAnswer=null;
+    await updateOpenCode(page);
+    select=gate();server.holdSelect=select.held;
+    await claude.locator("button").first().press("Enter");
+    await expect(message).toHaveText("· Switching…");await expect.poll(()=>server.counts.select).toBe(3);
+    installed=installAnswer(page);install.open();await installed;
+    await expect(message).toHaveText("· OpenCode installed and ready.");
+    const selected=agentRuntimePost(page);select.open();await selected;
+    await expect(message).toHaveText("· Claude Code selected.");
+    await expect(claude.getByText("Active",{exact:true})).toBeVisible();
+    await keepModeSaves(page);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:`${auditDir}harness-update-during-switch-${mode}-1280x800.png`})}
+    // The chat runs Claude Code, with its own models, on the last switch's socket.
+    await page.getByRole("button",{name:"Projects",exact:true}).click();await page.locator(".general-chat-card").click();
+    await expect(page.getByTestId("model-picker")).toContainText("Claude Fixture Sonnet");
+    await ask(page,"Which harness answers now?");
+    await expect(page.locator(".assistant-message-text")).toHaveText(["Fixture reply from claude"],{timeout:15_000});
+    expectCatalogModels(relay);
+    expect(relay.calls("turn/start").map(call=>call.connection)).toEqual([relay.connections()]);
+    expect(server.runtime).toBe("claude");expect(server.counts.install).toBe(2);
+  }finally{install.open();answer.open();select.open();await close()}
 });
 
 // A failed switch, or a failed save of the active profile, must not touch the harness that stays active: its socket, the running
