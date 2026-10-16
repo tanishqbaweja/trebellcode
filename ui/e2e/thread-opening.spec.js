@@ -751,6 +751,35 @@ test("History asked for while a thread opened from it opens shows History, and t
   }finally{await harness.close()}
 });
 
+// History, a slow open from its row, History asked for (it shows), Usage and History again, then the same row clicked again: the
+// thread is asked for again, so that click waits for the open on its way instead of resuming the thread a second time, the opening
+// state covers History again, and the thread lands in the chat.
+test("a thread clicked again in History after a page was asked for while it opens joins that open, and lands in the chat",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
+  const heading=name=>page.getByRole("heading",{name,exact:true}),history=page.getByRole("button",{name:"History",exact:true});
+  const historyRow=name=>page.locator(".history-thread-row").filter({hasText:name});
+  try{
+    await start(page,harness);
+    await history.click();await expect(historyRow("Payment retries")).toBeVisible({timeout:15_000});
+    const release=harness.hold(BETA.thread.id);
+    await historyRow("Payment retries").click();
+    await expect.poll(()=>harness.resumes(BETA.thread.id)).toBe(1);await expect(opening(page)).toBeVisible();
+    await history.click();await expect(heading("Thread history")).toBeVisible();await expect(opening(page)).toHaveCount(0);
+    await page.getByRole("button",{name:"Usage",exact:true}).click();await expect(heading("Usage")).toBeVisible();
+    await history.click();await expect(heading("Thread history")).toBeVisible();
+    await historyRow("Payment retries").click();
+    await frames(page,3);await page.waitForTimeout(500);
+    expect(harness.resumes(BETA.thread.id),"resumes sent for the thread clicked again while it opens").toBe(1);
+    await expect(opening(page),"the thread asked for again shows as opening, over History").toBeVisible();await expect(heading("Thread history")).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"thread-opening-history-clicked-again-dark-1600x980.png"});
+    release();
+    await expect(answer(page,BETA)).toBeVisible();await expect(opening(page)).toHaveCount(0);await expect(heading("Thread history")).toHaveCount(0);
+    await expect(headerTitle(page)).toHaveText("Payment retries");await expect(row(page,BETA)).toHaveClass(/active/);
+    expect(harness.resumes(BETA.thread.id)).toBe(1);
+  }finally{await harness.close()}
+});
+
 // Back and Forward through History: Release checklist open, History, Payment retries opened from it, Back to History (Release checklist
 // reopens behind it), then Forward to Payment retries, which takes a while to open over History. History asked for meanwhile shows,
 // and once the thread has opened behind it the step leaves the view there instead of taking it to the chat.
