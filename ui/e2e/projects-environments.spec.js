@@ -784,6 +784,66 @@ test.describe("Using an environment for agents",()=>{
   });
 });
 
+test.describe("An environment list that is still loading or failed",()=>{
+  const card=page=>page.locator(".capability-card").filter({has:page.getByText("Configured environments",{exact:true})});
+  // What the card would claim from its starting values, before the list is read: a count, Local machine active, none saved.
+  async function claimsNothing(page){
+    await expect(card(page).getByText("No saved remote environments",{exact:false})).toHaveCount(0);
+    await expect(card(page).getByText("Active",{exact:true})).toHaveCount(0);
+    await expect(card(page).locator(".capability-card-head em")).toHaveCount(0);
+    await expect(card(page).getByRole("button",{name:"Use for agent"})).toHaveCount(0);
+  }
+  // Two environments are saved and the agent runs in one of them (Use for agent on Lane local box), and host discovery keeps the
+  // first read out for seconds, as on a busy host: until it answers the card says it is loading, as Host capabilities says it is
+  // checking, instead of a count of 1, "Local machine · Active" and "No saved remote environments".
+  test("while the first read is out, Configured environments says it is loading and calls no environment active",async({page,request})=>{
+    await open(page,request);
+    for(const data of [{id:"lane-local-box",type:"local",name:"Lane local box",cwd:process.cwd()},SSH_PROFILE])expect((await request.post("/api/environments",{data})).ok()).toBe(true);
+    const held=gate();
+    await page.route(/\/api\/environments$/,async route=>{
+      if(route.request().method()!=="GET")return route.fallback();
+      await held.promise;
+      const body=await (await route.fetch()).json();
+      return json(route,{...body,activeEnvironmentId:"lane-local-box",activeEnvironment:(body.profiles||[]).find(profile=>profile.id==="lane-local-box")||null});
+    });
+    await nav(page,"Environments").click();
+    await expect(page.getByTestId("host-discovery-pending")).toBeVisible();
+    await claimsNothing(page);
+    await expect(card(page).getByRole("status")).toHaveText("Loading environments…");
+    await shootModes(page,"environments-first-read-loading");
+    held.open();
+    const rows=page.locator(".environment-list>div");
+    await expect(rows.filter({hasText:"Lane local box"}).getByText("Agent active",{exact:true})).toBeVisible();
+    await expect(rows.filter({hasText:"Local machine"}).getByRole("button",{name:"Use for agent",exact:true})).toBeVisible();
+    await expect(rows.filter({hasText:"Build box"})).toBeVisible();
+    await expect(card(page).locator(".capability-card-head em")).toHaveText("3");
+    await expect(card(page).getByRole("status")).toHaveCount(0);
+    await expect(card(page).getByText("No saved remote environments",{exact:false})).toHaveCount(0);
+  });
+
+  // A first read that fails says so at the top, and the card says its list is not loaded rather than claim Local machine is the only
+  // one; Refresh, pressed from the keyboard, lists the saved environment.
+  test("a failed first read says the environments are not loaded, and Refresh lists them",async({page,request})=>{
+    await open(page,request);
+    expect((await request.post("/api/environments",{data:SSH_PROFILE})).ok()).toBe(true);
+    let fail=true;
+    await page.route(/\/api\/environments$/,route=>route.request().method()==="GET"&&fail?json(route,{error:"Deliberate environments failure"},500):route.fallback());
+    await nav(page,"Environments").click();
+    await expect(page.locator(".environments-page").getByRole("alert")).toHaveText("Could not refresh environments: Deliberate environments failure");
+    await claimsNothing(page);
+    await expect(card(page).getByRole("status")).toHaveText("Not loaded: the environments could not be read.");
+    await shootModes(page,"environments-first-read-failed");
+    fail=false;
+    const refresh=page.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true});
+    await refresh.focus();await page.keyboard.press("Enter");
+    await expect(page.locator(".environment-list>div").filter({hasText:"Build box"})).toBeVisible();
+    await expect(card(page).locator(".capability-card-head em")).toHaveText("2");
+    await expect(card(page).getByRole("status")).toHaveCount(0);
+    await expect(page.locator(".environments-page").getByRole("alert")).toHaveCount(0);
+    await expect(refresh).toBeFocused();
+  });
+});
+
 test.describe("A project list that failed or is still loading",()=>{
   for(const mode of MODES)test(`a failed first read says so with Retry, and does not claim there are no projects (${mode})`,async({page,request})=>{
     await open(page,request,{mode});
