@@ -155,6 +155,32 @@ test("a recording goes on while the person looks at another tab or closes the pa
   }finally{await site.close()}
 });
 
+// Opens the agent browser on the site's /rec page, with Record in the device toolbar.
+async function openRecorder(page,request,site){
+  await page.addInitScript(scriptedAgentBrowser);
+  const {panel,address,frame}=await openBrowserPanel(page,request);
+  await typeAddress(page,address,site.url+"/rec");await panel.getByRole("button",{name:"Open agent browser"}).click();
+  await expect(frame.locator("h1")).toHaveText("Page /rec");
+  return {panel,record:panel.locator(".browser-device-toolbar button.recording"),saved:page.getByTestId("context-chip").filter({hasText:"Browser recording"})};
+}
+
+// A double click on Record starts one recording, which goes on: once the shell had armed it, the second click landed on Stop, which
+// stopped it at once and attached a recording of no length.
+test("a double click on Record starts one recording that goes on",async({page,request})=>{
+  test.setTimeout(60_000);
+  const site=await startSite();
+  try{
+    const {panel,record,saved}=await openRecorder(page,request,site);
+    // The shell arms the recording in 30 ms, before the second click comes.
+    await page.evaluate(()=>{const browser=window.trebellDesktop.browser,arm=browser.armRecording;browser.armRecording=async()=>{await new Promise(resolve=>setTimeout(resolve,30));return arm()}});
+    await record.dblclick({delay:120});
+    await expect(record,"the double click on Record started a recording that goes on").toHaveText(/Stop [1-9]\d*s/);
+    await expect(saved).toHaveCount(0);await expect(panel.getByTestId("browser-cookie-status")).toHaveCount(0);await expect(panel.locator(".browser-action-error")).toHaveCount(0);
+    await shots(page,"preview-record-double-click-goes-on");
+    await record.click();await expect(record).toHaveText(/Record/);await expect(saved).toHaveCount(1);
+  }finally{await site.close()}
+});
+
 // What the Browser panel shows stays while the person looks at another tab or closes the panel, and comes back as it was left: the
 // address as typed, the page previewed with Back to the one before, the agent browser's elements with the one chosen and the note
 // begun on it, and the zoom. It used to come back as at first (http://localhost:3000, No preview open) while the agent browser still
