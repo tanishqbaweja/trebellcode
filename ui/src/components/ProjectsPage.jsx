@@ -356,9 +356,11 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
       setCloneUrl("");partialSuccess("Clone was started",issues);
     }finally{setBusy(false)}
   }
-  // A cancel or retry on its way (the first click of a double click, or Enter pressed twice) is the one a second press waits for
-  // until the list shows what it did: the second sends nothing.
+  // A cancel or retry on its way (Enter pressed twice, or a second click) is the one a second press waits for until the list shows
+  // what it did: the second sends nothing. The second click of a double click does nothing either way (pressRest): once the list
+  // shows a Retry's new clone running, its Cancel is where Retry was, and that click would cancel the clone just started.
   const cloneActionsRef=useRef(new Set());
+  const pressRest=event=>event.detail>1;
   async function cloneAction(project,action){
     const key=action+":"+project.cloneJob?.id,sending=cloneActionsRef.current;if(sending.has(key))return;
     setError("");setCardError(null);sending.add(key);
@@ -589,7 +591,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
         <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong title={p.name}>{p.name}</strong><span title={projectEnvironmentLabel(p,environmentData.profiles)+" · "+p.path}>{projectEnvironmentLabel(p,environmentData.profiles)} · {p.path}</span><small title={projectCardDetail(p)||undefined}>{projectCardDetail(p)}</small></div></button>
         <button className="project-remove" aria-label={"Remove "+p.name} onClick={()=>removeProject(p)} disabled={busy}><Trash2 size={13}/></button>
         {cardAlert(p,"open")}{cardAlert(p,"remove")}
-        {p.cloneJob&&p.cloneJob.status!=="completed"&&<div className={"project-clone-status "+p.cloneJob.status}><div><strong>{p.cloneJob.phase||"Cloning repository"}</strong><span>{p.cloneJob.status==="failed"?(p.cloneJob.error||"Clone failed"):p.cloneJob.status==="cancelled"?"Clone cancelled":Math.round(p.cloneJob.progress||0)+"%"}</span></div>{["running","cancelling"].includes(p.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(p.cloneJob.progress)||0)+"%"}}/></i>}<div>{p.cloneJob.status==="running"&&<button onClick={()=>cloneAction(p,"cancel")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(p.cloneJob.status)&&<button onClick={()=>cloneAction(p,"retry")}><RefreshCw size={11}/> Retry</button>}</div>{cardAlert(p,"clone")}</div>}
+        {p.cloneJob&&p.cloneJob.status!=="completed"&&<div className={"project-clone-status "+p.cloneJob.status}><div><strong>{p.cloneJob.phase||"Cloning repository"}</strong><span>{p.cloneJob.status==="failed"?(p.cloneJob.error||"Clone failed"):p.cloneJob.status==="cancelled"?"Clone cancelled":Math.round(p.cloneJob.progress||0)+"%"}</span></div>{["running","cancelling"].includes(p.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(p.cloneJob.progress)||0)+"%"}}/></i>}<div>{p.cloneJob.status==="running"&&<button onClick={event=>{if(!pressRest(event))cloneAction(p,"cancel")}}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(p.cloneJob.status)&&<button onClick={event=>{if(!pressRest(event))cloneAction(p,"retry")}}><RefreshCw size={11}/> Retry</button>}</div>{cardAlert(p,"clone")}</div>}
         <div className="project-overrides">
           <label>Model<select value={p.defaultModel||""} onChange={e=>saveProject(p,{defaultModel:e.target.value||null})}><option value="">Inherit client default</option>{models.map(id=><option key={id} value={id}>{id}</option>)}</select></label>
           <label>Permissions<select value={p.permissionMode||""} onChange={e=>saveProject(p,{permissionMode:e.target.value||null})}><option value="">Inherit</option><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select></label>

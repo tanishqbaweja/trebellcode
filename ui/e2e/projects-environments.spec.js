@@ -1088,6 +1088,20 @@ test.describe("Clone",()=>{
       expect(hold.sent,"requests sent for Enter pressed twice on Cancel").toEqual(["cancel","retry","cancel"]);
       await expect(status.getByRole("alert")).toHaveCount(0);
       await shootModes(page,"clone-card-cancelled-once",{show:status});
+      // A double click on Retry on a quick host: the retry goes through at once, and the list shows the new clone running, with its
+      // Cancel where Retry was, before the second click comes. That click starts nothing and cancels nothing: the clone goes on.
+      hold.door=gate();hold.door.open();const before=hold.sent.length,again=sockets.size;
+      const box=await retry.boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+      await page.mouse.click(x,y);
+      await expect(cancel).toBeVisible({timeout:10_000});
+      const under=await cancel.boundingBox();
+      expect(x>=under.x&&x<=under.x+under.width&&y>=under.y&&y<=under.y+under.height,"Cancel is under the pointer where Retry was").toBe(true);
+      await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+      await frames(page);await page.waitForTimeout(600);
+      expect(hold.sent.slice(before),"requests sent for a double click on Retry whose second click lands on the new clone's Cancel").toEqual(["retry"]);
+      await expect(status).not.toContainText("Clone cancelled");await expect(cancel).toBeVisible();
+      await expect.poll(()=>sockets.size,{message:"the clone retried goes on, and git reaches the remote again",timeout:20_000}).toBeGreaterThan(again);
+      await shootModes(page,"clone-card-retried-once",{show:status});
     }finally{
       hold.door.open();
       for(const socket of sockets)socket.destroy();
