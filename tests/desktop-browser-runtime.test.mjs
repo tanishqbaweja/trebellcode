@@ -124,14 +124,16 @@ test("the agent browser draws a page that sets no background on white, in its wi
   }finally{await desktop.done()}
 });
 
-// A page's popup loads in place in the agent browser, as the agent works on one page at a time, when it is a web page. A popup of
+// A page's popup loads in place in the agent browser, as the agent works on one page at a time, when it is a web page or a document
+// the page made itself (a blob: address of the page's own origin, as an export, a report or an image preview opens). A popup of
 // another kind (javascript:, about:blank, data:) is refused, as Chromium refuses a file: popup itself, so the agent's page stays.
 const POPUP_START="<!doctype html><title>Popup start</title><style>button,a{display:block;margin:12px;font-size:16px}</style>"+
   "<button id='script' onclick=\"window.open('javascript:document.title=&quot;script ran&quot;');document.body.dataset.opened=this.id\">window.open javascript</button>"+
   "<button id='blank' onclick=\"window.open();document.body.dataset.opened=this.id\">window.open blank</button>"+
   "<button id='data' onclick=\"window.open('data:text/html,<h1>made-up page</h1>');document.body.dataset.opened=this.id\">window.open data</button>"+
+  "<button id='blob' onclick=\"window.open(window.URL.createObjectURL(new Blob(['<title>Made here</title><h1>made here</h1>'],{type:'text/html'})));document.body.dataset.opened=this.id\">window.open blob</button>"+
   "<a id='web' href='/next' target='_blank'>next page</a>";
-test("a page's popup that is not a web page leaves the agent browser on its page, and a web page's popup opens in it",{timeout:90_000},async()=>{
+test("a page's popup that is not a web page or a document the page made leaves the agent browser on its page, and one that is opens in it",{timeout:90_000},async()=>{
   if(process.platform!=="win32")return test.skip("Desktop browser runtime fixture currently targets the Windows desktop build.");
   const desktop=await startDesktop({"/":POPUP_START,"/next":"<!doctype html><title>Popup next</title><h1>next page</h1>"});
   try{
@@ -167,5 +169,11 @@ test("a page's popup that is not a web page leaves the agent browser on its page
     const next=await until(state=>state.url===site+"/next"&&!state.loading);
     assert.deepEqual({url:next.url,title:next.title,windows:next.windows},{url:site+"/next",title:"Popup next",windows:2});
     assert.equal((await window.evaluate(()=>window.trebellDesktop.browser.state())).url,site+"/next");
+    // A document the page made itself, opened in a popup, opens in the agent's window too, and the Browser panel follows it there.
+    await window.evaluate(url=>window.trebellDesktop.browser.navigate(url),start);
+    await click("#blob");
+    const made=await until(state=>state.url.startsWith("blob:")&&!state.loading);
+    assert.deepEqual({madeHere:made.url.startsWith("blob:"+site+"/"),title:made.title,windows:made.windows},{madeHere:true,title:"Made here",windows:2},`the page's own document opens in place, not ${made.url} (the button last clicked there: ${made.opened||"none"})`);
+    assert.equal((await window.evaluate(()=>window.trebellDesktop.browser.state())).url,made.url);
   }finally{await desktop.done()}
 });
