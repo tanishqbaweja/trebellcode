@@ -82,7 +82,10 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [repairStatus,setRepairStatus]=useState("");
   const [repairStartedFor,setRepairStartedFor]=useState(null);
   const [busy,setBusy]=useState("");
-  const [error,setError]=useState("");
+  // The last refusal, said where it was asked for (at): the goal's bar, the notes' buttons or the repair card. It is brought into
+  // view as it shows, clear of the goal's bar pinned below.
+  const [error,setError]=useState(null),errorRef=useRef(null);
+  useEffect(()=>{errorRef.current?.scrollIntoView({block:"nearest"})},[error]);
   const goalFields=[objective,tokenBudget,timeBudget,turnBudget,toolCallBudget,childAgentBudget,costBudgetUsd,completionConditions,constraints,validationExpectations];
   const goalFilled=useSavedFields("goal",thread?.id,[goal?.objective||"",...[goal?.tokenBudget,goal?.timeBudgetMinutes,goal?.turnBudget,goal?.toolCallBudget,goal?.childAgentBudget,goal?.costBudgetUsd].map(value=>value==null?"":String(value)),lines(goal?.completionConditions),lines(goal?.constraints),lines(goal?.validationExpectations)],goalFields,[setObjective,setTokenBudget,setTimeBudget,setTurnBudget,setToolCallBudget,setChildAgentBudget,setCostBudgetUsd,setCompletionConditions,setConstraints,setValidationExpectations]);
   const notes=[completedWork,unresolvedFailures,importantDecisions,artifactsCreated,pendingNextActions];
@@ -102,36 +105,38 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   },[rpc,rpcStatus,thread?.id,continuity?.verification?.updatedAt]);
   if(!thread?.id)return <div className="empty-state"><Target size={28}/><strong>No active thread</strong><span>Start or open a thread before setting a durable goal.</span></div>;
   if(rpcStatus!=="connected")return <div className="empty-state"><Target size={28}/><strong>Agent harness is reconnecting</strong><span>This thread's durable goal will be available again when the active harness reconnects.</span></div>;
+  const failAt=(at,e)=>setError({at,text:e?.message||String(e)});
+  const alertAt=at=>error?.at===at&&<div ref={errorRef} className="inline-error" role="alert">{error.text}</div>;
   // sent: the fields as a save sent them, which are what the goal it answers was filled from; one typed into since stays as typed.
   async function setGoal(patch,sent){
-    if(!rpc)return;setBusy("save");setError("");
+    if(!rpc)return;setBusy("save");setError(null);
     try{const result=await rpc.request("thread/goal/set",{threadId:thread.id,...patch});if(sent)goalFilled.current=sent;onGoal?.(result?.goal||null)}
     // A Codex without goals refuses the goal as a method it does not have: said as such, not as Codex's error.
-    catch(e){setError(codexGoalsMissing(e)?"Could not set the goal: this Codex does not support goals.":e.message||String(e))}finally{setBusy("")}
+    catch(e){failAt("goal",codexGoalsMissing(e)?"Could not set the goal: this Codex does not support goals.":e)}finally{setBusy("")}
   }
   async function save(){
-    const text=objective.trim();if(!text){setError("Enter an objective first.");return}
+    const text=objective.trim();if(!text){failAt("goal","Enter an objective first.");return}
     let nextTokenBudget,nextTimeBudget,nextTurnBudget,nextToolCallBudget,nextChildAgentBudget,nextCostBudgetUsd;
     try{
       nextTokenBudget=wholeNumber(tokenBudget,"Token budget");nextTimeBudget=wholeNumber(timeBudget,"Time budget");
       nextTurnBudget=wholeNumber(turnBudget,"Turn budget");nextToolCallBudget=wholeNumber(toolCallBudget,"Tool-call budget");nextChildAgentBudget=wholeNumber(childAgentBudget,"Child-agent budget");nextCostBudgetUsd=positiveNumber(costBudgetUsd,"Cost budget");
     }
-    catch(e){setError(e.message||String(e));return}
+    catch(e){failAt("goal",e);return}
     await setGoal({
       objective:text,status:goal?.status||"active",tokenBudget:nextTokenBudget,timeBudgetMinutes:nextTimeBudget,turnBudget:nextTurnBudget,toolCallBudget:nextToolCallBudget,childAgentBudget:nextChildAgentBudget,costBudgetUsd:nextCostBudgetUsd,
       completionConditions:parseLines(completionConditions),constraints:parseLines(constraints),validationExpectations:parseLines(validationExpectations),
     },goalFields);
   }
   async function clear(){
-    if(!rpc||!await askConfirm("Clear this thread goal?",{confirm:"Clear goal"}))return;setBusy("clear");setError("");
+    if(!rpc||!await askConfirm("Clear this thread goal?",{confirm:"Clear goal"}))return;setBusy("clear");setError(null);
     try{
       await rpc.request("thread/goal/clear",{threadId:thread.id});onGoal?.(null);
       setObjective("");setTokenBudget("");setTimeBudget("");setTurnBudget("");setToolCallBudget("");setChildAgentBudget("");setCostBudgetUsd("");setCompletionConditions("");setConstraints("");setValidationExpectations("");setDetailsOpen(false);setAdvancedBudgetOpen(false);
     }
-    catch(e){setError(e.message||String(e))}finally{setBusy("")}
+    catch(e){failAt("goal",e)}finally{setBusy("")}
   }
   async function saveContinuity(){
-    if(!rpc)return;setBusy("continuity");setError("");
+    if(!rpc)return;setBusy("continuity");setError(null);
     try{
       const result=await rpc.request("thread/continuity/set",{
         threadId:thread.id,
@@ -139,22 +144,22 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
         artifactsCreated:parseLines(artifactsCreated),pendingNextActions:parseLines(pendingNextActions),
       });
       notesFilled.current=notes;onContinuity?.(result?.continuity||null);
-    }catch(e){setError(e.message||String(e))}finally{setBusy("")}
+    }catch(e){failAt("notes",e)}finally{setBusy("")}
   }
   async function clearContinuity(){
     if(!rpc||!await askConfirm("Clear explicit continuity notes? Trebell-derived verification, checkpoints, queue and failure evidence will remain.",{confirm:"Clear notes"}))return;
-    setBusy("continuity-clear");setError("");
+    setBusy("continuity-clear");setError(null);
     try{
       const result=await rpc.request("thread/continuity/clear",{threadId:thread.id});onContinuity?.(result?.continuity||null);
       setCompletedWork("");setUnresolvedFailures("");setImportantDecisions("");setArtifactsCreated("");setPendingNextActions("");
-    }catch(e){setError(e.message||String(e))}finally{setBusy("")}
+    }catch(e){failAt("notes",e)}finally{setBusy("")}
   }
   async function repairVerification(){
-    if(!rpc)return;setBusy("verification-repair");setError("");setRepairStatus("");
+    if(!rpc)return;setBusy("verification-repair");setError(null);setRepairStatus("");
     try{
       const result=await startSameThreadVerificationRepair({rpc,thread});
       setRepairStatus(result?.turn?.id?"Repair turn started on this thread.":"Repair request started.");setRepairStartedFor(verificationKey);
-    }catch(e){setError(e.message||String(e))}finally{setBusy("")}
+    }catch(e){failAt("repair",e)}finally{setBusy("")}
   }
   // Codex's own goal statuses (usageLimited, budgetLimited) read as words rather than Codex's identifiers.
   const status=goal?.status?codexGoalStatusLabel(goal.status):"not set";
@@ -169,7 +174,6 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const workspaceCellLabel=workspaceLabel(continuity?.workspace);
   return <div className={"goal-panel"+(covered?" opening-covered":"")} data-testid="goal-panel">
     <div className="goal-panel-head"><Target size={19}/><div><strong>Thread goal</strong><span>Durable objective stored with this thread, independent of the chat transcript.</span></div><em className={"goal-status status-"+String(status).replace(/[^a-z]/gi,"").toLowerCase()}>{status}</em></div>
-    {error&&<div className="inline-error">{error}</div>}
     {blocked&&<div className="goal-budget-alert" role="alert" data-testid="goal-budget-alert"><AlertTriangle size={16}/><div><strong>Goal budget exhausted</strong><span>New turns are blocked. Increase the exhausted budget, or pause, complete, or clear this goal.</span></div></div>}
     <label>Objective<textarea aria-label="Objective" value={objective} onChange={e=>setObjective(e.target.value)} maxLength={4000} placeholder="What should this thread keep working toward?"/></label>
     <div className="goal-budget-grid">
@@ -229,16 +233,17 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
           </div>
         </details>
         {continuity?.verification?.status==="failed"&&<div className="verification-repair-card" data-testid="verification-repair-card"><div><strong>Verification needs repair</strong><span>Start a same-thread repair turn with the persisted failed-step evidence. No second reviewer model is spawned.</span></div><button type="button" onClick={repairVerification} disabled={!!busy||repairStarted||threadRunning} title={!repairStarted&&threadRunning?"A repair can start once the running turn ends":undefined}>{busy==="verification-repair"?"Starting…":repairStarted?"Repair started":"Repair failed verification"}</button></div>}
-        {repairStatus&&<div className="verification-repair-status">{repairStatus}</div>}
+        {repairStatus&&<div className="verification-repair-status">{repairStatus}</div>}{alertAt("repair")}
         <label>Completed work <span>(one per line)</span><textarea aria-label="Completed work" value={completedWork} onChange={e=>setCompletedWork(e.target.value)} placeholder={"Implemented the parser\nAdded regression tests"}/></label>
         <label>Unresolved failures <span>(one per line)</span><textarea aria-label="Unresolved failures" value={unresolvedFailures} onChange={e=>setUnresolvedFailures(e.target.value)} placeholder={"Preview still fails on Windows"}/></label>
         <label>Important decisions <span>(one per line)</span><textarea aria-label="Important decisions" value={importantDecisions} onChange={e=>setImportantDecisions(e.target.value)} placeholder={"Keep the public API backward compatible"}/></label>
         <label>Artifacts created <span>(one per line)</span><textarea aria-label="Artifacts created" value={artifactsCreated} onChange={e=>setArtifactsCreated(e.target.value)} placeholder={"Migration script\nRelease notes"}/></label>
         <label>Pending next actions <span>(one per line)</span><textarea aria-label="Pending next actions" value={pendingNextActions} onChange={e=>setPendingNextActions(e.target.value)} placeholder={"Run the final browser smoke test"}/></label>
-        <div className="goal-actions continuity-actions" onClick={pressOnce}><button type="button" className="primary" onClick={saveContinuity} disabled={!!busy}><RefreshCw size={12}/> Save continuity</button>{continuityNoteCount>0&&<button type="button" className="danger" onClick={clearContinuity} disabled={!!busy}><Trash2 size={12}/> Clear notes</button>}</div>
+        <div className="goal-actions continuity-actions" onClick={pressOnce}>{alertAt("notes")}<button type="button" className="primary" onClick={saveContinuity} disabled={!!busy}><RefreshCw size={12}/> Save continuity</button>{continuityNoteCount>0&&<button type="button" className="danger" onClick={clearContinuity} disabled={!!busy}><Trash2 size={12}/> Clear notes</button>}</div>
       </div>
     </details>
     <div className="goal-actions" onClick={pressOnce}>
+      {alertAt("goal")}
       <button className="primary" onClick={save} disabled={!!busy}><RefreshCw size={12}/> {goal?"Update goal":"Set goal"}</button>
       {goal?.status==="active"&&<button onClick={()=>setGoal({status:"paused"})} disabled={!!busy}><Pause size={12}/> Pause</button>}
       {goal&&goal.status!=="active"&&goal.status!=="complete"&&<button onClick={()=>setGoal({status:"active"})} disabled={!!busy}><Play size={12}/> Resume</button>}

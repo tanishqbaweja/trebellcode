@@ -545,6 +545,69 @@ test("words typed on into the Objective while a slow save is on its way are stil
   }finally{await harness.close()}
 });
 
+test("a budget the Goal panel refuses says why in its bar, right above the Update goal pressed, as an alert, and a budget it takes clears it",async({page})=>{
+  test.setTimeout(90_000);
+  const socket=await relaySocket(page);
+  const harness=await openComposerApp(page);
+  try{
+    const {panel}=await setGoalInPanel(page);
+    const update=panel.getByRole("button",{name:"Update goal",exact:true}),cost=panel.getByLabel("Cost budget",{exact:true});
+    const refusal=panel.getByRole("alert").filter({hasText:"Cost budget must be a positive number."});
+    await panel.getByText("Advanced budgets",{exact:true}).click();
+    // Each mode is set at full width, where the right panel leaves the header's theme button clear, and then both widths are tried.
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        // The person scrolls down to the budgets, types a cost of 0 and presses Update goal in the bar pinned at the bottom.
+        await panel.hover();await page.mouse.wheel(0,600);await expect(panel.locator(".goal-panel-head")).not.toBeInViewport();
+        await typeOver(page,cost,"0");await update.click();
+        await expect(refusal).toBeInViewport();
+        const said=await refusal.boundingBox(),pressed=await update.boundingBox();
+        expect(said.y+said.height).toBeLessThanOrEqual(pressed.y);expect(pressed.y-said.y-said.height).toBeLessThan(16);
+        await page.screenshot({animations:"disabled",path:auditDir+"goal-budget-refused-"+mode+"-"+width+"x800.png"});
+      }
+    }
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+    expect(socket.sent("thread/goal/set")).toHaveLength(1);
+    await typeOver(page,cost,"2.5");await update.click();
+    await expect(refusal).toHaveCount(0);
+    await expect.poll(()=>socket.sent("thread/goal/set").map(params=>params.costBudgetUsd)).toEqual([null,2.5]);
+  }finally{await harness.close()}
+});
+
+test("a continuity save the harness refuses says why right above Save continuity, clear of the goal's bar, as an alert, and keeps the notes",async({page})=>{
+  test.setTimeout(90_000);
+  let refusing=true;
+  const harness=await openComposerApp(page,{refuse:message=>refusing&&message.method==="thread/continuity/set"?"Continuity store is read-only":null});
+  try{
+    const {panel}=await setGoalInPanel(page);
+    const done=panel.getByLabel("Completed work",{exact:true}),pending=panel.getByLabel("Pending next actions",{exact:true}),save=panel.getByRole("button",{name:"Save continuity",exact:true});
+    const refusal=panel.getByRole("alert").filter({hasText:"Continuity store is read-only"}),bar=panel.locator(":scope>.goal-actions");
+    await panel.getByText("Continuity state",{exact:true}).click();
+    await done.click();await page.keyboard.type("Fixed the session refresh",{delay:15});
+    await pending.click();await page.keyboard.type("Run the browser smoke test",{delay:15});
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        await save.click();
+        await expect(refusal).toBeInViewport();
+        const said=await refusal.boundingBox(),pressed=await save.boundingBox(),pinned=await bar.boundingBox();
+        expect(said.y+said.height).toBeLessThanOrEqual(pressed.y);expect(pressed.y-said.y-said.height).toBeLessThan(16);
+        expect(said.y+said.height).toBeLessThanOrEqual(pinned.y);
+        await page.screenshot({animations:"disabled",path:auditDir+"goal-continuity-refused-"+mode+"-"+width+"x800.png"});
+      }
+    }
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+    await expect(done).toHaveValue("Fixed the session refresh");await expect(pending).toHaveValue("Run the browser smoke test");
+    // Saved once the harness takes it, and the reason goes.
+    refusing=false;await save.click();
+    await expect(refusal).toHaveCount(0);
+    await expect(panel.locator(".goal-continuity-details>summary")).toContainText("2 explicit notes");
+  }finally{await harness.close()}
+});
+
 test("removing an attachment chip from the keyboard moves focus to the next chip's remove button, then the one before, then the composer",async({page},testInfo)=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);
