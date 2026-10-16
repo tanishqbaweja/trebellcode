@@ -989,8 +989,10 @@ for(const kind of ["Codex","Trebell"]){
   });
 }
 
-// On a harness that cannot steer a running turn, Send now on a queued follow-up is off while the turn runs, and its title says why,
-// as it does for the follow-up being edited; the shortcut that sends the oldest follow-up now says why too, and sends nothing.
+// On a harness that cannot steer a running turn, Send now on a queued follow-up is off while the turn runs, and its title says why
+// and what the person can do, as it does for the follow-up being edited; the shortcut that sends the oldest follow-up now says so
+// too, and sends nothing. The title promises nothing about the queue, which may wait after the turn (a Stop holds it, a follow-up
+// to retry does not go by itself): only that Send now works once the turn ends.
 for(const kind of ["Trebell","Codex"]){
   test(`Send now on a follow-up in ${kind}'s queue says why it is off while a turn runs on a harness that cannot steer`,async({page})=>{
     test.setTimeout(60_000);
@@ -1003,10 +1005,10 @@ for(const kind of ["Trebell","Codex"]){
       await sendTyped(page,"Follow-up without steering");
       const sendNow=page.locator(".queued-message").filter({hasText:"Follow-up without steering"}).getByRole("button",{name:"Send now"});
       await expect(sendNow).toBeDisabled();
-      await expect(sendNow).toHaveAttribute("title","Codex cannot steer a running turn, so this follow-up waits for the turn to end");
+      await expect(sendNow).toHaveAttribute("title","Codex cannot steer a running turn; Send now works once the turn ends");
       await shoot(page,"send-now-without-steering-"+kind.toLowerCase());
       await composer(page).click();await page.keyboard.press("Control+Shift+Enter");
-      await expect(page.getByTestId("app-action-error")).toHaveText("Could not send queued follow-up: Codex cannot steer a running turn, so this follow-up waits for the turn to end");
+      await expect(page.getByTestId("app-action-error")).toHaveText("Could not send queued follow-up: Codex cannot steer a running turn; Send now works once the turn ends");
       await expect(page.locator(".queued-message p")).toHaveText(["Follow-up without steering"]);
       expect(codex.calls.filter(method=>["turn/steer","thread/queue/start","thread/queue/delete"].includes(method))).toEqual([]);expect(codex.turns).toHaveLength(1);
     }finally{await codex.close()}

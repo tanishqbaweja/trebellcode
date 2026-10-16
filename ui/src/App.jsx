@@ -4772,8 +4772,9 @@ export default function App(){
   const queueHeld=heldQueues.has(String(activeThread?.id||null));
   const providerLabel=modelProviderLabel(provider);
   const agentRuntimeLabel=AGENT_RUNTIME_LABELS[agentRuntime]||agentRuntime;
-  // Why a follow-up cannot go now on a harness that cannot steer: Send now's title, and the shortcut's note (sendQueuedNow).
-  const cannotSteerReason=agentRuntimeLabel+" cannot steer a running turn, so this follow-up waits for the turn to end";
+  // Why a follow-up cannot go now on a harness that cannot steer: Send now's title, and the shortcut's note (sendQueuedNow). It says
+  // what the person can do, which holds for every follow-up: one held after a Stop, or one to retry, does not go by itself.
+  const cannotSteerReason=agentRuntimeLabel+" cannot steer a running turn; Send now works once the turn ends";
   // Git text is written by the runtime the server runs (bootstrap), so the Source Control label names that harness.
   const sourceControlRuntime=bootstrap.agentRuntime||agentRuntime;
   const sourceControlRuntimeInstanceId=bootstrap.agentRuntimeInstanceId||(settings.agentRuntime===sourceControlRuntime?settings.agentRuntimeInstanceId:null)||null;
