@@ -346,10 +346,15 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
       setCloneUrl("");partialSuccess("Clone was started",issues);
     }finally{setBusy(false)}
   }
+  // A cancel or retry on its way (the first click of a double click, or Enter pressed twice) is the one a second press waits for
+  // until the list shows what it did: the second sends nothing.
+  const cloneActionsRef=useRef(new Set());
   async function cloneAction(project,action){
-    setError("");setCardError(null);
+    const key=action+":"+project.cloneJob?.id,sending=cloneActionsRef.current;if(sending.has(key))return;
+    setError("");setCardError(null);sending.add(key);
     try{await api("/api/clone-jobs",{method:"POST",body:{action,id:project.cloneJob?.id}});await refreshAfterSuccess("Clone "+action+" was accepted")}
     catch(err){failInCard(project,"clone",err.message||String(err))}
+    finally{sending.delete(key)}
   }
   // A removal is undone from the app's toast when the listed record can put the project back as it was; when it cannot
   // (projectRestoreBlocker), the page asks first and says what goes with it.

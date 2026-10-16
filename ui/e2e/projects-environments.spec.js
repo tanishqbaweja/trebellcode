@@ -947,6 +947,64 @@ test.describe("Clone",()=>{
     }
   });
 
+  // A double click on the card's Cancel or Retry, and Enter pressed twice on Cancel: each cancel or retry waits at a door until the
+  // presses are in, as on a slow server, so the second press comes while the first one's request is on its way. It sends nothing.
+  test("a double click on a cloning card's Cancel or Retry, or Enter pressed twice on Cancel, sends one request",async({page,request})=>{
+    test.setTimeout(120_000);
+    const parent=mkdtempSync(join(tmpdir(),"trebell-e2e-clone-twice-"));
+    const sockets=new Set(),remote=createHttpServer(incoming=>{sockets.add(incoming.socket)});
+    await new Promise((resolve,reject)=>remote.listen(0,"127.0.0.1",resolve).once("error",reject));
+    const hold={door:gate(),sent:[]};
+    await page.route(/\/api\/clone-jobs$/,async route=>{
+      const action=route.request().method()==="POST"?route.request().postDataJSON()?.action:null;
+      if(!["cancel","retry"].includes(action))return route.fallback();
+      hold.sent.push(action);await hold.door.promise;return route.fallback();
+    });
+    try{
+      await page.addInitScript(folder=>{window.trebellDesktop={pickDirectory:async()=>folder}},parent);
+      await open(page,request);
+      await nav(page,"Projects").click();
+      const clone=page.locator(".clone-card");
+      await clone.getByRole("textbox",{name:"Clone URL"}).click();
+      await page.keyboard.type(`http://127.0.0.1:${remote.address().port}/team/twice-repo.git`,{delay:10});
+      await clone.getByRole("button",{name:"Clone",exact:true}).click();
+      await expect(page.getByTestId("clone-banner")).toBeVisible({timeout:20_000});
+      await expect.poll(()=>sockets.size,{message:"git reached the remote",timeout:20_000}).toBeGreaterThan(0);
+      await nav(page,"Projects").click();
+      const status=projectCard(page,"twice-repo").locator(".project-clone-status"),cancel=status.getByRole("button",{name:"Cancel"}),retry=status.getByRole("button",{name:"Retry"});
+      await expect(status).toContainText("%");
+      await cancel.dblclick();
+      await expect.poll(()=>hold.sent.length).toBeGreaterThan(0);
+      hold.door.open();
+      await expect(status).toContainText("Clone cancelled",{timeout:10_000});
+      expect(hold.sent,"requests sent for a double click on Cancel").toEqual(["cancel"]);
+      // A double click on Retry starts the clone once, and git reaches the remote again.
+      hold.door=gate();const reached=sockets.size;
+      await retry.dblclick();
+      await expect.poll(()=>hold.sent.length).toBeGreaterThan(1);
+      hold.door.open();
+      await expect(cancel).toBeVisible({timeout:10_000});
+      await expect.poll(()=>sockets.size,{message:"git reached the remote again",timeout:20_000}).toBeGreaterThan(reached);
+      expect(hold.sent,"requests sent for a double click on Retry").toEqual(["cancel","retry"]);
+      // Enter pressed twice on Cancel.
+      hold.door=gate();
+      await cancel.focus();await page.keyboard.press("Enter");
+      await expect.poll(()=>hold.sent.length).toBeGreaterThan(2);
+      await page.keyboard.press("Enter");
+      hold.door.open();
+      await expect(status).toContainText("Clone cancelled",{timeout:10_000});
+      expect(hold.sent,"requests sent for Enter pressed twice on Cancel").toEqual(["cancel","retry","cancel"]);
+      await expect(status.getByRole("alert")).toHaveCount(0);
+      await shootModes(page,"clone-card-cancelled-once",{show:status});
+    }finally{
+      hold.door.open();
+      for(const socket of sockets)socket.destroy();
+      await new Promise(resolve=>remote.close(resolve));
+      await expect.poll(async()=>(await listedProjects(request)).some(project=>["running","cancelling"].includes(project.cloneJob?.status)),{timeout:20_000}).toBe(false).catch(()=>{});
+      try{rmSync(parent,{recursive:true,force:true,maxRetries:50,retryDelay:100})}catch{}
+    }
+  });
+
   // The banner over the chat while a project clones takes the mouse as the card's buttons do: the pointer is on Cancel and Retry
   // clone, not on the conversation area under them, and the conversation's first rows start below the banner, not under it.
   test("the clone banner's Cancel and Retry clone answer the mouse, and the conversation starts below the banner",async({page,request})=>{
