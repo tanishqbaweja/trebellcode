@@ -532,3 +532,35 @@ test("a welcome suggestion puts its prompt in the composer with the caret at its
     await expect(composer).toHaveValue("");
   }finally{await harness.close()}
 });
+
+test("Ctrl+S held stashes the draft once, and held on the empty composer brings it back once, as any shortcut held runs once",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page);
+  // The stash list as the GUI server keeps it, here in the page, so later specs on the shared server keep theirs.
+  const stashes=[];let made=0;
+  await page.route(/\/api\/stashes(?:\?.*)?$/,route=>{
+    const request=route.request(),method=request.method();
+    if(method==="POST"){stashes.unshift({...request.postDataJSON(),id:"stash-"+(++made)});return json(route,{ok:true,stash:stashes[0]})}
+    if(method==="DELETE"){const at=stashes.findIndex(stash=>stash.id===new URL(request.url()).searchParams.get("id"));if(at>=0)stashes.splice(at,1);return json(route,{ok:true})}
+    return json(route,{stashes});
+  });
+  try{
+    const composer=page.getByTestId("composer"),shell=page.locator(".app-shell"),draft="Draft to keep for later";
+    const holdCtrl=async(key,pressed)=>{await page.keyboard.down("Control");await holdKey(page,key,pressed);await page.keyboard.up("Control")};
+    await composer.click();await page.keyboard.type(draft,{delay:15});
+    // The press stashes the draft. Each repeat would find the composer empty and bring the stash back, or stash it again.
+    await holdCtrl("s",()=>expect(composer).toHaveValue(""));
+    await page.keyboard.type("Another thought",{delay:15});
+    await expect(composer).toHaveValue("Another thought");expect(stashes.map(stash=>stash.text)).toEqual([draft]);
+    await shootBoth(page,"held-ctrl-s-stashed",()=>expect(composer).toBeInViewport());
+    // Held on the empty composer, it brings the draft back once.
+    await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+    await holdCtrl("s",()=>expect(composer).toHaveValue(draft));
+    await page.keyboard.type(" today",{delay:15});
+    await expect(composer).toHaveValue(draft+" today");expect(stashes).toEqual([]);
+    // Ctrl+B held closes the sidebar, and its repeats do not open it again.
+    await holdCtrl("b",()=>expect(shell).toHaveClass(/sidebar-collapsed/));
+    await expect(shell).toHaveClass(/sidebar-collapsed/);
+    await page.keyboard.press("Control+b");await expect(shell).not.toHaveClass(/sidebar-collapsed/);
+  }finally{await harness.close()}
+});

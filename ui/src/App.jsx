@@ -974,6 +974,8 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   </div>;
 });
 
+// The shortcuts a held key goes on running as the keyboard repeats it: the ones that step.
+const REPEATING_SHORTCUTS=new Set(["navigationBack","navigationForward","threadPrevious","threadNext","previewZoomIn","previewZoomOut"]);
 export default function App(){
   const [bootstrap,setBootstrap]=useState({mock:false,wsUrl:null,cwd:"",platform:""});
   const [rpc,setRpc]=useState(null); const [rpcStatus,setRpcStatus]=useState("disconnected"); const [transportReason,setTransportReason]=useState(""); const transportConnectedRef=useRef(false);
@@ -2666,6 +2668,9 @@ export default function App(){
       const command=resolveKeybinding(event,settings,context,{scripts:projectlessMode?[]:currentProject?.scripts||[]});
       if(!command){desktopWindowZoomKey(event);return}
       event.preventDefault();
+      // A held key runs its shortcut once: a repeat would undo a toggle (Ctrl+S stashed the draft and the next repeat brought it
+      // back) or run the command again. Only the shortcuts that step through threads, history or the preview's zoom go on.
+      if(event.repeat&&!REPEATING_SHORTCUTS.has(command))return;
       if(command==="newChat")runUserAction(newTask,"Could not start a new thread");
       // The palette's key opens and closes it over anything but one of the app's own questions: the question stays on top, so the
       // palette would open, or close, unseen behind it.
