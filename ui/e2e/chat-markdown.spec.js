@@ -411,3 +411,53 @@ test("a reply's chart card head follows light and dark mode, its file name and l
     }
   }finally{await harness.close()}
 });
+
+// A chart whose content the server is slow to send: until the content arrives the card says it is loading, in the card's own colours,
+// both before the server has said the file is there and while the frame's content is on its way, instead of an empty box and then a
+// blank white one (a bright panel in dark mode). The content then shows in the card, laid out at the width it shows at.
+test("a reply's chart whose content is slow says it is loading until the content shows",async({page})=>{
+  test.setTimeout(45_000);
+  const text="Here is the chart.\n\n::codex-inline-vis{path=\"charts/slow.html\"}";
+  const thread={...fixtureThread("visualization-slow","Slow visualization fixture"),turns:[{id:"turn-1",status:"completed",items:[
+    {type:"userMessage",id:"user-1",content:[{type:"text",text:"Draw the slow chart."}]},{type:"agentMessage",id:"assistant-1",text}]}]};
+  const harness=await startHarness(thread);
+  // The server says the file is there (its HEAD) when the test lets it, and sends the content (its GET) when the test releases it.
+  let answerHead,sendContent;const headHeld=new Promise(resolve=>{answerHead=resolve}),contentHeld=new Promise(resolve=>{sendContent=resolve});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    const saved={};
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(saved)})});
+    await page.route(/\/api\/visualization\?/,async route=>{
+      if(route.request().method()==="HEAD"){await headHeld;return route.fulfill({status:200,contentType:"text/html",body:""})}
+      await contentHeld;return route.fulfill({status:200,contentType:"text/html",body:"<!doctype html><meta charset=utf-8><body style=\"font:14px sans-serif\"><h1>Slow chart</h1><p id=width></p><script>document.getElementById(\"width\").textContent=\"Laid out at \"+innerWidth+\"px\"</script></body>"});
+    });
+    await openApp(page,{harness,thread});
+    const card=page.locator(".inline-visualization-card"),loading=card.getByRole("status"),frame=card.locator("iframe");
+    // What a person sees in the middle of the card's body, where the chart goes: a light or a dark surface.
+    const surface=()=>card.evaluate(node=>{
+      const head=node.querySelector(".inline-visualization-head").getBoundingClientRect(),box=node.getBoundingClientRect(),rgb=value=>value.match(/[\d.]+/g).map(Number);
+      let item=document.elementFromPoint(box.left+box.width/2,(head.bottom+box.bottom)/2);
+      while(item.parentElement&&rgb(getComputedStyle(item).backgroundColor)[3]===0)item=item.parentElement;
+      const [r,g,b]=rgb(getComputedStyle(item).backgroundColor);return (0.2126*r+0.7152*g+0.0722*b)/255>0.5?"light":"dark";
+    });
+    await card.scrollIntoViewIfNeeded();
+    await expect(loading,"before the server has said the file is there").toHaveText("Loading visualization slow.html…");
+    expect(await surface(),"the card's body in dark mode before the server has said the file is there").toBe("dark");
+    const contentAsked=page.waitForRequest(request=>/\/api\/visualization\?/.test(request.url())&&request.method()==="GET");
+    answerHead();await contentAsked;
+    await expect(loading,"while the frame's content is on its way").toHaveText("Loading visualization slow.html…");
+    await expect(frame).toBeHidden();
+    expect(await surface(),"the card's body in dark mode while the content is on its way").toBe("dark");
+    await page.screenshot({path:join(shotsDir,"chat-visualization-loading-dark-1280x800.png"),animations:"disabled"});
+    await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
+    await expect(loading).toBeVisible();
+    await page.screenshot({path:join(shotsDir,"chat-visualization-loading-light-1280x800.png"),animations:"disabled"});
+    sendContent();
+    await expect(card.frameLocator("iframe").getByRole("heading",{name:"Slow chart"})).toBeVisible();
+    await expect(frame).toBeVisible();
+    await expect(loading).toHaveCount(0);
+    // The chart read its width as it loaded unseen: the width it shows at.
+    await expect(card.frameLocator("iframe").locator("#width")).toHaveText("Laid out at "+await frame.evaluate(node=>node.clientWidth)+"px");
+    await page.screenshot({path:join(shotsDir,"chat-visualization-arrived-light-1280x800.png"),animations:"disabled"});
+  }finally{answerHead?.();sendContent?.();await harness.close()}
+});
