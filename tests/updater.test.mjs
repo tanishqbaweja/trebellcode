@@ -41,7 +41,18 @@ test("desktop updater keeps a downloaded update retryable when pre-install clean
 test("desktop updater recovers a downloaded update when installer launch fails",async()=>{
   const updater=new FakeUpdater();updater.installError=new Error("installer launch failed");let recovered=null;
   const controller=createUpdaterController({app:packagedApp(),autoUpdater:updater,scheduleInstall:fn=>fn(),onInstallLaunchFailure:error=>{recovered=error.message}});controller.configure();updater.emit("update-downloaded",{version:"2.0.0"});
-  const result=await controller.install();assert.equal(result.ok,true);assert.equal(recovered,"installer launch failed");assert.equal(controller.getState().status,"downloaded");assert.equal(controller.getState().error,"installer launch failed");assert.deepEqual(updater.installCalls,[[false,true]]);
+  const result=await controller.install();assert.equal(result.ok,true);assert.equal(recovered,"installer launch failed");assert.equal(controller.getState().status,"downloaded");assert.equal(controller.getState().error,"Could not install the update: the installer did not start.");assert.deepEqual(updater.installCalls,[[false,true]]);
+});
+
+// electron-updater does not throw for an installer it cannot start: its install() says why through the error event, and quitAndInstall
+// returns without quitting, after the shell closed its server for the install.
+test("desktop updater recovers a downloaded update when electron-updater reports that its installer did not start",async()=>{
+  const updater=new FakeUpdater();updater.quitAndInstall=function(silent,forceRunAfter){this.installCalls.push([silent,forceRunAfter]);this.emit("error",new Error("No update filepath provided, can't quit and install"))};
+  let recovered=null;
+  const controller=createUpdaterController({app:packagedApp(),autoUpdater:updater,scheduleInstall:fn=>fn(),onInstallLaunchFailure:error=>{recovered=error.message}});controller.configure();updater.emit("update-downloaded",{version:"2.0.0"});
+  const result=await controller.install();assert.equal(result.ok,true);assert.equal(recovered,"No update filepath provided, can't quit and install","the shell brings the app back");
+  assert.equal(controller.getState().status,"downloaded");assert.equal(controller.getState().error,"Could not install the update: the installer did not start.");
+  assert.equal(updater.listenerCount("error"),1,"only the controller's own error listener stays");assert.deepEqual(updater.installCalls,[[false,true]]);
 });
 
 test("desktop updater reports development mode and rejects package-only actions",async()=>{

@@ -32,7 +32,7 @@ export function createUpdaterController({app,autoUpdater,onState=()=>{},beforeIn
     try{await autoUpdater.downloadUpdate();return snapshot()}catch(error){fail(error);throw error}
   };
   const recoverLaunchFailure=error=>{
-    publish({status:"downloaded",error:message(error)});
+    publish({status:"downloaded",error:"Could not install the update: the installer did not start."});
     try{const recovery=onInstallLaunchFailure(error);if(recovery&&typeof recovery.then==="function")recovery.catch(()=>{})}catch{}
   };
   const install=async()=>{
@@ -40,7 +40,13 @@ export function createUpdaterController({app,autoUpdater,onState=()=>{},beforeIn
     if(state.status!=="downloaded")throw new Error("Download the update before installing it.");
     publish({status:"installing",error:null});
     try{await beforeInstall()}catch(error){publish({status:"downloaded",error:message(error)});throw error}
-    const launch=()=>{try{autoUpdater.quitAndInstall(false,true)}catch(error){recoverLaunchFailure(error)}};
+    // electron-updater does not throw for an installer it cannot start: its install() says why through the error event and
+    // quitAndInstall returns without quitting. Either way the shell, which closed its server for the install, is brought back.
+    const launch=()=>{
+      let failure=null;const onError=error=>{failure??=error};autoUpdater.on("error",onError);
+      try{autoUpdater.quitAndInstall(false,true)}catch(error){failure=error}finally{autoUpdater.removeListener("error",onError)}
+      if(failure)recoverLaunchFailure(failure);
+    };
     try{scheduleInstall(launch)}catch(error){recoverLaunchFailure(error);throw error}
     return {ok:true,state:snapshot()};
   };

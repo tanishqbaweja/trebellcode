@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -203,5 +204,62 @@ test("a plain start shows the window once it has painted, at its saved zoom, als
   }finally{
     release();await closeElectronApp(app);
     images.closeAllConnections?.();await new Promise(resolve=>images.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
+});
+
+// Loaded after KEEP_OFF_SCREEN, it makes the shell a packaged build with a scripted release feed: a check finds 9.9.9 and Download
+// update gets it, with nothing fetched. Restart & install then runs electron-updater's own quitAndInstall, which finds no installer on
+// disk and starts nothing: it says so through its error event and returns without throwing, as for an installer it cannot launch.
+const packagedUpdate=root=>`
+Object.defineProperty(app,"isPackaged",{get:()=>true,configurable:true});
+app.getLoginItemSettings=()=>({openAtLogin:false,executableWillLaunchAtLogin:false,launchItems:[]});app.setLoginItemSettings=()=>{};
+const {autoUpdater}=require(require.resolve("electron-updater",{paths:[${JSON.stringify(root)}]}));
+const feed=globalThis.__updateFeed={checks:0};
+autoUpdater.checkForUpdates=async()=>{feed.checks++;autoUpdater.emit("checking-for-update");autoUpdater.emit("update-available",{version:"9.9.9"});return {updateInfo:{version:"9.9.9"}}};
+autoUpdater.downloadUpdate=async()=>{autoUpdater.emit("download-progress",{percent:50,transferred:50,total:100});autoUpdater.emit("update-downloaded",{version:"9.9.9"});return []};
+`;
+
+// Restart & install closes the GUI server for the installer. An installer electron-updater could not start was said only through its
+// error event, so the shell never brought the server back: the window kept a dead page, the bridge refused every call and the window's
+// Close did nothing (lane H, p108). Settings > General > Updates is used as a person does, on the built UI.
+test("a Restart & install whose installer does not start brings the app back, says so and offers it again, and the window still closes",{timeout:240_000},async t=>{
+  if(process.platform!=="win32")return t.skip("The desktop shell checks target the Windows desktop build.");
+  const dist=resolve(process.env.TREBELL_UI_DIST||join(packageRoot,"ui","dist"));
+  if(!existsSync(join(dist,"index.html")))return t.skip("The built UI is needed: npm run ui:build, or TREBELL_UI_DIST.");
+  const home=await mkdtemp(join(tmpdir(),"trebell-desktop-update-install-"));
+  const guiPort=await freePort(),appPort=await freePort(),stub=join(home,"packaged-update.cjs");let app=null;
+  await writeFile(stub,KEEP_OFF_SCREEN+packagedUpdate(packageRoot));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_TEST_HIDDEN:"1",TREBELL_GUI_MOCK:"1",TREBELL_UI_DIST:dist,TREBELL_GUI_PORT:String(guiPort),TREBELL_APP_SERVER_PORT:String(appPort),TREBELL_E2E_OFFLINE:"1",TREBELL_E2E_ALLOW_NETWORK:"0",CODEX_HOME:join(home,"codex"),CLAUDE_CONFIG_DIR:join(home,"claude"),OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const origin=`http://127.0.0.1:${guiPort}`;
+  try{
+    app=await electron.launch({args:["-r",stub,packageRoot],env});
+    // The shell's own first load of the app ends before the page is loaded again with the settings below.
+    const window=await app.firstWindow();for(let i=0;i<240&&!window.url().startsWith(origin);i++)await sleep(250);await window.waitForLoadState("load");
+    // Set up already, so the page opens on the app instead of its first-run questions.
+    await fetch(origin+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({onboardingComplete:true,panelAnimationMs:0})});
+    await window.reload();
+    // The check the shell makes 4 s after its start finds 9.9.9 (waited for, so it does not come again during the download).
+    for(let i=0;i<120&&!(await app.evaluate(()=>globalThis.__updateFeed.checks));i++)await sleep(250);
+    const card=window.locator(".update-settings");
+    const openUpdates=async()=>{await window.getByRole("button",{name:/^Settings/}).first().click();await window.getByRole("button",{name:/^General/}).first().click();await card.scrollIntoViewIfNeeded()};
+    await openUpdates();
+    await card.getByRole("button",{name:"Download update"}).click();
+    await card.getByRole("button",{name:"Restart & install"}).click();
+    const reloaded=window.waitForEvent("load",{timeout:60_000}).then(()=>true,()=>false);
+    await window.getByRole("dialog").getByRole("button",{name:"Restart and install"}).click();
+    if(!await reloaded)assert.fail("the window shows the app again after the installer did not start, instead of a page whose server is gone, whose Updates card says: "+(await card.innerText({timeout:2000}).catch(()=>"")).replace(/\s+/g," "));
+    assert.equal((await fetch(origin+"/api/health")).ok,true,"the GUI server answers again");
+    await openUpdates();
+    await card.getByText("Could not install the update: the installer did not start.").waitFor();
+    assert.match((await card.innerText()).replace(/\s+/g," "),/Status: Ready to install/);
+    assert.equal(await card.getByRole("button",{name:"Restart & install"}).isVisible(),true,"Restart & install is offered again");
+    await window.getByRole("button",{name:/^Projects/}).first().click();
+    await window.getByLabel("Search projects").waitFor();
+    // The window's Close quits the app, as it does when no update was tried.
+    const child=app.process(),exited=new Promise(resolve=>{const timer=setTimeout(()=>resolve(false),60_000);child.once("exit",()=>{clearTimeout(timer);resolve(true)})});
+    await window.locator(".window-close").click().catch(()=>{});
+    assert.equal(await exited,true,"the window's Close quits the app");
+  }finally{
+    await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }
 });
