@@ -201,3 +201,12 @@ test("Native uses existing covering tests only when testing was explicitly reque
   assert.match(rule[0],/Add further checks only for a named requirement or reported input form that the requested verification did not exercise/);
   assert.ok(prompt.indexOf("- When the user explicitly asks for testing or verification after an edit")<prompt.indexOf(rule[0]),"it follows the requested-verification batching rule");
 });
+
+test("Native's permission line says the network is open and a missing tool may be installed, within the profile's approvals",()=>{
+  const line=mode=>nativeSystemPrompt({permissionMode:mode,projectless:false,tools:[{name:"trebell_terminal"}]}).split("\n").filter(item=>item.startsWith("- Permission profile:"));
+  assert.deepEqual(line("full"),["- Permission profile: full. Commands run without asking the user. Trebell does not restrict network access, so a missing tool or library the task needs can be installed."]);
+  assert.deepEqual(line("supervised"),["- Permission profile: supervised. Trebell does not restrict network access, so a missing tool or library the task needs can be installed, with the user's approval where this profile asks for it."]);
+  assert.deepEqual(line("edits"),["- Permission profile: edits. Trebell does not restrict network access, so a missing tool or library the task needs can be installed, with the user's approval where this profile asks for it."]);
+  assert.deepEqual(line(undefined),line("supervised"),"no profile reads as supervised, as before");
+  assert.deepEqual(line("read-only"),["- Permission profile: read-only."],"Read Only refuses commands that change something, so it offers no install");
+});

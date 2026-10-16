@@ -15,6 +15,16 @@ function uniqueNamespaces(tools=[]){
   return [...new Set((Array.isArray(tools)?tools:[]).map(item=>String(item?.name||"").trim()).filter(Boolean))];
 }
 
+// The profile line also says what the environment allows, as Codex's permissions block does ("Network access is enabled"):
+// Trebell blocks no network access, so a model need not work around a missing tool or library it could install. Read Only
+// refuses commands that change something, so it says nothing more.
+function permissionProfileLine(permissionMode){
+  const mode=String(permissionMode||"supervised"),network="Trebell does not restrict network access, so a missing tool or library the task needs can be installed";
+  if(mode==="read-only")return "- Permission profile: read-only.";
+  if(mode==="full")return `- Permission profile: full. Commands run without asking the user. ${network}.`;
+  return `- Permission profile: ${mode}. ${network}, with the user's approval where this profile asks for it.`;
+}
+
 export function nativeSystemPrompt({tools=[],permissionMode="supervised",projectless=false}={}){
   const namespaces=uniqueNamespaces(tools),guidance=namespaces.map(name=>CAPABILITY_GUIDANCE[name]).filter(Boolean);
   const scope=projectless
@@ -57,7 +67,7 @@ export function nativeSystemPrompt({tools=[],permissionMode="supervised",project
     "- Once the task's stated acceptance signals are satisfied, stop speculative polishing or unrequested hardening and answer. When the user requested verification, stop once that focused verification passes.",
     "- If the user asks for verification and project tests are absent, use the smallest focused local smoke check that covers the requested acceptance-critical behavior; do not create a broader test campaign unless requested.",
     "- Before declaring an integration, service, daemon, endpoint, or runtime environment unavailable, inspect the workspace's existing run scripts/configuration and probe the relevant local process or endpoint when the available tools make that practical. If the changed behavior depends on those local components, prefer one bounded end-to-end smoke check over mocks alone.",
-    "- Permission profile: "+String(permissionMode||"supervised")+".",
+    permissionProfileLine(permissionMode),
     "",
     "Capabilities available in this thread:",
     ...(guidance.length?guidance.map(item=>"- "+item):["- Use the tool schemas exposed by Trebell; no additional capabilities should be assumed."]),
