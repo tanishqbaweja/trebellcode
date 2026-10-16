@@ -153,7 +153,7 @@ test("Usage says a period or account limit is empty only once that answer has lo
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(emptyUsage)});
     });
     const usagePage=page.locator(".usage-page"),summary=page.locator(".usage-summary"),codexCard=page.getByTestId("codex-account-usage");
-    const claims=["No recorded usage in this period.","No model usage recorded yet.","No turns recorded in this period."];
+    const claims=["No recorded usage in this period.","No model usage in this period.","No turns recorded in this period."];
     const expectNoClaims=async()=>{
       for(const claim of claims)await expect(usagePage.getByText(claim,{exact:true}),claim).toHaveCount(0);
       // The totals do not read as zero either: no "0 recorded turns" and no "$0.00" for usage that has not loaded.
@@ -214,6 +214,40 @@ test("Usage says a period or account limit is empty only once that answer has lo
     await page.screenshot({animations:"disabled",path:auditDir+"usage-refresh-failed-after-empty-light-1280x800.png",fullPage:false});
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
   }finally{for(const route of held.splice(0))await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(emptyUsage)}).catch(()=>{});await fixture.close()}
+});
+
+// Turns recorded 10, 12 and 40 days ago: 30 days lists two, and 7 days, which has none, says so in every card, the Models card in
+// the words of the other two rather than that no model usage was ever recorded.
+test("Usage says a chosen period with no turns has none in that period, in every card",async({page})=>{
+  test.setTimeout(40_000);
+  const fixture=await startUsageFixture({rateLimits:"none"});
+  const DAY=86_400_000,turn=(id,daysAgo,model,totalTokens)=>({id,at:new Date(Date.now()-daysAgo*DAY).toISOString(),environmentId:null,runtime:"codex",provider:"openai",model,usage:{inputTokens:totalTokens*.7,outputTokens:totalTokens*.3,totalTokens},cost:null});
+  const turns=[turn("usage-ten-days",10,"test/coding-fast",120_000),turn("usage-twelve-days",12,"test/coding-deep",300_000),turn("usage-forty-days",40,"test/coding-fast",80_000)];
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    // Each period is answered with the turns recorded in it, as /api/usage does.
+    await openUsage(page,fixture.wsUrl,route=>{
+      const days=Number(new URL(route.request().url()).searchParams.get("days")),records=turns.filter(item=>Date.now()-Date.parse(item.at)<=days*DAY);
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({records,total:{totalTokens:records.reduce((sum,item)=>sum+item.usage.totalTokens,0)},models:{},runtimes:{},daily:{}})});
+    });
+    const usagePage=page.locator(".usage-page"),summary=page.locator(".usage-summary"),models=page.locator(".usage-models"),period=page.getByRole("combobox",{name:"Period"});
+    await expect(summary).toContainText("2 recorded turns");await expect(models.locator(":scope>div")).toHaveCount(2);
+    await period.selectOption("7");
+    await expect(summary).toContainText("0 recorded turns");
+    await expect(models).toHaveText("No model usage in this period.");
+    await expect(usagePage.getByText("No recorded usage in this period.",{exact:true})).toBeVisible();
+    await expect(usagePage.getByText("No turns recorded in this period.",{exact:true})).toBeVisible();
+    await expect(usagePage.getByText("No model usage recorded yet.",{exact:true})).toHaveCount(0);
+    await models.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-period-empty-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"usage-period-empty-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // 90 days lists the three turns and their two models again.
+    await period.selectOption("90");
+    await expect(summary).toContainText("3 recorded turns");await expect(models.locator(":scope>div")).toHaveCount(2);
+    await expect(usagePage.getByText("No model usage in this period.",{exact:true})).toHaveCount(0);
+  }finally{await fixture.close()}
 });
 
 test("Usage opened while Codex connects never claims the route returned no limits before it answers",async({page})=>{
@@ -315,7 +349,7 @@ test("Usage takes cleared turns off the page even when the reload after the clea
     await expect(page.locator(".usage-models>div")).toHaveCount(0);await expect(page.locator(".usage-bars>div")).toHaveCount(0);
     await expect(usagePage).not.toContainText("test/coding-fast");
     await expect(summary.locator("strong")).toHaveText(["—","—","—","—"]);
-    for(const claim of ["No recorded usage in this period.","No model usage recorded yet.","No turns recorded in this period."])await expect(usagePage.getByText(claim,{exact:true}),claim).toHaveCount(0);
+    for(const claim of ["No recorded usage in this period.","No model usage in this period.","No turns recorded in this period."])await expect(usagePage.getByText(claim,{exact:true}),claim).toHaveCount(0);
     await expect(recent.locator(".capability-card-head em")).toHaveCount(0);
     await expect(clear).toBeDisabled();await expect(clear).toHaveText("Clear local history");
     // The page scrolls inside its own column: one shot shows the alert and the totals, the next the cards and the table below.
