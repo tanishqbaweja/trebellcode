@@ -281,6 +281,43 @@ test("an agent browser closed outside the panel takes its page's elements with i
   }finally{await site.close()}
 });
 
+// A double click on Attach context attaches the element once, as do a double click on Attach annotation and Enter pressed twice (while
+// the server is slow to store the first attach) or held on Attach context: the second press, or the key's repeats once the first
+// attach had landed, attached it again. Each count is read once the next attach has landed, as a second would have.
+test("a double click on Attach context, or Enter pressed twice or held on it, attaches the element once",async({page,request})=>{
+  const site=await startSite();
+  try{
+    await page.addInitScript(scriptedAgentBrowser);
+    const {panel,address}=await openBrowserPanel(page,request);
+    const elements=panel.locator(".browser-elements button"),annotation=panel.getByTestId("preview-annotation"),note=annotation.getByRole("textbox");
+    const attach=annotation.getByRole("button",{name:"Attach context",exact:true}),attachNote=annotation.getByRole("button",{name:"Attach annotation",exact:true});
+    const attached=label=>page.getByTestId("context-chip").filter({hasText:label}),status=annotation.locator(".annotation-actions span");
+    await typeAddress(page,address,site.url+"/rec");await panel.getByRole("button",{name:"Open agent browser"}).click();
+    await panel.getByRole("button",{name:"Inspect elements"}).click();
+    await elements.filter({hasText:"Save profile"}).click();
+    await attach.dblclick({delay:60});
+    await expect(status).toHaveText("Element context attached");
+    await elements.filter({hasText:"Docs"}).click();
+    await note.click();await page.keyboard.type("Point this at the API docs.",{delay:8});
+    await attachNote.dblclick({delay:60});
+    await expect(note).toHaveValue("");await expect(status).toHaveText("Annotation attached");
+    await expect(attached("Browser e1"),"the double click on Attach context attached e1 once").toHaveCount(1);
+    await shots(page,"preview-attach-context-double-click-once");
+    const store=await slowStore(page,"text");
+    await attach.focus();await page.keyboard.press("Enter");await page.keyboard.press("Enter");store();
+    await expect(status).toHaveText("Element context attached");
+    await expect(attached("Annotated e2"),"the double click on Attach annotation attached the note once").toHaveCount(1);
+    // Enter held on Attach context for e1: its repeats come once the first attach has landed.
+    await elements.filter({hasText:"Save profile"}).click();await expect(status).toHaveCount(0);
+    await attach.focus();await page.keyboard.down("Enter");await expect(status).toHaveText("Element context attached");
+    await page.keyboard.down("Enter");await page.keyboard.down("Enter");await page.keyboard.up("Enter");
+    await expect(attached("Browser e2"),"Enter pressed twice on Attach context attached e2 once").toHaveCount(1);
+    await elements.filter({hasText:"Docs"}).click();await attach.click();
+    await expect(attached("Browser e2")).toHaveCount(2);
+    await expect(attached("Browser e1"),"Enter held on Attach context attached e1 once more").toHaveCount(2);
+  }finally{await site.close()}
+});
+
 // An action's preview address opens the Browser on its page the first time the panel is drawn, whose part only loads then: from Open
 // preview on the action's card, and from the header button of an action set to open its preview when it runs. The page also tells
 // a frame that loaded the address from the default one, which shows nothing.

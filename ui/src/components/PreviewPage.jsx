@@ -31,9 +31,10 @@ const kept={draft:"http://localhost:3000",url:"",snapshot:null,selectedRef:null,
 // browser's window, not the panel: it used to end unsaved when the panel went. It is noted here once it has started, so the panel
 // finds it on coming back even if it went while the recording was starting.
 const recorderRef={current:null,since:0,stopping:false},streamRef={current:null},chunksRef={current:[]};
-// A press records or stops once, as a thread's menu item runs: the rest of it (the second click of a double click, Enter held) does
-// nothing. Record and Stop are one button, so the second click landed on the Stop of the recording the first click had started once
-// the shell armed it, and stopped it at once.
+// A press records, stops or attaches once, as a thread's menu item runs: the rest of it (the second click of a double click, Enter
+// held) does nothing. Record and Stop are one button, so the second click landed on the Stop of the recording the first click had
+// started once the shell armed it, and stopped it at once; and an element's attach can land before the second click comes, which
+// attached it again.
 function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
 
 export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAttachFile}){
@@ -61,7 +62,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   const [recording,setRecording]=useState(Boolean(recorderRef.current));
   const [recordingSeconds,setRecordingSeconds]=useState(0);
   const [previewZoom,setPreviewZoom]=useState(kept.previewZoom);
-  const urlInputRef=useRef(null);
+  const urlInputRef=useRef(null),attachingRef=useRef(false);
   useEffect(()=>{Object.assign(kept,{draft,url,snapshot,selectedRef,annotation,shown,previewZoom})});
 
   function remember(nextUrl,title=""){
@@ -227,7 +228,10 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
       recorderRef.current=null;recorderRef.stopping=false;streamRef.current=null;chunksRef.current=[];setRecording(false);setBusy("");
     }
   }
+  // One attach at a time: a press while one is on its way (Enter pressed twice) attaches nothing more. It used to attach the element
+  // again.
   async function attachElement(element,note=""){
+    if(attachingRef.current)return false;attachingRef.current=true;
     const cleanNote=String(note||"").trim();
     const lines=["Browser element context","URL: "+(snapshot?.url||url),"Title: "+(snapshot?.title||""),"Element ref: "+element.ref,"Tag: "+element.tag,"Text: "+(element.text||""),"Href: "+(element.href||"")];
     if(cleanNote)lines.push("","Annotation: "+cleanNote);
@@ -240,7 +244,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
       setLastAttached("");
       setBrowserError(error?.message||String(error)||"Could not attach browser context.");
       return false;
-    }
+    }finally{attachingRef.current=false}
   }
   // The agent browser closed, by its Close here, outside the panel or while the panel was away (as its state says), takes its page's
   // elements with it, so none of them can be attached.
@@ -263,7 +267,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     {desktopBrowserAvailable?<><div className="agent-browser-toolbar"><button onClick={agentOpen} disabled={!!busy}><Globe2 size={13}/> Open agent browser</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.show?.()).then(()=>setBrowserError("")).catch(error=>setBrowserError(error?.message||String(error)||"Could not show Agent Browser."))}><Eye size={13}/> Show browser</button><button onClick={inspect} disabled={!!busy}><MousePointer2 size={13}/> Inspect elements</button><button onClick={capture} disabled={!!busy}><Camera size={13}/> Attach screenshot</button><button onClick={openProfileImport} disabled={!!busy}>Import profile</button><button onClick={importCookies} disabled={!!busy}>Import cookie JSON</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.close?.()).then(()=>{setBrowserError("");dropPage();setCookieStatus("")}).catch(error=>setBrowserError(error?.message||String(error)||"Could not close Agent Browser."))}><X size={13}/> Close</button>{cookieStatus&&<span className="browser-cookie-status" role="status" data-testid="browser-cookie-status">{cookieStatus}</span>}</div>{browserError&&<div className="browser-action-error" role="alert">{browserError}</div>}</>:<div className="agent-browser-unavailable"><strong>Desktop Agent Browser is unavailable here</strong><span>The hosted UI still supports iframe previews, local dev-server detection, and recent-page history.</span></div>}
     {importOpen&&<div className="browser-profile-import" data-testid="browser-profile-import"><div className="browser-profile-import-head"><div><strong>Import signed-in browser session</strong><span>One-time cookie copy into Trebell Agent Browser.</span></div><button aria-label="Close profile import" title="Close profile import" onClick={()=>setImportOpen(false)}><X size={12}/></button></div>{(browserImports?.sources||[]).length?(browserImports.sources||[]).map(source=><section key={source.id}><div><strong>{source.name}</strong><span>{source.running?"Close the browser before importing.":source.installed?`${source.profiles?.length||0} profile${source.profiles?.length===1?"":"s"} found`:"No readable profiles found"}</span></div>{(source.profiles||[]).map(profile=><button key={profile.id} disabled={source.running||!!busy} onClick={()=>importProfile(source,profile)}><span>{profile.name}</span><small>{source.running?"Browser running":"Import"}</small></button>)}</section>):<p>No supported browser profiles were found. On Windows, Firefox and Helium are supported; cookie JSON remains available as a fallback.</p>}</div>}
     <div className={"preview-layout"+(desktopBrowserAvailable?"":" hosted")}><div className="preview-frame">{!url?<div className="preview-empty-state"><Globe2 size={18}/><strong>No preview open</strong><span>Enter a local or web URL above to preview it here.</span></div>:unanswered===url?<div className="preview-empty-state preview-unanswered" role="alert"><Unplug size={18}/><strong>Nothing answered at {url}</strong><span>Start the server for this address, then press Preview to try again.</span></div>:<iframe key={key} title="Trebell preview" src={url} style={{transform:"scale("+previewZoom+")",transformOrigin:"0 0",width:(100/previewZoom)+"%",height:(100/previewZoom)+"%"}}/>}</div>
-      {desktopBrowserAvailable&&<aside className="browser-inspector"><h3>Agent browser</h3>{snapshot?<><p><strong>{snapshot.title||"Untitled"}</strong><span>{snapshot.url}</span></p><div className="browser-elements">{(snapshot.elements||[]).map(el=><button className={selectedRef===el.ref?"active":""} key={el.ref} onClick={()=>{setSelectedRef(el.ref);setLastAttached("")}}><code>{el.ref}</code><span>{el.text||el.tag}</span><small>{el.tag}{el.href?" · link":""}</small></button>)}</div>{selectedElement&&<div className="browser-annotation" data-testid="preview-annotation"><div><strong>Annotate {selectedElement.ref}</strong><span>{selectedElement.text||selectedElement.tag}</span></div><textarea value={annotation} onChange={e=>setAnnotation(e.target.value)} placeholder="Add a note or instruction for the agent about this element…"/><div className="annotation-actions"><button onClick={()=>attachElement(selectedElement)}>Attach context</button><button className="primary" disabled={!annotation.trim()} onClick={async()=>{if(await attachElement(selectedElement,annotation))setAnnotation("")}}>Attach annotation</button>{lastAttached&&<span>{lastAttached}</span>}</div></div>}</>:<div className="empty-inspector">Open the agent browser and inspect the page to see model-addressable elements.</div>}</aside>}
+      {desktopBrowserAvailable&&<aside className="browser-inspector"><h3>Agent browser</h3>{snapshot?<><p><strong>{snapshot.title||"Untitled"}</strong><span>{snapshot.url}</span></p><div className="browser-elements">{(snapshot.elements||[]).map(el=><button className={selectedRef===el.ref?"active":""} key={el.ref} onClick={()=>{setSelectedRef(el.ref);setLastAttached("")}}><code>{el.ref}</code><span>{el.text||el.tag}</span><small>{el.tag}{el.href?" · link":""}</small></button>)}</div>{selectedElement&&<div className="browser-annotation" data-testid="preview-annotation"><div><strong>Annotate {selectedElement.ref}</strong><span>{selectedElement.text||selectedElement.tag}</span></div><textarea value={annotation} onChange={e=>setAnnotation(e.target.value)} placeholder="Add a note or instruction for the agent about this element…"/><div className="annotation-actions" onClick={pressOnce}><button onClick={()=>attachElement(selectedElement)}>Attach context</button><button className="primary" disabled={!annotation.trim()} onClick={async()=>{if(await attachElement(selectedElement,annotation))setAnnotation("")}}>Attach annotation</button>{lastAttached&&<span>{lastAttached}</span>}</div></div>}</>:<div className="empty-inspector">Open the agent browser and inspect the page to see model-addressable elements.</div>}</aside>}
     </div>
     <p className="preview-note">{desktopBrowserAvailable?"Trebell detects common localhost dev servers automatically. The iframe is a visual preview; Agent Browser gives the active coding agent DOM-aware browser control, and desktop Computer Use is available in Full access mode.":"Trebell detects common localhost dev servers automatically. This hosted surface provides iframe previews; Agent Browser and Computer Use are desktop capabilities."}</p>
   </div>;

@@ -29,7 +29,7 @@ function closeRowMenu(menu){if(!menu)return;menu.open=false;showRowMenu(menu,fal
 // which lands on what was under the item once its menu closed (another row, a destination), and the repeats of Enter held on it,
 // which go to what took the focus (the menu's button, or the next row when the thread moved to another group). Either would open it.
 // A queued follow-up's buttons take only a press of their own the same way (App.jsx), the Goal panel's (GoalPanel.jsx), and the
-// Browser panel's Record button (PreviewPage.jsx).
+// Browser panel's Record and Attach buttons (PreviewPage.jsx).
 export function ignorePressRest(keyboard){
   const types=keyboard?["keydown","keyup"]:["mousedown","mouseup","click","dblclick"],off=()=>{for(const type of types)window.removeEventListener(type,stop,true)};
   const stop=event=>{if(keyboard?event.repeat&&event.key==="Enter":event.detail>1){event.preventDefault();event.stopPropagation()}else if(event.type===(keyboard?"keyup":"mousedown"))off()};
