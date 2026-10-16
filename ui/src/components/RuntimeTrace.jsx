@@ -1,4 +1,4 @@
-import React,{useCallback,useEffect,useState} from "react";
+import React,{useCallback,useEffect,useRef,useState} from "react";
 import { RefreshCw } from "lucide-react";
 import { api } from "../api.js";
 import { mergeTraceFilterOptions, traceQuery } from "../runtime-trace-filters.js";
@@ -17,22 +17,25 @@ export default function RuntimeTrace({threadId=null}){
   const [categoryFilter,setCategoryFilter]=useState("");
   const [timeWindow,setTimeWindow]=useState("all");
   const [filterOptions,setFilterOptions]=useState({runtimes:[],categories:[],turns:[]});
+  // Each thread has a trace of its own (App keys it by thread). Only an answer for the filters still chosen lands: one asked
+  // before they changed neither lists its events nor ends the loading of the one asked after.
+  const view=useRef(0);
   const load=useCallback(async({silent=false}={})=>{
+    const asked=view.current;
     if(!silent)setLoading(true);
     try{
       const params=traceQuery({threadId,turnId:turnFilter,runtime:runtimeFilter,category:categoryFilter,timeWindow,limit:40});
       const result=await api("/api/traces?"+params.toString());
+      if(asked!==view.current)return false;
       const next=Array.isArray(result.items)?result.items:[];setItems(next);
       setFilterOptions(previous=>mergeTraceFilterOptions(previous,next));
       setError(result.journal?.lastError?.message||"");
       return true;
     }catch(loadError){
-      setError(loadError?.message||String(loadError)||"Could not refresh runtime trace.");
+      if(asked===view.current)setError(loadError?.message||String(loadError)||"Could not refresh runtime trace.");
       return false;
-    }finally{if(!silent)setLoading(false)}
+    }finally{if(!silent&&asked===view.current)setLoading(false)}
   },[threadId,turnFilter,runtimeFilter,categoryFilter,timeWindow]);
-
-  useEffect(()=>{setTurnFilter("");setRuntimeFilter("");setCategoryFilter("");setTimeWindow("all");setFilterOptions({runtimes:[],categories:[],turns:[]})},[threadId]);
 
   useEffect(()=>{
     let disposed=false,busy=false;
@@ -40,7 +43,7 @@ export default function RuntimeTrace({threadId=null}){
     load();
     const timer=setInterval(tick,3000);
     const visible=()=>{if(!document.hidden)tick()};document.addEventListener("visibilitychange",visible);
-    return()=>{disposed=true;clearInterval(timer);document.removeEventListener("visibilitychange",visible)};
+    return()=>{disposed=true;view.current++;clearInterval(timer);document.removeEventListener("visibilitychange",visible)};
   },[load]);
 
   return <section className="runtime-trace" data-testid="runtime-trace">

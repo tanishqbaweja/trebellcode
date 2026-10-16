@@ -5183,7 +5183,9 @@ export default function App(){
         </div>
       </section>
       {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<LazySlot><AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/></LazySlot>}
-      <RuntimeTrace threadId={activeThread?.id||null}/>
+      {/* The trace is the open thread's: another thread starts it afresh, so an answer still on its way for the thread left lands
+          nowhere. */}
+      <RuntimeTrace key={activeThread?.id||""} threadId={activeThread?.id||null}/>
       <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
     </div>;
   }
