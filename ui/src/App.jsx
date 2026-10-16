@@ -1055,7 +1055,7 @@ export default function App(){
   // The queue shown and what Trebell keeps of each thread, as of the last render: what a send that ended reads its follow-up's thread
   // queue from (clearQueuedDispatch), not the copy it took when it began.
   const queueNowRef=useRef(null);queueNowRef.current={queued,threadMeta};
-  const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
+  const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSectionState]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [uploadingFiles,setUploadingFiles]=useState([]); const [contextChips,setContextChips]=useState([]);
   // What the composer says about where its draft went, next to the draft: a send, or a queued follow-up the queue started, that
   // failed before any turn existed ("send", kept until the next send, Send now included, or an edit of the draft), or a thread
@@ -3320,7 +3320,8 @@ export default function App(){
   // the sidebar and the header name its thread and, once it takes long, its opening state covers the conversation (see opening); the
   // thread already open changes none of that. A thread the person asks for also replaces one a harness switch was still to reopen
   // for an earlier open (the transport's own reopens pass their client and keep it). from is the section it was asked for in: it
-  // lands in the chat from there, but a page the person has gone to since stays, with the thread open behind it.
+  // lands in the chat from there, but a page asked for since stays, the page it was asked from too (setSection), with the thread
+  // open behind it.
   // A thread other than the one shown, asked for again the same way while it opens (a second click), waits for that open rather than
   // start it over, which would make the person wait for another resume.
   // A thread that did not open leaves the view it replaced, and the composer says so beside the draft, with where a message sent now
@@ -3330,6 +3331,12 @@ export default function App(){
     const shown=activeThreadRef.current,detail=sentenceText(error?.message||String(error||"")||"The harness did not answer.");
     const where=reopen?"":shown?.id?` Sending now goes to “${titleOf(shown)}”.`:" Sending now starts a new task instead.";
     setComposerAlert({kind:"open",threadId:String(thread?.id||""),text:`Could not ${reopen?"reopen":"open"} “${titleOf(thread)}”: ${detail}${where}`});
+  }
+  // A page or view asked for while a thread opens shows: the open, and a harness switch's reopen of it, no longer land in the chat.
+  // The opening state covers the page the open was asked from (openingOverPage), so that page asked for again shows too.
+  function setSection(next){
+    const run=openRunRef.current,pending=pendingRuntimeThreadRef.current;if(run)run.from="";if(pending)pending.from="";
+    setOpening(current=>current?.from?{...current,from:""}:current);setSectionState(next);
   }
   async function openThread(thread,options={}){
     const threadId=String(thread?.id||""),client=options.client||rpc,from=options.from??sectionRef.current,toChat=!options.preserveSection,inFlight=openRunRef.current;
@@ -3438,7 +3445,7 @@ export default function App(){
     if(openedThread.status?.type!=="active")turnNotesRef.current.turnsEnded(thread.id);else if(resumedTurnId)turnNotesRef.current.turnsEnded(thread.id,resumedTurnId);
     // The composer's note goes with the view it was about: another thread shown, or this one opening after all, ends it; the thread
     // shown opening again (a reconnect) keeps a note about its failed send or about another thread that did not open.
-    activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from&&openRunRef.current?.from===from)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     // The turn that still runs (resumedTurnId) gets back on its live card the MCP progress and the diff it had, those sent while the
     // thread was not shown among them; its stored steps go in front of the diff (seedLiveRows).
     for(const [id,value] of liveExtrasRef.current.get(turnInfoKey(thread.id,resumedTurnId))||[])if(id){mcpProgressRef.current.set(id,value);activityTimelineRef.current?.setMcpProgress(id,value)}else setEvents(prev=>upsertEvent(prev,value));

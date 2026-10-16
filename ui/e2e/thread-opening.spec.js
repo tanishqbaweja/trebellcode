@@ -705,6 +705,38 @@ test("a page asked for while a thread opens shows at once, and the thread opens 
   }finally{await harness.close()}
 });
 
+// A thread opened from History covers History with its opening state. History asked for again is a page asked for after the click
+// too: its button did nothing (History not even selected), and after another page History showed the opening state again, until the
+// thread took the view from it. Clicked or pressed with the keyboard, History shows, and the thread opens behind it.
+test("History asked for while a thread opened from it opens shows History, and the thread opens behind it",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
+  const heading=name=>page.getByRole("heading",{name,exact:true}),history=page.getByRole("button",{name:"History",exact:true});
+  const historyRow=name=>page.locator(".history-thread-row").filter({hasText:name});
+  try{
+    await start(page,harness);
+    await history.click();await expect(historyRow("Payment retries")).toBeVisible({timeout:15_000});
+    const release=harness.hold(BETA.thread.id);
+    await historyRow("Payment retries").click();
+    await expect(opening(page)).toBeVisible();await expect(heading("Thread history")).toHaveCount(0);
+    await history.click();
+    await expect(heading("Thread history")).toBeVisible();await expect(history).toHaveClass(/active/);await expect(opening(page)).toHaveCount(0);
+    await expect(row(page,BETA)).toHaveClass(/active/);
+    for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:`${auditDir}thread-opening-history-asked-again-${mode}-1600x980.png`})}
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // Usage, then History from the keyboard: each shows when asked for.
+    await page.getByRole("button",{name:"Usage",exact:true}).click();await expect(heading("Usage")).toBeVisible();
+    await history.focus();await page.keyboard.press("Enter");
+    await expect(heading("Thread history")).toBeVisible();await expect(history).toHaveClass(/active/);await expect(opening(page)).toHaveCount(0);
+    // The thread lands behind History, which stays.
+    release();await expect.poll(()=>harness.sent("thread/goal/get").filter(id=>id===BETA.thread.id).length).toBe(1);await page.waitForTimeout(500);
+    await expect(heading("Thread history")).toBeVisible();await expect(page.locator(".chat-workspace")).toHaveCount(0);await expect(row(page,BETA)).toHaveClass(/active/);
+    // A row picked in History now opens its thread in the chat, as before.
+    await historyRow("Flaky import").click();
+    await expect(answer(page,GAMMA)).toBeVisible();await expect(headerTitle(page)).toHaveText("Flaky import");await expect(heading("Thread history")).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
 test("archiving the thread left while another opens keeps that open, and archiving a thread as it opens ends its open for good",async({page})=>{
   test.setTimeout(60_000);
   const harness=await startHarness(page,{saved:[ALPHA,BETA,GAMMA,DELTA]});
