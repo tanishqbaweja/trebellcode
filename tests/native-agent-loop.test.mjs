@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, readOnlyInspectionRun, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn as runNativeAgentTurnImpl } from "../src/native-agent-loop.mjs";
+import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderRejectedImage, nativeProviderRetryable, nativeTerminalAuditMetadata, readOnlyInspectionRun, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn as runNativeAgentTurnImpl } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
@@ -3533,6 +3533,62 @@ test("native agent preserves image tool observations for the next model turn",as
     executeTool:async()=>({success:true,contentItems:[{type:"inputText",text:"screen metadata"},{type:"inputImage",imageUrl:IMAGE_DATA_URL}]}),
   });
   assert.equal(result.text,"I can see the screenshot.");assert.equal(result.modelTurns,2);
+});
+
+// What OpenAI answered the music-harmony run (2026-10-16) for a model-written PNG whose pixel data was short.
+const invalidImageError=()=>Object.assign(new Error('OpenAI API HTTP 400: { "error": { "message": "The image data you provided does not represent a valid image. Please check your input and try again.", "type": "invalid_request_error", "param": "input", "code": "invalid_value" } }'),{status:400,retryable:false});
+const requestImages=request=>request.messages.flatMap(message=>Array.isArray(message.content)?message.content.filter(part=>part?.type==="image_url").map(part=>part.image_url.url):[]);
+
+test("native provider image rejections are told apart from other refusals",()=>{
+  assert.equal(nativeProviderRejectedImage(invalidImageError()),true);
+  assert.equal(nativeProviderRejectedImage(Object.assign(new Error('Anthropic API HTTP 400: {"type":"error","error":{"type":"invalid_request_error","message":"Could not process image"}}'),{status:400})),true);
+  assert.equal(nativeProviderRejectedImage(Object.assign(new Error("OpenAI API HTTP 500: The image data you provided does not represent a valid image"),{status:500})),false);
+  assert.equal(nativeProviderRejectedImage(Object.assign(new Error('OpenAI API HTTP 400: {"error":{"code":"context_length_exceeded"}}'),{status:400})),false);
+  assert.equal(nativeProviderRejectedImage(Object.assign(new Error("aborted"),{name:"AbortError"})),false);
+});
+
+test("native agent takes an image the provider cannot decode out of the request and sends it again",async()=>{
+  const GOOD="data:image/png;base64,R09PRA==",BAD="data:image/png;base64,QkFE",events=[],sent=[];let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"vision-model",messages:[{role:"user",content:"Render the score and look at it."}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      const images=requestImages(request);sent.push(images);
+      if(images.includes(BAD))throw invalidImageError();
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"page-1",namespace:"trebell_browser",name:"screenshot",arguments:"{}"}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"page-2",namespace:"trebell_browser",name:"screenshot",arguments:"{}"}],usage:{}};
+      const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.equal(observation.content[0].text,"Rendered page-2");
+      assert.equal(observation.content[1].type,"text");assert.match(observation.content[1].text,/provider could not decode it/);
+      return {text:"Page 1 rendered; page 2 needs a new render.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>({success:true,contentItems:[{type:"inputText",text:"Rendered "+call.id},{type:"inputImage",imageUrl:call.id==="page-1"?GOOD:BAD}]}),
+  });
+  assert.equal(result.text,"Page 1 rendered; page 2 needs a new render.");
+  // The image the provider already accepted stays; only the one this request added is replaced.
+  assert.deepEqual(sent,[[],[GOOD],[GOOD,BAD],[GOOD]]);
+  const rejected=events.filter(event=>event.name==="native.model.image_rejected");
+  assert.equal(rejected.length,1);assert.equal(rejected[0].data.scope,"added");assert.equal(rejected[0].data.replacedImages,1);assert.equal(rejected[0].data.status,400);
+});
+
+test("native agent takes out every image when the provider still refuses, and ends on a refusal without images",async()=>{
+  const FIRST="data:image/png;base64,MQ==",SECOND="data:image/png;base64,Mg==",scopes=[];let turns=0,refuseFirst=false;
+  const result=await runNativeAgentTurn({
+    model:"vision-model",messages:[{role:"user",content:"Compare the two images."}],onEvent:event=>{if(event.name==="native.model.image_rejected")scopes.push(event.data.scope)},
+    providerTurn:async request=>{
+      const images=requestImages(request);
+      if(refuseFirst&&images.length)throw invalidImageError();
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"a",namespace:"trebell_browser",name:"screenshot",arguments:"{}"}],usage:{}};
+      if(turns===2){refuseFirst=true;return {text:"",toolCalls:[{id:"b",namespace:"trebell_browser",name:"screenshot",arguments:"{}"}],usage:{}}}
+      assert.deepEqual(images,[]);return {text:"Neither image could be shown.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>({success:true,contentItems:[{type:"inputImage",imageUrl:call.id==="a"?FIRST:SECOND}]}),
+  });
+  assert.equal(result.text,"Neither image could be shown.");assert.deepEqual(scopes,["added","all"]);
+  await assert.rejects(runNativeAgentTurn({
+    model:"vision-model",messages:[{role:"user",content:"Look."}],
+    providerTurn:async()=>{throw invalidImageError()},executeTool:async()=>({success:true}),
+  }),/does not represent a valid image/);
 });
 
 test("native agent runs explicitly parallel-safe tool reads concurrently while preserving model observation order",async()=>{

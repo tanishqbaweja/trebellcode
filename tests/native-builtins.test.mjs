@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename,join } from "node:path";
 import { Readable } from "node:stream";
 import { EventEmitter } from "node:events";
+import { deflateSync } from "node:zlib";
 import { createNativeBuiltins } from "../src/native-builtins.mjs";
 
 async function workspace(){
@@ -126,6 +127,20 @@ test("Native workspace image reads preserve the actual pixels for the model with
     assert.equal(text.content,"const value = 1;\n");
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/app.js",as_image:true}}),/supported image/i);
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"..\\outside.png",as_image:true}}),/outside the active workspace/i);
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+test("Native workspace image reads refuse a PNG whose pixel data cannot decode instead of attaching it",async()=>{
+  // The music-harmony crash (2026-10-16): a model-written PNG with a valid signature and chunks whose pixel data was short
+  // was attached, and the provider refused the whole request with HTTP 400 "not a valid image".
+  const root=await workspace(),pixel=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+i8XkAAAAASUVORK5CYII=","base64");
+  const header=Buffer.alloc(13);header.writeUInt32BE(64,0);header.writeUInt32BE(64,4);header[8]=8;header[9]=0;
+  const chunk=(type,data)=>{const length=Buffer.alloc(4);length.writeUInt32BE(data.length);return Buffer.concat([length,Buffer.from(type,"latin1"),data,Buffer.alloc(4)])};
+  const short=Buffer.concat([pixel.subarray(0,8),chunk("IHDR",header),chunk("IDAT",deflateSync(Buffer.alloc(65*10))),chunk("IEND",Buffer.alloc(0))]);
+  try{
+    await writeFile(join(root,"src","short.png"),short);
+    const execute=createNativeBuiltins({root});
+    await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/short.png",as_image:true}}),/Image does not decode \(image\/png\): its pixel data is short: 650 of the 4160 bytes its 64x64 header needs/);
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
