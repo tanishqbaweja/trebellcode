@@ -4393,8 +4393,8 @@ export default function App(){
     const outcome=await import("./edit-from-here.js").then(({rewindToMessage})=>rewindToMessage({client:rpcRef.current||rpc,message,threadId,isolatedWorktree,turnRunsNow})).catch(error=>({error,title:"Could not edit from this message"}));
     if(outcome.refused){refuseWhileRunning();return}
     if(outcome.error){showActionError(outcome.error,outcome.title);return}
-    // A draft already in the composer stays, below the message brought back to edit.
-    setPrompt(current=>String(current||"").trim()&&current!==message.text?message.text+"\n\n"+current:message.text);await reloadActiveThread();
+    // A draft already in the composer stays, below the message brought back to edit, and so do its files, with the message's own.
+    setPrompt(current=>String(current||"").trim()&&current!==message.text?message.text+"\n\n"+current:message.text);if(message.attachments?.length)setAttachments(current=>[...new Set([...current,...message.attachments])]);await reloadActiveThread();
     // The message is the composer's to edit now, so the focus goes there, at its end: the button that had it left with the message.
     focusComposerAt(String(message.text||"").length);
   }

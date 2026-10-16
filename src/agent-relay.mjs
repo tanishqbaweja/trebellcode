@@ -69,6 +69,11 @@ function expandableNativeToolNamespaces(values=[]){
 function agentProviderIdentity(thread){return thread?.runtime==="native"?(thread?.providerMeta?.modelProvider||null):(thread?.providerMeta?.runtimeInstanceId||thread?.runtimeInstanceId||null)}
 
 function textOfInput(input=[]){return input.filter(item=>item?.type==="text").map(item=>item.text||"").join("\n")}
+// The files a message went with (an image, audio, a file), which its stored message keeps after its text as Codex keeps a message's
+// input: a thread opened again names them under the message, as its bubble did when it was sent. Only text reaches the model from
+// a stored message (native-agent-session itemText), so what the model reads of a thread is as before.
+const FILE_INPUTS=new Set(["localImage","localAudio","mention"]);
+function fileInputs(input=[]){return (Array.isArray(input)?input:[]).filter(item=>FILE_INPUTS.has(item?.type)&&item.path).map(item=>({type:item.type,...(item.name?{name:String(item.name)}:{}),path:String(item.path)}))}
 // A new thread is listed by its first message until it is renamed, as T3 Code seeds a thread's title (deriveThreadTitleSeed: the
 // message's text, else its first image) and as Codex lists its own threads.
 export function agentThreadTitleSeed(input=[],text=textOfInput(Array.isArray(input)?input:[])){
@@ -1978,7 +1983,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(send?.stopped)throw stoppedBeforeTurn();
       // An earlier turn that failed and still waits on its harness's recheck ends before this one starts.
       endFailureWait(thread.id);
-      const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
+      const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),inputFiles:fileInputs(params.input),status:"inProgress"});session.__assistant="";
       if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;
       // The stored message is the redacted one: a secret pasted into the first message never reaches the thread list.
       if(!thread.name&&!thread.preview){const stored=turn?.items?.find(item=>item?.type==="userMessage")?.content?.[0]?.text||"",preview=agentThreadTitleSeed(params.input||[],stored);if(preview)threadStore.update(thread.id,{preview})}
@@ -2021,7 +2026,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error(`The active ${label} turn changed before steering could be applied.`);
         const session=sessions.get(thread.id);if(!(session instanceof steerable))throw new Error(`The active ${label} session is unavailable for steering.`);
         const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{}));
-        const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env})}]};
+        const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env})},...fileInputs(params.input)]};
         threadStore.addItem(thread.id,activeTurn.id,item);emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});
         return {turnId:activeTurn.id,accepted:Boolean(result?.accepted),pending:Number(result?.pending)||0};
       }
@@ -2031,7 +2036,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const session=sessions.get(thread.id);if(!(session instanceof NativeAgentSession))throw new Error("The active Native session is unavailable for steering.");
       const prompt=await contextualAgentPrompt(params.input||[],{}),result=session.steer(prompt),text=textOfInput(params.input||[]);
       const safeText=redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env});
-      const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:safeText}]};threadStore.addItem(thread.id,activeTurn.id,item);
+      const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:safeText},...fileInputs(params.input)]};threadStore.addItem(thread.id,activeTurn.id,item);
       emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});
       journal?.record?.({runtime:"native",provider:agentProviderIdentity(thread),environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,turnId:activeTurn.id,category:"turn",name:"native.steering.requested",status:"pending",data:{messageChars:text.length}});
       return {turnId:activeTurn.id,accepted:Boolean(result?.accepted),pending:Number(result?.pending)||0};

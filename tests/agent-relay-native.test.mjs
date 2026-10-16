@@ -543,6 +543,34 @@ test("Trebell Native turn steering interrupts inference and persists the redirec
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
+// A message sent with files keeps them in its stored message, after its text, as Codex keeps a message's input, and so does a steer:
+// a thread opened again names the files that went with each (ui/src/thread-history.js). A skill picked is no file the person sent.
+test("Trebell Native keeps the files a message or a steer was sent with in its stored message, after its text",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-files-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const shot=join(repo,"screenshot.png"),log=join(repo,"pasted-context.txt"),notes=join(repo,"notes.txt");
+  await writeFile(shot,Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==","base64"));await writeFile(log,"GET /login 500 after the token refresh\n","utf8");await writeFile(notes,"Look at the parser.\n","utf8");
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0,firstStartedResolve;const firstStarted=new Promise(resolve=>{firstStartedResolve=resolve});
+  const nativeProviderTurn=async request=>{
+    calls++;
+    if(calls===1){firstStartedResolve();await new Promise((resolve,reject)=>{request.signal.addEventListener("abort",()=>reject(Object.assign(new Error("provider request aborted by steering"),{name:"AbortError"})),{once:true})});return{text:"obsolete",toolCalls:[],usage:{}}}
+    return{id:"files-answer",provider:request.provider,model:request.model,text:"I see the screenshot, the log and the notes.",toolCalls:[],finishReason:"stop",usage:{inputTokens:6,outputTokens:3,totalTokens:9}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"Here is what I see"},{type:"localImage",path:shot},{type:"mention",name:"pasted-context.txt",path:log},{type:"skill",name:"review",path:join(repo,"skills","review")}]})).turn;await firstStarted;
+    await rpc.request("turn/steer",{threadId:thread.id,expectedTurnId:turn.id,input:[{type:"text",text:"Look at my notes too"},{type:"mention",name:"notes.txt",path:notes}]});
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);
+    const stored=(await rpc.request("thread/read",{threadId:thread.id})).thread.turns[0].items.filter(item=>item.type==="userMessage").map(item=>item.content);
+    assert.deepEqual(stored,[
+      [{type:"text",text:"Here is what I see"},{type:"localImage",path:shot},{type:"mention",name:"pasted-context.txt",path:log}],
+      [{type:"text",text:"Look at my notes too"},{type:"mention",name:"notes.txt",path:notes}],
+    ]);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
 test("Trebell Native delegation preserves parent inference provider, tools, permissions and child budget",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-delegate-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});

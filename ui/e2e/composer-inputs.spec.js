@@ -413,6 +413,73 @@ test("a message sent with a pasted screenshot and a long pasted log names both f
   }finally{await harness.close()}
 });
 
+// The files a message went with are part of what was sent: its thread opened again, or the window reloaded, still names them under
+// the message, and Edit from here brings them back to the composer with its text. They showed only until the thread was left.
+test("the files a message went with show again under it when its thread is opened again or the window reloads, and Edit from here brings them back",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page,{replies:[{text:"I see the blue screenshot and the pasted log."}]});
+  try{
+    const composer=page.getByTestId("composer"),row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Composer thread"]')});
+    const bubble=page.locator(".user-bubble").filter({hasText:"Here is what I see"}),files=bubble.locator(".user-attachments > span"),sent=["screenshot.png","pasted-context.txt"];
+    await composer.click();await page.keyboard.type("Here is what I see",{delay:15});
+    await pasteImage(page,"screenshot.png");await expect(chips(page)).toHaveText(["screenshot.png"]);
+    await pasteText(page,"GET /login 500 after the token refresh\n".repeat(1300));await expect(chips(page)).toHaveText(sent);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("I see the blue screenshot and the pasted log.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(files).toHaveText(sent);
+    // Another view, then the thread again: the message still names its files.
+    await page.getByRole("button",{name:"New task",exact:true}).click();await expect(bubble).toHaveCount(0);
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(bubble.locator("p")).toHaveText("Here is what I see",{timeout:15_000});
+    await expect(files,"the files, the thread opened again").toHaveText(sent);
+    // The window reloaded: the same.
+    await page.reload();await expect(row).toBeVisible({timeout:15_000});
+    if(!await row.evaluate(node=>node.classList.contains("active")))await row.locator(".thread-main").click();
+    await expect(files,"the files, the window reloaded").toHaveText(sent,{timeout:15_000});await expect(bubble.locator("p")).toHaveText("Here is what I see");
+    await shootBoth(page,"sent-message-files-reopened",()=>expect(files.first()).toBeInViewport());
+    // Edit from here brings the message back to the composer with its files.
+    await bubble.getByRole("button",{name:"Edit from here",exact:true}).click();
+    await page.getByRole("dialog").getByRole("button",{name:"Edit from here",exact:true}).click();
+    await expect(composer).toHaveValue("Here is what I see",{timeout:15_000});
+    await expect(chips(page),"the files come back to the composer with the message").toHaveText(sent);
+    await expect(bubble).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+// Codex keeps the files a message went with as lines after its text ([Attached image "…" is saved at: …]): its thread opened again
+// shows the text alone, with the files named under it, as the bubble did when it was sent. It showed those lines, full paths and all.
+test("on Codex, the files a message went with show again under it when its thread is opened again, without the lines Codex keeps them by",async({page})=>{
+  test.setTimeout(90_000);
+  const thread={id:"codex-sent-files",name:"Codex sent files",preview:"Codex sent files",cwd:process.cwd(),status:{type:"idle"},model:"test/coding-fast",createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexHarness(thread,[(turn,{emit,threadId,finish})=>{
+    emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});
+    const answer={id:"agent-"+turn.id,type:"agentMessage",text:"I see the screenshot and the log."};turn.items.push(answer);emit({method:"item/completed",params:{threadId,turnId:turn.id,item:answer}});finish("completed");
+  }]);
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Codex sent files"]')}),composer=page.getByTestId("composer");
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");
+    const bubble=page.locator(".user-bubble").filter({hasText:"Here is what I see"}),files=bubble.locator(".user-attachments > span"),sent=["screenshot.png","pasted-context.txt"];
+    await composer.click();await page.keyboard.type("Here is what I see",{delay:15});
+    await pasteImage(page,"screenshot.png");await expect(chips(page)).toHaveText(["screenshot.png"]);
+    await pasteText(page,"GET /login 500 after the token refresh\n".repeat(1300));await expect(chips(page)).toHaveText(sent);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("I see the screenshot and the log.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(files).toHaveText(sent);
+    expect(harness.turns.at(-1).items[0].content[0].text,"Codex keeps the files as lines after the text").toContain('[Attached image "screenshot.png" is saved at: ');
+    // Another view, then the thread again: the text alone, with the files under it.
+    await page.getByRole("button",{name:"New task",exact:true}).click();await expect(bubble).toHaveCount(0);
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(bubble.locator("p"),"the message's text, the thread opened again").toHaveText("Here is what I see",{timeout:15_000});
+    await expect(files,"the files, the thread opened again").toHaveText(sent);
+    await expect(page.getByText(/\[Attached (image|file) /)).toHaveCount(0);
+    await shootBoth(page,"codex-sent-message-files-reopened",()=>expect(files.first()).toBeInViewport());
+  }finally{await harness.close()}
+});
+
 test("removing a context chip from the keyboard moves focus to the chip before it, then to the composer",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);

@@ -222,10 +222,11 @@ export class AgentThreadStore{
   #turnOf(threadId,turnId){
     const thread=this.peek(threadId),turn=thread?.turns?.find(item=>item.id===turnId);return turn?{thread,turn}:null;
   }
-  addTurn(threadId,{id=randomUUID(),inputText="",items=[],status="inProgress",startedAt=Math.floor(Date.now()/1000)}={}){
+  // inputFiles: the files the message went with ({type,path,name}, agent-relay fileInputs), kept after its text.
+  addTurn(threadId,{id=randomUUID(),inputText="",inputFiles=[],items=[],status="inProgress",startedAt=Math.floor(Date.now()/1000)}={}){
     const current=this.peek(threadId);if(!current)return null;
     const turn={id,status,startedAt,completedAt:null,durationMs:null,error:null,items:[
-      ...(inputText?[{type:"userMessage",id:`user-${id}`,clientId:null,content:[{type:"text",text:redactSecretText(inputText,{environment:this.env})}]}]:[]),
+      ...(inputText?[{type:"userMessage",id:`user-${id}`,clientId:null,content:[{type:"text",text:redactSecretText(inputText,{environment:this.env})},...inputFiles]}]:[]),
       ...items,
     ]};
     const thread={...current,status:{type:"active",activeFlags:[]},updatedAt:Math.floor(Date.now()/1000)};this.#persistTurn(thread,turn);this.#cacheMetadata(thread);return clone(turn);

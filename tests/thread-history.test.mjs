@@ -142,3 +142,23 @@ test("a turn's session handoff item is a row of its own in turn and item pages, 
   // A turn that has no row loaded yet gets it at the end.
   assert.deepEqual(withSessionHandoff([{id:"u1",role:"user",text:"Earlier",turnId:"t1"}],row).map(message=>message.id),["u1","session-handoff-t2"]);
 });
+
+// A message sent with files names them again when its thread is opened: Codex keeps them as the lines codexTurnInput writes after the
+// text (and an image again as an item), the agent relay as items after the text. The text shows without those lines.
+test("a sent message's files come back with it from history, off its text, from turn and item pages",()=>{
+  const shot="C:\\Users\\me\\AppData\\Roaming\\Trebell\\attachments\\screenshot.png",log="C:\\Users\\me\\AppData\\Roaming\\Trebell\\attachments\\pasted-context.txt";
+  const codex={id:"u1",type:"userMessage",content:[{type:"text",text:`Here is what I see\n\n[Attached image "screenshot.png" is saved at: ${shot}]\n\n[Attached file "pasted-context.txt" is saved at: ${log}]`,text_elements:[]},{type:"localImage",path:shot}]};
+  const relay={id:"u2",type:"userMessage",content:[{type:"text",text:"And now?"},{type:"localImage",path:shot},{type:"mention",name:"pasted-context.txt",path:log},{type:"skill",name:"review",path:"C:\\skills\\review"},{type:"mention",name:"Linear",path:"app://linear"}]};
+  const plain={id:"u3",type:"userMessage",content:[{type:"text",text:"No files here"}]};
+  const turns=[{id:"t1",items:[codex,{id:"a1",type:"agentMessage",text:"I see it."}]},{id:"t2",items:[relay]},{id:"t3",items:[plain]}];
+  const expected=[
+    {id:"u1",role:"user",text:"Here is what I see",turnId:"t1",checkpointId:null,attachments:[shot,log]},
+    {id:"a1",role:"assistant",text:"I see it.",turnId:"t1"},
+    {id:"u2",role:"user",text:"And now?",turnId:"t2",checkpointId:null,attachments:[shot,log]},
+    {id:"u3",role:"user",text:"No files here",turnId:"t3",checkpointId:null},
+  ];
+  assert.deepEqual(historyFromTurns(turns),expected);
+  assert.deepEqual(historyFromItemEntries(turns.flatMap(turn=>turn.items.map(item=>({turnId:turn.id,item})))),expected);
+  // A message of files alone still shows, by its files.
+  assert.deepEqual(historyFromTurns([{id:"t4",items:[{id:"u4",type:"userMessage",content:[{type:"text",text:`[Attached file "pasted-context.txt" is saved at: ${log}]`}]}]}]),[{id:"u4",role:"user",text:"",turnId:"t4",checkpointId:null,attachments:[log]}]);
+});
