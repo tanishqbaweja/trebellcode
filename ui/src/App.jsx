@@ -5182,9 +5182,9 @@ export default function App(){
           ].map(([label,value])=><div key={label} className={value==="runtime"?"available runtime":value?"available":"unavailable"}>{value?<Check size={13} aria-hidden="true"/>:<Minus size={13} aria-hidden="true"/>}<span>{label}</span><strong>{capabilityStatus(value)}</strong></div>)}
         </div>
       </section>
-      {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<LazySlot><AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/></LazySlot>}
-      {/* The trace is the open thread's: another thread starts it afresh, so an answer still on its way for the thread left lands
-          nowhere. */}
+      {/* The background processes and the trace are the open thread's: another thread starts each afresh, so an answer still on its
+          way for the thread left lands nowhere. */}
+      {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<LazySlot><AgentBackgroundTerminals key={activeThread.id} rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/></LazySlot>}
       <RuntimeTrace key={activeThread?.id||""} threadId={activeThread?.id||null}/>
       <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
     </div>;
