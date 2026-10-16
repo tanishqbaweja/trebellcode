@@ -51,7 +51,10 @@ const TurnActivityCard=memo(function TurnActivityCard({threadId,turnId,rows,live
       {visible.items.map(event=>{
         const id=String(event.id),streamedOutput=commandOutputs?.get(id)||"",progress=mcpProgress?.get(id);
         if(event.kind==="reasoning")return <ReasoningRow key={event.id} id={id} text={streamedOutput||reasoningItemText(event.raw)} active={event.status==="running"}/>;
-        let rowEvent=!event.output&&streamedOutput?{...event,output:streamedOutput}:event;
+        // The streamed output shows once it goes on from the row's own: an ACP command's row starts with its first chunk, and the
+        // rest only streams.
+        const own=event.output||"";
+        let rowEvent=streamedOutput.length>own.length&&streamedOutput.startsWith(own)?{...event,output:streamedOutput}:event;
         if(progress)rowEvent={...rowEvent,title:progress.title||rowEvent.title,raw:{...(rowEvent.raw||{}),progress:progress.raw||progress}};
         return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={onInspectChanges}/>;
       })}

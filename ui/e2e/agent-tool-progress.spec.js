@@ -11,13 +11,16 @@ import { keepThreadMeta } from "./test-home.js";
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 async function listen(server){await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));return server.address().port}
 
-test("non-Codex ACP command progress streams visibly and terminal tool calls settle",async({page})=>{
+test("non-Codex ACP command progress streams visibly while the step runs and terminal tool calls settle",async({page})=>{
   test.setTimeout(40_000);
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-progress-"));
   const fixture=join(root,"fake-acp-progress.mjs");
   await writeFile(fixture,String.raw`
+import { existsSync } from "node:fs";
 import readline from "node:readline";
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));let sessionId="fixture-session";
+// The command ends once the test writes "finish" beside this file, so it runs for as long as the test looks at the step.
+const finished=()=>new Promise(resolve=>{const check=()=>existsSync(new URL("./finish",import.meta.url))?resolve():setTimeout(check,50);check()});
 function send(value){process.stdout.write(JSON.stringify(value)+"\n")}
 async function handle(message){
   if(!message.method||message.id==null)return;
@@ -28,7 +31,7 @@ async function handle(message){
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"tool_call",toolCallId:"cmd-stream",title:"Fixture build",kind:"execute",status:"in_progress",rawOutput:"phase one\n"}}});
     await delay(700);
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:"cmd-stream",title:"Fixture build",kind:"execute",status:"in_progress",rawOutput:"phase one\nphase two\n"}}});
-    await delay(700);
+    await finished();
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:"cmd-stream",title:"Fixture build",kind:"execute",status:"completed",rawOutput:"phase one\nphase two\ndone\n"}}});
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"tool_call",toolCallId:"cmd-fast",title:"Quick check",kind:"execute",status:"completed",rawOutput:"quick complete\n"}}});
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:"Fixture finished."}}}});
@@ -68,8 +71,16 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     const composer=page.getByTestId("composer");await expect(composer).toBeEnabled();await composer.fill("Run the fixture command");await page.getByTestId("send").click();
     const streamed=page.locator(".tool-event").filter({hasText:"Fixture build"});await expect(streamed).toBeVisible();await streamed.locator("summary").click();
     await expect(streamed).toContainText("phase one");await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"agent-tool-progress-running-1280x800.png",fullPage:true});
-    await expect(streamed).toContainText("phase two");
-    await expect(streamed.locator("summary")).toContainText("done");
+    // The later output shows as it comes, while the step still runs, and the step closed and opened again from the keyboard
+    // shows all of it.
+    const body=streamed.locator(".tool-event-body"),status=streamed.locator("summary em");
+    await expect(body).toContainText("phase two");await expect(status).toHaveText("running");
+    await streamed.locator("summary").click();await expect(body).toHaveCount(0);
+    await streamed.locator("summary").focus();await page.keyboard.press("Enter");
+    await expect(body).toContainText(/phase one\s+phase two/);await expect(status).toHaveText("running");
+    await page.screenshot({animations:"disabled",path:auditDir+"agent-tool-progress-streamed-1280x800.png",fullPage:true});
+    await writeFile(join(root,"finish"),"");
+    await expect(streamed.locator("summary")).toContainText("done");await expect(body).toContainText(/phase two\s+done/);
     const quick=page.locator(".tool-event").filter({hasText:"Quick check"});await expect(quick.locator("summary")).toContainText("done");
     await expect(page.locator(".assistant-message-text")).toContainText("Fixture finished.");
     await expect(page.locator(".tool-event.kind-commandExecution")).toHaveCount(2);
