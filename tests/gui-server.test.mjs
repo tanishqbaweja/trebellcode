@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import { connect } from "node:net";
 import { EventEmitter } from "node:events";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { WebSocket } from "ws";
@@ -1457,6 +1458,40 @@ test("a project action runs once at a time in its own terminal, and Stop ends it
     assert.equal((await post("/api/project-script/stop",{path:projectPath,scriptId:"dev"})).session.running,false);
   }finally{
     await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+// A tray Quit and Restart & install close the GUI server while the window is still open (desktop/main.mjs before-quit and
+// beforeInstall), and the HTTP server's close waits for every socket on it. It waited for good on one nobody ends: the terminal
+// drawer's, or an upgrade no socket server takes, as the drawer's is when it opens again after the terminals' socket server has closed.
+// The app then stayed running, hidden and without its tray icon, and an install never started its installer.
+test("the GUI server's close finishes with the terminal drawer's socket open and an upgrade nobody answers, as a tray Quit or an install closes it",{timeout:90_000},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-close-with-terminal-"));
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",onboardingComplete:true}}));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const gui=await createGuiServer({port,appPort,mock:false,env});
+  // The server's own ends of the sockets, so that a close still waiting when the test ends can be let go.
+  const serverSockets=new Set();let upgraded=false;
+  gui.server.on("connection",socket=>serverSockets.add(socket));gui.server.on("upgrade",req=>{if(String(req.url).startsWith("/api/no-such/"))upgraded=true});
+  let drawer=null,held=null,closing=null;
+  try{
+    // Create terminal, and the drawer's socket on it.
+    const created=await fetch(gui.url+"/api/terminal/sessions",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cwd:home,cols:120,rows:32,name:"Terminal"})}).then(r=>r.json());
+    assert.equal(created.session?.running,true,JSON.stringify(created));
+    drawer=new WebSocket(gui.url.replace(/^http/,"ws")+"/api/terminal/ws?session="+encodeURIComponent(created.session.id));
+    assert.equal(await new Promise((resolve,reject)=>{drawer.once("message",raw=>resolve(JSON.parse(String(raw)).type));drawer.once("error",reject)}),"snapshot","the drawer's socket is open on its terminal");
+    const drawerClosed=new Promise(resolve=>drawer.once("close",resolve));
+    held=connect(port,"127.0.0.1");held.on("error",()=>{});await new Promise(resolve=>held.once("connect",resolve));
+    held.write(`GET /api/no-such/ws HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`);
+    await until(()=>upgraded,"the server has the upgrade",10_000);
+    closing=gui.close();
+    assert.equal(await Promise.race([closing.then(()=>"closed"),new Promise(resolve=>setTimeout(()=>resolve("still closing after 15 s"),15_000))]),"closed","the close finishes");
+    await drawerClosed;
+  }finally{
+    drawer?.terminate();held?.destroy();
+    if(closing){for(const socket of serverSockets)socket.destroy();await closing}else await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
 });

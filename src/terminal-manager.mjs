@@ -180,7 +180,9 @@ export class TerminalManager extends EventEmitter{
       });
     };
     server.on("upgrade",upgrade);
-    return {close:()=>{server.off("upgrade",upgrade);try{wss.close()}catch{}}};
+    // ws leaves the sockets it accepted open when it closes, and the HTTP server's close waits for each of them (a tray Quit or an
+    // install waited on the terminal drawer's for good): they are ended here, as the Codex and agent relays end theirs.
+    return {close:()=>{server.off("upgrade",upgrade);for(const ws of wss.clients)try{ws.terminate()}catch{}try{wss.close()}catch{}}};
   }
   async shutdown(){
     if(this.closed)return;this.closed=true;

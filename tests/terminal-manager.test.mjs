@@ -250,3 +250,25 @@ test("after the terminal worker dies, the next terminal starts a new worker and 
     assert.equal(terminals.snapshot(first.id).running,false,"the first terminal ended with its worker");
   }finally{await terminals.shutdown()}
 });
+
+// A tray Quit or Restart & install closes the GUI server while the window is still open, and the HTTP server's close waits for every
+// socket on it. The terminal drawer's socket stayed open once the terminals' socket server had closed (ws leaves the sockets it
+// accepted open), so with a terminal open the quit never finished and the app stayed running, hidden, without its tray icon.
+test("closing the terminals' socket server ends the terminal sockets still open, so the HTTP server's close does not wait on them",{timeout:30000},async()=>{
+  const { createServer } = await import("node:http");
+  const { WebSocket } = await import("ws");
+  const terminals=new TerminalManager({persist:false}),server=createServer((_req,res)=>{res.writeHead(404);res.end()});
+  const attached=terminals.attachWebSocket(server);
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  let socket=null;
+  try{
+    const session=await terminals.create({cwd:process.cwd()}),heard=[];
+    socket=new WebSocket(`ws://127.0.0.1:${server.address().port}/api/terminal/ws?session=${encodeURIComponent(session.id)}`);socket.on("message",raw=>heard.push(JSON.parse(String(raw)).type));
+    assert.ok(await until(()=>heard.includes("snapshot"),10000),"the socket opens on the terminal, as the drawer's does");
+    const socketClosed=new Promise(resolve=>socket.once("close",resolve));
+    attached.close();
+    const serverClosed=new Promise(resolve=>server.close(()=>resolve("closed")));
+    assert.equal(await Promise.race([serverClosed,new Promise(resolve=>setTimeout(()=>resolve("still waiting on the terminal's socket"),5000))]),"closed","the HTTP server's close finishes");
+    await socketClosed;
+  }finally{try{socket?.terminate()}catch{}await terminals.shutdown()}
+});

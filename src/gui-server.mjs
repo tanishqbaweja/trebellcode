@@ -3455,6 +3455,11 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   // closes one that sat idle for 5 s, so a request sent just then met a closing socket (ECONNRESET): an idle connection is kept
   // longer than those clients keep it, and the header timeout stays above that.
   server.keepAliveTimeout=65_000;server.headersTimeout=66_000;
+  // The close waits for every connection to end, and a tray Quit or an install waits on the close while the window is still open: what
+  // is still open a second into it (a socket no socket server ended, such as the terminal drawer's opened again, a request still
+  // running) is ended then, so the app quits instead of staying on, hidden, without its tray icon.
+  const connections=new Set();
+  server.on("connection",socket=>{connections.add(socket);socket.once("close",()=>connections.delete(socket))});
   await new Promise((resolve,reject)=>{
     server.once("error",reject);
     server.listen(port,host,resolve);
@@ -3516,7 +3521,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         eventJournal.close(),
       ]);
       state.close();agentThreads.close();
-      await new Promise(resolve=>server.close(resolve));
+      await new Promise(resolve=>{const cut=setTimeout(()=>{for(const socket of connections)socket.destroy()},1000);server.close(()=>{clearTimeout(cut);resolve()})});
     },
   };
 }

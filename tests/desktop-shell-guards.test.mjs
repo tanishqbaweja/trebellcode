@@ -135,7 +135,12 @@ test("the desktop shell keeps its window and bridge to the app, and its notifica
 
     // Last: it runs the shutdown cleanup. Both quits are recorded instead of performed, and each before-quit listener gets a
     // stand-in event. The cleanup gets up to a minute: on a busy machine stopping the server's processes takes longer than 15 s.
-    await t.test("the tray's Quit runs the shutdown cleanup and then quits",async()=>{
+    // A terminal is open in the drawer, which the cleanup used to wait on for good, so the app stayed running, hidden and without its
+    // tray icon: the mock server has no terminals, so the drawer's socket is an upgrade nobody answers, which holds the GUI server's
+    // close as the real drawer's socket did.
+    await t.test("the tray's Quit runs the shutdown cleanup and then quits, also with a terminal open in the drawer",async()=>{
+      await window.evaluate(()=>{window.__drawerSocket=new WebSocket(location.origin.replace(/^http/,"ws")+"/api/terminal/ws?session=mock-terminal")});
+      await sleep(1000);
       const quit=await app.evaluate(async({app})=>{
         const item=globalThis.__trebellTrayMenuTemplate().find(entry=>entry.label==="Quit Trebell Code");
         const realQuit=app.quit;let quits=0;app.quit=()=>{quits++};
