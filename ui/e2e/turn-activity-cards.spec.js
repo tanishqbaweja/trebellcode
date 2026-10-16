@@ -688,6 +688,36 @@ test("a Codex thread left while its turn runs shows, back on it, the MCP progres
   }finally{await harness.close()}
 });
 
+// A connection that drops loses what Codex sent meanwhile: an MCP step that ended while the window was not connected reads as it
+// ended once the window is back on the thread, under its own name, never with the progress it had before the drop.
+test("an MCP step that ends while the connection is down reads done once the window reconnects, not with its old progress",async({page})=>{
+  test.setTimeout(90_000);
+  const thread=codexThread("codex-drop-progress","Browse while offline");let live=null;
+  const harness=await startCodexHarness(thread,[
+    // The turn browses with an MCP tool that reports its progress; it runs on until the test ends.
+    (turn,tools)=>{
+      const emit=(method,params)=>tools.emit({method,params:{threadId:tools.threadId,turnId:turn.id,...params}}),browse={id:"mcp-"+turn.id,type:"mcpToolCall",server:"browser",tool:"navigate",status:"inProgress"};
+      live={turn,tools,emit,browse};thread.status={type:"active",activeFlags:[]};turn.items.push(browse);
+      tools.emit({method:"turn/started",params:{threadId:tools.threadId,turn:{...turn,items:[]}}});
+      emit("item/started",{item:{...browse}});emit("item/mcpToolCall/progress",{itemId:browse.id,message:"Browser progress 2/4"});
+    },
+  ]);
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Browse while offline");
+    await page.getByTestId("composer").fill("Browse the docs");await page.getByTestId("send").click();
+    const card=liveCard(page),browsing=card.locator(".tool-event.kind-mcpToolCall");
+    await expect(browsing.locator("summary strong")).toHaveText("Browser progress 2/4",{timeout:10_000});await expect(browsing.locator("summary em")).toHaveText("running");
+    // The connection drops, and meanwhile the step ends while the turn runs on: none of it reaches the window.
+    live.browse.status="completed";harness.drop();
+    // On the new connection the thread opens again: the step reads done, under its own name, and the turn still runs.
+    await expect(browsing.locator("summary em")).toHaveText("done",{timeout:15_000});
+    await expect(browsing.locator("summary strong")).toHaveText("browser / navigate");await expect(browsing).toHaveCount(1);
+    await expect(page.getByRole("button",{name:"Stop"})).toBeVisible();
+    await auditCards(page,"reconnected-step-ended",card.locator(".activity-card-head"));
+  }finally{await harness.close()}
+});
+
 test("a Codex turn running when its thread opens that fails while the thread opens shows each step and the failure once, nothing running",async({page})=>{
   test.setTimeout(60_000);
   const thread={...codexThread("codex-open-failing","Codex open failing"),status:{type:"active",activeFlags:[]}};

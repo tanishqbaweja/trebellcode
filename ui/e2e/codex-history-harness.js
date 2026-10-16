@@ -78,6 +78,9 @@ export async function startCodexHarness(thread,script,{seed=[],pageTurns=Infinit
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   return {
     wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",turns,calls,others,
+    // The connection drops, as an app-server or network blip does: the relay closes the window's socket, which connects again; what
+    // the harness sends until then is lost.
+    drop(){try{socket?.terminate()}catch{}socket=null},
     async close(){relay.close();try{socket?.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])},
   };
 }

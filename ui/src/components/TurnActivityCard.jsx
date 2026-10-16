@@ -55,7 +55,8 @@ const TurnActivityCard=memo(function TurnActivityCard({threadId,turnId,rows,live
         // rest only streams.
         const own=event.output||"";
         let rowEvent=streamedOutput.length>own.length&&streamedOutput.startsWith(own)?{...event,output:streamedOutput}:event;
-        if(progress)rowEvent={...rowEvent,title:progress.title||rowEvent.title,raw:{...(rowEvent.raw||{}),progress:progress.raw||progress}};
+        // An MCP call's progress names it while it runs; one that ended reads as it ended, whatever progress was kept for it.
+        if(progress&&event.status==="running")rowEvent={...rowEvent,title:progress.title||rowEvent.title,raw:{...(rowEvent.raw||{}),progress:progress.raw||progress}};
         return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={onInspectChanges}/>;
       })}
     </div>}

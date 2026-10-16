@@ -2389,8 +2389,10 @@ export default function App(){
       client=current;rpcRef.current=current;setRpc(current);
       try{
         await current.connect().catch(error=>{refused=Boolean(error?.trebellRpcResponse);throw error});if(disposed)return;refusals=0;
-        // A reconnect replaced the socket: the open approvals, questions and app requests of the old one died with it.
-        dropServerRequestsExcept(current);
+        // A reconnect replaced the socket: the open approvals, questions and app requests of the old one died with it. So does what
+        // was kept of the running turns' MCP progress and diffs: an end sent while the socket was down never came, and a thread opened
+        // again would show a step that ended as it was then.
+        dropServerRequestsExcept(current);liveExtrasRef.current.clear();
         await recoverCodexAfterRestart(current);await ensureSections(current);
         const listed=await loadThreads(current);
         const pending=pendingRuntimeThreadRef.current;
