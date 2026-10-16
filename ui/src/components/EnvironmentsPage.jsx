@@ -1,26 +1,29 @@
-import React,{useEffect,useRef,useState} from "react";
+import React,{useEffect,useLayoutEffect,useRef,useState} from "react";
 import { Laptop2, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { api } from "../api.js";
 
 // The Environments page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves
 // on, or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.
 let environmentsOnScreen=null;
-// An add outlives the page that sent it too: the page the person comes back to before it answers is busy with it, as the one they
-// left was, and the page on screen shows what it did once it lands.
+// An add outlives the page that sent it too ({draft, name}: the form as it was sent). The page the person comes back to before it
+// answers shows that form, is busy with it as the one they left was, and says it is adding it; once it lands the page on screen shows
+// what it did.
 let adding=null;
 const BLANK_DRAFT={type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"",themeDirectory:""};
+const addingMessage=name=>({text:`Adding “${name}”…`,tone:"notice",adding:true});
 
 export default function EnvironmentsPage({onOfferUndo}={}){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
-  const [draft,setDraft]=useState(BLANK_DRAFT);
+  const [startedWith]=useState(()=>adding);
+  const [draft,setDraft]=useState(()=>adding?.draft||BLANK_DRAFT);
   // Every button is disabled while an action runs, which drops the keyboard on the page body; once the page is idle again it goes
   // back to the button that started the action, if that is still there (a removed environment's row is not).
   const [busy,setBusyState]=useState(()=>adding?"add":"");
   const busyFocusRef=useRef(null);
   const setBusy=value=>{if(value&&!busyFocusRef.current)busyFocusRef.current=document.activeElement;setBusyState(value)};
   useEffect(()=>{if(busy)return;const button=busyFocusRef.current;busyFocusRef.current=null;if(button&&button!==document.body&&button.isConnected&&!button.disabled&&document.activeElement===document.body)button.focus()},[busy]);
-  // A notice reports what an action did; an error says what failed and is styled as one.
-  const [message,setMessageState]=useState({text:"",tone:"notice"});
+  // A notice reports what an action did; an error says what failed and is styled as one. An add on its way says so (adding).
+  const [message,setMessageState]=useState(()=>adding?addingMessage(adding.name):{text:"",tone:"notice"});
   const setMessage=(text,tone="notice")=>setMessageState({text:String(text||""),tone});
   const setError=text=>setMessage(text,"error");
   // Host discovery (ssh -V, wsl --list) can take seconds: until /api/environments first answers, the page says it is checking and
@@ -37,20 +40,30 @@ export default function EnvironmentsPage({onOfferUndo}={}){
   const emptyLocal=draft.type==="local"&&![draft.name,draft.cwd,draft.themeDirectory].some(value=>value.trim());
 
   async function refresh({reportErrors=false}={}){
-    try{setData(await api("/api/environments"));setDiscovery("done");if(reportErrors)setMessage("");return true}
+    try{setData(await api("/api/environments"));setDiscovery("done");if(reportErrors)setMessageState(current=>current.adding?current:{text:"",tone:"notice"});return true}
     catch(error){setDiscovery(state=>state==="done"?"done":"failed");if(reportErrors)setError("Could not refresh environments: "+(error?.message||String(error)));return false}
   }
   useEffect(()=>{refresh({reportErrors:true})},[]);
 
   async function add(){
-    setBusy("add");setMessage("");
-    const page=()=>environmentsOnScreen?.current||screenRef.current;
-    try{
-      const body={...draft,port:Number.isInteger(portNumber)?portNumber:22,name:draft.name||({local:"Local machine",wsl:"WSL",ssh:"SSH"}[draft.type])};
-      await (adding=api("/api/environments",{method:"POST",body}));
-      page().startOver();
-      await page().refresh();
-    }catch(e){page().showError(e.message)}finally{adding=null;page().idle()}
+    const sent=draft,name=draft.name||({local:"Local machine",wsl:"WSL",ssh:"SSH"}[draft.type]);
+    setBusy("add");setMessageState(addingMessage(name));
+    const record=adding={draft:sent,name};let failure=null;
+    try{await api("/api/environments",{method:"POST",body:{...draft,port:Number.isInteger(portNumber)?portNumber:22,name}})}
+    catch(e){failure=e.message||String(e)}
+    if(adding===record)adding=null;
+    const page=environmentsOnScreen?.current;
+    if(page)await page.addLanded(record,failure);
+  }
+  // What an add did, on the page on screen: a failure is said, with the form as it is; an add that went through is listed, and the
+  // form starts over if it still holds what was sent (one the person changed meanwhile keeps their changes).
+  async function addLanded(record,failure){
+    if(failure)setError(failure);
+    else{
+      setDraft(current=>current===record.draft?BLANK_DRAFT:current);setMessageState(current=>current.adding?{text:"",tone:"notice"}:current);
+      await refresh();
+    }
+    setBusy("");
   }
   // The listed profile is the whole saved environment, and POST /api/environments keeps its id, so Undo puts back the same
   // environment: projects that use it find it again.
@@ -73,8 +86,14 @@ export default function EnvironmentsPage({onOfferUndo}={}){
     await environmentsOnScreen?.current?.refresh({reportErrors:true});
   }
   const screenRef=useRef(null);
-  screenRef.current={showError:setError,refresh,startOver:()=>setDraft(BLANK_DRAFT),idle:()=>setBusy("")};
-  useEffect(()=>{const page=screenRef;environmentsOnScreen=page;return()=>{if(environmentsOnScreen===page)environmentsOnScreen=null}},[]);
+  screenRef.current={showError:setError,refresh,addLanded};
+  // This is the page on screen from the commit that draws it. An add it started busy with that landed while it was being drawn shows
+  // then.
+  useLayoutEffect(()=>{
+    const page=screenRef;environmentsOnScreen=page;
+    if(startedWith&&adding!==startedWith)void addLanded(startedWith,null);
+    return()=>{if(environmentsOnScreen===page)environmentsOnScreen=null};
+  },[]);
   async function setEnabled(id,enabled){
     setBusy("enabled:"+id);setMessage("");
     try{

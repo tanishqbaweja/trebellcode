@@ -689,35 +689,53 @@ test.describe("Adding an environment",()=>{
   });
 
   // The person adds an environment while the server is slow, goes to Projects and comes back before it answers, and waits. The
-  // page they come back to is busy with the add, as the one they left was, so typing it again cannot add it twice, and it lists
-  // the environment once the add lands, without a Refresh.
-  test("an Add that lands after the person left Environments and came back is listed without Refresh, and the page is busy with it until then",async({page,request})=>{
+  // page they come back to shows the form as it was sent and says it is adding it, and is busy with it as the one they left was, so
+  // it cannot be added twice; it lists the environment once the add lands, without a Refresh, and the form starts over. The second
+  // time they start the next environment in that form while the add is on its way: what they type there stays once it lands.
+  test("an Add that lands after the person left Environments and came back is listed without Refresh, and the page says it is adding it until then",async({page,request})=>{
     await open(page,request);
-    const door=gate(),adds=[];
-    await page.route(/\/api\/environments$/,async route=>{if(route.request().method()!=="POST")return route.fallback();adds.push(route.request().postDataJSON()?.name);await door.promise;return route.fallback()});
+    const hold={door:gate()},adds=[];
+    await page.route(/\/api\/environments$/,async route=>{if(route.request().method()!=="POST")return route.fallback();adds.push(route.request().postDataJSON()?.name);await hold.door.promise;return route.fallback()});
     try{
       await nav(page,"Environments").click();
       await hostDiscovered(page);
-      const form=page.locator(".environment-create"),name=form.getByRole("textbox",{name:"Name",exact:true}),add=form.getByRole("button",{name:"Add environment",exact:true});
-      const listed=page.locator(".environment-list>div strong"),refresh=page.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true});
+      const form=page.locator(".environment-create"),name=form.getByRole("textbox",{name:"Name",exact:true}),cwd=form.getByRole("textbox",{name:"Working directory",exact:true}),add=form.getByRole("button",{name:"Add environment",exact:true});
+      const listed=page.locator(".environment-list>div strong"),refresh=page.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true}),status=page.locator(".environments-page>.inline-status");
+      const leaveAndComeBack=async()=>{await nav(page,"Projects").click();await expect(page.locator(".projects-page")).toBeVisible();await nav(page,"Environments").click();await hostDiscovered(page)};
       await name.click();await page.keyboard.type("Slow box",{delay:15});
       await add.click();
       await expect.poll(()=>adds).toEqual(["Slow box"]);
-      await nav(page,"Projects").click();await expect(page.locator(".projects-page")).toBeVisible();
-      await nav(page,"Environments").click();
-      await hostDiscovered(page);
+      await expect.soft(status,"the page the add is sent from says it is adding it").toHaveText("Adding “Slow box”…");
+      await leaveAndComeBack();
       await expect(listed,"the environment is not listed while its add is on its way").toHaveText(["Local machine"]);
-      await name.click();await page.keyboard.type("Slow box",{delay:15});
-      await expect.soft(refresh,"Refresh while the add is on its way").toBeDisabled();
-      await expect.soft(add,"Add environment while the add is on its way").toBeDisabled();
-      door.open();
+      await expect(name,"the page come back to shows the form the add was sent with").toHaveValue("Slow box");
+      await expect(status,"and says the add is on its way").toHaveText("Adding “Slow box”…");
+      await expect(refresh,"Refresh while the add is on its way").toBeDisabled();
+      await expect(add,"Add environment while the add is on its way").toBeDisabled();
+      await shootModes(page,"environment-adding-after-return",{show:form});
+      hold.door.open();
       await expect(listed,"the environment once its add has landed, with no Refresh").toHaveText(["Local machine","Slow box"]);
-      await expect(refresh).toBeEnabled();
-      await expect(name,"the form starts over once the add lands, as on the page it was sent from").toHaveValue("");
-      expect(adds,"environments sent to be added").toEqual(["Slow box"]);
-      expect((await listedEnvironments(request)).map(profile=>profile.name)).toEqual(["Slow box"]);
+      await expect(refresh).toBeEnabled();await expect(status).toHaveCount(0);
+      await expect(name,"the form starts over once the add lands, as it still holds what was sent").toHaveValue("");
+      // The next one: back again while it is on its way, the person types the environment after it into the form it shows.
+      hold.door=gate();
+      await name.click();await page.keyboard.type("Second box",{delay:15});
+      await add.click();
+      await expect.poll(()=>adds).toEqual(["Slow box","Second box"]);
+      await leaveAndComeBack();
+      await expect(name).toHaveValue("Second box");await expect(status).toHaveText("Adding “Second box”…");
+      await name.click();await page.keyboard.press("Control+A");await page.keyboard.type("Third box",{delay:15});
+      await cwd.click();await page.keyboard.type("C:\\code\\third",{delay:15});
+      hold.door.open();
+      await expect(listed).toHaveText(["Local machine","Slow box","Second box"]);
+      await expect(refresh).toBeEnabled();await expect(status).toHaveCount(0);
+      await expect(name,"what was typed while the add was on its way stays once it lands").toHaveValue("Third box");
+      await expect(cwd).toHaveValue("C:\\code\\third");
+      await expect(add).toBeEnabled();
+      expect(adds,"environments sent to be added").toEqual(["Slow box","Second box"]);
+      expect((await listedEnvironments(request)).map(profile=>profile.name)).toEqual(["Slow box","Second box"]);
       await shootModes(page,"environment-added-after-return",{show:page.locator(".environment-list")});
-    }finally{door.open()}
+    }finally{hold.door.open()}
   });
 
   // Docker Desktop's own WSL distro runs its engine. Offline, host discovery answers as a fixed host whose wsl --list names one distro
