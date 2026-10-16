@@ -152,6 +152,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   // a line, once the field is left: shown at each key, it took a new line or a comma away as soon as it was typed. Another window
   // coming to the front leaves the focus on the field (activeElement), so the text stays as typed meanwhile.
   const [environmentKeysText,setEnvironmentKeysText]=useState(null);
+  // A refused Save profile is said in the editor, under its buttons, and scrolled into view: the status line under the editor was out
+  // of view of the button.
+  const [instanceRefusal,setInstanceRefusal]=useState("");
+  const instanceRefusalRef=useRef(null);
+  useEffect(()=>{if(instanceRefusal)instanceRefusalRef.current?.scrollIntoView({block:"nearest"})},[instanceRefusal]);
   const [modelDraft,setModelDraft]=useState({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});
   const [customModelEditorOpen,setCustomModelEditorOpen]=useState(false);
   // What the custom model form has to say (a draft it refuses, or that the model was saved), said in its own card under the form and
@@ -294,14 +299,14 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     finally{setAgentSelectionOverride(null)}
   }
   function editInstance(instance=null){
-    setEnvironmentKeysText(null);
+    setEnvironmentKeysText(null);setInstanceRefusal("");
     setInstanceDraft(instance?{...instance}:{
       id:`${selectedAgent}-${crypto.randomUUID()}`,kind:selectedAgent,displayName:`${(agentInfo?.definitions||[]).find(item=>item.id===selectedAgent)?.name||selectedAgent} profile`,binaryPath:"",homePath:"",serverUrl:"",autoCompactWindow:"",
     });
   }
   async function saveInstance(){
     if(!instanceDraft||savingInstance)return;
-    setSavingInstance(true);
+    setSavingInstance(true);setInstanceRefusal("");
     setAgentMessageTarget(instanceDraft.kind||selectedAgent);
     showAgentMessage("Saving runtime profile…");
     try{
@@ -312,7 +317,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       const result=active?await switchRuntime({runtime:instance.kind||selectedAgent,instanceId:instance.id,resetThread:true},request):await request();
       if(!active&&result.selectedInstanceId===instance.id)await switchRuntime({runtime:result.selectedRuntime||instance.kind,instanceId:instance.id,resetThread:true},async()=>result,{gate:false});
       setAgentInfo(result);setInstanceDraft(null);showAgentMessage("Runtime profile saved.");
-    }catch(error){showAgentMessage(error.message,true)}
+    }catch(error){showAgentMessage("");setInstanceRefusal(`Could not save the runtime profile “${instanceDraft.displayName||instanceDraft.id}”: ${error.message}`)}
     finally{setSavingInstance(false)}
   }
   async function removeInstance(instance){
@@ -884,6 +889,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           <label>Approved inherited environment variables<textarea value={environmentKeysText??(instanceDraft.approvedEnvironmentKeys||[]).join("\n")} onChange={e=>{setEnvironmentKeysText(e.target.value);setInstanceDraft({...instanceDraft,approvedEnvironmentKeys:e.target.value.split(/\r?\n|,/).map(value=>value.trim()).filter(Boolean)})}} onBlur={e=>{if(document.activeElement!==e.target)setEnvironmentKeysText(null)}} placeholder={"One variable name per line\nExample: HTTPS_PROXY"}/></label>
           <p>Trebell passes only a safe OS baseline, this runtime's own credential variables, and the names listed here. Values are read from the parent process at launch time and are not stored in the profile.</p>
           <div className="provider-key-actions"><button className="setting-action" onClick={saveInstance} disabled={savingInstance} aria-busy={savingInstance?"true":undefined}>{savingInstance&&<RefreshCw size={12} className="spin" aria-hidden="true"/>}Save profile</button><button onClick={()=>setInstanceDraft(null)}>Cancel</button></div>
+          {instanceRefusal&&<p ref={instanceRefusalRef} className="provider-status-error" role="alert">{instanceRefusal}</p>}
         </div>}
         <p className={!agentInfoError&&(agentInfo===null||selectedAgentStatus?.available)?"provider-note":"provider-status-error"}><strong>{selectedAgentStatus?.name||selectedAgent}</strong> · {agentInfo===null?"checking…":selectedAgentStatus?.authenticated==null&&selectedAgentStatus?.message?selectedAgentStatus.message:selectedAgentStatus?.available?"ready":selectedAgentStatus?.message||agentInfo?.error||"setup required"}{agentInfoError&&<span data-testid="agent-runtime-refresh-error" role="alert"> · Could not refresh harness status ({agentInfoError}); showing the last known list</span>}{agentMessage&&<span className={"agent-runtime-message"+(agentMessageError?" error":"")} data-testid="agent-runtime-message" role={agentMessageError?"alert":undefined}>{" · "+agentMessageText}</span>} <button onClick={()=>loadAgentRuntimes()} disabled={!!authenticatingAgent}><RefreshCw size={11}/> Refresh</button></p>
       </div>}

@@ -173,6 +173,16 @@ async function switchMode(page,mode){
   const html=page.locator("html");if(await html.getAttribute("data-mode")===mode)return;
   await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(html).toHaveAttribute("data-mode",mode);
 }
+// Scrolls Settings with the mouse wheel in small steps until the target is wholly in view, and no further, as a person stops once
+// what they scroll to shows: scrolled down to, it ends near the bottom of the window.
+async function wheelIntoView(page,target){
+  await page.mouse.move(Math.round(page.viewportSize().width*.65),400);
+  await expect.poll(async()=>{
+    const box=await target.boundingBox(),height=page.viewportSize().height;
+    if(box&&box.y>=60&&box.y+box.height<=height-4)return true;
+    await page.mouse.wheel(0,box&&box.y<60?-40:40);return false;
+  },{timeout:20_000,intervals:[120]}).toBe(true);
+}
 function expectCatalogModels(relay){
   for(const call of relay.calls("thread/start","turn/start"))expect(CATALOGS[call.runtime].models,`${call.method} sent ${call.params.model} to ${call.runtime}`).toContain(call.params.model);
 }
@@ -675,6 +685,53 @@ test("a kept switch refusal ends once a switch to its harness goes through, also
     await openHarnessSettings(page);
     await expect(row.locator("button em")).toHaveText("Switch");await expect(row.getByRole("alert"),"the refusal OpenCode has since outlived").toHaveCount(0);
     await page.screenshot({animations:"disabled",path:auditDir+"harness-switch-refusal-ended-1280x800.png"});
+  }finally{await close()}
+});
+
+// A refused Save profile says why in the profile editor, under its buttons: it went to the status line under the editor, which was
+// below the fold at 1280x800 once Save profile was scrolled into view, so nothing on screen changed and the editor just stayed open.
+test("a refused Save profile says why in the profile editor, in view, once",async({page})=>{
+  test.setTimeout(90_000);
+  const {close}=await startHarness(page,{runtime:"claude",profileEditing:true});
+  await keepModeSaves(page);
+  const reason="Claude auto-compact threshold must be an integer between 100000 and 1000000 tokens";
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    const editor=page.locator(".runtime-profile-editor"),refusal=editor.getByRole("alert");
+    const autoCompact=editor.getByRole("spinbutton",{name:"Auto-compact after"}),save=editor.getByRole("button",{name:"Save profile",exact:true});
+    for(const pass of ["dark","light"])for(const width of [1280,900]){
+      await switchMode(page,pass);await page.setViewportSize({width,height:800});
+      await page.getByRole("button",{name:"Threads",exact:true}).click();await openHarnessSettings(page);
+      // The active profile is edited at 1280 and a new one is added at 900; either is refused the same way. Each control is
+      // scrolled to just before it is used, so Save profile ends near the bottom of the window.
+      const adding=width===900,opener=adding?page.getByRole("button",{name:"Add profile",exact:true}):page.locator(".runtime-profile-row").filter({hasText:"Claude Code"}).getByRole("button",{name:"Edit",exact:true});
+      await wheelIntoView(page,opener);await opener.click();
+      await wheelIntoView(page,autoCompact);await autoCompact.click();await page.keyboard.type("50000",{delay:15});
+      await wheelIntoView(page,save);
+      const rejected=agentRuntimePost(page);
+      await save.click();
+      expect((await rejected).status()).toBe(400);
+      await expect(refusal).toHaveText(`Could not save the runtime profile “${adding?"Claude Code profile":"Claude Code"}”: ${reason}`);
+      await expect(refusal).toBeInViewport({ratio:1});await expect(save).toBeInViewport({ratio:1});
+      await expect(editor).toBeVisible();await expect(autoCompact).toHaveValue("50000");
+      // Said once: the status line under the editor does not repeat it.
+      await expect(page.getByTestId("agent-runtime-message")).toHaveCount(0);
+      await page.screenshot({animations:"disabled",path:`${auditDir}harness-profile-refused-in-editor-${pass}-${width}x800.png`});
+      // Cancel closes the editor, and the next one opens without the refusal.
+      await editor.getByRole("button",{name:"Cancel",exact:true}).click();await expect(editor).toHaveCount(0);
+      await page.getByRole("button",{name:"Add profile",exact:true}).click();await expect(editor).toBeVisible();await expect(refusal).toHaveCount(0);
+      await editor.getByRole("button",{name:"Cancel",exact:true}).click();
+    }
+    // A value inside the range saves: the editor closes and the status line says so.
+    await page.getByRole("button",{name:"Add profile",exact:true}).click();
+    await autoCompact.click();await page.keyboard.type("50000",{delay:15});await save.click();await expect(refusal).toBeVisible();
+    await autoCompact.fill("250000");
+    const accepted=agentRuntimePost(page);
+    await save.click();
+    expect((await accepted).status()).toBe(200);
+    await expect(editor).toHaveCount(0);
+    await expect(page.getByTestId("agent-runtime-message")).toHaveText("· Runtime profile saved.");
   }finally{await close()}
 });
 
