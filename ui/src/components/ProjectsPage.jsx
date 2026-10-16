@@ -417,9 +417,14 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   screenRef.current={showError:setError,placeRestored,onProjectUpdated,noteInCard:(project,area,text)=>setCardError({id:project.id,area,text})};
   useEffect(()=>{const page=screenRef;projectsOnScreen=page;return()=>{if(projectsOnScreen===page)projectsOnScreen=null}},[]);
 
+  // Each editor opened is its own (opened). Its save on its way (Save pressed with Enter twice or held, or double-clicked) is the one
+  // a second press waits for: the second sends nothing, nor does a press once it is saved. When the save lands it closes the editor
+  // it saved, not one the person opened since (after Cancel or another Edit).
+  const editorSavesRef=useRef(new WeakSet());
   function editScript(project,script=null){
     const value=script||blankScript();
     setEditor({
+      opened:{},
       projectId:project.id,
       id:value.id||null,
       name:value.name||"",
@@ -433,6 +438,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
 
   async function submitScript(project){
     if(!editor?.command.trim())return;
+    const opened=editor.opened,saving=editorSavesRef.current;if(saving.has(opened))return;
     const item={
       id:editor.id||crypto.randomUUID(),
       name:editor.name.trim()||"Project action",
@@ -445,8 +451,9 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
     const scripts=editor.id
       ? project.scripts.map(script=>script.id===editor.id?item:script)
       : [...project.scripts,item];
-    const saved=await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId||item.id});
-    if(saved)setEditor(null);
+    let saved=null;
+    try{saving.add(opened);saved=await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId||item.id})}finally{if(!saved)saving.delete(opened)}
+    if(saved)setEditor(current=>current?.opened===opened?null:current);
   }
 
   // A deleted action cannot be brought back, so Delete asks first, in the app's dialog; Cancel keeps it. The list saved without it is
@@ -460,13 +467,16 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   }
 
   function editHook(project,hook=null){
-    const value=hook||blankHook();setHookEditor({projectId:project.id,id:value.id||null,name:value.name||"",event:value.event||"verification.required",command:value.command||"",failureMode:value.failureMode||"block",timeoutMs:Number(value.timeoutMs)||30000,actionsText:(value.actions||[]).join(", ")});
+    const value=hook||blankHook();setHookEditor({opened:{},projectId:project.id,id:value.id||null,name:value.name||"",event:value.event||"verification.required",command:value.command||"",failureMode:value.failureMode||"block",timeoutMs:Number(value.timeoutMs)||30000,actionsText:(value.actions||[]).join(", ")});
   }
 
   async function submitHook(project){
     if(!hookEditor?.command.trim())return;
+    const opened=hookEditor.opened,saving=editorSavesRef.current;if(saving.has(opened))return;
     const event=hookEditor.event,item={id:hookEditor.id||crypto.randomUUID(),name:hookEditor.name.trim()||hookEventLabel(event),event,command:hookEditor.command.trim(),enabled:true,failureMode:event==="source-control.after"?"warn":hookEditor.failureMode,timeoutMs:Math.max(1000,Math.min(300000,Number(hookEditor.timeoutMs)||30000)),actions:event.startsWith("source-control.")?hookEditor.actionsText.split(",").map(value=>value.trim()).filter(Boolean):[]};
-    const hooks=hookEditor.id?(project.hooks||[]).map(hook=>hook.id===hookEditor.id?item:hook):[...(project.hooks||[]),item];const saved=await saveProject(project,{hooks});if(saved)setHookEditor(null);
+    const hooks=hookEditor.id?(project.hooks||[]).map(hook=>hook.id===hookEditor.id?item:hook):[...(project.hooks||[]),item];let saved=null;
+    try{saving.add(opened);saved=await saveProject(project,{hooks})}finally{if(!saved)saving.delete(opened)}
+    if(saved)setHookEditor(current=>current?.opened===opened?null:current);
   }
 
   async function deleteHook(project,id){const saved=await saveProject(project,{hooks:(project.hooks||[]).filter(hook=>hook.id!==id)});if(saved&&hookEditor?.projectId===project.id&&hookEditor?.id===id)setHookEditor(null)}

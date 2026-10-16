@@ -84,6 +84,14 @@ async function openProjects(page){
 // Another checkout of the main project's repository, opened after it so the list leads with it: when Git answers, the main
 // project's card moves into this checkout's group and is drawn again there.
 const leadingCheckout=(request,boot)=>request.post("/api/projects",{data:{path:join(boot.cwd,"docs"),name:"Neighbour Project"}});
+// A door requests wait at until the test opens it, as on a slow server; once open, it lets every request through.
+function gate(){let open=()=>{};const promise=new Promise(resolve=>{open=resolve});return {promise,open}}
+// The keyboard taken with Tab from where it is to target, as a person tabs to a button.
+async function tabTo(page,target){
+  for(let step=0;step<8&&!await target.evaluate(node=>node===document.activeElement);step++)await page.keyboard.press("Tab");
+  await expect(target).toBeFocused();
+}
+const frames=page=>page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
 
 // Each test leaves only the main project, under its own name, and no saved environments.
 test.afterEach(async({request})=>{
@@ -1184,6 +1192,117 @@ test.describe("A card's failures",()=>{
       await shootModes(page,"card-remove-failed",{show:failure});
     }finally{
       try{rmSync(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}catch{}
+    }
+  });
+});
+
+test.describe("Saving an action or a hook",()=>{
+  // Every save of a card's actions or hooks waits at a door until the test opens it, so a press made while a save is on its way
+  // is told apart from one made after it lands. saves lists what each save sent was for: "actions" or "hooks".
+  async function holdCardSaves(page){
+    const hold={door:gate(),saves:[]};
+    await page.route(/\/api\/projects$/,async route=>{
+      const body=route.request().method()==="POST"?route.request().postDataJSON():null;
+      if(!body?.scripts&&!body?.hooks)return route.fallback();
+      hold.saves.push(body.scripts?"actions":"hooks");await hold.door.promise;return route.fallback();
+    });
+    return hold;
+  }
+  const savedNames=async(request,boot,kind)=>((await listedProjects(request)).find(project=>project.path===boot.cwd)?.[kind]||[]).map(item=>item.name);
+
+  test("Save action pressed again while it saves, from the keyboard or with a double click, saves one action, and the next one's editor keeps what is typed",async({page,request})=>{
+    const boot=await open(page,request);
+    const hold=await holdCardSaves(page);
+    try{
+      await openProjects(page);
+      const card=page.locator(".project-card.active"),editor=card.locator(".project-action-editor"),rows=card.locator(".project-action-row strong");
+      const name=editor.getByPlaceholder("Action name (e.g. Dev server)"),command=editor.getByPlaceholder("Command (e.g. npm run dev)"),save=editor.getByRole("button",{name:"Save action",exact:true});
+      const addAction=async(label,run)=>{await card.getByRole("button",{name:"Add action",exact:true}).click();await name.click();await page.keyboard.type(label,{delay:10});await command.click();await page.keyboard.type(run,{delay:10})};
+      // Enter on Save action, Enter again, then Enter held: all while the first save is on its way.
+      await addAction("First action","node first.js");
+      await tabTo(page,save);
+      await page.keyboard.press("Enter");
+      await expect.poll(()=>hold.saves.length).toBeGreaterThan(0);
+      await page.keyboard.press("Enter");
+      await page.keyboard.down("Enter");for(let repeat=0;repeat<5;repeat++)await page.keyboard.down("Enter");await page.keyboard.up("Enter");
+      hold.door.open();
+      await expect(editor).toHaveCount(0);
+      expect(hold.saves,"saves sent for Save action pressed again while it saved").toEqual(["actions"]);
+      await expect(rows).toHaveText(["First action"]);
+      // The person goes straight on to the next action, and double-clicks its Save action.
+      hold.door=gate();
+      await addAction("Second action","node second.js");
+      await expect(name).toHaveValue("Second action");
+      await save.dblclick();
+      await expect.poll(()=>hold.saves.length).toBeGreaterThan(1);
+      hold.door.open();
+      await expect(editor).toHaveCount(0);
+      expect(hold.saves,"saves sent for a double click on Save action").toEqual(["actions","actions"]);
+      await expect(rows).toHaveText(["First action","Second action"]);
+      expect(await savedNames(request,boot,"scripts")).toEqual(["First action","Second action"]);
+      await shootModes(page,"card-action-saved-once",{show:card.locator(".project-actions")});
+    }finally{
+      hold.door.open();await request.post("/api/projects",{data:{path:boot.cwd,scripts:[]}});
+    }
+  });
+
+  test("Enter held on Save hook saves one hook",async({page,request})=>{
+    const boot=await open(page,request);
+    const hold=await holdCardSaves(page);
+    try{
+      await openProjects(page);
+      const card=page.locator(".project-card.active"),editor=card.locator(".project-hook-editor"),save=editor.getByRole("button",{name:"Save hook",exact:true});
+      await card.getByRole("button",{name:"Add hook",exact:true}).click();
+      await editor.getByPlaceholder("Hook name (e.g. Lint gate)").click();await page.keyboard.type("Held hook",{delay:10});
+      await editor.getByPlaceholder("Command (e.g. npm run lint)").click();await page.keyboard.type("npm run held",{delay:10});
+      await tabTo(page,save);
+      await page.keyboard.down("Enter");
+      await expect.poll(()=>hold.saves.length).toBeGreaterThan(0);
+      for(let repeat=0;repeat<8;repeat++)await page.keyboard.down("Enter");
+      await page.keyboard.up("Enter");
+      hold.door.open();
+      await expect(editor).toHaveCount(0);
+      expect(hold.saves,"saves sent for Enter held on Save hook").toEqual(["hooks"]);
+      await expect(card.locator(".project-hook-row strong")).toHaveText(["Held hook"]);
+      expect(await savedNames(request,boot,"hooks")).toEqual(["Held hook"]);
+      await shootModes(page,"card-hook-saved-once",{show:card.locator(".project-hooks")});
+    }finally{
+      hold.door.open();await request.post("/api/projects",{data:{path:boot.cwd,hooks:[]}});
+    }
+  });
+
+  // Save, then Cancel while the save is on its way, and Add again for the next one: the save that lands closes nothing, and the
+  // editor opened since keeps what the person types in it.
+  test("a save that lands after its editor was cancelled leaves the editor opened since open with what was typed",async({page,request})=>{
+    const boot=await open(page,request);
+    const hold=await holdCardSaves(page);
+    try{
+      await openProjects(page);
+      const card=page.locator(".project-card.active");
+      for(const [kind,placeholder,command] of [["action","Action name (e.g. Dev server)","Command (e.g. npm run dev)"],["hook","Hook name (e.g. Lint gate)","Command (e.g. npm run lint)"]]){
+        const editor=card.locator(`.project-${kind}-editor`),name=editor.getByPlaceholder(placeholder),add=card.getByRole("button",{name:"Add "+kind,exact:true});
+        hold.door=gate();const sent=hold.saves.length;
+        await add.click();await name.click();await page.keyboard.type("Saved "+kind,{delay:10});
+        await editor.getByPlaceholder(command).click();await page.keyboard.type("npm run saved",{delay:10});
+        await editor.getByRole("button",{name:"Save "+kind,exact:true}).click();
+        await expect.poll(()=>hold.saves.length).toBe(sent+1);
+        await editor.getByRole("button",{name:"Cancel",exact:true}).click();await expect(editor).toHaveCount(0);
+        await add.click();await name.click();await page.keyboard.type("Next "+kind,{delay:10});
+        hold.door.open();
+        await expect(card.locator(`.project-${kind}-row strong`).filter({hasText:"Saved "+kind})).toHaveCount(1);
+        // The person refreshes the list. Refresh reads it after the save has, so what the save did as it ended is on screen by then.
+        const listed=page.waitForResponse(response=>/\/api\/projects$/.test(response.url())&&response.request().method()==="GET");
+        await page.getByRole("button",{name:"Refresh projects",exact:true}).click();await listed;await frames(page);
+        await expect(editor,`the ${kind} editor opened after Cancel stays open`).toHaveCount(1);
+        await expect(name).toHaveValue("Next "+kind);
+        await editor.scrollIntoViewIfNeeded();
+        await shootModes(page,`card-${kind}-editor-kept`,{show:editor});
+        await editor.getByRole("button",{name:"Cancel",exact:true}).click();
+      }
+      expect(await savedNames(request,boot,"scripts")).toEqual(["Saved action"]);
+      expect(await savedNames(request,boot,"hooks")).toEqual(["Saved hook"]);
+    }finally{
+      hold.door.open();await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],hooks:[]}});
     }
   });
 });
