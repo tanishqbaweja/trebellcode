@@ -66,6 +66,11 @@ async function holdKey(page,key,pressed=async()=>{}){
   for(let repeat=0;repeat<5;repeat++){await page.waitForTimeout(33);await page.keyboard.down(key)}
   await page.keyboard.up(key);await frames(page);
 }
+// A paste as the browser makes it: the paste event, then, when the app leaves the text to the browser, the text put in at the caret.
+const pasteText=(page,text)=>page.getByTestId("composer").evaluate((node,text)=>{
+  const data=new DataTransfer();data.setData("text/plain",text);
+  if(node.dispatchEvent(new ClipboardEvent("paste",{clipboardData:data,bubbles:true,cancelable:true})))document.execCommand("insertText",false,text);
+},text);
 
 test("a file over the attachment limit is refused at once by its name, and an accepted file shows as uploading until it is in",async({page},testInfo)=>{
   test.setTimeout(90_000);
@@ -407,6 +412,30 @@ test("Enter held on the @ file menu attaches the file once, and its repeats send
     await expect(page.getByText("The login redirect is fixed.")).toBeVisible({timeout:15_000});
     await expect(users).toHaveCount(2);await expect(users.last()).toContainText("Check @src/login.js for the redirect");
     await expect(context).toHaveCount(0);expect(harness.turns(harness.threads[0])).toHaveLength(2);
+  }finally{await harness.close()}
+});
+
+test("Enter on a draft over the 120,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page);
+  try{
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send"),status=page.locator(".composer-status"),users=page.locator(".user-bubble");
+    const over="Draft is 120,002 characters · maximum 120,000",chunk="The quick brown fox jumps over the lazy dog. ".repeat(700).slice(0,30_000);
+    const length=()=>composer.evaluate(node=>node.value.length);
+    // Four pastes reach the limit (a longer one would become an attachment), and two characters typed pass it.
+    await composer.click();for(let part=0;part<4;part++)await pasteText(page,chunk);
+    await expect.poll(length).toBe(120_000);
+    await page.keyboard.type("!!",{delay:20});
+    await expect(status).toContainText(over);await expect(send).toBeDisabled();
+    await page.keyboard.press("Enter");await frames(page);
+    await expect(page.getByText("Message exceeds the 120,000 character limit")).toHaveCount(0);await expect(page.locator(".activity-card-failed")).toHaveCount(0);
+    await expect.poll(length).toBe(120_002);await expect(users).toHaveCount(1);
+    await expect(send).toHaveAttribute("title",over);
+    await shootBoth(page,"over-limit-enter",()=>expect(status).toContainText(over));
+    // Two characters fewer, the draft is at the limit and Send is back.
+    await composer.click();await page.keyboard.press("Control+End");await page.keyboard.press("Backspace");await page.keyboard.press("Backspace");
+    await expect(send).toBeEnabled();await expect(send).toHaveAttribute("title","Send message");await expect(status).toContainText("120,000 / 120,000 chars");
+    expect(harness.turns(harness.threads[0])).toHaveLength(1);
   }finally{await harness.close()}
 });
 

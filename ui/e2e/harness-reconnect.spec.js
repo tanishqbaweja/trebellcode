@@ -80,8 +80,10 @@ test("a send while the harness transport is down keeps the draft, never falls ba
     await expect(composer).toBeEditable();
     await expect(send).toBeDisabled();
     await expect(send).toHaveAttribute("title","Reconnecting to Codex…");
-    await composer.press("Enter");
-    await expect(page.getByText("Codex is reconnecting. Your draft was kept; send it again once Codex is connected.")).toBeVisible();
+    // Enter does what the disabled Send does: nothing. No failed card says again what the line under the composer says.
+    await composer.press("Enter");await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+    await expect(transport).toHaveText("Reconnecting to Codex… · your draft stays here until it connects.");
+    await expect(page.getByText("Codex is reconnecting. Your draft was kept; send it again once Codex is connected.")).toHaveCount(0);await expect(page.locator(".activity-card-failed")).toHaveCount(0);
     await expect(composer).toHaveValue(draft);
     expect(directCalls).toBe(0);
     expect(harness.requests.some(message=>message.method==="thread/start"||message.method==="turn/start")).toBe(false);

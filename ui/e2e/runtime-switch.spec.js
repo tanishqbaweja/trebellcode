@@ -175,6 +175,9 @@ test("a harness switch clears the old model, blocks sends until the new catalog 
     expect(relay.calls("thread/start","turn/start")).toEqual([]);
     expect(server.counts.direct).toBe(0);
     await expect(composer).toHaveValue(draft);
+    // Enter does what the disabled Send does: nothing. No failed card says again what the line under the composer says.
+    await expect(page.getByTestId("composer-runtime-switch")).toHaveText("Switching to OpenCode… · your draft stays here until it is ready.");
+    await expect(page.getByText(/Trebell is switching to OpenCode/)).toHaveCount(0);await expect(page.locator(".activity-card-failed")).toHaveCount(0);
     await page.setViewportSize({width:1280,height:800});await page.screenshot({animations:"disabled",path:auditDir+"runtime-switch-loading-models-1280x800.png",fullPage:true});
 
     releaseCatalog();
