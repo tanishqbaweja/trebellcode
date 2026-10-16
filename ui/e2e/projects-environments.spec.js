@@ -1456,6 +1456,39 @@ test.describe("Saving an action or a hook",()=>{
       hold.door.open();await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],hooks:[]}});
     }
   });
+
+  // Timeout (seconds) takes 1 to 300: what is typed beyond them is held to the nearer one once the field is left, 0 as -5 is.
+  test("a hook Timeout of 0 is held to the 1 s minimum, as -5 is held to 1 and 999 to 300, and the hook saves 1 s",async({page,request})=>{
+    const boot=await open(page,request);
+    try{
+      await openProjects(page);
+      const card=page.locator(".project-card.active"),editor=card.locator(".project-hook-editor"),timeout=editor.getByRole("spinbutton",{name:"Timeout (seconds)"});
+      await card.getByRole("button",{name:"Add hook",exact:true}).click();
+      await editor.getByPlaceholder("Hook name (e.g. Lint gate)").click();await page.keyboard.type("Quick hook",{delay:10});
+      await editor.getByPlaceholder("Command (e.g. npm run lint)").click();await page.keyboard.type("npm run quick",{delay:10});
+      for(const [typed,held] of [["-5","1"],["999","300"],["0","1"]]){
+        await timeout.click();await page.keyboard.press("Control+A");await page.keyboard.type(typed,{delay:10});await page.keyboard.press("Tab");
+        await expect(timeout,`Timeout (seconds) after ${typed} is typed and the field is left`).toHaveValue(held);
+      }
+      await shootModes(page,"card-hook-timeout-zero",{show:editor});
+      await editor.getByRole("button",{name:"Save hook",exact:true}).click();
+      await expect(editor).toHaveCount(0);
+      const saved=async()=>((await listedProjects(request)).find(project=>project.path===boot.cwd)?.hooks||[]).map(hook=>[hook.name,hook.timeoutMs]);
+      expect(await saved()).toEqual([["Quick hook",1000]]);
+      // A 0 typed and Save hook clicked straight from the field saves 1 s too; the saved hook's editor shows it.
+      await card.locator(".project-hook-row").getByRole("button",{name:"Edit hook",exact:true}).click();
+      await expect(timeout).toHaveValue("1");
+      await timeout.click();await page.keyboard.press("Control+A");await page.keyboard.type("30",{delay:10});await page.keyboard.press("Tab");
+      await editor.getByRole("button",{name:"Save hook",exact:true}).click();await expect(editor).toHaveCount(0);
+      await expect.poll(saved).toEqual([["Quick hook",30000]]);
+      await card.locator(".project-hook-row").getByRole("button",{name:"Edit hook",exact:true}).click();
+      await timeout.click();await page.keyboard.press("Control+A");await page.keyboard.type("0",{delay:10});
+      await editor.getByRole("button",{name:"Save hook",exact:true}).click();await expect(editor).toHaveCount(0);
+      await expect.poll(saved).toEqual([["Quick hook",1000]]);
+    }finally{
+      await request.post("/api/projects",{data:{path:boot.cwd,hooks:[]}});
+    }
+  });
 });
 
 test.describe("Renaming a project",()=>{
