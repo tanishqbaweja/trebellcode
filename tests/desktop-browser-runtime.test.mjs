@@ -75,3 +75,51 @@ test("desktop isolated browser reports bounded runtime failures and responsive v
     fixture.closeAllConnections?.();await new Promise(resolve=>fixture.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }
 });
+
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+// A hidden start of the desktop app beside a fixture server of pages (path: html). done closes both.
+async function startDesktop(pages){
+  const home=await mkdtemp(join(tmpdir(),"trebell-desktop-agent-browser-"));let app=null;
+  const fixture=createServer((req,res)=>{const body=pages[req.url];res.writeHead(body?200:404,{"content-type":"text/html"});res.end(body||"missing")});
+  const fixturePort=await listen(fixture),guiPort=await freePort(),appPort=await freePort();
+  const done=async()=>{await closeElectronApp(app);fixture.closeAllConnections?.();await new Promise(resolve=>fixture.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100})};
+  try{
+    app=await electron.launch({args:[packageRoot],env:{...process.env,TREBELL_HOME:home,TREBELL_TEST_HIDDEN:"1",TREBELL_GUI_MOCK:"1",TREBELL_GUI_PORT:String(guiPort),TREBELL_APP_SERVER_PORT:String(appPort),TREBELL_E2E_OFFLINE:"1",TREBELL_E2E_ALLOW_NETWORK:"0",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""}});
+    const window=await app.firstWindow();await window.waitForLoadState("domcontentloaded");
+    return {app,window,site:`http://127.0.0.1:${fixturePort}`,gui:`http://127.0.0.1:${guiPort}`,done};
+  }catch(error){await done();throw error}
+}
+
+// What Attach screenshot gives the model of the agent browser, the page as its window shows it: the colour of an empty corner, and the
+// darkest drawn pixel of the page's heading (null before the window has painted).
+async function agentScreenshotPixels({app,window,gui}){
+  const shot=await window.evaluate(()=>window.trebellDesktop.browser.screenshot());
+  return app.evaluate(async({BrowserWindow,nativeImage},{gui,dataUrl})=>{
+    const agent=BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&!item.webContents.getURL().startsWith(gui));
+    const heading=JSON.parse(await agent.webContents.executeJavaScript("JSON.stringify(document.querySelector('h1').getBoundingClientRect())"));
+    const image=nativeImage.createFromDataURL(dataUrl);if(image.isEmpty())return null;
+    const {width,height}=image.getSize(),bitmap=image.toBitmap(),scale=width/agent.getContentSize()[0];
+    // The bitmap is BGRA; a pixel not drawn yet is transparent.
+    const rgba=(x,y)=>{const at=(Math.round(y)*width+Math.round(x))*4;return [bitmap[at+2],bitmap[at+1],bitmap[at],bitmap[at+3]]};
+    let ink=[255,255,255];
+    for(let y=Math.ceil(heading.top*scale);y<Math.floor(heading.bottom*scale);y++)for(let x=Math.ceil(heading.left*scale);x<Math.floor(heading.right*scale);x++){const pixel=rgba(x,y);if(pixel[3]===255&&pixel[0]+pixel[1]+pixel[2]<ink[0]+ink[1]+ink[2])ink=pixel.slice(0,3)}
+    return {corner:rgba(width-12,height-12).slice(0,3),ink};
+  },{gui,dataUrl:shot.dataUrl});
+}
+const lightness=([red,green,blue])=>red+green+blue;
+
+// A page that sets no background shows on white in the agent browser, as in a browser and in the Browser panel's preview, so its black
+// text and blue links can be read in the window and in the screenshot the model gets.
+test("the agent browser draws a page that sets no background on white, in its window and in Attach screenshot",{timeout:60_000},async()=>{
+  if(process.platform!=="win32")return test.skip("Desktop browser runtime fixture currently targets the Windows desktop build.");
+  const desktop=await startDesktop({"/":"<!doctype html><title>Plain page</title><h1>Plain page</h1><a href='/'>next page</a> <button>Make an error</button> <input placeholder='Type here'>"});
+  try{
+    // Open agent browser on the page, then Attach screenshot, as the Browser panel's buttons do, until the heading shows in it.
+    await desktop.window.evaluate(url=>window.trebellDesktop.browser.navigate(url),desktop.site+"/");
+    let pixels=await agentScreenshotPixels(desktop);
+    for(const end=Date.now()+10_000;(!pixels||lightness(pixels.ink)>=200)&&Date.now()<end;pixels=await agentScreenshotPixels(desktop))await sleep(150);
+    assert.ok(pixels,"the agent browser's window has painted");
+    assert.deepEqual(pixels.corner,[255,255,255],`the page shows on white, not on rgb(${pixels.corner})`);
+    assert.ok(lightness(pixels.ink)<200,`its heading is drawn in black on it, not in rgb(${pixels.ink})`);
+  }finally{await desktop.done()}
+});

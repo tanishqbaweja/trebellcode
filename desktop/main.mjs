@@ -360,7 +360,9 @@ async function ensureAgentBrowser({show=false}={}){
   const browser=new BrowserWindow({
     width:1280,height:860,show:show&&!hiddenValidation,title:"Trebell Agent Browser",
     icon:appIcon(),
-    backgroundColor:"#0a0d14",autoHideMenuBar:true,
+    // White, as a browser draws a page that sets no background (the Browser panel's preview too): its default black text then reads,
+    // in the window and in the screenshot the model gets.
+    backgroundColor:"#ffffff",autoHideMenuBar:true,
     webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,partition:"persist:trebell-agent-browser"},
   });
   agentBrowser=browser;
