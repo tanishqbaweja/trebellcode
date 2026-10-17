@@ -17,3 +17,9 @@ test("queue entries left dispatching across a restart require an explicit retry"
   assert.equal(restored.autoStartFailed,true);
   assert.equal(restored.recoveredUncertainDispatch,true);
 });
+
+test("a queue entry still on its way in this window keeps its dispatch mark when its thread opens again",()=>{
+  const [onItsWay,left]=hydratePersistedQueue([{id:"q1",text:"going",dispatchingAt:123},{id:"q2",text:"left by a reload",dispatchingAt:456}],new Set(["q1"]));
+  assert.equal(onItsWay.dispatchingAt,123);assert.equal(onItsWay.autoStartFailed,false);assert.equal(onItsWay.recoveredUncertainDispatch,undefined);
+  assert.equal(left.dispatchingAt,null);assert.equal(left.autoStartFailed,true);assert.equal(left.recoveredUncertainDispatch,true);
+});

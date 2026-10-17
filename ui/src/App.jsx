@@ -1077,8 +1077,9 @@ export default function App(){
   // The threads whose local queue a Stop holds (stop()): nothing in it starts by itself, and its follow-ups say so, until the thread
   // runs a turn again (startTurn) or the Stop fails. The hold is saved with the thread's queue (trebellQueueHeld), so the thread opened
   // after a reload or a restart reads it held too (openThreadInternal, saved: it comes from there); a thread whose hold this window has
-  // set or ended (holdKnownRef) keeps this window's.
-  const localQueueStartRef=useRef(null);const [heldQueues,setHeldQueues]=useState(()=>new Set()),heldQueuesRef=useRef(heldQueues),holdKnownRef=useRef(new Set());
+  // set or ended (holdKnownRef) keeps this window's. localQueueStartRef: the follow-ups of Trebell's queue on their way in this window,
+  // from the queue or Send now, until what became of each is written.
+  const localQueueStartRef=useRef(new Set());const [heldQueues,setHeldQueues]=useState(()=>new Set()),heldQueuesRef=useRef(heldQueues),holdKnownRef=useRef(new Set());
   const holdQueue=(threadId,held,{saved=false}={})=>{
     const id=String(threadId);holdKnownRef.current.add(id);if(heldQueuesRef.current.has(id)===held)return;
     const next=new Set(heldQueuesRef.current);if(held)next.add(id);else next.delete(id);heldQueuesRef.current=next;setHeldQueues(next);
@@ -2792,13 +2793,14 @@ export default function App(){
     setAttachments(current=>restoreQueuedDraft({attachments:current,queued:aside,maxAttachments:MAX_COMPOSER_ATTACHMENTS}).attachments);
     setContextChips(current=>restoreQueuedDraft({contextChips:current,queued:aside,maxAttachments:MAX_COMPOSER_ATTACHMENTS}).contextChips);
   },[queuedEditId,queueEditDraft,queued]);
-  // A follow-up being edited holds the local queue, so it goes as saved, and so does a Stop (heldQueues), unless it fails.
+  // A follow-up being edited holds the local queue, so it goes as saved, and so does a Stop (heldQueues), unless it fails. One goes at
+  // a time: none starts while one of the queue is on its way (localQueueStartRef), whatever the queue's order meanwhile.
   useEffect(()=>{
     if(runtimeCapabilities.nativeQueue&&(queueMode==="native"||queued[0]?.native))return;
     const threadId=activeThreadRef.current?.id||null;
     if(running||!queued.length||queuedEditId||heldQueues.has(String(threadId)))return;
-    const next=queued[0];if(next?.autoStartFailed||localQueueStartRef.current===next.id)return;
-    localQueueStartRef.current=next.id;
+    const next=queued[0],onItsWay=localQueueStartRef.current;if(next?.autoStartFailed||queued.some(item=>onItsWay.has(item.id)))return;
+    onItsWay.add(next.id);
     (async()=>{
       const dispatching=queued.map(item=>item.id===next.id?{...item,dispatchingAt:Date.now(),autoStartFailed:false}:item);
       try{
@@ -2816,7 +2818,7 @@ export default function App(){
         // As a send that fails: no turn exists to show it on, so why goes beside the composer, under the queue that keeps the
         // follow-up, never onto the last turn's card (a worktree that could not be set up says why in its own card).
         setEvents([]);if(!(error&&typeof error==="object"&&WORKTREE_CARD_ERRORS.has(error)))setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error?.message||String(error)||"the harness refused the turn")});
-      }finally{localQueueStartRef.current=null}
+      }finally{onItsWay.delete(next.id)}
     })();
   },[running,queued,queueMode,runtimeCapabilities.nativeQueue,queuedEditId,heldQueues]);
   useEffect(()=>{setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null)},[agentRuntime,runtimeCapabilities.nativeQueue,projectlessMode]);
@@ -3207,10 +3209,15 @@ export default function App(){
   // A follow-up whose send Stop ended before its turn existed is not on its way any more: its dispatch mark goes, by id, from its
   // thread's queue as that is now, so a follow-up queued meanwhile stays, and the thread opened again reads it queued, not as a send
   // that may have started (hydratePersistedQueue's retry needed), and starts it with the rest of the queue.
+  // A write that fails still takes the mark off the queue shown, so its card does not read as being sent.
   function clearQueuedDispatch(threadId,id){
-    const current=queueNow(threadId);
-    if(current.some(item=>item.id===id&&item.dispatchingAt))persistLocalQueue(threadId,current.map(item=>item.id===id?{...item,dispatchingAt:null}:item)).catch(error=>showActionError(error,"Could not save the queued follow-ups"));
+    const current=queueNow(threadId);if(!current.some(item=>item.id===id&&item.dispatchingAt))return;
+    const cleared=current.map(item=>item.id===id?{...item,dispatchingAt:null}:item);
+    persistLocalQueue(threadId,cleared).catch(error=>{if(activeThreadRef.current?.id===threadId)setQueued(cleared);showActionError(error,"Could not save the queued follow-ups")});
   }
+  // A follow-up of Trebell's queue on its way (localQueueStartRef, or its dispatch mark) is sent whatever its card is pressed for: the
+  // card says it is being sent, with its buttons off, and Send now, Edit, the moves and Remove leave it as it is.
+  function queuedOnItsWay(item){return Boolean(item?.id&&!item.native&&(item.dispatchingAt||localQueueStartRef.current.has(item.id)))}
   async function persistThreadWorkspaceContext(thread,cwd=thread?.cwd,extra={},{strict=false}={}){
     if(!thread?.id||!cwd)return null;
     const existing=threadMeta[thread.id]||{};
@@ -3452,7 +3459,7 @@ export default function App(){
     const projectless=Object.prototype.hasOwnProperty.call(savedMeta,"projectless")?Boolean(savedMeta.projectless):Boolean(thread.providerMeta?.projectless);
     const useNativeQueue=shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless});
     const savedContextTask=savedMeta.trebellContext?.continuityTask||savedMeta.trebellContext?.userTask||savedMeta.trebellContext?.task||"";if(savedContextTask)contextTaskRef.current.set(thread.id,savedContextTask);
-    const restoredLocalQueue=useNativeQueue?[]:hydratePersistedQueue(savedMeta.trebellQueue||[]);
+    const restoredLocalQueue=useNativeQueue?[]:hydratePersistedQueue(savedMeta.trebellQueue||[],localQueueStartRef.current);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
     const connectedClient=Boolean(client&&!(client===rpc&&rpcStatus!=="connected"));
     let resumed=null,cp=null,goalData=null,continuityData=null,attachmentData=null;
@@ -3527,7 +3534,7 @@ export default function App(){
     // A thread whose own Codex app-server died says so, in one row: its resumes name the death until its next turn, under one id.
     const appServerExit=resumed?.trebellAppServerExit;if(appServerExit?.id)setEvents(prev=>upsertEvent(prev,{id:"app-server-exit-"+appServerExit.id,kind:"error",title:appServerExitText(appServerExit),status:"done",raw:appServerExit}));
     const failedSend=turnNotesRef.current.takeFailedSend(thread.id);if(failedSend){restoreFailedDraft(failedSend.draft);if(failedSend.alert)setComposerAlert(failedSend.alert)}
-    if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
+    if(restoredLocalQueue.some(item=>item.recoveredUncertainDispatch))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(projectError)throw projectError;else if(!openedThread.cwd)setProjectPath(projectPath);
     if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
@@ -4298,8 +4305,8 @@ export default function App(){
   }
   async function sendQueuedNow(item){
     // The follow-up being edited waits for its edit (its Send now is disabled, and the keyboard's steer skips it): sending it now
-    // would send the text the composer is changing.
-    if(item?.id&&item.id===queuedEditId)return;
+    // would send the text the composer is changing. One on its way is being sent already (queuedOnItsWay).
+    if(item?.id&&(item.id===queuedEditId||queuedOnItsWay(item)))return;
     if(running&&!runtimeCapabilities.steering)throw new Error(cannotSteerReason);
     // Send now is the next send, so the composer's note about the last one ends.
     setComposerAlert(null);
@@ -4334,15 +4341,21 @@ export default function App(){
     }
     await validateAttachmentPaths(item.attachments||[]);
     if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
-      await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});
-      await persistLocalQueue(activeThread.id,queueNow(activeThread.id).filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
+      // Steered into the turn, it is on its way too until Codex has it: its card says so and leaves it be, and a steer that fails leaves
+      // it queued as it was (clearQueuedDispatch).
+      localQueueStartRef.current.add(item.id);let steered=false;
+      try{
+        await persistLocalQueue(activeThread.id,queueNow(activeThread.id).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now()}:q));
+        await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});steered=true;
+        await persistLocalQueue(activeThread.id,queueNow(activeThread.id).filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
+      }catch(error){if(!steered)clearQueuedDispatch(activeThread.id,item.id);throw error}finally{localQueueStartRef.current.delete(item.id)}
     }
     if(running)return;
     const threadId=activeThread?.id||null,dispatching=queued.map(q=>q.id===item.id?{...q,dispatchingAt:Date.now(),autoStartFailed:false}:q);
     if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
     // Until what became of it is written, the queue does not start it as well (localQueueStartRef), as it would once a start that
     // failed has stopped the thread running.
-    localQueueStartRef.current=item.id;
+    localQueueStartRef.current.add(item.id);
     try{
       await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips));
       await persistLocalQueue(threadId,queueNow(threadId).filter(q=>q.id!==item.id));
@@ -4351,24 +4364,27 @@ export default function App(){
       // when the queue starts it. A start that failed marks only it to retry, in the queue as that is now (queueNow).
       if(error?.trebellSendStopped){clearQueuedDispatch(threadId,item.id);return}
       const failed=queueNow(threadId).map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:true}:q);try{await persistLocalQueue(threadId,failed)}catch{setQueued(failed)}throw error;
-    }finally{if(localQueueStartRef.current===item.id)localQueueStartRef.current=null}
+    }finally{localQueueStartRef.current.delete(item.id)}
   }
   // A queued follow-up is edited in the composer and stays queued as it was until the edit is saved (dispatchSend) or Escape ends it
   // (cancelQueuedEdit); the composer's draft is set aside meanwhile.
   async function editQueued(item){
     if(item?.native&&!item.editable){setEvents(prev=>[...prev,{id:"queue-edit-unavailable-"+Date.now(),kind:"error",title:"This queued follow-up contains input Trebell cannot safely edit yet.",status:"done",raw:{}}]);return}
-    // One follow-up is edited at a time (the others' Edit waits until it is saved or Escape ends it), so an edit never replaces another.
-    if(queuedEditId)return;
+    // One follow-up is edited at a time (the others' Edit waits until it is saved or Escape ends it), so an edit never replaces another;
+    // one on its way goes as it is, so an edit of it would send it twice (queuedOnItsWay).
+    if(queuedEditId||queuedOnItsWay(item))return;
     if(prompt.trim()||attachments.length||contextChips.length)setQueueEditDraft({text:prompt,attachments:[...attachments],contextChips:[...contextChips]});
     setQueuedEditId(item.id);setPrompt(item.draftText??item.text??"");setAttachments(item.attachments||[]);setContextChips(item.contextChips||[]);
   }
   function cancelQueuedEdit(){setPrompt("");setAttachments([]);setContextChips([]);setQueuedEditId(null)}
   async function removeQueued(item){
+    if(queuedOnItsWay(item))return;
     if(item?.native&&rpc&&activeThread?.id){await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});if(queuedEditId===item.id)cancelQueuedEdit();setQueued(prev=>prev.filter(entry=>entry.id!==item.id));return}
     if(activeThread?.id)await persistLocalQueue(activeThread.id,queued.filter(entry=>entry.id!==item.id));else setQueued(prev=>prev.filter(entry=>entry.id!==item.id));
     if(queuedEditId===item.id)cancelQueuedEdit();
   }
   async function moveQueued(item,direction){
+    if(queuedOnItsWay(item))return;
     const next=reorderQueue(queued,item.id,direction);if(next===queued||next.map(entry=>entry.id).join("\0")===queued.map(entry=>entry.id).join("\0"))return;
     if(item?.native&&rpc&&activeThread?.id){await rpc.request("thread/queue/reorder",{threadId:activeThread.id,queuedSubmissionIds:next.map(entry=>entry.id)});setQueued(next);return}
     if(activeThread?.id)await persistLocalQueue(activeThread.id,next);else setQueued(next);
@@ -5284,8 +5300,8 @@ export default function App(){
               {shownApproval&&<div className="inline-approval"><ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {/* A follow-up's button runs once for a double click or Enter held on it, as a thread's menu item does: the rest of the press
                   does nothing, so the second click never lands on the next follow-up's button, which comes up in its place once the first
-                  takes this one out or moves it. */}
-              {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span title={queueHeld&&!item.native&&!item.autoStartFailed?"A Stop holds the queue: it goes on once this thread runs a turn again. Send now sends this follow-up now.":undefined}>{item.native?`Queued in ${agentRuntimeLabel}`:item.autoStartFailed?"Queued · retry needed":queueHeld?"Queued · held after Stop":"Queued"}{queuedEditId===item.id?" · editing"+(queueEditDraft?" · your draft returns after":""):""}</span><p>{item.text}</p><div className="queued-message-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}><button disabled={(running&&!runtimeCapabilities.steering)||queuedEditId===item.id} title={queuedEditId===item.id?"Save the edit with Enter, or press Escape, before sending it":running&&!runtimeCapabilities.steering?cannotSteerReason:undefined} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>runUserAction(()=>editQueued(item),"Could not edit queued follow-up")} disabled={Boolean(queuedEditId)||item.editable===false} title={queuedEditId&&queuedEditId!==item.id?"Save the follow-up you are editing, or press Escape, first":undefined}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
+                  takes this one out or moves it. A follow-up on its way reads as being sent, its buttons off (queuedOnItsWay). */}
+              {queued.map((item,index)=>{const sending=!item.native&&Boolean(item.dispatchingAt),sendingTitle=sending?"This follow-up is already being sent":undefined;return <div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span title={sending?"This follow-up is being sent: it leaves the queue once it has gone, and stays here if it cannot be sent.":queueHeld&&!item.native&&!item.autoStartFailed?"A Stop holds the queue: it goes on once this thread runs a turn again. Send now sends this follow-up now.":undefined}>{item.native?`Queued in ${agentRuntimeLabel}`:sending?"Sending…":item.autoStartFailed?"Queued · retry needed":queueHeld?"Queued · held after Stop":"Queued"}{queuedEditId===item.id?" · editing"+(queueEditDraft?" · your draft returns after":""):""}</span><p>{item.text}</p><div className="queued-message-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}><button disabled={sending||(running&&!runtimeCapabilities.steering)||queuedEditId===item.id} title={sendingTitle||(queuedEditId===item.id?"Save the edit with Enter, or press Escape, before sending it":running&&!runtimeCapabilities.steering?cannotSteerReason:undefined)} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>runUserAction(()=>editQueued(item),"Could not edit queued follow-up")} disabled={sending||Boolean(queuedEditId)||item.editable===false} title={sendingTitle||(queuedEditId&&queuedEditId!==item.id?"Save the follow-up you are editing, or press Escape, first":undefined)}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={sending||index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={sending||index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button disabled={sending} title={sendingTitle} onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>})}
               {!messages.length&&!events.length&&!storeCardTurnIds(shownTurnActivity).length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>

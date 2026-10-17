@@ -13,8 +13,10 @@ export function persistedQueueItems(items=[]){
   }));
 }
 
-export function hydratePersistedQueue(items=[]){
-  return persistedQueueItems(items).map(item=>item.dispatchingAt?{
+// A follow-up left on its way by a window that is gone (a reload, a restart) may have started, so it waits for a retry; one still on
+// its way in this window (onItsWay, the ids of those) keeps its mark while its send goes on.
+export function hydratePersistedQueue(items=[],onItsWay=new Set()){
+  return persistedQueueItems(items).map(item=>item.dispatchingAt&&!onItsWay.has(item.id)?{
     ...item,dispatchingAt:null,autoStartFailed:true,recoveredUncertainDispatch:true,
   }:item);
 }

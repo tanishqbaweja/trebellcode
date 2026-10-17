@@ -584,6 +584,74 @@ for(const outcome of ["starts","fails"]){
   });
 }
 
+// A follow-up on its way, a turn the queue or Send now starts for it or a steer of it into the turn that runs, goes whatever its
+// card's buttons are pressed for: its card says it is being sent, never queued beside its sent message, and its Send now, Edit and
+// Remove are off, so a press neither drops a follow-up that is sent anyway nor sends it twice. Its thread left and opened again
+// meanwhile, it still reads so. Once it has gone it leaves the queue; a start that fails brings it back queued, to retry, with its
+// buttons on.
+test("a follow-up on its way says it is being sent, with Send now, Edit and Remove off, until it has gone or its start fails",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Follow-up on its way",project:true});
+  const queue=page.locator(".queued-message p"),labels=page.locator(".queued-message>span"),sent=text=>page.locator(".user-bubble").filter({hasText:text});
+  const button=(text,name)=>page.locator(".queued-message").filter({hasText:text}).getByRole("button",{name,exact:true});
+  try{
+    // A follow-up's send waits on its repository context while context is a gate not yet open.
+    let context=null;await page.route(/\/api\/context\/packet$/,async route=>{await context?.promise;await route.fallback()});
+    codex.holdTurns=true;
+    await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+    await expect(stop(page)).toBeVisible();
+    for(const text of ["Queued alpha","Queued beta","Queued gamma"]){await sendTyped(page,text);await expect(page.locator(".queued-message").filter({hasText:text})).toHaveCount(1)}
+    // The turn ends and the queue starts alpha, whose send waits on its context.
+    context=gate();codex.holdTurns=false;
+    await expect(sent("Queued alpha")).toBeVisible({timeout:10_000});codex.holdTurns=true;
+    await expect(labels,"alpha's card, its message sent").toHaveText(["Sending…","Queued","Queued"]);
+    for(const name of ["Send now","Edit","Remove"])await expect(button("Queued alpha",name)).toBeDisabled();
+    await expect(button("Queued alpha","Remove")).toHaveAttribute("title","This follow-up is already being sent");
+    await expect(button("Queued beta","Remove")).toBeEnabled();
+    await shoot(page,"queued-follow-up-on-its-way");
+    // Pressed anyway, Remove and Edit leave it as it is, and so does the shortcut that sends the oldest follow-up now.
+    await button("Queued alpha","Remove").click({force:true});await button("Queued alpha","Edit").click({force:true});
+    await composer(page).click();await page.keyboard.press("Control+Shift+Enter");
+    await page.waitForTimeout(400);
+    await expect(queue).toHaveText(["Queued alpha","Queued beta","Queued gamma"]);await expect(labels).toHaveText(["Sending…","Queued","Queued"]);
+    await expect(composer(page)).toHaveValue("");
+    // Away and back, it still reads as being sent, not as a send to retry.
+    await newTask(page).click();await expectIdleNewTask(page);
+    await threadRow(page,"Follow-up on its way").locator(".thread-main").click();
+    await expect(sent("Queued alpha")).toBeVisible({timeout:10_000});
+    await expect(queue).toHaveText(["Queued alpha","Queued beta","Queued gamma"]);
+    await expect(labels,"alpha's card, its thread opened again").toHaveText(["Sending…","Queued","Queued"]);
+    for(const name of ["Edit","Remove"])await expect(button("Queued alpha",name)).toBeDisabled();
+    // Its turn starts: it leaves the queue, sent once.
+    context.open();await expect.poll(()=>codex.turns.length).toBe(2);codex.turns[1].answer();codex.turns[1].start();
+    await expect(queue).toHaveText(["Queued beta","Queued gamma"]);await expect(labels).toHaveText(["Queued","Queued"]);await expect(sent("Queued alpha")).toHaveCount(1);
+    // Sent now, beta is steered into alpha's turn, and is on its way until Codex has it.
+    codex.steerHold=gate();await button("Queued beta","Send now").click();
+    await expect.poll(()=>codex.calls.filter(method=>method==="turn/steer").length).toBe(1);
+    await expect(labels,"beta's card, its steer on its way").toHaveText(["Sending…","Queued"]);
+    for(const name of ["Send now","Edit","Remove"])await expect(button("Queued beta",name)).toBeDisabled();
+    await button("Queued beta","Remove").click({force:true});
+    codex.steerHold.open();
+    await expect(sent("Queued beta")).toHaveCount(1);await expect(queue).toHaveText(["Queued gamma"]);await expect(labels).toHaveText(["Queued"]);
+    // gamma goes once alpha's turn ends, and its start fails: it is queued again, to retry, with its buttons on.
+    context=gate();codex.holdTurns=false;
+    await expect(sent("Queued gamma")).toBeVisible({timeout:10_000});codex.holdTurns=true;
+    await expect(labels).toHaveText(["Sending…"]);await expect(button("Queued gamma","Remove")).toBeDisabled();
+    context.open();await expect.poll(()=>codex.turns.length).toBe(3);codex.turns[2].fail("Deliberate queued start failure");
+    await expect(page.getByTestId("composer-alert")).toHaveText("Queued follow-up not sent: Deliberate queued start failure.");
+    await expect(labels).toHaveText(["Queued · retry needed"]);await expect(sent("Queued gamma")).toHaveCount(0);
+    for(const name of ["Send now","Edit","Remove"])await expect(button("Queued gamma",name)).toBeEnabled();
+    // Sent now, it is on its way again and says so until its turn starts.
+    context=gate();await button("Queued gamma","Send now").click();
+    await expect(sent("Queued gamma")).toBeVisible();await expect(labels).toHaveText(["Sending…"]);
+    for(const name of ["Send now","Edit","Remove"])await expect(button("Queued gamma",name)).toBeDisabled();
+    context.open();await expect.poll(()=>codex.turns.length).toBe(4);codex.turns[3].answer();codex.turns[3].start();
+    await expect(page.locator(".queued-message")).toHaveCount(0);await expect(sent("Queued gamma")).toHaveCount(1);
+    expect(codex.turns).toHaveLength(4);expect(codex.calls.filter(method=>method==="turn/steer")).toHaveLength(1);
+  }finally{await codex.close()}
+});
+
 // A Compact the harness refuses ends the one compaction row as failed; nothing is left saying it still compacts.
 test("a Compact that fails ends its row as failed, with no compaction left running",async({page})=>{
   test.setTimeout(60_000);
