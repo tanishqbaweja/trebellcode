@@ -156,8 +156,9 @@ test("a recording goes on while the person looks at another tab or closes the pa
   }finally{await site.close()}
 });
 
-// The server is slow to store what the page attaches ("text" or "blob") until store() is called, as one slow to answer is.
-async function slowStore(page,kind){let store=()=>{};const stored=new Promise(resolve=>{store=resolve});await page.route("**/api/attachments/"+kind,async route=>{await stored;await route.continue()});return store}
+// The server is slow to store what the page attaches ("text" or "blob") until store() is called, as one slow to answer is (an SSH
+// or WSL environment's copy); store.reached settles once the page has asked it to store something.
+async function slowStore(page,kind){let store=()=>{},asked=()=>{};const stored=new Promise(resolve=>{store=resolve}),reached=new Promise(resolve=>{asked=resolve});await page.route("**/api/attachments/"+kind,async route=>{asked();await stored;await route.continue()});return Object.assign(()=>store(),{reached})}
 
 // Opens the agent browser on the site's /rec page, with Record in the device toolbar.
 async function openRecorder(page,request,site){
@@ -321,6 +322,43 @@ test("a double click on Attach context, or Enter pressed twice or held on it, at
     await elements.filter({hasText:"Docs"}).click();await attach.click();
     await expect(attached("Browser e2")).toHaveCount(e2+1);
     await expect.soft(attached("Browser e1"),"Enter held on Attach context attached e1 once more").toHaveCount(e1+1);
+  }finally{await site.close()}
+});
+
+// An element attached while another's attach is still on its way (the server is slow to store it) is attached too. The one that
+// lands first says so only under its own element, and the note typed for the element chosen since stays. One guard for every
+// attach left the second undone, the first one's notice read as the second's, and the first one's note emptied the second's.
+test("an element attached while another's attach is on its way is attached too, and the first landing neither says the second was attached nor empties its note",async({page,request})=>{
+  const site=await startSite();
+  try{
+    await page.addInitScript(scriptedAgentBrowser);
+    const {panel,address}=await openBrowserPanel(page,request);
+    const elements=panel.locator(".browser-elements button"),annotation=panel.getByTestId("preview-annotation"),note=annotation.getByRole("textbox");
+    const attach=annotation.getByRole("button",{name:"Attach context",exact:true}),attachNote=annotation.getByRole("button",{name:"Attach annotation",exact:true});
+    const attached=label=>page.getByTestId("context-chip").filter({hasText:label}),status=annotation.locator(".annotation-actions span"),choose=text=>elements.filter({hasText:text}).click();
+    await typeAddress(page,address,site.url+"/rec");await panel.getByRole("button",{name:"Open agent browser"}).click();
+    await panel.getByRole("button",{name:"Inspect elements"}).click();
+    // e1's attach is on its way when e2 is chosen and attached.
+    let store=await slowStore(page,"text");
+    await choose("Save profile");await attach.click();await store.reached;
+    await choose("Docs");await attach.click();store();
+    await expect(attached("Browser e1")).toHaveCount(1);
+    await expect.soft(attached("Browser e2"),"e2, attached while e1's attach was on its way, is attached too").toHaveCount(1);
+    await expect(status).toHaveText("Element context attached");
+    // e1's attach lands while e2 is chosen and not attached.
+    store=await slowStore(page,"text");
+    await choose("Save profile");await attach.click();await store.reached;
+    await choose("Docs");store();
+    await expect(attached("Browser e1")).toHaveCount(2);
+    await expect.soft(status,"e1's attach landing says nothing under e2").toHaveCount(0);
+    await shots(page,"preview-attach-while-another-on-its-way");
+    // e1's note is on its way when e2 is chosen and a note of its own is typed.
+    store=await slowStore(page,"text");
+    await choose("Save profile");await typeAddress(page,note,"Make this say Save changes.");await attachNote.click();await store.reached;
+    await choose("Docs");await typeAddress(page,note,"Point this at the API docs.");store();
+    await expect(attached("Annotated e1")).toHaveCount(1);
+    await expect.soft(note,"e1's note landing leaves the note typed for e2").toHaveValue("Point this at the API docs.");
+    await expect(attachNote).toBeEnabled();
   }finally{await site.close()}
 });
 
