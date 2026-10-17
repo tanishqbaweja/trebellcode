@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { mkdir,writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WebSocket } from "ws";
 import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 import { routeCodexApp,startCodexHarness } from "./codex-history-harness.js";
 
@@ -537,11 +538,90 @@ test("words typed on into the Objective while a slow save is on its way are stil
     socket.release();
     await expect(update).toBeEnabled();await painted(page);
     await expect(objective).toHaveValue("Make the signup tests pass on Firefox");
+    await expect(panel.locator(".goal-field-changed"),"the goal this panel saved is not a change made elsewhere").toHaveCount(0);
     expect(objectives()).toEqual(["Make the login tests pass","Make the signup tests pass"]);
     await shootBoth(page,"goal-typed-on-during-save",()=>objective.scrollIntoViewIfNeeded());
     await update.click();
     await expect.poll(objectives).toEqual(["Make the login tests pass","Make the signup tests pass","Make the signup tests pass on Firefox"]);
     await expect(update).toBeEnabled();await expect(objective).toHaveValue("Make the signup tests pass on Firefox");
+  }finally{await harness.close()}
+});
+
+// A change made elsewhere to a goal field edited here (the /goal command, here while the panel was closed and while it is open) is
+// said above Update goal, with Use saved and Keep mine, and Discard changes takes every edit back. The edit stayed with nothing to
+// say the saved goal had changed and no way to drop it, so an Update goal pressed only for a budget wrote it over the new objective.
+test("a goal changed elsewhere while its Objective is edited here says so above Update goal, Use saved and Keep mine choose, and Discard changes takes the edits back",async({page})=>{
+  test.setTimeout(120_000);
+  const socket=await relaySocket(page);
+  const harness=await openComposerApp(page);
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const composer=page.getByTestId("composer"),changed=panel.locator(":scope>.goal-actions").getByRole("status"),button=name=>panel.getByRole("button",{name,exact:true});
+    const tokens=panel.getByLabel("Token budget",{exact:true}),lastSave=()=>socket.sent("thread/goal/set").at(-1),question=page.locator("dialog.inspector-text-prompt");
+    const goalCommand=async text=>{await composer.click();await page.keyboard.type(text,{delay:15});await page.keyboard.press("Enter");await expect(composer).toHaveValue("")};
+    await typeOver(page,objective,"Make the login and signup tests pass");
+    await expect.soft(button("Discard changes"),"an edit offers Discard changes by Update goal").toBeVisible();
+    // The panel is closed, and the goal set again from the composer, which opens the panel on it.
+    await page.getByRole("button",{name:"Close right panel"}).click();await expect(panel).toHaveCount(0);
+    await goalCommand("/goal Make the checkout tests pass");
+    await expect(objective).toHaveValue("Make the login and signup tests pass");
+    await expect(changed,"the objective set elsewhere is said above Update goal").toContainText("Objective changed elsewhere to “Make the checkout tests pass” while you were editing.");
+    await shootBoth(page,"goal-changed-elsewhere",()=>expect(changed).toBeInViewport());
+    // Use saved takes the objective set elsewhere, and a budget typed then is saved with it.
+    await changed.getByRole("button",{name:"Use saved",exact:true}).click();
+    await expect(objective).toHaveValue("Make the checkout tests pass");await expect(changed).toHaveCount(0);
+    await typeOver(page,tokens,"5000");await button("Update goal").click();
+    await expect.poll(lastSave).toMatchObject({objective:"Make the checkout tests pass",tokenBudget:5000});
+    await expect(button("Update goal")).toBeEnabled();await expect(button("Discard changes")).toHaveCount(0);
+    // Set elsewhere again while the objective is edited with the panel open: Keep mine keeps the edit, and Update goal saves it.
+    await typeOver(page,objective,"Make the checkout and refund tests pass");
+    await goalCommand("/goal Make the payment tests pass");
+    await expect(changed).toContainText("Objective changed elsewhere to “Make the payment tests pass” while you were editing.");
+    await expect(objective).toHaveValue("Make the checkout and refund tests pass");
+    await changed.getByRole("button",{name:"Keep mine",exact:true}).click();await expect(changed).toHaveCount(0);
+    await button("Update goal").click();
+    await expect.poll(lastSave).toMatchObject({objective:"Make the checkout and refund tests pass",tokenBudget:5000});
+    await expect(button("Update goal")).toBeEnabled();await expect(button("Discard changes")).toHaveCount(0);
+    // Discard changes, once asked, takes back every edit made since.
+    await typeOver(page,objective,"Make every test pass");await typeOver(page,tokens,"7000");
+    await button("Discard changes").click();
+    await expect(question.locator("p")).toHaveText("Discard your changes to this goal?");
+    await question.getByRole("button",{name:"Discard changes",exact:true}).click();await expect(question).toHaveCount(0);
+    await expect(objective).toHaveValue("Make the checkout and refund tests pass");await expect(tokens).toHaveValue("5000");
+    await expect(button("Discard changes")).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+// Another window's request to the relay, whose notifications reach the page as any change made elsewhere does.
+async function relayRequest(harness,method,params){
+  const socket=new WebSocket(harness.wsUrl);await new Promise((resolve,reject)=>{socket.once("open",resolve);socket.once("error",reject)});
+  try{return await new Promise((resolve,reject)=>{socket.on("message",raw=>{const message=JSON.parse(String(raw));if(message.id===1)message.error?reject(new Error(message.error.message)):resolve(message.result)});socket.send(JSON.stringify({id:1,method,params}))})}
+  finally{socket.close()}
+}
+
+// The same for a continuity note edited here that another window saves meanwhile: said above Save continuity, where Use saved takes
+// it, and Discard changes there takes the notes' edits back.
+test("a continuity note saved in another window while it is edited here says so above Save continuity, and Discard changes takes the edits back",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page);
+  try{
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    const panel=page.getByTestId("goal-panel"),done=panel.getByLabel("Completed work",{exact:true}),row=panel.locator(".continuity-actions"),changed=row.getByRole("status");
+    const discard=row.getByRole("button",{name:"Discard changes",exact:true}),question=page.locator("dialog.inspector-text-prompt");
+    await panel.getByText("Continuity state",{exact:true}).click();
+    await done.click();await page.keyboard.type("Fixed the session refresh",{delay:15});
+    await expect.soft(discard,"an edit offers Discard changes by Save continuity").toBeVisible();
+    await relayRequest(harness,"thread/continuity/set",{threadId:harness.threads[0].id,completedWork:["Wrote the migration"]});
+    await expect(changed,"the note saved in another window is said above Save continuity").toContainText("Completed work changed elsewhere to “Wrote the migration” while you were editing.");
+    await expect(done).toHaveValue("Fixed the session refresh");
+    await shootBoth(page,"goal-note-changed-elsewhere",()=>changed.scrollIntoViewIfNeeded());
+    await changed.getByRole("button",{name:"Use saved",exact:true}).click();
+    await expect(done).toHaveValue("Wrote the migration");await expect(changed).toHaveCount(0);await expect(discard).toHaveCount(0);
+    await done.click();await page.keyboard.press("End");await page.keyboard.type(" and its rollback",{delay:15});
+    await discard.click();
+    await expect(question.locator("p")).toHaveText("Discard your changes to the continuity notes?");
+    await question.getByRole("button",{name:"Discard changes",exact:true}).click();await expect(question).toHaveCount(0);
+    await expect(done).toHaveValue("Wrote the migration");await expect(discard).toHaveCount(0);
   }finally{await harness.close()}
 });
 

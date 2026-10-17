@@ -1,4 +1,4 @@
-import React,{useEffect,useRef,useState} from "react";
+import React,{useEffect,useReducer,useRef,useState} from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, Pause, Play, RefreshCw, Target, Trash2 } from "lucide-react";
 import { startSameThreadVerificationRepair } from "../verification-repair.js";
 import { verificationEvidenceMeta, verificationEvidenceSummary, verificationEvidenceView } from "../verification-evidence-view.js";
@@ -8,22 +8,42 @@ import { askConfirm } from "../ask-dialog.js";
 import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 const NOTE_KEYS=["completedWork","unresolvedFailures","importantDecisions","artifactsCreated","pendingNextActions"];
+const GOAL_LABELS=["Objective","Token budget","Time budget","Turn budget","Tool-call budget","Child-agent budget","Cost budget","Completion conditions","Constraints","Validation expectations"];
+const NOTE_LABELS=["Completed work","Unresolved failures","Important decisions","Artifacts created","Pending next actions"];
 function lines(value){return (Array.isArray(value)?value:[]).join("\n")}
+function goalValues(goal){return [goal?.objective||"",...[goal?.tokenBudget,goal?.timeBudgetMinutes,goal?.turnBudget,goal?.toolCallBudget,goal?.childAgentBudget,goal?.costBudgetUsd].map(value=>value==null?"":String(value)),lines(goal?.completionConditions),lines(goal?.constraints),lines(goal?.validationExpectations)]}
+function noteValues(continuity){return NOTE_KEYS.map(key=>lines(continuity?.notes?.[key]))}
 // The fields of a group (the goal's, the notes) as the person has them, kept against what they were last filled with from what the
-// thread saved (filled): a read of it again (every read and save answer brings new lists) or a change made elsewhere fills only
-// the fields still as they were filled, so what the person typed stays until it is saved. It stays while the panel is away too
-// (another tab, the panel closed) and comes back with it; another thread's panel starts afresh. A second run for what it has just
-// filled (StrictMode's) leaves the fields alone.
+// thread saved (saved.filled): a read of it again (every read and save answer brings new lists) or a change made elsewhere fills only
+// the fields still as they were filled, so what the person typed stays until it is saved or discarded. A change made elsewhere to
+// a field they edited (the /goal command, another window) is said in the bar that saves it (saved.changed), with Use saved and Keep
+// mine: it used to stay out of sight, and the next save wrote the edit over it. What this panel saved (saved.own), or what comes
+// while its save is on its way (saved.sending), is not such a change. It all stays while the panel is away (another tab, the panel
+// closed), also what a save still on its way brings, and comes back with it; another thread's panel starts afresh. A second run for
+// what it has just filled (StrictMode's) leaves the fields alone.
 const awayDrafts={};
-function useSavedFields(group,threadId,saved,fields,setters){
-  const filled=useRef(null),latest=useRef(fields);latest.current=fields;
+function useSavedFields(group,threadId,values,fields,setters){
+  const [saved]=useState(()=>{const away=awayDrafts[group];return threadId&&away?.threadId===threadId?away.saved:{filled:null,changed:{}}});
+  const [,render]=useReducer(count=>count+1,0),latest=useRef(fields),first=useRef(true);latest.current=fields;
   useEffect(()=>{
-    let last=filled.current,current=fields;if(last===saved)return;
-    if(!last){const away=awayDrafts[group];awayDrafts[group]=null;if(threadId&&away?.threadId===threadId)({filled:last,fields:current}=away)}
-    filled.current=saved;saved.forEach((value,index)=>setters[index](last&&current[index]!==last[index]?current[index]:value));
-  },[JSON.stringify(saved)]);
-  useEffect(()=>()=>{const last=filled.current,fields=latest.current;awayDrafts[group]=last&&fields.some((value,index)=>value!==last[index])?{threadId,filled:last,fields}:null},[]);
-  return filled;
+    let last=saved.filled,current=fields;
+    if(first.current){first.current=false;const away=awayDrafts[group];awayDrafts[group]=null;if(away?.saved===saved)current=away.fields}
+    if(last===values)return;
+    const was=saved.changed;saved.filled=values;saved.changed={};
+    values.forEach((value,index)=>{
+      const edited=last&&current[index]!==last[index];setters[index](edited?current[index]:value);
+      if(edited&&value!==current[index]&&(value===last[index]?index in was:!saved.sending&&value!==saved.own?.[index]))saved.changed[index]=value;
+    });
+    render();
+  },[JSON.stringify(values)]);
+  useEffect(()=>()=>{const fields=latest.current,last=saved.filled;awayDrafts[group]=last&&fields.some((value,index)=>value!==last[index])?{threadId,saved,fields}:null},[]);
+  const settle=(index,value)=>{if(value!=null)setters[index](value);delete saved.changed[index];render()};
+  return {saved,unsaved:!!saved.filled&&fields.some((value,index)=>value!==saved.filled[index]),use:index=>settle(index,saved.changed[index]),keep:index=>settle(index),
+    discard(){saved.filled.forEach((value,index)=>setters[index](value));saved.changed={};render()}};
+}
+// Each field edited here whose saved value changed elsewhere, across the bar above the button that saves it.
+function changedNotes(group,labels){
+  return Object.entries(group.saved.changed).map(([index,value])=><div key={index} className="goal-field-changed" role="status"><span>{labels[index]} {value?<>changed elsewhere to “{value.length>240?value.slice(0,240)+"…":value}”</>:"cleared elsewhere"} while you were editing.</span><div><button type="button" onClick={()=>group.use(index)}>Use saved</button><button type="button" onClick={()=>group.keep(index)}>Keep mine</button></div></div>);
 }
 function parseLines(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean)}
 function wholeNumber(value,label){
@@ -87,9 +107,9 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [error,setError]=useState(null),errorRef=useRef(null);
   useEffect(()=>{errorRef.current?.scrollIntoView({block:"nearest"})},[error]);
   const goalFields=[objective,tokenBudget,timeBudget,turnBudget,toolCallBudget,childAgentBudget,costBudgetUsd,completionConditions,constraints,validationExpectations];
-  const goalFilled=useSavedFields("goal",thread?.id,[goal?.objective||"",...[goal?.tokenBudget,goal?.timeBudgetMinutes,goal?.turnBudget,goal?.toolCallBudget,goal?.childAgentBudget,goal?.costBudgetUsd].map(value=>value==null?"":String(value)),lines(goal?.completionConditions),lines(goal?.constraints),lines(goal?.validationExpectations)],goalFields,[setObjective,setTokenBudget,setTimeBudget,setTurnBudget,setToolCallBudget,setChildAgentBudget,setCostBudgetUsd,setCompletionConditions,setConstraints,setValidationExpectations]);
+  const goalSaved=useSavedFields("goal",thread?.id,goalValues(goal),goalFields,[setObjective,setTokenBudget,setTimeBudget,setTurnBudget,setToolCallBudget,setChildAgentBudget,setCostBudgetUsd,setCompletionConditions,setConstraints,setValidationExpectations]);
   const notes=[completedWork,unresolvedFailures,importantDecisions,artifactsCreated,pendingNextActions];
-  const notesFilled=useSavedFields("notes",thread?.id,NOTE_KEYS.map(key=>lines(continuity?.notes?.[key])),notes,[setCompletedWork,setUnresolvedFailures,setImportantDecisions,setArtifactsCreated,setPendingNextActions]);
+  const notesSaved=useSavedFields("notes",thread?.id,noteValues(continuity),notes,[setCompletedWork,setUnresolvedFailures,setImportantDecisions,setArtifactsCreated,setPendingNextActions]);
   useEffect(()=>{setDetailsOpen(false);setAdvancedBudgetOpen(false);setContinuityOpen(false);setVerificationOpen(false);setVerificationEvidence(null);setVerificationEvidenceError("");setRepairStatus("");setRepairStartedFor(null)},[thread?.id]);
   // A started repair holds the button until its turn ends or the thread records a newer verification, so one failure
   // is not repaired twice at once.
@@ -108,12 +128,14 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const failAt=(at,e)=>setError({at,text:e?.message||String(e)});
   const alertAt=at=>error?.at===at&&<div ref={errorRef} className="inline-error" role="alert">{error.text}</div>;
   // sent: the fields as a save sent them, which are what the goal it answers was filled from; one typed into since stays as typed.
+  // The goal it saved is this panel's own, which a change made elsewhere is told from.
   async function setGoal(patch,sent){
-    if(!rpc)return;setBusy("save");setError(null);
-    try{const result=await rpc.request("thread/goal/set",{threadId:thread.id,...patch});if(sent)goalFilled.current=sent;onGoal?.(result?.goal||null)}
+    if(!rpc)return;const saved=goalSaved.saved;setBusy("save");setError(null);if(sent)saved.sending=(saved.sending||0)+1;
+    try{const result=await rpc.request("thread/goal/set",{threadId:thread.id,...patch});if(sent)Object.assign(saved,{filled:sent,own:goalValues(result?.goal),changed:{}});onGoal?.(result?.goal||null)}
     // A Codex without goals refuses the goal as a method it does not have: said as such, not as Codex's error.
-    catch(e){failAt("goal",codexGoalsMissing(e)?"Could not set the goal: this Codex does not support goals.":e)}finally{setBusy("")}
+    catch(e){failAt("goal",codexGoalsMissing(e)?"Could not set the goal: this Codex does not support goals.":e)}finally{if(sent)saved.sending--;setBusy("")}
   }
+  async function discard(group,what){if(await askConfirm("Discard your changes to "+what+"?",{confirm:"Discard changes",cancel:"Keep editing"}))group.discard()}
   async function save(){
     const text=objective.trim();if(!text){failAt("goal","Enter an objective first.");return}
     let nextTokenBudget,nextTimeBudget,nextTurnBudget,nextToolCallBudget,nextChildAgentBudget,nextCostBudgetUsd;
@@ -136,15 +158,15 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     catch(e){failAt("goal",e)}finally{setBusy("")}
   }
   async function saveContinuity(){
-    if(!rpc)return;setBusy("continuity");setError(null);
+    if(!rpc)return;const saved=notesSaved.saved;setBusy("continuity");setError(null);saved.sending=(saved.sending||0)+1;
     try{
       const result=await rpc.request("thread/continuity/set",{
         threadId:thread.id,
         completedWork:parseLines(completedWork),unresolvedFailures:parseLines(unresolvedFailures),importantDecisions:parseLines(importantDecisions),
         artifactsCreated:parseLines(artifactsCreated),pendingNextActions:parseLines(pendingNextActions),
       });
-      notesFilled.current=notes;onContinuity?.(result?.continuity||null);
-    }catch(e){failAt("notes",e)}finally{setBusy("")}
+      Object.assign(saved,{filled:notes,own:noteValues(result?.continuity),changed:{}});onContinuity?.(result?.continuity||null);
+    }catch(e){failAt("notes",e)}finally{saved.sending--;setBusy("")}
   }
   async function clearContinuity(){
     if(!rpc||!await askConfirm("Clear explicit continuity notes? Trebell-derived verification, checkpoints, queue and failure evidence will remain.",{confirm:"Clear notes"}))return;
@@ -239,12 +261,13 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
         <label>Important decisions <span>(one per line)</span><textarea aria-label="Important decisions" value={importantDecisions} onChange={e=>setImportantDecisions(e.target.value)} placeholder={"Keep the public API backward compatible"}/></label>
         <label>Artifacts created <span>(one per line)</span><textarea aria-label="Artifacts created" value={artifactsCreated} onChange={e=>setArtifactsCreated(e.target.value)} placeholder={"Migration script\nRelease notes"}/></label>
         <label>Pending next actions <span>(one per line)</span><textarea aria-label="Pending next actions" value={pendingNextActions} onChange={e=>setPendingNextActions(e.target.value)} placeholder={"Run the final browser smoke test"}/></label>
-        <div className="goal-actions continuity-actions" onClick={pressOnce}>{alertAt("notes")}<button type="button" className="primary" onClick={saveContinuity} disabled={!!busy}><RefreshCw size={12}/> Save continuity</button>{continuityNoteCount>0&&<button type="button" className="danger" onClick={clearContinuity} disabled={!!busy}><Trash2 size={12}/> Clear notes</button>}</div>
+        <div className="goal-actions continuity-actions" onClick={pressOnce}>{alertAt("notes")}{changedNotes(notesSaved,NOTE_LABELS)}<button type="button" className="primary" onClick={saveContinuity} disabled={!!busy}><RefreshCw size={12}/> Save continuity</button>{notesSaved.unsaved&&<button type="button" onClick={()=>discard(notesSaved,"the continuity notes")} disabled={!!busy}>Discard changes</button>}{continuityNoteCount>0&&<button type="button" className="danger" onClick={clearContinuity} disabled={!!busy}><Trash2 size={12}/> Clear notes</button>}</div>
       </div>
     </details>
     <div className="goal-actions" onClick={pressOnce}>
-      {alertAt("goal")}
+      {alertAt("goal")}{changedNotes(goalSaved,GOAL_LABELS)}
       <button className="primary" onClick={save} disabled={!!busy}><RefreshCw size={12}/> {goal?"Update goal":"Set goal"}</button>
+      {goalSaved.unsaved&&<button onClick={()=>discard(goalSaved,"this goal")} disabled={!!busy}>Discard changes</button>}
       {goal?.status==="active"&&<button onClick={()=>setGoal({status:"paused"})} disabled={!!busy}><Pause size={12}/> Pause</button>}
       {goal&&goal.status!=="active"&&goal.status!=="complete"&&<button onClick={()=>setGoal({status:"active"})} disabled={!!busy}><Play size={12}/> Resume</button>}
       {goal&&goal.status!=="complete"&&<button onClick={()=>setGoal({status:"complete"})} disabled={!!busy}><CheckCircle2 size={12}/> Complete</button>}

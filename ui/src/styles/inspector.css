@@ -805,6 +805,9 @@
    buttons in a narrow panel). */
 :root:root .context-panel .goal-actions>.inline-error{flex-basis:100%}
 :root:root .context-panel .goal-details .inline-error{scroll-margin-bottom:104px}
+/* A field edited here whose saved value changed elsewhere says so the same way, in the warning colours, with its two choices. */
+:root:root .context-panel .goal-actions>.goal-field-changed{flex-basis:100%;display:grid;gap:8px;padding:9px 12px;border:1px solid var(--warnb)!important;border-radius:9px;background:var(--warnt)!important;color:var(--tx1)!important;font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+:root:root .context-panel .goal-field-changed>div{display:flex;flex-wrap:wrap;gap:6px}
 @container inspector (max-width:470px){
   :root:root .context-panel .goal-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
