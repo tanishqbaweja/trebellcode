@@ -13,6 +13,7 @@ import { desktopBridgeToolAvailability } from "./desktop-tool-availability.js";
 import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
 import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
 import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
+import { askTerminalKeyboard } from "./terminal-keyboard.js";
 import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
 
 export { repositoryContextEntries } from "./context-provenance.js";
@@ -358,8 +359,10 @@ async function waitForDetachedSetup(sessionId,{timeoutMs=30*60_000}={}){
 
 // A send's new worktree (App asks for one only in New worktree mode). owns: whether the view that asked for the worktree is still
 // shown. One left meanwhile gets no worktree card, project or terminal of this worktree; the worktree is still made for the send.
+// pressed: the presses counted at the send's press, as of which the setup terminal asks for the keyboard as it opens the drawer, once
+// the worktree is made, so a menu opened or a key pressed meanwhile keeps the keyboard where it went (terminal-keyboard.js).
 // worktreeCardErrors: the failures the worktree setup card already shows (the activity list does not repeat them).
-export async function prepareWorktree(deps,basePath,modelId,{owns=null}={}){
+export async function prepareWorktree(deps,basePath,modelId,{owns=null,pressed}={}){
   const {setWorktreeSetup,touchProject,setPanel,showActionError,worktreeCardErrors}=deps;
   const card=next=>{if(!owns||owns())setWorktreeSetup(next)};
   const info=await api("/api/git/info?path="+encodeURIComponent(basePath));
@@ -384,7 +387,7 @@ export async function prepareWorktree(deps,basePath,modelId,{owns=null}={}){
         waitForSetup:Boolean(setup.waitForSetup),
         detail:setup.waitForSetup?"Agent will start after setup completes":"Setup is running in the background",
       });
-      if(!owns||owns()){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:setup.session.id})),0)}
+      if(!owns||owns()){askTerminalKeyboard(pressed);setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:setup.session.id})),0)}
       const completion=monitorWorktreeSetup(deps,setup.session.id);
       if(setup.waitForSetup){
         const settled=await completion;

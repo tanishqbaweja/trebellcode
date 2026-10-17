@@ -506,12 +506,12 @@ for(const mode of ["dark","light"])test(`a linked pull request opens its web pag
 // turn runs. The desktop bridge records each Open in window.__opens, answers it once window.__openHold (a promise, when set)
 // settles, and while window.__openFails is set fails it as the shell does for an editor whose program is gone (editorGone). others
 // are more threads for the sidebar.
-async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,running=true,editors=[{id:"vscode",label:"Visual Studio Code"}],others=[],settings={}}){
+async function openHeaderFixture(page,{width,height=800,mode="dark",prCount=3,running=true,editors=[{id:"vscode",label:"Visual Studio Code"}],others=[],settings={},respond}){
   await page.addInitScript(editors=>{window.__opens=[];window.__openFails=false;Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors}),open:async(path,id)=>{window.__opens.push(id);await window.__openHold;if(window.__openFails)throw new Error("Could not start "+editors.find(editor=>editor.id===id).label+": it is no longer at D:\\Editors\\"+id+".exe.")}}}})},editors);
   const project={id:"header-project",name:"Billing reconciliation service with a very long project name",path:process.cwd(),environmentId:null,branch:"feature/reconcile-refunds-in-the-ledger-export",scripts:[{id:"dev-server",name:"Start the billing dev server",command:"npm run dev -- --port 4173"}],preferredScriptId:"dev-server"};
   const thread={id:"header-thread",name:"Investigate why the nightly billing reconciliation job double counts refunds in the ledger export",preview:"Refunds",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Why are refunds counted twice?"}]},{type:"agentMessage",id:"assistant-1",text:"Looking."}]}]};
   const prs=Array.from({length:prCount},(_,index)=>({url:"https://github.com/acme/billing/pull/"+(12345+index),number:12345+index,title:"Refund fix "+index,state:"open"}));
-  const harness=await startHarness([thread,...others]);
+  const harness=await startHarness([thread,...others],{respond});
   try{
     await page.setViewportSize({width,height});
     await openApp(page,{harness,threads:[thread,...others],meta:{[thread.id]:{projectless:false,environmentId:null,linkedPullRequests:prs},...Object.fromEntries(others.map(other=>[other.id,{projectless:false,environmentId:null}]))},project,settings:{appearanceMode:mode,...settings},layout:{sidebarWidth:258,rightPanelWidth:520,terminalHeight:330}});
@@ -710,6 +710,113 @@ test("a running project action folded into More actions is stopped from there, w
       await drawer.getByRole("button",{name:"Close terminal",exact:true}).click();await expect(drawer).toHaveCount(0);
     }
     expect(runs.map(run=>run.running)).toEqual([false,false,false]);
+  }finally{await harness.close()}
+});
+
+// The server's side of a terminal that comes up a while after the press that asked for it, for the tests below: the list holds the
+// terminals in listed (none until a test adds one), and a terminal's socket says it runs and what it printed. A held request answers
+// once its release() is called.
+async function lateTerminals(page){
+  const listed=[],json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>route.request().method()==="GET"?json(route,{sessions:listed}):route.fallback());
+  await page.route(/\/api\/project-script\/runs(?:\?.*)?$/,route=>json(route,{runs:{}}));
+  await page.routeWebSocket(/\/api\/terminal\/ws\?/,ws=>{
+    const url=new URL(ws.url()),session=listed.find(item=>item.id===url.searchParams.get("session"));
+    if(url.searchParams.get("watch")==="1"){ws.send(JSON.stringify({type:"state",running:Boolean(session?.running),exitCode:null}));return}
+    ws.send(JSON.stringify({type:"snapshot",session:{...(session||{}),buffer:"Starting\r\n"}}));
+  });
+  const terminal=(id,name,cwd)=>({id,name,cwd,environmentId:null,environmentName:"Local machine",environmentType:"local",cols:120,rows:32,running:true,exitCode:null,createdAt:Date.now(),updatedAt:Date.now(),buffer:""});
+  const held=()=>{let release=()=>{};const answered=new Promise(resolve=>release=resolve);return {answered,release}};
+  return {listed,terminal,held,json};
+}
+// The terminal came up with More actions open: it stays open, with the keyboard on its button, and takes the click.
+async function expectMoreActionsKept(page,{more,menu,drawer},what){
+  await expect(drawer.locator(".terminal-tab")).toHaveCount(1);await expect(drawer.locator(".terminal-pane.active .terminal-command-line input")).toBeEnabled();await settle(page);
+  await expect(menu,"More actions stays open as "+what+" comes up").toBeVisible();await expect(more,"the keyboard stays on More actions").toBeFocused();
+}
+
+// An action run from its Projects card shows its terminal on the chat when the run answers, which a real run does in up to a second
+// or so. More actions opened on the thread meanwhile stays open as that terminal comes up: the card's run asked for the terminal's
+// keyboard as it answered, after the press that opened the menu, where the header's run asks as of the press that ran it.
+test("More actions opened on the thread while an action run from its Projects card starts stays open as the action's terminal comes up",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,project,thread,header,more,menu}=await openHeaderFixture(page,{width:1180,running:false});
+  const script=project.scripts[0],drawer=page.getByTestId("drawer");
+  try{
+    const {listed,terminal,held,json}=await lateTerminals(page),run=held();
+    await page.route(/\/api\/project-script\/run$/,async route=>{await run.answered;const session=terminal("card-run",script.name,project.path);listed.push(session);return json(route,{ok:true,script,session,previewUrl:null})});
+    await expect(more).toBeVisible();
+    await header.locator(".project-crumb:not(.sidebar-reopen)").click();
+    await page.locator(".project-card.active .project-action-run").filter({hasText:script.name}).click();
+    // Back on the thread while the run is on its way, More actions is opened.
+    await openThread(page,thread.name);
+    await more.click();await expect(menu).toBeVisible();await expect(drawer).toHaveCount(0);
+    run.release();
+    await expect(header.locator(".workspace-header-actions>.script-control")).toHaveAttribute("data-running","true");
+    await expectMoreActionsKept(page,{more,menu,drawer},"the card's run shows its terminal");
+    await page.screenshot({path:join(shotsDir,"header-overflow-card-run-terminal-dark-1180x800.png"),animations:"disabled"});
+    await menu.getByRole("button",{name:"Switch to light mode",exact:true}).click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
+  }finally{await harness.close()}
+});
+
+// A send in New worktree mode whose worktree runs a setup script opens the drawer on that script's terminal by itself once the
+// worktree is made, seconds after the press that sent it. More actions opened meanwhile stays open as that terminal comes up: the
+// drawer asked for the keyboard as it opened, after the press that opened the menu, where it now asks as of the send. The worktree
+// here takes the project's own folder, so the header keeps its actions (a real one is a project of its own, whose header loads its
+// own Git state), and the send's thread is never answered, so the header stays the new task's.
+test("More actions opened while a send's new worktree is made stays open as the worktree's setup terminal comes up",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,project,header,more,menu}=await openHeaderFixture(page,{width:1180,running:false,respond:message=>message.method==="thread/start"?new Promise(()=>{}):undefined});
+  const drawer=page.getByTestId("drawer"),composer=page.getByTestId("composer");
+  try{
+    const {listed,terminal,held,json}=await lateTerminals(page),worktree=held();let asked=false;
+    await page.route(/\/api\/git\/action$/,async route=>{
+      if(route.request().postDataJSON()?.action!=="worktree-create")return route.fallback();
+      asked=true;await worktree.answered;listed.push(terminal("worktree-setup","Fixture setup",project.path));
+      return json(route,{result:{worktree:project.path,setup:{scriptName:"Fixture setup",waitForSetup:false,session:{id:"worktree-setup"}}}});
+    });
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await expect(header.locator(".thread-title-button.is-static")).toBeVisible();
+    // The new task's short title leaves the row more room: the window narrows until the header folds actions into More actions.
+    let width=1180;
+    while(width>840&&!await more.isVisible()){width-=20;await page.setViewportSize({width,height:800});await settle(page)}
+    await page.locator(".workspace-mode").selectOption("worktree");
+    await composer.fill("Set up the worktree, then find the double counted refunds.");await page.getByTestId("send").click();
+    await expect.poll(()=>asked,{message:"the send asked for its worktree"}).toBe(true);
+    await expect(more).toBeVisible();await more.click();await expect(menu).toBeVisible();await expect(drawer).toHaveCount(0);
+    worktree.release();
+    await expectMoreActionsKept(page,{more,menu,drawer},"the setup terminal");
+    await page.screenshot({path:join(shotsDir,"header-overflow-worktree-setup-terminal-dark-"+width+"x800.png"),animations:"disabled"});
+    await menu.getByRole("button",{name:"Switch to light mode",exact:true}).click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
+  }finally{await harness.close()}
+});
+
+// A harness's Sign in in Settings opens its sign-in terminal on the chat when the server answers, once it has started the harness's
+// own sign in. More actions opened on the thread meanwhile stays open as that terminal comes up: the drawer asked for the keyboard as
+// it opened, after the press that opened the menu, where it now asks as of the press on Sign in.
+test("More actions opened on the thread while a harness's sign in starts stays open as its sign-in terminal comes up",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,thread,more,menu}=await openHeaderFixture(page,{width:1180,running:false});
+  const drawer=page.getByTestId("drawer");
+  try{
+    const {listed,terminal,held,json}=await lateTerminals(page),signIn=held();
+    await page.route(/\/api\/agent-runtimes$/,route=>route.request().method()!=="GET"?route.fallback():json(route,{
+      selectedRuntime:"codex",selectedInstanceId:"codex-default",compatibleInstanceIds:["codex-default"],
+      definitions:[{id:"codex",name:"Codex",protocol:"codex",multipleInstances:true,canAuthenticate:true}],
+      instances:[{id:"codex-default",kind:"codex",displayName:"Codex",enabled:true}],
+      statuses:[{id:"codex-default",kind:"codex",name:"Codex",available:true,installed:true,authenticated:false,version:"0.46.0",message:"Not signed in"}],
+    }));
+    await page.route(/\/api\/agent-runtime-auth$/,async route=>{await signIn.answered;const session=terminal("codex-sign-in","Codex sign in",process.cwd());listed.push(session);return json(route,{ok:true,authenticated:false,session})});
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"Settings",exact:true}).click();
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    await page.locator(".agent-runtime-option").filter({hasText:"Codex"}).getByRole("button",{name:"Sign in",exact:true}).click();
+    // Back on the thread while the sign in starts, More actions is opened.
+    await openThread(page,thread.name);
+    await more.click();await expect(menu).toBeVisible();await expect(drawer).toHaveCount(0);
+    signIn.release();
+    await expectMoreActionsKept(page,{more,menu,drawer},"the sign-in terminal");
+    await page.screenshot({path:join(shotsDir,"header-overflow-sign-in-terminal-dark-1180x800.png"),animations:"disabled"});
+    await menu.getByRole("button",{name:"Switch to light mode",exact:true}).click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
   }finally{await harness.close()}
 });
 

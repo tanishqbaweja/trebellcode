@@ -66,20 +66,22 @@ test("the header's action button shows its action running, shows its terminal on
 
 // The server side of action runs for the tests below, scripted as above: each run answers after latencyMs (a real run answered in
 // 450-1275 ms on a loaded host) with a terminal of its own, the terminal list holds every terminal started, and a watch socket says
-// whether its terminal runs. Proof screenshots go to TREBELL_PROOF_SHOTS when it is set.
+// whether its terminal runs. With held, a run answers only once answer() is called, and the list holds its terminal from its answer
+// on, as the server lists a run once it has started it. Proof screenshots go to TREBELL_PROOF_SHOTS when it is set.
 const proofShots=process.env.TREBELL_PROOF_SHOTS?String(process.env.TREBELL_PROOF_SHOTS).replace(/[\\/]*$/,"/"):auditDir+"proof-";
 if(process.env.TREBELL_PROOF_SHOTS)mkdirSync(proofShots,{recursive:true});
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const devServer={id:"dev-server",name:"Dev server",command:"node server.js",previewUrl:null,autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
-async function scriptedActions(page,request,{latencyMs=500}={}){
+async function scriptedActions(page,request,{latencyMs=500,held=false}={}){
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"Action Workspace",activate:true,scripts:[devServer],preferredScriptId:devServer.id}});
   const started=[],sockets=new Map();
+  let answer=()=>{};const answering=held?new Promise(resolve=>answer=resolve):null;
   const session=run=>({id:run.id,name:devServer.name,cwd:boot.cwd,environmentId:null,environmentName:"Local machine",environmentType:"local",cols:120,rows:32,running:run.running,exitCode:run.running?null:1,createdAt:Date.now(),updatedAt:Date.now(),buffer:""});
   await page.route(/\/api\/project-script\/run$/,async route=>{
-    const run={id:"action-run-"+(started.length+1),running:true};started.push(run);
-    await delay(latencyMs);
+    const run={id:"action-run-"+(started.length+1),running:true};
+    if(answering){await answering;started.push(run)}else{started.push(run);await delay(latencyMs)}
     return json(route,{ok:true,script:devServer,session:session(run),previewUrl:null});
   });
   await page.route(/\/api\/project-script\/stop$/,route=>{
@@ -95,7 +97,7 @@ async function scriptedActions(page,request,{latencyMs=500}={}){
     if(url.searchParams.get("watch")==="1"){ws.send(JSON.stringify({type:"state",running:Boolean(run?.running),exitCode:null}));return}
     ws.send(JSON.stringify({type:"snapshot",session:{...(run?session(run):{id}),buffer:"DEV SERVER READY on 127.0.0.1:4173\r\n"}}));
   });
-  return {started,cleanup:()=>request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}})};
+  return {started,answer:()=>answer(),cleanup:()=>request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}})};
 }
 const headerAction=page=>{const header=page.locator(".workspace-header");return {button:header.getByRole("button",{name:"Dev server",exact:true}),stop:header.getByRole("button",{name:"Stop Dev server",exact:true})}};
 
@@ -166,5 +168,35 @@ test("Stop pressed from the keyboard leaves the keyboard on the action's button"
     // And Enter there runs the action again, from the keyboard.
     await page.keyboard.press("Enter");
     await expect(button).toHaveAttribute("data-running","true");
+  }finally{await cleanup()}
+});
+
+// The terminal asked for while the header's action is on its way, with no terminal listed yet: the drawer opened with Toggle terminal,
+// Focus terminal (Ctrl+`), or a press in the drawer already open. The action's terminal takes the keyboard as it shows, as after the
+// press that ran the action alone. Its answer asks as of that press, and it used to take back the ask made since, so the keyboard
+// stayed on Toggle terminal, fell to the page from Create terminal as the action's terminal replaced it, or stayed where the press in
+// the drawer left it.
+for(const [way,slug] of [["Toggle terminal","toggle"],["Ctrl+`","focus-terminal"],["a press in the drawer","drawer-press"]])test(`the action's terminal takes the keyboard as it shows after ${way} while the header's action starts`,async({page,request})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {started,answer,cleanup}=await scriptedActions(page,request,{held:true});
+  try{
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const {button}=headerAction(page),toggle=page.getByTestId("terminal-toggle"),drawer=page.getByTestId("drawer"),none=drawer.getByText("No terminal session",{exact:true});
+    const commandLine=drawer.locator(".terminal-pane.active .terminal-command-line input");
+    if(way==="a press in the drawer"){await toggle.click();await expect(none).toBeVisible()}
+    await button.click();
+    if(way==="Toggle terminal")await toggle.click();
+    else if(way==="Ctrl+`")await page.keyboard.press("Control+Backquote");
+    else await none.click();
+    await expect(none,"no terminal is listed while the run is on its way").toBeVisible();
+    expect(started.length).toBe(0);
+    answer();
+    await expect(button).toHaveAttribute("data-running","true");
+    await expect(drawer.locator(".terminal-tab")).toHaveCount(1);await expect(commandLine).toBeEnabled();
+    await expect(commandLine,"the action's terminal takes the keyboard ("+way+")").toBeFocused();
+    await page.screenshot({animations:"disabled",path:proofShots+"I1-ask-while-starting-"+slug+"-dark-1280.png"});
+    expect(started.length,"one run of the action").toBe(1);
   }finally{await cleanup()}
 });

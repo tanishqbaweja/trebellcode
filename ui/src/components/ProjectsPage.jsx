@@ -7,6 +7,7 @@ import { projectRemovalQuestion, projectRestoreBlocker, projectRestoreBody } fro
 import { inkOn } from "../theme-utils.js";
 import { startVisibilityPoll } from "../visibility-poll.js";
 import { askConfirm } from "../ask-dialog.js";
+import { terminalPresses } from "../terminal-keyboard.js";
 
 // The Projects page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves on,
 // or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.
@@ -535,11 +536,13 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,isPr
   }
 
   async function runScript(project,script){
+    const pressed=terminalPresses();
     setBusy(true);setError("");setCardError(null);
     try{
       const run={path:project.path,environmentId:project.environmentId||null,scriptId:script.id};
-      // The app shows the run as the header's does: its terminal, and the action running on the header's button with its Stop.
-      onRunScript?.(await api("/api/project-script/run",{method:"POST",body:run}),run);
+      // The app shows the run as the header's does: its terminal, and the action running on the header's button with its Stop. The
+      // terminal asks for the keyboard as of this press (pressed), so one made while the run starts keeps it (terminal-keyboard.js).
+      onRunScript?.(await api("/api/project-script/run",{method:"POST",body:run}),run,pressed);
       if(script.previewUrl&&script.autoOpenPreview)onOpenPreview?.(script.previewUrl);
     }catch(err){failInCard(project,"action:"+script.id,err.message||String(err))}
     finally{setBusy(false)}

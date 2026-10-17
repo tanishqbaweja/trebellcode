@@ -10,6 +10,7 @@ import { normalizeCustomTheme } from "../theme-utils.js";
 import { parseThemeJson } from "../theme-json.js";
 import { sharedRuntimeCapabilities } from "../../../src/runtime-capabilities.mjs";
 import { runtimeStatusForKind } from "../runtime-status.js";
+import { terminalPresses } from "../terminal-keyboard.js";
 import { harnessCheck, harnessStateText, harnessStateTitle } from "../harness-check.js";
 import { agentName } from "../display-labels.js";
 import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, MODEL_PROVIDER_LABELS, modelProviderLabel } from "../provider-labels.js";
@@ -385,8 +386,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       switchRuntime({runtime:kind,instanceId:result.selectedInstanceId||null,resetThread:true},async()=>result,{gate:false}).catch(()=>{});
     }catch(error){setAgentMessageTarget(kind);showAgentMessage(error.message,true)}finally{setInstallingAgent(null)}
   }
+  // The sign-in terminal the answer opens asks for the keyboard as of this press (pressed, terminal-keyboard.js), so a press made
+  // while the harness's sign in starts keeps it.
   async function authenticateAgentRuntime(kind,instanceId){
-    const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind);if(!definition?.canAuthenticate)return;
+    const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind),pressed=terminalPresses();if(!definition?.canAuthenticate)return;
     setAgentMessageTarget(kind);
     setAuthenticatingAgent(instanceId||kind);showAgentMessage("Opening "+(definition.name||kind)+" sign in…");
     try{
@@ -397,7 +400,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         else await loadAgentRuntimes();
       }else{
         showAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
-        if(result?.session)onOpenRuntimeAuthTerminal?.(result.session);
+        if(result?.session)onOpenRuntimeAuthTerminal?.(result.session,pressed);
       }
     }catch(error){showAgentMessage(error.message,true)}
     finally{setAuthenticatingAgent(null)}
