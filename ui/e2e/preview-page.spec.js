@@ -15,16 +15,17 @@ async function startSite(port=0){
 }
 
 // The desktop bridge as desktop/preload.cjs gives it, scripted: an agent browser with a history of its own that reports its state
-// after each move, as desktop/main.mjs does, and notes the calls the panel makes (and the sizes it is set to). Its page has two
-// elements to inspect, and window.closeAgentWindow() closes its window as a person does outside the panel, which the shell reports
-// with its state. The window it grants a recording is a canvas that keeps drawing, so the recorder encodes real frames, and
+// after each move, as desktop/main.mjs does, and notes the calls the panel makes (and the sizes it is set to, and how many snapshots
+// it took). Its page has two elements to inspect. window.closeAgentWindow() closes its window as a person does outside the panel,
+// which the shell reports with its state; the window opened next is another, which its state and its snapshots name (windowId), as
+// the shell's do. The window it grants a recording is a canvas that keeps drawing, so the recorder encodes real frames, and
 // window.displayMediaCalls counts the recordings of it started.
 function scriptedAgentBrowser(){
-  const pages=[],listeners=new Set();let at=-1,size={width:1280,height:800};window.agentBrowserCalls=[];window.agentBrowserSizes=[];window.displayMediaCalls=0;
-  const current=()=>({open:at>=0,url:pages[at]||"",title:"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,...size});
+  const pages=[],listeners=new Set();let at=-1,windowId=1,size={width:1280,height:800};window.agentBrowserCalls=[];window.agentBrowserSizes=[];window.agentSnapshots=0;window.displayMediaCalls=0;
+  const current=()=>({open:at>=0,...(at>=0?{windowId}:{}),url:pages[at]||"",title:"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,...size});
   const report=()=>{for(const listener of listeners)listener(current())};
   const call=(name,move=()=>{})=>async(...args)=>{window.agentBrowserCalls.push(name);move(...args);report();return current()};
-  window.closeAgentWindow=()=>{pages.length=0;at=-1;report()};
+  window.closeAgentWindow=()=>{pages.length=0;at=-1;windowId++;report()};
   Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{
     state:async()=>current(),
     onState:listener=>{listeners.add(listener);return()=>listeners.delete(listener)},
@@ -32,7 +33,7 @@ function scriptedAgentBrowser(){
     back:call("back",()=>{if(at>0)at--}),
     forward:call("forward",()=>{if(at<pages.length-1)at++}),
     reload:call("reload"),
-    snapshot:async()=>({url:pages[at]||"",title:"",elements:at<0?[]:[{ref:"e1",tag:"button",text:"Save profile",href:""},{ref:"e2",tag:"a",text:"Docs",href:pages[at]+"/docs"}]}),
+    snapshot:async()=>{window.agentSnapshots++;return {windowId,url:pages[at]||"",title:"",elements:at<0?[]:[{ref:"e1",tag:"button",text:"Save profile",href:""},{ref:"e2",tag:"a",text:"Docs",href:pages[at]+"/docs"}]}},
     setViewport:call("setViewport",(width,height)=>{size={width,height};window.agentBrowserSizes.push([width,height])}),
     armRecording:async()=>({ok:true,expiresAt:Date.now()+5000,sourceId:"window:1:0"}),
   }}});
@@ -327,6 +328,57 @@ test("an agent browser closed outside the panel takes its page's elements with i
     await page.evaluate(()=>window.closeAgentWindow());
     await tabs.getByRole("button",{name:"Browser",exact:true}).click();
     await expect(none,"closed while the panel was on Files").toBeVisible();await expect(elements).toHaveCount(0);await expect(attach).toHaveCount(0);
+  }finally{await site.close()}
+});
+
+// The agent browser's elements the panel keeps are those of the page they were read on, in that window. A page it no longer shows
+// takes them with it: its window closed while the panel was on Files and opened again on the same address before the panel came
+// back (the agent's open, or the tray's Open Agent Browser, which no panel hears), a page the agent opened while the panel was on
+// Files, and one it opens while the panel is open. They came back, and Attach context attached the gone page's element, whose ref
+// the next snapshot gives to another element. A page the panel's own Open agent browser opens while the panel is on Files comes
+// back with that page and its elements: the panel came back on the page before, listing its elements.
+test("the agent browser's elements go with the page they were read on, also while the panel is away",async({page,request})=>{
+  test.setTimeout(120_000);
+  const site=await startSite();
+  try{
+    await page.addInitScript(scriptedAgentBrowser);
+    const {panel,address,frame}=await openBrowserPanel(page,request);
+    const tabs=panel.locator(".context-panel-tab-scroll"),elements=panel.locator(".browser-elements button"),attach=panel.getByRole("button",{name:"Attach context",exact:true});
+    const none=panel.getByText("Open the agent browser and inspect the page to see model-addressable elements.");
+    const agentOpens=to=>page.evaluate(url=>window.trebellDesktop.browser.navigate(url),site.url+to);
+    const chooseElement=async()=>{await panel.getByRole("button",{name:"Inspect elements"}).click();await elements.filter({hasText:"Save profile"}).click();await expect(attach).toBeVisible()};
+    const toFiles=async()=>{await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(address).toHaveCount(0)};
+    const toBrowser=async()=>{await tabs.getByRole("button",{name:"Browser",exact:true}).click();await expect(address).toBeVisible()};
+    const gone=async how=>{await expect.soft(none,how).toBeVisible();await expect.soft(elements,how).toHaveCount(0);await expect.soft(attach,how).toHaveCount(0)};
+    await typeAddress(page,address,site.url+"/rec");await panel.getByRole("button",{name:"Open agent browser"}).click();
+    await expect(frame.locator("h1")).toHaveText("Page /rec");
+    await chooseElement();await toFiles();
+    await page.evaluate(()=>window.closeAgentWindow());await agentOpens("/rec");
+    await toBrowser();
+    await gone("the window closed and opened again on the same address while the panel was on Files");
+    await shots(page,"preview-agent-page-gone-while-away");
+    await chooseElement();await toFiles();
+    await agentOpens("/next");
+    await toBrowser();
+    await gone("the agent opened another page while the panel was on Files");
+    await chooseElement();
+    await agentOpens("/later");
+    await gone("the agent opened another page while the panel was open");
+    // Open agent browser is pressed for /b, and Files is clicked before /b has loaded; /b loads, and its elements are read, while
+    // the panel is on Files.
+    await chooseElement();
+    await page.evaluate(()=>{const browser=window.trebellDesktop.browser,navigate=browser.navigate;browser.navigate=async(...args)=>{await new Promise(resolve=>{window.loadNow=resolve});browser.navigate=navigate;return navigate(...args)}});
+    await typeAddress(page,address,site.url+"/b");await panel.getByRole("button",{name:"Open agent browser"}).click();
+    await toFiles();
+    const snapshots=await page.evaluate(()=>window.agentSnapshots);
+    await page.evaluate(()=>window.loadNow());
+    await expect.poll(()=>page.evaluate(()=>window.agentSnapshots)).toBe(snapshots+1);
+    await toBrowser();
+    await expect.soft(frame.locator("h1"),"the page Open agent browser opened while the panel was on Files is previewed").toHaveText("Page /b");
+    await expect.soft(panel.locator(".browser-inspector p span"),"and its elements are listed").toHaveText(site.url+"/b");
+    await expect(elements).toHaveCount(2);
+    await expect.soft(panel.getByTestId("preview-annotation"),"the element chosen on the page before is not chosen on /b").toHaveCount(0);
+    await shots(page,"preview-agent-page-opened-while-away");
   }finally{await site.close()}
 });
 

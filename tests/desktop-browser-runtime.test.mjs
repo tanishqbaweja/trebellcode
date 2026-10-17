@@ -59,6 +59,12 @@ test("desktop isolated browser reports bounded runtime failures and responsive v
     assert.match(history.atTwo.url,/\/two$/);assert.equal(history.atTwo.canGoBack,true);
     assert.match(history.back.url,/\/one$/);assert.equal(history.back.canGoForward,true);
     assert.match(history.forward.url,/\/two$/);assert.equal(history.reloaded.url,history.forward.url);assert.equal(history.reloaded.title,"History two");
+    // The state names the agent browser's window, as a snapshot of its page does, so the panel can drop elements read on another
+    // window's page; every window opened again after a close is another.
+    const page=await window.evaluate(async()=>({state:await window.trebellDesktop.browser.state(),snapshot:await window.trebellDesktop.browser.snapshot()}));
+    assert.equal(typeof page.state.windowId,"number","the state names the agent browser's window: "+JSON.stringify(page.state));
+    assert.equal(page.snapshot.windowId,page.state.windowId);assert.equal(page.snapshot.url,page.state.url);
+    let windowId=page.state.windowId;
     for(let iteration=0;iteration<12;iteration++){
       await window.evaluate(async url=>{
         await Promise.allSettled([
@@ -69,6 +75,7 @@ test("desktop isolated browser reports bounded runtime failures and responsive v
       },`http://127.0.0.1:${fixturePort}/one?close-race=${iteration}`);
       const reopened=await window.evaluate(async url=>{await window.trebellDesktop.browser.navigate(url);return window.trebellDesktop.browser.state()},`http://127.0.0.1:${fixturePort}/clean?reopen=${iteration}`);
       assert.equal(reopened.open,true);assert.match(reopened.url,/\/clean\?reopen=/);
+      assert.equal(typeof reopened.windowId,"number");assert.notEqual(reopened.windowId,windowId,"the window opened again after a close is another");windowId=reopened.windowId;
     }
     // Its window closed outside the panel (a person closes it) is reported to the app as the agent browser closed, as the panel's
     // own Close leaves it, so the panel drops the gone page's elements.

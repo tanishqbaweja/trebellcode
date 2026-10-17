@@ -398,12 +398,14 @@ async function ensureAgentBrowser({show=false}={}){
   return browser;
 }
 
+// An open agent browser names its window (windowId), as its snapshot does, so the panel can tell a page of another window, one
+// closed and opened again on the same address, from the page its elements were read on.
 function browserState(browser=agentBrowser){
   const contents=liveWindowWebContents(browser);
   if(!contents)return {open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:null,height:null};
   try{
     const history=contents.navigationHistory;const [width,height]=browser.getContentSize();
-    return {open:true,url:contents.getURL(),title:contents.getTitle(),canGoBack:history.canGoBack(),canGoForward:history.canGoForward(),loading:contents.isLoading(),width,height};
+    return {open:true,windowId:browser.id,url:contents.getURL(),title:contents.getTitle(),canGoBack:history.canGoBack(),canGoForward:history.canGoForward(),loading:contents.isLoading(),width,height};
   }catch{return {open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:null,height:null}}
 }
 
@@ -443,7 +445,7 @@ async function browserSnapshot(){
     'const elements=nodes.map((el,index)=>{const ref="e"+(index+1);el.setAttribute("data-trebell-ref",ref);return {ref,tag:el.tagName.toLowerCase(),type:el.getAttribute("type"),role:el.getAttribute("role"),text:(el.innerText||el.getAttribute("aria-label")||el.getAttribute("placeholder")||el.value||"").trim().slice(0,300),href:el.href||null,name:el.getAttribute("name"),disabled:Boolean(el.disabled)};});'+
     'return {url:location.href,title:document.title,text:(document.body?.innerText||"").slice(0,24000),elements};'+
   '})()';
-  return await browser.webContents.executeJavaScript(script,true);
+  return {...await browser.webContents.executeJavaScript(script,true),windowId:browser.id};
 }
 
 async function browserClick(ref){

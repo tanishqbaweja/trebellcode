@@ -25,12 +25,16 @@ function noneSet(result,from=""){
   return (failed===1?"the cookie"+from+" could not be set":"none of the "+failed+" cookies"+from+" could be set")+(why?" ("+why+")":"")+(skipped?"; "+skipped+" encrypted or partitioned cookie"+(skipped===1?" was":"s were")+" skipped":"")+".";
 }
 // What the panel shows is kept while another tab is open or the panel is closed, and comes back with it: a look at Files used to
-// reset it while the agent browser still showed the page. What a panel reads with useKept it reads as it is set, also by a panel
-// that went away meanwhile.
+// reset it while the agent browser still showed the page. The panel shown reads it as it is set, also by one that went away
+// meanwhile, so what lands then (the page an Open agent browser pressed before it went opens, and that page's elements) shows.
 const kept={draft:"http://localhost:3000",url:"",snapshot:null,selectedRef:null,annotation:"",shown:{pages:[],at:-1},previewZoom:1,phase:"idle"},keptListeners=new Set();
 function setKept(next){Object.assign(kept,next);for(const listener of keptListeners)listener()}
 function onKept(listener){keptListeners.add(listener);return()=>keptListeners.delete(listener)}
 function useKept(name){return [useSyncExternalStore(onKept,()=>kept[name]),next=>setKept({[name]:typeof next==="function"?next(kept[name]):next})]}
+// The agent browser's elements belong to the page it showed when they were read: that window (one closed and opened again on the
+// same address is another) at that address. A state of any other page drops them, live or as the panel comes back, so Attach
+// context never attaches an element of a page the agent browser no longer shows, whose ref may name another element there now.
+function samePage(state,shot){return state.windowId===shot.windowId&&state.url===shot.url}
 // A recording goes on while another tab is open or the panel is closed, and comes back with the panel, as it records the agent
 // browser's window, not the panel: it used to end unsaved when the panel went. Its phase (kept.phase: idle, starting, recording, or
 // stopping while it is saved) is every panel's, so one opened again while a recording starts or is saved offers no second Record
@@ -43,13 +47,13 @@ const rec={since:0};
 function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
 
 export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAttachFile}){
-  const [draft,setDraft]=useState(kept.draft);
-  const [url,setUrl]=useState(kept.url);
+  const [draft,setDraft]=useKept("draft");
+  const [url,setUrl]=useKept("url");
   const [key,setKey]=useState(0);
-  const [snapshot,setSnapshot]=useState(kept.snapshot);
+  const [snapshot,setSnapshot]=useKept("snapshot");
   const [busy,setBusy]=useState("");
-  const [selectedRef,setSelectedRef]=useState(kept.selectedRef);
-  const [annotation,setAnnotation]=useState(kept.annotation);
+  const [selectedRef,setSelectedRef]=useKept("selectedRef");
+  const [annotation,setAnnotation]=useKept("annotation");
   const [lastAttached,setLastAttached]=useState("");
   const [cookieStatus,setCookieStatus]=useState("");
   const [browserImports,setBrowserImports]=useState(null);
@@ -60,15 +64,14 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   const [urlError,setUrlError]=useState("");
   // Back and Forward step through the addresses this preview has shown, as a browser's do; the agent browser keeps its own
   // history. They used to step the agent browser and show its page, so Back after typing an address went to an older agent page.
-  const [shown,setShown]=useState(kept.shown);
+  const [shown,setShown]=useKept("shown");
   const [unanswered,setUnanswered]=useState("");
   const [viewport,setViewport]=useState({width:1280,height:800});
   const [history,setHistory]=useState([]);
   const [phase]=useKept("phase"),recording=phase==="recording"||phase==="stopping";
   const [recordingSeconds,setRecordingSeconds]=useState(0);
-  const [previewZoom,setPreviewZoom]=useState(kept.previewZoom);
+  const [previewZoom,setPreviewZoom]=useKept("previewZoom");
   const urlInputRef=useRef(null),attaching=useRef(new Set());
-  useEffect(()=>{Object.assign(kept,{draft,url,snapshot,selectedRef,annotation,shown,previewZoom})});
 
   function remember(nextUrl,title=""){
     const normalized=normalizedHistoryUrl(nextUrl);if(!normalized)return;
@@ -96,7 +99,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   useEffect(()=>{
     const browser=window.trebellDesktop?.browser;if(!browser)return;
     let disposed=false;
-    const take=state=>{if(disposed||!state)return;if(state.open===false)dropPage();if(state.width&&state.height)setViewport({width:state.width,height:state.height});if(state.url)remember(state.url,state.title)};
+    const take=state=>{if(disposed||!state)return;if(state.open===false||kept.snapshot&&!samePage(state,kept.snapshot))dropPage();if(state.width&&state.height)setViewport({width:state.width,height:state.height});if(state.url)remember(state.url,state.title)};
     browser.state?.().then(state=>{if(!disposed&&state)setBrowserError("");take(state)}).catch(error=>{if(!disposed)setBrowserError(error?.message||String(error)||"Could not read Agent Browser state.")});
     const unsubscribe=browser.onState?.(take);
     return()=>{disposed=true;unsubscribe?.()};
@@ -146,9 +149,10 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   function step(by){const at=shown.at+by,next=shown.pages[at];if(!next)return;setShown(current=>({...current,at}));setDraft(next);setUrlError("");setUrl(next)}
   // Preview loads the address shown again, so one that did not answer is asked again once its server is up.
   function go(){const next=normalized();if(next&&!previewableUrl(next)){setUrlError(INVALID_PREVIEW_URL);return}setUrlError("");if(!next){setUrl("");return}if(next===url)setKey(value=>value+1);show(next);remember(next)}
+  // The page opened comes with its own elements, none of them chosen: the element chosen on the page before, and its note, go.
   async function openAgentUrl(next){
     if(!next)return;setBusy("open");
-    try{const state=await window.trebellDesktop?.browser?.navigate?.(next);setBrowserError("");show(next);remember(next,state?.title);setSnapshot(await window.trebellDesktop?.browser?.snapshot?.())}
+    try{const state=await window.trebellDesktop?.browser?.navigate?.(next);setBrowserError("");show(next);remember(next,state?.title);const shot=await window.trebellDesktop?.browser?.snapshot?.();dropPage();setSnapshot(shot)}
     catch(error){setBrowserError(error?.message||String(error)||"Could not open Agent Browser.")}
     finally{setBusy("")}
   }
