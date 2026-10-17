@@ -64,14 +64,15 @@ async function openBrowserPanel(page,request){
 // Types an address over the one in the bar (or a size over the one in a device toolbar field), as a person does.
 async function typeAddress(page,address,value){await address.click();await page.keyboard.press("Control+A");await page.keyboard.type(value,{delay:8})}
 
-// Dark and light screenshots at 1280x800 and 900 wide. The mode is switched with the header's appearance toggle at 1280: at 900 the
-// open right panel lies over the header and its appearance toggle, so a person widens the window to reach it.
-async function shots(page,name){
+// Dark and light screenshots at 1280x800 and 900 wide, each with show (the part of the panel the shot is for) scrolled into view. The
+// mode is switched with the header's appearance toggle at 1280: at 900 the open right panel lies over the header and its appearance
+// toggle, so a person widens the window to reach it.
+async function shots(page,name,show=null){
   for(const mode of ["dark","light"]){
     await page.setViewportSize({width:1280,height:800});
     if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
     await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
-    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+".png"})}
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await show?.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+".png"})}
   }
   await page.setViewportSize({width:1280,height:800});
   await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
@@ -162,9 +163,10 @@ test("a recording goes on while the person looks at another tab or closes the pa
   }finally{await site.close()}
 });
 
-// The server is slow to store what the page attaches ("text" or "blob") until store() is called, as one slow to answer is (an SSH
-// or WSL environment's copy); store.reached settles once the page has asked it to store something.
-async function slowStore(page,kind){let store=()=>{},asked=()=>{};const stored=new Promise(resolve=>{store=resolve}),reached=new Promise(resolve=>{asked=resolve});await page.route("**/api/attachments/"+kind,async route=>{asked();await stored;await route.continue()});return Object.assign(()=>store(),{reached})}
+// The server is slow to store what the page attaches ("text" or "blob"), or only the text whose file name ends so (an element's own,
+// "-e1.txt"), until store() is called, as one slow to answer is (an SSH or WSL environment's copy); store.reached settles once the
+// page has asked it to store something.
+async function slowStore(page,kind,named=""){let store=()=>{},asked=()=>{};const stored=new Promise(resolve=>{store=resolve}),reached=new Promise(resolve=>{asked=resolve});await page.route("**/api/attachments/"+kind,async route=>{if(named&&!route.request().postDataJSON()?.name?.endsWith(named))return route.fallback();asked();await stored;await route.continue()});return Object.assign(()=>store(),{reached})}
 
 // Opens the agent browser on the site's /rec page, with Record in the device toolbar.
 async function openRecorder(page,request,site){
@@ -427,10 +429,13 @@ test("a double click on Attach context, or Enter pressed twice or held on it, at
   }finally{await site.close()}
 });
 
-// An element attached while another's attach is still on its way (the server is slow to store it) is attached too. The one that
-// lands first says so only under its own element, and the note typed for the element chosen since stays. One guard for every
-// attach left the second undone, the first one's notice read as the second's, and the first one's note emptied the second's.
-test("an element attached while another's attach is on its way is attached too, and the first landing neither says the second was attached nor empties its note",async({page,request})=>{
+// An element attached while another's attach is still on its way (the server is slow to store it) is attached too, and the two
+// land one at a time, in each order: the one that lands first says so only under its own element, the other's landing after it
+// leaves its notice, and the note typed for the element chosen since stays. One guard for every attach left the second undone, the
+// first one's notice read as the second's, and the first one's note emptied the second's; and one notice for every element went to
+// whichever attach landed last, so e1's landing after e2's took away the notice under e2.
+test("an element attached while another's attach is on its way is attached too, and the other's landing, before or after its own, neither says it was attached nor takes away its notice or empties its note",async({page,request})=>{
+  test.setTimeout(60_000);
   const site=await startSite();
   try{
     await page.addInitScript(scriptedAgentBrowser);
@@ -440,20 +445,26 @@ test("an element attached while another's attach is on its way is attached too, 
     const attached=label=>page.getByTestId("context-chip").filter({hasText:label}),status=annotation.locator(".annotation-actions span"),choose=text=>elements.filter({hasText:text}).click();
     await typeAddress(page,address,site.url+"/rec");await panel.getByRole("button",{name:"Open agent browser"}).click();
     await panel.getByRole("button",{name:"Inspect elements"}).click();
-    // e1's attach is on its way when e2 is chosen and attached.
+    // e1's attach is on its way when e2 is chosen and attached; e1's lands first, and the next time e2's does.
+    for(const [round,[first,second]] of [["e1","e2"],["e2","e1"]].entries()){
+      const held={e1:await slowStore(page,"text","-e1.txt"),e2:await slowStore(page,"text","-e2.txt")};
+      const land=ref=>{held[ref]();return expect(attached("Browser "+ref),ref+" is attached").toHaveCount(round+1)};
+      await choose("Save profile");await attach.click();await held.e1.reached;
+      await choose("Docs");await attach.click();await held.e2.reached;
+      await land(first);
+      if(first==="e1")await expect.soft(status,"e1's attach landing says nothing under e2, whose attach is on its way").toHaveCount(0);
+      else await expect(status,"e2's attach landing says so under e2").toHaveText("Element context attached");
+      await land(second);
+      await expect.soft(status,`e2 reads that it was attached once ${second}'s attach has landed after ${first}'s`).toHaveText("Element context attached");
+      if(first==="e2")await shots(page,"preview-attach-landing-after-another-keeps-its-notice",annotation);
+    }
+    // e1's attach lands while e2 is chosen and not attached.
     let store=await slowStore(page,"text");
     await choose("Save profile");await attach.click();await store.reached;
-    await choose("Docs");await attach.click();store();
-    await expect(attached("Browser e1")).toHaveCount(1);
-    await expect.soft(attached("Browser e2"),"e2, attached while e1's attach was on its way, is attached too").toHaveCount(1);
-    await expect(status).toHaveText("Element context attached");
-    // e1's attach lands while e2 is chosen and not attached.
-    store=await slowStore(page,"text");
-    await choose("Save profile");await attach.click();await store.reached;
     await choose("Docs");store();
-    await expect(attached("Browser e1")).toHaveCount(2);
+    await expect(attached("Browser e1")).toHaveCount(3);
     await expect.soft(status,"e1's attach landing says nothing under e2").toHaveCount(0);
-    await shots(page,"preview-attach-while-another-on-its-way");
+    await shots(page,"preview-attach-while-another-on-its-way",annotation);
     // e1's note is on its way when e2 is chosen and a note of its own is typed.
     store=await slowStore(page,"text");
     await choose("Save profile");await typeAddress(page,note,"Make this say Save changes.");await attachNote.click();await store.reached;
