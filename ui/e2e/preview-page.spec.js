@@ -165,8 +165,10 @@ test("a recording goes on while the person looks at another tab or closes the pa
 
 // The server is slow to store what the page attaches ("text" or "blob"), or only the text whose file name ends so (an element's own,
 // "-e1.txt"), until store() is called, as one slow to answer is (an SSH or WSL environment's copy); store.reached settles once the
-// page has asked it to store something.
-async function slowStore(page,kind,named=""){let store=()=>{},asked=()=>{};const stored=new Promise(resolve=>{store=resolve}),reached=new Promise(resolve=>{asked=resolve});await page.route("**/api/attachments/"+kind,async route=>{if(named&&!route.request().postDataJSON()?.name?.endsWith(named))return route.fallback();asked();await stored;await route.continue()});return Object.assign(()=>store(),{reached})}
+// page has asked it to store something, and store.asked() says whether it has, so a check that the page sends what it attaches can
+// wait for that with a message of its own and the expect timeout: an attach the page never sends leaves store.reached unsettled
+// until the test times out, naming nothing.
+async function slowStore(page,kind,named=""){let store=()=>{},reach=()=>{},asked=false;const stored=new Promise(resolve=>{store=resolve}),reached=new Promise(resolve=>{reach=resolve});await page.route("**/api/attachments/"+kind,async route=>{if(named&&!route.request().postDataJSON()?.name?.endsWith(named))return route.fallback();asked=true;reach();await stored;await route.continue()});return Object.assign(()=>store(),{reached,asked:()=>asked})}
 
 // Opens the agent browser on the site's /rec page, with Record in the device toolbar.
 async function openRecorder(page,request,site){
@@ -449,8 +451,8 @@ test("an element attached while another's attach is on its way is attached too, 
     for(const [round,[first,second]] of [["e1","e2"],["e2","e1"]].entries()){
       const held={e1:await slowStore(page,"text","-e1.txt"),e2:await slowStore(page,"text","-e2.txt")};
       const land=ref=>{held[ref]();return expect(attached("Browser "+ref),ref+" is attached").toHaveCount(round+1)};
-      await choose("Save profile");await attach.click();await held.e1.reached;
-      await choose("Docs");await attach.click();await held.e2.reached;
+      await choose("Save profile");await attach.click();await expect.poll(held.e1.asked,"e1's attach is on its way").toBe(true);
+      await choose("Docs");await attach.click();await expect.poll(held.e2.asked,"e2, attached while e1's attach is on its way, is attached too").toBe(true);
       await land(first);
       if(first==="e1")await expect.soft(status,"e1's attach landing says nothing under e2, whose attach is on its way").toHaveCount(0);
       else await expect(status,"e2's attach landing says so under e2").toHaveText("Element context attached");
