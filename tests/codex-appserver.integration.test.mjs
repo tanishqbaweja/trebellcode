@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { copyFile, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
@@ -31,12 +31,21 @@ async function waitForNonEmptyRollout(root,{timeoutMs=5000}={}){
   throw new Error("Codex rollout did not become non-empty before timeout");
 }
 
+// The sign-in these tests give their own Codex homes: an API-key sign-in written from OPENAI_API_KEY, in the form Codex's
+// own API-key login writes. The person's sign-in (CODEX_HOME or ~/.codex) is never read or copied: a ChatGPT sign-in's
+// refresh token is replaced when any copy refreshes, which would leave theirs unable to refresh. Without the key the tests
+// skip; to run them, give the run the key (node --env-file-if-exists=.env --test ...).
+function codexTestAuth(){
+  const key=String(process.env.OPENAI_API_KEY||"").trim();
+  return key?JSON.stringify({auth_mode:"apikey",OPENAI_API_KEY:key}):null;
+}
+
 async function isolatedCodexRuntime(env,root,{name="codex-runtime",instanceId="codex-default"}={}){
-  const sourceHome=String(process.env.CODEX_HOME||"").trim()||join(homedir(),".codex");
-  const sourceAuth=join(sourceHome,"auth.json"),runtimeHome=join(root,name);
+  const auth=codexTestAuth(),runtimeHome=join(root,name);
+  if(!auth)return null;
   try{
     await mkdir(runtimeHome,{recursive:true});
-    await copyFile(sourceAuth,join(runtimeHome,"auth.json"));
+    await writeFile(join(runtimeHome,"auth.json"),auth);
   }catch{return null}
   const state=new TrebellStateStore(env);
   state.updateSettings({
@@ -369,9 +378,10 @@ test("compatible Codex profiles switch an existing thread through a separate app
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-profiles-"));
   const env={...process.env,TREBELL_HOME:home};
   const shared=join(home,"shared-codex"),shadow=join(home,"personal-codex"),isolated=join(home,"isolated-codex");
-  const sourceAuth=join(String(process.env.CODEX_HOME||"").trim()||join(homedir(),".codex"),"auth.json");
+  const auth=codexTestAuth();
   try{
-    for(const target of [shared,shadow,isolated]){await mkdir(target,{recursive:true});await copyFile(sourceAuth,join(target,"auth.json"))}
+    if(!auth)throw new Error("no Codex API-key sign-in");
+    for(const target of [shared,shadow,isolated]){await mkdir(target,{recursive:true});await writeFile(join(target,"auth.json"),auth)}
   }catch{t.skip("Codex login is unavailable for real profile integration");await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});return}
   const persisted=new TrebellStateStore(env);
   persisted.updateSettings({
