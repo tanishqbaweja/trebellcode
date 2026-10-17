@@ -1075,9 +1075,15 @@ export default function App(){
   // longer than OPENING_COVER_DELAY_MS.
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [opening,setOpening]=useState(null); const [openingCover,setOpeningCover]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   // The threads whose local queue a Stop holds (stop()): nothing in it starts by itself, and its follow-ups say so, until the thread
-  // runs a turn again (startTurn) or the Stop fails.
-  const localQueueStartRef=useRef(null);const [heldQueues,setHeldQueues]=useState(()=>new Set());
-  const holdQueue=(threadId,held)=>setHeldQueues(current=>{const id=String(threadId);if(current.has(id)===held)return current;const next=new Set(current);if(held)next.add(id);else next.delete(id);return next});
+  // runs a turn again (startTurn) or the Stop fails. The hold is saved with the thread's queue (trebellQueueHeld), so the thread opened
+  // after a reload or a restart reads it held too (openThreadInternal, saved: it comes from there); a thread whose hold this window has
+  // set or ended (holdKnownRef) keeps this window's.
+  const localQueueStartRef=useRef(null);const [heldQueues,setHeldQueues]=useState(()=>new Set()),heldQueuesRef=useRef(heldQueues),holdKnownRef=useRef(new Set());
+  const holdQueue=(threadId,held,{saved=false}={})=>{
+    const id=String(threadId);holdKnownRef.current.add(id);if(heldQueuesRef.current.has(id)===held)return;
+    const next=new Set(heldQueuesRef.current);if(held)next.add(id);else next.delete(id);heldQueuesRef.current=next;setHeldQueues(next);
+    if(threadId&&!saved)api("/api/thread-meta",{method:"POST",body:{threadId:id,patch:{trebellQueueHeld:held}}}).catch(error=>showActionError(error,"Could not save the hold on the queued follow-ups"));
+  };
   // The composer's draft set aside while a queued follow-up is edited there (editQueued): it comes back once the edit ends.
   const [queueEditDraft,setQueueEditDraft]=useState(null);
   // The queue shown and what Trebell keeps of each thread, as of the last render: what a send that ended reads its follow-up's thread
@@ -3512,6 +3518,8 @@ export default function App(){
     // The composer's note goes with the view it was about: another thread shown, or this one opening after all, ends it; the thread
     // shown opening again (a reconnect) keeps a note about its failed send or about another thread that did not open.
     activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from&&!openRunRef.current?.pageAsked)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    // A hold a Stop put on its queue holds it again after a reload or a restart, with the follow-ups it shows (holdQueue).
+    if(!useNativeQueue&&savedMeta.trebellQueueHeld&&!holdKnownRef.current.has(String(thread.id)))holdQueue(thread.id,true,{saved:true});
     // The turn that still runs (resumedTurnId) gets back on its live card the MCP progress and the diff it had, those sent while the
     // thread was not shown among them; its stored steps go in front of the diff (seedLiveRows).
     for(const [id,value] of liveExtrasRef.current.get(turnInfoKey(thread.id,resumedTurnId))||[])if(id){mcpProgressRef.current.set(id,value);activityTimelineRef.current?.setMcpProgress(id,value)}else setEvents(prev=>upsertEvent(prev,value));

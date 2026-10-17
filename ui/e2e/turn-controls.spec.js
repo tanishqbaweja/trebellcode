@@ -154,8 +154,10 @@ for(const action of ["Delete","Archive"]){
 // follow-ups wait in Trebell's own queue (Codex's queue, codex.queue, holds only General chats'); settings adds to the app's settings.
 // names: several threads, the first opened. Each turn is its thread's; turn.fail refuses its turn/start, and a thread with a started
 // turn still running resumes active, with its turns. modes: the collaboration modes Codex lists. capabilities: the runtime's
-// capabilities, when they are not Codex's own. codex.calls: the methods the app asked for, in order.
-async function startCodex(page,{name,names=[name],project=false,settings={},modes=[],capabilities=null}){
+// capabilities, when they are not Codex's own. catalog: the app's state lists the threads' meta as the server does, as a catalog
+// whose full entries (the follow-ups queued among them) a thread reads as it opens, so a reload finds what the window saved.
+// codex.calls: the methods the app asked for, in order.
+async function startCodex(page,{name,names=[name],project=false,settings={},modes=[],capabilities=null,catalog=false}){
   const cwd=project?await mkdtemp(join(tmpdir(),"turn-controls-codex-")):process.cwd(),now=Date.now()/1000;
   const threads=names.map((threadName,index)=>({id:"codex-stop-thread"+(index?"-"+(index+1):""),name:threadName,preview:threadName,cwd,createdAt:now-60+index,updatedAt:now-index,status:{type:"idle"},turns:[]})),[thread]=threads;
   const codex={thread,threads,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null,queue:[],calls:[]};
@@ -230,7 +232,7 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
   await keepThreadMeta(page);await keepSettings(page);
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"turn-controls-codex",activeEnvironmentId:null,activeEnvironment:null,...(capabilities?{runtimeCapabilities:capabilities}:{})}));
   const projects=project?[{id:"codex-queue-project",name:"Codex queue project",path:cwd,environmentId:null,effectiveSettings:{}}]:[];
-  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue",...settings},projects,...(project?{activeProjectId:projects[0].id}:{}),threadMeta:Object.fromEntries(threads.map(item=>[item.id,project?{projectless:false,environmentId:null,cwd}:{projectless:true,environmentId:null}]))}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue",...settings},projects,...(project?{activeProjectId:projects[0].id}:{}),threadMeta:Object.fromEntries(threads.map(item=>[item.id,{...(project?{projectless:false,environmentId:null,cwd}:{projectless:true,environmentId:null}),...(catalog?{__catalogOnly:true}:{})}]))}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
   await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{project:projects[0]||null}:{projects}));
   if(project){
@@ -432,6 +434,44 @@ for(const kind of ["Trebell","Codex"]){
     }finally{await codex.close()}
   });
 }
+
+// The hold a Stop puts on Trebell's queue stays with the thread's queue: after the window reloads, as after Trebell starts again,
+// the follow-ups still read held and none starts by itself, as when the thread is left and opened again. The hold ends as before:
+// a follow-up sent now runs the thread again, and the next starts by itself once that turn ends, also after another reload.
+test("follow-ups a Stop held stay held after the window reloads, and the queue goes on once one is sent now",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Held queue",project:true,catalog:true});
+  const queue=page.locator(".queued-message p"),labels=page.locator(".queued-message>span"),row=threadRow(page,"Held queue");
+  const reload=async()=>{await page.reload();await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(composer(page)).toBeEnabled({timeout:15_000})};
+  try{
+    codex.holdTurns=true;
+    await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+    await expect(stop(page)).toBeVisible();
+    for(const text of ["Queued alpha","Queued beta"]){await sendTyped(page,text);await expect(page.locator(".queued-message").filter({hasText:text})).toHaveCount(1)}
+    await stop(page).click();
+    await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/,{timeout:10_000});
+    await expect(labels).toHaveText(Array(2).fill("Queued · held after Stop"));
+    await reload();
+    await expect(queue).toHaveText(["Queued alpha","Queued beta"],{timeout:10_000});
+    await page.waitForTimeout(800);
+    expect(codex.turns.map(turn=>turn.id),"no turn started by itself after the reload").toEqual(["codex-turn-1"]);
+    await expect(labels,"the follow-ups a Stop held, the window reloaded").toHaveText(Array(2).fill("Queued · held after Stop"));
+    await expect(stop(page)).toHaveCount(0);
+    await shoot(page,"held-queue-after-reload");
+    // Sent now, alpha runs the thread again: the hold ends, and beta reads queued, after another reload too.
+    await page.locator(".queued-message").filter({hasText:"Queued alpha"}).getByRole("button",{name:"Send now"}).click();
+    await expect.poll(()=>codex.turns.length).toBe(2);codex.turns[1].answer();codex.turns[1].start();
+    await expect(page.locator(".user-bubble").filter({hasText:"Queued alpha"})).toBeVisible();
+    await expect(queue).toHaveText(["Queued beta"]);await expect(labels).toHaveText(["Queued"]);
+    await reload();
+    await expect(queue).toHaveText(["Queued beta"],{timeout:10_000});await expect(labels).toHaveText(["Queued"]);
+    // beta starts by itself once alpha's turn ends.
+    codex.holdTurns=false;
+    await expect.poll(()=>codex.turns.length,{timeout:15_000}).toBe(3);codex.turns[2].answer();codex.turns[2].start();
+    await expect(page.locator(".user-bubble").filter({hasText:"Queued beta"})).toBeVisible();await expect(page.locator(".queued-message")).toHaveCount(0);
+  }finally{await codex.close()}
+});
 
 // A Stop that fails holds nothing: the turn goes on, its follow-ups in Trebell's queue read queued as before, and the first starts by
 // itself when the turn ends. Codex refuses the interrupt for a turn it runs (stop()), or for the turn it had queued once it starts it
