@@ -282,9 +282,11 @@ test("an agent browser closed outside the panel takes its page's elements with i
   }finally{await site.close()}
 });
 
-// A double click on Attach context attaches the element once, as do a double click on Attach annotation and Enter pressed twice (while
-// the server is slow to store the first attach) or held on Attach context: the second press, or the key's repeats once the first
-// attach had landed, attached it again. Each count is read once the next attach has landed, as a second would have.
+// A double click on Attach context attaches the element once, as do a double click on Attach annotation and Enter pressed twice on
+// Attach context while the server is slow to store the first attach (so the second press comes while it is on its way, at a button
+// still enabled), and Enter held on Attach context, whose repeats come once the first attach has landed: each attached it again.
+// Each count is read once the next attach has landed, as a second would have, and each is a check of its own, so a run on a build
+// that attaches twice says which of them did.
 test("a double click on Attach context, or Enter pressed twice or held on it, attaches the element once",async({page,request})=>{
   const site=await startSite();
   try{
@@ -300,22 +302,25 @@ test("a double click on Attach context, or Enter pressed twice or held on it, at
     await expect(status).toHaveText("Element context attached");
     await elements.filter({hasText:"Docs"}).click();
     await note.click();await page.keyboard.type("Point this at the API docs.",{delay:8});
-    await attachNote.dblclick({delay:60});
+    let store=await slowStore(page,"text");
+    await attachNote.dblclick({delay:60});store();
     await expect(note).toHaveValue("");await expect(status).toHaveText("Annotation attached");
-    await expect(attached("Browser e1"),"the double click on Attach context attached e1 once").toHaveCount(1);
+    await expect.soft(attached("Browser e1"),"the double click on Attach context attached e1 once").toHaveCount(1);
     await shots(page,"preview-attach-context-double-click-once");
-    const store=await slowStore(page,"text");
+    store=await slowStore(page,"text");
     await attach.focus();await page.keyboard.press("Enter");await page.keyboard.press("Enter");store();
     await expect(status).toHaveText("Element context attached");
-    await expect(attached("Annotated e2"),"the double click on Attach annotation attached the note once").toHaveCount(1);
+    await expect.soft(attached("Annotated e2"),"the double click on Attach annotation attached the note once").toHaveCount(1);
     // Enter held on Attach context for e1: its repeats come once the first attach has landed.
     await elements.filter({hasText:"Save profile"}).click();await expect(status).toHaveCount(0);
+    const e1=await attached("Browser e1").count();
     await attach.focus();await page.keyboard.down("Enter");await expect(status).toHaveText("Element context attached");
     await page.keyboard.down("Enter");await page.keyboard.down("Enter");await page.keyboard.up("Enter");
-    await expect(attached("Browser e2"),"Enter pressed twice on Attach context attached e2 once").toHaveCount(1);
+    await expect.soft(attached("Browser e2"),"Enter pressed twice on Attach context attached e2 once").toHaveCount(1);
+    const e2=await attached("Browser e2").count();
     await elements.filter({hasText:"Docs"}).click();await attach.click();
-    await expect(attached("Browser e2")).toHaveCount(2);
-    await expect(attached("Browser e1"),"Enter held on Attach context attached e1 once more").toHaveCount(2);
+    await expect(attached("Browser e2")).toHaveCount(e2+1);
+    await expect.soft(attached("Browser e1"),"Enter held on Attach context attached e1 once more").toHaveCount(e1+1);
   }finally{await site.close()}
 });
 
