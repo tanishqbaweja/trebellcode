@@ -173,6 +173,8 @@ test("a slow Refresh of the thread just left lists nothing under the thread open
     const listedB=lists(threadB);
     await native.open("Background thread B");
     await expect.poll(()=>lists(threadB)).toBeGreaterThan(listedB);
+    // While A's Refresh is still on its way, B, whose own list has answered, says it has none: it read Checking until A's answer came.
+    await expect(background.locator(".agent-background-empty"),"thread B reads its own list while thread A's Refresh is on its way").toHaveText("No agent background processes.");
     // B's later lists are slow too, so nothing of B's would replace what A's answer leaves once it lands.
     native.hold(message=>message.method==="thread/backgroundTerminals/list");
     await native.release(message=>message.params?.threadId===threadA.id);
