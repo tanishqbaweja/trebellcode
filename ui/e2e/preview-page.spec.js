@@ -17,9 +17,10 @@ async function startSite(port=0){
 // The desktop bridge as desktop/preload.cjs gives it, scripted: an agent browser with a history of its own that reports its state
 // after each move, as desktop/main.mjs does, and notes the calls the panel makes (and the sizes it is set to). Its page has two
 // elements to inspect, and window.closeAgentWindow() closes its window as a person does outside the panel, which the shell reports
-// with its state. The window it grants a recording is a canvas that keeps drawing, so the recorder encodes real frames.
+// with its state. The window it grants a recording is a canvas that keeps drawing, so the recorder encodes real frames, and
+// window.displayMediaCalls counts the recordings of it started.
 function scriptedAgentBrowser(){
-  const pages=[],listeners=new Set();let at=-1,size={width:1280,height:800};window.agentBrowserCalls=[];window.agentBrowserSizes=[];
+  const pages=[],listeners=new Set();let at=-1,size={width:1280,height:800};window.agentBrowserCalls=[];window.agentBrowserSizes=[];window.displayMediaCalls=0;
   const current=()=>({open:at>=0,url:pages[at]||"",title:"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,...size});
   const report=()=>{for(const listener of listeners)listener(current())};
   const call=(name,move=()=>{})=>async(...args)=>{window.agentBrowserCalls.push(name);move(...args);report();return current()};
@@ -36,6 +37,7 @@ function scriptedAgentBrowser(){
     armRecording:async()=>({ok:true,expiresAt:Date.now()+5000,sourceId:"window:1:0"}),
   }}});
   if(navigator.mediaDevices)navigator.mediaDevices.getDisplayMedia=async()=>{
+    window.displayMediaCalls++;
     const canvas=document.createElement("canvas");canvas.width=320;canvas.height=200;const context=canvas.getContext("2d");let frame=0;
     const draw=()=>{context.fillStyle=`hsl(${frame++*7%360} 60% 50%)`;context.fillRect(0,0,320,200)};draw();setInterval(draw,33);
     return canvas.captureStream(30);
@@ -210,6 +212,51 @@ test("a double click on Record starts one recording that goes on",async({page,re
     await expect(saved).toHaveCount(0);await expect(panel.getByTestId("browser-cookie-status")).toHaveCount(0);await expect(panel.locator(".browser-action-error")).toHaveCount(0);
     await shots(page,"preview-record-double-click-goes-on");
     await record.click();await expect(record).toHaveText(/Record/);await expect(saved).toHaveCount(1);
+  }finally{await site.close()}
+});
+
+// A panel opened again while a recording is starting (the shell takes its time to arm it) offers no second Record, and shows the
+// recording once it has started. It read Record, and a press there started a second recording of the window, whose frames went
+// into the first one's file.
+test("a Browser panel opened again while a recording is starting offers no second Record, and shows the recording once it has started",async({page,request})=>{
+  test.setTimeout(60_000);
+  const site=await startSite();
+  try{
+    const {panel,record,saved}=await openRecorder(page,request,site),tabs=panel.locator(".context-panel-tab-scroll");
+    await page.evaluate(()=>{const browser=window.trebellDesktop.browser,arm=browser.armRecording;browser.armRecording=async()=>{await new Promise(resolve=>{window.armRecordingNow=resolve});return arm()}});
+    await record.click();await expect(record).toBeDisabled();
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(record).toHaveCount(0);
+    await tabs.getByRole("button",{name:"Browser",exact:true}).click();
+    await expect(record,"the panel opened again while the recording starts offers no second Record").toBeDisabled();
+    await expect(record).toHaveText(/Record/);
+    await page.evaluate(()=>window.armRecordingNow());
+    await expect(record,"the panel opened again shows the recording once it has started").toHaveText(/Stop [1-9]\d*s/);
+    await shots(page,"preview-recording-started-while-away");
+    await record.click();await expect(saved).toHaveCount(1);await expect(record).toHaveText(/Record/);
+    expect(await page.evaluate(()=>window.displayMediaCalls),"one recording of the window was started").toBe(1);
+  }finally{await site.close()}
+});
+
+// A panel opened again while a recording is being saved (the server is slow to store it) says so and offers no Stop, and reads
+// Record once it is saved. It read Stop: a press there saved the recording again or did nothing, and it read Stop until the panel
+// was opened once more.
+test("a Browser panel opened again while a recording is being saved says so, saves nothing more, and reads Record once it is saved",async({page,request})=>{
+  test.setTimeout(60_000);
+  const site=await startSite();
+  try{
+    const {panel,record,saved}=await openRecorder(page,request,site),tabs=panel.locator(".context-panel-tab-scroll");
+    await record.click();await expect(record).toHaveText(/Stop [1-9]\d*s/);
+    const store=await slowStore(page,"blob");
+    await record.click();await store.reached;
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(record).toHaveCount(0);
+    await tabs.getByRole("button",{name:"Browser",exact:true}).click();
+    await expect.soft(record,"the panel opened again while the recording is saved says so").toHaveText(/Saving/);
+    await expect.soft(record,"the panel opened again while the recording is saved offers no Stop").toBeDisabled();
+    await shots(page,"preview-recording-saved-while-away");
+    store();
+    await expect(saved,"the recording is saved once").toHaveCount(1);
+    await expect(record,"the panel opened again reads Record once the recording is saved").toHaveText(/Record/);
+    await expect(record).toBeEnabled();
   }finally{await site.close()}
 });
 

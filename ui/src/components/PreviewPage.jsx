@@ -1,4 +1,4 @@
-import React,{useEffect,useRef,useState} from "react";
+import React,{useEffect,useRef,useState,useSyncExternalStore} from "react";
 import { ExternalLink, Globe2, RefreshCw, Camera, MousePointer2, Eye, X, Radar, ArrowLeft, ArrowRight, MonitorSmartphone, Circle, Square, RotateCw, History, Unplug } from "lucide-react";
 import { api } from "../api.js";
 import { openWebLink } from "../web-link.js";
@@ -25,12 +25,17 @@ function noneSet(result,from=""){
   return (failed===1?"the cookie"+from+" could not be set":"none of the "+failed+" cookies"+from+" could be set")+(why?" ("+why+")":"")+(skipped?"; "+skipped+" encrypted or partitioned cookie"+(skipped===1?" was":"s were")+" skipped":"")+".";
 }
 // What the panel shows is kept while another tab is open or the panel is closed, and comes back with it: a look at Files used to
-// reset it while the agent browser still showed the page.
-const kept={draft:"http://localhost:3000",url:"",snapshot:null,selectedRef:null,annotation:"",shown:{pages:[],at:-1},previewZoom:1};
+// reset it while the agent browser still showed the page. What a panel reads with useKept it reads as it is set, also by a panel
+// that went away meanwhile.
+const kept={draft:"http://localhost:3000",url:"",snapshot:null,selectedRef:null,annotation:"",shown:{pages:[],at:-1},previewZoom:1,phase:"idle"},keptListeners=new Set();
+function setKept(next){Object.assign(kept,next);for(const listener of keptListeners)listener()}
+function onKept(listener){keptListeners.add(listener);return()=>keptListeners.delete(listener)}
+function useKept(name){return [useSyncExternalStore(onKept,()=>kept[name]),next=>setKept({[name]:typeof next==="function"?next(kept[name]):next})]}
 // A recording goes on while another tab is open or the panel is closed, and comes back with the panel, as it records the agent
-// browser's window, not the panel: it used to end unsaved when the panel went. It is noted here once it has started, so the panel
-// finds it on coming back even if it went while the recording was starting.
-const recorderRef={current:null,since:0,stopping:false},streamRef={current:null},chunksRef={current:[]};
+// browser's window, not the panel: it used to end unsaved when the panel went. Its phase (kept.phase: idle, starting, recording, or
+// stopping while it is saved) is every panel's, so one opened again while a recording starts or is saved offers no second Record
+// or Stop, and reads Record once it is saved. rec holds the recording going on, with chunks of its own.
+const rec={since:0};
 // A press records, stops or attaches once, as a thread's menu item runs: the rest of it (the second click of a double click, Enter
 // held) does nothing. Record and Stop are one button, so the second click landed on the Stop of the recording the first click had
 // started once the shell armed it, and stopped it at once; and an element's attach can land before the second click comes, which
@@ -59,7 +64,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   const [unanswered,setUnanswered]=useState("");
   const [viewport,setViewport]=useState({width:1280,height:800});
   const [history,setHistory]=useState([]);
-  const [recording,setRecording]=useState(Boolean(recorderRef.current));
+  const [phase]=useKept("phase"),recording=phase==="recording"||phase==="stopping";
   const [recordingSeconds,setRecordingSeconds]=useState(0);
   const [previewZoom,setPreviewZoom]=useState(kept.previewZoom);
   const urlInputRef=useRef(null),attaching=useRef(new Set());
@@ -97,9 +102,9 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     return()=>{disposed=true;unsubscribe?.()};
   },[projectPath]);
   useEffect(()=>{
-    if(!recording){setRecordingSeconds(0);return}
-    const tick=()=>setRecordingSeconds(Math.max(0,Math.floor((Date.now()-recorderRef.since)/1000)));tick();const timer=setInterval(tick,500);return()=>clearInterval(timer);
-  },[recording]);
+    if(phase!=="recording"){setRecordingSeconds(0);return}
+    const tick=()=>setRecordingSeconds(Math.max(0,Math.floor((Date.now()-rec.since)/1000)));tick();const timer=setInterval(tick,500);return()=>clearInterval(timer);
+  },[phase]);
   // An address asked for before the panel was drawn (an action's Open preview opens the panel and asks at once) is shown as it opens.
   useEffect(()=>{
     const open=next=>{
@@ -193,22 +198,25 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     try{await window.trebellDesktop?.browser?.setViewport?.(next.width,next.height);setBrowserError("")}
     catch(error){setBrowserError(error?.message||String(error)||"Could not resize Agent Browser.")}
   }
+  // Record starts one recording: in a panel that read Record while another was starting it starts nothing more.
   async function startRecording(){
+    if(kept.phase!=="idle")return;
     const browser=window.trebellDesktop?.browser;if(!browser?.armRecording||!navigator.mediaDevices?.getDisplayMedia||typeof MediaRecorder==="undefined")throw new Error("Browser recording is unavailable in this build.");
-    setBusy("recording");
+    setKept({phase:"starting"});setBusy("recording");let stream=null;
     try{
       await browser.armRecording();
-      const stream=await navigator.mediaDevices.getDisplayMedia({audio:false,video:{frameRate:{ideal:30,max:30}}});streamRef.current=stream;
+      stream=await navigator.mediaDevices.getDisplayMedia({audio:false,video:{frameRate:{ideal:30,max:30}}});
       const choices=["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm","video/mp4;codecs=avc1"];
-      const mimeType=choices.find(type=>MediaRecorder.isTypeSupported(type))||"";const recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined);chunksRef.current=[];
-      recorder.ondataavailable=event=>{if(event.data?.size)chunksRef.current.push(event.data)};
-      recorder.start(250);recorderRef.current=recorder;recorderRef.since=Date.now();setRecording(true);
-    }finally{setBusy("")}
+      const mimeType=choices.find(type=>MediaRecorder.isTypeSupported(type))||"",recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined),chunks=[];
+      recorder.ondataavailable=event=>{if(event.data?.size)chunks.push(event.data)};
+      recorder.start(250);Object.assign(rec,{since:Date.now(),recorder,stream,chunks});stream=null;setKept({phase:"recording"});
+    }finally{for(const track of stream?.getTracks()||[])try{track.stop()}catch{}if(kept.phase==="starting")setKept({phase:"idle"});setBusy("")}
   }
-  // A recording is saved once: Stop pressed again while it is being saved (Enter pressed twice, or Stop in the panel opened again)
-  // saves nothing more. It used to save it again.
+  // A recording is saved once: Stop pressed again while it is being saved (Enter pressed twice) saves nothing more, and a panel
+  // opened again meanwhile reads Saving, then Record. It used to save it again, and the panel opened again kept reading Stop.
   async function stopRecording(){
-    const recorder=recorderRef.current;if(!recorder||recorderRef.stopping)return;recorderRef.stopping=true;setBusy("recording-stop");
+    if(kept.phase!=="recording")return;
+    const {recorder,stream,chunks,since}=rec,seconds=Math.max(0,Math.floor((Date.now()-since)/1000));setKept({phase:"stopping"});setBusy("recording-stop");
     try{
       const stopped=new Promise((resolve,reject)=>{
         let settled=false;
@@ -221,12 +229,12 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
         }else finish(resolve);
       });
       await stopped;
-      const type=recorder.mimeType||chunksRef.current[0]?.type||"video/webm";const blob=new Blob(chunksRef.current,{type});
+      const type=recorder.mimeType||chunks[0]?.type||"video/webm";const blob=new Blob(chunks,{type});
       if(!blob.size)throw new Error("Browser recording produced no encoded video. Record for a little longer and try again.");
-      if(onAttachFile){const ext=type.includes("mp4")?"mp4":"webm";await onAttachFile(new File([blob],`browser-recording-${Date.now()}.${ext}`,{type}),{kind:"browser",label:"Browser recording",detail:`${recordingSeconds}s · ${(blob.size/1024/1024).toFixed(1)} MB`})}
+      if(onAttachFile){const ext=type.includes("mp4")?"mp4":"webm";await onAttachFile(new File([blob],`browser-recording-${Date.now()}.${ext}`,{type}),{kind:"browser",label:"Browser recording",detail:`${seconds}s · ${(blob.size/1024/1024).toFixed(1)} MB`})}
     }finally{
-      for(const track of streamRef.current?.getTracks?.()||[])try{track.stop()}catch{}
-      recorderRef.current=null;recorderRef.stopping=false;streamRef.current=null;chunksRef.current=[];setRecording(false);setBusy("");
+      for(const track of stream?.getTracks?.()||[])try{track.stop()}catch{}
+      Object.assign(rec,{recorder:null,stream:null,chunks:null});setKept({phase:"idle"});setBusy("");
     }
   }
   // What is being attached (an element of a page, with its note) is attached once at a time: a press for it while it is on its way
@@ -257,7 +265,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     <div className="preview-bar"><Globe2 size={15}/>{desktopBrowserAvailable&&<><button title="Back" disabled={shown.at<1||!!busy} onClick={()=>step(-1)}><ArrowLeft size={13}/></button><button title="Forward" disabled={shown.at>=shown.pages.length-1||!!busy} onClick={()=>step(1)}><ArrowRight size={13}/></button></>}<input ref={urlInputRef} value={draft} onChange={e=>{setDraft(e.target.value);if(urlError)setUrlError("")}} onKeyDown={e=>e.key==="Enter"&&go()} aria-label="Page address" aria-invalid={urlError?"true":undefined} placeholder="http://localhost:3000" title={"Preview zoom "+Math.round(previewZoom*100)+"%"}/><button onClick={go}>Preview</button>{desktopBrowserAvailable&&<button title="Reload agent browser" onClick={reloadAgent} disabled={!!busy}><RefreshCw size={13}/></button>}{url&&<button aria-label="Open in browser" title="Open in browser" onClick={()=>openWebLink(url)}><ExternalLink size={13}/></button>}</div>
     {urlError&&<div className="inline-error preview-url-error" role="alert">{urlError}</div>}
 
-    {desktopBrowserAvailable&&<div className="browser-device-toolbar"><MonitorSmartphone size={13}/><select aria-label="Viewport preset" value={VIEWPORTS.find(item=>item.width===viewport.width&&item.height===viewport.height)?.id||"custom"} onChange={e=>{const preset=VIEWPORTS.find(item=>item.id===e.target.value);if(preset)applyViewport(preset.width,preset.height)}}><option value="custom">Custom</option>{VIEWPORTS.map(item=><option key={item.id} value={item.id}>{item.label} · {item.width}×{item.height}</option>)}</select><input type="number" aria-label="Viewport width" min="320" max="3840" value={viewport.width} onChange={e=>setViewport(v=>({...v,width:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)} onKeyDown={e=>e.key==="Enter"&&applyViewport(viewport.width,viewport.height)}/><span>×</span><input type="number" aria-label="Viewport height" min="240" max="2160" value={viewport.height} onChange={e=>setViewport(v=>({...v,height:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)} onKeyDown={e=>e.key==="Enter"&&applyViewport(viewport.width,viewport.height)}/><button title="Rotate viewport" onClick={()=>applyViewport(viewport.height,viewport.width)}><RotateCw size={12}/></button><button className={recording?"recording active":"recording"} disabled={!!busy&&!recording} onClick={event=>{pressOnce(event);(recording?stopRecording():startRecording()).catch(error=>setBrowserError(error?.message||String(error)))}}>{recording?<Square size={11}/>:<Circle size={11}/>} {recording?`Stop ${recordingSeconds}s`:"Record"}</button></div>}
+    {desktopBrowserAvailable&&<div className="browser-device-toolbar"><MonitorSmartphone size={13}/><select aria-label="Viewport preset" value={VIEWPORTS.find(item=>item.width===viewport.width&&item.height===viewport.height)?.id||"custom"} onChange={e=>{const preset=VIEWPORTS.find(item=>item.id===e.target.value);if(preset)applyViewport(preset.width,preset.height)}}><option value="custom">Custom</option>{VIEWPORTS.map(item=><option key={item.id} value={item.id}>{item.label} · {item.width}×{item.height}</option>)}</select><input type="number" aria-label="Viewport width" min="320" max="3840" value={viewport.width} onChange={e=>setViewport(v=>({...v,width:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)} onKeyDown={e=>e.key==="Enter"&&applyViewport(viewport.width,viewport.height)}/><span>×</span><input type="number" aria-label="Viewport height" min="240" max="2160" value={viewport.height} onChange={e=>setViewport(v=>({...v,height:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)} onKeyDown={e=>e.key==="Enter"&&applyViewport(viewport.width,viewport.height)}/><button title="Rotate viewport" onClick={()=>applyViewport(viewport.height,viewport.width)}><RotateCw size={12}/></button><button className={recording?"recording active":"recording"} disabled={phase==="starting"||phase==="stopping"||!recording&&!!busy} onClick={event=>{pressOnce(event);(recording?stopRecording():startRecording()).catch(error=>setBrowserError(error?.message||String(error)))}}>{recording?<Square size={11}/>:<Circle size={11}/>} {phase==="stopping"?"Saving…":recording?`Stop ${recordingSeconds}s`:"Record"}</button></div>}
 
     {history.length>0&&<details className="browser-history"><summary><History size={12}/> Recent pages</summary><div>{history.slice(0,12).map(item=><button key={item.url} onClick={()=>{setDraft(item.url);openAgentUrl(item.url)}}><span><strong>{item.title||new URL(item.url).host}</strong><small>{item.url}</small></span><time>{new Date(item.lastVisitedAt).toLocaleString()}</time></button>)}</div></details>}
 
