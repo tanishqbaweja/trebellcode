@@ -211,6 +211,14 @@ test("while the harness is away, Runtime keeps the background processes it last 
     await expect(background.locator(".agent-background-head>div>span")).toHaveText("2");
     for(const button of [background.getByTitle("Refresh background processes"),background.getByRole("button",{name:"Stop all"}),rows.nth(0).getByRole("button",{name:"Stop",exact:true}),rows.nth(1).getByRole("button",{name:"Stop",exact:true})])await expect(button).toBeDisabled();
     await shootModes(page,background,"native-background-harness-away");
+    // Runtime opened again while the harness is away (here from Goal) has listed nothing, so it gives no count: it read 0 while the
+    // two processes ran.
+    await native.panel.getByRole("button",{name:"Goal",exact:true}).click();await expect(background).toHaveCount(0);
+    await native.panel.getByRole("button",{name:"Runtime",exact:true}).click();
+    await expect(background.getByRole("status")).toHaveText("Agent harness is not connected, so this thread's background processes cannot be checked or stopped.");
+    await expect(background.locator(".agent-background-head>div>span"),"Runtime opened again while the harness is away gives no count").toHaveCount(0);
+    await expect(rows).toHaveCount(0);await expect(background).not.toContainText("No agent background processes.");
+    await shootModes(page,background,"native-background-harness-away-opened-again");
     // Once the harness is back the list is current again, and Stop all stops both processes.
     native.back();
     await expect(summary).toContainText("Connected locally",{timeout:20_000});

@@ -42,8 +42,9 @@ export default function AgentBackgroundTerminals({rpc,rpcStatus,threadId}){
   }
 
   const away=rpcStatus!=="connected",locked=away||!!busy;
+  // Away with nothing listed (Runtime opened while the harness is away) gives no count: 0 would say none run.
   return <section className="agent-background-terminals" data-testid="agent-background-terminals">
-    <div className="agent-background-head"><div><SquareTerminal size={13}/><strong>Agent background processes</strong><span>{items.length}</span></div><div><button onClick={()=>refresh()} disabled={loading||locked} title="Refresh background processes"><RefreshCw size={11}/></button>{items.length>0&&<button onClick={clean} disabled={locked}><CircleStop size={11}/> Stop all</button>}</div></div>
+    <div className="agent-background-head"><div><SquareTerminal size={13}/><strong>Agent background processes</strong>{!(away&&!items.length)&&<span>{items.length}</span>}</div><div><button onClick={()=>refresh()} disabled={loading||locked} title="Refresh background processes"><RefreshCw size={11}/></button>{items.length>0&&<button onClick={clean} disabled={locked}><CircleStop size={11}/> Stop all</button>}</div></div>
     {away&&<p className="agent-background-empty" role="status">Agent harness is not connected, so this thread's background processes cannot be checked or stopped.{items.length?" The processes it last listed are kept below.":""}</p>}
     {actionError&&<p className="agent-background-error">{actionError}</p>}
     {error&&error!==actionError&&<p className="agent-background-error">{error}</p>}
