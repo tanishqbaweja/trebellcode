@@ -25,7 +25,9 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // Then by what lane G's fixes to Settings (a runtime profile's environment variables and refused save, API keys, harness updates,
 // SnapShots and the Settings search) add to the lazy chunks, 1.6 / 0.6 KB, which took them 0.1 KB gzip over it: its headroom stays
 // 3.3 / 0.5 KB, as on main before lane G.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:738.6,gzipKB:241}};
+// Then by what lane E's fixes to the Goal panel, the Browser panel and the Runtime and Context tabs add to the lazy chunks,
+// 3.1 / 1.7 KB, which took them 0.6 / 1.4 KB over it: its headroom stays 2.5 / 0.3 KB, as on main before lane E.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:741.7,gzipKB:242.7}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
