@@ -62,7 +62,7 @@ async function openBrowserPanel(page,request){
 async function typeAddress(page,address,value){await address.click();await page.keyboard.press("Control+A");await page.keyboard.type(value,{delay:8})}
 
 // Dark and light screenshots at 1280x800 and 900 wide. The mode is switched with the header's appearance toggle at 1280: at 900 the
-// open right panel lies over the header, and closing the panel would drop the preview, so a person widens the window to reach it.
+// open right panel lies over the header and its appearance toggle, so a person widens the window to reach it.
 async function shots(page,name){
   for(const mode of ["dark","light"]){
     await page.setViewportSize({width:1280,height:800});
