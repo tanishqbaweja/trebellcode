@@ -145,9 +145,12 @@ test("a recording goes on while the person looks at another tab or closes the pa
     await panel.getByRole("button",{name:"Close right panel"}).click();await expect(panel).toHaveCount(0);
     await page.keyboard.press("Control+Alt+B");
     await expect(record,"after the panel was closed and opened again with Ctrl+Alt+B").toHaveText(/Stop \d+s/);
-    // In a narrow window the panel lies over the conversation, and Escape closes it.
+    // In a narrow window the panel lies over the conversation, and Escape closes it. Escape is pressed once the panel has taken focus,
+    // as it does when the window makes it a drawer, by when the drawer listens for Escape: pressed as soon as the dimmed area showed,
+    // it came before the drawer listened for it in one run of five or so, and the panel stayed open.
     await page.setViewportSize({width:900,height:800});
     await expect(page.getByTestId("inspector-scrim")).toBeVisible();
+    await expect.poll(()=>page.evaluate(()=>!!document.activeElement?.closest("[data-testid=right-panel]")),"the drawer takes focus").toBe(true);
     await page.keyboard.press("Escape");await expect(panel).toHaveCount(0);
     await page.getByTestId("right-panel-toggle").first().click();
     await expect(record,"after Escape closed the panel in a narrow window").toHaveText(/Stop \d+s/);
