@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import os
@@ -73,6 +74,19 @@ class TrebellNativeAgent(BaseInstalledAgent):
     )
     _REMOTE_NODE_ARCHIVE = "/tmp/trebell-node-linux-x64.tar.gz"
     _REMOTE_NODE_ROOT = "/opt/trebell-node"
+    # Harbor ends a run at the task's agent timeout by cancelling run(), which stops the host-side `docker exec` but
+    # not the process inside the container. A Codex lane stops there by itself: its next event write to the closed
+    # stream fails. The Native runner writes nothing to stdout, so it kept acting into the verifier's phase (2026-10-18:
+    # 80 s of tool calls next to a Terminal-Bench 2.0 verifier in the same container). On cancellation, kill the runner
+    # (and the shell that started it) so that, like Codex, it takes no action after the timeout. Processes it started
+    # are left alone, as Codex's are. The match is assembled at run time so this script never matches itself, and it
+    # walks /proc because slim task images ship no ps or pkill.
+    _STOP_RUNNER = (
+        'me=$$; pattern="trebell-native-""agent.mjs"; '
+        'for p in /proc/[0-9]*; do pid="${p#/proc/}"; [ "$pid" = "$me" ] && continue; '
+        'cmd="$(tr "\\000" " " < "$p/cmdline" 2>/dev/null)" || continue; '
+        'case "$cmd" in *"$pattern"*) kill -KILL "$pid" 2>/dev/null && echo "stopped $pid";; esac; done; true'
+    )
 
     @staticmethod
     @override
@@ -294,6 +308,23 @@ class TrebellNativeAgent(BaseInstalledAgent):
         gate_snapshot_paths = os.environ.get("TREBELL_HARBOR_GATE_SNAPSHOT_PATHS", "").strip()
         if gate_snapshot_paths:
             env["TREBELL_HARBOR_GATE_SNAPSHOT_PATHS"] = gate_snapshot_paths
+        try:
+            await self._run_runner(environment, env)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._stop_runner(environment))
+            raise
+
+    async def _stop_runner(self, environment: BaseEnvironment) -> None:
+        try:
+            result = await asyncio.wait_for(
+                self.exec_as_root(environment, command=self._STOP_RUNNER), timeout=60
+            )
+            stopped = " ".join(str(result.stdout or "").split()) or "nothing was running"
+            self.logger.info(f"Agent run cancelled (Harbor's agent timeout); Native runner: {stopped}")
+        except Exception as error:
+            self.logger.warning(f"Agent run cancelled, but stopping the Native runner failed: {error}")
+
+    async def _run_runner(self, environment: BaseEnvironment, env: dict[str, str]) -> None:
         await self.exec_as_agent(
             environment,
             command=(

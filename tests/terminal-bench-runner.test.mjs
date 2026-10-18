@@ -782,6 +782,18 @@ test("Trebell Native Harbor adapter launches the agent with the image's login-sh
   assert.ok(launch.indexOf("{self._LOGIN_ENVIRONMENT}")<launch.indexOf('"$runtime_cmd" {self._REMOTE_RUNNER}'),"the login environment must load before the agent starts");
 });
 
+test("Trebell Native Harbor adapter stops its runner when Harbor's agent timeout cancels the run",async()=>{
+  const adapter=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
+  assert.match(adapter,/try:\s+await self\._run_runner\(environment, env\)\s+except asyncio\.CancelledError:\s+await asyncio\.shield\(self\._stop_runner\(environment\)\)\s+raise/);
+  assert.match(adapter,/self\.exec_as_root\(environment, command=self\._STOP_RUNNER\), timeout=60/);
+  const stop=adapter.slice(adapter.indexOf("_STOP_RUNNER = ("),adapter.indexOf("\n    )",adapter.indexOf("_STOP_RUNNER = (")));
+  assert.ok(stop.includes('pattern="trebell-native-""agent.mjs"'),"assemble the match at run time");
+  assert.ok(!stop.includes("trebell-native-agent.mjs"),"the stop script's own command line must not match the runner");
+  assert.ok(stop.includes('[ "$pid" = "$me" ] && continue'),"never kill the stop script itself");
+  assert.ok(stop.includes("/proc/[0-9]*")&&!/\bpkill\b|\bps -/.test(stop),"walk /proc: slim task images ship no ps or pkill");
+  assert.ok(stop.includes("kill -KILL"),"the runner takes no action after the timeout");
+});
+
 test("Trebell Native Harbor adapter skips package-manager setup when curl already exists",async()=>{
   const source=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
   assert.match(source,/_PINNED_NODE_VERSION = "22\.23\.3"/);
