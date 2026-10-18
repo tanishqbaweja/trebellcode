@@ -589,6 +589,33 @@ test("a double click on the × of a file attached in a question takes away that 
   }finally{await harness.close()}
 });
 
+// A double click on a command approval card's button answers it once, and with no card after it the rest of the press does nothing
+// to the page, which takes the card's place under the pointer: no word there is selected. Allow once, Allow session and Deny, at
+// 1280 and 900 wide.
+test("a double click on the last approval card's Allow once, Allow session or Deny answers it once and selects nothing where the card was",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const card=page.locator(".inline-approval .approval-card"),asked=[];
+    for(const [pass,width] of [["dark",1280],["light",900]]){
+      if(pass==="light")await toggleMode(page);
+      await page.setViewportSize({width,height:800});
+      for(const [button,decision] of [["Allow once","accept"],["Allow session","acceptForSession"],["Deny","decline"]]){
+        const itemId=(button+"-"+pass).replace(/\W+/g,"-").toLowerCase(),request=harness.ask("item/commandExecution/requestApproval",{threadId:RELEASE.id,turnId:"turn-release",itemId,command:["npm","run",itemId],reason:"Run "+itemId});asked.push(request);
+        await expect(card).toContainText("Run "+itemId);
+        await doubleClick(page,card.getByRole("button",{name:button,exact:true}),()=>expect(card).toHaveCount(0));
+        expect(await request.answered).toEqual({decision});
+        expect.soft(await selectedText(page),`the second click of a double click on ${button} selected text where the card was`).toBe("");
+        await page.waitForTimeout(600);
+      }
+      if(pass==="dark")await shoot(page,"after-double-click-approval");
+    }
+    for(const request of asked)expect(harness.answersTo(request)).toHaveLength(1);
+  }finally{await harness.close()}
+});
+
 // An Escape answers only a request the person has had time to see: pressed twice on an app request, its second press leaves the
 // agent's question that comes up after it waiting. Read, the question is dismissed by the next Escape.
 test("Escape pressed twice on an app request leaves the agent's question that comes up after it waiting",async({page})=>{

@@ -631,7 +631,8 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
 // threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
 // A card answers once, and only to a click aimed at it: the second click of a double click (its click count is 2, or it lands where
 // the first did, answeringClick) was aimed at the card before, which the first click answered, and the next card has come up under
-// the pointer.
+// the pointer. The rest of that press does nothing either (ignorePressRest), as on an app request's buttons: with no card after it,
+// the second click lands on the conversation, which slides under the pointer, and would select a word there.
 function ApprovalCard({request,onResolve,threadLabel=""}){
   const answered=useRef(false);
   if(!request)return null;
@@ -646,7 +647,7 @@ function ApprovalCard({request,onResolve,threadLabel=""}){
   const detail=permissions?[network&&"Network access",fileSystem&&"Filesystem access"].filter(Boolean).join(" + "):(networkTarget||p.reason||commandText||p.path||request.method);
   const showCommand=!permissions&&Boolean(commandText.trim())&&detail!==commandText;
   const approvalOptions=Array.isArray(p.approvalOptions)?p.approvalOptions.filter(option=>option&&typeof option.decision==="string"&&option.label):[];
-  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}<p>{detail||p.reason||request.method}</p>{showCommand&&<pre className="approval-command" data-testid="approval-command"><code>{commandText}</code></pre>}{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}{approvalOptions.filter(option=>option.warning).map(option=><small key={"warning-"+option.decision}>{option.label}: {option.warning}</small>)}<div className="approval-actions">{approvalOptions.length
+  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}<p>{detail||p.reason||request.method}</p>{showCommand&&<pre className="approval-command" data-testid="approval-command"><code>{commandText}</code></pre>}{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}{approvalOptions.filter(option=>option.warning).map(option=><small key={"warning-"+option.decision}>{option.label}: {option.warning}</small>)}<div className="approval-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}>{approvalOptions.length
     // An ACP harness's own choices, in its order and wording (T3 grokApprovalOptions / antigravityApprovalOptions).
     ?approvalOptions.map(option=><button key={option.decision} className={option.decision==="accept"?"approve":undefined} onClick={event=>answer(event,option.decision)}>{option.label}</button>)
     :<><button onClick={event=>answer(event,"decline")}>Deny</button><button onClick={event=>answer(event,"acceptForSession")}>Allow session</button><button className="approve" onClick={event=>answer(event,"accept")}>Allow once</button></>}</div></div>;
