@@ -257,6 +257,21 @@ test("usage records upsert streaming updates instead of double-counting a turn",
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});}
 });
 
+// Usage's Clear local history clears every recorded turn, so each usage answer says how many Trebell holds, whatever the period and
+// environments it lists: the page offers the clear from that, also in a period that lists none.
+test("usage answers say how many turns Trebell holds in every period and environment",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-usage-stored-")),env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env),DAY=86_400_000,now=Date.now();
+    for(const [id,daysAgo,environmentId] of [["ten",10,null],["twenty",20,"ssh-a"],["two-hundred",200,null]])state.recordUsage({id,runtime:"native",provider:"openai",model:"gpt-test",environmentId,threadId:"thread-"+id,turnId:"turn-"+id,usage:{totalTokens:10},at:now-daysAgo*DAY});
+    const week=state.usage({days:7});assert.equal(week.records.length,0);assert.equal(week.storedTurns,3);
+    const month=state.usage({days:30});assert.equal(month.records.length,2);assert.equal(month.storedTurns,3);
+    const elsewhere=state.usage({days:365,environmentIds:["ssh-b"]});assert.equal(elsewhere.records.length,0);assert.equal(elsewhere.storedTurns,3);
+    assert.equal(state.clearUsage(),3);
+    assert.equal(state.usage({days:365}).storedTurns,0);
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});}
+});
+
 test("thread usage reconstructs goal token totals from persisted turn usage",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-thread-usage-")),env={...process.env,TREBELL_HOME:home};
   try{

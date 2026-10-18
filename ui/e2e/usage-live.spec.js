@@ -262,6 +262,50 @@ test("Usage says a chosen period with no turns has none in that period, in every
   }finally{await fixture.close()}
 });
 
+// Turns recorded 10, 20 and 200 days ago. Clear local history clears every turn Trebell holds, as its question says, so 7 days,
+// which lists none, still offers it: it was greyed out in any period or environment that listed no turns, so the person had to
+// find one that did. Cleared from 30 days, 1 year lists none either, and with nothing left to clear it is greyed out.
+test("Clear local history is offered in a period with no turns while older turns are recorded, and clears them all",async({page})=>{
+  test.setTimeout(40_000);
+  const fixture=await startUsageFixture({rateLimits:"none"});
+  const DAY=86_400_000,turn=(id,daysAgo,totalTokens)=>({id,at:new Date(Date.now()-daysAgo*DAY).toISOString(),environmentId:null,runtime:"codex",provider:"openai",model:"test/coding-fast",usage:{inputTokens:totalTokens*.7,outputTokens:totalTokens*.3,totalTokens},cost:null});
+  let turns=[turn("usage-ten-days",10,120_000),turn("usage-twenty-days",20,80_000),turn("usage-two-hundred-days",200,2_000_000)],deletes=0;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    // As /api/usage does: each period is answered with the turns recorded in it and how many turns Trebell holds in all, and a
+    // clear deletes every turn.
+    await openUsage(page,fixture.wsUrl,route=>{
+      const reply=value=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+      if(route.request().method()==="DELETE"){deletes++;const cleared=turns.length;turns=[];return reply({ok:true,cleared})}
+      const days=Number(new URL(route.request().url()).searchParams.get("days")),records=turns.filter(item=>Date.now()-Date.parse(item.at)<=days*DAY);
+      return reply({records,total:{totalTokens:records.reduce((sum,item)=>sum+item.usage.totalTokens,0)},models:{},runtimes:{},daily:{},storedTurns:turns.length});
+    });
+    const summary=page.locator(".usage-summary"),period=page.getByRole("combobox",{name:"Period"}),clear=page.getByRole("button",{name:"Clear local history",exact:true});
+    const question=page.locator("dialog.inspector-text-prompt");
+    await expect(summary).toContainText("2 recorded turns");await expect(clear).toBeEnabled();
+    // 7 days, chosen from the keyboard: Up from 30 days.
+    await period.focus();await page.keyboard.press("ArrowUp");await expect(period).toHaveValue("7");
+    await expect(summary).toContainText("0 recorded turns");
+    await expect(clear,"Trebell holds three turns to clear").toBeEnabled();
+    for(const mode of ["dark","light"]){
+      if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").first().click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+"usage-clear-offered-empty-period-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+    }
+    await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
+    // Cleared from 30 days: every period's turns go, the one 200 days old too.
+    await period.selectOption("30");await expect(summary).toContainText("2 recorded turns");
+    await clear.click();
+    await expect(question.locator("p")).toHaveText("Clear Trebell's locally recorded usage history? Provider account usage is not affected.");
+    await question.getByRole("button",{name:"Clear history",exact:true}).click();
+    await expect(summary).toContainText("0 recorded turns");await expect(clear,"nothing is left to clear").toBeDisabled();
+    expect(deletes).toBe(1);
+    await period.selectOption("365");
+    await expect(summary).toContainText("0 recorded turns");await expect(clear).toBeDisabled();
+  }finally{await fixture.close()}
+});
+
 test("Usage opened while Codex connects never claims the route returned no limits before it answers",async({page})=>{
   test.setTimeout(40_000);
   const control={rateLimits:"quota",holdInit:true,heldInit:[]};const fixture=await startUsageFixture(control);

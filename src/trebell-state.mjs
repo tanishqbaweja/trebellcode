@@ -578,7 +578,8 @@ export class TrebellStateStore {
       environments[environmentKey].tokens+=Number(record.usage?.totalTokens||0);environments[environmentKey].turns++;
       if(record.cost?.currency==="USD")environments[environmentKey].costUsd+=Number(record.cost.amount||0);
     }
-    return {days:horizon,total,models,runtimes,daily,environments,environmentIds:selected?[...selected]:null,records:clone(records)};
+    // storedTurns: every turn Trebell holds, whatever the period and environments asked for; what Clear local history clears.
+    return {days:horizon,total,models,runtimes,daily,environments,environmentIds:selected?[...selected]:null,records:clone(records),storedTurns:this.collections?this.collections.usageCount():this.state.usageRecords.length};
   }
   threadUsage(threadId,{since=0}={}){
     const id=String(threadId||""),start=Math.max(0,Number(since)||0),records=this.collections?this.collections.usage({since:start,limit:5000,threadId:id}):this.state.usageRecords.filter(item=>item.threadId===id&&Number(item.at||0)>=start);
