@@ -46,10 +46,10 @@ test("the actions fold from the end of the row, each once, and only the ones the
 test("each level past the last non-folding one folds one more action, up to all of them",()=>{
   const foldable=["goal","terminal","source"];
   assert.deepEqual(fitState(0,foldable),{fit:0,folded:[]});
-  assert.deepEqual(fitState(HEADER_FIT_LEVELS-1,foldable),{fit:4,folded:[]});
-  assert.deepEqual(fitState(HEADER_FIT_LEVELS,foldable),{fit:5,folded:["goal"]});
-  assert.deepEqual(fitState(HEADER_FIT_LEVELS+1,foldable),{fit:5,folded:["goal","terminal"]});
-  assert.deepEqual(fitState(HEADER_FIT_LEVELS+9,foldable),{fit:5,folded:foldable});
+  assert.deepEqual(fitState(HEADER_FIT_LEVELS-1,foldable),{fit:HEADER_FIT_LEVELS-1,folded:[]});
+  assert.deepEqual(fitState(HEADER_FIT_LEVELS,foldable),{fit:HEADER_FIT_LEVELS,folded:["goal"]});
+  assert.deepEqual(fitState(HEADER_FIT_LEVELS+1,foldable),{fit:HEADER_FIT_LEVELS,folded:["goal","terminal"]});
+  assert.deepEqual(fitState(HEADER_FIT_LEVELS+9,foldable),{fit:HEADER_FIT_LEVELS,folded:foldable});
   assert.deepEqual(fitState(3),{fit:3,folded:[]});
 });
 
@@ -58,15 +58,16 @@ test("a header folds only as many actions as its title needs, and gives them bac
   // The row's six actions and, as while the menu is open, the menu items of two of them.
   const controls=[...["source","open-in","script","review","terminal","goal"].map(control),control("terminal"),control("goal")];
   const folded=()=>[...new Set(controls.filter(node=>node.hasAttribute("data-folded")).map(node=>node.dataset.fold))];
-  // Each level to 4 gives the title 20px; each folded action gives 34px, but the first pays for the More actions button.
-  let base=-60;
+  // Each level up to the last that folds nothing gives the title 20px; each folded action gives 34px, but the first pays for the
+  // More actions button.
+  let base=-80;
   const header={dataset:{},querySelectorAll:()=>controls,querySelector:()=>({get clientWidth(){
-    const state=Math.min(Number(header.dataset.fit),4),count=folded().length;
+    const state=Math.min(Number(header.dataset.fit),HEADER_FIT_LEVELS-1),count=folded().length;
     return Math.max(0,base+20*state+(count?34*(count-1):0));
   },scrollWidth:600})};
   observeHeaderFit(header)();
-  // Level 4 leaves 20px, one fold 20px, two 54px, three 88px: past the readable width.
-  assert.equal(header.dataset.fit,"5");
+  // Level 5 leaves 20px, one fold 20px, two 54px, three 88px: past the readable width.
+  assert.equal(header.dataset.fit,String(HEADER_FIT_LEVELS));
   assert.deepEqual(new Set(folded()),new Set(["goal","terminal","review"]));
   // The menu items of the folded actions are marked too.
   assert.equal(controls.filter(node=>node.hasAttribute("data-folded")).length,5);
@@ -76,6 +77,6 @@ test("a header folds only as many actions as its title needs, and gives them bac
   assert.deepEqual(folded(),[]);
   // Too narrow for any number of folds: every action folds.
   base=-400;observeHeaderFit(header)();
-  assert.equal(header.dataset.fit,"5");
+  assert.equal(header.dataset.fit,String(HEADER_FIT_LEVELS));
   assert.deepEqual(new Set(folded()),new Set(HEADER_FOLD_ORDER));
 });

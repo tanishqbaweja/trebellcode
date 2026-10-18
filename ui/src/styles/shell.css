@@ -751,33 +751,35 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* Topbar in narrow main columns (a mid-size window with the inspector open): the thread title is the last thing to give way.
    The project crumb shrinks first, to a few letters (its large flex-shrink takes the whole squeeze before the title takes any);
    then header-fit.js measures the title and, while it shows less than a readable width, sets data-fit: 1 drops the labels of the
-   labelled actions, 2 also the project name and folds several linked pull requests into the first one's chip ("#482 +1", as the
-   sidebar row reads), 3 also hides the theme and palette buttons (the palette, Settings and the sidebar's search reach both), 4
-   leaves the pull request chip its icon and how many are linked, and 5 shows the More actions menu while actions fold into it
-   one at a time from the end of the row (each one header-fit.js marks data-folded; Stop and the inspector toggle never fold).
-   Each control keeps its tooltip and accessible name. */
+   labelled actions, 2 folds several linked pull requests into the first one's chip ("#482 +1", as the sidebar row reads) and
+   lets the project crumb shrink to its first letter and the ellipsis, 3 also drops the project name, 4 also hides the theme and
+   palette buttons (the palette, Settings and the sidebar's search reach both), 5 leaves the pull request chip its icon and how
+   many are linked, and 6 shows the More actions menu while actions fold into it one at a time from the end of the row (each one
+   header-fit.js marks data-folded; Stop and the inspector toggle never fold). Each control keeps its tooltip and accessible
+   name. */
 .workspace-header .workspace-breadcrumb{flex:1 1 auto}
 .workspace-header .project-crumb:not(.sidebar-reopen){flex:0 1000 auto;min-width:calc(39px + 4ch)}
 .workspace-header .thread-title-button{flex:0 1 auto;min-width:0}
 .workspace-header .thread-title-button strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control){width:30px;padding:0;justify-content:center}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control)>span{display:none}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control){width:30px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control)>span{display:none}
 /* The row's own picker; the copy in the More actions menu keeps its label. The icon-only select hides its editor's name over
    the light theme's !important select color, which would otherwise show the name's first letters beside the chevron. */
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>.open-in-wrap .open-in-picker>button{width:28px;padding:0;justify-content:center}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>.open-in-wrap .open-in-picker>button>span{display:none}
-.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>.open-in-wrap .open-in-picker>select{width:24px;min-width:0;padding:0;color:transparent!important}
-.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .project-crumb:not(.sidebar-reopen){width:30px;min-width:30px;padding:0;justify-content:center}
-.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .project-crumb:not(.sidebar-reopen)>span{display:none}
-.workspace-header:is([data-fit="3"],[data-fit="4"],[data-fit="5"]) .workspace-header-actions>:is(.theme-toggle,.palette-control){display:none}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .workspace-header-actions>.open-in-wrap .open-in-picker>button{width:28px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .workspace-header-actions>.open-in-wrap .open-in-picker>button>span{display:none}
+.workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .workspace-header-actions>.open-in-wrap .open-in-picker>select{width:24px;min-width:0;padding:0;color:transparent!important}
+.workspace-header[data-fit="2"] .project-crumb:not(.sidebar-reopen){min-width:calc(39px + 3ch)}
+.workspace-header:is([data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .project-crumb:not(.sidebar-reopen){width:30px;min-width:30px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .project-crumb:not(.sidebar-reopen)>span{display:none}
+.workspace-header:is([data-fit="4"],[data-fit="5"],[data-fit="6"]) .workspace-header-actions>:is(.theme-toggle,.palette-control){display:none}
 .workspace-header .header-pr>:is(.header-pr-more,.header-pr-count){display:none}
-.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"]) .header-pr+.header-pr{display:none}
-.workspace-header:is([data-fit="2"],[data-fit="3"]) .header-pr>.header-pr-more{display:inline}
-.workspace-header:is([data-fit="4"],[data-fit="5"]) .header-pr{padding:0 7px}
-.workspace-header:is([data-fit="4"],[data-fit="5"]) .header-pr>.header-pr-number{display:none}
-.workspace-header:is([data-fit="4"],[data-fit="5"]) .header-pr>.header-pr-count{display:inline}
+.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .header-pr+.header-pr{display:none}
+.workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"]) .header-pr>.header-pr-more{display:inline}
+.workspace-header:is([data-fit="5"],[data-fit="6"]) .header-pr{padding:0 7px}
+.workspace-header:is([data-fit="5"],[data-fit="6"]) .header-pr>.header-pr-number{display:none}
+.workspace-header:is([data-fit="5"],[data-fit="6"]) .header-pr>.header-pr-count{display:inline}
 .workspace-header .header-overflow{position:relative;display:none;flex:none}
-.workspace-header[data-fit="5"] .header-overflow{display:flex}
+.workspace-header[data-fit="6"] .header-overflow{display:flex}
 /* A folded action leaves the row for the menu; the menu lists only the folded ones (and the theme and palette buttons). */
 .workspace-header .workspace-header-actions>[data-folded]{display:none}
 .workspace-header .header-overflow-menu>[data-fold]:not([data-folded]){display:none}

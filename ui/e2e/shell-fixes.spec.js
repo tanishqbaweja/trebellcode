@@ -463,13 +463,64 @@ for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(
       await expect(first).toHaveAttribute("title",prCount>1?"Open pull request #12345 · also linked: "+prs.slice(1).map(pr=>"#"+pr.number).join(", "):"Open pull request #12345");
       const shown=await chips.evaluateAll(nodes=>nodes.filter(node=>node.offsetParent).map(node=>node.innerText.replace(/\s+/g,"")));
       const fit=Number(await header.getAttribute("data-fit"));
-      expect(shown).toEqual(prCount===1?[fit>=4?"":"#12345"]:fit>=4?[String(prCount)]:fit>=2?["#12345+"+(prCount-1)]:prs.map(pr=>"#"+pr.number));
+      expect(shown).toEqual(prCount===1?[fit>=5?"":"#12345"]:fit>=5?[String(prCount)]:fit>=2?["#12345+"+(prCount-1)]:prs.map(pr=>"#"+pr.number));
       await page.screenshot({path:join(shotsDir,`header-linked-prs-${prCount}-${phase}-${mode}-1280x800.png`),animations:"disabled"});
     }
     // Closing the inspector gives every chip its number back.
     await page.getByTestId("right-panel-toggle").click();await settle(page);
     await expect(header).toHaveAttribute("data-fit","0");
     expect(await chips.evaluateAll(nodes=>nodes.map(node=>node.innerText.trim()))).toEqual(prs.map(pr=>"#"+pr.number));
+  }finally{await harness.close()}
+});
+
+// Two linked pull requests fold into the first one's chip ("#101 +1") beside the open inspector, and the project crumb keeps a
+// shortened name, ended by its ellipsis, as it does beside one chip: the title keeps a readable width and the crumb has the room
+// left beside it (UI lane D, 2026-10-17: the fold took the crumb's name too, leaving its folder icon while the title showed whole).
+// The crumb's tooltip gives the whole name at each width.
+for(const mode of ["dark","light"])test(`the project crumb keeps a shortened name beside two linked pull requests, at 1280 where they fold into one chip and at 900 and 700, in ${mode} mode`,async({page})=>{
+  test.setTimeout(45_000);
+  const project={id:"header-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
+  const thread={id:"header-thread",name:"Repo task one",preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at repo task one"}]},{type:"agentMessage",id:"assistant-1",text:"Looked at repo task one."}]}]};
+  const prs=[101,102].map(number=>({url:"https://github.com/lane-d/scratch/pull/"+number,number,title:"Scratch PR "+number,state:"open"}));
+  const harness=await startHarness([thread]);
+  try{
+    // The Git tab syncs the thread's links with the server, which keeps these two.
+    await page.route(/\/api\/source-control\/thread-link$/,route=>route.request().method()==="POST"?route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({links:prs})}):route.fallback());
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:false,environmentId:null,linkedPullRequests:prs}},project,settings:{appearanceMode:mode}});
+    await openThread(page,thread.name);
+    const right=page.getByTestId("right-panel");
+    if(!(await right.isVisible())){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible()}
+    await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 2");
+    const header=page.locator(".chat-workspace .workspace-header"),crumb=header.locator(".project-crumb:not(.sidebar-reopen)"),title=header.locator(".thread-title-button strong");
+    // The name's box, and the width its first letter and the ellipsis take in its font: the least a shortened name shows.
+    const name=()=>crumb.locator("span").evaluate(node=>{
+      const style=getComputedStyle(node),least=document.createElement("span");
+      least.style.cssText="position:absolute;visibility:hidden;white-space:nowrap";least.textContent=node.textContent.trim().charAt(0)+"…";
+      for(const key of ["fontFamily","fontSize","fontWeight","fontStyle","fontStretch","fontFeatureSettings","fontVariationSettings","letterSpacing"])least.style[key]=style[key];
+      document.body.append(least);const width=least.getBoundingClientRect().width;least.remove();
+      return {display:style.display,shown:node.clientWidth,whole:node.scrollWidth,least:width,overflow:style.textOverflow};
+    });
+    // The main column beside the docked 460px inspector at 1280; at 900 and below the inspector lies over it, and at 700 the
+    // sidebar has closed.
+    for(const [width,column] of [[1280,562],[900,704],[700,700]]){
+      await page.setViewportSize({width,height:800});
+      await expect.poll(()=>header.evaluate(node=>Math.round(node.getBoundingClientRect().width))).toBe(column);await settle(page);
+      const chips=await header.locator(".header-pr").evaluateAll(nodes=>nodes.filter(node=>node.offsetParent).map(node=>node.innerText.replace(/\s+/g,"")));
+      if(width===1280)expect(chips,"the pull requests fold into the first one's chip").toEqual(["#101+1"]);
+      const shown=await name();
+      expect(shown.display,`the crumb's name at ${width}px`).not.toBe("none");
+      expect(shown.shown+1,`the crumb's name shows its first letter and the ellipsis at least at ${width}px`).toBeGreaterThanOrEqual(shown.least);
+      if(shown.shown<shown.whole)expect(shown.overflow,`the crumb's name is cut with an ellipsis at ${width}px`).toBe("ellipsis");
+      const titleBox=await title.evaluate(node=>({shown:node.clientWidth,whole:node.scrollWidth}));
+      expect(titleBox.shown+1,`the title's width at ${width}px`).toBeGreaterThanOrEqual(Math.min(titleBox.whole,80));
+      const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+      await expect(crumb).toHaveAttribute("title",project.name+" · Projects and workspaces");
+      // Beside the docked inspector the pointer reaches the crumb; below 900px the inspector's scrim lies over the header.
+      if(width===1280)await crumb.hover();
+      await page.screenshot({path:join(shotsDir,`header-crumb-beside-folded-prs-${mode}-${width}x800.png`),animations:"disabled"});
+    }
   }finally{await harness.close()}
 });
 
@@ -555,7 +606,7 @@ const headerFold=header=>header.evaluate((node,order)=>{
   if(folded.length){
     const last=[...node.querySelectorAll(`[data-fold="${folded.at(-1)}"]`)],fit=node.dataset.fit;
     for(const control of last)control.removeAttribute("data-folded");
-    if(folded.length===1)node.dataset.fit="4";
+    if(folded.length===1)node.dataset.fit="5";
     titleWithOneLess=title.clientWidth;
     for(const control of last)control.setAttribute("data-folded","");
     node.dataset.fit=fit;
@@ -587,7 +638,7 @@ for(const [width,height] of [[1180,800],[1280,800]])for(const mode of ["dark","l
     await expect(title).toBeVisible();
     const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     const state=await headerFold(header);
-    expect(state.fit).toBe("5");expect(state.present).toEqual(HEADER_FOLD_ORDER);
+    expect(state.fit).toBe("6");expect(state.present).toEqual(HEADER_FOLD_ORDER);
     await expectFoldedOnlyAsNeeded(header,state);
     // Stop and the inspector toggle stay in the header, beside the menu that holds what folded; the first toggle still shown
     // keeps the line that parts it from the labelled actions.
@@ -619,7 +670,7 @@ for(const [width,height] of [[1180,800],[1280,800]])for(const mode of ["dark","l
     await more.click();await expect(menu).toBeVisible();await page.mouse.click(column.x+column.width/2,400);await expect(menu).toHaveCount(0);
     // Closing the inspector gives the actions back to the row, and the menu goes.
     await page.getByTestId("right-panel-toggle").click();await settle(page);
-    expect(Number(await header.getAttribute("data-fit"))).toBeLessThan(5);
+    expect(Number(await header.getAttribute("data-fit"))).toBeLessThan(6);
     await expect(more).toBeHidden();await expect(header.locator("[data-folded]")).toHaveCount(0);
     for(const name of ["Review","Stop","Toggle terminal","Thread goal",project.scripts[0].name])await expect(header.getByRole("button",{name,exact:true}),name).toBeVisible();
     await expect(header.locator(".branch-control")).toBeVisible();await expect(header.locator(".workspace-header-actions>.open-in-wrap")).toBeVisible();
@@ -917,7 +968,7 @@ for(const mode of ["dark","light"])test(`a turn ending that gives the row every 
     await startTurn(page,header);await more.focus();await page.keyboard.press("Enter");await expect(menu).toBeVisible();
     await tabToMenuItem(page,menu,mode==="dark"?"Switch to light mode":"Switch to dark mode");
     await endTurn(page,harness,thread,header);await unfolded();
-    expect(Number(await header.getAttribute("data-fit"))).toBeGreaterThanOrEqual(3);
+    expect(Number(await header.getAttribute("data-fit"))).toBeGreaterThanOrEqual(4);
     await expect(panelToggle).toBeFocused();
   }finally{await harness.close()}
 });

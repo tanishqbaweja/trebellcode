@@ -1,16 +1,18 @@
 // The workspace header keeps the open thread named. The project crumb gives way first (the stylesheet shrinks it before the
 // title); when the title would still be cut below a readable width, the labelled actions (branch, Review, Stop, the project
-// action and the Open-in picker) go icon-only, then the project crumb keeps only its icon while several linked pull requests
-// fold into the first one's chip, then the theme and command palette buttons step aside (the palette, Settings and the sidebar's
-// "Search or jump to" reach both), then the pull request chip keeps only its icon and count (its tooltip names them all), and
-// last the actions fold into the More actions menu one at a time, from the end of the row, until the title has room: beside the
-// desktop window's minimum width and a wide inspector, a row of icons alone leaves the title no room, and folding no more than
-// the title needs keeps the rest where they were (a turn's Stop button moves an action or two, not the whole row). Stop and
-// the inspector toggle never fold. The header is measured, so any branch name, project action, number of linked pull requests
-// or window width is covered, not only the widths a breakpoint was tuned for. Levels: 0 everything labelled, 1 labelled actions
-// icon-only, 2 the project crumb icon-only and one pull request chip, 3 also without the theme and palette buttons, 4 the pull
-// request chip without numbers, then data-fit 5 with one more action folded at each level.
-export const HEADER_FIT_LEVELS=5;
+// action and the Open-in picker) go icon-only, then several linked pull requests fold into the first one's chip while the
+// project crumb may shrink to its first letter, then the project crumb keeps only its icon (the fold alone often gives the title
+// its room, and the crumb then keeps a shortened name beside it), then the theme and command palette buttons step aside (the
+// palette, Settings and the sidebar's "Search or jump to" reach both), then the pull request chip keeps only its icon and count
+// (its tooltip names them all), and last the actions fold into the More actions menu one at a time, from the end of the row,
+// until the title has room: beside the desktop window's minimum width and a wide inspector, a row of icons alone leaves the
+// title no room, and folding no more than the title needs keeps the rest where they were (a turn's Stop button moves an action
+// or two, not the whole row). Stop and the inspector toggle never fold. The header is measured, so any branch name, project
+// action, number of linked pull requests or window width is covered, not only the widths a breakpoint was tuned for. Levels:
+// 0 everything labelled, 1 labelled actions icon-only, 2 one pull request chip and the project crumb down to its first letter,
+// 3 the project crumb icon-only, 4 also without the theme and palette buttons, 5 the pull request chip without numbers, then
+// data-fit 6 with one more action folded at each level.
+export const HEADER_FIT_LEVELS=6;
 export const TITLE_READABLE_WIDTH=80;
 // The foldable actions by their data-fold, the first to fold first. Each one's row control and its More actions menu item
 // carry the same data-fold; a folded one is marked data-folded, which hides it from the row and shows it in the menu.
