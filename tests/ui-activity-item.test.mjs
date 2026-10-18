@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import v8 from "node:v8";
+import vm from "node:vm";
 import { RESTORED_LIST_LIMIT, RESTORED_TEXT_LIMIT, activityRow, isCardItem, mergeLiveRow, restoredRow, settledRow } from "../ui/src/activity-item.js";
 import { cardRowsFromItemEntries } from "../ui/src/turn-activity.js";
 import { activityItemStatus } from "../ui/src/activity-details.js";
@@ -112,6 +114,29 @@ test("a kept row holds bounded text: a command's output its end, other text its 
   // Nothing to cut: the same row.
   const small=activityRow({id:"s",type:"commandExecution",command:"ls",status:"completed",aggregatedOutput:"a b"});
   assert.equal(restoredRow(small),small);
+});
+
+test("a row kept again reads as it was kept: each cut says how much it left out once",()=>{
+  // A sealed card's row sealed again, or a turn's ended diff kept and then put on the turn's card, is kept twice.
+  const command=activityRow({id:"c",type:"commandExecution",command:"build",status:"completed",aggregatedOutput:"HEAD"+"x".repeat(RESTORED_TEXT_LIMIT)+"TAIL",exitCode:0});
+  const diff={id:"diff-t1",kind:"fileChange",title:"Workspace diff updated",status:"done",raw:"diff --git a/app.js b/app.js\n"+"+line\n".repeat(5000),turnId:"t1"};
+  const tool=activityRow({id:"s",type:"dynamicToolCall",namespace:"trebell_repo",tool:"search_code",status:"completed",rawOutput:"HEAD"+"y".repeat(RESTORED_TEXT_LIMIT)+"TAIL"});
+  for(const row of [command,diff,tool]){const kept=restoredRow(row);assert.notEqual(kept,row);assert.equal(restoredRow(kept),kept,row.id+" kept again")}
+  assert.ok(restoredRow(command).output.startsWith("… 8 earlier characters not shown\n"));
+  assert.match(restoredRow(diff).raw,new RegExp("\\n… "+(diff.raw.length-RESTORED_TEXT_LIMIT).toLocaleString("en-US")+" more characters$"));
+  assert.ok(restoredRow(tool).output.endsWith("\n… 8 more characters"));
+});
+
+test("a kept row lets go of the long text it was cut from, holding only its cut",()=>{
+  v8.setFlagsFromString("--expose-gc");const gc=vm.runInNewContext("gc");
+  const heap=()=>{gc();gc();return process.memoryUsage().heapUsed};
+  // A diff as a turn/diff/updated notification brings it: parsed from the frame, about 8 MB each.
+  const diffOf=index=>JSON.parse(JSON.stringify({diff:`diff --git a/lock${index} b/lock${index}\n`+`+line ${index} of a long lockfile diff\n`.repeat(250_000)})).diff;
+  const before=heap(),kept=[];
+  for(let index=0;index<8;index++)kept.push(restoredRow({id:"diff-"+index,kind:"fileChange",title:"Workspace diff updated",status:"done",raw:diffOf(index),turnId:"t"+index}));
+  const grown=heap()-before;
+  assert.ok(kept.every(row=>row.raw.length<RESTORED_TEXT_LIMIT+40));
+  assert.ok(grown<24*1024*1024,`8 kept diff rows hold ${Math.round(grown/1024/1024)} MB after a full collection`);
 });
 
 test("a Trebell tool that answered with text shows that text as its output, and a kept row keeps the text's start",()=>{

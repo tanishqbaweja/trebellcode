@@ -741,6 +741,49 @@ test("a Codex turn that ends while another thread is shown keeps its diff row wi
   }finally{await harness.close()}
 });
 
+// What a turn that ends while another thread is shown keeps of its diff, until the thread runs its next turn, is the row its card
+// shows, not the whole diff: a diff of many megabytes (a lockfile rewritten) leaves the window's memory once the turn ends, and back
+// on the thread the turn's card still lists the diff row, which reads from the diff's start.
+test("a Codex turn that ends while another thread is shown keeps only the diff row its card shows, not the whole diff",async({page})=>{
+  test.setTimeout(120_000);
+  const thread=codexThread("codex-away-big-diff","Rewrite the lockfile"),other=codexThread("codex-away-big-diff-other","Docs review");
+  let live=null,completed=false;
+  page.on("websocket",socket=>socket.on("framereceived",frame=>{const text=typeof frame.payload==="string"&&frame.payload.length<100_000?frame.payload:"";if(text.includes('"turn/completed"'))completed=true}));
+  const head="diff --git a/package-lock.json b/package-lock.json\n--- a/package-lock.json\n+++ b/package-lock.json\n";
+  const harness=await startCodexHarness(thread,[
+    // The turn changes the lockfile a little first; it runs on until the test ends it.
+    (turn,tools)=>{
+      const emit=(method,params)=>tools.emit({method,params:{threadId:tools.threadId,turnId:turn.id,...params}});
+      live={turn,tools,emit};thread.status={type:"active",activeFlags:[]};
+      tools.emit({method:"turn/started",params:{threadId:tools.threadId,turn:{...turn,items:[]}}});
+      emit("turn/diff/updated",{diff:head+"@@ -1 +1 @@\n-old\n+first change\n"});
+    },
+  ],{others:[other]});
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Rewrite the lockfile");
+    await page.getByTestId("composer").fill("Rewrite the lockfile");await page.getByTestId("send").click();
+    await expect(liveCard(page).locator(".tool-event.kind-fileChange")).toHaveCount(1,{timeout:10_000});
+    await openThreadRow(page,"Docs review");await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
+    const cdp=await page.context().newCDPSession(page);
+    const heap=async()=>{await cdp.send("HeapProfiler.collectGarbage");await cdp.send("HeapProfiler.collectGarbage");return (await cdp.send("Runtime.getHeapUsage")).usedSize};
+    const before=await heap();
+    // While the person reads the other thread the whole lockfile is rewritten (a diff of about 24 MB), the reply comes and the turn ends.
+    const lines=Array.from({length:600_000},(_,index)=>`+    "node_modules/pkg-${index}": "1.0.${index%10}",`);
+    live.emit("turn/diff/updated",{diff:head+"@@ -1,600000 +1,600000 @@\n"+lines.join("\n")+"\n"});
+    codexReply(live.turn,live.tools,"Rewrote the lockfile.");thread.status={type:"idle"};live.tools.finish("completed");
+    await expect.poll(()=>completed,{timeout:20_000}).toBe(true);await page.waitForTimeout(500);
+    const grown=await heap()-before;
+    expect(grown,`the window holds ${Math.round(grown/1024/1024)} MB more once the turn has ended`).toBeLessThan(8*1024*1024);
+    // Back on the thread, the turn's card lists the diff row, which reads from the diff's start.
+    await openThreadRow(page,"Rewrite the lockfile");await expect(reply(page,"Rewrote the lockfile.")).toBeVisible({timeout:10_000});
+    const card=cardOf(page,live.turn.id),diff=card.locator(".tool-event.kind-fileChange");
+    await expect(diff).toHaveCount(1);await diff.locator("summary").click();
+    await expect(diff).toContainText('"node_modules/pkg-0"');await expect(diff).not.toContainText("first change");
+    await auditCards(page,"returned-turn-ended-big-diff",card,{sizes:[[1280,800]]});
+  }finally{await harness.close()}
+});
+
 // A Codex reply streams on while the person reads another thread; Codex's history lists the reply in progress as it stands, or
 // only finished items. Back on the thread the reply reads from its start, with what came meanwhile and after, once and in order,
 // and once the turn ends it reads whole, once. Listed, it also opens that way after a reload while it streams.

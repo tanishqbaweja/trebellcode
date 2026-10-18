@@ -58,8 +58,18 @@ export function storedRow(row){
   return settled!==row&&row.kind==="contextCompaction"?{...settled,title:"Context compacted"}:settled;
 }
 
+// What a cut text keeps is a copy: a slice of a string keeps the whole string it was cut from in memory, so a row kept after its turn
+// would hold all of a long output or diff while it shows only its cut. A text cut once is left as it was cut: cut again, it would
+// count what the first cut left out wrongly.
+const CUT_TAIL=/^\n… [\d,]+ more characters$/,CUT_HEAD=/^… [\d,]+ earlier characters not shown\n/;
+const copied=text=>JSON.parse(JSON.stringify(text));
 function cappedText(value){
-  return value.length>RESTORED_TEXT_LIMIT?value.slice(0,RESTORED_TEXT_LIMIT)+"\n… "+(value.length-RESTORED_TEXT_LIMIT).toLocaleString("en-US")+" more characters":value;
+  if(value.length<=RESTORED_TEXT_LIMIT||CUT_TAIL.test(value.slice(RESTORED_TEXT_LIMIT)))return value;
+  return copied(value.slice(0,RESTORED_TEXT_LIMIT)+"\n… "+(value.length-RESTORED_TEXT_LIMIT).toLocaleString("en-US")+" more characters");
+}
+function cutOutputEnd(text){
+  const head=CUT_HEAD.exec(text);if(head&&text.length-head[0].length===RESTORED_TEXT_LIMIT)return text;
+  return copied("… "+(text.length-RESTORED_TEXT_LIMIT).toLocaleString("en-US")+" earlier characters not shown\n"+text.slice(-RESTORED_TEXT_LIMIT));
 }
 function cappedValue(value,depth=0){
   if(typeof value==="string")return cappedText(value);
@@ -75,12 +85,13 @@ function cappedValue(value,depth=0){
 }
 
 // A row kept after its turn: a command's output keeps its end (where a failure shows), other text in the item its start, and
-// lists their first entries, so a long history holds bounded rows. The same row when nothing needed cutting.
+// lists their first entries, so a long history holds bounded rows. The same row when nothing needed cutting, a row kept already
+// among them.
 export function restoredRow(row){
   if(!row||typeof row!=="object")return row;
   const text=typeof row.output==="string"?row.output:"";
   const output=text.length<=RESTORED_TEXT_LIMIT?row.output
-    :row.kind==="commandExecution"?"… "+(text.length-RESTORED_TEXT_LIMIT).toLocaleString("en-US")+" earlier characters not shown\n"+text.slice(-RESTORED_TEXT_LIMIT)
+    :row.kind==="commandExecution"?cutOutputEnd(text)
     :cappedText(text);
   const raw=cappedValue(row.raw);
   return output===row.output&&raw===row.raw?row:{...row,output,raw};

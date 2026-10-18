@@ -1025,7 +1025,8 @@ export default function App(){
   const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
   // The MCP progress of each running turn, by item id, and its diff (under ""), by thread and turn, kept whether the thread shows or
   // not: the harness's history has neither, so a thread opened again while the turn runs gets them back on its live card. The
-  // turn's end drops its progress; its diff stays until the thread's next turn starts, for the turn's own card (withEndedDiffs).
+  // turn's end drops its progress; its diff stays until the thread's next turn starts, for the turn's own card (withEndedDiffs), as
+  // the bounded row that card shows.
   // liveRepliesRef: the reply each running turn streams, by thread and turn ({itemId,text,sync}), kept the same way as the live
   // reply shows it: Codex's history may not list a reply in progress, and an ACP harness's lists it once the turn ends. One marked
   // copy is the history's copy of the turn's latest reply, from a thread opened with no reply kept: its item's next delta goes on it.
@@ -3009,9 +3010,10 @@ export default function App(){
         if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:recordTurnCompletion(prev[outcomeKey],{status:outcomeStatus,durationMs,completedAt:completedAtMs/1000,error})}));
       }
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});markThreadTurn(threadId,false);
-      // The turn's reply and MCP progress end with it, whether its thread shows or not; the diff it showed last stays with it.
+      // The turn's reply and MCP progress end with it, whether its thread shows or not; the diff it showed last stays with it, as the
+      // row its card shows (restoredRow), not the whole diff.
       const endedDiff=liveExtrasRef.current.get(outcomeKey)?.get("");liveRepliesRef.current.delete(outcomeKey);
-      if(endedDiff)liveExtrasRef.current.set(outcomeKey,new Map([["",endedDiff]]));else liveExtrasRef.current.delete(outcomeKey);
+      if(endedDiff)liveExtrasRef.current.set(outcomeKey,new Map([["",restoredRow(endedDiff)]]));else liveExtrasRef.current.delete(outcomeKey);
       // A queued turn that ends without having started takes its send with it.
       if(completedTurnId&&pendingSendsRef.current.get(String(threadId||""))?.turnId===String(completedTurnId))pendingSendsRef.current.delete(String(threadId||""));
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
