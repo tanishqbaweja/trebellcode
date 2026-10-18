@@ -792,6 +792,53 @@ for(const listed of [false,true])test(`a Codex reply left streaming reads from i
   }finally{await harness.close()}
 });
 
+// A reply the window follows only from partway, as after the connection dropped while another thread was shown (the thread is
+// followed again on the new connection, the reply's start gone with the old one), gives way back on its thread to the copy Codex's
+// history lists of it, which holds its start: the reply reads from its start, with what came after, once and in order, and whole,
+// once, when its turn ends.
+test("a Codex reply kept from partway after the connection dropped reads from its start back on its thread when its history lists it",async({page})=>{
+  test.setTimeout(90_000);
+  const thread=codexThread("codex-dropped-reply","Write the notes"),other=codexThread("codex-dropped-reply-other","Other notes"),seen=socketFrames(page);
+  let live=null;
+  const harness=await startCodexHarness(thread,[
+    // The reply streams on until the test ends the turn; Codex's history lists it as it stands.
+    (turn,tools)=>{
+      const answer={id:"agent-"+turn.id,type:"agentMessage",text:""};thread.status={type:"active",activeFlags:[]};turn.items.push(answer);
+      const say=delta=>{answer.text+=delta;tools.emit({method:"item/agentMessage/delta",params:{threadId:tools.threadId,turnId:turn.id,itemId:answer.id,delta}})};
+      live={turn,tools,answer,say};
+      tools.emit({method:"turn/started",params:{threadId:tools.threadId,turn:{...turn,items:[]}}});
+      tools.emit({method:"item/started",params:{threadId:tools.threadId,turnId:turn.id,item:{...answer}}});say("First part of the notes. ");
+    },
+  ],{others:[other]});
+  const resumes=()=>harness.calls.filter(call=>call.method==="thread/resume"&&call.params.threadId===thread.id).length;
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Write the notes");
+    await page.getByTestId("composer").fill("Write the release notes.");await page.getByTestId("send").click();
+    await expect(replyText(page,"First part")).toHaveText("First part of the notes.",{timeout:10_000});
+    // The person reads another thread while the reply goes on.
+    await openThreadRow(page,"Other notes");await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
+    live.say("Second part, sent while away. ");await expect.poll(()=>seen.some(frame=>frame.includes("Second part, sent while away."))).toBe(true);
+    // The connection drops; on the new one the window follows the thread again, and the reply goes on.
+    const before=resumes();harness.drop();
+    await expect.poll(resumes,{timeout:20_000}).toBe(before+1);
+    live.say("Third part, after the reconnect. ");await expect.poll(()=>seen.some(frame=>frame.includes("Third part, after the reconnect."))).toBe(true);
+    // Back on it, the reply reads from its start, and goes on in the same place.
+    await openThreadRow(page,"Write the notes");await expect(page.getByRole("button",{name:"Stop"})).toBeVisible({timeout:10_000});
+    let full="First part of the notes. Second part, sent while away. Third part, after the reconnect.";
+    await expect(replyText(page,"Third part"),"the reply back on its thread").toHaveText(full);
+    live.say("Fourth part, after the return. ");full+=" Fourth part, after the return.";
+    await expect(replyText(page,"Fourth part")).toHaveText(full);await expect(replyText(page,"First part")).toHaveCount(1);
+    await auditCards(page,"returned-reply-after-reconnect",replyText(page,"Fourth part"),{sizes:[[1280,800]]});
+    // The turn ends: the reply reads whole, once.
+    live.answer.text=full+" The end.";
+    live.tools.emit({method:"item/completed",params:{threadId:live.tools.threadId,turnId:live.turn.id,item:{...live.answer}}});thread.status={type:"idle"};live.tools.finish("completed");
+    await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
+    await expect(replyText(page,"The end.")).toHaveText(full+" The end.");
+    expect(timesIn(await page.locator(".conversation-column").innerText(),"First part of the notes.")).toBe(1);
+  }finally{await harness.close()}
+});
+
 // Gemini threads on the real agent relay, run by a fake ACP agent: a prompt runs a command step and streams its reply in parts, the
 // next part once the test writes its name beside the agent ("two", "three", "four"); "finish" ends the step and the turn.
 async function startAcpReplyHarness(page,names){

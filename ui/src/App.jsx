@@ -1229,12 +1229,21 @@ export default function App(){
     return next;
   }
   // A delta of a turn's reply goes on the reply kept for the turn as it goes on the live reply (assistantStreamDelta); a copy, only
-  // when it is the delta's own reply.
+  // when it is the delta's own reply. whole: the kept reply holds its start, kept from its item's item/started or its turn's
+  // turn/started on this socket (keepReplyStart), or from the history's copy. One that a delta began is kept from partway: a
+  // reconnect, or an open replaced before it landed, followed the thread from the middle of the reply.
   function keepLiveReply(threadId,turnId,itemId,delta,offset){
     const key=turnInfoKey(threadId,turnId);if(!key)return;
     let kept=liveRepliesRef.current.get(key);if(kept?.copy&&kept.itemId!==String(itemId||""))kept=null;
+    const whole=Boolean(kept?.whole||kept?.copy);
     kept=kept||{itemId:null,text:"",sync:EMPTY_ASSISTANT_STREAM};const step=assistantStreamDelta(kept.sync,delta,offset);
-    liveRepliesRef.current.set(key,{itemId:itemId?String(itemId):kept.itemId,text:(step.restart?"":kept.text)+step.append,sync:step.state});
+    liveRepliesRef.current.set(key,{itemId:itemId?String(itemId):kept.itemId,text:(step.restart?"":kept.text)+step.append,sync:step.state,whole});
+  }
+  // A reply that starts on this socket is kept from its start: its turn's turn/started (a harness that sends no item/started for its
+  // replies streams them from there) or its item's item/started, when no reply with text is kept for the turn yet.
+  function keepReplyStart(threadId,turnId,{itemId=null,text=""}={}){
+    const key=turnInfoKey(threadId,turnId),kept=key?liveRepliesRef.current.get(key):null;if(!key||kept?.text)return;
+    liveRepliesRef.current.set(key,{itemId:itemId?String(itemId):null,text:String(text||""),sync:{chars:String(text||"").length,desynced:false},whole:true});
   }
   // The live reply shows a turn's reply so far from its start, and goes on from it.
   function showLiveReply(threadId,turnId,reply){
@@ -2958,8 +2967,9 @@ export default function App(){
     else if(message.method==="turn/started"){
       const id=p.turn?.id||p.turnId;
       const clockKey=turnInfoKey(threadId,id);if(clockKey&&!turnClockRef.current.has(clockKey))turnClockRef.current.set(clockKey,receivedAt);
-      // The thread's earlier turns leave the diff each kept, as their rows leave the live card.
+      // The thread's earlier turns leave the diff each kept, as their rows leave the live card. The turn's reply is kept from its start.
       if(clockKey)for(const key of [...liveExtrasRef.current.keys()])if(key!==clockKey&&key.startsWith(String(threadId)+"\0"))liveExtrasRef.current.delete(key);
+      keepReplyStart(threadId,id);
       // A turn that starts again (the relay's restart recovery) is running, not ended: its next completion is recorded whole.
       if(clockKey)setTurnInfo(prev=>{const known=turnStartedAgain(prev[clockKey]);return known===prev[clockKey]?prev:{...prev,[clockKey]:known}});
       updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:receivedAt,lastActivityAt:Date.now()});markThreadTurn(threadId,true);
@@ -3017,6 +3027,7 @@ export default function App(){
     }
     else if(message.method==="turn/plan/updated"&&isCurrent){const plan=(p.plan||[]).map((s,i)=>({id:"plan-"+i,kind:"plan",title:s.step||s.description||s.text||"Plan step",status:s.status==="completed"?"done":s.status==="inProgress"?"running":"pending",raw:s,turnId:p.turnId==null?null:String(p.turnId)}));setEvents(prev=>[...prev.filter(e=>e.kind!=="plan"),...plan])}
     else if(message.method==="item/started"&&p.item){
+      if(p.item.type==="agentMessage")keepReplyStart(threadId,p.turnId,{itemId:p.item.id,text:p.item.text});
       const item=activityRow(p.item,{turnId:p.turnId});
       const isActivityItem=!["userMessage","agentMessage","sessionHandoff"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,{currentActivity:{id:item.id,kind:item.kind,title:item.title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
@@ -3121,7 +3132,7 @@ export default function App(){
     // delta of a reply the history listed as it stood when the thread opened takes that copy's place: the live reply goes on from it.
     else if(message.method==="item/agentMessage/delta"){
       const delta=p.delta||p.text||"",copy=liveRepliesRef.current.get(turnInfoKey(threadId,p.turnId));
-      if(isCurrent&&copy?.copy&&copy.itemId===String(p.itemId||"")&&!assistantStreamSyncRef.current.chars){setMessages(prev=>prev.filter(m=>String(m.id)!==copy.itemId));showLiveReply(threadId,p.turnId,{itemId:copy.itemId,text:copy.text,sync:copy.sync})}
+      if(isCurrent&&copy?.copy&&copy.itemId===String(p.itemId||"")&&!assistantStreamSyncRef.current.chars){setMessages(prev=>prev.filter(m=>String(m.id)!==copy.itemId));showLiveReply(threadId,p.turnId,{itemId:copy.itemId,text:copy.text,sync:copy.sync,whole:true})}
       keepLiveReply(threadId,p.turnId,p.itemId,delta,p.offset);
       if(isCurrent){const step=assistantStreamDelta(assistantStreamSyncRef.current,delta,p.offset);if(step.restart)clearAssistantText();assistantStreamSyncRef.current=step.state;if(step.append)appendAssistantStream(step.append)}
     }
@@ -3563,14 +3574,17 @@ export default function App(){
     const pendingSend=pendingSendsRef.current.get(String(thread.id)),resumedRunning=openedThread.status?.type==="active"||Boolean(pendingSend),resumedTurnId=resumedActiveTurnId(resumed);
     // The reply the running turn streams shows under its live card from its start: the relay's so far (an ACP harness stores a reply
     // once its turn ends), else the one kept while the thread was not shown, and a copy the history lists of it gives way. With
-    // neither, the history's copy of the turn's latest reply is the reply so far, and that reply's next delta goes on from it.
+    // neither, the history's copy of the turn's latest reply is the reply so far, and that reply's next delta goes on from it. A
+    // reply kept from partway (not whole: its start came before this window followed the thread on this socket) gives way to the
+    // history's copy of the same reply instead, which holds its start; it shows only while the history lists no copy of it.
     const relayReply=resumedTurnId&&String(resumed?.trebellLiveReply?.turnId||"")===resumedTurnId?String(resumed.trebellLiveReply.text||""):"";
     const replyKey=turnInfoKey(thread.id,resumedTurnId),keptReply=liveRepliesRef.current.get(replyKey);
-    const liveReply=relayReply?{itemId:null,text:relayReply,sync:{chars:relayReply.length,desynced:false}}:keptReply?.text&&!keptReply.copy?keptReply:null;
+    const liveReply=relayReply?{itemId:null,text:relayReply,sync:{chars:relayReply.length,desynced:false},whole:true}:keptReply?.text&&!keptReply.copy?keptReply:null;
     const shownHistory=history=>{
-      const copy=replyKey&&!liveReply?.text?history.findLast(message=>message.role==="assistant"&&String(message.turnId||"")===resumedTurnId):null;
-      if(copy)liveRepliesRef.current.set(replyKey,{itemId:String(copy.id),text:String(copy.text),sync:{chars:String(copy.text).length,desynced:false},copy:true});
-      const shown=liveReply?.itemId?history.filter(message=>String(message.id)!==liveReply.itemId):history;
+      const latest=replyKey&&!(liveReply?.text&&liveReply.whole)?history.findLast(message=>message.role==="assistant"&&String(message.turnId||"")===resumedTurnId):null;
+      const copy=latest&&(!liveReply?.text||String(latest.id)===String(liveReply.itemId||""))?latest:null;
+      if(copy){liveRepliesRef.current.set(replyKey,{itemId:String(copy.id),text:String(copy.text),sync:{chars:String(copy.text).length,desynced:false},copy:true});if(liveReply?.text)clearAssistantText()}
+      const shown=liveReply?.itemId&&!copy?history.filter(message=>String(message.id)!==liveReply.itemId):history;
       return pendingSend?.message&&!resumedTurnId?[...shown,pendingSend.message]:shown;
     };
     // The composer is held only for a send of the thread shown: another thread opened releases it, as a new task does (showNewTask).
