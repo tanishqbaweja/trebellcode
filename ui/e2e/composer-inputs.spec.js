@@ -1269,3 +1269,130 @@ test("a draft of several lines and its attachment chips leave the end of the las
     for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`grown-draft-with-files-reply-end-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });
+
+// The composer is off while a send goes (Sending…), and the browser drops the keyboard it had there, or on Send, on the page: the next
+// message typed went nowhere. Once the send has gone the keyboard is in the composer again, after Enter and after Send, while the reply
+// runs (Queue a follow-up…) and after it, so the next message typed at once lands there. A person typing types at 20 ms a key.
+const typeOn=(page,text)=>page.keyboard.type(text,{delay:20});
+const heldGate=()=>{let open=()=>{};const promise=new Promise(resolve=>{open=resolve});return {promise,open}};
+// The page at 1280 and 900 wide in the mode it is in, with the keyboard left where it is.
+async function shootHere(page,name){
+  const mode=await page.locator("html").getAttribute("data-mode");
+  for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+"x800.png"})}
+  await page.setViewportSize({width:1280,height:800});
+}
+
+test("the keyboard is back in the composer once a send has gone, after Enter and after Send, while the reply runs and after it, so the next message typed lands there",async({page})=>{
+  test.setTimeout(120_000);
+  const slow=heldGate();
+  const harness=await openComposerApp(page,{replies:[{text:"Reply number one."},async()=>{await slow.promise;return {text:"Reply number two, after a slow provider."}},{text:"Reply number three."},{text:"Reply number four."}]});
+  try{
+    const composer=page.getByTestId("composer"),users=page.locator(".user-bubble"),queued=page.locator(".queued-message"),reply=text=>page.getByText(text,{exact:true});
+    const idle="Ask Trebell Code anything…";
+    // Enter (dark): once the message is in and the composer is on again, the next message, typed at once, lands there.
+    await composer.click();await typeOn(page,"First message");await page.keyboard.press("Enter");
+    await expect(users.last()).toContainText("First message");await expect(composer).toBeEnabled();
+    await typeOn(page,"Second message");
+    await expect(composer,"the keyboard after Enter").toBeFocused();await expect(composer).toHaveValue("Second message");
+    await expect(reply("Reply number one.")).toBeVisible({timeout:15_000});await expect(composer).toHaveAttribute("placeholder",idle);
+    await shootHere(page,"keyboard-after-enter");
+    // A slow reply runs: the follow-up typed at once, as the composer asks for it, lands there; Enter queues it, and the keyboard is
+    // still there for the next.
+    await page.keyboard.press("Enter");
+    await expect(composer).toHaveAttribute("placeholder","Queue a follow-up…");
+    await typeOn(page,"A follow-up typed while it runs");
+    await expect(composer,"the keyboard while the reply runs").toBeFocused();await expect(composer).toHaveValue("A follow-up typed while it runs");
+    await shootHere(page,"keyboard-follow-up-while-running");
+    await page.keyboard.press("Enter");
+    await expect(queued).toHaveCount(1);await expect(composer).toBeEnabled();await expect(composer).toHaveValue("");
+    await typeOn(page,"One more");
+    await expect(composer,"the keyboard after a follow-up is queued").toBeFocused();await expect(composer).toHaveValue("One more");
+    await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");
+    // The slow reply ends, and the queued follow-up goes and is answered.
+    slow.open();
+    await expect(reply("Reply number three.")).toBeVisible({timeout:15_000});await expect(composer).toHaveAttribute("placeholder",idle);
+    // Send (light): the click puts the keyboard on Send, which goes off with the composer; it comes back to the composer.
+    await switchMode(page,"light");
+    await composer.click();await typeOn(page,"Fourth message");await page.getByTestId("send").click();
+    await expect(users.last()).toContainText("Fourth message");await expect(composer).toBeEnabled();
+    await typeOn(page,"After the button");
+    await expect(composer,"the keyboard after Send").toBeFocused();await expect(composer).toHaveValue("After the button");
+    await expect(reply("Reply number four.")).toBeVisible({timeout:15_000});
+    await shootHere(page,"keyboard-after-send-button");
+    expect(sentTexts(harness)).toEqual(["Look at the login page","First message","Second message","A follow-up typed while it runs","Fourth message"]);
+  }finally{slow.open();await harness.close()}
+});
+
+test("on Codex the keyboard is back in the composer once a send has gone, after Enter while the turn runs and after Send",async({page})=>{
+  test.setTimeout(90_000);
+  const running=heldGate();
+  const thread={id:"codex-keyboard",name:"Codex keyboard",preview:"Codex keyboard",cwd:process.cwd(),status:{type:"idle"},model:"test/coding-fast",createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000,turns:[]};
+  const answer=(text,wait=null)=>async(turn,{emit,threadId,finish})=>{
+    emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});
+    await wait;
+    const item={id:"agent-"+turn.id,type:"agentMessage",text};turn.items.push(item);emit({method:"item/completed",params:{threadId,turnId:turn.id,item}});finish("completed");
+  };
+  const harness=await startCodexHarness(thread,[answer("Codex reply one.",running.promise),answer("Codex reply two.")]);
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Codex keyboard"]')}),composer=page.getByTestId("composer");
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");
+    // Enter (dark): while Codex runs the turn, the follow-up typed at once lands in the composer.
+    await composer.click();await typeOn(page,"Codex message");await page.keyboard.press("Enter");
+    await expect(composer).toHaveAttribute("placeholder","Queue a follow-up…");
+    await typeOn(page,"A follow-up for Codex");
+    await expect(composer,"the keyboard after Enter on Codex").toBeFocused();await expect(composer).toHaveValue("A follow-up for Codex");
+    await shootHere(page,"codex-keyboard-after-enter");
+    await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");
+    running.open();
+    await expect(page.getByText("Codex reply one.",{exact:true})).toBeVisible({timeout:15_000});await expect(composer).toHaveAttribute("placeholder","Ask Trebell Code anything…");
+    // Send (light): the keyboard comes back from Send to the composer, and the next message lands there.
+    await switchMode(page,"light");
+    await composer.click();await typeOn(page,"Codex by the button");await page.getByTestId("send").click();
+    await expect(page.getByText("Codex reply two.",{exact:true})).toBeVisible({timeout:15_000});
+    await typeOn(page,"Next for Codex");
+    await expect(composer,"the keyboard after Send on Codex").toBeFocused();await expect(composer).toHaveValue("Next for Codex");
+    await shootHere(page,"codex-keyboard-after-send-button");
+    expect(harness.turns.map(turn=>turn.items[0].content[0].text)).toEqual(["Codex message","Codex by the button"]);
+  }finally{running.open();await harness.close()}
+});
+
+// The keyboard comes back only to a page that has no other place for it: a field clicked, or the palette opened with its key, while the
+// send goes keeps it, and what is typed on goes there.
+test("a field clicked or the palette opened while a send goes keeps the keyboard once the send has gone",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Reply number one."},{text:"Reply number two."}]});
+  // The send waits on its repository context while hold is a gate not yet opened.
+  let hold=null;await page.route(/\/api\/context\/packet$/,async route=>{await hold?.promise;await route.fallback()});
+  try{
+    const composer=page.getByTestId("composer"),search=page.getByRole("textbox",{name:"Search threads"}),palette=page.getByTestId("command-palette");
+    // The sidebar's search, clicked while the composer says Sending… (dark).
+    hold=heldGate();
+    await composer.click();await typeOn(page,"First message");await page.keyboard.press("Enter");
+    await expect(composer).toHaveAttribute("placeholder","Sending…");
+    await search.click();await typeOn(page,"Compo");
+    hold.open();
+    await expect(page.getByText("Reply number one.",{exact:true})).toBeVisible({timeout:15_000});await expect(composer).toBeEnabled();
+    await typeOn(page,"ser");
+    await expect(search,"the field clicked while the send went").toBeFocused();await expect(search).toHaveValue("Composer");await expect(composer).toHaveValue("");
+    await shootHere(page,"keyboard-field-clicked-during-send");
+    await page.keyboard.press("Escape");await expect(search).toHaveValue("");
+    // The palette, opened with Ctrl+K while the composer says Sending… (light).
+    await switchMode(page,"light");
+    hold=heldGate();
+    await composer.click();await typeOn(page,"Second message");await page.keyboard.press("Enter");
+    await expect(composer).toHaveAttribute("placeholder","Sending…");
+    await page.keyboard.press("Control+K");await expect(palette).toBeVisible();
+    hold.open();
+    await expect(page.getByText("Reply number two.",{exact:true})).toBeVisible({timeout:15_000});await expect(composer).toBeEnabled();
+    await typeOn(page,"usage");
+    const query=palette.getByRole("textbox");
+    await expect(query,"the palette opened while the send went").toBeFocused();await expect(query).toHaveValue("usage");await expect(composer).toHaveValue("");
+    await shootHere(page,"keyboard-palette-opened-during-send");
+    await page.keyboard.press("Escape");await expect(palette).toBeHidden();
+    expect(sentTexts(harness)).toEqual(["Look at the login page","First message","Second message"]);
+  }finally{hold?.open();await harness.close()}
+});

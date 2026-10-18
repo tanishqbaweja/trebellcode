@@ -725,6 +725,15 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const composerRef=useRef(null),slashMenuRef=useRef(null),mentionMenuRef=useRef(null),modelMenuRef=useRef(null),modelButtonRef=useRef(null),wrapRef=useRef(null);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
   useLayoutEffect(()=>{resizeTextarea(composerRef.current,{min:40,max:160})},[prompt]);
+  // A send turns the composer off until it has gone, and the browser drops the keyboard it had there (or on Send) on the page: it comes
+  // back to the composer once that is on again, unless the person put it elsewhere meanwhile (a click outside the composer, another
+  // field, a shortcut). sentFromRef: what had the keyboard when the draft was sent.
+  const composerOff=!providerReady||submitting||openingThread,sentFromRef=useRef(null);
+  useEffect(()=>{const away=event=>{if(!wrapRef.current?.contains(event.target))sentFromRef.current=null};window.addEventListener("pointerdown",away,true);return()=>window.removeEventListener("pointerdown",away,true)},[]);
+  useLayoutEffect(()=>{
+    const from=sentFromRef.current,active=document.activeElement;if(composerOff||!from)return;sentFromRef.current=null;
+    if(!active||active===document.body||active===from)composerRef.current?.focus();
+  },[composerOff]);
   // The composer's height, on the workspace (--composer-height), ends the thread above it (shell.css) as a draft of several lines, a
   // second row of controls or context chips grow it. It lands a frame after the composer resizes, so the thread's own resize observer,
   // which keeps a thread at its end there, sees its view resize in a frame of its own.
@@ -819,7 +828,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     requestAnimationFrame(()=>{const node=composerRef.current;if(!node)return;node.focus();const end=node.value.length;node.setSelectionRange(end,end);setCaret(end)});
   }
   // The note about dictation goes once the draft is sent, and how the send went shows in its place.
-  function sendDraft(send){setDictationAlert(null);send?.(prompt)}
+  function sendDraft(send){setDictationAlert(null);sentFromRef.current=document.activeElement||document.body;send?.(prompt)}
   function keyDown(e){
     // A held Enter acts once: only its press completes a command, picks a file or sends, so its repeats do not send what the press
     // completed, or the message only begun with the file it picked.
@@ -986,7 +995,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef}>{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={[[chip.label,chip.detail].filter(Boolean).join(" · "),chip.path].filter(Boolean).join("\n")}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveContext(chip.path))} title="Remove context"><X size={10}/></button></span>)}</div>}
     <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/>{attachmentDisplayName(path)}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveAttachment(path))} title={"Remove "+attachmentDisplayName(path)}><X size={10}/></button></span>)}{uploadingFiles.map(file=><span key={file.id} className="uploading" aria-busy="true" title={"Uploading "+file.name+"…"}><LoaderCircle size={11} aria-hidden="true"/><bdi>{file.name}</bdi><small>Uploading…</small></span>)}</div>
-    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setDictationAlert(null);setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={composerPlaceholder} disabled={!providerReady||submitting||openingThread}/>
+    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setDictationAlert(null);setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={composerPlaceholder} disabled={composerOff}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
