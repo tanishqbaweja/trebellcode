@@ -150,22 +150,47 @@ for(const action of ["Delete","Archive"]){
 // does, an interrupt for a turn not started yet is refused ("no active turn to interrupt"). interruptDelayMs holds the interrupt's
 // answer (Codex answers once the turn has stopped), interruptError refuses every interrupt with that message, the turn going on,
 // compactError fails thread/compact/start with that message, holdTurns keeps a turn running after its reply until it is set
-// false, and steerHold, a gate, holds turn/steer's answer until it opens. project makes the thread a project thread, whose
-// follow-ups wait in Trebell's own queue (Codex's queue, codex.queue, holds only General chats'); settings adds to the app's settings.
+// false, steerHold, a gate, holds turn/steer's answer until it opens, and drainQueue has Codex start the first follow-up of its
+// queue as a turn completes, as Codex does. project makes the thread a project thread, whose follow-ups wait in Trebell's own
+// queue (Codex's queue, codex.queue, holds only General chats'); settings adds to the app's settings.
 // names: several threads, the first opened. Each turn is its thread's; turn.fail refuses its turn/start, and a thread with a started
 // turn still running resumes active, with its turns. modes: the collaboration modes Codex lists. capabilities: the runtime's
 // capabilities, when they are not Codex's own. catalog: the app's state lists the threads' meta as the server does, as a catalog
 // whose full entries (the follow-ups queued among them) a thread reads as it opens, so a reload finds what the window saved.
-// codex.calls: the methods the app asked for, in order.
+// codex.calls: the methods the app asked for, in order; codex.sent(method): the params of each request for that method.
 async function startCodex(page,{name,names=[name],project=false,settings={},modes=[],capabilities=null,catalog=false}){
   const cwd=project?await mkdtemp(join(tmpdir(),"turn-controls-codex-")):process.cwd(),now=Date.now()/1000;
   const threads=names.map((threadName,index)=>({id:"codex-stop-thread"+(index?"-"+(index+1):""),name:threadName,preview:threadName,cwd,createdAt:now-60+index,updatedAt:now-index,status:{type:"idle"},turns:[]})),[thread]=threads;
-  const codex={thread,threads,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null,queue:[],calls:[]};
+  const codex={thread,threads,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null,queue:[],calls:[],requests:[]};
+  codex.sent=method=>codex.requests.filter(message=>message.method===method).map(message=>message.params||{});
   const live=item=>{const turns=codex.turns.filter(turn=>turn.threadId===item.id&&turn.status!=="refused");return {...item,status:turns.some(turn=>turn.started&&turn.status==="inProgress")?{type:"active",activeFlags:[]}:{type:"idle"},turns:turns.map(turn=>({id:turn.id,status:turn.status,items:[]}))}};
   const upstream=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
   upstream.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   const notify=(method,params)=>{if(codex.socket?.readyState===1)codex.socket.send(JSON.stringify({method,params}))};
-  const end=(turn,status)=>{turn.status=status;clearTimeout(turn.timer);notify("turn/completed",{threadId:turn.threadId,turn:{id:turn.id,status,items:[]}})};
+  const end=(turn,status)=>{turn.status=status;clearTimeout(turn.timer);notify("turn/completed",{threadId:turn.threadId,turn:{id:turn.id,status,items:[]}});if(status==="completed"&&codex.drainQueue)startQueued(turn.threadId)};
+  // A turn Codex starts streams its reply and completes, unless it has ended already. ask: the message of a follow-up its queue
+  // starts, which Codex sends as the turn's first item.
+  const run=(turn,ask=null)=>{
+    turn.started=true;notify("turn/started",{threadId:turn.threadId,turn:{id:turn.id,status:"inProgress",items:[]}});
+    if(ask)notify("item/completed",{threadId:turn.threadId,turnId:turn.id,item:ask});
+    if(turn.status!=="inProgress")return end(turn,turn.status);
+    const itemId="reply-"+turn.id,words="One two three four five six seven eight nine ten. Counting is done.".split(/(?<= )/);let index=0;
+    notify("item/started",{threadId:turn.threadId,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:""}});
+    const tick=()=>{
+      if(turn.status!=="inProgress")return;
+      if(index<words.length){notify("item/agentMessage/delta",{threadId:turn.threadId,turnId:turn.id,itemId,delta:words[index++]});turn.timer=setTimeout(tick,60);return}
+      if(codex.holdTurns){turn.timer=setTimeout(tick,60);return}
+      notify("item/completed",{threadId:turn.threadId,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:words.join("")}});end(turn,"completed");
+    };
+    turn.timer=setTimeout(tick,60);
+  };
+  // drainQueue: the thread's first follow-up leaves Codex's queue and runs as a turn of its own.
+  const startQueued=threadId=>{
+    const item=codex.queue.find(entry=>entry.threadId===threadId);if(!item)return;
+    codex.queue=codex.queue.filter(entry=>entry!==item);notify("thread/queue/changed",{threadId});
+    const turn={id:"codex-turn-"+(codex.turns.length+1),threadId,status:"inProgress",started:false,timer:null};codex.turns.push(turn);
+    run(turn,{id:"ask-"+turn.id,type:"userMessage",clientId:item.clientUserMessageId,content:item.input});
+  };
   // Codex closes a thread's session once no window follows it, and says so.
   codex.closeThread=threadId=>notify("thread/closed",{threadId});
   // Any other notification, as Codex sends it.
@@ -173,25 +198,13 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
   wss.on("connection",ws=>{
     sockets.add(ws);codex.socket=ws;ws.on("close",()=>sockets.delete(ws));
     ws.on("message",raw=>{
-      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;codex.calls.push(message.method);
+      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;codex.calls.push(message.method);codex.requests.push(message);
       const params=message.params||{},respond=result=>{if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,result}))};
       if(message.method==="turn/start"){
         const turn={id:"codex-turn-"+(codex.turns.length+1),threadId:params.threadId||thread.id,status:"inProgress",started:false,timer:null};codex.turns.push(turn);
         turn.answer=()=>respond({turn:{id:turn.id,status:"inProgress",items:[],startedAt:turn.started?Math.floor(Date.now()/1000):null}});
         turn.fail=text=>{turn.status="refused";if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:text}}))};
-        turn.start=()=>{
-          turn.started=true;notify("turn/started",{threadId:turn.threadId,turn:{id:turn.id,status:"inProgress",items:[]}});
-          if(turn.status!=="inProgress")return end(turn,turn.status);
-          const itemId="reply-"+turn.id,words="One two three four five six seven eight nine ten. Counting is done.".split(/(?<= )/);let index=0;
-          notify("item/started",{threadId:turn.threadId,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:""}});
-          const tick=()=>{
-            if(turn.status!=="inProgress")return;
-            if(index<words.length){notify("item/agentMessage/delta",{threadId:turn.threadId,turnId:turn.id,itemId,delta:words[index++]});turn.timer=setTimeout(tick,60);return}
-            if(codex.holdTurns){turn.timer=setTimeout(tick,60);return}
-            notify("item/completed",{threadId:turn.threadId,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:words.join("")}});end(turn,"completed");
-          };
-          turn.timer=setTimeout(tick,60);
-        };
+        turn.start=()=>run(turn);
         return;
       }
       if(message.method==="thread/compact/start"&&codex.compactError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.compactError}}));return}
@@ -651,6 +664,56 @@ test("a follow-up on its way says it is being sent, with Send now, Edit and Remo
     expect(codex.turns).toHaveLength(4);expect(codex.calls.filter(method=>method==="turn/steer")).toHaveLength(1);
   }finally{await codex.close()}
 });
+
+// A screenshot as a person pastes it: a PNG drawn in the page, handed over in the paste event's files.
+const pasteImage=(page,name)=>composer(page).evaluate(async(node,name)=>{
+  const canvas=document.createElement("canvas");canvas.width=64;canvas.height=40;const pen=canvas.getContext("2d");pen.fillStyle="#3b82f6";pen.fillRect(0,0,64,40);
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/png")),data=new DataTransfer();data.items.add(new File([blob],name,{type:"image/png"}));
+  node.dispatchEvent(new ClipboardEvent("paste",{clipboardData:data,bubbles:true,cancelable:true}));
+},name);
+// The files a request asks Codex to read, as codexTurnInput names them: a line after the text with the file's path, and an image
+// item for an image.
+const sentFiles=params=>{const input=params?.input||[];return [...String(input[0]?.text||"").matchAll(/\[Attached (image|file) "([^"]+)" is saved at: ([^\n]+)\]/g)].map(([,kind,name,path])=>kind+" "+name+(input.some(part=>part.type==="localImage"&&part.path===path)?" with its image item":"")+(path.endsWith(name)?"":" at "+path))};
+
+// A follow-up's files go with it, as those of a message sent at once do: the one Send now steers into the running turn and the one
+// the queue starts when the turn ends each name their files under their message, and Codex is asked with them, in Trebell's queue
+// (a project thread's) as in Codex's (a General chat's, whose follow-ups Codex starts itself). One goes with a pasted screenshot,
+// the other with a picked file.
+for(const kind of ["Trebell","Codex"]){
+  test(`a follow-up's files go to Codex with it and show under its message, sent now into the running turn or started from ${kind}'s queue when the turn ends`,async({page})=>{
+    test.setTimeout(90_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Follow-ups with files",project:kind==="Trebell"});
+    const queue=page.locator(".queued-message p"),chips=page.locator(".attachment-shelf > span"),files=text=>page.locator(".user-bubble").filter({hasText:text}).locator(".user-attachments > span");
+    const pickFile=async(name,text)=>{const [chooser]=await Promise.all([page.waitForEvent("filechooser"),page.getByRole("button",{name:"Attach files",exact:true}).click()]);await chooser.setFiles([{name,mimeType:"text/plain",buffer:Buffer.from(text)}])};
+    const askedFor=(method,text)=>codex.sent(method).find(params=>String(params.input?.[0]?.text||"").startsWith(text));
+    try{
+      codex.holdTurns=true;codex.drainQueue=true;
+      await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+      await expect(stop(page)).toBeVisible();
+      // alpha is queued with a pasted screenshot and beta with a picked file, each file leaving the composer with its follow-up.
+      await typeInComposer(page,"Queued alpha with a screenshot");await pasteImage(page,"screenshot.png");await expect(chips).toHaveText(["screenshot.png"]);
+      await page.keyboard.press("Enter");await expect(queue).toHaveText(["Queued alpha with a screenshot"]);await expect(chips).toHaveCount(0);
+      await typeInComposer(page,"Queued beta with notes");await pickFile("notes.txt","Notes the follow-up takes along.");await expect(chips).toHaveText(["notes.txt"]);
+      await composer(page).click();await page.keyboard.press("Enter");
+      await expect(queue).toHaveText(["Queued alpha with a screenshot","Queued beta with notes"]);await expect(chips).toHaveCount(0);
+      // Send now steers alpha into the running turn, its screenshot with it.
+      await page.locator(".queued-message").filter({hasText:"Queued alpha"}).getByRole("button",{name:"Send now"}).click();
+      await expect(files("Queued alpha"),"the message Send now steered in names its file").toHaveText(["screenshot.png"]);
+      await expect(queue).toHaveText(["Queued beta with notes"]);
+      expect(codex.sent("turn/steer").map(sentFiles),"what the steer asked Codex").toEqual([["image screenshot.png with its image item"]]);
+      // The turn ends and the queue starts beta, its file with it: Trebell's queue in a turn/start, Codex's with what it was given
+      // when beta was queued.
+      codex.holdTurns=false;
+      await expect.poll(()=>codex.turns.length,{timeout:15_000}).toBe(2);if(kind==="Trebell"){codex.turns[1].answer();codex.turns[1].start()}
+      await expect(files("Queued beta"),"the message the queue started names its file").toHaveText(["notes.txt"]);
+      expect(sentFiles(askedFor(kind==="Trebell"?"turn/start":"thread/queue/add","Queued beta")),"what Codex was asked for the follow-up the queue started").toEqual(["file notes.txt"]);
+      await expect(page.locator(".queued-message")).toHaveCount(0);await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+      await expect(files("Queued alpha")).toHaveText(["screenshot.png"]);await expect(files("Main task")).toHaveCount(0);
+      await page.locator(".user-bubble").filter({hasText:"Queued alpha"}).scrollIntoViewIfNeeded();await shoot(page,"follow-up-files-"+kind.toLowerCase()+"-queue");
+    }finally{await codex.close()}
+  });
+}
 
 // A Compact the harness refuses ends the one compaction row as failed; nothing is left saying it still compacts.
 test("a Compact that fails ends its row as failed, with no compaction left running",async({page})=>{
