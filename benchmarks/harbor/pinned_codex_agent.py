@@ -13,6 +13,7 @@ from harbor.agents.options import Cli
 from harbor.environments.base import BaseEnvironment
 
 from .agent_timeout_stop import stop_agent_tree
+from .ca_bundle import ensure_ca_bundle
 
 
 def _lowercase_bool(value):
@@ -126,6 +127,8 @@ class PinnedCodexAgent(Codex):
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
+        # The pinned binary reads the system CA store, so an image without one could not reach the API (ca_bundle.py).
+        await ensure_ca_bundle(self, environment)
         archive_value = os.environ.get("TREBELL_CODEX_PINNED_TARBALL", "").strip()
         if not archive_value:
             raise ValueError(

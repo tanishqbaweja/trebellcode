@@ -18,6 +18,7 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext, ModelUsage
 
 from .agent_timeout_stop import stop_agent_tree
+from .ca_bundle import ensure_ca_bundle
 
 
 class TrebellNativeOptions(InstalledAgentOptions):
@@ -101,6 +102,8 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 f"Missing Trebell Native Harbor bundle: {bundle}. "
                 "Run npm run bench:terminal:bundle first."
             )
+        # The same container as the Codex lanes (ca_bundle.py): an image without a CA store gets the Mozilla one.
+        await ensure_ca_bundle(self, environment)
         # Harbor already mounts /logs/agent for each trial. Recreating the
         # mount point is unnecessary and can fail on Docker Desktop/Windows.
         await self.exec_as_root(environment, command="mkdir -p /installed-agent")

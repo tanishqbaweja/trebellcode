@@ -67,7 +67,8 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/nativeBundleSha256/);
   assert.match(source,/nativeAdapterSha256/);
   assert.ok(source.includes('agentTimeoutStopSha256=await sha256File(join(root,"benchmarks","harbor","agent_timeout_stop.py"))'));
-  assert.match(source,/nativeAdapterSha256,agentTimeoutStopSha256,/);
+  assert.ok(source.includes('caBundleSha256=await sha256File(join(root,"benchmarks","harbor","ca_bundle.py"))'));
+  assert.ok(source.includes("nativeAdapterSha256,agentTimeoutStopSha256,caBundleSha256,"));
   assert.match(source,/NATIVE_PINNED_NODE_VERSION="22\.23\.3"/);
   assert.match(source,/1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af/);
   assert.match(source,/ensurePinnedNodeTarball/);
@@ -806,6 +807,20 @@ test("Both Harbor adapters stop their agent, and everything still under it, when
   assert.ok(stop.indexOf("kill -STOP")>0&&stop.indexOf("kill -STOP")<stop.indexOf("kill -KILL"),"freeze the tree before killing it, so nothing under it starts another process");
   assert.ok(squeeze(stop).includes("agent.exec_as_root(environment, command=stop_tree_script(marker)), timeout=60"));
   assert.ok(stop.includes("except Exception as error:"),"a failed stop never replaces Harbor's timeout");
+});
+
+test("Both Harbor adapters give a task image without a CA store the same Mozilla bundle before the agent starts",async()=>{
+  const read=name=>readFile(new URL(`../benchmarks/harbor/${name}`,import.meta.url),"utf8");
+  const [native,codex,ca]=await Promise.all([read("trebell_native_agent.py"),read("pinned_codex_agent.py"),read("ca_bundle.py")]);
+  for(const [name,adapter] of [["native",native],["codex",codex]]){
+    assert.ok(adapter.includes("from .ca_bundle import ensure_ca_bundle"),`${name} imports the shared step`);
+    const install=adapter.slice(adapter.indexOf("async def install("));
+    assert.ok(install.indexOf("await ensure_ca_bundle(self, environment)")>0&&install.indexOf("await ensure_ca_bundle(self, environment)")<install.indexOf("await self.exec_as_root("),`${name} runs it first in install`);
+  }
+  assert.ok(ca.includes('BUNDLE_PATH = "/etc/ssl/certs/ca-certificates.crt"'));
+  assert.ok(ca.includes("/etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem"),"an image with any of the usual stores is left alone");
+  assert.ok(ca.includes('if "missing" not in str(result.stdout or ""):\n        return'),"nothing changes where a store exists");
+  assert.ok(ca.includes("source = Path(certifi.where())"),"the bundle is certifi's, from Harbor's own Python");
 });
 
 test("Trebell Native Harbor adapter skips package-manager setup when curl already exists",async()=>{
