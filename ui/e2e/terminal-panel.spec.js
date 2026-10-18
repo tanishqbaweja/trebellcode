@@ -226,16 +226,33 @@ test("a screen scrolled up stays where it is while output streams, and follows t
 
 // A screen at its end follows a running program through any resize of the window or the drawer. A narrower window re-wraps its long
 // lines, and the browser's scroll anchoring then moved the screen, which took that for the person scrolling up: it stopped short of
-// its end with its last line cut, and the program's later lines printed below the view until the person scrolled. A screen the
-// person scrolled up in stays scrolled up through a resize.
-test("a screen at its end follows a running program's later lines while the window narrows or widens and the right panel opens or closes, and one scrolled up stays scrolled up",async({page,request})=>{
-  test.setTimeout(240_000);
+// its end with its last line cut, and the program's later lines printed below the view until the person scrolled. A resize made a
+// little each frame, as a person drags the window's edge or the sidebar animates open, did the same without the anchoring: the
+// scroll that the screen's own move to its end sent came once the next step had re-wrapped its lines taller, so it found the screen
+// short of its end. A screen the person scrolled up in stays scrolled up through a resize, made at once or a little each frame.
+test("a screen at its end follows a running program's later lines while the window narrows or widens, at once or a little each frame, and the right panel or the sidebar opens or closes, and one scrolled up stays scrolled up",async({page,request})=>{
+  test.setTimeout(300_000);
   const shell=await realTerminals(page);
   try{
     await page.setViewportSize({width:1280,height:800});
-    const {screen,input}=await openTerminal(page,request);
+    const {drawer,screen,input}=await openTerminal(page,request);
     const fromBottom=()=>screen.evaluate(node=>Math.round(node.scrollHeight-node.clientHeight-node.scrollTop));
     const top=()=>screen.evaluate(node=>Math.round(node.scrollTop));
+    // How far the screen ends short of its end once it has come to rest (a frame or two after the last line printed).
+    const restingGap=async()=>{let gap=await fromBottom();for(let turn=0;turn<20&&gap>2;turn++){await page.waitForTimeout(100);gap=await fromBottom()}return gap};
+    // The drawer's edge dragged px further in each frame for steps frames (back out for a negative px), as a person drags the
+    // window's edge: each move is made between two frames, after one frame's drawing and before the next one's.
+    const drag=(px,steps=30)=>page.evaluate(({px,steps})=>new Promise(resolve=>{
+      const node=document.querySelector("[data-testid='drawer']"),from=parseFloat(node.style.right)||0;let step=0;
+      const move=()=>requestAnimationFrame(()=>setTimeout(()=>{node.style.right=Math.max(0,from+px*++step)+"px";if(step<steps)move();else requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))},0));
+      move();
+    }),{px,steps});
+    // The person turns the wheel up until the newest lines are well below the view, and the view comes to rest.
+    const scrollUp=async()=>{
+      await screen.hover();
+      for(let turn=0;turn<10&&await fromBottom()<=600;turn++)await page.mouse.wheel(0,-400);
+      await expect.poll(async()=>{const before=await top();await page.waitForTimeout(250);return await top()-before},{message:"the view comes to rest"}).toBe(0);
+    };
     // Whether the printed text shows whole inside the screen (its last time printed).
     const whole=text=>screen.evaluate((node,text)=>{
       const view=node.getBoundingClientRect(),walker=document.createTreeWalker(node,NodeFilter.SHOW_TEXT);let box=null;
@@ -252,34 +269,56 @@ test("a screen at its end follows a running program's later lines while the wind
       await expect(screen).toHaveText(PROMPT);
     };
     await input.click();
-    // Lines long enough to wrap once the window is narrower, as prompts with a long path do (ConPTY pads the rows it redraws).
-    await run(page,"for /L %i in (1,1,300) do @echo wide line %i "+"x".repeat(100));
+    // Lines of many lengths up to 119 characters (the terminal is 120 wide), as prompts with a long path are: a narrower window
+    // re-wraps some of them at any width, so each step of a resize made a little each frame makes the screen taller (ConPTY pads
+    // the rows it redraws).
+    await run(page,"node -e \"for(let i=1;i<=300;i++)console.log('wide line '+String(i).padStart(3,'0')+' '+'x'.repeat(42+(i*13&63)))\"");
     await expect(screen).toContainText(/^wide line 300 x+ *$/m,{timeout:30_000});
     await expect(screen).toHaveText(PROMPT);
     const panelToggle=page.getByTestId("right-panel-toggle").first(),panel=page.getByTestId("right-panel");
-    for(const [tag,resize] of [
+    // The sidebar opens as Settings' panel animations draw it at 300 ms (App sets this property from the setting): the main
+    // column narrows a little each frame, by the 196px the sidebar takes at 900 wide.
+    const openSidebarAnimated=async()=>{
+      await page.evaluate(()=>document.documentElement.style.setProperty("--panel-animation-ms","300ms"));
+      await page.getByRole("button",{name:"Open sidebar",exact:true}).first().click();
+      await expect.poll(()=>drawer.evaluate(node=>Math.round(node.getBoundingClientRect().width)),{message:"the sidebar has opened"}).toBe(704);
+      await page.evaluate(()=>document.documentElement.style.setProperty("--panel-animation-ms","0ms"));
+    };
+    for(const [tag,resize,before] of [
       ["narrowed-to-900",()=>page.setViewportSize({width:900,height:800})],
       ["narrowed-to-700",()=>page.setViewportSize({width:700,height:800})],
       ["widened-to-900",()=>page.setViewportSize({width:900,height:800})],
       ["widened-to-1280",()=>page.setViewportSize({width:1280,height:800})],
       ["panel-opened",async()=>{await panelToggle.click();await expect(panel).toBeVisible()}],
       ["panel-closed",async()=>{await panelToggle.click();await expect(panel).toHaveCount(0)}],
+      ["dragged-narrower",()=>drag(12)],
+      ["dragged-wider",()=>drag(-12)],
+      ["sidebar-opened",openSidebarAnimated,async()=>{
+        await page.setViewportSize({width:900,height:800});
+        await page.getByRole("button",{name:"Collapse sidebar",exact:true}).click();
+        await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
+        await expect.poll(()=>drawer.evaluate(node=>Math.round(node.getBoundingClientRect().width))).toBe(900);
+      }],
     ]){
+      await before?.();
       await lateLines(tag,resize);
-      await expect.poll(fromBottom,{message:tag+": the screen stays at its end"}).toBeLessThanOrEqual(2);
-      expect(await whole(tag+" 20"),tag+": the program's last line shows whole").toBe(true);
+      // Each step is checked on its own (a screen that stopped following follows again once the next command is typed).
+      const gap=await restingGap();console.log(tag+": the screen ends "+gap+" px short of its end");
+      expect.soft(gap,tag+": the screen stays at its end").toBeLessThanOrEqual(2);
+      expect.soft(await whole(tag+" 20"),tag+": the program's last line shows whole").toBe(true);
       if(tag==="narrowed-to-900")await shots(page,"terminal-follows-after-narrowing",[900]);
+      if(tag==="dragged-narrower")await page.screenshot({animations:"disabled",path:auditDir+"terminal-follows-after-dragging-dark-1280.png"});
     }
-    // Scrolled up by the person while a program waits to print, the screen stays where it is as the window narrows, and the
-    // program's lines print below the view.
-    await lateLines("scrolled-up",async()=>{
-      await screen.hover();
-      for(let turn=0;turn<10&&await fromBottom()<=600;turn++)await page.mouse.wheel(0,-400);
-      await expect.poll(async()=>{const before=await top();await page.waitForTimeout(250);return await top()-before},{message:"the view comes to rest"}).toBe(0);
-      await page.setViewportSize({width:900,height:800});
-    },4000);
-    expect(await fromBottom(),"the screen stays scrolled up").toBeGreaterThan(600);
-    expect(await whole("scrolled-up 20"),"the program's lines print below the view").toBe(false);
+    await shots(page,"terminal-follows-after-sidebar-opened",[900]);
+    // Scrolled up by the person while a program waits to print, the screen stays where it is as the drawer's edge is dragged in
+    // or the window narrows at once, and the program's lines print below the view.
+    for(const [tag,resize] of [["scrolled-up-dragged",()=>drag(12,20)],["scrolled-up",()=>page.setViewportSize({width:900,height:800})]]){
+      await page.setViewportSize({width:1280,height:800});await drawer.evaluate(node=>{node.style.right=""});
+      await lateLines(tag,async()=>{await scrollUp();await resize()},4000);
+      const away=await fromBottom();console.log(tag+": the screen stays "+away+" px above its end");
+      expect.soft(away,tag+": the screen stays scrolled up").toBeGreaterThan(600);
+      expect.soft(await whole(tag+" 20"),tag+": the program's lines print below the view").toBe(false);
+    }
     await shots(page,"terminal-scrolled-up-through-narrowing",[900]);
   }finally{await shell.close()}
 });

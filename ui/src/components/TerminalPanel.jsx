@@ -11,6 +11,19 @@ const nextTerminalName=(taken)=>{
   let number=1;while(used.has("Terminal "+number))number+=1;
   return "Terminal "+number;
 };
+// A screen that follows its output (data-stick) is moved to its end here, and the top it was left at is kept (data-pinned): the
+// scroll this sends can come once its lines have re-wrapped taller (the next step of a window edge dragged, or of a panel that
+// animates open, is laid out by then), and finds it short of its end.
+const pinToEnd=node=>{node.scrollTop=node.scrollHeight;node.dataset.pinned=node.scrollTop};
+// At its end a screen follows its output. Short of its end it stops following only when its top is above where it was last at its
+// end: the person scrolled up. Otherwise its lines re-wrapped taller under it (a following screen has no scroll anchor, so its top
+// stays put), and it is moved to its end again.
+function screenScrolled(event){
+  const node=event.currentTarget;
+  if(node.scrollTop+node.clientHeight>=node.scrollHeight-8){node.dataset.stick="true";node.dataset.pinned=node.scrollTop}
+  else if(node.dataset.stick!=="false"&&node.scrollTop>=node.dataset.pinned-1)pinToEnd(node);
+  else node.dataset.stick="false";
+}
 
 export default function TerminalPanel({projectPath,environmentId=null,environmentName="Local machine",onAttachExcerpt}){
   const [sessions,setSessions]=useState([]);
@@ -114,14 +127,15 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   // shows the output that has arrived (typing redraws too), so each one moves a following screen to its end before a scroll
   // event can find it short of the end and take it for the person scrolling up.
   useLayoutEffect(()=>{
-    for(const id of paneIds){const node=outputRefs.current.get(id);if(node&&node.dataset.stick!=="false")node.scrollTo({top:node.scrollHeight})}
+    for(const id of paneIds){const node=outputRefs.current.get(id);if(node&&node.dataset.stick!=="false")pinToEnd(node)}
   });
   // A screen that shows the latest output keeps showing it when the drawer or a split makes it shorter (it used to stay at
-  // the top and hide the prompt), or the window or the right panel re-wraps its lines; one the user scrolled up in stays where
-  // it is. Such a screen has no scroll anchor (inspector.css), whose move as its lines re-wrapped it took for the person scrolling.
+  // the top and hide the prompt), or the window, a panel or the sidebar re-wraps its lines, at once or a little each frame; one
+  // the user scrolled up in stays where it is. Such a screen has no scroll anchor (inspector.css), whose move as its lines
+  // re-wrapped it took for the person scrolling, and its scroll events tell the person's scroll from a re-wrap (screenScrolled).
   useEffect(()=>{
     if(typeof ResizeObserver==="undefined")return;
-    const observer=new ResizeObserver(entries=>{for(const entry of entries)if(entry.target.dataset.stick!=="false")entry.target.scrollTop=entry.target.scrollHeight});
+    const observer=new ResizeObserver(entries=>{for(const entry of entries)if(entry.target.dataset.stick!=="false")pinToEnd(entry.target)});
     for(const id of paneIds){const node=outputRefs.current.get(id);if(node)observer.observe(node)}
     return()=>observer.disconnect();
   },[paneIds.join("|")]);
@@ -196,7 +210,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     if(socket?.readyState!==WebSocket.OPEN){setError(RECONNECTING);return false}
     setError("");socket.send(JSON.stringify({type:"input",data}));
     // What the person sends takes its screen back to the latest output, as typing in a terminal does, so the answer shows.
-    const node=outputRefs.current.get(id);if(node){node.dataset.stick="true";node.scrollTo({top:node.scrollHeight})}
+    const node=outputRefs.current.get(id);if(node){node.dataset.stick="true";pinToEnd(node)}
     return true;
   }
   // An empty line is sent too: its Enter is what ends a Python block or takes the default a prompt offers.
@@ -274,7 +288,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
       {!paneSessions.length?<div className="terminal-empty"><SquareTerminal size={30}/><strong>No terminal session</strong><button onClick={create} data-busy={creating||undefined}>Create terminal</button></div>:<div className={"terminal-panes "+(paneSessions.length>1?"split "+splitDirection:"")} style={paneStyle}>
       {paneSessions.map(session=><section key={session.id} className={"terminal-pane"+(session.id===activeId?" active":"")} onMouseDown={()=>session.id!==activeId&&setActiveId(session.id)}>
         <div className="terminal-pane-head"><span><SquareTerminal size={11}/>{session.name||"Terminal"}</span>{paneSessions.length>1&&<button onClick={()=>close(session.id)} aria-label={"Close "+(session.name||"terminal")}><X size={10}/></button>}</div>
-        <pre ref={node=>node?outputRefs.current.set(session.id,node):outputRefs.current.delete(session.id)} className="terminal-screen" onScroll={event=>{const node=event.currentTarget;node.dataset.stick=String(node.scrollTop+node.clientHeight>=node.scrollHeight-8)}}>{screenContent(session.id)}</pre>
+        <pre ref={node=>node?outputRefs.current.set(session.id,node):outputRefs.current.delete(session.id)} className="terminal-screen" onScroll={screenScrolled}>{screenContent(session.id)}</pre>
         <form className="terminal-command-line" onSubmit={event=>send(session.id,event)}><span>$</span><input ref={node=>node?inputRefs.current.set(session.id,node):inputRefs.current.delete(session.id)} value={lines[session.id]||""} onChange={event=>setLines(previous=>({...previous,[session.id]:event.target.value}))} onPaste={event=>paste(session.id,event)} placeholder={session.running?"Type a command…":"Stopped terminal history"} disabled={!session.running}/><button type="button" onClick={()=>ctrlC(session.id)} disabled={!session.running}>Ctrl+C</button><button disabled={!session.running}>Send</button></form>
         <div className="terminal-foot"><span>{session.restored?"Restored history · ":""}{session.environmentName||environmentName} · {session.cwd||projectPath||"Home"}</span><button onClick={()=>attachRecent(session)} disabled={attachBusy===session.id} title="Attach recent output to the composer"><Paperclip size={12}/> {attachBusy===session.id?"Attaching…":"Attach recent output"}</button></div>
       </section>)}
