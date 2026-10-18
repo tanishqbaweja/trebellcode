@@ -249,9 +249,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
         catch(e){if(!textRequests.finish(text)){ownsBusy=false;return}setError(actionErrorUnlessNamed("Could not generate the pull request text",e,NAMES_GIT_TEXT),"writer");return}
         if(!textRequests.finish(text)){ownsBusy=false;return}
       }
-      const title=await askText("PR title",suggested.title||commitMessage||"Trebell Code changes");if(!title)return;
+      const title=(await askText("PR title",suggested.title||commitMessage||"Trebell Code changes"))?.trim();if(!title)return;
       const body=await askText("PR description",suggested.body||"",{multiline:true});if(body==null)return;
-      const d=await api("/api/source-control/pr",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,title:title.trim(),body})});
+      const d=await api("/api/source-control/pr",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,title,body})});
       const issues=[];
       if(d.url){
         if(threadId)try{await onLinkPrUrl?.(d.url,"created")}catch(error){issues.push("it could not be linked to this thread: "+(error.message||String(error))+".")}
@@ -415,7 +415,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     const localName=String(info?.root||projectPath).split(/[\\/]/).filter(Boolean).pop()||"repository";
     const labels={gitlab:"Repository path (group/project or project)",forgejo:"Repository path (owner/repository or repository)",bitbucket:"Repository path (workspace/repository)","azure-devops":"Repository path (project/repository)"};
     const defaults={bitbucket:"workspace/"+localName,"azure-devops":"project/"+localName};
-    const name=await askText(labels[sourceProvider]||"Repository name",defaults[sourceProvider]||localName);if(!name)return;
+    const name=(await askText(labels[sourceProvider]||"Repository name",defaults[sourceProvider]||localName))?.trim();if(!name)return;
     // Each answer is its own button, so Cancel and Escape publish nothing (OK and Cancel once meant public and private).
     const visibility=sourceProvider==="azure-devops"?"private":await askChoice("Publish "+name+" on "+(diagnostics?.providers?.[sourceProvider]?.label||sourceProvider)+"?\n\nAnyone can see a public repository; a private one only you and the people you add can see.",{choices:[{value:"private",label:"Private"},{value:"public",label:"Public"}]});
     if(!visibility)return;

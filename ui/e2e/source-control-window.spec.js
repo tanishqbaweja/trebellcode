@@ -1219,6 +1219,43 @@ test("a branch name of spaces is refused in the app as an empty one is, and a na
   await expect.poll(()=>git(["worktree","list","--porcelain"]),GIT_WAIT).toContain("branch refs/heads/feature/tree");
 });
 
+// A pull request title or a repository name of spaces names nothing, as a branch name of spaces does: OK, pressed with Enter or
+// clicked, asks nothing more and sends nothing (UI lane D, 2026-10-17: Create PR went on to the description and sent an empty
+// title, and Publish asked to publish "   " on GitHub, which only the host refused). Typed with spaces around it, each is sent
+// without them.
+test("a pull request title or a repository name of spaces is refused in the app as an empty one is, and one typed with spaces around it is sent without them",async({page,request})=>{
+  test.setTimeout(60_000);
+  await asInDesktopApp(page);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  const host=await scriptCodeHost(page,{boot,prs:[samplePr(91,{title:"Existing PR"})],info:{upstream:null,remotes:[]}});
+  await page.route("**/api/git/review-text",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({title:"Add the scratch change",body:"Written."})}));
+  const {right,repository,pulls}=await openGitPanel(page,request,"Source control blank title");
+  const dialog=page.locator("dialog.inspector-text-prompt"),field=dialog.getByRole("textbox"),sent=path=>host.calls.filter(call=>call.path===path).map(call=>call.body);
+  // Each question opens with its suggestion selected, so what is typed replaces it.
+  const answer=async(button,label,text,ok="Enter")=>{
+    await button.click();await expect(dialog).toContainText(label);await expect(field).toBeFocused();
+    await page.keyboard.type(text,{delay:15});await expect(field).toHaveValue(text);
+    if(ok==="Enter")await page.keyboard.press("Enter");else await dialog.getByRole("button",{name:"OK",exact:true}).click();
+  };
+  const create=pulls.getByRole("button",{name:"Create PR",exact:true}),generate=pulls.getByRole("button",{name:"Generate PR",exact:true}),publish=repository.getByRole("button",{name:"Publish repository"});
+  await expect(pulls.getByRole("button",{name:/#91 Existing PR/})).toBeVisible();await expect(publish).toBeEnabled();
+  for(const [button,label] of [[create,"PR title"],[generate,"PR title"],[publish,"Repository name"]])for(const ok of ["Enter","click"]){
+    await answer(button,label,"   ",ok);
+    await expect(dialog,`${label} of spaces, given OK with ${ok}`).toHaveCount(0);
+  }
+  expect(sent("pr"),"pull requests created").toEqual([]);expect(sent("publish"),"repositories published").toEqual([]);
+  await expect(right.locator(".source-control-error")).toHaveCount(0);
+  await shootBothModes(page,"source-control-blank-title-refused");
+  // With spaces around it, the title and the name are sent without them, and the question names the repository without them.
+  await answer(create,"PR title","  Padded title  ");
+  await expect(dialog).toContainText("PR description");await page.keyboard.press("Control+Enter");
+  await expect.poll(()=>sent("pr").map(body=>body.title)).toEqual(["Padded title"]);
+  await answer(publish,"Repository name","  padded-repo  ");
+  await expect(dialog.locator("p")).toHaveText(/^Publish padded-repo on GitHub\?/);
+  await dialog.getByRole("button",{name:"Private",exact:true}).click();
+  await expect.poll(()=>sent("publish").map(body=>[body.name,body.visibility])).toEqual([["padded-repo","private"]]);
+});
+
 test("each project selects its detected code host every time it is opened",async({page,request})=>{
   test.setTimeout(90_000);
   const first=await mkdtemp(join(tmpdir(),"trebell-host-first-")),second=await mkdtemp(join(tmpdir(),"trebell-host-second-"));repositories.push(first,second);
