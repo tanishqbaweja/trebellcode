@@ -172,14 +172,21 @@ export function terminalBenchDatasetTaskNamesFromVersionMetadata(value,{namespac
   return [...new Set(names)].sort((a,b)=>a.localeCompare(b));
 }
 
-export async function preflightTerminalBenchDatasetTaskMembership({harbor,dataset,task,env,captureFn}={}){
+export async function preflightTerminalBenchDatasetTaskMembership({harbor,dataset,task,env,captureFn,attempts=3,retryDelaysMs=[15_000,45_000],sleepFn=ms=>new Promise(done=>setTimeout(done,ms))}={}){
   if(typeof captureFn!=="function")throw new TypeError("preflightTerminalBenchDatasetTaskMembership requires captureFn");
   const qualified=terminalBenchTaskQualifiedName(dataset,task);
   if(!qualified)throw new Error(`Cannot derive a registry task identity for dataset membership preflight: dataset=${dataset} task=${task}`);
   const namespace=qualified.split("/")[0],slug=qualified.slice(namespace.length+1);
-  let raw;
-  try{raw=await captureFn(harbor,["version","show",dataset,"--tasks","--json"],{env})}
-  catch(error){throw new Error(`Cannot verify dataset membership for ${qualified} in ${dataset}: ${error?.message||error}`)}
+  // Harbor's `version show` does not retry its own registry requests, so a registry statement timeout or a dropped connection
+  // fails it now and then while the next query works (2026-10-16 20:11Z; five launches on 2026-10-18). Nothing has started
+  // yet, so the query is asked again after a pause. An answer that arrives is never asked again, even when it is refused below.
+  const tries=Math.max(1,Math.floor(Number(attempts))||1);
+  let raw,used=0,lastError=null;
+  for(let attempt=1;attempt<=tries;attempt++){
+    try{raw=await captureFn(harbor,["version","show",dataset,"--tasks","--json"],{env});used=attempt;lastError=null;break}
+    catch(error){lastError=error;if(attempt<tries)await sleepFn(retryDelaysMs[Math.min(attempt-1,retryDelaysMs.length-1)]??0)}
+  }
+  if(lastError)throw new Error(`Cannot verify dataset membership for ${qualified} in ${dataset} after ${tries} attempt${tries===1?"":"s"}: ${lastError?.message||lastError}`);
   let parsed;
   try{parsed=JSON.parse(String(raw||""))}catch(error){throw new Error(`Cannot parse dataset membership metadata for ${dataset}: ${error?.message||error}`)}
   const names=terminalBenchDatasetTaskNamesFromVersionMetadata(parsed,{namespace});
@@ -191,6 +198,7 @@ export async function preflightTerminalBenchDatasetTaskMembership({harbor,datase
     datasetVersion:String(parsed?.version||"").trim()||null,
     datasetRevision:String(parsed?.revision||"").trim()||null,
     datasetContentHash:String(parsed?.content_hash||"").trim()||null,
+    attempts:used,
   };
 }
 

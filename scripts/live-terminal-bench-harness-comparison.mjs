@@ -91,7 +91,8 @@ function capture(command,args,{env=process.env}={}){
     const child=spawn(command,args,{cwd:root,env,stdio:["ignore","pipe","pipe"],windowsHide:true});let stdout="",stderr="";
     child.stdout.setEncoding("utf8");child.stderr.setEncoding("utf8");child.stdout.on("data",chunk=>{stdout+=chunk});child.stderr.on("data",chunk=>{stderr+=chunk});
     child.once("error",reject);
-    child.once("exit",(code,signal)=>code===0?resolveCapture(stdout):reject(Object.assign(new Error(`${command} exited with ${signal||code}: ${stderr.trim().slice(0,500)}`),{code,signal})));
+    // Harbor prints its own errors to stdout ("Error: ..."), so a failure with nothing on stderr names stdout's end instead.
+    child.once("exit",(code,signal)=>code===0?resolveCapture(stdout):reject(Object.assign(new Error(`${command} exited with ${signal||code}: ${stderr.trim()?stderr.trim().slice(0,500):stdout.trim().slice(-500)}`),{code,signal})));
   });
 }
 async function sourceGitProvenance(){

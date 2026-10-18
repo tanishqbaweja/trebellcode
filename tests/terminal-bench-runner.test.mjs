@@ -237,10 +237,37 @@ test("Terminal-Bench paid runner preflights authoritative dataset membership bef
     harbor:"harbor-test",dataset:"terminal-bench/terminal-bench@4.0.0",task:"example-task",env:{SAFE:"1"},
     captureFn:async(command,args,options)=>{calls.push({command,args,options});return JSON.stringify(metadata)},
   });
-  assert.deepEqual(result,{completed:true,qualifiedTask:"terminal-bench/example-task",taskCount:2,datasetVersion:"4.0.0",datasetRevision:"rev-4",datasetContentHash:"dataset-sha"});
+  assert.deepEqual(result,{completed:true,qualifiedTask:"terminal-bench/example-task",taskCount:2,datasetVersion:"4.0.0",datasetRevision:"rev-4",datasetContentHash:"dataset-sha",attempts:1});
   assert.deepEqual(calls,[{command:"harbor-test",args:["version","show","terminal-bench/terminal-bench@4.0.0","--tasks","--json"],options:{env:{SAFE:"1"}}}]);
   await assert.rejects(()=>preflightTerminalBenchDatasetTaskMembership({harbor:"harbor-test",dataset:"terminal-bench/terminal-bench@4.0.0",task:"stale-task",captureFn:async()=>JSON.stringify(metadata)}),/not a member of dataset/);
   await assert.rejects(()=>preflightTerminalBenchDatasetTaskMembership({harbor:"harbor-test",dataset:"terminal-bench/terminal-bench@4.0.0",task:"example-task",captureFn:async()=>"not-json"}),/Cannot parse dataset membership metadata/);
+});
+
+test("Terminal-Bench dataset membership preflight asks the registry again after a failed query, and never after an answer",async()=>{
+  const metadata={version:"4.0.0",revision:"rev-4",content_hash:"dataset-sha",tasks:[{available:true,task_version:{package:{name:"example-task",org:{name:"terminal-bench"}}}}]};
+  const dataset="terminal-bench/terminal-bench@4.0.0",waits=[],sleepFn=async ms=>{waits.push(ms)};
+  let calls=0;
+  const result=await preflightTerminalBenchDatasetTaskMembership({harbor:"harbor-test",dataset,task:"example-task",sleepFn,captureFn:async()=>{
+    calls++;if(calls<3)throw new Error("harbor-test exited with 1: Error: canceling statement due to statement timeout");return JSON.stringify(metadata);
+  }});
+  assert.equal(result.attempts,3);
+  assert.equal(calls,3);
+  assert.deepEqual(waits,[15_000,45_000]);
+  calls=0;waits.length=0;
+  await assert.rejects(()=>preflightTerminalBenchDatasetTaskMembership({harbor:"harbor-test",dataset,task:"example-task",sleepFn,captureFn:async()=>{calls++;throw new Error("harbor-test exited with 1: Error: The read operation timed out")}}),
+    /^Error: Cannot verify dataset membership for terminal-bench\/example-task in terminal-bench\/terminal-bench@4\.0\.0 after 3 attempts: harbor-test exited with 1: Error: The read operation timed out$/);
+  assert.equal(calls,3);
+  assert.deepEqual(waits,[15_000,45_000]);
+  // An answer that arrived is the registry's answer: a task it does not list, or output that is not JSON, is refused at once.
+  for(const [task,output,refusal] of [["stale-task",JSON.stringify(metadata),/not a member of dataset/],["example-task","not-json",/Cannot parse dataset membership metadata/]]){
+    calls=0;waits.length=0;
+    await assert.rejects(()=>preflightTerminalBenchDatasetTaskMembership({harbor:"harbor-test",dataset,task,sleepFn,captureFn:async()=>{calls++;return output}}),refusal);
+    assert.equal(calls,1);
+    assert.deepEqual(waits,[]);
+  }
+  calls=0;
+  await assert.rejects(()=>preflightTerminalBenchDatasetTaskMembership({harbor:"harbor-test",dataset,task:"example-task",attempts:1,sleepFn,captureFn:async()=>{calls++;throw new Error("down")}}),/after 1 attempt: down$/);
+  assert.equal(calls,1);
 });
 
 test("Terminal-Bench parallel Docker prewarm pulls declared agent and verifier images once before lane fan-out",async()=>{
