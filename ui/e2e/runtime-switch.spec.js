@@ -790,6 +790,42 @@ test("names typed one per line or split by commas into Approved inherited enviro
   }finally{await close()}
 });
 
+// A saved profile's answer is not left under the next profile opened: Add profile, or Edit, after a save opened the new draft with the
+// card's "Runtime profile saved." right under its Save profile and Cancel, as if the draft had been saved.
+test("a profile opened after a save, by Add profile or by Edit from the keyboard, is not captioned as saved",async({page})=>{
+  test.setTimeout(60_000);
+  const {server,close}=await startHarness(page,{runtime:"claude",profileEditing:true});
+  await keepModeSaves(page);
+  const editor=page.locator(".runtime-profile-editor"),message=page.getByTestId("agent-runtime-message");
+  const name=editor.getByRole("textbox",{name:"Profile name"}),save=editor.getByRole("button",{name:"Save profile",exact:true}),add=page.getByRole("button",{name:"Add profile",exact:true});
+  const typeName=async text=>{await name.click();await page.keyboard.press("Control+A");await page.keyboard.type(text,{delay:10})};
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await openHarnessSettings(page);
+    for(const [mode,opener] of [["dark","Add profile"],["light","Edit"]]){
+      await switchMode(page,mode);
+      // A profile is saved first.
+      await wheelIntoView(page,add);await add.click();
+      await typeName("Saved first");
+      await wheelIntoView(page,save);
+      const saved=agentRuntimePost(page);await save.click();expect((await saved).status()).toBe(200);
+      await expect(editor).toHaveCount(0);await expect(message).toHaveText("· Runtime profile saved.");
+      // The next one is opened and typed into, and not saved.
+      const open=opener==="Add profile"?add:page.locator(".runtime-profile-row").filter({hasText:"Claude Code"}).getByRole("button",{name:"Edit",exact:true});
+      await wheelIntoView(page,open);
+      if(opener==="Edit")await open.press("Enter");else await open.click();
+      await expect(editor).toBeVisible();
+      await typeName("Not saved yet");
+      await wheelIntoView(page,save);
+      await expect(message,`nothing under the profile ${opener} opened says it was saved`).toHaveCount(0);
+      await page.screenshot({animations:"disabled",path:`${auditDir}harness-profile-opened-after-save-by-${opener==="Edit"?"edit":"add"}-${mode}-1280x800.png`});
+      await editor.getByRole("button",{name:"Cancel",exact:true}).click();await expect(editor).toHaveCount(0);
+    }
+    expect(server.counts.upsert,"only the two saves went out").toBe(2);
+  }finally{await close()}
+});
+
 // An update that ends after the person switched to another harness, in Settings or by opening that harness's thread from the sidebar,
 // is the update of the harness it was for: the harness switched to keeps its transport and the thread open on it. The install compared
 // the harness it updated with the one in use when it began, so it reloaded the harness switched to, which closed its thread.

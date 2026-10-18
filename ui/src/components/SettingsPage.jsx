@@ -336,8 +336,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     }
     finally{setAgentSelectionOverride(null)}
   }
+  // A profile opened for editing starts with the card's status line clear: the answer to the last save under it read as this one's.
   function editInstance(instance=null){
-    setEnvironmentKeysText(null);setInstanceRefusal("");
+    setEnvironmentKeysText(null);setInstanceRefusal("");setAgentMessage("");
     setInstanceDraft(instance?{...instance}:{
       id:`${selectedAgent}-${crypto.randomUUID()}`,kind:selectedAgent,displayName:`${(agentInfo?.definitions||[]).find(item=>item.id===selectedAgent)?.name||selectedAgent} profile`,binaryPath:"",homePath:"",serverUrl:"",autoCompactWindow:"",
     });
