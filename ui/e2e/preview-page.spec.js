@@ -141,7 +141,7 @@ test("a recording goes on while the person looks at another tab or closes the pa
     await record.click();
     await expect(record).toHaveText(/Stop [1-9]\d*s/);
     await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(address).toHaveCount(0);
-    await tabs.getByRole("button",{name:"Browser",exact:true}).click();
+    await tabs.getByRole("button",{name:"Browser, recording",exact:true}).click();
     await expect(record,"back on Browser after a look at Files, the recording is still going").toHaveText(/Stop \d+s/);
     await panel.getByRole("button",{name:"Close right panel"}).click();await expect(panel).toHaveCount(0);
     await page.keyboard.press("Control+Alt+B");
@@ -160,6 +160,46 @@ test("a recording goes on while the person looks at another tab or closes the pa
     await record.click();
     await expect(saved,"Stop saves the recording once").toHaveCount(1);
     await expect(record).toHaveText(/Record/);
+  }finally{await site.close()}
+});
+
+// A recording that goes on while the Browser panel is away had no sign of itself anywhere outside the panel: the tab strip, the
+// sidebar and the header looked as with none, so a person who went on with other work kept recording the agent browser's window.
+// The panel's Browser tab says so while another tab is shown, and the header button that opens the panel while it is closed (also
+// on a page, and in a narrow window), each with a red mark and in its name, until the recording stops.
+test("a recording that goes on while the Browser panel is away is said on the panel's Browser tab and on the header button that opens the panel, until it stops",async({page,request})=>{
+  const site=await startSite();
+  try{
+    const {panel,record,saved}=await openRecorder(page,request,site);
+    const tabs=panel.locator(".context-panel-tab-scroll"),browserTab=tabs.getByRole("button",{name:/^Browser/}),toggle=page.getByTestId("right-panel-toggle").first();
+    const marked=async(button,name)=>{await expect(button).toHaveAccessibleName(name);await expect(button.locator(".recording-mark")).toBeVisible()};
+    const unmarked=async(button,name)=>{await expect(button).toHaveAccessibleName(name);await expect(button.locator(".recording-mark")).toHaveCount(0)};
+    await unmarked(browserTab,"Browser");await unmarked(toggle,"Open files and diff");
+    await record.click();await expect(record).toHaveText(/Stop [1-9]\d*s/);
+    // On another tab, the Browser tab says a recording is on.
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(record).toHaveCount(0);
+    await marked(browserTab,"Browser, recording");await expect(browserTab).toHaveAttribute("title","Browser · Recording");
+    await shots(page,"preview-recording-said-on-browser-tab",browserTab);
+    // With the panel closed, the header button that opens it says so, on a page too.
+    await panel.getByRole("button",{name:"Close right panel"}).click();await expect(panel).toHaveCount(0);
+    await marked(toggle,"Open files and diff, browser recording on");await expect(toggle).toHaveAttribute("title","Toggle workspace panel · Browser recording on");
+    await shots(page,"preview-recording-said-on-panel-button");
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"Projects"}).click();
+    await expect(page.getByTestId("page-topbar")).toBeVisible();
+    await marked(page.getByTestId("page-topbar").getByTestId("right-panel-toggle"),"Open files and diff, browser recording on");
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();await expect(page.getByTestId("page-topbar")).toHaveCount(0);
+    // In a narrow window the closed panel's button says so too; it opens the panel, whose Browser tab says so, and Browser there stops it.
+    await page.setViewportSize({width:900,height:800});
+    await marked(toggle,"Open files and diff, browser recording on");
+    await toggle.click();await expect(panel).toBeVisible();
+    await marked(browserTab,"Browser, recording");await browserTab.click();
+    await expect(record).toHaveText(/Stop \d+s/);await record.click();
+    await expect(saved,"Stop saves the recording once").toHaveCount(1);await expect(record).toHaveText(/Record/);
+    // Once it is saved, neither says a recording is on.
+    await unmarked(browserTab,"Browser");
+    await page.setViewportSize({width:1280,height:800});
+    await unmarked(toggle,"Open files and diff");
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await unmarked(browserTab,"Browser");
   }finally{await site.close()}
 });
 

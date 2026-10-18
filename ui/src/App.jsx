@@ -14,6 +14,7 @@ import ThreadSidebar,{ ignorePressRest } from "./components/ThreadSidebar.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
 import ChatMarkdown,{ StreamingMarkdown } from "./components/LazyChatMarkdown.jsx";
 import RightPanel from "./components/RightPanel.jsx";
+import { useBrowserRecording } from "./browser-recording.js";
 import { contextCompactionSignal } from "./provider-session-status.js";
 import OpenInControl, { useOpenInEditors } from "./components/OpenInControl.jsx";
 import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
@@ -5222,6 +5223,9 @@ export default function App(){
   // Not a runUserAction, which first clears the last action's error: switching the mode leaves an error the person has not read yet.
   const toggleAppearanceMode=()=>saveAppSettings({appearanceMode:resolvedMode==="dark"?"light":"dark"}).catch(error=>showActionError(error,"Could not change appearance"));
   const appearanceToggleLabel=resolvedMode==="dark"?"Switch to light mode":"Switch to dark mode";
+  // A Browser panel recording goes on with the panel closed: the header's panel button says so, with a red mark, until it stops.
+  const browserRecording=useBrowserRecording(),panelToggleLabel=browserRecording?["Open files and diff, browser recording on","Toggle workspace panel · Browser recording on"]:["Open files and diff","Toggle workspace panel"];
+  const recordingMark=browserRecording&&<i className="recording-mark" aria-hidden="true"/>;
   // One Open-in state for the row's picker and the menu's copy, so both open the editor last chosen in either, and an Open from
   // either replaces the failure the row's picker shows. The menu closes as Open runs, so a failure there is reported like the
   // menu's other actions, not beside a picker that has gone: in the shell's own sentence, as the row's picker shows it, which
@@ -5419,7 +5423,7 @@ export default function App(){
               {running&&!openingShown&&<button className={"header-control stop-control"+(stopping?" stopping":"")} disabled={stopping} onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label={stopping?"Stopping":"Stop"} title={stopping?"Stopping the running turn…":"Stop the running turn"}><CircleStop size={14}/><span>{stopping?"Stopping…":"Stop"}</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} data-fold="terminal" onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               {activeThread?.id&&!openingShown&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} data-fold="goal" onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
-              <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={toggleRightPanel} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
+              <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={toggleRightPanel} aria-label={panelToggleLabel[0]} title={panelToggleLabel[1]}><PanelRight size={16}/>{recordingMark}</button>
               <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={toggleAppearanceMode} aria-label={appearanceToggleLabel} title={appearanceToggleLabel}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
               <button className="header-control icon-only palette-control" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title={withKey("Command palette",sidebarShortcuts.commandPalette)}><Command size={15}/></button>
               {/* Shown once actions fold: the folded ones in the row's order, then the theme and palette buttons, which the row has
@@ -5481,7 +5485,7 @@ export default function App(){
             <span className="page-crumb"><CrumbIcon size={14} aria-hidden="true"/><strong>{crumbLabel}</strong>{section==="settings"&&settingsSectionLabel&&<><ChevronRight size={12} aria-hidden="true"/><em>{settingsSectionLabel}</em></>}</span>
           </div>
           <div className="workspace-header-actions">
-            <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else{setRightPanelTab(tab=>tab||"files");setRightPanelOpen(true)}}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
+            <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else{setRightPanelTab(tab=>tab||"files");setRightPanelOpen(true)}}} aria-label={panelToggleLabel[0]} title={panelToggleLabel[1]}><PanelRight size={16}/>{recordingMark}</button>
             <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={toggleAppearanceMode} aria-label={appearanceToggleLabel} title={appearanceToggleLabel}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
             <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title={withKey("Command palette",sidebarShortcuts.commandPalette)}><Command size={15}/></button>
           </div>

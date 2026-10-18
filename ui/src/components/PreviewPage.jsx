@@ -3,6 +3,7 @@ import { ExternalLink, Globe2, RefreshCw, Camera, MousePointer2, Eye, X, Radar, 
 import { api } from "../api.js";
 import { openWebLink } from "../web-link.js";
 import { takeRequestedPreview } from "../preview-open.js";
+import { setBrowserRecording } from "../browser-recording.js";
 import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 const VIEWPORTS=[
@@ -28,7 +29,7 @@ function noneSet(result,from=""){
 // reset it while the agent browser still showed the page. The panel shown reads it as it is set, also by one that went away
 // meanwhile, so what lands then (the page an Open agent browser pressed before it went opens, and that page's elements) shows.
 const kept={draft:"http://localhost:3000",url:"",snapshot:null,selectedRef:null,annotation:"",shown:{pages:[],at:-1},previewZoom:1,phase:"idle"},keptListeners=new Set();
-function setKept(next){Object.assign(kept,next);for(const listener of keptListeners)listener()}
+function setKept(next){Object.assign(kept,next);if("phase" in next)setBrowserRecording(kept.phase==="recording");for(const listener of keptListeners)listener()}
 function onKept(listener){keptListeners.add(listener);return()=>keptListeners.delete(listener)}
 function useKept(name){return [useSyncExternalStore(onKept,()=>kept[name]),next=>setKept({[name]:typeof next==="function"?next(kept[name]):next})]}
 // The agent browser's elements belong to the page it showed when they were read: that window (one closed and opened again on the
@@ -38,7 +39,8 @@ function samePage(state,shot){return state.windowId===shot.windowId&&state.url==
 // A recording goes on while another tab is open or the panel is closed, and comes back with the panel, as it records the agent
 // browser's window, not the panel: it used to end unsaved when the panel went. Its phase (kept.phase: idle, starting, recording, or
 // stopping while it is saved) is every panel's, so one opened again while a recording starts or is saved offers no second Record
-// or Stop, and reads Record once it is saved. rec holds the recording going on, with chunks of its own.
+// or Stop, and reads Record once it is saved; until it is stopped, the Browser tab and the header's panel button say it is on outside
+// the panel (browser-recording.js). rec holds the recording going on, with chunks of its own.
 const rec={since:0};
 // A press records, stops or attaches once, as a thread's menu item runs: the rest of it (the second click of a double click, Enter
 // held) does nothing. Record and Stop are one button, so the second click landed on the Stop of the recording the first click had

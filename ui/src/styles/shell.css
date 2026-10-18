@@ -203,6 +203,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header .script-running-dot{flex:none;width:7px;height:7px;margin:0 3px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--okt)}
 .workspace-header .header-control.script-stop-control{color:var(--err)}
 .workspace-header .header-control.script-stop-control:hover{background:var(--errt);color:var(--err)}
+/* A Browser recording going on marks the panel button in its corner, as it does the panel's Browser tab. */
+.workspace-header .header-control:has(>.recording-mark){position:relative}
+.workspace-header .header-control>.recording-mark{position:absolute;top:4px;right:4px;width:7px;height:7px;border-radius:50%;background:var(--err);box-shadow:0 0 0 2px var(--bg1)}
 /* A held control (Review during a turn) fades as well: the muted text colour alone is hardly lighter than an enabled control's in
    light mode. */
 .workspace-header .header-control:is(:disabled,:disabled:hover){background:transparent;color:var(--tx3);cursor:default;opacity:.65}

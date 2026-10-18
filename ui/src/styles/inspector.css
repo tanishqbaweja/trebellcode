@@ -46,6 +46,8 @@
 :root:root .context-panel .context-panel-tab.active::after{background:var(--ac)}
 :root:root .context-panel .context-panel-tab:disabled{opacity:.38;cursor:not-allowed}
 :root:root .context-panel .context-panel-tab:focus-visible{outline-offset:-3px}
+/* A Browser recording going on marks the Browser tab in its corner, so the tab keeps its box (RightPanel). */
+:root:root .context-panel .context-panel-tab>.recording-mark{position:absolute;top:7px;right:2px;width:6px;height:6px;border-radius:50%;background:var(--err);box-shadow:0 0 0 2px var(--bg1)}
 :root:root .context-panel .context-panel-actions{position:relative;flex:none;display:flex;align-items:center;gap:2px;margin-left:4px;padding-left:9px}
 :root:root .context-panel .context-panel-actions::before{content:"";position:absolute;left:0;top:17px;bottom:17px;width:1px;background:var(--line)}
 :root:root .context-panel .context-panel-close{
