@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import os
 import shlex
+import tempfile
 from pathlib import Path
 from typing import Annotated, Literal, override
 
@@ -19,6 +20,18 @@ from .ca_bundle import ensure_ca_bundle
 def _lowercase_bool(value):
     # Harbor parses --ak values, so "apps=false" arrives as the boolean False.
     return str(value).lower() if isinstance(value, bool) else value
+
+
+def instruction_from_file(command: str, quoted: str, remote: str) -> str:
+    """Harbor's command with its quoted instruction read from `remote` in the container instead: the same single
+    argument, byte for byte, trailing newlines included (the x keeps $(...) from dropping them)."""
+    if command.count(quoted) != 1:
+        raise ValueError("the instruction must appear exactly once in the command")
+    read = (
+        f'TREBELL_CODEX_PROMPT="$(cat {shlex.quote(remote)}; printf x)"; '
+        'TREBELL_CODEX_PROMPT="${TREBELL_CODEX_PROMPT%x}"; '
+    )
+    return read + command.replace(quoted, '"$TREBELL_CODEX_PROMPT"')
 
 
 class PinnedCodexOptions(CodexOptions):
@@ -65,6 +78,33 @@ class PinnedCodexAgent(Codex):
     # What agent_timeout_stop.py looks for to stop Codex, and everything under it, at Harbor's agent timeout: Harbor's
     # run() starts `codex exec` with this flag.
     _CODEX_MARKER = "--dangerously-bypass-approvals-and-sandbox"
+    # Harbor's run() puts the whole instruction, shell-quoted, on the docker compose exec command line, and Windows'
+    # CreateProcess takes at most 32,767 characters, so a longer instruction fails there before Codex starts
+    # (WinError 206: SWE-bench Multilingual's fastlane__fastlane-19207, 71,327 bytes). Such an instruction is uploaded to
+    # this file instead, and the container's shell hands it to `codex exec` as the same single argument. A shorter
+    # instruction keeps Harbor's command exactly as it was.
+    _REMOTE_INSTRUCTION = "/tmp/trebell-codex-instruction.txt"
+    _INLINE_INSTRUCTION_LIMIT = 24_000
+    _instruction_on_file: str | None = None
+
+    @override
+    async def run(self, instruction, environment, context) -> None:
+        quoted = shlex.quote(instruction)
+        if len(quoted) <= self._INLINE_INSTRUCTION_LIMIT:
+            return await super().run(instruction, environment, context)
+        with tempfile.TemporaryDirectory() as folder:
+            local = Path(folder) / "instruction.txt"
+            local.write_bytes(instruction.encode("utf-8"))
+            await environment.upload_file(local, self._REMOTE_INSTRUCTION)
+        # Readable by the agent, which is the image's own USER when the task names none.
+        await self.exec_as_root(
+            environment, command=f"chmod 0644 {shlex.quote(self._REMOTE_INSTRUCTION)}"
+        )
+        self._instruction_on_file = quoted
+        try:
+            return await super().run(instruction, environment, context)
+        finally:
+            self._instruction_on_file = None
 
     @override
     async def exec_as_agent(
@@ -75,6 +115,10 @@ class PinnedCodexAgent(Codex):
         cwd: str | None = None,
         timeout_sec: int | None = None,
     ):
+        if self._instruction_on_file and self._instruction_on_file in command:
+            command = instruction_from_file(
+                command, self._instruction_on_file, self._REMOTE_INSTRUCTION
+            )
         try:
             return await super().exec_as_agent(
                 environment, command, env=env, cwd=cwd, timeout_sec=timeout_sec

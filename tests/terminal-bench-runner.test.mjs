@@ -805,7 +805,20 @@ test("Pinned Harbor Codex adapter pins the official version and uses Windows-saf
   assert.match(source,/WinError 1920/);
   assert.match(source,/except OSError:/);
   assert.doesNotMatch(source,/super\(\)\._get_session_dir\(\)/);
-  assert.doesNotMatch(source,/async def run\(/);
+  // Codex runs through Harbor's own run(). The one override only moves an instruction too long for Windows' command line
+  // (WinError 206) to a file, and hands both paths to Harbor's run(); the codex exec command stays Harbor's.
+  const run=source.slice(source.indexOf("    async def run("),source.indexOf("    @override\n    async def exec_as_agent("));
+  assert.equal(run.split("return await super().run(instruction, environment, context)").length-1,2,"both paths are Harbor's run()");
+  assert.match(source,/WinError 206/);
+  assert.match(source,/_INLINE_INSTRUCTION_LIMIT = 24_000/);
+  assert.match(source,/if len\(quoted\) <= self\._INLINE_INSTRUCTION_LIMIT:\n\s+return await super\(\)\.run\(instruction, environment, context\)/);
+  assert.match(source,/_REMOTE_INSTRUCTION = "\/tmp\/trebell-codex-instruction\.txt"/);
+  assert.match(source,/await environment\.upload_file\(local, self\._REMOTE_INSTRUCTION\)/);
+  assert.match(source,/exec_as_root\(\n\s+environment, command=f"chmod 0644 /);
+  assert.match(source,/TREBELL_CODEX_PROMPT="\$\(cat \{shlex\.quote\(remote\)\}; printf x\)"/);
+  assert.match(source,/TREBELL_CODEX_PROMPT="\$\{TREBELL_CODEX_PROMPT%x\}"/);
+  assert.match(source,/if command\.count\(quoted\) != 1:/);
+  assert.doesNotMatch(source,/f?["']codex exec/,"no codex exec command of the adapter's own");
 });
 
 test("Trebell Native Harbor adapter launches the agent with the image's login-shell environment",async()=>{
