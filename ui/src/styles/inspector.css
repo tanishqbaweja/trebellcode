@@ -1040,6 +1040,9 @@
 :root:root .terminal-drawer .terminal-pane-head button{width:22px;height:22px;display:grid;place-items:center;padding:0;border:0!important;border-radius:5px;background:transparent!important;color:var(--tx3)!important;cursor:pointer}
 :root:root .terminal-drawer .terminal-pane-head button:hover{background:var(--bg3)!important;color:var(--tx0)!important}
 :root:root .terminal-drawer .terminal-pane>.terminal-screen{min-height:0;margin:0;padding:8px 14px;overflow:auto;border:0!important;border-radius:0;background:var(--bg0)!important;color:var(--tx1)!important;font:400 12px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+/* A screen at its end is kept there by TerminalPanel, not by the browser's scroll anchoring: the scroll anchoring made as a resize
+   re-wrapped its lines left it short of its end, which it took for the person scrolling up, and it stopped following the output. */
+:root:root .terminal-drawer .terminal-screen:not([data-stick="false"]){overflow-anchor:none}
 :root:root .terminal-drawer .terminal-screen>.terminal-dropped{display:block;margin:0 0 6px;padding-bottom:6px;border-bottom:1px dashed var(--line2);color:var(--tx3);font:italic 400 11.5px/1.5 var(--font);user-select:none}
 :root:root .terminal-drawer .terminal-command-line{
   display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:6px;margin:0 8px 6px;padding:2px 2px 2px 12px;

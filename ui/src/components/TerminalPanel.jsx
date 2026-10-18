@@ -100,7 +100,8 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     for(const id of paneIds){const node=outputRefs.current.get(id);if(node&&node.dataset.stick!=="false")node.scrollTo({top:node.scrollHeight})}
   });
   // A screen that shows the latest output keeps showing it when the drawer or a split makes it shorter (it used to stay at
-  // the top and hide the prompt); one the user scrolled up in stays where it is.
+  // the top and hide the prompt), or the window or the right panel re-wraps its lines; one the user scrolled up in stays where
+  // it is. Such a screen has no scroll anchor (inspector.css), whose move as its lines re-wrapped it took for the person scrolling.
   useEffect(()=>{
     if(typeof ResizeObserver==="undefined")return;
     const observer=new ResizeObserver(entries=>{for(const entry of entries)if(entry.target.dataset.stick!=="false")entry.target.scrollTop=entry.target.scrollHeight});

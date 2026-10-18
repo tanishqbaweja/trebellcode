@@ -224,6 +224,66 @@ test("a screen scrolled up stays where it is while output streams, and follows t
   }finally{await shell.close()}
 });
 
+// A screen at its end follows a running program through any resize of the window or the drawer. A narrower window re-wraps its long
+// lines, and the browser's scroll anchoring then moved the screen, which took that for the person scrolling up: it stopped short of
+// its end with its last line cut, and the program's later lines printed below the view until the person scrolled. A screen the
+// person scrolled up in stays scrolled up through a resize.
+test("a screen at its end follows a running program's later lines while the window narrows or widens and the right panel opens or closes, and one scrolled up stays scrolled up",async({page,request})=>{
+  test.setTimeout(240_000);
+  const shell=await realTerminals(page);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    const {screen,input}=await openTerminal(page,request);
+    const fromBottom=()=>screen.evaluate(node=>Math.round(node.scrollHeight-node.clientHeight-node.scrollTop));
+    const top=()=>screen.evaluate(node=>Math.round(node.scrollTop));
+    // Whether the printed text shows whole inside the screen (its last time printed).
+    const whole=text=>screen.evaluate((node,text)=>{
+      const view=node.getBoundingClientRect(),walker=document.createTreeWalker(node,NodeFilter.SHOW_TEXT);let box=null;
+      while(walker.nextNode()){const at=walker.currentNode.textContent.lastIndexOf(text);if(at<0)continue;const range=document.createRange();range.setStart(walker.currentNode,at);range.setEnd(walker.currentNode,at+text.length);box=range.getBoundingClientRect()}
+      return Boolean(box)&&box.top>=view.top-0.5&&box.bottom<=view.bottom+0.5;
+    },text);
+    // A program that prints 20 lines wait ms (3 s) after it starts, and the resize made while it waits.
+    const lateLines=async(tag,resize,wait=3000)=>{
+      await input.click();
+      await run(page,"node -e \"setTimeout(()=>{for(let i=1;i<=20;i++)console.log('"+tag+" '+i)},"+wait+")\"");
+      await expect(screen).toContainText("console.log('"+tag+" '+i)");
+      await resize();
+      await expect(screen).toContainText(new RegExp("^"+tag+" 20 *$","m"),{timeout:20_000});
+      await expect(screen).toHaveText(PROMPT);
+    };
+    await input.click();
+    // Lines long enough to wrap once the window is narrower, as prompts with a long path do (ConPTY pads the rows it redraws).
+    await run(page,"for /L %i in (1,1,300) do @echo wide line %i "+"x".repeat(100));
+    await expect(screen).toContainText(/^wide line 300 x+ *$/m,{timeout:30_000});
+    await expect(screen).toHaveText(PROMPT);
+    const panelToggle=page.getByTestId("right-panel-toggle").first(),panel=page.getByTestId("right-panel");
+    for(const [tag,resize] of [
+      ["narrowed-to-900",()=>page.setViewportSize({width:900,height:800})],
+      ["narrowed-to-700",()=>page.setViewportSize({width:700,height:800})],
+      ["widened-to-900",()=>page.setViewportSize({width:900,height:800})],
+      ["widened-to-1280",()=>page.setViewportSize({width:1280,height:800})],
+      ["panel-opened",async()=>{await panelToggle.click();await expect(panel).toBeVisible()}],
+      ["panel-closed",async()=>{await panelToggle.click();await expect(panel).toHaveCount(0)}],
+    ]){
+      await lateLines(tag,resize);
+      await expect.poll(fromBottom,{message:tag+": the screen stays at its end"}).toBeLessThanOrEqual(2);
+      expect(await whole(tag+" 20"),tag+": the program's last line shows whole").toBe(true);
+      if(tag==="narrowed-to-900")await shots(page,"terminal-follows-after-narrowing",[900]);
+    }
+    // Scrolled up by the person while a program waits to print, the screen stays where it is as the window narrows, and the
+    // program's lines print below the view.
+    await lateLines("scrolled-up",async()=>{
+      await screen.hover();
+      for(let turn=0;turn<10&&await fromBottom()<=600;turn++)await page.mouse.wheel(0,-400);
+      await expect.poll(async()=>{const before=await top();await page.waitForTimeout(250);return await top()-before},{message:"the view comes to rest"}).toBe(0);
+      await page.setViewportSize({width:900,height:800});
+    },4000);
+    expect(await fromBottom(),"the screen stays scrolled up").toBeGreaterThan(600);
+    expect(await whole("scrolled-up 20"),"the program's lines print below the view").toBe(false);
+    await shots(page,"terminal-scrolled-up-through-narrowing",[900]);
+  }finally{await shell.close()}
+});
+
 test("one very long line of output (a minified file printed) keeps the page responsive and the screen near its character cap",async({page,request})=>{
   test.setTimeout(120_000);
   const shell=await realTerminals(page);
