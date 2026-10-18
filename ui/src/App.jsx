@@ -1020,7 +1020,7 @@ export default function App(){
   const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
   // The MCP progress of each running turn, by item id, and its diff (under ""), by thread and turn, kept whether the thread shows or
   // not: the harness's history has neither, so a thread opened again while the turn runs gets them back on its live card. The
-  // turn's end drops them.
+  // turn's end drops its progress; its diff stays until the thread's next turn starts, for the turn's own card (withEndedDiffs).
   const liveExtrasRef=useRef(new Map());
   // assistantStreamSyncRef: how much of the live reply is shown, so a Native draft delta lands where its offset says.
   const assistantStreamBufferRef=useRef(null);const assistantStreamSyncRef=useRef(EMPTY_ASSISTANT_STREAM);
@@ -1210,6 +1210,15 @@ export default function App(){
   }
   function keepLiveExtra(threadId,turnId,id,value){
     const key=turnInfoKey(threadId,turnId),extras=liveExtrasRef.current;if(key)extras.set(key,(extras.get(key)||new Map()).set(id,value));
+  }
+  // A turn that ended keeps on its own card the diff its live card showed last, after its steps.
+  function withEndedDiffs(threadId,rowsByTurn,runningTurnId){
+    let next=rowsByTurn;
+    for(const turnId of Object.keys(rowsByTurn||{})){
+      const diff=turnId!==String(runningTurnId||"")&&liveExtrasRef.current.get(turnInfoKey(threadId,turnId))?.get("");
+      if(diff){if(next===rowsByTurn)next={...rowsByTurn};next[turnId]=[...rowsByTurn[turnId].filter(row=>row.id!==diff.id),restoredRow(diff)]}
+    }
+    return next;
   }
   // Stored steps of the running turn (older than any live one) go in front of its live rows, in the list and in the record above:
   // the turn running when the thread opened, or one that starts again under its id (the relay's restart recovery).
@@ -2922,6 +2931,8 @@ export default function App(){
     else if(message.method==="turn/started"){
       const id=p.turn?.id||p.turnId;
       const clockKey=turnInfoKey(threadId,id);if(clockKey&&!turnClockRef.current.has(clockKey))turnClockRef.current.set(clockKey,receivedAt);
+      // The thread's earlier turns leave the diff each kept, as their rows leave the live card.
+      if(clockKey)for(const key of [...liveExtrasRef.current.keys()])if(key!==clockKey&&key.startsWith(String(threadId)+"\0"))liveExtrasRef.current.delete(key);
       // A turn that starts again (the relay's restart recovery) is running, not ended: its next completion is recorded whole.
       if(clockKey)setTurnInfo(prev=>{const known=turnStartedAgain(prev[clockKey]);return known===prev[clockKey]?prev:{...prev,[clockKey]:known}});
       updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:receivedAt,lastActivityAt:Date.now()});markThreadTurn(threadId,true);
@@ -2961,7 +2972,9 @@ export default function App(){
         if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:recordTurnCompletion(prev[outcomeKey],{status:outcomeStatus,durationMs,completedAt:completedAtMs/1000,error})}));
       }
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});markThreadTurn(threadId,false);
-      liveExtrasRef.current.delete(turnInfoKey(threadId,completedTurnId));
+      // The turn's MCP progress ends with it, whether its thread shows or not; the diff it showed last stays with it.
+      const endedDiff=liveExtrasRef.current.get(outcomeKey)?.get("");
+      if(endedDiff)liveExtrasRef.current.set(outcomeKey,new Map([["",endedDiff]]));else liveExtrasRef.current.delete(outcomeKey);
       // A queued turn that ends without having started takes its send with it.
       if(completedTurnId&&pendingSendsRef.current.get(String(threadId||""))?.turnId===String(completedTurnId))pendingSendsRef.current.delete(String(threadId||""));
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
@@ -3575,7 +3588,8 @@ export default function App(){
       }
       // The running turn's stored steps start its live card. The notifications handled as the thread shows read its cards from the
       // ref (a turn that starts again under its id gets its stored steps back), so the ref holds them from here, before the render.
-      const cards=openedCards,opened={...mergeTurnActivity(emptyTurnActivity(thread.id),cards.rows,cards.merge),boundaryTurnId:cards.boundaryTurnId};turnActivityRef.current=opened;setTurnActivity(opened);
+      // A turn that ended, also while the thread was not shown, has the diff it showed last on its card.
+      const cards=openedCards,opened={...mergeTurnActivity(emptyTurnActivity(thread.id),withEndedDiffs(thread.id,cards.rows,resumedTurnId),cards.merge),boundaryTurnId:cards.boundaryTurnId};turnActivityRef.current=opened;setTurnActivity(opened);
       if(resumedTurnId)seedLiveRows(thread.id,resumedTurnId,cards.rows[String(resumedTurnId)]);
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex")applyProviderInventory(harnessInventory(runtimeInventoryRef.current,resumed.thread.providerMeta))
     }
@@ -3621,7 +3635,7 @@ export default function App(){
         .then(timeline=>{
           if(activeThreadRef.current?.id!==timelineThreadId||!timeline.items.length||!timeline.turnId)return;
           const turnId=String(timeline.turnId),rows=cardRowsFromItemEntries(timeline.items.map(item=>({turnId,item})),{activeTurnId:resumedTurnId});
-          setTurnActivity(prev=>prev.threadId===timelineThreadId?mergeTurnActivity(prev,rows,timeline.complete?{mode:"replace",complete:true}:{mode:"older"}):prev);
+          setTurnActivity(prev=>prev.threadId===timelineThreadId?mergeTurnActivity(prev,withEndedDiffs(timelineThreadId,rows,resumedTurnId),timeline.complete?{mode:"replace",complete:true}:{mode:"older"}):prev);
           seedLiveRows(timelineThreadId,turnId,rows[turnId]);
         })
         .catch(error=>{

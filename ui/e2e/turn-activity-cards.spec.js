@@ -18,6 +18,8 @@ const cardOf=(page,turnId)=>page.locator(`.turn-card [data-testid=activity-card]
 const pastCards=page=>page.locator(".turn-card [data-testid=activity-card]");
 const liveCard=page=>page.locator(".agent-block [data-testid=activity-card]");
 const reply=(page,text)=>page.locator(".history-assistant:not([data-testid=turn-outcome-row])").filter({hasText:text});
+// The socket frames the page has received, so a test knows a notification reached the window before the person goes on.
+function socketFrames(page){const seen=[];page.on("websocket",socket=>socket.on("framereceived",frame=>seen.push(String(frame.payload||""))));return seen}
 const userRow=(page,text)=>page.locator(".user-row").filter({hasText:text});
 const headTop=card=>card.locator(".activity-card-head").evaluate(node=>node.getBoundingClientRect().top);
 const distanceFromEnd=page=>page.locator(".conversation-scroll").evaluate(node=>Math.round(node.scrollHeight-node.clientHeight-node.scrollTop));
@@ -685,6 +687,47 @@ test("a Codex thread left while its turn runs shows, back on it, the MCP progres
     live.emit("item/mcpToolCall/progress",{itemId:live.browse.id,message:"Browser progress 5/5"});await expect(browsing.locator("summary strong")).toHaveText("Browser progress 5/5");
     live.emit("item/completed",{item:{...live.browse,status:"completed"}});thread.status={type:"idle"};live.tools.finish("completed");
     await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);await expect(browsing).toHaveCount(1);await expect(browsing.locator("summary em")).toHaveText("done");
+  }finally{await harness.close()}
+});
+
+// A turn that ends while its thread is not shown keeps the diff row it had, with its last diff, as one watched to its end does:
+// back on the thread its own card lists it beside its steps, also when the person leaves and comes back once more.
+test("a Codex turn that ends while another thread is shown keeps its diff row with the last diff on its card, back on its thread",async({page})=>{
+  test.setTimeout(90_000);
+  const thread=codexThread("codex-away-ended","Build and test"),other=codexThread("codex-away-ended-other","Docs review"),seen=socketFrames(page),turnDiff=line=>`diff --git a/app.js b/app.js\n--- a/app.js\n+++ b/app.js\n@@ -1 +1 @@\n-old line\n+${line}\n`;
+  let live=null;
+  const harness=await startCodexHarness(thread,[
+    // The turn builds, browses with an MCP tool and changes a file; it runs on until the test ends it.
+    (turn,tools)=>{
+      const emit=(method,params)=>tools.emit({method,params:{threadId:tools.threadId,turnId:turn.id,...params}});
+      const build={id:"cmd-"+turn.id,type:"commandExecution",command:"npm run build",cwd:process.cwd(),status:"inProgress",aggregatedOutput:"",exitCode:null},browse={id:"mcp-"+turn.id,type:"mcpToolCall",server:"browser",tool:"navigate",status:"inProgress"};
+      live={turn,tools,emit,build,browse};thread.status={type:"active",activeFlags:[]};turn.items.push(build,browse);
+      tools.emit({method:"turn/started",params:{threadId:tools.threadId,turn:{...turn,items:[]}}});
+      emit("item/started",{item:{...build}});emit("item/started",{item:{...browse}});emit("item/mcpToolCall/progress",{itemId:browse.id,message:"Browser progress 1/4"});emit("turn/diff/updated",{diff:turnDiff("first change")});
+    },
+  ],{others:[other]});
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Build and test");
+    await page.getByTestId("composer").fill("Build and test the app");await page.getByTestId("send").click();
+    await expect(liveCard(page).locator(".tool-event.kind-fileChange")).toHaveCount(1,{timeout:10_000});
+    // The person reads another thread. Meanwhile the diff changes again, both steps end, the reply comes and the turn ends.
+    await openThreadRow(page,"Docs review");await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
+    live.emit("turn/diff/updated",{diff:turnDiff("second change while away")});
+    Object.assign(live.build,{status:"completed",aggregatedOutput:"build ok\n",exitCode:0});live.emit("item/completed",{item:{...live.build}});
+    live.browse.status="completed";live.emit("item/completed",{item:{...live.browse}});
+    codexReply(live.turn,live.tools,"Built and tested.");thread.status={type:"idle"};live.tools.finish("completed");
+    await expect.poll(()=>seen.some(frame=>frame.includes('"turn/completed"'))).toBe(true);
+    for(const round of ["back","back again"]){
+      // Back on it, the finished turn's card lists its two steps done and the diff row with the last diff.
+      await openThreadRow(page,"Build and test");await expect(reply(page,"Built and tested.")).toBeVisible({timeout:10_000});
+      await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
+      const card=cardOf(page,live.turn.id),diff=card.locator(".tool-event.kind-fileChange");
+      await expect(card.locator(".activity-card-summary"),round).toHaveText("3 steps");await expect(card.locator(".tool-event.status-done"),round).toHaveCount(3);
+      await expect(diff,round).toHaveCount(1);await diff.locator("summary").click();
+      await expect(diff).toContainText("second change while away");await expect(diff).not.toContainText("first change");
+      if(round==="back"){await auditCards(page,"returned-turn-ended-diff",card);await openThreadRow(page,"Docs review")}
+    }
   }finally{await harness.close()}
 });
 
