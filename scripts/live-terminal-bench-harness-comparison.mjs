@@ -204,6 +204,8 @@ try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");
   const nativeBundleSha256=await sha256File(nativeBundlePath),nativeAdapterSha256=await sha256File(nativeAdapterPath);
+  // Both adapters stop their agent through this module at Harbor's agent timeout.
+  const agentTimeoutStopSha256=await sha256File(join(root,"benchmarks","harbor","agent_timeout_stop.py"));
   const lanes=[
     {label:"native",harness:"native",authMode:"api"},
     ...CODEX_AUTH_MODES.map(authMode=>({label:`codex-${authMode}`,harness:"codex",authMode})),
@@ -284,7 +286,7 @@ try{
     ...sourceProvenance,
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
     ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),
-    comparisonLanes:selectedLanes.map(lane=>lane.label),configuredComparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,
+    comparisonLanes:selectedLanes.map(lane=>lane.label),configuredComparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,agentTimeoutStopSha256,
     pricingSnapshot:MODEL==="gpt-6-luna"?gpt6LunaPricingForServiceTier(SERVICE_TIER):null,
     complete,
     infrastructureInterrupted:jobs.filter(Boolean).some(job=>Boolean(job.infrastructureFailureReason)),

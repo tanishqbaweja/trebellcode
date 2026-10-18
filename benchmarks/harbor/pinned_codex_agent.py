@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import os
 import shlex
@@ -10,6 +11,8 @@ from harbor.agents.installed.codex import Codex
 from harbor.agents.installed.codex import CodexOptions
 from harbor.agents.options import Cli
 from harbor.environments.base import BaseEnvironment
+
+from .agent_timeout_stop import stop_agent_tree
 
 
 def _lowercase_bool(value):
@@ -58,6 +61,28 @@ class PinnedCodexAgent(Codex):
     _REMOTE_BINARY = (
         _REMOTE_ROOT + "/vendor/x86_64-unknown-linux-musl/bin/codex"
     )
+    # What agent_timeout_stop.py looks for to stop Codex, and everything under it, at Harbor's agent timeout: Harbor's
+    # run() starts `codex exec` with this flag.
+    _CODEX_MARKER = "--dangerously-bypass-approvals-and-sandbox"
+
+    @override
+    async def exec_as_agent(
+        self,
+        environment: BaseEnvironment,
+        command: str,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        timeout_sec: int | None = None,
+    ):
+        try:
+            return await super().exec_as_agent(
+                environment, command, env=env, cwd=cwd, timeout_sec=timeout_sec
+            )
+        except asyncio.CancelledError:
+            # Harbor's agent timeout (agent_timeout_stop.py): Codex takes no action after it. Stopping it here, inside
+            # the cancelled exec and before Harbor's run() copies the sessions, means the copy ends where Codex stopped.
+            await asyncio.shield(stop_agent_tree(self, environment, self._CODEX_MARKER))
+            raise
 
     @override
     def _get_session_dir(self) -> Path | None:

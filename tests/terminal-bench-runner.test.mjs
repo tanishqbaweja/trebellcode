@@ -66,6 +66,8 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/tracked source cleanliness could not be verified/);
   assert.match(source,/nativeBundleSha256/);
   assert.match(source,/nativeAdapterSha256/);
+  assert.ok(source.includes('agentTimeoutStopSha256=await sha256File(join(root,"benchmarks","harbor","agent_timeout_stop.py"))'));
+  assert.match(source,/nativeAdapterSha256,agentTimeoutStopSha256,/);
   assert.match(source,/NATIVE_PINNED_NODE_VERSION="22\.23\.3"/);
   assert.match(source,/1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af/);
   assert.match(source,/ensurePinnedNodeTarball/);
@@ -782,16 +784,28 @@ test("Trebell Native Harbor adapter launches the agent with the image's login-sh
   assert.ok(launch.indexOf("{self._LOGIN_ENVIRONMENT}")<launch.indexOf('"$runtime_cmd" {self._REMOTE_RUNNER}'),"the login environment must load before the agent starts");
 });
 
-test("Trebell Native Harbor adapter stops its runner when Harbor's agent timeout cancels the run",async()=>{
-  const adapter=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
-  assert.match(adapter,/try:\s+await self\._run_runner\(environment, env\)\s+except asyncio\.CancelledError:\s+await asyncio\.shield\(self\._stop_runner\(environment\)\)\s+raise/);
-  assert.match(adapter,/self\.exec_as_root\(environment, command=self\._STOP_RUNNER\), timeout=60/);
-  const stop=adapter.slice(adapter.indexOf("_STOP_RUNNER = ("),adapter.indexOf("\n    )",adapter.indexOf("_STOP_RUNNER = (")));
-  assert.ok(stop.includes('pattern="trebell-native-""agent.mjs"'),"assemble the match at run time");
-  assert.ok(!stop.includes("trebell-native-agent.mjs"),"the stop script's own command line must not match the runner");
-  assert.ok(stop.includes('[ "$pid" = "$me" ] && continue'),"never kill the stop script itself");
-  assert.ok(stop.includes("/proc/[0-9]*")&&!/\bpkill\b|\bps -/.test(stop),"walk /proc: slim task images ship no ps or pkill");
-  assert.ok(stop.includes("kill -KILL"),"the runner takes no action after the timeout");
+test("Both Harbor adapters stop their agent, and everything still under it, when Harbor's agent timeout cancels the run",async()=>{
+  const read=name=>readFile(new URL(`../benchmarks/harbor/${name}`,import.meta.url),"utf8");
+  const [native,codex,stop]=await Promise.all([read("trebell_native_agent.py"),read("pinned_codex_agent.py"),read("agent_timeout_stop.py")]);
+  const squeeze=text=>text.replace(/\s+/g," ");
+  assert.ok(native.includes("from .agent_timeout_stop import stop_agent_tree"));
+  const nativeRun=squeeze(native.slice(native.indexOf("await self._run_runner(environment, env)"),native.indexOf("async def _run_runner")));
+  assert.ok(nativeRun.startsWith("await self._run_runner(environment, env) except asyncio.CancelledError: #"),"only Harbor's cancellation triggers the stop");
+  assert.ok(nativeRun.includes("await asyncio.shield(stop_agent_tree(self, environment, self._RUNNER_MARKER)) raise"),"stop, then let the cancellation go on");
+  assert.ok(native.includes('_RUNNER_MARKER = "trebell-native-agent.mjs"'));
+  assert.ok(native.includes('_REMOTE_RUNNER = "/installed-agent/trebell-native-agent.mjs"'),"the marker is the runner's file name");
+  assert.ok(codex.includes("from .agent_timeout_stop import stop_agent_tree"));
+  const codexExec=squeeze(codex.slice(codex.indexOf("async def exec_as_agent("),codex.indexOf("raise",codex.indexOf("async def exec_as_agent("))+5));
+  assert.ok(codexExec.includes("return await super().exec_as_agent( environment, command, env=env, cwd=cwd, timeout_sec=timeout_sec ) except asyncio.CancelledError:"),"wrap every agent exec");
+  assert.ok(codexExec.includes("await asyncio.shield(stop_agent_tree(self, environment, self._CODEX_MARKER)) raise"),"stop Codex inside the cancelled exec, before Harbor's run() copies the sessions");
+  assert.ok(codex.includes('_CODEX_MARKER = "--dangerously-bypass-approvals-and-sandbox"'));
+  assert.ok(stop.includes("half = len(marker) // 2")&&stop.includes(`pattern = f'"{marker[:half]}""{marker[half:]}"'`),"split the marker so the script never matches itself");
+  assert.ok(stop.includes('[ "$pid" = "$me" ] || [ "$pid" = 1 ] && continue'),"never the script itself, never the container's first process");
+  const script=stop.slice(stop.indexOf('return f"""'),stop.indexOf('"""',stop.indexOf('return f"""')+11));
+  assert.ok(script.includes("/proc/[0-9]*")&&!/\bpkill\b|\bps\b/.test(script),"walk /proc: slim task images ship no ps or pkill");
+  assert.ok(stop.indexOf("kill -STOP")>0&&stop.indexOf("kill -STOP")<stop.indexOf("kill -KILL"),"freeze the tree before killing it, so nothing under it starts another process");
+  assert.ok(squeeze(stop).includes("agent.exec_as_root(environment, command=stop_tree_script(marker)), timeout=60"));
+  assert.ok(stop.includes("except Exception as error:"),"a failed stop never replaces Harbor's timeout");
 });
 
 test("Trebell Native Harbor adapter skips package-manager setup when curl already exists",async()=>{
