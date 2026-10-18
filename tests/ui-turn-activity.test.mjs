@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activitySummary, cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeIncompleteTurnIds } from "../ui/src/turn-activity.js";
+import { activitySummary, cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeCompactionTurnIds, storeIncompleteTurnIds } from "../ui/src/turn-activity.js";
 
 const command=(id,text,extra={})=>({id,type:"commandExecution",command:text,status:"completed",exitCode:0,aggregatedOutput:"",...extra});
 const entry=(turnId,item)=>({turnId,item});
@@ -131,6 +131,16 @@ test("the card head counts steps and failures, and says when steps are not all l
   assert.deepEqual(activitySummary([]),{text:"0 steps",failed:0});
   const many=Array.from({length:1200},(_,index)=>({id:"s"+index,status:"done"}));
   assert.equal(activitySummary(many).text,"1,200 steps");
+});
+
+test("a compaction's turn is one whose steps are all compactions, as Compact's turn and a harness's /compact are",()=>{
+  const compaction=id=>({id,type:"contextCompaction"});
+  const store=mergeTurnActivity(emptyTurnActivity("th"),cardRowsFromTurns([
+    {id:"c1",items:[compaction("k1")]},{id:"c2",items:[{id:"u",type:"userMessage",content:[]},compaction("k2"),compaction("k3")]},
+    {id:"t3",items:[command("x","npm test"),compaction("k4")]},{id:"t4",items:[{id:"a",type:"agentMessage",text:"Hi."}]},{id:"t5",items:[command("y","ls")]}]),{mode:"replace",complete:true});
+  assert.deepEqual(storeCompactionTurnIds(store),["c1","c2"]);
+  assert.deepEqual(storeCardTurnIds(store),["c1","c2","t3","t5"]);
+  assert.deepEqual(storeCompactionTurnIds(emptyTurnActivity("th")),[]);assert.deepEqual(storeCompactionTurnIds(null),[]);
 });
 
 test("the card that opens by itself is the newest turn's, none while a sent message waits for its turn",()=>{

@@ -737,7 +737,9 @@ test("a Compact that fails ends its row as failed, with no compaction left runni
 
 // A Compact that works is one row too: Compact shows it compacting, and the compaction's item (started and completed as Codex
 // sends it, or only completed as the agent relay sends it for Grok and OpenCode) and thread/compacted end that same row
-// compacted. The compaction's turn keeps the one row on its own card once the next turn starts.
+// compacted. The compaction's turn keeps the one row on its own card once the next turn starts. That card says how the compaction
+// ended: the turn, which has no reply, has no row saying it finished without one, live or once the next turn starts, while an
+// ordinary turn that ends with no reply still says so.
 for(const order of ["Codex","the agent relay"]){
   test(`a Compact that works shows one row from compacting to compacted, with the compaction's events in ${order}'s order`,async({page})=>{
     test.setTimeout(60_000);
@@ -764,6 +766,8 @@ for(const order of ["Codex","the agent relay"]){
       codex.notify("thread/tokenUsage/updated",usage(21));codex.notify("turn/completed",{threadId,turn:{id:turnId,status:"completed",items:[]}});
       await expect(meter).toHaveAttribute("aria-valuenow","21");await expect(stop(page)).toHaveCount(0);
       await expect(rows).toHaveCount(1);await expect(rows).toHaveClass(/status-done/);await expect(rows.locator("summary strong")).toHaveText("Context compacted");
+      const ended=page.locator(`[data-testid=turn-outcome-row][data-turn-id="${turnId}"]`),noReply=page.getByText("Finished without a reply.",{exact:true});
+      await expect(ended,"the compaction's turn has a row saying it finished without a reply").toHaveCount(0);await expect(noReply).toHaveCount(0);
       await rows.scrollIntoViewIfNeeded();await shoot(page,"compact-one-row");
       await sendTyped(page,"Count again.");
       await expect.poll(()=>codex.turns.length).toBe(2);const next=codex.turns[1];next.answer();next.start();
@@ -772,6 +776,14 @@ for(const order of ["Codex","the agent relay"]){
       await expect(card.locator(".activity-card-summary")).toHaveText("1 step");
       await expect(card).toHaveAttribute("data-state","closed");await card.locator(".activity-card-head").click();
       await expect(rows).toHaveCount(1);await expect(card.locator(".tool-event summary strong")).toHaveText("Context compacted");
+      await expect(ended).toHaveCount(0);await expect(noReply).toHaveCount(0);
+      // A turn of the person's that Codex ends with no reply still says so, under its message.
+      await sendTyped(page,"Format the code.");
+      await expect.poll(()=>codex.turns.length).toBe(3);const quiet=codex.turns[2];quiet.answer();
+      codex.notify("turn/started",{threadId,turn:{id:quiet.id,status:"inProgress",items:[]}});await expect(stop(page)).toBeVisible();
+      quiet.status="completed";codex.notify("turn/completed",{threadId,turn:{id:quiet.id,status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
+      await expect(page.locator(`[data-testid=turn-outcome-row][data-turn-id="${quiet.id}"] .turn-outcome-message`)).toHaveText("Finished without a reply.");
+      await expect(noReply).toHaveCount(1);await expect(ended).toHaveCount(0);
     }finally{await codex.close()}
   });
 }

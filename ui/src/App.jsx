@@ -25,7 +25,7 @@ import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queued
 import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId, sessionHandoffMessage, withSessionHandoff } from "./thread-history.js";
 import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain, turnTrailers } from "./turn-outcome.js";
 import { activityRow, isCardItem, mergeLiveRow, restoredRow, settledRow } from "./activity-item.js";
-import { cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeIncompleteTurnIds } from "./turn-activity.js";
+import { cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeCompactionTurnIds, storeIncompleteTurnIds } from "./turn-activity.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { answeringClick, approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
@@ -576,12 +576,12 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
   const decorations=useMemo(()=>assistantRowDecorations(messages,{harnessLabel,turnInfo,threadId}),[messages,harnessLabel,turnInfo,threadId]);
   // Each earlier turn's activity card, and the row that ends a turn which failed, was stopped or completed before any reply,
   // unless the live card lists that failure (one with no rows at all ends after the turn before it, or opens the thread); a turn
-  // whose steps are not all loaded never reads as finished without a reply. The turn lists are strings, so the placement is
-  // worked out again only when they change, not with every step a card adds.
+  // whose steps are not all loaded never reads as finished without a reply, nor does a compaction, whose card says it compacted.
+  // The turn lists are strings, so the placement is worked out again only when they change, not with every step a card adds.
   const cardFailedTurnSet=useMemo(()=>new Set(String(cardFailedTurns||"").split("\n").filter(Boolean)),[cardFailedTurns]);
   const gapBeforeId=historyGap?.beforeId??null,boundaryTurnId=turnActivity?.boundaryTurnId??null;
-  const cardTurns=useMemo(()=>storeCardTurnIds(turnActivity).join("\n"),[turnActivity]),incompleteTurns=useMemo(()=>storeIncompleteTurnIds(turnActivity).join("\n"),[turnActivity]);
-  const trailers=useMemo(()=>turnTrailers(messages,{harnessLabel,turnInfo,threadId,cardFailedTurnIds:cardFailedTurnSet,cardTurnId,reorder:!virtualized,turnOrder,gapBeforeId,startLoaded:!canLoadEarlier,cardTurnIds:cardTurns?cardTurns.split("\n"):[],liveCardTurnId,boundaryTurnId,incompleteTurnIds:new Set(incompleteTurns?incompleteTurns.split("\n"):[])}),[messages,harnessLabel,turnInfo,threadId,cardFailedTurnSet,cardTurnId,virtualized,turnOrder,gapBeforeId,canLoadEarlier,cardTurns,liveCardTurnId,boundaryTurnId,incompleteTurns]);
+  const cardTurns=useMemo(()=>storeCardTurnIds(turnActivity).join("\n"),[turnActivity]),incompleteTurns=useMemo(()=>storeIncompleteTurnIds(turnActivity).join("\n"),[turnActivity]),compactionTurns=useMemo(()=>storeCompactionTurnIds(turnActivity).join("\n"),[turnActivity]);
+  const trailers=useMemo(()=>turnTrailers(messages,{harnessLabel,turnInfo,threadId,cardFailedTurnIds:cardFailedTurnSet,cardTurnId,reorder:!virtualized,turnOrder,gapBeforeId,startLoaded:!canLoadEarlier,cardTurnIds:cardTurns?cardTurns.split("\n"):[],liveCardTurnId,boundaryTurnId,incompleteTurnIds:new Set(incompleteTurns?incompleteTurns.split("\n"):[]),compactionTurnIds:compactionTurns?compactionTurns.split("\n"):[]}),[messages,harnessLabel,turnInfo,threadId,cardFailedTurnSet,cardTurnId,virtualized,turnOrder,gapBeforeId,canLoadEarlier,cardTurns,liveCardTurnId,boundaryTurnId,incompleteTurns,compactionTurns]);
   // A virtualized list estimates each chunk with the closed cards its rows carry (36px and the 22px below each); a chunk on
   // screen measures itself. The chunks holding the active find match and an older page's anchor row mount at once, so both can
   // be scrolled to exactly.

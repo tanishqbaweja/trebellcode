@@ -267,6 +267,23 @@ test("a turn whose steps are not all loaded never reads as finished without a re
   assert.deepEqual([...turnEndRows(messages,{turnInfo,threadId:"th",incompleteTurnIds:["t1"]}).keys()],["u2"]);
 });
 
+test("a completed compaction, a turn whose steps are all compactions, has no row, while a stop or failure of it and an ordinary turn without a reply still do",()=>{
+  // c2: the turn Compact ran, with no rows of its own, between t1's reply and t3, the person's next turn, which ended with no reply.
+  const turnInfo={[turnInfoKey("th","t1")]:{status:"completed",durationMs:900},[turnInfoKey("th","c2")]:{status:"completed",durationMs:1500},[turnInfoKey("th","t3")]:{status:"completed",durationMs:700}};
+  const messages=[user("u1","t1"),reply("a1","t1"),user("u3","t3")],options={harnessLabel:"Codex",turnInfo,threadId:"th",turnOrder:["t1","c2","t3"]};
+  assert.deepEqual([...turnEndRows(messages,options).keys()],["u3","a1"]);
+  const rows=turnEndRows(messages,{...options,compactionTurnIds:["c2"]});
+  assert.deepEqual([...rows.keys()],["u3"]);
+  assert.deepEqual(rows.get("u3"),[{turnId:"t3",heading:"Codex",outcomeLabel:"done · 0.7s",outcomeTone:"ok",message:"Finished without a reply.",latest:true}]);
+  assert.deepEqual([...turnEndRows(messages,{...options,compactionTurnIds:new Set(["c2"])}).keys()],["u3"]);
+  // A compaction of the person's own turn (a harness's /compact after a reload) has none either; a stopped or failed one keeps its row.
+  assert.deepEqual([...turnEndRows(messages,{...options,compactionTurnIds:["c2","t3"]}).keys()],[]);
+  for(const [status,label,tone,message] of [["interrupted","stopped · 1.5s","warn",""],["failed","failed · 1.5s","err","Compaction failed."]]){
+    const ended={...turnInfo,[turnInfoKey("th","c2")]:{status,durationMs:1500,...(message?{error:message}:{})}};
+    assert.deepEqual(turnEndRows(messages,{...options,turnInfo:ended,compactionTurnIds:["c2"]}).get("a1"),[{turnId:"c2",heading:"Codex",outcomeLabel:label,outcomeTone:tone,message,latest:false}]);
+  }
+});
+
 test("a turn the history import made never reads as finished without a reply, while an imported reply keeps its pill",()=>{
   // The import keeps a conversation's messages only and calls every turn it makes completed: an interrupted request, and Claude
   // Code's interrupt marker, are turns without a reply too.

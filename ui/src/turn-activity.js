@@ -130,10 +130,14 @@ export function newestCardTurnId({messages=[],turnOrder=null,turns=null}={}){
   return held.at(-1)||null;
 }
 
-// The turns that have a card, and those whose steps (and maybe reply) are not all loaded.
+// The turns that have a card, those whose steps (and maybe reply) are not all loaded, and those whose steps are all compactions (the
+// turn Compact runs, a harness's own /compact): their card says how they ended.
 export function storeCardTurnIds(store){
   return Object.keys(store?.turns||{}).filter(id=>store.turns[id]?.rows?.length);
 }
 export function storeIncompleteTurnIds(store){
   return Object.keys(store?.turns||{}).filter(id=>store.turns[id]&&!store.turns[id].complete);
+}
+export function storeCompactionTurnIds(store){
+  return Object.keys(store?.turns||{}).filter(id=>{const rows=store.turns[id]?.rows;return rows?.length>0&&rows.every(row=>row?.kind==="contextCompaction")});
 }
