@@ -476,9 +476,12 @@ for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(
 // Two linked pull requests fold into the first one's chip ("#101 +1") beside the open inspector, and the project crumb keeps a
 // shortened name, ended by its ellipsis, as it does beside one chip: the title keeps a readable width and the crumb has the room
 // left beside it (UI lane D, 2026-10-17: the fold took the crumb's name too, leaving its folder icon while the title showed whole).
-// The crumb's tooltip gives the whole name at each width.
-for(const mode of ["dark","light"])test(`the project crumb keeps a shortened name beside two linked pull requests, at 1280 where they fold into one chip and at 900 and 700, in ${mode} mode`,async({page})=>{
-  test.setTimeout(45_000);
+// In a narrower main column the theme and palette buttons step aside, which often frees more than the title needs, and the crumb
+// gets its shortened name back there too (at 1240 it kept its icon alone beside a whole title with room to spare): it keeps only
+// its icon where its shortened name would leave the title under its readable width. Beside a shortened crumb the title shows
+// whole while the crumb can shrink further. The crumb's tooltip gives the whole name at each width.
+for(const mode of ["dark","light"])test(`the project crumb keeps a shortened name beside two linked pull requests, at 1280 where they fold into one chip, at 1240 where the theme and palette buttons step aside, and at 900 and 700, and keeps only its icon where the title needs its room, in ${mode} mode`,async({page})=>{
+  test.setTimeout(60_000);
   const project={id:"header-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
   const thread={id:"header-thread",name:"Repo task one",preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at repo task one"}]},{type:"agentMessage",id:"assistant-1",text:"Looked at repo task one."}]}]};
   const prs=[101,102].map(number=>({url:"https://github.com/lane-d/scratch/pull/"+number,number,title:"Scratch PR "+number,state:"open"}));
@@ -502,18 +505,34 @@ for(const mode of ["dark","light"])test(`the project crumb keeps a shortened nam
       document.body.append(least);const width=least.getBoundingClientRect().width;least.remove();
       return {display:style.display,shown:node.clientWidth,whole:node.scrollWidth,least:width,overflow:style.textOverflow};
     });
-    // The main column beside the docked 460px inspector at 1280; at 900 and below the inspector lies over it, and at 700 the
-    // sidebar has closed.
-    for(const [width,column] of [[1280,562],[900,704],[700,700]]){
+    // The main column beside the docked 460px inspector at 1280, 1240 and 1180, and beside the 224px sidebar at 1100; at 900 and
+    // below the inspector lies over it, and at 700 the sidebar has closed. At 1240 the theme and palette buttons have stepped
+    // aside, and at 1180 and 1100 the crumb has its shortened name or the title needs the room.
+    for(const [width,column,named] of [[1280,562,true],[900,704,true],[700,700,true],[1240,522,true],[1180,462,false],[1100,416,false]]){
       await page.setViewportSize({width,height:800});
       await expect.poll(()=>header.evaluate(node=>Math.round(node.getBoundingClientRect().width))).toBe(column);await settle(page);
       const chips=await header.locator(".header-pr").evaluateAll(nodes=>nodes.filter(node=>node.offsetParent).map(node=>node.innerText.replace(/\s+/g,"")));
       if(width===1280)expect(chips,"the pull requests fold into the first one's chip").toEqual(["#101+1"]);
-      const shown=await name();
-      expect(shown.display,`the crumb's name at ${width}px`).not.toBe("none");
-      expect(shown.shown+1,`the crumb's name shows its first letter and the ellipsis at least at ${width}px`).toBeGreaterThanOrEqual(shown.least);
-      if(shown.shown<shown.whole)expect(shown.overflow,`the crumb's name is cut with an ellipsis at ${width}px`).toBe("ellipsis");
-      const titleBox=await title.evaluate(node=>({shown:node.clientWidth,whole:node.scrollWidth}));
+      if(width===1240)await expect(header.getByRole("button",{name:"Command palette",exact:true}),"the palette button has stepped aside").toBeHidden();
+      const shown=await name(),titleBox=await title.evaluate(node=>({shown:node.clientWidth,whole:node.scrollWidth}));
+      // The crumb's box and its least width, and the title's box and the width its text takes, to the fraction of a pixel.
+      const squeeze=await header.evaluate(node=>{
+        const box=node.querySelector(".project-crumb:not(.sidebar-reopen)"),strong=node.querySelector(".thread-title-button strong"),text=document.createRange();text.selectNodeContents(strong);
+        return {crumb:box.getBoundingClientRect().width,least:parseFloat(getComputedStyle(box).minWidth),title:strong.getBoundingClientRect().width,text:text.getBoundingClientRect().width};
+      });
+      console.log(`header at ${width}: fit ${await header.getAttribute("data-fit")}, crumb ${squeeze.crumb.toFixed(3)}px (least ${squeeze.least.toFixed(3)}), its name ${shown.display==="none"?"hidden":shown.shown+" of "+shown.whole+"px"}, title ${squeeze.title.toFixed(3)}px for its text's ${squeeze.text.toFixed(3)}px, chips ${chips.join(" ")}`);
+      // The crumb gives way before the title: beside a crumb wider than its least width the title is not cut at all (it took a
+      // few hundredths of a pixel of the crumb's squeeze, and its ellipsis showed in place of its last letters).
+      if(squeeze.crumb>squeeze.least+0.5)expect.soft(squeeze.text,`the title beside a crumb wider than its least width shows whole at ${width}px`).toBeLessThanOrEqual(squeeze.title+0.01);
+      if(named||shown.display!=="none"){
+        expect(shown.display,`the crumb's name at ${width}px`).not.toBe("none");
+        expect(shown.shown+1,`the crumb's name shows its first letter and the ellipsis at least at ${width}px`).toBeGreaterThanOrEqual(shown.least);
+        if(shown.shown<shown.whole)expect(shown.overflow,`the crumb's name is cut with an ellipsis at ${width}px`).toBe("ellipsis");
+      }else{
+        // Its icon alone, only because its shortened name (the header's data-crumb) would cut the title under its readable width.
+        const withName=await header.evaluate(node=>{node.dataset.crumb="short";const strong=node.querySelector(".thread-title-button strong"),box={shown:strong.clientWidth,whole:strong.scrollWidth};delete node.dataset.crumb;return box});
+        expect(withName.shown+1,`the title beside the crumb's shortened name at ${width}px`).toBeLessThan(Math.min(withName.whole,80));
+      }
       expect(titleBox.shown+1,`the title's width at ${width}px`).toBeGreaterThanOrEqual(Math.min(titleBox.whole,80));
       const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
       await expect(crumb).toHaveAttribute("title",project.name+" · Projects and workspaces");

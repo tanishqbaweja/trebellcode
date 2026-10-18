@@ -749,16 +749,18 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header .thread-title-button.is-static:hover{background:transparent;color:var(--tx1)}
 
 /* Topbar in narrow main columns (a mid-size window with the inspector open): the thread title is the last thing to give way.
-   The project crumb shrinks first, to a few letters (its large flex-shrink takes the whole squeeze before the title takes any);
-   then header-fit.js measures the title and, while it shows less than a readable width, sets data-fit: 1 drops the labels of the
-   labelled actions, 2 folds several linked pull requests into the first one's chip ("#482 +1", as the sidebar row reads) and
-   lets the project crumb shrink to its first letter and the ellipsis, 3 also drops the project name, 4 also hides the theme and
-   palette buttons (the palette, Settings and the sidebar's search reach both), 5 leaves the pull request chip its icon and how
-   many are linked, and 6 shows the More actions menu while actions fold into it one at a time from the end of the row (each one
-   header-fit.js marks data-folded; Stop and the inspector toggle never fold). Each control keeps its tooltip and accessible
-   name. */
+   The project crumb shrinks first, to a few letters (its flex-shrink, a million times the title's, takes the whole squeeze before
+   the title takes any: at a thousand times the title took a few hundredths of a pixel of it, and its ellipsis showed in place of
+   its last letters beside every shortened crumb); then header-fit.js measures the title and, while it shows less than a readable
+   width, sets data-fit: 1 drops the labels of the labelled actions, 2 folds several linked pull requests into the first one's
+   chip ("#482 +1", as the sidebar row reads) and lets the project crumb shrink to its first letter and the ellipsis, 3 also drops
+   the project name, 4 also hides the theme and palette buttons (the palette, Settings and the sidebar's search reach both), 5
+   leaves the pull request chip its icon and how many are linked, and 6 shows the More actions menu while actions fold into it
+   one at a time from the end of the row (each one header-fit.js marks data-folded; Stop and the inspector toggle never fold).
+   From 4 on the project name comes back as at 2 (data-crumb="short") wherever the title keeps its readable width beside it.
+   Each control keeps its tooltip and accessible name. */
 .workspace-header .workspace-breadcrumb{flex:1 1 auto}
-.workspace-header .project-crumb:not(.sidebar-reopen){flex:0 1000 auto;min-width:calc(39px + 4ch)}
+.workspace-header .project-crumb:not(.sidebar-reopen){flex:0 1000000 auto;min-width:calc(39px + 4ch)}
 .workspace-header .thread-title-button{flex:0 1 auto;min-width:0}
 .workspace-header .thread-title-button strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .header-control:is(.branch-control,.review-control,.script-control,.stop-control){width:30px;padding:0;justify-content:center}
@@ -768,9 +770,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .workspace-header-actions>.open-in-wrap .open-in-picker>button{width:28px;padding:0;justify-content:center}
 .workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .workspace-header-actions>.open-in-wrap .open-in-picker>button>span{display:none}
 .workspace-header:is([data-fit="1"],[data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .workspace-header-actions>.open-in-wrap .open-in-picker>select{width:24px;min-width:0;padding:0;color:transparent!important}
-.workspace-header[data-fit="2"] .project-crumb:not(.sidebar-reopen){min-width:calc(39px + 3ch)}
-.workspace-header:is([data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .project-crumb:not(.sidebar-reopen){width:30px;min-width:30px;padding:0;justify-content:center}
-.workspace-header:is([data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .project-crumb:not(.sidebar-reopen)>span{display:none}
+.workspace-header:is([data-fit="2"],[data-crumb="short"]) .project-crumb:not(.sidebar-reopen){min-width:calc(39px + 3ch)}
+.workspace-header:is([data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]):not([data-crumb="short"]) .project-crumb:not(.sidebar-reopen){width:30px;min-width:30px;padding:0;justify-content:center}
+.workspace-header:is([data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]):not([data-crumb="short"]) .project-crumb:not(.sidebar-reopen)>span{display:none}
 .workspace-header:is([data-fit="4"],[data-fit="5"],[data-fit="6"]) .workspace-header-actions>:is(.theme-toggle,.palette-control){display:none}
 .workspace-header .header-pr>:is(.header-pr-more,.header-pr-count){display:none}
 .workspace-header:is([data-fit="2"],[data-fit="3"],[data-fit="4"],[data-fit="5"],[data-fit="6"]) .header-pr+.header-pr{display:none}
