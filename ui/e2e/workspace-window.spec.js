@@ -833,6 +833,36 @@ test("an HTML file previewed after a PDF stays sandboxed: its script never runs,
   }
 });
 
+// An .htm file is a web page as an .html one is, and the Files view previews it the same way: its text shows in the sandboxed frame
+// with its script refused, and its raw address serves it as HTML, sandboxed (UI lane D, 2026-10-17: served as a download, the
+// frame stayed a blank white box).
+test("an .htm page previews as the same page saved as .html does, sandboxed with its script refused",async({page,request})=>{
+  test.setTimeout(60_000);
+  const html="<!doctype html><title>Page</title><body><script>document.body.append('SCRIPT RAN');try{parent.document.title='Changed by the page'}catch{}</script><p>Static page text</p></body>\n";
+  // The other files the preview shows from their raw address, by the kind each is served as.
+  const media={image:["png","jpg","jpeg","gif","webp","bmp","svg","ico"],video:["mp4","webm","mov"],audio:["mp3","wav","m4a","ogg","flac"],application:["pdf"]};
+  const {right,row,dir}=await openFilesFolder(page,request,"Workspace htm preview",{"page.htm":html,"page.html":html,...Object.fromEntries(Object.values(media).flat().map(ext=>["sample."+ext,"x"]))});
+  const head=right.locator(".file-head strong"),frame=right.locator(".document-preview iframe"),body=page.frameLocator(".document-preview iframe").locator("body");
+  const title=await page.title();
+  for(const name of ["page.htm","page.html","page.htm"]){
+    await row(name).click();await expect(head).toHaveText(name);
+    await expect(frame).toHaveAttribute("sandbox","");await expect(frame).toHaveAttribute("title",name);
+    await expect(body,name).toContainText("Static page text");
+    await expect(body,name).not.toContainText("SCRIPT RAN");
+    expect(await page.title(),name).toBe(title);
+  }
+  await shootBothModes(page,"workspace-htm-preview");
+  const raw=path=>request.get("/api/workspace/raw?"+new URLSearchParams({root:dir,path:join(dir,path)}));
+  for(const path of ["page.htm","page.html"]){
+    const headers=(await raw(path)).headers();
+    expect(headers["content-type"],path).toBe("text/html; charset=utf-8");
+    expect(headers["content-security-policy"],path).toBe("sandbox");
+    expect(headers["x-content-type-options"],path).toBe("nosniff");
+  }
+  // None is served as a download, which a preview cannot show.
+  for(const [kind,extensions] of Object.entries(media))for(const ext of extensions)expect((await raw("sample."+ext)).headers()["content-type"],ext).toMatch(new RegExp("^"+kind+"/"));
+});
+
 test("a file the system will not let Trebell read says so plainly, without the system's error or the folder's full path",async({page,request})=>{
   test.skip(process.platform!=="win32","icacls denies the read here");
   test.setTimeout(60_000);
