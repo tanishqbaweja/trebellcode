@@ -63,7 +63,9 @@ function attachmentParts(path){
 
 // A press answers the question, or takes a file away, once, as a queued follow-up's buttons run: the rest of it (the second click of
 // a double click, Enter held) does nothing, so it never lands on what comes under the pointer once the dialog or the file has gone:
-// a word of the page behind, which it would select, or the next file's ×, which would take that file away too.
+// a word of the page behind, which it would select, or the next file's ×, which would take that file away too. A double click whose
+// pointer moved a few pixels is two clicks of their own to the browser, so a file's × also takes only a click aimed at its file
+// (answeringClick), as Submit and Cancel do.
 function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
 
 // threadLabel names the task that asked when it is not the open thread; waiting counts the questions after this one.
@@ -131,7 +133,7 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
     {questions.map(q=><div className="question-block" key={q.id}><label>{q.header&&<small>{q.header}</small>}<strong>{q.question}</strong></label>
       {q.options?.length>0&&<div className={"question-options"+(q.allowMultiple?" multiple":"")}>{q.options.map(opt=><button className={answers[q.id]?.includes(opt.label)?"active":""} aria-pressed={Boolean(answers[q.id]?.includes(opt.label))} key={opt.label} onClick={()=>chooseOption(q,opt.label)}>{opt.label}{opt.description&&<span>{opt.description}</span>}</button>)}</div>}
       <input className="tb-input" placeholder="Custom answer…" value={answers[q.id]?.find(a=>!q.options?.some(o=>o.label===a))||""} onChange={e=>setCustom(q,e.target.value)}/>
-      <div className="question-files">{(filesByQuestion[q.id]||[]).map(path=>{const [stem,ext]=attachmentParts(path);return <span key={path} title={path}><Paperclip size={11}/><em>{stem}</em>{ext&&<em className="question-file-ext">{ext}</em>}<button type="button" title="Remove attachment" onClick={()=>setFilesByQuestion(prev=>({...prev,[q.id]:(prev[q.id]||[]).filter(item=>item!==path)}))}><X size={11}/></button></span>})}<button type="button" className="tb-btn tb-btn--sm question-attach" onClick={()=>attach(q.id)} disabled={busy===q.id||fileCount>=100}><Paperclip size={13}/> {busy===q.id?"Choosing…":"Attach files"}</button></div>
+      <div className="question-files">{(filesByQuestion[q.id]||[]).map(path=>{const [stem,ext]=attachmentParts(path);return <span key={path} title={path}><Paperclip size={11}/><em>{stem}</em>{ext&&<em className="question-file-ext">{ext}</em>}<button type="button" title="Remove attachment" onClick={event=>answeringClick(event)&&setFilesByQuestion(prev=>({...prev,[q.id]:(prev[q.id]||[]).filter(item=>item!==path)}))}><X size={11}/></button></span>})}<button type="button" className="tb-btn tb-btn--sm question-attach" onClick={()=>attach(q.id)} disabled={busy===q.id||fileCount>=100}><Paperclip size={13}/> {busy===q.id?"Choosing…":"Attach files"}</button></div>
     </div>)}
     {attachError&&<div className="inline-error" role="alert">{attachError}</div>}
     {submitError&&<div className="inline-error" role="alert">{submitError}</div>}

@@ -12,6 +12,7 @@ import {
   buildElicitationResponse,
 } from "../mcp-elicitation.js";
 import { ignorePressRest } from "./ThreadSidebar.jsx";
+import { answerableClick, answeringClick } from "../approval-utils.js";
 
 function pretty(value){
   if(typeof value==="string")return value;
@@ -82,7 +83,10 @@ function useEscapeToCancel(ref,active,cancelRef){
 
 // A press answers a request once, as a queued follow-up's buttons run: the rest of it (the second click of a double click, Enter held)
 // does nothing, so it never lands on what comes up under the pointer once the dialog has gone: the next request, which it would answer
-// unseen, or the page behind, where it would select a word.
+// unseen, or the page behind, where it would select a word. A double click whose pointer moved a few pixels is two clicks of their own
+// to the browser: the answer buttons and the X take only a click aimed at this request (answeringClick), as the approval cards' and
+// the questions' do, so its second click leaves the next request, come up in this one's place, waiting. A form's Submit notes its
+// click only once the form goes (answerableClick): one it refused for a field left empty leaves the next Submit free to answer.
 function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
 
 export default function McpElicitationModal({request,onResolve,onVerify,verificationAvailable=true,verificationUnavailableReason=""}){
@@ -116,9 +120,10 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
   cancelRef.current=cancelRequest;
   // Editing a field clears the previous validation error, which otherwise stayed on screen after the field was fixed.
   function edit(update){setValues(update);setError("");setInvalidField(null)}
-  async function submitForm(){
+  async function submitForm(event){
     const problem=firstFormProblem(fields,values);
     if(problem){setError(problem.message);setInvalidField(problem.id);errorRef.current?.scrollIntoView?.({block:"nearest"});return}
+    answeringClick(event);
     try{await resolve(acp?buildElicitationResponse(request,"once",coerceElicitationFormContent(fields,values)):{action:"accept",content:coerceElicitationFormContent(fields,values),_meta:null})}
     catch(err){setError(err?.message||String(err));errorRef.current?.scrollIntoView?.({block:"nearest"})}
   }
@@ -143,7 +148,7 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
   const message=String(params.message||"").trim();
   const title=kind==="approval"?"Approve app action":kind==="url"?"App needs browser input":kind==="verification"?"Verification required":"App needs input";
   return <div className="modal-backdrop" data-testid="mcp-elicitation"><div className={"mcp-elicitation-modal kind-"+kind} role="dialog" aria-modal="true" aria-labelledby="mcp-elicitation-title" ref={dialogRef} tabIndex={-1} onClick={pressOnce}>
-    <div className="modal-head"><div><span className="modal-head-icon">{kind==="approval"?<ShieldCheck size={16}/>:<PlugZap size={16}/>}</span><strong id="mcp-elicitation-title">{title}</strong></div><button className="modal-close" disabled={resolveBusy||verificationBusy} onClick={cancelRequest} aria-label="Cancel app request"><X size={16}/></button></div>
+    <div className="modal-head"><div><span className="modal-head-icon">{kind==="approval"?<ShieldCheck size={16}/>:<PlugZap size={16}/>}</span><strong id="mcp-elicitation-title">{title}</strong></div><button className="modal-close" disabled={resolveBusy||verificationBusy} onClick={event=>answeringClick(event)&&cancelRequest()} aria-label="Cancel app request"><X size={16}/></button></div>
     {error&&<div className="inline-error" role="alert" ref={errorRef}>{error}</div>}
 
     {kind==="approval"&&<>
@@ -155,10 +160,10 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
       {details.displayParams.length>0&&<div className="mcp-approval-params">{details.displayParams.map(item=><div key={item.name}><span>{item.label}</span><code>{pretty(item.value)}</code></div>)}</div>}
       <div className="mcp-approval-note">Only approve if you expect this app action.{elicitationSupportsPersist(request,"always")&&" “Always allow” changes future approval behavior for this tool, not Trebell’s global permission mode."}</div>
       <div className="mcp-approval-actions">
-        <button className="tb-btn mcp-cancel" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel tool</button>
-        {elicitationSupportsPersist(request,"always")&&<button className="tb-btn tb-btn--outline approve strong" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("always"))}>Always allow</button>}
-        {elicitationSupportsPersist(request,"session")&&<button className="tb-btn tb-btn--outline approve" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("session"))}>Allow session</button>}
-        <button className="tb-btn tb-btn--primary approve allow-once" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("once"))}>Allow once</button>
+        <button className="tb-btn mcp-cancel" disabled={resolveBusy} onClick={event=>answeringClick(event)&&resolve(buildMcpApprovalResponse("cancel"))}>Cancel tool</button>
+        {elicitationSupportsPersist(request,"always")&&<button className="tb-btn tb-btn--outline approve strong" disabled={resolveBusy} onClick={event=>answeringClick(event)&&resolve(buildMcpApprovalResponse("always"))}>Always allow</button>}
+        {elicitationSupportsPersist(request,"session")&&<button className="tb-btn tb-btn--outline approve" disabled={resolveBusy} onClick={event=>answeringClick(event)&&resolve(buildMcpApprovalResponse("session"))}>Allow session</button>}
+        <button className="tb-btn tb-btn--primary approve allow-once" disabled={resolveBusy} onClick={event=>answeringClick(event)&&resolve(buildMcpApprovalResponse("once"))}>Allow once</button>
       </div>
     </>}
 
@@ -174,14 +179,14 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
           :field.type==="boolean"?<span className="mcp-boolean"><input type="checkbox" checked={Boolean(values[field.id])} onChange={event=>edit(current=>({...current,[field.id]:event.target.checked}))}/> Enabled</span>
           :<input className="tb-input" aria-invalid={invalidField===field.id||undefined} type={field.secret?"password":field.type==="number"?"number":field.format==="email"?"email":field.format==="uri"?"url":"text"} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} step={field.integer?1:undefined} value={values[field.id]??""} onChange={event=>edit(current=>({...current,[field.id]:event.target.value}))}/>}
       </Field>})}</div>:<p className="mcp-elicitation-message">This MCP server is asking permission to continue.</p>}
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button className="tb-btn" disabled={resolveBusy} onClick={()=>resolve(acp?buildElicitationResponse(request,"decline"):buildMcpApprovalResponse("decline"))}>Decline</button>{fields.length>0?<button className="tb-btn tb-btn--primary primary" disabled={resolveBusy} onClick={submitForm}>Submit</button>:<button className="tb-btn tb-btn--primary primary" disabled={resolveBusy} onClick={()=>resolve(acp?buildElicitationResponse(request,"once"):buildMcpApprovalResponse("once"))}>Allow</button>}</div>
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button className="tb-btn" disabled={resolveBusy} onClick={event=>answeringClick(event)&&resolve(acp?buildElicitationResponse(request,"decline"):buildMcpApprovalResponse("decline"))}>Decline</button>{fields.length>0?<button className="tb-btn tb-btn--primary primary" disabled={resolveBusy} onClick={event=>answerableClick(event)&&submitForm(event)}>Submit</button>:<button className="tb-btn tb-btn--primary primary" disabled={resolveBusy} onClick={event=>answeringClick(event)&&resolve(acp?buildElicitationResponse(request,"once"):buildMcpApprovalResponse("once"))}>Allow</button>}</div>
     </>}
 
     {kind==="url"&&<>
       {message&&<p className="mcp-elicitation-message">{message}</p>}
       <div className="mcp-url-card"><code>{params.url}</code>{!acp&&<button className="tb-btn tb-btn--sm" onClick={openUrl}><ExternalLink size={12}/> Open link</button>}</div>
       <p className="mcp-approval-note">{acp?"Opening the link tells the agent you consented to the out-of-band flow. Trebell never reads what you enter there; the agent can report completion separately.":"Trebell does not mark the request complete just because the link was opened. Confirm only after you finish the requested step in your browser."}</p>
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button className="tb-btn" disabled={resolveBusy} onClick={()=>resolve(acp?buildElicitationResponse(request,"decline"):buildMcpApprovalResponse("decline"))}>Decline</button>{acp?<button className="tb-btn tb-btn--primary primary" disabled={resolveBusy} onClick={openUrl}><ExternalLink size={12}/> Open & continue</button>:<button className="tb-btn tb-btn--primary primary" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("once"))}>I completed it</button>}</div>
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button className="tb-btn" disabled={resolveBusy} onClick={event=>answeringClick(event)&&resolve(acp?buildElicitationResponse(request,"decline"):buildMcpApprovalResponse("decline"))}>Decline</button>{acp?<button className="tb-btn tb-btn--primary primary" disabled={resolveBusy} onClick={event=>answeringClick(event)&&openUrl()}><ExternalLink size={12}/> Open & continue</button>:<button className="tb-btn tb-btn--primary primary" disabled={resolveBusy} onClick={event=>answeringClick(event)&&resolve(buildMcpApprovalResponse("once"))}>I completed it</button>}</div>
     </>}
 
     {kind==="verification"&&<>
@@ -189,12 +194,12 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
       {params.description&&<p className="mcp-approval-note">{params.description}</p>}
       {!verificationAvailable&&<div className="inline-error">{verificationUnavailableReason||"Device verification is unavailable for this runtime or workspace."}</div>}
       {verificationAvailable&&!onVerify&&<div className="inline-error">This Trebell runtime cannot request a native verification proof.</div>}
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button className="tb-btn" disabled={verificationBusy||resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button>{verificationAvailable&&onVerify&&<button className="tb-btn tb-btn--primary primary" disabled={verificationBusy||resolveBusy} onClick={verify}>{verificationBusy?"Verifying…":"Verify with device"}</button>}</div>
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button className="tb-btn" disabled={verificationBusy||resolveBusy} onClick={event=>answeringClick(event)&&resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button>{verificationAvailable&&onVerify&&<button className="tb-btn tb-btn--primary primary" disabled={verificationBusy||resolveBusy} onClick={event=>answeringClick(event)&&verify()}>{verificationBusy?"Verifying…":"Verify with device"}</button>}</div>
     </>}
 
     {kind==="unsupported"&&<>
       <div className="inline-error">This MCP server requested an elicitation mode this Trebell build does not understand: {String(params.mode||"unknown")}.</div>
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button className="tb-btn" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button></div>
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button className="tb-btn" disabled={resolveBusy} onClick={event=>answeringClick(event)&&resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button></div>
     </>}
   </div></div>;
 }

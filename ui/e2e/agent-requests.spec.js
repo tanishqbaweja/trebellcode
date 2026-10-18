@@ -589,6 +589,66 @@ test("a double click on the × of a file attached in a question takes away that 
   }finally{await harness.close()}
 });
 
+// A double click whose pointer moves a few pixels between its clicks: its first click, then a second a few pixels away, each a
+// click of its own to the browser (detail 1), as Windows makes it when the pointer leaves its double-click rectangle.
+async function movedDoubleClick(page,button){
+  const box=await button.boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+  await page.evaluate(()=>getSelection().removeAllRanges());
+  await page.mouse.click(x,y);await page.waitForTimeout(90);await page.mouse.click(x+6,y+1);
+}
+
+// The second of those clicks lands on what comes up under the pointer and does nothing to it: on an app request's Allow once or a
+// form's Submit, the next app request, which waits for its own answer, as the approval cards' and the questions' do; on the × of a
+// file attached in a question, the next file, which stays.
+test("a double click that moves a few pixels on an app request's Allow once or a form's Submit answers only the request it was aimed at, and on a question's file × takes away only that file",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const app=page.getByTestId("mcp-elicitation");
+    const write=askApproval(harness,"Write fixture"),remove=askApproval(harness,"Delete fixture");
+    await expect(app).toContainText("Write fixture");
+    await movedDoubleClick(page,app.getByRole("button",{name:"Allow once",exact:true}));
+    expect(await write.answered).toEqual({action:"accept",content:null,_meta:null});
+    await page.waitForTimeout(600);
+    expect.soft(harness.answersTo(remove),"the second click of the double click approved the next request unseen").toHaveLength(0);
+    if(!harness.answersTo(remove).length){
+      await expect(app).toContainText("Delete fixture");
+      await shoot(page,"app-request-after-moved-double-click");
+      await app.getByRole("button",{name:"Cancel tool",exact:true}).click();expect(await remove.answered).toEqual({action:"cancel",content:null,_meta:null});
+    }
+    await expect(app).toHaveCount(0);expect(harness.answersTo(write)).toHaveLength(1);expect(harness.answersTo(remove)).toHaveLength(1);
+    // A form's Submit, pressed so: the form goes, and the next form, come up in its place, waits for its own answer.
+    const formOf=message=>harness.ask("mcpServer/elicitation/request",{threadId:RELEASE.id,serverName:"fixture_app",mode:"form",message,requestedSchema:{type:"object",properties:{note:{type:"string",title:"Note"}}}});
+    await page.waitForTimeout(600);
+    const first=formOf("Name the first release"),second=formOf("Name the second release");
+    await expect(app).toContainText("Name the first release");
+    await movedDoubleClick(page,app.getByRole("button",{name:"Submit",exact:true}));
+    expect((await first.answered).action).toBe("accept");
+    await page.waitForTimeout(600);
+    expect.soft(harness.answersTo(second),"the second click of the double click submitted the next form unseen").toHaveLength(0);
+    if(!harness.answersTo(second).length){
+      await expect(app).toContainText("Name the second release");
+      await app.getByRole("button",{name:"Decline",exact:true}).click();expect((await second.answered).action).toBe("decline");
+    }
+    await expect(app).toHaveCount(0);expect(harness.answersTo(first)).toHaveLength(1);expect(harness.answersTo(second)).toHaveLength(1);
+    // A question's files: the × of the first, pressed so, takes away that file only.
+    const modal=page.locator(".question-modal"),files=modal.locator(".question-files > span"),names=numbers=>numbers.map(number=>`worker-${number}.log`);
+    const asked=harness.ask("item/tool/requestUserInput",{threadId:RELEASE.id,turnId:"turn-release",itemId:"q-moved-logs",questions:[{id:"logs",header:"Logs",question:"Attach the failing logs?",options:[],allowMultiple:false}]});
+    await expect(modal).toContainText("Attach the failing logs?");
+    const [chooser]=await Promise.all([page.waitForEvent("filechooser"),modal.getByRole("button",{name:"Attach files"}).click()]);
+    await chooser.setFiles(names([1,2,3,4,5]).map(name=>textFile(name,name)));
+    await expect(files).toHaveText(names([1,2,3,4,5]));await page.waitForTimeout(600);
+    await movedDoubleClick(page,files.first().getByRole("button",{name:"Remove attachment"}));
+    await page.waitForTimeout(600);
+    await expect.soft(files,"the second click of the double click took away the next file too").toHaveText(names([2,3,4,5]));
+    await shoot(page,"question-file-after-moved-double-click");
+    await modal.getByRole("button",{name:"Submit",exact:true}).click();
+    expect((await asked.answered).answers.logs.answers[0]).toMatch(/^Attached files:\n- .*worker-2\.log\n- .*worker-3\.log\n- .*worker-4\.log\n- .*worker-5\.log$/);
+  }finally{await harness.close()}
+});
+
 // A double click on a command approval card's button answers it once, and with no card after it the rest of the press does nothing
 // to the page, which takes the card's place under the pointer: no word there is selected. Allow once, Allow session and Deny, at
 // 1280 and 900 wide.
