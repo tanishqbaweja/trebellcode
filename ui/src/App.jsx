@@ -3681,7 +3681,9 @@ export default function App(){
     if(restoredLocalQueue.some(item=>item.recoveredUncertainDispatch))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(projectError)throw projectError;else if(!openedThread.cwd)setProjectPath(projectPath);
-    if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
+    // The goal and notes read for the thread come in the frame that shows it, so a Goal panel open on it starts from them and puts
+    // back a draft left unsaved on it against them: an empty goal for a moment read as the goal cleared elsewhere.
+    if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(goalData?.goal||null);setContinuity(continuityData?.continuity||null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
     if(!connectedClient){setReviewedFiles(savedMeta.reviewedFiles||[]);if(persistentReadErrors.length)showActionError(new Error(persistentReadErrors.join(" · ")),"Opened thread, but some saved state could not be loaded");return}
     const map=cp?Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x])):(reopeningCurrentThread?checkpointByTurn:{});
     if(cp)setCheckpointByTurn(map);
@@ -5316,10 +5318,11 @@ export default function App(){
     if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} agentRuntime={sourceControlRuntime} agentRuntimeInstanceId={sourceControlRuntimeInstanceId} agentRuntimeLabel={agentRuntimeName(sourceControlRuntime)} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} onGitInfo={next=>setGitInfo(current=>sameSnapshot(current,next)?current:next)} gitInfo={gitInfo} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="agents"&&runtimeCapabilities.delegation)return <div className="panel-page"><AgentsPage threads={threads} threadMeta={threadMeta} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onDelegate={delegateTask} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry} canModelDelegate={Boolean(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation)}/></div>;
     // Everything the goal panel holds (drafts, busy state and its last error) belongs to one thread: another thread, or a harness
-    // switch, starts it afresh instead of showing the previous thread's error. A save that answers after another thread opened
-    // updates nothing on screen (that thread loads its own goal), like every other goal and continuity update here. While another
-    // thread's opening state is up, the panel waits for that thread instead of offering the goal of the one being left, which only
-    // hides: a failed open brings it back with what was being written in it.
+    // switch, starts it from that thread's own saved goal, or from the draft left unsaved on it (GoalPanel keeps each thread's
+    // until it is saved or discarded), never with the previous thread's draft or error. A save that answers after another thread
+    // opened updates nothing on screen (that thread loads its own goal), like every other goal and continuity update here. While
+    // another thread's opening state is up, the panel waits for that thread instead of offering the goal of the one being left,
+    // which only hides: a failed open brings it back with what was being written in it.
     if(rightPanelTab==="goal"){
       const goalThreadId=activeThread?.id||null,forGoalThread=apply=>next=>{if(goalThreadId&&activeThreadRef.current?.id===goalThreadId)apply(next)};
       return <>{openingShown&&<div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>}<GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} covered={openingShown} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/></>;

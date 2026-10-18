@@ -16,10 +16,11 @@ const json=(route,value)=>route.fulfill({status:200,contentType:"application/jso
 
 // One thread, "Composer thread", open, unless newTask leaves the window on New task. replies answers the provider's calls in order.
 // refuse(message), when given, names an error to answer a request with instead of the relay (a harness refusing it). turns are the
-// thread's turns from before the window opened, in place of its one short reply.
-async function openComposerApp(page,{newTask=false,replies=[],refuse=null,turns=[{user:"Look at the login page",items:[replyItem("seed-reply-1","The login page renders.")]}]}={}){
+// thread's turns from before the window opened, in place of its one short reply. others names more threads, each with a short reply.
+async function openComposerApp(page,{newTask=false,replies=[],refuse=null,turns=[{user:"Look at the login page",items:[replyItem("seed-reply-1","The login page renders.")]}],others=[]}={}){
   const harness=await startRelayHarness({replies});
   harness.seedThread("Composer thread",turns);
+  others.forEach((name,index)=>harness.seedThread(name,[{user:"Look at "+name,items:[replyItem("other-reply-"+index,name+" is ready.")]}]));
   await routeRelayApp(page,harness);
   if(refuse)await page.routeWebSocket(harness.wsUrl,ws=>{
     const server=ws.connectToServer();
@@ -638,6 +639,51 @@ test("the Goal panel left open on New task says no thread is open, and the threa
     await expect(rightPanel).toContainText("No active thread");await expect(rightPanel.getByRole("alert")).toHaveCount(0);
     await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
     await expect(objective).toHaveValue("Make the login tests pass");
+  }finally{await harness.close()}
+});
+
+// A Goal edit left unsaved went without a word when the person opened another thread and came back: the panel kept one put-away
+// draft, and the other thread's panel dropped it. Each thread keeps its own until it is saved or discarded, and another thread's
+// panel starts from its own goal or its own draft, opened from the sidebar or from the palette.
+test("a Goal edit and note left unsaved on a thread are still there when the person opens another thread and comes back, and each thread keeps its own",async({page})=>{
+  test.setTimeout(120_000);
+  const socket=await relaySocket(page);
+  const harness=await openComposerApp(page,{others:["Second thread"]});
+  try{
+    // The first thread's goal was set elsewhere (another window), as one set before this window opened was.
+    await relayRequest(harness,"thread/goal/set",{threadId:harness.threads[0].id,objective:"Make the login tests pass",completionConditions:["Login tests pass"]});
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    const panel=page.getByTestId("goal-panel"),objective=panel.getByLabel("Objective",{exact:true});
+    await expect(objective).toHaveValue("Make the login tests pass");
+    const done=panel.getByLabel("Completed work",{exact:true}),discard=panel.locator(":scope>.goal-actions").getByRole("button",{name:"Discard changes",exact:true});
+    const row=name=>page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)}),composer=page.getByTestId("composer");
+    const opened=async name=>{await expect(row(name)).toHaveClass(/active/);await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");await painted(page)};
+    const notes=async()=>{if(!await done.isVisible())await panel.getByText("Continuity state",{exact:true}).click();return done};
+    await typeOver(page,objective,"Make the login and signup tests pass");
+    await (await notes()).click();await page.keyboard.type("Fixed the session refresh",{delay:15});
+    // The second thread, opened from the sidebar, shows its own goal, none, with nothing of the first thread's edits.
+    await row("Second thread").locator(".thread-main").click();await opened("Second thread");
+    await expect(objective,"the second thread's own objective").toHaveValue("");await expect(await notes()).toHaveValue("");
+    await expect(panel.getByRole("button",{name:"Set goal",exact:true})).toBeVisible();await expect(discard).toHaveCount(0);
+    await objective.click();await page.keyboard.type("Ship the billing page",{delay:15});
+    // Back on the first thread its edits are as they were left, nothing is said to have changed elsewhere, and Discard is offered.
+    await row("Composer thread").locator(".thread-main").click();await opened("Composer thread");
+    await expect(objective,"the first thread's unsaved objective, back on it").toHaveValue("Make the login and signup tests pass");
+    await expect(await notes(),"the first thread's unsaved note, back on it").toHaveValue("Fixed the session refresh");
+    await expect(panel.locator(".goal-field-changed"),"nothing changed elsewhere").toHaveCount(0);await expect(discard).toBeVisible();
+    await shootBoth(page,"goal-draft-after-another-thread",()=>objective.scrollIntoViewIfNeeded());
+    // The second thread opened from the palette keeps its own edit too.
+    await composer.click();await page.keyboard.press("Control+K");
+    const palette=page.getByTestId("command-palette");
+    await page.keyboard.type("Second thread",{delay:20});await expect(palette.locator(".command-palette-item.selected.kind-thread")).toContainText("Second thread");
+    await page.keyboard.press("Enter");await expect(palette).toBeHidden();await opened("Second thread");
+    await expect(objective,"the second thread's unsaved objective, opened from the palette").toHaveValue("Ship the billing page");
+    // Back on the first thread, Update goal saves its edit.
+    await row("Composer thread").locator(".thread-main").click();await opened("Composer thread");
+    await expect(objective).toHaveValue("Make the login and signup tests pass");
+    await panel.getByRole("button",{name:"Update goal",exact:true}).click();
+    await expect.poll(()=>socket.sent("thread/goal/set").map(params=>params.objective)).toEqual(["Make the login and signup tests pass"]);
+    await expect(panel.getByRole("button",{name:"Update goal",exact:true})).toBeEnabled();await expect(discard).toHaveCount(0);
   }finally{await harness.close()}
 });
 

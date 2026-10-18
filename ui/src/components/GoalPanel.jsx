@@ -19,15 +19,17 @@ function noteValues(continuity){return NOTE_KEYS.map(key=>lines(continuity?.note
 // a field they edited (the /goal command, another window) is said in the bar that saves it (saved.changed), with Use saved and Keep
 // mine: it used to stay out of sight, and the next save wrote the edit over it. What this panel saved (saved.own), or what comes
 // while its save is on its way (saved.sending), is not such a change. It all stays while the panel is away (another tab, the panel
-// closed), also what a save still on its way brings, and comes back with it; another thread's panel starts afresh. A second run for
-// what it has just filled (StrictMode's) leaves the fields alone.
-const awayDrafts={};
+// closed, another thread opened), also what a save still on its way brings, and comes back with it: each thread's panel with that
+// thread's own (awayDrafts keeps one per thread and group), and one with none from its saved goal and notes. Another thread's panel
+// used to drop what the one before had put away. A second run for what it has just filled (StrictMode's) leaves the fields alone.
+const awayDrafts=new Map();
 function useSavedFields(group,threadId,values,fields,setters){
-  const [saved]=useState(()=>{const away=awayDrafts[group];return threadId&&away?.threadId===threadId?away.saved:{filled:null,changed:{}}});
+  const key=group+":"+threadId;
+  const [saved]=useState(()=>threadId&&awayDrafts.get(key)?.saved||{filled:null,changed:{}});
   const [,render]=useReducer(count=>count+1,0),latest=useRef(fields),first=useRef(true);latest.current=fields;
   useEffect(()=>{
     let last=saved.filled,current=fields;
-    if(first.current){first.current=false;const away=awayDrafts[group];awayDrafts[group]=null;if(away?.saved===saved)current=away.fields}
+    if(first.current){first.current=false;const away=awayDrafts.get(key);awayDrafts.delete(key);if(away?.saved===saved)current=away.fields}
     if(last===values)return;
     const was=saved.changed;saved.filled=values;saved.changed={};
     values.forEach((value,index)=>{
@@ -36,7 +38,7 @@ function useSavedFields(group,threadId,values,fields,setters){
     });
     render();
   },[JSON.stringify(values)]);
-  useEffect(()=>()=>{const fields=latest.current,last=saved.filled;awayDrafts[group]=last&&fields.some((value,index)=>value!==last[index])?{threadId,saved,fields}:null},[]);
+  useEffect(()=>()=>{const fields=latest.current,last=saved.filled;if(threadId&&last&&fields.some((value,index)=>value!==last[index]))awayDrafts.set(key,{saved,fields});else awayDrafts.delete(key)},[]);
   const settle=(index,value)=>{if(value!=null)setters[index](value);delete saved.changed[index];render()};
   return {saved,unsaved:!!saved.filled&&fields.some((value,index)=>value!==saved.filled[index]),use:index=>settle(index,saved.changed[index]),keep:index=>settle(index),
     discard(){saved.filled.forEach((value,index)=>setters[index](value));saved.changed={};render()}};
