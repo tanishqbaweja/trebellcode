@@ -397,6 +397,51 @@ test("OpenCode compatibility blocks known-broken managed updates and pins verifi
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
+// One install or update of a harness runs at a time: Settings opened again while an update ran offered Update once more, and the
+// server started every install it was asked for, so two npm installs of opencode-ai ran at once (each up to 180 s). The second is
+// refused with the reason, another harness installs meanwhile, and once the first has ended, failed or not, the next one runs.
+test("a second install of a harness asked for while one runs is refused, and the next once it has ended runs",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-install-once-"));const env={...process.env,TREBELL_HOME:home};
+  // OpenCode's npm install runs until release(); fail is the error the next one ends with.
+  const installs=[],held=[],release=()=>{for(const resolve of held.splice(0))resolve()};let installed="1.14.10",fail="";
+  try{
+    const state=new TrebellStateStore(env);state.updateSettings({activeEnvironmentId:"ssh-fixture"});
+    const environments={
+      get:id=>id==="ssh-fixture"?{id,name:"Fixture SSH",type:"ssh",cwd:"/srv/app"}:null,
+      executeArgv:async(id,{command,args})=>{
+        if(command==="npm"&&args[0]==="--version")return {exitCode:0,stdout:"11.0.0\n",stderr:""};
+        if(command==="npm"&&args[0]==="view")return {exitCode:0,stdout:JSON.stringify("1.14.19")+"\n",stderr:""};
+        if(command==="npm"&&args[0]==="install"){
+          const spec=args.at(-1);installs.push(spec);if(!spec.startsWith("opencode-ai@"))return {exitCode:0,stdout:"installed\n",stderr:""};
+          await new Promise(resolve=>held.push(resolve));
+          if(fail){const stderr=fail;fail="";return {exitCode:1,stdout:"",stderr}}
+          installed=spec.split("@").at(-1);return {exitCode:0,stdout:"installed\n",stderr:""};
+        }
+        if(command==="opencode"&&args[0]==="--version")return {exitCode:0,stdout:"opencode "+installed+"\n",stderr:""};
+        if(command==="opencode"&&args[0]==="auth")return {exitCode:0,stdout:"— 1 credentials\n",stderr:""};
+        if(command==="claude"&&args[0]==="--version")return {exitCode:0,stdout:"claude 2.0.0\n",stderr:""};
+        if(command==="claude"&&args[0]==="auth")return {exitCode:0,stdout:JSON.stringify({loggedIn:true}),stderr:""};
+        return {exitCode:1,stdout:"",stderr:"unexpected command"};
+      },
+    };
+    const manager=new AgentRuntimeManager({state,env,environments});
+    const npmRan=async count=>{while(installs.length<count)await new Promise(resolve=>setTimeout(resolve,5))};
+    const first=manager.install("opencode").then(value=>value,error=>error);
+    await npmRan(1);
+    // Asked again while npm installs it: refused at once, with nothing run.
+    const second=await Promise.race([manager.install("opencode").then(()=>"installed a second time",error=>error),new Promise(resolve=>setTimeout(()=>resolve("no answer after 1.5 s"),1500))]);
+    assert.deepEqual(installs,["opencode-ai@1.14.19"],"npm installs OpenCode once at a time");
+    assert.equal(second?.message??second,"OpenCode is already being installed or updated. Wait for it to finish first.");
+    assert.equal((await manager.install("claude")).packageName,"@anthropic-ai/claude-code","another harness installs meanwhile");
+    // The first fails, and OpenCode can be installed again.
+    fail="npm ERR! code E404 opencode-ai@1.14.19 is not in the npm registry";release();
+    assert.match(String((await first)?.message),/^npm ERR! code E404/);
+    const third=manager.install("opencode");await npmRan(3);release();
+    assert.equal((await third).targetVersion,"1.14.19");
+    assert.deepEqual(installs,["opencode-ai@1.14.19","@anthropic-ai/claude-code","opencode-ai@1.14.19"]);
+  }finally{release();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
 // The Windows command shim npm writes for a package's bin.
 const npmShim=target=>["@ECHO off","GOTO start",":find_dp0","SET dp0=%~dp0","EXIT /b",":start","SETLOCAL","CALL :find_dp0",`"%dp0%\\${target}"   %*`,""].join("\r\n");
 

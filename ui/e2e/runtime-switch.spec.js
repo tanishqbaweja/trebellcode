@@ -903,7 +903,7 @@ const RELOADS_AFTER_SWITCHES=[
     await harnessRow(page,"Claude Code").locator("button").first().click();
     await expect(page.getByTestId("agent-runtime-message")).toHaveText("· Switching…");await expect.poll(()=>server.counts.select).toBe(1);
     const sockets=relay.connections(),installed=installAnswer(page);install.open();await installed;
-    await expect(page.getByTestId("agent-runtime-message")).toHaveText("· OpenCode installed and ready.");
+    await expect(harnessRow(page,"OpenCode").getByRole("status")).toHaveText("OpenCode installed and ready.");await expect(page.getByTestId("agent-runtime-message")).toHaveText("· Switching…");
     select.open();
     await expect(harnessRow(page,"Claude Code").getByRole("alert")).toHaveText("Could not switch to Claude Code: Claude Code could not start: fixture launcher failed");
     return sockets;
@@ -965,7 +965,7 @@ test("an update that ends after a switch, with Settings still open, is said for 
     const sockets=loaded+1,bootstraps=server.counts.bootstrap;await expect.poll(()=>relay.openConnections()).toEqual([sockets]);
     let installed=installAnswer(page);
     releaseInstall();await installed;
-    await expect(message).toHaveText("· OpenCode installed and ready.");
+    await expect(opencode.getByRole("status")).toHaveText("OpenCode installed and ready.");await expect(message).toHaveText("· Claude Code selected.");
     await expect(claude.getByText("Active",{exact:true})).toBeVisible();await expect(opencode).toContainText("1.1.0-updated");
     await page.screenshot({animations:"disabled",path:auditDir+"harness-update-after-switch-said-in-settings-1280x800.png"});
     // A question asked next reaches Claude Code on that socket.
@@ -974,7 +974,7 @@ test("an update that ends after a switch, with Settings still open, is said for 
     await expect(page.locator(".assistant-message-text")).toHaveText(["Fixture reply from claude"],{timeout:15_000});
     expect(relay.calls("turn/start").map(call=>[call.runtime,call.connection])).toEqual([["claude",sockets]]);
     expect(relay.connections(),"the update opened no new socket").toBe(sockets);expect(server.counts.bootstrap).toBe(bootstraps);
-    // An update that fails after a switch says so for OpenCode, not on Claude Code's line as if Claude Code had failed.
+    // An update that fails after a switch says so on the OpenCode row, not on Claude Code's line as if Claude Code had failed.
     await openHarnessSettings(page);
     await opencode.locator("button").first().click();await expect(message).toHaveText("· OpenCode selected.");
     await expect.poll(()=>relay.openConnections()).toEqual([sockets+1]);
@@ -983,8 +983,8 @@ test("an update that ends after a switch, with Settings still open, is said for 
     const switched=sockets+2;await expect.poll(()=>relay.openConnections()).toEqual([switched]);
     installed=installAnswer(page);
     releaseInstall();await installed;
-    await expect(message).toHaveText("· OpenCode: Could not install opencode-ai");
-    await expect(message).toHaveAttribute("role","alert");
+    await expect(opencode.getByRole("alert")).toHaveText("Could not update OpenCode: Could not install opencode-ai");
+    await expect(message).toHaveText("· Claude Code selected.");
     await expect(claude.getByText("Active",{exact:true})).toBeVisible();await expect(opencode.getByRole("button",{name:"Update",exact:true})).toBeEnabled();
     await keepModeSaves(page);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:`${auditDir}harness-update-failed-after-switch-${mode}-1280x800.png`})}
@@ -1008,9 +1008,9 @@ test("an update whose answer comes after or during a switch made with the keyboa
     await claude.locator("button").first().press("Enter");
     await expect(message).toHaveText("· Claude Code selected.");
     let installed=installAnswer(page);answer.open();await installed;
-    await expect(message).toContainText("OpenCode installed and ready.");
+    await expect(opencode.getByRole("status")).toHaveText("OpenCode installed and ready.");
     await expect(claude.getByText("Active",{exact:true})).toBeVisible();
-    await expect(message).toHaveText("· OpenCode installed and ready.");
+    await expect(message).toHaveText("· Claude Code selected.");
     await expect(opencode).toContainText("1.1.0-updated");await expect(opencode.getByRole("button",{name:"Update",exact:true})).toBeEnabled();
     // Back on OpenCode, the next update's answer comes while the switch to Claude Code waits for the server.
     await opencode.locator("button").first().click();await expect(message).toHaveText("· OpenCode selected.");
@@ -1020,7 +1020,7 @@ test("an update whose answer comes after or during a switch made with the keyboa
     await claude.locator("button").first().press("Enter");
     await expect(message).toHaveText("· Switching…");await expect.poll(()=>server.counts.select).toBe(3);
     installed=installAnswer(page);install.open();await installed;
-    await expect(message).toHaveText("· OpenCode installed and ready.");
+    await expect(opencode.getByRole("status")).toHaveText("OpenCode installed and ready.");await expect(message).toHaveText("· Switching…");
     const selected=agentRuntimePost(page);select.open();await selected;
     await expect(message).toHaveText("· Claude Code selected.");
     await expect(claude.getByText("Active",{exact:true})).toBeVisible();
@@ -1035,6 +1035,133 @@ test("an update whose answer comes after or during a switch made with the keyboa
     expect(relay.calls("turn/start").map(call=>call.connection)).toEqual([relay.connections()]);
     expect(server.runtime).toBe("claude");expect(server.counts.install).toBe(2);
   }finally{install.open();answer.open();select.open();await close()}
+});
+
+// The harness rows lane G's update checks ran on, OpenCode's last, with Claude Code's profiles under them: at 1280x800 the OpenCode
+// row ends at about 656 px, and the card's status line, under the profiles, is below the fold.
+const UPDATE_HARNESSES=[["native","Trebell Native","native"],["codex","Codex","codex"],["claude","Claude Code","claude"],["opencode","OpenCode","http"]];
+const UPDATE_REFUSED="npm ERR! code E404 opencode-ai@latest is not in the npm registry";
+// Update on OpenCode's row, scrolled to with the wheel as a person does, and Update OpenCode in the question: it runs while held.
+async function pressUpdateOpenCode(page){
+  const row=harnessRow(page,"OpenCode");
+  await wheelIntoView(page,row);
+  await row.getByRole("button",{name:"Update",exact:true}).click();
+  await page.getByRole("dialog").getByRole("button",{name:"Update OpenCode",exact:true}).click();
+  await expect(row.getByRole("button",{name:"Installing…",exact:true})).toBeDisabled();
+}
+
+// An update still on its way when Settings is opened again says so on its row there, with the button held, and starts no second
+// install: the install was the Settings page's own, so the page opened again offered Update at once, and a press on it installed
+// OpenCode a second time alongside the first.
+test("Settings opened again while an update runs says Installing… on its row with its button held, and starts no second install",async({page})=>{
+  test.setTimeout(90_000);
+  const {server,close}=await startHarness(page,{runtime:"claude",installs:true,profileEditing:true,harnesses:UPDATE_HARNESSES});
+  await keepModeSaves(page);
+  const install=gate();server.holdInstall=install.held;
+  const opencode=harnessRow(page,"OpenCode"),installing=opencode.getByRole("button",{name:"Installing…",exact:true}),update=opencode.getByRole("button",{name:"Update",exact:true});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await openHarnessSettings(page);await pressUpdateOpenCode(page);
+    // Off to Projects, and back by the sidebar, then by Ctrl+,.
+    for(const back of ["the sidebar","Ctrl+,"]){
+      await leaveSettings(page);
+      if(back==="Ctrl+,"){await page.keyboard.press("Control+Comma");await expect(page.getByRole("heading",{name:"Agent harness"})).toBeVisible()}
+      else await openHarnessSettings(page);
+      await expect.soft(installing,`Settings opened again by ${back} says OpenCode's update is on its way`).toBeDisabled();
+      // Where Update is offered, a press on it installs OpenCode no second time.
+      if(await update.count()){await update.click();await page.getByRole("dialog").getByRole("button",{name:"Update OpenCode",exact:true}).click()}
+      await page.waitForTimeout(500);
+      expect(server.counts.install,"one install of OpenCode at a time").toBe(1);
+    }
+    await shootModes(page,"harness-update-running-after-reopen",{widths:[1280,900],check:()=>installing.scrollIntoViewIfNeeded()});
+    // The update ends: the row on screen says so, with the new version, and offers Update again.
+    const installed=installAnswer(page);install.open();await installed;
+    await expect(opencode.getByRole("status")).toHaveText("OpenCode installed and ready.");
+    await expect(opencode).toContainText("1.1.0-updated");await expect(update).toBeEnabled();
+    expect(server.counts.install).toBe(1);
+  }finally{install.open();await close()}
+});
+
+// An update that ends once Settings was left is not lost: a failure is said in the app's alert, and Settings opened again says how it
+// went on the OpenCode row, with the new version once it worked. Its answer went only to the Settings page that started it, which was
+// gone: the card opened again said nothing of it, and a failure was said nowhere.
+test("an update that ends after Settings was left says a failure in the app's alert, and Settings opened again says how it went",async({page})=>{
+  test.setTimeout(120_000);
+  const {server,relay,close}=await startHarness(page,{runtime:"claude",installs:true,profileEditing:true,harnesses:UPDATE_HARNESSES});
+  await keepModeSaves(page);
+  const opencode=harnessRow(page,"OpenCode"),alert=page.getByTestId("app-action-error"),failure="Could not update OpenCode: "+UPDATE_REFUSED;
+  const toChat=async()=>{await page.getByRole("button",{name:"Projects",exact:true}).click();await page.locator(".general-chat-card").click();await expect(page.getByTestId("composer")).toBeVisible()};
+  let install=gate();
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openGeneralChat(page,relay);
+    // It works while the person asks Claude Code something in the chat.
+    server.holdInstall=install.held;
+    await openHarnessSettings(page);await pressUpdateOpenCode(page);
+    await toChat();await ask(page,"What does Claude Code say meanwhile?");
+    await expect(page.locator(".assistant-message-text")).toHaveText(["Fixture reply from claude"],{timeout:15_000});
+    let installed=installAnswer(page);install.open();await installed;
+    await page.waitForTimeout(500);await expect(alert,"an update that worked is not said as a failure").toHaveCount(0);
+    await openHarnessSettings(page);
+    await expect(opencode).toContainText("1.1.0-updated");
+    await expect.soft(opencode.getByRole("status"),"Settings opened again says the update went").toHaveText("OpenCode installed and ready.");
+    // It fails while the person is in the chat: the chat says so, and Settings opened again says it on the OpenCode row.
+    install=gate();server.holdInstall=install.held;server.failInstall=UPDATE_REFUSED;
+    await pressUpdateOpenCode(page);await toChat();
+    installed=installAnswer(page);install.open();await installed;
+    await expect.soft(alert,"the chat says the update failed").toHaveText(failure);
+    if(await alert.count())for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:`${auditDir}harness-update-failed-said-in-chat-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    await openHarnessSettings(page);
+    await expect(opencode.getByRole("alert"),"Settings opened again says why").toHaveText(failure);
+    await expect(opencode.getByRole("button",{name:"Update",exact:true})).toBeEnabled();
+    await shootModes(page,"harness-update-failed-said-after-reopen",{widths:[1280,900],check:()=>opencode.scrollIntoViewIfNeeded()});
+    // It fails while Settings, opened again during it, is on screen: said on the row there, not in the app's alert as well.
+    await expect(alert).toHaveCount(0,{timeout:10_000});
+    install=gate();server.holdInstall=install.held;server.failInstall=UPDATE_REFUSED;
+    await pressUpdateOpenCode(page);await expect(opencode.getByRole("alert")).toHaveCount(0);
+    await leaveSettings(page);await openHarnessSettings(page);
+    installed=installAnswer(page);install.open();await installed;
+    await expect(opencode.getByRole("alert")).toHaveText(failure);await expect(opencode.getByRole("alert")).toBeInViewport();
+    await page.waitForTimeout(500);await expect(alert,"said once, on its row").toHaveCount(0);
+    expect(server.counts.install).toBe(3);
+  }finally{install.open();await close()}
+});
+
+// With Settings open, an update's answer is said on the row whose Update was pressed, in view, once: it went to the card's status
+// line, under the profiles and below the fold at 1280x800, so a failed update changed nothing on screen but the row's button.
+test("an update's answer is said on the OpenCode row whose Update was pressed, in view, once",async({page})=>{
+  test.setTimeout(90_000);
+  const {server,close}=await startHarness(page,{runtime:"claude",installs:true,profileEditing:true,harnesses:UPDATE_HARNESSES});
+  await keepModeSaves(page);
+  const opencode=harnessRow(page,"OpenCode"),message=page.getByTestId("agent-runtime-message"),alert=page.getByTestId("app-action-error");
+  let install=gate();
+  try{
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    // At 1280 with the page as it opens, and at 900 with the row scrolled to with the wheel, so it ends near the bottom of the window.
+    for(const [mode,width] of [["dark",1280],["light",900]]){
+      await page.setViewportSize({width,height:800});await switchMode(page,mode);
+      await page.getByRole("button",{name:"Projects",exact:true}).click();await openHarnessSettings(page);
+      install=gate();server.holdInstall=install.held;server.failInstall=UPDATE_REFUSED;
+      await pressUpdateOpenCode(page);
+      let installed=installAnswer(page);install.open();await installed;
+      const refusal=opencode.getByRole("alert");
+      await expect(refusal).toHaveText("Could not update OpenCode: "+UPDATE_REFUSED);await expect(refusal).toBeInViewport({ratio:1});
+      await expect(opencode.getByRole("button",{name:"Update",exact:true})).toBeEnabled();
+      await expect(message,"said once: the status line under the profiles does not repeat it").toHaveCount(0);await expect(alert).toHaveCount(0);
+      await page.screenshot({animations:"disabled",path:`${auditDir}harness-update-failed-on-its-row-${mode}-${width}x800.png`});
+      // The next one works: said there too, with the new version.
+      install=gate();server.holdInstall=install.held;
+      await pressUpdateOpenCode(page);await expect(refusal).toHaveCount(0);
+      installed=installAnswer(page);install.open();await installed;
+      const said=opencode.getByRole("status");
+      await expect(said).toHaveText("OpenCode installed and ready.");await expect(said).toBeInViewport({ratio:1});
+      await expect(opencode).toContainText("1.1.0-updated");await expect(message).toHaveCount(0);
+      await page.screenshot({animations:"disabled",path:`${auditDir}harness-update-said-on-its-row-${mode}-${width}x800.png`});
+    }
+    expect(server.counts.install).toBe(4);
+  }finally{install.open();await close()}
 });
 
 // A failed switch, or a failed save of the active profile, must not touch the harness that stays active: its socket, the running

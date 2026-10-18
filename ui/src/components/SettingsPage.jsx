@@ -39,6 +39,13 @@ let lastSettingsSection="general";
 let lastSwitchRefusal=null,agentRowsShown=0;const switchRefusalViews=new Set();
 function keepSwitchRefusal(value){lastSwitchRefusal=value;for(const show of switchRefusalViews)show(value)}
 if(typeof window!=="undefined")window.addEventListener("trebell:runtime-switched",event=>{if(lastSwitchRefusal&&lastSwitchRefusal.kind===event.detail)keepSwitchRefusal(null)});
+// The harness installs and updates on their way (running, by harness) and what the last one did ({kind,text,error,seen}), said on the
+// row whose Install or Update was pressed, and the Settings pages that show them: a page opened while one runs says Installing… on
+// its row with its button held, and the answer reaches the page on screen with the harness list it brings. An answer that comes with
+// no harness rows on screen waits for the next page that shows them (a failure is also said in the app's alert); one they showed is
+// kept until they are left.
+let agentInstalls={running:[],note:null};const agentInstallViews=new Set();
+function keepAgentInstalls(change,info=null){agentInstalls={...agentInstalls,...change};for(const show of agentInstallViews)show(agentInstalls,info)}
 // A shortcut or condition being typed is a draft. It is saved when the field is left or Enter is pressed, and only once it can work,
 // so a half-typed "Ctrl+" or "threadOpen &&" never replaces the one in use. A draft that cannot work stays in the field, marked
 // invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited. A saved
@@ -129,8 +136,9 @@ function swallowSecondClick(){
 export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTasks=[],onActionError,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
   const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||lastSettingsSection);
   useEffect(()=>{lastSettingsSection=settingsSection},[settingsSection]);
-  // The harness rows are on screen while this page shows Agents & models (agentRowsShown).
-  useEffect(()=>{if(settingsSection!=="agents")return;agentRowsShown++;return()=>{agentRowsShown--}},[settingsSection]);
+  // The harness rows are on screen while this page shows Agents & models (agentRowsShown), and so is what an install said there. It
+  // ends once no rows are left on screen, a moment after, as React mounts a page again at once in development.
+  useEffect(()=>{if(settingsSection!=="agents")return;agentRowsShown++;if(agentInstalls.note)agentInstalls.note.seen=true;return()=>{agentRowsShown--;setTimeout(()=>{if(!agentRowsShown&&agentInstalls.note?.seen)keepAgentInstalls({note:null})})}},[settingsSection]);
   const [settingsSearch,setSettingsSearch]=useState("");
   const [workspaceScope,setWorkspaceScope]=useState({environmentId:settings.activeEnvironmentId||"local",projectId:""});
   const [workspaceScopeCatalog,setWorkspaceScopeCatalog]=useState({environmentData:{profiles:[]},projects:[]});
@@ -169,7 +177,12 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const showAgentMessage=(text,error=false)=>{setAgentMessage(text);setAgentMessageError(Boolean(error));setSwitchRefusal(null)};
   const showProviderMessage=(text,error=false)=>{setProviderMessage(text);setProviderMessageError(Boolean(error))};
   const [agentSelectionOverride,setAgentSelectionOverride]=useState(null);
-  const [installingAgent,setInstallingAgent]=useState(null);
+  // The installs every Settings page knows of (agentInstalls). An answer that comes while this page is open brings it the harness
+  // list, and what the install did is scrolled into view under its row, as a refused save is in its editor.
+  const [installs,showInstalls]=useState(()=>agentInstalls);
+  const installNoteRef=useRef(null),arrivedNoteRef=useRef(null);
+  useEffect(()=>{const show=(next,info)=>{arrivedNoteRef.current=next.note;showInstalls(next);if(info)setAgentInfo(info)};agentInstallViews.add(show);showInstalls(agentInstalls);return()=>{agentInstallViews.delete(show)}},[]);
+  useEffect(()=>{if(installs.note&&installs.note===arrivedNoteRef.current)installNoteRef.current?.scrollIntoView({block:"nearest"})},[installs.note]);
   const [authenticatingAgent,setAuthenticatingAgent]=useState(null);
   const [instanceDraft,setInstanceDraft]=useState(null);
   // The approved variables as typed, while their field is being edited. The list is made from them at each change and shows, one name
@@ -370,21 +383,26 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     const confirmation=kind==="antigravity"
       ?"Install or update "+label+" ACP runtime on this machine?\n\nTrebell will download Google's published Antigravity ACP runtime through the official Agent Client Protocol registry."
       :"Install or update "+label+" in the selected environment?\n\nTrebell will run: "+(definition.installCommand||"npm install -g "+packageName);
-    if(!await askConfirm(confirmation,{confirm:verb+" "+label,tone:"primary"}))return;
-    setAgentMessageTarget(kind);
-    setInstallingAgent(kind);showAgentMessage("Installing "+label+"…");
+    // One install of a harness at a time, also from a Settings page opened while one runs.
+    if(!await askConfirm(confirmation,{confirm:verb+" "+label,tone:"primary"})||agentInstalls.running.includes(kind))return;
+    showAgentMessage("");keepAgentInstalls({running:[...agentInstalls.running,kind],note:null});
+    const ended=(note,info=null)=>keepAgentInstalls({running:agentInstalls.running.filter(item=>item!==kind),note:{kind,...note,seen:agentRowsShown>0}},info);
     try{
       const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"install",runtime:kind,environmentId:settings.activeEnvironmentId||null}});
       setAgentInfo(result);
       const status=result.installed?.status;
-      // What the install did is said at once, for the harness it installed.
-      setAgentMessageTarget(kind);showAgentMessage(status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.");
+      // What the install did is said at once on its row, on the Settings page open now, which takes the harness list too.
+      ended({text:status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready."},result);
       // Reinstalling the harness in use reloads it once the install finishes; the transport stays usable during the install itself.
       // The app decides, once the switches asked before this answer have settled: this page can show a switch still on its way, or be
       // closed. A harness switched to meanwhile, here or by opening its thread, keeps its transport and open thread; a switch refused
       // leaves this harness in use, and it reloads.
       switchRuntime({runtime:kind,instanceId:result.selectedInstanceId||null,resetThread:true},async()=>result,{gate:false}).catch(()=>{});
-    }catch(error){setAgentMessageTarget(kind);showAgentMessage(error.message,true)}finally{setInstallingAgent(null)}
+    }catch(error){
+      const failed=`Could not ${verb.toLowerCase()} ${label}`;ended({text:failed+": "+error.message,error:true});
+      // With no harness rows on screen (Settings left, or another section open), the app's alert says it, as a refused switch.
+      if(!agentRowsShown)onActionError?.(error,failed);
+    }
   }
   // The sign-in terminal the answer opens asks for the keyboard as of this press (pressed, terminal-keyboard.js), so a press made
   // while the harness's sign in starts keeps it.
@@ -916,9 +934,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           const unverified=status?.authenticated==null&&["cursor","grok","opencode"].includes(def.id)&&status?.message;
           const statusText=incompatible?(compatibility.message||"Incompatible runtime version"):unverified?status.message:status?.available?status?.version||status?.message||"Ready":status?.message||"Unavailable";
           const actionText=active?(incompatible||unverified?"Needs setup":"Active"):status?.available?(incompatible||unverified?"Needs setup":"Switch"):status?.installed?"Not ready":"Not installed";
+          const installing=installs.running.includes(def.id),installNote=installs.note?.kind===def.id?installs.note:null;
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(def.id,status.id)}>
             <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em className={"is-"+String(actionText).toLowerCase().replace(/\s+/g,"-")}>{actionText}</em>
-          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id,status?.installed?"Update":"Install")}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}</div>;
+          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installing} onClick={()=>installAgentRuntime(def.id,status?.installed?"Update":"Install")}>{installing?"Installing…":status?.installed?"Update":"Install"}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}{installNote&&<p ref={installNoteRef} className={installNote.error?"agent-runtime-option-error":"agent-runtime-option-note"} role={installNote.error?"alert":"status"}>{installNote.text}</p>}</div>;
         })}</div>
         {selectedAgentDefinition?.multipleInstances!==false&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>

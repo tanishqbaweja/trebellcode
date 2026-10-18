@@ -483,9 +483,17 @@ export class AgentRuntimeManager{
     }
     return {runtime:instance.kind,instanceId:instance.id,name:RUNTIMES[instance.kind]?.name||instance.kind,command:this.executable(instance,{environmentId}),args};
   }
+  // One install or update of a harness runs at a time: a second one asked for meanwhile (from Settings opened again, or another
+  // window) is refused, as two npm installs of one package at once can leave it half replaced.
+  #installing=new Set();
   async install(kind,{environmentId=undefined}={}){
     const target=this.installable(kind);const normalized=normalizeAgentRuntime(kind);
     if(!target)throw new Error((RUNTIMES[normalized]?.name||String(kind||"Harness"))+" is not installable from Trebell Code");
+    if(this.#installing.has(target.runtime))throw new Error((RUNTIMES[target.runtime]?.name||target.runtime)+" is already being installed or updated. Wait for it to finish first.");
+    this.#installing.add(target.runtime);
+    try{return await this.#install(target,environmentId)}finally{this.#installing.delete(target.runtime)}
+  }
+  async #install(target,environmentId){
     if(target.runtime==="antigravity"){
       if(this.activeEnvironment(environmentId))throw new Error("Managed Antigravity ACP installation is currently available only on the local machine");
       const installed=await installAntigravityRuntime({env:this.env,fetchImpl:this.fetchImpl,platform:this.platform,arch:this.arch});
