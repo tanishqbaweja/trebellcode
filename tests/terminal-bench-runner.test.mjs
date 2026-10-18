@@ -355,6 +355,8 @@ test("Harbor processes on Windows opt out of the detached telemetry sender that 
 test("Benchmark run IDs carry the dataset family without renaming Terminal-Bench 4 runs",async()=>{
   assert.equal(benchmarkRunPrefix("terminal-bench/terminal-bench@4.0.0"),"tb4");
   assert.equal(benchmarkRunPrefix("terminal-bench/terminal-bench@2.0"),"tb2");
+  assert.equal(benchmarkRunPrefix("terminal-bench/terminal-bench-2@1"),"tb2");
+  assert.equal(benchmarkRunPrefix("terminal-bench/terminal-bench-2@latest"),"tb2");
   assert.equal(benchmarkRunPrefix("swe-bench/swe-bench-verified@latest"),"swebv");
   assert.equal(benchmarkRunPrefix("example-org/My_Bench Pro@1.0"),"my-bench-pro");
   assert.equal(benchmarkRunPrefix(""),"bench");

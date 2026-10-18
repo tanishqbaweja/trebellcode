@@ -16,6 +16,8 @@ export function terminalBenchTaskQualifiedName(dataset,task){
 export function benchmarkRunPrefix(dataset){
   const text=String(dataset||"").trim().toLowerCase(),at=text.lastIndexOf("@"),ref=at>=0?text.slice(at+1):"",pkg=at>=0?text.slice(0,at):text;
   if(pkg==="terminal-bench/terminal-bench")return "tb"+(ref.match(/^(\d+)\./)?.[1]||"");
+  // Terminal-Bench 2.0 is its own registry package, versioned by revision (@1) or @latest, not by a semver ref.
+  if(pkg==="terminal-bench/terminal-bench-2")return "tb2";
   if(pkg==="swe-bench/swe-bench-verified")return "swebv";
   return (pkg.split("/").pop()||"").replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,20)||"bench";
 }
