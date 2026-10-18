@@ -15,10 +15,11 @@ const auditDir=fileURLToPath(new URL("../../visual-audit/composer-inputs/",impor
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 
 // One thread, "Composer thread", open, unless newTask leaves the window on New task. replies answers the provider's calls in order.
-// refuse(message), when given, names an error to answer a request with instead of the relay (a harness refusing it).
-async function openComposerApp(page,{newTask=false,replies=[],refuse=null}={}){
+// refuse(message), when given, names an error to answer a request with instead of the relay (a harness refusing it). turns are the
+// thread's turns from before the window opened, in place of its one short reply.
+async function openComposerApp(page,{newTask=false,replies=[],refuse=null,turns=[{user:"Look at the login page",items:[replyItem("seed-reply-1","The login page renders.")]}]}={}){
   const harness=await startRelayHarness({replies});
-  harness.seedThread("Composer thread",[{user:"Look at the login page",items:[replyItem("seed-reply-1","The login page renders.")]}]);
+  harness.seedThread("Composer thread",turns);
   await routeRelayApp(page,harness);
   if(refuse)await page.routeWebSocket(harness.wsUrl,ws=>{
     const server=ws.connectToServer();
@@ -1180,3 +1181,91 @@ test("beside OpenCode's agent picker the mic stays clickable between the model p
   }finally{await fixture.close()}
 });
 
+// A reply long enough to scroll that ends with a line with a link in it, then its done chip: what a person rereads, clicks and cites
+// while writing.
+const LONG_REPLY=[...Array.from({length:30},(_,index)=>`Paragraph ${index+1} of the reply about the login flow and its session token.`),"Last line of the reply: sign out on a 401, see the [session notes](https://example.invalid/notes)."].join("\n\n");
+// The end of the last reply against the composer: whether the view is at its end, and for the reply's last line, the link in it and
+// the done chip, "clear" when it is above the composer and its chips and the page answers it at its middle, or else where it is and
+// what the page answers there.
+const readReplyEnd=page=>page.evaluate(()=>{
+  const scroll=document.querySelector(".conversation-scroll"),wrap=document.querySelector(".composer-wrap"),chip=wrap.querySelector(".attachment-shelf>span");
+  const top=Math.min(wrap.getBoundingClientRect().top,chip?chip.getBoundingClientRect().top:Infinity);
+  const line=[...scroll.querySelectorAll("p")].filter(node=>node.textContent.startsWith("Last line of the reply")).pop();
+  const clear=(node,x)=>{
+    if(!node)return "missing";
+    const box=node.getBoundingClientRect(),at=document.elementFromPoint(x(box),box.top+box.height/2);
+    return box.bottom<=top+0.5&&node.contains(at)?"clear":`${Math.round(box.top)}-${Math.round(box.bottom)} answers ${String(at?.className||at?.tagName)}${at?.closest(".composer-wrap")?" in the composer":""}, composer top ${Math.round(top)}`;
+  };
+  return {atEnd:scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<=1,line:clear(line,box=>box.left+20),link:clear(line?.querySelector("a"),box=>box.left+box.width/2),
+    chip:clear([...scroll.querySelectorAll("[data-testid=turn-outcome]")].pop(),box=>box.left+box.width/2)};
+});
+const replyEndClear={atEnd:true,line:"clear",link:"clear",chip:"clear"};
+const distanceFromEnd=page=>page.locator(".conversation-scroll").evaluate(node=>Math.round(node.scrollHeight-node.clientHeight-node.scrollTop));
+// The first paragraph wholly below the view's top, and where it is on screen.
+const firstParagraphInView=page=>page.locator(".conversation-scroll").evaluate(node=>{
+  const top=node.getBoundingClientRect().top,paragraph=[...node.querySelectorAll("p")].find(item=>item.getBoundingClientRect().top>=top);
+  return paragraph?{text:paragraph.textContent.slice(0,13),top:Math.round(paragraph.getBoundingClientRect().top)}:null;
+});
+// The mouse wheel over the thread, as a person scrolls it, then the view once it holds still.
+async function wheelThread(page,dy,steps=1){
+  const view=await page.locator(".conversation-scroll").boundingBox();
+  await page.mouse.move(view.x+view.width/2,view.y+Math.min(200,view.height/2));
+  for(let step=0;step<steps;step++)await page.mouse.wheel(0,dy);
+  const top=()=>page.locator(".conversation-scroll").evaluate(node=>Math.round(node.scrollTop));
+  await expect.poll(async()=>{const before=await top();await page.waitForTimeout(120);return before===await top()}).toBe(true);
+}
+// A message of several lines, written with Shift+Enter between them.
+async function typeLines(page,count){
+  await page.keyboard.type("Line 1 of a longer message",{delay:10});
+  for(let line=2;line<=count;line++){await page.keyboard.press("Shift+Enter");await page.keyboard.type("Line "+line,{delay:10})}
+}
+
+// The thread's scroll area ended where the composer's top is with an empty draft, so a draft of several lines (the composer growing
+// from 115 to 235 px) and its attachment chips covered the end of the last reply even with the thread at its end, and the empty
+// attachment shelf, drawn over the reply, took the clicks on its last line. The end of the reply stays clear of the composer however
+// tall it grows, a thread at its end stays there, and one scrolled up keeps what is being read in place.
+test("a draft of several lines and its attachment chips leave the end of the last reply clear to read, click and cite, and a thread scrolled up keeps its place",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page,{turns:[{user:"Explain the login flow",items:[replyItem("login-reply",LONG_REPLY)]}]});
+  try{
+    const composer=page.getByTestId("composer"),lastLine=page.locator(".conversation-scroll p").filter({hasText:"Last line of the reply"});
+    await expect(lastLine).toBeVisible();
+    await expect.poll(()=>readReplyEnd(page),{message:"the empty composer"}).toEqual(replyEndClear);
+    // Scrolled up to reread, the person writes eight lines: the paragraph at the view's top stays where it is.
+    await wheelThread(page,-400);
+    const reading=await firstParagraphInView(page);
+    await composer.click();await typeLines(page,8);await expect(composer).toHaveValue(/\nLine 8$/);
+    await expect.poll(()=>firstParagraphInView(page),{message:"the paragraph being read"}).toEqual(reading);
+    expect(await distanceFromEnd(page)).toBeGreaterThan(48);
+    // Scrolled to its end, the end of the reply shows above the grown composer, and the empty attachment shelf takes no room over it.
+    await wheelThread(page,1200,6);
+    await expect.poll(()=>readReplyEnd(page),{message:"an eight-line draft, the thread scrolled to its end"}).toEqual(replyEndClear);
+    await expect(page.locator(".attachment-shelf")).toBeHidden();
+    // At its end, the thread stays there as the draft goes and grows again, with no scrolling.
+    await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+    await expect.poll(()=>readReplyEnd(page),{message:"the draft cleared"}).toEqual(replyEndClear);
+    await typeLines(page,8);
+    await expect.poll(()=>readReplyEnd(page),{message:"eight lines written again at the thread's end"}).toEqual(replyEndClear);
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const width of [1280,900,700]){
+        await page.setViewportSize({width,height:800});
+        await expect.poll(()=>readReplyEnd(page),{message:`an eight-line draft at ${width}x800 in ${mode}`}).toEqual(replyEndClear);
+        await page.screenshot({animations:"disabled",path:auditDir+`grown-draft-reply-end-${mode}-${width}x800.png`});
+      }
+    }
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+    await expect.poll(()=>readReplyEnd(page),{message:"back at 1280x800"}).toEqual(replyEndClear);
+    // A triple-click on the last line selects it and offers Cite, and its link takes a click.
+    const box=await lastLine.boundingBox();
+    await page.mouse.click(box.x+30,box.y+box.height/2,{clickCount:3});
+    expect(await page.evaluate(()=>String(getSelection()))).toMatch(/^Last line of the reply/);
+    await expect(page.getByTestId("assistant-selection-cite")).toBeVisible();
+    await lastLine.getByRole("link",{name:"session notes"}).click({trial:true,timeout:5000});
+    // Two pasted screenshots: their chips sit above the composer, clear of the reply's text, and the thread stays at its end.
+    await composer.click();await pasteImage(page,"screen-1.png");await pasteImage(page,"screen-2.png");
+    await expect(chips(page)).toHaveText(["screen-1.png","screen-2.png"]);
+    await expect.poll(()=>readReplyEnd(page),{message:"eight lines and two screenshots"}).toEqual(replyEndClear);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`grown-draft-with-files-reply-end-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});

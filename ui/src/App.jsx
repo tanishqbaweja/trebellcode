@@ -722,9 +722,17 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const [mentionBusy,setMentionBusy]=useState(false);
   const [slashIndex,setSlashIndex]=useState(0);
   const [slashDismissed,setSlashDismissed]=useState(null);
-  const composerRef=useRef(null),slashMenuRef=useRef(null),mentionMenuRef=useRef(null),modelMenuRef=useRef(null),modelButtonRef=useRef(null);
+  const composerRef=useRef(null),slashMenuRef=useRef(null),mentionMenuRef=useRef(null),modelMenuRef=useRef(null),modelButtonRef=useRef(null),wrapRef=useRef(null);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
   useLayoutEffect(()=>{resizeTextarea(composerRef.current,{min:40,max:160})},[prompt]);
+  // The composer's height, on the workspace (--composer-height), ends the thread above it (shell.css) as a draft of several lines, a
+  // second row of controls or context chips grow it. It lands a frame after the composer resizes, so the thread's own resize observer,
+  // which keeps a thread at its end there, sees its view resize in a frame of its own.
+  useEffect(()=>{
+    const wrap=wrapRef.current,host=wrap?.parentElement;if(!host||typeof ResizeObserver==="undefined")return;
+    let frame=0;const observer=new ResizeObserver(()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>host.style.setProperty("--composer-height",wrap.offsetHeight+"px"))});
+    observer.observe(wrap);return()=>{observer.disconnect();cancelAnimationFrame(frame);host.style.removeProperty("--composer-height")};
+  },[]);
   useEffect(()=>{onModelPickerOpenChange?.(modelOpen)},[modelOpen,onModelPickerOpenChange]);
   useEffect(()=>{if(!modelOpen)setModelQuery("")},[modelOpen]);
   // The menu opens on the checked model, centred, even far down a long catalog (gpt-6.1-sol is 65th of OpenAI's 79); the
@@ -973,7 +981,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     :providerReady?(runtimeSwitchLabel||(!transportReady?transportMessage:running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"))
     :modelProviderRuntime?`Configure ${providerLabel} in Settings…`
     :`Configure ${agentRuntimeLabel} in Settings…`;
-  return <div className={"composer-wrap"+(prompt.length>=32768?" long-draft":"")} onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
+  return <div ref={wrapRef} className={"composer-wrap"+(prompt.length>=32768?" long-draft":"")} onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
     {slashMenuOpen&&<div className="slash-menu" ref={slashMenuRef}>{slashItems.map(([cmd,desc],index)=><button key={cmd} type="button" className={index===slashActive?"active":undefined} onMouseDown={e=>{e.preventDefault();chooseSlash(cmd)}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
     {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef}>{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={[[chip.label,chip.detail].filter(Boolean).join(" · "),chip.path].filter(Boolean).join("\n")}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveContext(chip.path))} title="Remove context"><X size={10}/></button></span>)}</div>}

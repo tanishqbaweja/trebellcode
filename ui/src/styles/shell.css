@@ -237,17 +237,24 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* --thread-find-reserve: while find is open the strip under its floating bar stays clear (App measures the bar and sets it, moving
    the scroll position with it so the rows in view stay put): the first rows start below it and a jump to a match lands below it.
    --history-hold: when an older page lands above a newest page too short to fill the view, the column keeps the height that holds
-   the rows in view where they were; rows arriving below fill it, and App lowers it as the view scrolls up. */
-.chat-workspace .conversation-scroll{top:var(--top);bottom:132px;padding:max(34px,var(--thread-find-reserve,0px)) 28px 72px;scroll-padding-top:var(--thread-find-reserve,0px);scrollbar-width:auto;scrollbar-color:auto}
-.main-frame.terminal-open .chat-workspace .conversation-scroll{bottom:calc(var(--terminal-height,330px) + 128px)}
+   the rows in view where they were; rows arriving below fill it, and App lowers it as the view scrolls up.
+   --composer-reach: how far the composer stands above its foot: its height (--composer-height, which the composer measures) and the
+   attachment chips on the shelf above it. The conversation, and the opening state over it, end there, so a draft of several lines, a
+   second row of controls or the chips never cover the end of the last reply: App keeps a view at its end there as the view shrinks,
+   and a view scrolled up keeps its rows in place. The welcome is sized to the window, and keeps its place as a draft grows. */
+.chat-workspace{--composer-reach:calc(var(--composer-height,115px) + 1px)}
+.chat-workspace:has(>.composer-wrap>.attachment-shelf>span){--composer-reach:calc(var(--composer-height,115px) + 32px)}
+.chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:116px}
+.chat-workspace .conversation-scroll{top:var(--top);bottom:calc(16px + var(--composer-reach));padding:max(34px,var(--thread-find-reserve,0px)) 28px 72px;scroll-padding-top:var(--thread-find-reserve,0px);scrollbar-width:auto;scrollbar-color:auto}
+.main-frame.terminal-open .chat-workspace .conversation-scroll{bottom:calc(var(--terminal-height,330px) + 12px + var(--composer-reach))}
 /* A thread that takes more than a moment to open (App: OPENING_COVER_DELAY_MS) names itself in the conversation area with a quiet
    spinner. What it covers only hides, so a failed open puts that view back with its layout and scroll position as they were; a
    page it was opened from (History, Projects…) hides the same way under the chat view, and so does the left thread's find bar. The
    left thread's goal panel gives its place to the opening state's own, without unmounting. */
 .chat-workspace :is(.conversation-scroll,.thread-find-bar).opening-covered,.main-frame.opening-over-page>:is(.page-topbar,.secondary-page){visibility:hidden}
 :root:root .context-panel .goal-panel.opening-covered{display:none}
-.chat-workspace .thread-opening{position:absolute;left:0;right:0;top:var(--top);bottom:132px;display:flex;align-items:center;justify-content:center;padding:34px 28px 72px;pointer-events:none;animation:tb-fade .24s ease-out}
-.main-frame.terminal-open .chat-workspace .thread-opening{bottom:calc(var(--terminal-height,330px) + 128px)}
+.chat-workspace .thread-opening{position:absolute;left:0;right:0;top:var(--top);bottom:calc(16px + var(--composer-reach));display:flex;align-items:center;justify-content:center;padding:34px 28px 72px;pointer-events:none;animation:tb-fade .24s ease-out}
+.main-frame.terminal-open .chat-workspace .thread-opening{bottom:calc(var(--terminal-height,330px) + 12px + var(--composer-reach))}
 .thread-opening-body{min-width:0;max-width:min(100%,764px);display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center}
 .thread-opening-body strong{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--tx0);font-size:15px;font-weight:600;letter-spacing:-.01em}
 .thread-opening-body span{display:inline-flex;align-items:center;gap:8px;color:var(--tx2);font-size:12.5px}
@@ -561,6 +568,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .context-chip :is(svg,strong,button){flex:none}
 .composer-wrap .context-chip button{width:18px;height:18px;color:var(--tx2)}
 .composer-wrap .context-chip button:hover{background:var(--bg3);color:var(--tx0)}
+/* An empty shelf takes no room, nor the clicks on the end of the reply above the composer. */
+.composer-wrap .attachment-shelf:empty{display:none}
 .composer-wrap .attachment-shelf>span{height:26px;gap:6px;padding:0 6px 0 9px;border:1px solid var(--line2);border-radius:var(--r-s);background:var(--bg2);color:var(--tx1);font-size:11px;box-shadow:var(--sh1)}
 .composer-wrap .attachment-shelf>span button{color:var(--tx3)}
 .composer-wrap .attachment-shelf>span button:hover{color:var(--tx0)}
