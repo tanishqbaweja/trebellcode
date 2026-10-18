@@ -10,7 +10,7 @@ const json=(route,value)=>route.fulfill({status:200,contentType:"application/jso
 const names=["Bulk one","Bulk two","Bulk three","Bulk four"];
 
 // refuse(message) names an error to answer a request with instead of the relay. stop() stops the harness as far as the page can
-// tell: its socket closes and every reconnect is turned away.
+// tell: its socket closes and every reconnect is turned away, until start() lets the page's next reconnect through.
 async function proxyRelay(page,harness){
   const proxy={refuse:()=>null,stopped:false,sockets:[]};
   await page.routeWebSocket(harness.wsUrl,ws=>{
@@ -24,6 +24,7 @@ async function proxyRelay(page,harness){
     });
   });
   proxy.stop=()=>{proxy.stopped=true;for(const ws of proxy.sockets.splice(0))ws.close({code:1011,reason:"harness stopped"})};
+  proxy.start=()=>{proxy.stopped=false};
   return proxy;
 }
 
@@ -556,7 +557,7 @@ test("with the harness away, Delete says Trebell Native is not connected before 
       await switchMode(page,mode);
       const row=await rowMenu(page,"Bulk one");
       await row.getByRole("button",{name:"Delete",exact:true}).click();
-      await expect(sidebarAlert(page)).toHaveText("Trebell Native is not connected");
+      await expect(sidebarAlert(page)).toHaveText("Could not delete “Bulk one”: Trebell Native is not connected.");
       await expect(question).toHaveCount(0);
       await expect(threadRow(page,"Bulk one")).toHaveClass(/active/);
       await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
@@ -645,5 +646,39 @@ test("an Undo the harness refuses says so where the Undo was, naming the thread 
     expect((await groups(page)).find(([group])=>group==="Active")?.[1]).toContain("Bulk six");
     await expect(conversation.getByText("Sections are read-only")).toHaveCount(0);
     await shoot(page,"sidebar-unsettle-undo-refused");
+  }finally{await harness.close()}
+});
+
+// A row's Archive or Pin refused while the harness is away says what could not be done to which thread, as a bulk action's refusal and
+// a refused Delete do, so once the harness is back it reads as that refusal. It said "Trebell Native is not connected" while the
+// composer and the harness card said Trebell Native was connected again.
+test("an Archive or Pin refused while the harness is away names the action and the thread, so once the harness is back it does not say it is away",async({page})=>{
+  test.setTimeout(120_000);
+  const {harness,proxy}=await openSidebarApp(page);
+  const transport=page.getByTestId("composer-transport"),composer=page.getByTestId("composer"),dot=page.getByTestId("sidebar-provider-dot");
+  try{
+    // Archive clicked in dark; in light the keyboard goes from the row to its menu button, Enter, down to Pin, Enter.
+    for(const [mode,name,item,verb] of [["dark","Bulk two","Archive","archive"],["light","Bulk three","Pin","pin"]]){
+      await switchMode(page,mode);
+      proxy.stop();
+      await expect(transport).toContainText("Reconnecting to Trebell Native");
+      if(mode==="dark")await (await rowMenu(page,name)).getByRole("button",{name:item,exact:true}).click();
+      else{
+        const row=threadRow(page,name),target=row.getByRole("button",{name:item,exact:true});
+        await row.locator(".thread-main").focus();await page.keyboard.press("Tab");await page.keyboard.press("Enter");
+        await expect(row.locator(".thread-menu")).toHaveAttribute("open","");
+        for(let step=0;step<14&&!await target.evaluate(node=>node===document.activeElement);step++)await page.keyboard.press("Tab");
+        await expect(target).toBeFocused();await page.keyboard.press("Enter");
+      }
+      await expect(sidebarAlert(page)).toContainText("Trebell Native is not connected");
+      await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+      // The harness is back, as the composer and the harness card say: the alert names the refusal, not the harness as away.
+      proxy.start();
+      await expect(transport).toHaveCount(0,{timeout:30_000});
+      await expect(composer).toHaveAttribute("placeholder","Ask Trebell Code anything…");await expect(dot).toHaveClass(/tone-ok/);
+      await expect(sidebarAlert(page),"the sidebar once the harness is back").toHaveText(`Could not ${verb} “${name}”: Trebell Native is not connected.`);
+      await shoot(page,"sidebar-refused-while-away-harness-back");
+      await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+    }
   }finally{await harness.close()}
 });

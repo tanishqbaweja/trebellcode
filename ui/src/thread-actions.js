@@ -100,22 +100,27 @@ async function undoThreadActions(results){
 }
 export async function threadAction(deps,thread,action){
   const {rpc,rpcStatus,agentRuntimeLabel,agentRuntime,setSnoozeRequest,presetFor,permissionMode,model,provider,projectPath,setThreads,openThread,askConfirm,openingThreadRef,newChat,leaveRemovedThread}=deps;
-  if(action==="pin"||action==="settle"||action==="active"||action==="archive"){await reversibleThreadAction(deps,thread,action);return}
+  // A refusal names the action and the thread with its reason, as a bulk action's does, so one made while the harness was away still
+  // reads as that refusal once it is back ("Could not archive “X”: Trebell Native is not connected."), not as the harness away.
+  const refused=(verb,error)=>new Error(bulkActionFailure(verb,[{title:titleOf(thread),error}]));
+  if(action==="pin"||action==="settle"||action==="active"||action==="archive"){
+    try{await reversibleThreadAction(deps,thread,action)}catch(error){throw refused(action!=="active"?action:{Pinned:"unpin",Snoozed:"wake",Settled:"un-settle"}[thread.section?.name]||"move",error)}
+    return;
+  }
   if(action==="snooze"){setSnoozeRequest({threads:[thread],bulk:false});return}
   if(action==="fork"){
     if(!rpc)return;
-    const p=presetFor(permissionMode);
-    const result=await rpc.request("thread/fork",{threadId:thread.id,...(agentRuntime==="codex"?{}:{model:model||null}),...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd:thread.cwd||projectPath,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,threadSource:"trebell-code",excludeTurns:true});
+    const p=presetFor(permissionMode);let result;
+    try{result=await rpc.request("thread/fork",{threadId:thread.id,...(agentRuntime==="codex"?{}:{model:model||null}),...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd:thread.cwd||projectPath,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,threadSource:"trebell-code",excludeTurns:true})}catch(error){throw refused("fork",error)}
     if(result?.thread){setThreads(prev=>[result.thread,...prev.filter(t=>t.id!==result.thread.id)]);await openThread(result.thread)}
     return;
   }
   if(action==="delete"){
     // As Archive: with the harness away, the delete could not happen, so it is refused before it asks or leaves the thread.
-    if(!rpc||rpcStatus!=="connected")throw new Error(agentRuntimeLabel+" is not connected");
+    if(!rpc||rpcStatus!=="connected")throw refused("delete",agentRuntimeLabel+" is not connected");
     if(!await askConfirm("Delete “"+titleOf(thread)+"” permanently? This cannot be undone.",{confirm:"Delete thread"}))return;
     if(openingThreadRef.current===String(thread.id))await newChat();
-    // A delete the harness refuses names the thread with its reason, as a bulk action's refusal does.
-    try{await rpc.request("thread/delete",{threadId:thread.id})}catch(error){throw new Error(bulkActionFailure("delete",[{title:titleOf(thread),error}]))}
+    try{await rpc.request("thread/delete",{threadId:thread.id})}catch(error){throw refused("delete",error)}
     setThreads(prev=>prev.filter(t=>t.id!==thread.id));
     await leaveRemovedThread(thread.id);
     return;
