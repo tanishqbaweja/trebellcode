@@ -33,7 +33,7 @@ import { isListedThread, prependThread } from "./thread-list-state.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
 import { matchingMessageExcerpt, matchingPullRequestExcerpt, sidebarSearchMatches } from "./thread-message-search.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
-import { THREAD_SCROLL_END_THRESHOLD, captureHistoryPrependAnchor, captureThreadScrollPosition, historyAnchorDisturbed, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
+import { THREAD_SCROLL_END_THRESHOLD, captureConversationPosition, captureHistoryPrependAnchor, captureThreadScrollPosition, conversationWelcome, historyAnchorDisturbed, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
 import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
 import { createThreadTurnNotes } from "./thread-turn-notes.js";
 import { latestTurnRowsStart } from "./conversation-order.js";
@@ -1202,6 +1202,8 @@ export default function App(){
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
+  // Counts the new tasks and general chats shown (showNewTask): each comes up on its welcome at its top.
+  const [newTaskView,setNewTaskView]=useState(0);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyHoldRef=useRef(0);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const shownWelcomeRef=useRef(null);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeRequestRef=useRef(Promise.resolve());const runtimeSettledRef=useRef(Promise.resolve());const runtimeLandedRef=useRef(null);const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
   modelsRef.current=models;modelRef.current=model;
@@ -1485,7 +1487,7 @@ export default function App(){
   }
   function rememberConversationPosition(threadId=activeThreadRef.current?.id){
     const node=conversationScrollRef.current;if(!threadId||!node)return null;
-    const position=captureThreadScrollPosition(node);if(!position)return null;
+    const position=captureConversationPosition(node);if(!position)return null;
     rememberThreadScrollPosition(threadScrollPositionsRef.current,threadId,position);
     followConversationEndRef.current=position.atEnd;
     return position;
@@ -1503,7 +1505,7 @@ export default function App(){
       setHistoryHold(node,historyHoldAfterScroll(node,historyHoldRef.current));
       if(historyHoldRef.current&&(node.firstElementChild?.getBoundingClientRect().height||0)>historyHoldRef.current+0.5)setHistoryHold(node,0);
     }
-    const position=captureThreadScrollPosition(node);followConversationEndRef.current=position?.atEnd!==false;
+    const position=captureConversationPosition(node);followConversationEndRef.current=position?.atEnd!==false;
     const threadId=activeThreadRef.current?.id;if(threadId&&position)rememberThreadScrollPosition(threadScrollPositionsRef.current,threadId,position);
   }
   function stopHistoryAnchorSettle(){
@@ -1511,9 +1513,11 @@ export default function App(){
     if(settle?.frame)cancelAnimationFrame(settle.frame);
   }
   // A view that follows the end goes back to it. The welcome of a conversation with nothing in it has no end to follow: it comes up at
-  // its top, also in place of a conversation scrolled down, and then stays where the person scrolls it, whatever the zoom or size.
+  // its top, in each view that shows it (a new task, a general chat, a thread with nothing in it: each one clears shownWelcomeRef as it
+  // comes up), also in place of a conversation or another welcome scrolled down, and then stays where the person scrolls it, whatever
+  // the zoom or size.
   function keepConversationEnd(node){
-    const welcome=node.querySelector(":scope>.conversation-column>.welcome");
+    const welcome=conversationWelcome(node);
     if(welcome){if(shownWelcomeRef.current!==welcome){shownWelcomeRef.current=welcome;node.scrollTop=0}return}
     shownWelcomeRef.current=null;if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight);
   }
@@ -1551,7 +1555,9 @@ export default function App(){
     }
     if(pendingThreadScrollRestoreRef.current===threadId){
       const position=threadScrollPositionsRef.current.get(threadId)||null;
-      node.scrollTop=restoredThreadScrollTop(position,node);
+      // A thread with nothing in it opens on its welcome, at its top (keepConversationEnd), not at the welcome's end as a thread
+      // opens at its newest message: from 150% zoom that end had the welcome's picture and title under the header.
+      if(conversationWelcome(node))keepConversationEnd(node);else node.scrollTop=restoredThreadScrollTop(position,node);
       followConversationEndRef.current=position?.atEnd??true;
       pendingThreadScrollRestoreRef.current=null;
       return;
@@ -1560,6 +1566,10 @@ export default function App(){
     // above it, and the browser's scroll anchoring keeps that reply where it was on screen: a view that follows the end goes back.
     keepConversationEnd(node);
   },[activeThread?.id,messages.length,events.length,cardTurnId]);
+  // A new task or a general chat comes up on its welcome at its top, also in place of a welcome scrolled down. That welcome can be the
+  // same element with new words (New general chat from the palette, over the new task), whose box need not resize, so the observer
+  // below would not see it come up.
+  useLayoutEffect(()=>{const node=conversationScrollRef.current;if(node&&newTaskView)keepConversationEnd(node)},[newTaskView]);
   useEffect(()=>{
     const node=conversationScrollRef.current;if(!node||typeof ResizeObserver==="undefined")return;
     const content=node.firstElementChild;if(!content)return;
@@ -3469,7 +3479,7 @@ export default function App(){
   // A new task asked for from the new task (on it, or back from a page opened from it) keeps its unsent draft with the agent and the
   // collaboration mode chosen for it, and a send still on its way in the thread left goes on there without holding the new task's
   // composer (send).
-  function showNewTask(){const leftNewTask=!activeThreadRef.current;rememberConversationPosition();setComposerAlert(null);releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setQueueEditDraft(null);if(!leftNewTask){submittingRef.current=null;setSubmitting(false);setPrompt("");setAttachments([]);setContextChips([]);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default")}setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
+  function showNewTask(){const leftNewTask=!activeThreadRef.current;rememberConversationPosition();setComposerAlert(null);releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;shownWelcomeRef.current=null;setNewTaskView(view=>view+1);setSection("chat");setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setQueueEditDraft(null);if(!leftNewTask){submittingRef.current=null;setSubmitting(false);setPrompt("");setAttachments([]);setContextChips([]);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default")}setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -3633,7 +3643,7 @@ export default function App(){
     const restoredLocalQueue=useNativeQueue?[]:hydratePersistedQueue(queueNowRef.current.threadMeta[thread.id]?.trebellQueue||savedMeta.trebellQueue||[],localQueueStartRef.current);
     // The composer's note goes with the view it was about: another thread shown, or this one opening after all, ends it; the thread
     // shown opening again (a reconnect) keeps a note about its failed send or about another thread that did not open.
-    activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection&&sectionRef.current===from&&!openRunRef.current?.pageAsked)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!reopeningCurrentThread)shownWelcomeRef.current=null;if(!preserveSection&&sectionRef.current===from&&!openRunRef.current?.pageAsked)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     // A hold a Stop put on its queue holds it again after a reload or a restart, with the follow-ups it shows (holdQueue).
     if(!useNativeQueue&&savedMeta.trebellQueueHeld&&!holdKnownRef.current.has(String(thread.id)))holdQueue(thread.id,true,{saved:true});
     // The turn that still runs (resumedTurnId) gets back on its live card the MCP progress and the diff it had, those sent while the

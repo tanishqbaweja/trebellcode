@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { captureHistoryPrependAnchor, captureThreadScrollPosition, historyAnchorDisturbed, historyAnchorOffset, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "../ui/src/thread-scroll.js";
+import { captureConversationPosition, captureHistoryPrependAnchor, captureThreadScrollPosition, conversationWelcome, historyAnchorDisturbed, historyAnchorOffset, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "../ui/src/thread-scroll.js";
 
 test("thread scroll capture distinguishes following-end from reading earlier content",()=>{
   assert.deepEqual(captureThreadScrollPosition({scrollTop:1450,scrollHeight:2000,clientHeight:500}),{top:1450,atEnd:false,distanceFromEnd:50});
@@ -83,4 +83,26 @@ test("a history hold gives back what lies below the view as it scrolls up, and n
   assert.equal(historyHoldAfterScroll({scrollTop:0,scrollHeight:2000,clientHeight:616},848),0);
   assert.equal(historyHoldAfterScroll({scrollTop:338,scrollHeight:954,clientHeight:616},0),0);
   assert.equal(historyHoldAfterScroll(null,848),0);
+});
+
+// The welcome of a conversation with nothing in it is the column's last child. Every resize and streamed growth of the conversation
+// asks for it, so it is read from there: a selector query under the box walked every row and code token of a long thread to find none.
+test("the conversation's welcome is read from its column's last child, without a query under the box",()=>{
+  const welcome={classList:{contains:name=>name==="welcome"}},row={classList:{contains:()=>false}};
+  const box=last=>({firstElementChild:last===undefined?null:{lastElementChild:last},querySelector(){throw new Error("a query under the box")},querySelectorAll(){throw new Error("a query under the box")}});
+  assert.equal(conversationWelcome(box(welcome)),welcome);
+  assert.equal(conversationWelcome(box(row)),null);
+  assert.equal(conversationWelcome(box(null)),null);
+  assert.equal(conversationWelcome(box(undefined)),null);
+  assert.equal(conversationWelcome(null),null);
+});
+
+// A welcome has no end of its own: what comes in its place (a thread's first messages) shows from its end, so the place kept for the
+// thread, and whether the view follows its end, count it as at its end even scrolled to its top, as it comes up zoomed in.
+test("a welcome counts as at its end, so what comes in its place shows from its end",()=>{
+  const column=last=>({lastElementChild:last}),welcome={classList:{contains:name=>name==="welcome"}},row={classList:{contains:()=>false}};
+  assert.deepEqual(captureConversationPosition({scrollTop:0,scrollHeight:397,clientHeight:317,firstElementChild:column(welcome)}),{top:0,atEnd:true,distanceFromEnd:0});
+  assert.deepEqual(captureConversationPosition({scrollTop:0,scrollHeight:2000,clientHeight:500,firstElementChild:column(row)}),{top:0,atEnd:false,distanceFromEnd:1500});
+  assert.deepEqual(captureConversationPosition({scrollTop:1452,scrollHeight:2000,clientHeight:500,firstElementChild:column(row)}),captureThreadScrollPosition({scrollTop:1452,scrollHeight:2000,clientHeight:500}));
+  assert.equal(captureConversationPosition(null),null);
 });

@@ -10,6 +10,21 @@ export function captureThreadScrollPosition(node,threshold=THREAD_SCROLL_END_THR
   return {top:Math.min(scrollTop,maxTop),atEnd:distanceFromEnd<=threshold,distanceFromEnd};
 }
 
+// The welcome a conversation with nothing in it shows, which the app renders as its column's last child, or null. It is read from the
+// column's last child, with no selector query under the box: the resize and layout paths that ask run on every streamed growth of a
+// conversation.
+export function conversationWelcome(node){
+  const last=node?.firstElementChild?.lastElementChild;
+  return last?.classList?.contains("welcome")?last:null;
+}
+
+// Where the conversation is (captureThreadScrollPosition), a welcome counting as at its end: it has no end of its own, and what comes in
+// its place, the thread's first messages, shows from its end as a thread's newest message does.
+export function captureConversationPosition(node,threshold=THREAD_SCROLL_END_THRESHOLD){
+  const position=captureThreadScrollPosition(node,threshold);
+  return position&&conversationWelcome(node)?{...position,atEnd:true,distanceFromEnd:0}:position;
+}
+
 export function restoredThreadScrollTop(position,node){
   if(!node)return 0;
   const maxTop=Math.max(0,(Number(node.scrollHeight)||0)-(Number(node.clientHeight)||0));
