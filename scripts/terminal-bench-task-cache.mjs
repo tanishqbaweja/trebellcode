@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 export function terminalBenchTaskQualifiedName(dataset,task){
   const datasetText=String(dataset||"").trim(),taskText=String(task||"").trim();
@@ -19,6 +20,8 @@ export function benchmarkRunPrefix(dataset){
   // Terminal-Bench 2.0 is its own registry package, versioned by revision (@1) or @latest, not by a semver ref.
   if(pkg==="terminal-bench/terminal-bench-2")return "tb2";
   if(pkg==="swe-bench/swe-bench-verified")return "swebv";
+  // SWE-bench Multilingual is a legacy-registry dataset (name@version, no namespace), run from local task copies.
+  if(pkg==="swebench_multilingual")return "swebml";
   return (pkg.split("/").pop()||"").replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,20)||"bench";
 }
 
@@ -120,9 +123,9 @@ export function terminalBenchTaskNoNetworkSectionsFromToml(text){
 const HARBOR_EGRESS_KERNEL_PROBE_IMAGE="alpine:3.23.4@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11";
 const HARBOR_EGRESS_KERNEL_PROBE_SCRIPT="if [ ! -f /proc/config.gz ]; then exit 0; fi; zcat /proc/config.gz 2>/dev/null | grep -qE '^CONFIG_NFT_FIB_INET=[ym]'";
 
-export async function preflightTerminalBenchNetworkPolicy({dataset,task,env,captureFn,docker="docker",home=homedir(),cacheRoot=null}={}){
+export async function preflightTerminalBenchNetworkPolicy({dataset,task,env,captureFn,docker="docker",home=homedir(),cacheRoot=null,taskPath=null}={}){
   if(typeof captureFn!=="function")throw new TypeError("preflightTerminalBenchNetworkPolicy requires captureFn");
-  const taskToml=await terminalBenchCachedTaskToml({dataset,task,home,cacheRoot});
+  const taskToml=await terminalBenchCachedTaskToml({dataset,task,home,cacheRoot,taskPath});
   if(!taskToml)return {completed:false,taskTomlFound:false,noNetworkSections:[]};
   const noNetworkSections=terminalBenchTaskNoNetworkSectionsFromToml(await readFile(taskToml,"utf8"));
   if(!noNetworkSections.length)return {completed:true,taskTomlFound:true,noNetworkSections,egressControlSupported:null};
@@ -133,7 +136,9 @@ export async function preflightTerminalBenchNetworkPolicy({dataset,task,env,capt
   return {completed:true,taskTomlFound:true,noNetworkSections,egressControlSupported:true};
 }
 
-export async function terminalBenchCachedTaskToml({dataset,task,home=homedir(),cacheRoot=null}={}){
+export async function terminalBenchCachedTaskToml({dataset,task,home=homedir(),cacheRoot=null,taskPath=null}={}){
+  // A local task copy (localTaskPath) has its task.toml in its own directory, not in Harbor's task cache.
+  if(taskPath){const taskToml=join(taskPath,"task.toml");try{await stat(taskToml);return taskToml}catch{return null}}
   const qualified=terminalBenchTaskQualifiedName(dataset,task);if(!qualified)return null;
   const [namespace,...parts]=qualified.split("/"),slug=parts.join("/");if(!namespace||!slug||slug.includes("/"))return null;
   const root=cacheRoot||join(home,".cache","harbor","tasks","packages",namespace,slug);
@@ -153,9 +158,9 @@ export async function terminalBenchCachedDockerImages(options={}){
   return {taskToml,images};
 }
 
-export async function prewarmTerminalBenchDockerImages({dataset,task,env,runFn,captureFn,docker="docker",home=homedir(),cacheRoot=null,maxAttempts=3}={}){
+export async function prewarmTerminalBenchDockerImages({dataset,task,env,runFn,captureFn,docker="docker",home=homedir(),cacheRoot=null,taskPath=null,maxAttempts=3}={}){
   if(typeof runFn!=="function")throw new TypeError("prewarmTerminalBenchDockerImages requires runFn");
-  const {taskToml,images}=await terminalBenchCachedDockerImages({dataset,task,home,cacheRoot});
+  const {taskToml,images}=await terminalBenchCachedDockerImages({dataset,task,home,cacheRoot,taskPath});
   if(!taskToml)return {completed:false,taskTomlFound:false,images:[],attempts:[]};
   const unique=[...new Map(images.map(item=>[item.image,item])).values()],attempts=[];
   for(const item of unique){
@@ -221,6 +226,60 @@ export async function preflightTerminalBenchDatasetTaskMembership({harbor,datase
     datasetRevision:String(parsed?.revision||"").trim()||null,
     datasetContentHash:String(parsed?.content_hash||"").trim()||null,
     attempts:used,
+  };
+}
+
+// A dataset kept as local task copies (TREBELL_TERMINAL_BENCH_TASK_ROOT): one directory per task under the root, run with
+// `harbor run -p <root>/<task>`, and a manifest.json at the root naming the dataset and the sha256 of every file of every task.
+// This is for a dataset Harbor cannot fetch here (SWE-bench Multilingual: a legacy-registry dataset whose git clone dies on
+// resets). There is no registry query or task cache: the launch checks the copy against the manifest instead.
+export function localTaskPath(taskRoot,task){
+  const root=String(taskRoot||"").trim(),name=String(task||"").trim();
+  if(!root)return null;
+  if(!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name))throw new Error(`A local task is one directory name under ${root}, not ${task}`);
+  return join(resolve(root),name);
+}
+
+async function filesUnder(dir,base=dir){
+  const files=[];
+  for(const entry of await readdir(dir,{withFileTypes:true})){
+    const full=join(dir,entry.name);
+    if(entry.isDirectory())files.push(...await filesUnder(full,base));
+    else files.push(relative(base,full).split(sep).join("/"));
+  }
+  return files;
+}
+
+export async function preflightLocalTaskMembership({taskRoot,dataset,task}){
+  const taskPath=localTaskPath(taskRoot,task);
+  if(!taskPath)throw new Error("A local task launch needs TREBELL_TERMINAL_BENCH_TASK_ROOT");
+  const manifestPath=join(resolve(taskRoot),"manifest.json");
+  let manifestText,manifest;
+  try{manifestText=await readFile(manifestPath,"utf8");manifest=JSON.parse(manifestText)}
+  catch(error){throw new Error(`Cannot read the local task manifest ${manifestPath}: ${error?.message||error}`)}
+  if(dataset&&manifest?.dataset!==dataset)throw new Error(`The local task manifest ${manifestPath} is for dataset ${manifest?.dataset}, not ${dataset}. Refusing launch.`);
+  const entry=manifest?.tasks?.[task];
+  if(!entry||!Array.isArray(entry.files)||!entry.files.length)throw new Error(`Task ${task} is not in the local task manifest ${manifestPath}. Refusing launch.`);
+  const listed=new Set();
+  for(const file of entry.files){
+    const rel=String(file?.path||"");
+    if(!rel||rel.split(/[\\/]/).some(part=>part===".."||part===""))throw new Error(`The local task manifest lists an unsafe path for ${task}: ${rel}`);
+    let bytes;try{bytes=await readFile(join(taskPath,rel))}catch{throw new Error(`Local task ${task} is missing ${rel}, which its manifest lists. Refusing launch.`)}
+    if(createHash("sha256").update(bytes).digest("hex")!==file.sha256)throw new Error(`Local task ${task}'s ${rel} differs from its manifest. Refusing launch.`);
+    listed.add(rel);
+  }
+  const extra=(await filesUnder(taskPath)).filter(rel=>!listed.has(rel));
+  if(extra.length)throw new Error(`Local task ${task} has files its manifest does not list: ${extra.slice(0,5).join(", ")}. Refusing launch.`);
+  return {
+    completed:true,
+    local:true,
+    qualifiedTask:task,
+    taskPath,
+    taskCount:Object.keys(manifest.tasks).length,
+    datasetVersion:String(manifest.dataset||"").trim()||null,
+    datasetContentHash:createHash("sha256").update(manifestText).digest("hex"),
+    taskContentHash:createHash("sha256").update(JSON.stringify(entry.files)).digest("hex"),
+    files:entry.files.length,
   };
 }
 

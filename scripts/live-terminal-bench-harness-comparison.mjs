@@ -16,7 +16,7 @@ import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTermin
 import { estimateGpt6LunaCostFromAggregate, gpt6LunaPricingForServiceTier } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
-import { benchmarkRunPrefix, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, prewarmTerminalBenchDockerImages, terminalBenchCachedTaskArtifacts, prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName, verifierDownloadCacheArgs } from "./terminal-bench-task-cache.mjs";
+import { benchmarkRunPrefix, localTaskPath, preflightLocalTaskMembership, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, prewarmTerminalBenchDockerImages, terminalBenchCachedTaskArtifacts, prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName, verifierDownloadCacheArgs } from "./terminal-bench-task-cache.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -40,7 +40,10 @@ const SERVICE_TIER=String(serviceTierArg?.slice("--service-tier=".length)||proce
 if(!["default","fast"].includes(SERVICE_TIER))throw new Error("Terminal-Bench service tier must be default or fast.");
 const taskArg=process.argv.find(arg=>arg.startsWith("--task="));
 const TASK=String(taskArg?.slice("--task=".length)||process.env.TREBELL_TERMINAL_BENCH_TASK||"terminal-bench/session-window-debug").trim();
-const HARBOR_TASK=terminalBenchTaskQualifiedName(DATASET,TASK),RUN_PREFIX=benchmarkRunPrefix(DATASET);
+// TREBELL_TERMINAL_BENCH_TASK_ROOT: the dataset is kept as local task copies, checked against the root's manifest.json and run
+// with `harbor run -p <root>/<task>` (localTaskPath in terminal-bench-task-cache.mjs). Every lane runs the same copy.
+const TASK_ROOT=String(process.env.TREBELL_TERMINAL_BENCH_TASK_ROOT||"").trim()||null,LOCAL_TASK_PATH=localTaskPath(TASK_ROOT,TASK);
+const HARBOR_TASK=LOCAL_TASK_PATH?TASK:terminalBenchTaskQualifiedName(DATASET,TASK),RUN_PREFIX=benchmarkRunPrefix(DATASET);
 if(!HARBOR_TASK)throw new Error(`Cannot derive Harbor task identity from dataset=${DATASET} task=${TASK}`);
 const setupTimeoutArg=process.argv.find(arg=>arg.startsWith("--agent-setup-timeout-multiplier="));
 const SETUP_TIMEOUT_MULTIPLIER=Number(setupTimeoutArg?.slice("--agent-setup-timeout-multiplier=".length)||process.env.TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER||3);
@@ -243,16 +246,18 @@ try{
     ...(nativePinnedNodeTarballPath?{TREBELL_NODE_PINNED_TARBALL:nativePinnedNodeTarballPath}: {}),
     ...(codexPinnedTarballPath?{TREBELL_CODEX_PINNED_TARBALL:codexPinnedTarballPath}: {}),
   },outputRoot=join(root,".harbor-jobs"),jobs=[];
-  const datasetMembershipPreflight={startedAt:new Date().toISOString(),...(await preflightTerminalBenchDatasetTaskMembership({harbor,dataset:DATASET,task:TASK,env:sharedEnv,captureFn:capture})),finishedAt:new Date().toISOString()};
+  const datasetMembershipPreflight={startedAt:new Date().toISOString(),...(LOCAL_TASK_PATH?await preflightLocalTaskMembership({taskRoot:TASK_ROOT,dataset:DATASET,task:TASK}):await preflightTerminalBenchDatasetTaskMembership({harbor,dataset:DATASET,task:TASK,env:sharedEnv,captureFn:capture})),finishedAt:new Date().toISOString()};
   let taskCachePrewarm=null,dockerImagePrewarm=null;
   const prewarmTaskCache=async()=>({startedAt:new Date().toISOString(),...(await prewarmTerminalBenchTaskCache({harbor,dataset:DATASET,task:TASK,env:sharedEnv,runFn:run})),finishedAt:new Date().toISOString()});
-  if(PARALLEL&&selectedLanes.length>1)taskCachePrewarm=await prewarmTaskCache();
+  // A local task copy is already on disk, so there is no task cache to fill.
+  if(PARALLEL&&selectedLanes.length>1&&!LOCAL_TASK_PATH)taskCachePrewarm=await prewarmTaskCache();
   // Refuse tasks whose no-network environments this Docker engine cannot enforce before any paid lane starts.
-  let networkPolicyPreflight=await preflightTerminalBenchNetworkPolicy({dataset:DATASET,task:TASK,env:sharedEnv,captureFn:capture});
+  let networkPolicyPreflight=await preflightTerminalBenchNetworkPolicy({dataset:DATASET,task:TASK,env:sharedEnv,captureFn:capture,taskPath:LOCAL_TASK_PATH});
+  if(!networkPolicyPreflight.taskTomlFound&&LOCAL_TASK_PATH)throw new Error(`Local task ${TASK} has no task.toml at ${LOCAL_TASK_PATH}`);
   if(!networkPolicyPreflight.taskTomlFound&&!taskCachePrewarm){taskCachePrewarm=await prewarmTaskCache();networkPolicyPreflight=await preflightTerminalBenchNetworkPolicy({dataset:DATASET,task:TASK,env:sharedEnv,captureFn:capture})}
   // Measurement only: Native snapshots the task's own-container deliverables at each completion gate for later official regrading.
-  const nativeGateSnapshotArtifacts=(await terminalBenchCachedTaskArtifacts({dataset:DATASET,task:TASK}).catch(()=>[])).filter(item=>!item.service).map(({source,exclude})=>({source,exclude}));
-  if(PARALLEL&&selectedLanes.length>1)dockerImagePrewarm={startedAt:new Date().toISOString(),...(await prewarmTerminalBenchDockerImages({dataset:DATASET,task:TASK,env:sharedEnv,runFn:run,captureFn:capture})),finishedAt:new Date().toISOString()};
+  const nativeGateSnapshotArtifacts=(await terminalBenchCachedTaskArtifacts({dataset:DATASET,task:TASK,taskPath:LOCAL_TASK_PATH}).catch(()=>[])).filter(item=>!item.service).map(({source,exclude})=>({source,exclude}));
+  if(PARALLEL&&selectedLanes.length>1)dockerImagePrewarm={startedAt:new Date().toISOString(),...(await prewarmTerminalBenchDockerImages({dataset:DATASET,task:TASK,env:sharedEnv,runFn:run,captureFn:capture,taskPath:LOCAL_TASK_PATH})),finishedAt:new Date().toISOString()};
   const willRunCodexApi=selectedLanes.some(lane=>lane.label==="codex-api"),willRunCodexOauth=selectedLanes.some(lane=>lane.label==="codex-oauth");
   let codexOauthAuthPath=null;
   if(willRunCodexOauth){
@@ -279,7 +284,7 @@ try{
     status:"pending",startedAt:null,finishedAt:null,runError:null,attempts:[],retryReason:null,retryCleanup:null,infrastructureFailureReason:null,
   }));
   const reportSnapshot=({complete=false}={})=>({
-    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,hostedWebSearch:"disabled",setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,verifierDownloadCache:VERIFIER_DOWNLOAD_CACHE,datasetMembershipPreflight,taskCachePrewarm,networkPolicyPreflight,dockerImagePrewarm,nativeGateSnapshotArtifacts,
+    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,hostedWebSearch:"disabled",setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,verifierDownloadCache:VERIFIER_DOWNLOAD_CACHE,localTaskRoot:TASK_ROOT,localTaskPath:LOCAL_TASK_PATH,datasetMembershipPreflight,taskCachePrewarm,networkPolicyPreflight,dockerImagePrewarm,nativeGateSnapshotArtifacts,
     usesBaseAgentTimeout:AGENT_TIMEOUT_MULTIPLIER===1,
     timeoutComparability:AGENT_TIMEOUT_MULTIPLIER===1?"benchmark-base":"extended-agent-timeout",
     sameModel:true,sameReasoningEffort:true,sameServiceTier:true,sameHostedWebSearchPolicy:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
@@ -313,7 +318,7 @@ try{
     const {label,harness,authMode}=lane;
     const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":CODEX_INSTALL_MODE==="pinned"?"benchmarks.harbor.pinned_codex_agent:PinnedCodexAgent":"codex";
     const laneState=laneStates[laneIndex];let jobName=laneState.jobName;
-    const argsForJob=currentJobName=>["run","-d",DATASET,"-i",HARBOR_TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,...(SERVICE_TIER==="fast"?["--ak","service_tier=fast"]:[]),...(harness.startsWith("codex")?["--ak","web_search=disabled"]:[]),...(harness.startsWith("codex")&&CODEX_INSTALL_MODE==="pinned"?["--ak","apps=false"]:[]),"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y",...VERIFIER_CACHE_ARGS];
+    const argsForJob=currentJobName=>["run",...(LOCAL_TASK_PATH?["-p",LOCAL_TASK_PATH]:["-d",DATASET,"-i",HARBOR_TASK]),"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,...(SERVICE_TIER==="fast"?["--ak","service_tier=fast"]:[]),...(harness.startsWith("codex")?["--ak","web_search=disabled"]:[]),...(harness.startsWith("codex")&&CODEX_INSTALL_MODE==="pinned"?["--ak","apps=false"]:[]),"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y",...VERIFIER_CACHE_ARGS];
     let args=argsForJob(jobName);
     const retainNativeEnvironment=STANDALONE_NATIVE_RERUN&&harness==="native";
     if(retainNativeEnvironment)args.push("--no-delete");

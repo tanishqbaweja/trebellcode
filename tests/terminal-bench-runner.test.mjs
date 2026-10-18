@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,7 +11,7 @@ import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor }
 import { windowsHarborEnv } from "../scripts/harbor-process-env.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
-import { benchmarkRunPrefix, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, terminalBenchTaskNoNetworkSectionsFromToml, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName, verifierDownloadCacheArgs } from "../scripts/terminal-bench-task-cache.mjs";
+import { benchmarkRunPrefix, localTaskPath, preflightLocalTaskMembership, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, terminalBenchCachedTaskToml, terminalBenchTaskNoNetworkSectionsFromToml, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName, verifierDownloadCacheArgs } from "../scripts/terminal-bench-task-cache.mjs";
 import { rewriteIndex, upstreamFor } from "../scripts/verifier-download-cache.mjs";
 import { isSweBenchDataset, sweBenchVerifierReportMissing } from "../scripts/terminal-bench-verifier-summary.mjs";
 
@@ -345,6 +345,41 @@ test("Terminal-Bench network preflight refuses no-network tasks before inference
   assert.match(source,/networkPolicyPreflight,/);
 });
 
+test("A local task copy runs from its own directory, and only while every file matches the root's manifest",async()=>{
+  assert.equal(localTaskPath(null,"demo__task-1"),null);
+  assert.equal(localTaskPath("",".."),null);
+  for(const bad of ["a/b","..","../demo","a\\b",""])assert.throws(()=>localTaskPath("/tasks",bad),/one directory name/,bad);
+  const root=await mkdtemp(join(tmpdir(),"trebell-local-tasks-"));
+  try{
+    const task="demo__task-1",taskPath=localTaskPath(root,task),sha=text=>createHash("sha256").update(text).digest("hex");
+    const files={"task.toml":`[verifier]\ntimeout_sec = 3000\n[environment]\ncpus = 4\n`,"tests/test.sh":"#!/bin/bash\necho graded\n"};
+    for(const [rel,text] of Object.entries(files)){await mkdir(join(taskPath,...rel.split("/").slice(0,-1)),{recursive:true});await writeFile(join(taskPath,rel),text)}
+    const manifest={dataset:"swebench_multilingual@1.0",tasks:{[task]:{files:Object.entries(files).map(([path,text])=>({path,sha256:sha(text)}))}}};
+    await writeFile(join(root,"manifest.json"),JSON.stringify(manifest));
+    const ok=await preflightLocalTaskMembership({taskRoot:root,dataset:"swebench_multilingual@1.0",task});
+    assert.equal(ok.completed,true);assert.equal(ok.local,true);assert.equal(ok.qualifiedTask,task);assert.equal(ok.taskPath,taskPath);assert.equal(ok.taskCount,1);assert.equal(ok.files,2);
+    assert.equal(ok.datasetVersion,"swebench_multilingual@1.0");assert.match(ok.datasetContentHash,/^[0-9a-f]{64}$/);assert.match(ok.taskContentHash,/^[0-9a-f]{64}$/);
+    await assert.rejects(preflightLocalTaskMembership({taskRoot:root,dataset:"other_dataset@1.0",task}),/is for dataset swebench_multilingual@1\.0, not other_dataset@1\.0/);
+    await assert.rejects(preflightLocalTaskMembership({taskRoot:root,dataset:"swebench_multilingual@1.0",task:"demo__task-2"}),/not in the local task manifest/);
+    await writeFile(join(taskPath,"tests","test.sh"),"#!/bin/bash\necho changed\n");
+    await assert.rejects(preflightLocalTaskMembership({taskRoot:root,dataset:"swebench_multilingual@1.0",task}),/tests\/test\.sh differs from its manifest/);
+    await writeFile(join(taskPath,"tests","test.sh"),files["tests/test.sh"]);
+    await writeFile(join(taskPath,"tests","extra.py"),"print(1)\n");
+    await assert.rejects(preflightLocalTaskMembership({taskRoot:root,dataset:"swebench_multilingual@1.0",task}),/files its manifest does not list: tests\/extra\.py/);
+    await rm(join(taskPath,"tests","extra.py"));
+    assert.equal(await terminalBenchCachedTaskToml({dataset:"swebench_multilingual@1.0",task,taskPath}),join(taskPath,"task.toml"));
+    assert.equal(await terminalBenchCachedTaskToml({dataset:"swebench_multilingual@1.0",task,taskPath:join(root,"absent")}),null);
+    const policy=await preflightTerminalBenchNetworkPolicy({dataset:"swebench_multilingual@1.0",task,taskPath,captureFn:async()=>{throw new Error("must not probe")}});
+    assert.equal(policy.taskTomlFound,true);assert.deepEqual(policy.noNetworkSections,[]);
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+  const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
+  assert.match(source,/LOCAL_TASK_PATH=localTaskPath\(TASK_ROOT,TASK\)/);
+  assert.match(source,/LOCAL_TASK_PATH\?await preflightLocalTaskMembership\(\{taskRoot:TASK_ROOT,dataset:DATASET,task:TASK\}\):await preflightTerminalBenchDatasetTaskMembership\(/);
+  assert.match(source,/\.\.\.\(LOCAL_TASK_PATH\?\["-p",LOCAL_TASK_PATH\]:\["-d",DATASET,"-i",HARBOR_TASK\]\)/);
+  assert.match(source,/if\(PARALLEL&&selectedLanes\.length>1&&!LOCAL_TASK_PATH\)taskCachePrewarm=await prewarmTaskCache\(\)/);
+  assert.match(source,/localTaskRoot:TASK_ROOT,localTaskPath:LOCAL_TASK_PATH/);
+});
+
 test("Harbor processes on Windows opt out of the detached telemetry sender that opens console windows",async()=>{
   assert.deepEqual(windowsHarborEnv({},"win32"),{PYTHONUTF8:"1",PYTHONIOENCODING:"utf-8",HARBOR_TELEMETRY:"0"});
   const explicit={HARBOR_TELEMETRY:"1"};
@@ -362,6 +397,7 @@ test("Benchmark run IDs carry the dataset family without renaming Terminal-Bench
   assert.equal(benchmarkRunPrefix("terminal-bench/terminal-bench-2@1"),"tb2");
   assert.equal(benchmarkRunPrefix("terminal-bench/terminal-bench-2@latest"),"tb2");
   assert.equal(benchmarkRunPrefix("swe-bench/swe-bench-verified@latest"),"swebv");
+  assert.equal(benchmarkRunPrefix("swebench_multilingual@1.0"),"swebml");
   assert.equal(benchmarkRunPrefix("example-org/My_Bench Pro@1.0"),"my-bench-pro");
   assert.equal(benchmarkRunPrefix(""),"bench");
   const comparison=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
