@@ -995,10 +995,10 @@
 :root:root .terminal-drawer .real-terminal .terminal-tab-select>svg{flex:none}
 :root:root .terminal-drawer .real-terminal .terminal-tab-select>bdi{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 :root:root .terminal-drawer .real-terminal .terminal-tab.active .terminal-tab-select>svg{color:var(--ac)}
-/* Exit status of a stopped session: 0 reads as success, anything else as a failure. */
+/* Exit status of a stopped session: 0 reads as success, anything else as a failure, and "stopped" (no exit code) as neither. */
 :root:root .terminal-drawer .real-terminal .terminal-tab-select>em{flex:none;padding:1px 5px;border-radius:5px;background:var(--errt)!important;color:var(--err)!important;font:600 10px/1.2 var(--mono);font-style:normal}
 :root:root .terminal-drawer .real-terminal .terminal-tab-select>em.exit-ok{background:var(--okt)!important;color:var(--ok)!important}
-:root:root .terminal-drawer .real-terminal .terminal-tab-select>em:empty{display:none}
+:root:root .terminal-drawer .real-terminal .terminal-tab-select>em.exit-stopped{background:var(--bg4)!important;color:var(--tx1)!important}
 :root:root .terminal-drawer .real-terminal .terminal-tab-list>.terminal-tab>.terminal-tab-close{flex:none;width:20px;height:20px;display:grid;place-items:center;margin-left:auto;padding:0;border-radius:5px;color:var(--tx3)!important;transition:background .12s,color .12s}
 :root:root .terminal-drawer .real-terminal .terminal-tab-list>.terminal-tab>.terminal-tab-close:hover{background:var(--bg4)!important;color:var(--tx0)!important}
 :root:root .terminal-drawer .real-terminal>.terminal-tabs>button{

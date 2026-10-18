@@ -60,6 +60,8 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   // A socket closed here is taken from its session first, so its close opens nothing again, and a reconnect still waiting is dropped.
   const closeSocket=id=>{clearTimeout(reconnects.current.get(id));reconnects.current.delete(id);const socket=sockets.current.get(id);sockets.current.delete(id);socket?.close()};
   const closeSockets=(kept=[])=>{for(const id of new Set([...sockets.current.keys(),...reconnects.current.keys()]))if(!kept.includes(id))closeSocket(id)};
+  // A session's program ended: its tab shows the exit code, or that it stopped (a terminal worker that dies leaves none).
+  const ended=(id,exitCode)=>setSessions(previous=>previous.map(session=>session.id===id?{...session,running:false,exitCode}:session));
   useEffect(()=>{
     closeSockets();setActiveId(null);setPaneIds([]);screens.current.clear();setLines({});setListed(false);refresh();
   },[environmentId]);
@@ -82,7 +84,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
           if(typeof msg.session?.running==="boolean")setSessions(previous=>previous.map(session=>session.id===id?{...session,running:msg.session.running,exitCode:msg.session.exitCode??session.exitCode}:session));
         }
         else if(msg.type==="output"){screenOf(id).write(msg.data);drawScreens()}
-        else if(msg.type==="exit")setSessions(previous=>previous.map(session=>session.id===id?{...session,running:false,exitCode:msg.exitCode}:session));
+        else if(msg.type==="exit")ended(id,msg.exitCode);
       };
       ws.onclose=()=>{
         if(sockets.current.get(id)!==ws)return;sockets.current.delete(id);
@@ -91,6 +93,21 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     };
     for(const id of paneIds)if(!sockets.current.has(id)&&!reconnects.current.has(id))connect(id);
   },[paneIds.join("|")]);
+  // A running session not shown in a pane is watched instead (a socket that carries none of its output), so its tab shows it ended
+  // (its program exited, or the terminal worker died) without being selected: it showed so only once shown. A watch that drops
+  // opens again as a pane's socket does.
+  const watched=listed?sessions.filter(session=>session.running&&!paneIds.includes(session.id)).map(session=>session.id).join("|"):"";
+  useEffect(()=>{
+    if(!watched)return;
+    let live=true;const open=new Set();
+    const watch=(id,attempt=0)=>{
+      const ws=new WebSocket(wsUrl("/api/terminal/ws?watch=1&session="+encodeURIComponent(id)));open.add(ws);
+      ws.onmessage=event=>{let msg;try{msg=JSON.parse(event.data)}catch{return}attempt=0;if(msg.type==="exit"||msg.type==="state"&&!msg.running)ended(id,msg.exitCode)};
+      ws.onclose=()=>{open.delete(ws);if(live)setTimeout(()=>live&&watch(id,attempt+1),Math.min(5000,500*2**attempt))};
+    };
+    for(const id of watched.split("|"))watch(id);
+    return()=>{live=false;for(const ws of open)ws.close()};
+  },[watched]);
 
   // New output is followed only on a screen that shows the latest output: one the person scrolled up in stays where it is until
   // they scroll back down or send it something, so earlier output can be read while a program keeps printing. Every redraw
@@ -111,12 +128,13 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   // The active terminal's command line takes the keyboard, unless something outside the drawer was pressed since it was asked for
   // (terminal-keyboard.js): the terminals listed late keep a menu opened meanwhile open.
   useEffect(()=>{if(activeId)setTimeout(()=>{if(terminalKeyboardAsked())inputRefs.current.get(activeId)?.focus()},0)},[activeId,focusTick]);
-  // The active session tab stays in view when more tabs are open than the header row can show.
-  useEffect(()=>{tabListRef.current?.querySelector("button.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"})},[activeId,sessions.length]);
+  // The active session tab stays in view when more tabs are open than the header row can show (the tab's box, which holds its
+  // select and close buttons, is the one marked active).
+  useEffect(()=>{tabListRef.current?.querySelector(".terminal-tab.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"})},[activeId,sessions.length]);
   // The tab list shows once the sessions are listed.
   useEffect(()=>{
     const list=tabListRef.current;if(!list||typeof ResizeObserver==="undefined")return;
-    const observer=new ResizeObserver(()=>list.querySelector("button.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"}));
+    const observer=new ResizeObserver(()=>list.querySelector(".terminal-tab.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"}));
     observer.observe(list);return()=>observer.disconnect();
   },[listed]);
 
@@ -240,8 +258,10 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
           it has a name. Closing from either hands focus to the terminal that is then active, as the gone button cannot keep it. */}
       <div className="terminal-tab-list" ref={tabListRef} onWheel={event=>{if(event.deltaY&&!event.deltaX)event.currentTarget.scrollLeft+=event.deltaY}}>{sessions.map(session=>{
         const name=session.name||"Terminal",closeTab=()=>close(session.id).then(closed=>closed&&setFocusTick(value=>value+1));
+        // A stopped session's mark: its exit code, or "stopped" when it has none; its title and the tab's name say which.
+        const code=session.exitCode,end=code==null?"Stopped":"Exited with code "+code;
         return <div key={session.id} className={"terminal-tab"+(session.id===activeId?" active":"")}>
-          <button className="terminal-tab-select" onClick={()=>selectSession(session.id)} onKeyDown={event=>{if(event.key==="Delete"){event.preventDefault();closeTab()}}} aria-keyshortcuts="Delete" aria-current={session.id===activeId||undefined}><SquareTerminal size={13}/><bdi title={name}>{name}</bdi>{!session.running&&<em className={session.exitCode===0?"exit-ok":"exit-failed"}>{session.exitCode}</em>}</button>
+          <button className="terminal-tab-select" onClick={()=>selectSession(session.id)} onKeyDown={event=>{if(event.key==="Delete"){event.preventDefault();closeTab()}}} aria-keyshortcuts="Delete" aria-current={session.id===activeId||undefined}><SquareTerminal size={13}/><bdi title={name}>{name}</bdi>{!session.running&&<em className={code==null?"exit-stopped":code===0?"exit-ok":"exit-failed"} role="img" aria-label={end} title={end}>{code??"stopped"}</em>}</button>
           <button type="button" className="terminal-tab-close" onClick={closeTab} aria-label={"Close "+name} title={"Close "+name}><X size={11}/></button>
         </div>;
       })}</div>
