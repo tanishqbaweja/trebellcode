@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url";
 // with what its call returned from agent/trebell-native-tool-calls.jsonl when the trial kept one.
 // Status: hosted web use, or an upstream/benchmark fetch that returned content, makes a lane invalid by
 // policy; a lane that ran commands none of which were recorded is unaudited; every other flag (including
-// partly recorded commands) needs review before the result counts.
+// partly recorded commands, fetches saved to a file and Native commands that only name a URL) needs review
+// before the result counts.
 
 const LOCAL_CODEX_TOOLS=new Set(["exec_command","exec","write_stdin","apply_patch","view_image","clock__curr_time","sleep","wait","update_plan","request_user_input","request_user_input_async","shell","shell_command","local_shell","create_goal","get_goal","update_goal"]);
 const COMMAND_CODEX_TOOLS=new Set(["exec_command","exec","write_stdin","shell","shell_command","local_shell"]);
@@ -73,6 +74,17 @@ const OUTPUT_FETCH=[
 ];
 const mayFetchOnRun=command=>OUTPUT_FETCH.some(([run])=>run.test(command));
 const outputShowsFetch=(command,output)=>OUTPUT_FETCH.some(([run,fetched])=>run.test(command)&&fetched.test(output));
+// Fetches whose response the command writes to a file rather than to its output: curl -o/-O/--output/--remote-name, wget (which
+// saves unless -O - or --spider), a > or tee redirect or a tar extract of a fetch, and a file write in the same script (Python's
+// urlretrieve, open(..., "w"), write_text or copyfileobj; Node's writeFile). /dev/null and standard output keep nothing.
+const NOT_A_FILE=String.raw`(?:-(?![\w-])|\/dev\/(?:null|stdout|stderr)\b)`;
+const FETCH_TO_FILE=[
+  new RegExp(String.raw`\bcurl\b[^\n;|&]*?\s(?:-[A-Za-z]*o\s*(?!${NOT_A_FILE})[^\s;|&]|-[A-Za-z]*O[A-Za-z]*\b|--(?:output|output-dir|remote-name(?:-all)?)\b(?![=\s]+${NOT_A_FILE}))`),
+  new RegExp(String.raw`\bwget\b(?=\s+(?:-|['"]?(?:https?|ftp):))(?![^\n;|&]*?(?:\s-[A-Za-z]*O\s*${NOT_A_FILE}|\s--output-document[=\s]+${NOT_A_FILE}|\s--spider\b))`),
+  /\b(?:curl|wget)\b(?:[^\n;&]|&(?=[>\d]))*?(?:(?<![\d>])>>?\s*(?!&|\/dev\/(?:null|stdout|stderr)\b)[^\s;|&>]|\|\s*(?:tee|tar)\b)/,
+  /\burlretrieve\s*\(|\bopen\s*\([^)\n]*,\s*(?:mode\s*=\s*)?['"][wax]b?\+?['"]|\.write_(?:text|bytes)\s*\(|\bcopyfileobj\s*\(|\b(?:writeFile(?:Sync)?|createWriteStream)\s*\(/,
+];
+const fetchSavedToFile=command=>FETCH_TO_FILE.some(pattern=>pattern.test(String(command??"")));
 
 // `git` followed by its global options, then the subcommand.
 const GIT=String.raw`\bgit(?:\s+(?:-[Cc]\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s;|&]+)|--?[A-Za-z][\w-]*(?:=[^\s;|&]+)?))*\s+`;
@@ -120,7 +132,24 @@ const LOOPBACK_HOST=/^(?:|localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|::1?|\[::1?\])
 const NETWORK_FAILURE=/could not resolve host|name or service not known|temporary failure in name resolution|network is unreachable|connection refused|connection reset|connection timed out|timed out|failed to establish a new connection|urlopen error|max retries exceeded|nodename nor servname|getaddrinfo|no route to host|connectionerror|http error [45]\d\d|\b(?:401|403|404|410|429|451|500|502|503|504)\s+(?:client error|server error|unauthorized|forbidden|not found|gone|too many requests|internal server error|bad gateway|service unavailable|gateway time-?out)|rate limit|ssl(?:error|_error|: )|certificate verify failed|could not find a version that satisfies|no matching distribution found|curl: \(\d+\)|"message"\s*:\s*"(?:not found|bad credentials|requires authentication|api rate limit exceeded)/i;
 const OUTPUT_FRAME_LINE=/^\s*(?:Script (?:completed|failed|timed out|running)\b|Wall time\b|Output:\s*$|Exit code:|Process exited with code|Process running with session ID|Chunk ID:|Original token count:|Total output lines:)/i;
 const OUTPUT_NOISE_LINE=/^\s*(?:File "[^"]*", line \d+|[\w.]*(?:Error|Exception)\b|raise\b|During handling of the above exception|\^+\s*$|[*<>]\s|curl: \(\d+\)|HTTP\/[\d.]+\s+\d{3}\b|(?:content-|x-|access-control-|cache-control|date|server|etag|vary|location|set-cookie|strict-transport|via|age|accept-ranges|last-modified|expires|connection|transfer-encoding|alt-svc|cf-)[\w-]*:\s)/i;
-const PACKAGE_FETCHED=/\b(?:Downloading|Saved|Successfully (?:installed|downloaded))\b/;
+// Python's warnings (`<file>:<line>: <Name>Warning: <message>`, the source line indented under each, as sympy prints on import) and
+// the shell's own errors (`bash: line 1: file: command not found`, which some images' login shells print on every command) are not
+// content either.
+const PYTHON_WARNING_LINE=/^\s*\S[^\n]*?:\d+: (?:[A-Z]\w*)?Warning: /;
+const SHELL_ERROR_LINE=/^\S+: (?:line )?\d+: [^\n]*: (?:command )?not found\s*$|^\S+: [^\n:]+: command not found\s*$/;
+// An HTML page in an output runs from <!DOCTYPE html> or <html> to </html> or the end of the output (a page cut by head or the
+// log's cap). A title that is only a missing-page or HTTP-error notice (GitHub's "Page not found &middot; GitHub &middot; GitHub",
+// a server's "404 Not Found") marks the error page a fetch gets back in place of what it asked for; an issue titled "404 on
+// redirect" is no such page.
+const HTML_PAGE=/<(?:!doctype\s+html|html)\b[\s\S]*?(?:<\/html\s*>|$)/gi;
+const HTML_ERROR_TITLE=/<title\b[^>]*>\s*(?:page\s+not\s+found|not\s+found|(?:error\s+)?[45]\d\d\b(?:\s*[:\-–—]?\s*\(?(?:not\s+found|forbidden|unauthorized|gone|too\s+many\s+requests|internal\s+server\s+error|bad\s+gateway|service\s+(?:temporarily\s+)?unavailable|gateway\s+time-?out)\)?)?)(?:!!1)?(?:\s*\(\s*[45]\d\d\s*\))?(?:\s*(?:[·|:\-–—]|&middot;)\s*[^<·|:\n]{1,40}){0,2}\s*<\/title>/i;
+const networkFailed=text=>NETWORK_FAILURE.test(text)||HTML_ERROR_TITLE.test(text);
+// A package fetch's output names each distribution that came back: pip's Downloading, Saved and Successfully installed/downloaded
+// lines (a file name, a URL or name-version), and conda's download progress (name-version | size | ...). A "Requirement already
+// satisfied" line fetched nothing.
+const PIP_FETCH_LINE=/^\s*(?:Downloading|Saved|Successfully (?:installed|downloaded))\b(.*)$/;
+const CONDA_FETCH_LINE=/^\s*([^\s|]+)\s*\|\s*[\d.]+\s*[KMGT]?i?B\s*\|/;
+const BENCHMARK_PACKAGES=["swebench","swe-bench","terminal-bench"];
 // A response from the OpenAI API (raw JSON or a printed client object).
 const HOSTED_MODEL_RESPONSE=/"object"\s*:\s*"(?:response|chat\.completion|text_completion|model|list|embedding)"|\bresp_[0-9a-f]{16,}\b|\bchatcmpl-[A-Za-z0-9]{10,}\b/;
 // Fetches of the benchmark itself: Terminal-Bench task repositories and SWE-bench datasets or tooling.
@@ -212,18 +241,41 @@ function upstreamReference(text,context){
   }
   return null;
 }
-// True when an output carries real content rather than only errors, tracebacks, headers or tool framing.
+// True when an output carries real content rather than only errors, tracebacks, warnings, headers, tool framing or an HTML error
+// page (dropped whole, however long its markup).
 function returnedContent(text){
-  const value=String(text||"");let chars=0,traceback=false;
+  let chars=0,traceback=false,warning=false,errorPage=false;
+  const value=String(text||"").replace(HTML_PAGE,page=>{if(!HTML_ERROR_TITLE.test(page))return page;errorPage=true;return ""});
   for(const line of value.split(/\r?\n/)){
     if(traceback){if(!line.trim()||/^\s/.test(line))continue;traceback=false;continue}
     if(/^\s*Traceback \(most recent call last\)/.test(line)){traceback=true;continue}
-    if(!line.trim()||OUTPUT_FRAME_LINE.test(line)||NETWORK_FAILURE.test(line)||OUTPUT_NOISE_LINE.test(line))continue;
+    if(PYTHON_WARNING_LINE.test(line)){warning=true;continue}
+    if(warning){warning=false;if(/^\s/.test(line))continue}
+    if(!line.trim()||OUTPUT_FRAME_LINE.test(line)||networkFailed(line)||OUTPUT_NOISE_LINE.test(line)||SHELL_ERROR_LINE.test(line))continue;
     chars+=line.replace(/\s+/g,"").length;
   }
-  return chars>=(NETWORK_FAILURE.test(value)?200:40);
+  return chars>=(errorPage||networkFailed(value)?200:40);
 }
-function upstreamContentReturned(upstream,text){return upstream?.via==="package"?PACKAGE_FETCHED.test(String(text||"")):returnedContent(text)}
+// Whether one of the named packages came back, by the download lines that name each distribution a fetch got.
+function packageFetched(text,names){
+  const wanted=names.map(normalizePackage);
+  const named=token=>{
+    const name=normalizePackage(String(token).replace(/^[(['"]+|[)\]'",;]+$/g,"").split("/").pop());
+    return wanted.some(want=>name===want||(name.startsWith(`${want}-`)&&/\d/.test(name.charAt(want.length+1))));
+  };
+  for(const line of String(text||"").split(/\r?\n|\r/)){
+    const pip=PIP_FETCH_LINE.exec(line),conda=CONDA_FETCH_LINE.exec(line);
+    if(pip&&pip[1].trim().split(/\s+/).some(named))return true;
+    if(conda&&named(conda[1]))return true;
+  }
+  return false;
+}
+// A package fetch returned the project's (or the benchmark's) package only when a download line names that package itself: `pip
+// install "requests[socks]"` that found requests already installed and downloaded only PySocks fetched nothing of the project.
+function upstreamContentReturned(upstream,text,context){
+  if(upstream?.via!=="package")return returnedContent(text);
+  return packageFetched(text,upstream.target==="benchmark"?BENCHMARK_PACKAGES:[context?.project?.repo].filter(Boolean));
+}
 // The benchmark named in what a network command or hosted tool returned (search results or API listings
 // that point at the benchmark's task repository, dataset or the SWE-bench task id). Project URLs are not
 // used here: a repository's own files (setup.cfg, README) name them.
@@ -338,16 +390,34 @@ function commandFinding(kinds,text,{file,line,callId=null,context=null,source=nu
   const finding={kind:"command",kinds,hosts:externalHosts(text,{schemeless:true}),file,line,callId,...(source?{source}:{}),snippet:String(text).slice(0,SNIPPET_CHARS)};
   return markUpstream(finding,text,context);
 }
-function annotateOutput(finding,output,context=null){
+// Native's network-like kind only says the runner saw a URL in the command (a grep, a comment or a docstring names one as often as
+// a fetch does) where no fetch rule here matched.
+const urlMentionOnly=kinds=>kinds.includes("network-like")&&!kinds.some(kind=>kind!=="network-like"&&!NON_NETWORK_KINDS.has(kind));
+// A model client sent to a local endpoint (a loopback or compose-service URL, or a base_url or OPENAI_BASE_URL setting that names
+// no host) talks to the task's own server: its answer is the OpenAI API's only when the command names an OpenAI or ChatGPT host.
+const MODEL_ENDPOINT_SETTING=/\b(?:base_url|api_base|OPENAI_BASE_URL|OPENAI_API_BASE)\b/i;
+function localModelEndpoint(command,hosts=[]){
+  if(command==null||hosts.some(host=>/openai|chatgpt/i.test(host)))return false;
+  const named=[...String(command).matchAll(URL_PATTERN)].map(match=>{try{return new URL(match[0]).hostname.toLowerCase()}catch{return null}}).filter(Boolean);
+  return named.some(isLocalHost)||(!named.length&&MODEL_ENDPOINT_SETTING.test(command));
+}
+// `command` is the text of the command that printed the output, when there is one.
+function annotateOutput(finding,output,context=null,command=null){
   const text=outputText(output);
-  Object.assign(finding,{output:text.slice(0,OUTPUT_CHARS),outputChars:text.length,outputHosts:externalHosts(text).slice(0,12),networkFailureSeen:NETWORK_FAILURE.test(text)});
+  Object.assign(finding,{output:text.slice(0,OUTPUT_CHARS),outputChars:text.length,outputHosts:externalHosts(text).slice(0,12),networkFailureSeen:networkFailed(text)});
   const reference=outputReference(text,context);
-  if(finding.kind==="hosted-web"){if(reference)finding.outputReference=reference;return finding}
+  // What a hosted tool or a command that only names a URL printed is shown for review but decides no leak.
+  if(finding.kind==="hosted-web"||(finding.kind==="command"&&urlMentionOnly(finding.kinds))){if(reference)finding.outputReference=reference;return finding}
   if(finding.kind!=="command"||finding.writtenCode||!hasNetworkKind(finding.kinds))return finding;
   if(reference&&!isLeakTarget(finding.upstream))finding.upstream=reference;
-  if(finding.upstream)finding.contentReturned=upstreamContentReturned(finding.upstream,text);
+  if(finding.upstream){
+    const returned=upstreamContentReturned(finding.upstream,text,context);
+    // A fetch the command sent to a file prints nothing of it: what came back stays unknown (a later read of the file shows it).
+    if(!returned&&finding.upstream.via!=="package"&&!finding.networkFailureSeen&&fetchSavedToFile(command))Object.assign(finding,{contentReturned:null,savedToFile:true});
+    else{finding.contentReturned=returned;delete finding.savedToFile}
+  }
   // A shell call that got a response from the OpenAI/ChatGPT API used a hosted model (which can search).
-  if(finding.kinds.includes("hosted-endpoint")&&HOSTED_MODEL_RESPONSE.test(text))finding.hostedEndpointReached=true;
+  if(finding.kinds.includes("hosted-endpoint")&&HOSTED_MODEL_RESPONSE.test(text)&&!localModelEndpoint(command,finding.hosts))finding.hostedEndpointReached=true;
   return finding;
 }
 
@@ -415,7 +485,7 @@ export function auditCodexRolloutText(text,{file=null,context=null}={}){
     // A printed tool list (ALL_TOOLS) shows which non-local tools the lane offered.
     if(/\bALL_TOOLS\b/.test(call.text))for(const match of output.matchAll(TOOL_LIST_NAME))if(!LOCAL_CODEX_TOOLS.has(match[1]))offered.add(match[1]);
     closeCall(call);
-    for(const finding of byCall.get(call.callId)||[])if(finding.output==null)annotateOutput(finding,output,context);
+    for(const finding of byCall.get(call.callId)||[])if(finding.output==null)annotateOutput(finding,output,context,call.text);
     if(open===call)open=null;
   };
   // Resolved shell commands (CommandExecution events) catch commands that the exec JavaScript built at
@@ -435,13 +505,13 @@ export function auditCodexRolloutText(text,{file=null,context=null}={}){
       // A network command that actually ran: no longer only written code.
       if(existing.writtenCode&&hasNetworkKind(kinds))delete existing.writtenCode;
       markUpstream(existing,command,context);
-      if(existing.output!=null)annotateOutput(existing,call.output??output,context);
+      if(existing.output!=null)annotateOutput(existing,call.output??output,context,`${call.text}\n${command}`);
       return;
     }
     const finding=add(commandFinding(kinds,command,{file,line,callId:call?.callId||null,context,source:"command-execution"}),call?.callId);
     if(listed)finding.verifierPathSeen=true;
     if(call)call.command=finding;
-    if(!call||call.closed)annotateOutput(finding,output,context);
+    if(!call||call.closed)annotateOutput(finding,output,context,command);
   };
   const eventItem=(item,line)=>{
     const type=String(item?.type||"");
@@ -495,7 +565,7 @@ export function auditCodexExecStreamText(text,{file=null,context=null}={}){
       const finding=commandFinding(kinds,command,{file,line,context});
       if(verifierListed(command,output))finding.verifierPathSeen=true;
       if(item.exit_code!=null)finding.exitCode=item.exit_code;
-      findings.push(completed?annotateOutput(finding,output,context):finding);
+      findings.push(completed?annotateOutput(finding,output,context,command):finding);
     }else if(type==="web_search"){
       findings.push({kind:"hosted-web",tool:"web_search",file,line,executed:completed?true:null,snippet:JSON.stringify(item.action??{query:item.query}).slice(0,SNIPPET_CHARS)});
     }else if(type==="mcp_tool_call"){
@@ -592,7 +662,7 @@ export function auditNativeEventsText(text,{file=null,context=null,toolCalls=nul
       const finding=commandFinding(kinds,command,{file,line,callId,context});
       finding.hosts=[...new Set([...(Array.isArray(audit.hosts)?audit.hosts.map(host=>String(host).toLowerCase()):[]),...finding.hosts])].filter(host=>!isLocalHost(host));
       const returned=nativeCallReturned(call);
-      if(returned!=null)annotateOutput(finding,returned,context);
+      if(returned!=null)annotateOutput(finding,returned,context,command);
       findings.push(finding);if(callId)byCall.set(callId,finding);
     }else if(row?.name==="native.tool.completed"&&byCall.has(data.callId)){
       Object.assign(byCall.get(data.callId),{success:data.success===true,error:data.error?String(data.error).slice(0,OUTPUT_CHARS):null});
@@ -769,7 +839,7 @@ export function compactIntegrity(audit){
   const evidence=rankFindings(audit.trials.flatMap(trial=>trial.findings).filter(finding=>!NON_EVIDENCE_KINDS.has(finding.kind))).slice(0,EVIDENCE_ITEMS);
   return {status:audit.summary.status,logs:audit.logs,...audit.summary,evidence:evidence.map(finding=>({
     kind:finding.kind,kinds:finding.kinds,tool:finding.tool,hosts:finding.hosts,file:finding.file,line:finding.line,snippet:String(finding.snippet||"").slice(0,240),networkFailureSeen:finding.networkFailureSeen,
-    ...(finding.upstream?{upstream:finding.upstream,contentReturned:finding.contentReturned}:{}),
+    ...(finding.upstream?{upstream:finding.upstream,contentReturned:finding.contentReturned,...(finding.savedToFile?{savedToFile:true}:{})}:{}),
     ...(finding.hostedEndpointReached?{hostedEndpointReached:true}:{}),
     ...(finding.outputReference?{outputReference:finding.outputReference}:{}),
     ...(finding.executed!=null?{executed:finding.executed}:{}),

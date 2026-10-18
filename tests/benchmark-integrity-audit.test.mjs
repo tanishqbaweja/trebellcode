@@ -499,6 +499,149 @@ test("a Native pip install of an unrelated package stays a review network comman
   });
 });
 
+test("a Native command whose only network sign is a URL in its text (network-like) stays in review whatever it printed, with the output shown for the reviewer",async()=>{
+  await withJobs(async root=>{
+    const lanes={
+      "job-grep":[PSF_TRIAL,{command:'grep -rn "https://github.com/psf/requests" setup.py docs/conf.py',stdout:'setup.py:99:        "Source": "https://github.com/psf/requests",\ndocs/conf.py:31:github_url = "https://github.com/psf/requests"\n'}],
+      "job-comment":[PSF_TRIAL,{command:"# upstream reference: https://github.com/psf/requests/blob/main/requests/utils.py\nsed -n '960,990p' requests/utils.py",stdout:"def prepend_scheme_if_needed(url, new_scheme):\n    scheme, netloc, path, params, query, fragment = urlparse(url, new_scheme)\n"}],
+      "job-docstring":["astropy__astropy-12907__AbC1234",{command:"cat >> astropy/modeling/tests/test_separable.py <<'EOF'\n\ndef test_nested_compound_model():\n    \"\"\"Regression test for https://github.com/astropy/astropy/issues/12906.\"\"\"\n    assert separability_matrix(m.Pix2Sky_TAN() & cm).shape == (4, 4)\nEOF\npython -m pytest astropy/modeling/tests/test_separable.py -q -k nested",stdout:"astropy/modeling/tests/test_separable.py ..                             [100%]\n2 passed, 11 deselected in 0.41s\n"}],
+      // A fetch through a script the rules here never see: what it printed is there for a human to judge.
+      "job-script":[PSF_TRIAL,{command:"python /tmp/get.py https://raw.githubusercontent.com/psf/requests/v2.27.1/requests/utils.py",stdout:fixedSource}],
+    };
+    for(const [job,[trial,call]] of Object.entries(lanes)){
+      await writeNativeTrial(root,[job,trial],[call]);
+      const audit=await auditJobIntegrity(root,job),[finding]=commandFindings(audit);
+      assert.equal(audit.summary.status,"review",job);assert.equal(audit.summary.upstreamLeaks,0,job);assert.equal(audit.summary.networkCommands,1,job);
+      assert.deepEqual(finding.kinds,["network-like"],job);assert.equal(finding.upstream?.target,"project",job);
+      assert.equal(finding.contentReturned,null,job);assert.equal(finding.output,call.stdout.slice(0,400),job);
+    }
+    // Output that names the benchmark is shown as well, not taken for a benchmark fetch: this command parses a workbook whose XML namespaces are URLs.
+    await writeNativeTrial(root,["job-xml","fin-saccr-rwa__AbC1234"],[{command:"python3 -c \"import zipfile; ns={'x':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}; print(open('/app/NOTES.md').read())\"",stdout:"Task notes\nThis environment was adapted from laude-institute/terminal-bench for the spreadsheet track.\n"}]);
+    const xml=await auditJobIntegrity(root,"job-xml"),[parse]=commandFindings(xml);
+    assert.equal(xml.summary.status,"review");assert.equal(xml.summary.upstreamLeaks,0);
+    assert.equal(parse.upstream,undefined);assert.deepEqual(parse.outputReference,{target:"benchmark",via:"output"});
+  });
+});
+
+test("a package install that names the project fetched it only when a download line names the project's own distribution, in Codex lanes too",async()=>{
+  await withJobs(async root=>{
+    const socks="Requirement already satisfied: requests[socks] in /testbed (2.27.0)\nRequirement already satisfied: urllib3<1.27,>=1.21.1 in /opt/miniconda3/envs/testbed/lib/python3.9/site-packages (from requests[socks]) (1.26.8)\nCollecting PySocks!=1.5.7,>=1.5.6\n  Downloading PySocks-1.7.1-py3-none-any.whl (16 kB)\nInstalling collected packages: PySocks\nSuccessfully installed PySocks-1.7.1\n";
+    const lanes={
+      "job-extra":[{command:'pip install "requests[socks]"',stdout:socks},false],
+      "job-plugin":[{command:"pip install requests pytest-httpbin==1.0.0",stdout:"Requirement already satisfied: requests in /testbed (2.27.0)\nCollecting pytest-httpbin==1.0.0\n  Downloading pytest_httpbin-1.0.0-py2.py3-none-any.whl (9.9 kB)\nInstalling collected packages: pytest-httpbin\nSuccessfully installed pytest-httpbin-1.0.0\n"},false],
+      "job-conda-other":[{command:"conda install -y requests pysocks",stdout:"Collecting package metadata (current_repodata.json): done\nSolving environment: done\n\nDownloading and Extracting Packages\npysocks-1.7.1        | 31 KB     | ########## | 100% \nPreparing transaction: done\n"},false],
+      // From pip's cache: no Downloading line, but the project's own distribution was installed.
+      "job-cached":[{command:"pip install -U requests==2.27.1",stdout:"Collecting requests==2.27.1\n  Using cached requests-2.27.1-py2.py3-none-any.whl (63 kB)\nInstalling collected packages: requests\n  Attempting uninstall: requests\n    Found existing installation: requests 2.27.0\n    Uninstalling requests-2.27.0:\n      Successfully uninstalled requests-2.27.0\nSuccessfully installed requests-2.27.1\n"},true],
+      "job-conda":[{command:"conda install -y requests=2.27.1",stdout:"Downloading and Extracting Packages\nrequests-2.27.1      | 54 KB     | ########## | 100% \nPreparing transaction: done\n"},true],
+    };
+    for(const [job,[call,fetched]] of Object.entries(lanes)){
+      await writeNativeTrial(root,[job,PSF_TRIAL],[call]);
+      const audit=await auditJobIntegrity(root,job),[finding]=commandFindings(audit);
+      assert.deepEqual(finding.upstream,{target:"project",via:"package"},job);assert.equal(finding.contentReturned,fetched,job);
+      assert.equal(audit.summary.upstreamLeaks,fetched?1:0,job);assert.equal(audit.summary.status,fetched?"invalid":"review",job);
+    }
+    const codex=summarizeIntegrityFindings(execRollout('pip install "requests[socks]"',socks,{context:taskContextFromTrialName(PSF_TRIAL)}));
+    assert.equal(codex.upstreamLeaks,0);assert.equal(codex.status,"review");
+  });
+});
+
+test("a model client sent to a local endpoint got its answer from the task's own server: a review network command, not hosted use, in Codex lanes too",async()=>{
+  await withJobs(async root=>{
+    const chat="ChatCompletion(id='chatcmpl-5f1c2a9e0b7d4c3a', choices=[Choice(finish_reason='stop', index=0, message=ChatCompletionMessage(content='pong', role='assistant'))], created=1760760000, model='local-echo', object='chat.completion')\n";
+    const client=base=>`python - <<'PY'\nfrom openai import OpenAI\nclient = OpenAI(${base}api_key='test')\nprint(client.chat.completions.create(model='local-echo', messages=[{'role': 'user', 'content': 'ping'}]))\nPY`;
+    const local={
+      "job-loopback":client("base_url='http://127.0.0.1:8000/v1', "),
+      "job-env":"OPENAI_BASE_URL=http://localhost:8000/v1 OPENAI_API_KEY=test python check_gateway.py",
+      "job-service":"curl -s http://gateway:8000/v1/chat/completions -H \"Authorization: Bearer $OPENAI_API_KEY\" -d @req.json",
+    };
+    for(const [job,command] of Object.entries(local)){
+      await writeNativeTrial(root,[job,"llm-gateway__AbC1234"],[{command,stdout:chat}]);
+      const audit=await auditJobIntegrity(root,job),[finding]=commandFindings(audit);
+      assert.ok(finding.kinds.includes("hosted-endpoint"),job);assert.equal(finding.hostedEndpointReached,undefined,job);
+      assert.equal(audit.summary.hostedWebCalls,0,job);assert.equal(audit.summary.status,"review",job);
+    }
+    // A client left on its default endpoint reached the OpenAI API.
+    await writeNativeTrial(root,["job-default","llm-gateway__AbC1234"],[{command:client(""),stdout:chat}]);
+    const hosted=await auditJobIntegrity(root,"job-default");
+    assert.equal(hosted.summary.status,"invalid");assert.deepEqual(hosted.summary.hostedWebTools,["endpoint:openai-client"]);
+    assert.equal(summarizeIntegrityFindings(execRollout(local["job-loopback"],chat)).status,"review");
+  });
+});
+
+test("Python warnings, the shell's own errors and an HTML error page are not content: an upstream fetch that printed only them returned nothing, in Codex lanes too",async()=>{
+  await withJobs(async root=>{
+    const sympy="sympy__sympy-13974__AbC1234",raw="https://raw.githubusercontent.com/psf/requests/v2.27.1/requests/utils.py";
+    const warnings=["/testbed/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working","  from collections import Mapping, defaultdict","/testbed/sympy/core/containers.py:271: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working","  class OrderedSet(collections.MutableSet):","/testbed/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working","  from collections import Callable",""].join("\n");
+    const dns=traceback('  File "/opt/miniconda3/envs/testbed/lib/python3.9/urllib/request.py", line 214, in urlopen',"    return opener.open(url, data, timeout)","urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>");
+    const fetchSympy="python - <<'PY'\nimport sympy, urllib.request\nprint(urllib.request.urlopen('https://raw.githubusercontent.com/sympy/sympy/master/sympy/physics/quantum/tensorproduct.py').read()[:4000].decode())\nPY";
+    const page=(title,body)=>["<!DOCTYPE html>",'<html lang="en" data-color-mode="auto" data-light-theme="light" data-dark-theme="dark">',"<head>",'  <meta charset="utf-8">','  <link rel="dns-prefetch" href="https://github.githubassets.com">',`  <title>${title}</title>`,'  <meta name="description" content="GitHub is where people build software. More than 100 million people use GitHub to discover, fork, and contribute to over 420 million projects.">',"</head>","<body>",'  <a href="#start-of-content" class="px-2 py-4 color-bg-accent-emphasis color-fg-on-emphasis show-on-focus js-skip-to-content">Skip to content</a>',...body,'  <footer class="footer pt-8 pb-6 f6 color-fg-muted p-responsive" role="contentinfo"><p>&copy; 2026 GitHub, Inc.</p><nav aria-label="Footer"><a href="https://docs.github.com/site-policy/github-terms/github-terms-of-service">Terms</a> <a href="https://docs.github.com/site-policy/privacy-policies/github-privacy-statement">Privacy</a> <a href="https://www.githubstatus.com/">Status</a></nav></footer>',"</body>","</html>",""].join("\n");
+    const missing=['  <div class="container-lg p-responsive py-6"><img alt="404 &ldquo;This is not the web page you are looking for&rdquo;" src="/images/modules/404/parallax_bg.jpg"><p>Find code, projects, and people on GitHub:</p><form action="/search"><input type="text" name="q"><button type="submit">Search</button></form><p>Contact Support &mdash; GitHub Status &mdash; @githubstatus</p></div>'];
+    const lanes={
+      "job-warnings":[sympy,{command:fetchSympy,exitCode:1,stderr:warnings+dns},true],
+      "job-404":[PSF_TRIAL,{command:"curl -sL https://github.com/psf/requests/blob/v2.27.9/requests/utils.py",stdout:page("Page not found &middot; GitHub &middot; GitHub",missing)},true],
+      // The same page cut by head before its end, its title written with the character itself.
+      "job-404-cut":[PSF_TRIAL,{command:"curl -sL https://github.com/psf/requests/blob/v2.27.9/requests/utils.py | head -11",stdout:page("Page not found · GitHub · GitHub",missing).split("\n").slice(0,11).join("\n")},true],
+      // curl -s failed silently; the image's login shell printed its own errors.
+      "job-shell":[PSF_TRIAL,{command:`curl -s ${raw}`,exitCode:6,stderr:"/usr/local/bin/_activate_current_env.sh: line 8: : command not found\ncritical libmamba Shell not initialized\n"},false],
+    };
+    for(const [job,[trial,call,failure]] of Object.entries(lanes)){
+      await writeNativeTrial(root,[job,trial],[call]);
+      const audit=await auditJobIntegrity(root,job),[finding]=commandFindings(audit);
+      assert.equal(finding.upstream?.target,"project",job);assert.equal(finding.contentReturned,false,job);assert.equal(finding.networkFailureSeen,failure,job);
+      assert.equal(audit.summary.upstreamLeaks,0,job);assert.equal(audit.summary.status,"review",job);
+    }
+    // Content next to them still came back: the module after the same warnings, a file's page whose embedded data holds the
+    // source, and an issue whose title starts with 404.
+    const tensor="from sympy import Expr, Add, Mul, Matrix, Pow, sympify\nfrom sympy.core.trace import Tr\n\ndef tensor_product_simp_Mul(e):\n    \"\"\"Simplify a Mul with TensorProducts.\"\"\"\n    if isinstance(e, Pow) and isinstance(e.base, TensorProduct):\n        return TensorProduct(*[x**e.exp for x in e.base.args])\n";
+    const contrasts={
+      "job-warnings-ok":[sympy,{command:fetchSympy,stdout:tensor,stderr:warnings}],
+      "job-blob":[PSF_TRIAL,{command:"curl -sL https://github.com/psf/requests/blob/v2.27.1/requests/utils.py",stdout:page("requests/requests/utils.py at v2.27.1 &middot; psf/requests &middot; GitHub",[`  <script type="application/json" data-target="react-app.embeddedData">${JSON.stringify({payload:{blob:{rawLines:fixedSource.split("\n")}}})}</script>`])}],
+      "job-issue":[PSF_TRIAL,{command:"curl -sL https://github.com/psf/requests/issues/6027",stdout:page("404 on redirect with proxy &middot; Issue #6027 &middot; psf/requests &middot; GitHub",['  <h1 class="gh-header-title">404 on redirect with proxy</h1>','  <td class="comment-body">When using proxies in python 3.8.12, prepend_scheme_if_needed drops the auth part; rebuilding the netloc from parse_url keeps the credentials.</td>'])}],
+    };
+    for(const [job,[trial,call]] of Object.entries(contrasts)){
+      await writeNativeTrial(root,[job,trial],[call]);
+      const audit=await auditJobIntegrity(root,job);
+      assert.equal(audit.summary.upstreamLeaks,1,job);assert.equal(audit.summary.status,"invalid",job);
+    }
+    const codex=summarizeIntegrityFindings(execRollout(fetchSympy,warnings+dns,{context:taskContextFromTrialName(sympy)}));
+    assert.equal(codex.upstreamLeaks,0);assert.equal(codex.status,"review");
+  });
+});
+
+test("an upstream fetch the command saved to a file printed nothing of it: what came back stays unknown and the finding says it was saved, in Codex lanes too",async()=>{
+  await withJobs(async root=>{
+    const raw="https://raw.githubusercontent.com/psf/requests/v2.27.1/requests/utils.py";
+    const saved={
+      "job-curl-o":`curl -sL ${raw} -o /tmp/upstream_utils.py`,
+      "job-wget":`wget -q ${raw} -O /tmp/upstream_utils.py`,
+      "job-redirect":`curl -fsSL ${raw} > /tmp/upstream_utils.py`,
+      "job-urlretrieve":`python - <<'PY'\nimport urllib.request\nurllib.request.urlretrieve('${raw}', '/tmp/upstream_utils.py')\nPY`,
+    };
+    for(const [job,command] of Object.entries(saved)){
+      await writeNativeTrial(root,[job,PSF_TRIAL],[{command}]);
+      const audit=await auditJobIntegrity(root,job),[finding]=commandFindings(audit);
+      assert.equal(finding.contentReturned,null,job);assert.equal(finding.savedToFile,true,job);
+      assert.equal(audit.summary.status,"review",job);assert.equal(audit.summary.upstreamLeaks,0,job);
+      assert.equal(compactIntegrity(audit).evidence[0].savedToFile,true,job);
+    }
+    // Nothing kept: a status probe written to /dev/null, and a saved fetch that failed.
+    const unsaved={
+      "job-probe":[{command:"curl -s -o /dev/null -w '%{http_code}' https://github.com/psf/requests/pull/6028",stdout:"200"},false],
+      "job-failed":[{command:`curl -sSL ${raw} -o /tmp/upstream_utils.py`,exitCode:6,stderr:"curl: (6) Could not resolve host: raw.githubusercontent.com\n"},true],
+    };
+    for(const [job,[call,failure]] of Object.entries(unsaved)){
+      await writeNativeTrial(root,[job,PSF_TRIAL],[call]);
+      const [finding]=commandFindings(await auditJobIntegrity(root,job));
+      assert.equal(finding.contentReturned,false,job);assert.equal(finding.savedToFile,undefined,job);assert.equal(finding.networkFailureSeen,failure,job);
+    }
+    // Saved, then printed: content came back.
+    await writeNativeTrial(root,["job-printed",PSF_TRIAL],[{command:`curl -sL ${raw} -o /tmp/upstream_utils.py && sed -n '960,990p' /tmp/upstream_utils.py`,stdout:fixedSource}]);
+    assert.equal((await auditJobIntegrity(root,"job-printed")).summary.status,"invalid");
+    const codex=execRollout(saved["job-curl-o"],"",{context:taskContextFromTrialName(PSF_TRIAL)}).find(finding=>finding.kind==="command");
+    assert.equal(codex.contentReturned,null);assert.equal(codex.savedToFile,true);
+  });
+});
+
 // Native logging gaps.
 
 test("Native commands the event log does not fully record are counted and keep the lane in review",()=>{
