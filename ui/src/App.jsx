@@ -1202,7 +1202,7 @@ export default function App(){
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
-  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyHoldRef=useRef(0);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
+  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyHoldRef=useRef(0);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const shownWelcomeRef=useRef(null);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeRequestRef=useRef(Promise.resolve());const runtimeSettledRef=useRef(Promise.resolve());const runtimeLandedRef=useRef(null);const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
   modelsRef.current=models;modelRef.current=model;
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
@@ -1510,6 +1510,13 @@ export default function App(){
     const settle=historyAnchorSettleRef.current;historyAnchorSettleRef.current=null;
     if(settle?.frame)cancelAnimationFrame(settle.frame);
   }
+  // A view that follows the end goes back to it. The welcome of a conversation with nothing in it has no end to follow: it comes up at
+  // its top, also in place of a conversation scrolled down, and then stays where the person scrolls it, whatever the zoom or size.
+  function keepConversationEnd(node){
+    const welcome=node.querySelector(":scope>.conversation-column>.welcome");
+    if(welcome){if(shownWelcomeRef.current!==welcome){shownWelcomeRef.current=welcome;node.scrollTop=0}return}
+    shownWelcomeRef.current=null;if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight);
+  }
   // A send brings the newest message into view: the view follows the end again, and an older page's anchor stops holding it.
   function followConversationEnd(){stopHistoryAnchorSettle();pendingHistoryPrependRef.current=null;setHistoryAnchorItemId(null);setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true}
   // Puts the anchor row back on its spot. A newest page that did not fill the view ends inside it, so the view cannot scroll far
@@ -1551,14 +1558,14 @@ export default function App(){
     }
     // The live card takes its new turn a commit after its first row shows (cardTurnId), when the turn before's reply moves back
     // above it, and the browser's scroll anchoring keeps that reply where it was on screen: a view that follows the end goes back.
-    if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight);
+    keepConversationEnd(node);
   },[activeThread?.id,messages.length,events.length,cardTurnId]);
   useEffect(()=>{
     const node=conversationScrollRef.current;if(!node||typeof ResizeObserver==="undefined")return;
     const content=node.firstElementChild;if(!content)return;
     // A view that follows the end stays on the newest message when the messages grow and when the view itself is resized, as
     // when the terminal opens beneath it (T3 keeps the end on layout changes too). A view scrolled up stays where it is.
-    const observer=new ResizeObserver(()=>{if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight)});
+    const observer=new ResizeObserver(()=>keepConversationEnd(node));
     observer.observe(content);observer.observe(node);return()=>observer.disconnect();
   },[section,activeThread?.id]);
   useEffect(()=>{

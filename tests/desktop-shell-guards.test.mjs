@@ -468,3 +468,61 @@ test("a failed chat action's toast shows above the composer, centred on it and i
     await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }
 });
+
+// Zoomed in, the New task welcome no longer fits the conversation's box: it shows from its top, its picture and title below the
+// header, and scrolls only for the rest. The box keeps a view that follows the newest message at its end when it is resized, and
+// it kept the welcome, which has no newest message, at its end too: from 150% its picture and title were under the header (lane H, p113).
+test("the New task welcome shows from its top, below the header, when the window is zoomed in and when it opens zoomed",{timeout:180_000},async t=>{
+  if(process.platform!=="win32")return t.skip("The desktop shell checks target the Windows desktop build.");
+  const dist=resolve(process.env.TREBELL_UI_DIST||join(packageRoot,"ui","dist"));
+  if(!existsSync(join(dist,"index.html")))return t.skip("The built UI is needed: npm run ui:build, or TREBELL_UI_DIST.");
+  const home=await mkdtemp(join(tmpdir(),"trebell-desktop-welcome-zoom-"));
+  const guiPort=await freePort(),appPort=await freePort(),stub=join(home,"keep-off-screen.cjs");let app=null;
+  await writeFile(stub,KEEP_OFF_SCREEN);
+  const env={...process.env,TREBELL_HOME:home,TREBELL_TEST_HIDDEN:"1",TREBELL_GUI_MOCK:"1",TREBELL_UI_DIST:dist,TREBELL_GUI_PORT:String(guiPort),TREBELL_APP_SERVER_PORT:String(appPort),TREBELL_E2E_OFFLINE:"1",TREBELL_E2E_ALLOW_NETWORK:"0",CODEX_HOME:join(home,"codex"),CLAUDE_CONFIG_DIR:join(home,"claude"),OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const origin=`http://127.0.0.1:${guiPort}`;
+  try{
+    app=await electron.launch({args:["-r",stub,packageRoot],env});
+    const window=await app.firstWindow();for(let i=0;i<240&&!window.url().startsWith(origin);i++)await sleep(250);await window.waitForLoadState("load");
+    await fetch(origin+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({onboardingComplete:true,panelAnimationMs:0})});
+    await window.reload();
+    await app.evaluate(({BrowserWindow},origin)=>BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&item.webContents.getURL().startsWith(origin)).setContentSize(1280,800),origin);
+    // Ctrl+= and Ctrl+0 through the window's input, as a person presses them, and the window's zoom they set.
+    const press=code=>app.evaluate(({BrowserWindow},{origin,code})=>{const main=BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&item.webContents.getURL().startsWith(origin));for(const type of ["keyDown","keyUp"])main.webContents.sendInputEvent({type,keyCode:code,modifiers:["control"]})},{origin,code});
+    const zoom=async()=>Math.round(await app.evaluate(({BrowserWindow},origin)=>BrowserWindow.getAllWindows().find(item=>!item.isDestroyed()&&item.webContents.getURL().startsWith(origin)).webContents.getZoomFactor(),origin)*100);
+    // Where the welcome shows once the page has drawn two frames at the zoom: the picture's and the title's top against the header's
+    // bottom, and the box's scroll against how far it can scroll.
+    const welcome=async percent=>{
+      for(let i=0;i<100&&await zoom()!==percent;i++)await sleep(100);
+      assert.equal(await zoom(),percent,"the window's zoom");
+      await window.locator(".welcome h1").waitFor();
+      await window.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      return window.evaluate(()=>{
+        const box=selector=>document.querySelector(selector).getBoundingClientRect(),scroller=document.querySelector(".chat-workspace .conversation-scroll");
+        return {header:Math.round(box(".chat-workspace .workspace-header").bottom),picture:Math.round(box(".welcome .welcome-mark").top),title:Math.round(box(".welcome h1").top),scrollTop:Math.round(scroller.scrollTop),scrollRoom:scroller.scrollHeight-scroller.clientHeight};
+      });
+    };
+    const seen={};
+    await window.getByRole("button",{name:/^New task/}).first().click();
+    for(let i=0;i<5;i++)await press("=");
+    seen.zoomed150=await welcome(150);
+    // Opened again at 150%: Settings, then New task.
+    await window.getByRole("button",{name:"Settings",exact:true}).click();await window.getByRole("heading",{name:"Settings"}).waitFor();
+    await window.getByRole("button",{name:/^New task/}).first().click();
+    seen.opened150=await welcome(150);
+    // Opened again at 150% after a conversation that was scrolled to its end: a long message and its reply, then New task.
+    const composer=window.getByTestId("composer");
+    await composer.click();await composer.fill(Array.from({length:30},(_,i)=>`Line ${i+1} of a long message.`).join("\n"));await window.keyboard.press("Enter");
+    await window.getByText("Mock direct reply: Line 1 of a long message.").first().waitFor();
+    await window.getByRole("button",{name:/^New task/}).first().click();
+    seen.afterConversation150=await welcome(150);
+    for(let i=0;i<2;i++)await press("=");
+    seen.zoomed170=await welcome(170);
+    await press("0");
+    const shows=({header,picture,title,scrollTop,scrollRoom})=>({belowHeader:picture>=header&&title>=header,fromTop:scrollTop===0,scrollsForTheRest:scrollRoom>0});
+    const ok={belowHeader:true,fromTop:true,scrollsForTheRest:true};
+    assert.deepEqual(Object.fromEntries(Object.entries(seen).map(([name,at])=>[name,shows(at)])),{zoomed150:ok,opened150:ok,afterConversation150:ok,zoomed170:ok},"where the welcome showed: "+JSON.stringify(seen));
+  }finally{
+    await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
+});
