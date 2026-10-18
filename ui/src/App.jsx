@@ -653,7 +653,8 @@ function ApprovalCard({request,onResolve,threadLabel=""}){
     :<><button onClick={event=>answer(event,"decline")}>Deny</button><button onClick={event=>answer(event,"acceptForSession")}>Allow session</button><button className="approve" onClick={event=>answer(event,"accept")}>Allow once</button></>}</div></div>;
 }
 // The undo toast's remaining seconds, counting down with the timer that removes it. Hidden from the live region so it is
-// not announced every second.
+// not announced every second. Each toast counts with one of its own (keyed by the toast): a toast that replaced another went on
+// from that one's last count, so it read 6s for its first quarter second.
 function UndoCountdown({expiresAt}){
   const [now,setNow]=useState(()=>Date.now());
   useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),250);return()=>clearInterval(timer)},[expiresAt]);
@@ -5468,7 +5469,7 @@ export default function App(){
     {elicitations.length>0&&(()=>{const verification=userVerificationAvailability({runtime:agentRuntime,remote:Boolean(workspaceEnvironmentId)});return <LazySlot><McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={verification.available} verificationUnavailableReason={verification.reason}/></LazySlot>})()}
     {!elicitations.length&&questions[0]&&<LazySlot><QuestionModal key={questions[0].id} request={questions[0]} threadLabel={requestThreadLabel(questions[0])} waiting={questions.length-1} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={(room,keep)=>pickFiles("",{room,keep})}/></LazySlot>}
     {snoozeRequest&&<LazySlot><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)} focusFallback={focusShownView}/></LazySlot>}
-    {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><UndoCountdown expiresAt={threadUndo.expiresAt}/></div>}
+    {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><UndoCountdown key={threadUndo.id} expiresAt={threadUndo.expiresAt}/></div>}
     {paletteOpen&&<LazySlot fallback={<CommandPaletteLoading seed={paletteSeedRef} onClose={closePalette}/>}><CommandPalette open seed={paletteSeedRef} focusFallback={focusShownView} onClose={closePalette} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></LazySlot>}
     {initialLoaded&&settings.onboardingComplete===false&&<LazySlot><OnboardingModal open projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={managedInference?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/></LazySlot>}
   </div>;

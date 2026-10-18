@@ -682,3 +682,38 @@ test("an Archive or Pin refused while the harness is away names the action and t
     }
   }finally{await harness.close()}
 });
+
+// Every undo toast counts its 5 seconds down from 5s: one that replaced another (a Pin seconds after an Archive) showed 6s for its
+// first quarter second, from the time the toast before it was last counted at.
+test("an undo toast that replaces another starts at 5s and counts down, as a fresh one does",async({page})=>{
+  test.setTimeout(90_000);
+  const list=["Alpha task","Beta task","Gamma task","Delta task","Epsilon task","Zeta task"];
+  const {harness}=await openSidebarApp(page,list);
+  const toast=undoToast(page),label=toast.locator("span").first(),seconds=toast.locator("em");
+  // The toast's label and seconds at every frame from now on.
+  const watch=()=>page.evaluate(()=>{const seen=window.__undoSeconds=[];const tick=()=>{const node=document.querySelector("[data-testid=thread-undo-toast]");if(node)seen.push([node.querySelector("span")?.textContent||"",node.querySelector("em")?.textContent||""]);if(seen.length<900)requestAnimationFrame(tick)};requestAnimationFrame(tick)});
+  const shown=text=>page.evaluate(text=>[...new Set(window.__undoSeconds.filter(([name])=>name===text).map(([,value])=>value))],text);
+  try{
+    // Dark: Beta archived, then Gamma pinned; Delta pinned on its own. Light: Epsilon archived, then Zeta pinned; Gamma unpinned on its own.
+    for(const [mode,archived,[replacing,replacingItem,replacingLabel],[fresh,freshItem,freshLabel]] of [
+      ["dark","Beta task",["Gamma task","Pin","Thread pinned"],["Delta task","Pin","Thread pinned"]],
+      ["light","Epsilon task",["Zeta task","Pin","Thread pinned"],["Gamma task","Unpin","Thread unpinned"]]]){
+      await switchMode(page,mode);
+      // An Archive's toast, counted down to 3s, then the toast of another action replaces it.
+      await (await rowMenu(page,archived)).getByRole("button",{name:"Archive",exact:true}).click();
+      await expect(label).toHaveText("Thread archived");await expect(seconds).toHaveText("3s",{timeout:5000});
+      await watch();
+      await (await rowMenu(page,replacing)).getByRole("button",{name:replacingItem,exact:true}).click();
+      await expect(label).toHaveText(replacingLabel);await expect(seconds).toHaveText("4s",{timeout:3000});
+      expect(await shown(replacingLabel),"the seconds the toast that replaced another showed").toEqual(["5s","4s"]);
+      await shoot(page,"sidebar-undo-toast-replaced");
+      await expect(toast).toHaveCount(0,{timeout:8000});
+      // A fresh toast, with none before it, counts the same.
+      await watch();
+      await (await rowMenu(page,fresh)).getByRole("button",{name:freshItem,exact:true}).click();
+      await expect(label).toHaveText(freshLabel);await expect(seconds).toHaveText("4s",{timeout:3000});
+      expect(await shown(freshLabel),"the seconds a fresh toast showed").toEqual(["5s","4s"]);
+      await expect(toast).toHaveCount(0,{timeout:8000});
+    }
+  }finally{await harness.close()}
+});
