@@ -1,6 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { HelpCircle, Paperclip, X } from "lucide-react";
 import { answeringClick } from "../approval-utils.js";
+import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 // Modal focus: move focus into the dialog when it opens and keep Tab/Shift+Tab inside it, so keyboard users cannot
 // reach (and activate) controls behind the backdrop. Focus that sits inside another open modal is left alone, the questions the
@@ -59,6 +60,11 @@ function attachmentParts(path){
   const name=attachmentName(path),dot=name.lastIndexOf(".");
   return dot>0&&name.length-dot<=10?[name.slice(0,dot),name.slice(dot)]:[name,""];
 }
+
+// A press answers the question, or takes a file away, once, as a queued follow-up's buttons run: the rest of it (the second click of
+// a double click, Enter held) does nothing, so it never lands on what comes under the pointer once the dialog or the file has gone:
+// a word of the page behind, which it would select, or the next file's ×, which would take that file away too.
+function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
 
 // threadLabel names the task that asked when it is not the open thread; waiting counts the questions after this one.
 export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit,onCancel,pickFiles}){
@@ -119,7 +125,7 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
       return {...prev,[q.id]:value?[...current,value]:current};
     });
   }
-  return <div className="modal-backdrop"><div className="question-modal" role="dialog" aria-modal="true" aria-labelledby="question-modal-title" ref={dialogRef} tabIndex={-1}>
+  return <div className="modal-backdrop"><div className="question-modal" role="dialog" aria-modal="true" aria-labelledby="question-modal-title" ref={dialogRef} tabIndex={-1} onClick={pressOnce}>
     <div className="modal-head"><div><span className="modal-head-icon"><HelpCircle size={16}/></span><strong id="question-modal-title">Agent needs input</strong></div><button className="modal-close" onClick={cancel} disabled={Boolean(busy)} aria-label="Close question" title="Close question"><X size={16}/></button></div>
     {threadLabel&&<p className="question-thread" data-testid="question-thread">Waiting in {threadLabel}</p>}
     {questions.map(q=><div className="question-block" key={q.id}><label>{q.header&&<small>{q.header}</small>}<strong>{q.question}</strong></label>

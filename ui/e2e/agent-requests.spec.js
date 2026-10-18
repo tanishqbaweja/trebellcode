@@ -493,6 +493,101 @@ test("Escape that answers the last request runs no shortcut bound to Escape as w
 // The agent's question and the app request a test asks; an app request shows its tool's title.
 const askQuestion=(harness,id,text)=>harness.ask("item/tool/requestUserInput",{threadId:RELEASE.id,turnId:"turn-"+RELEASE.id,itemId:"q-"+id,questions:[{id,header:id,question:text,options:[{label:"yes"},{label:"no"}],allowMultiple:false}]});
 const askApproval=(harness,title)=>harness.ask("mcpServer/elicitation/request",{threadId:RELEASE.id,serverName:"fixture_app",mode:"form",message:"Approve the fixture change?",requestedSchema:{type:"object",properties:{}},_meta:{codex_approval_kind:"mcp_tool_call",connector_name:"Fixture App",tool_title:title,tool_name:"fixture_action"}});
+// A person's double click on a button: its first click, then its second at the same spot once the page shows what the first did
+// (shown), with nothing selected before it.
+async function doubleClick(page,button,shown){
+  const box=await button.boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+  await page.evaluate(()=>getSelection().removeAllRanges());
+  await page.mouse.move(x,y);await page.mouse.down();await page.mouse.up();await shown();
+  await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+}
+const selectedText=page=>page.evaluate(()=>String(getSelection()));
+
+// A double click on the answer to the last request answers it once, and its second click, which lands on the page behind once the
+// dialog has gone, does nothing there: no word under the pointer is selected and nothing there is pressed. An app request's Allow once
+// and Cancel tool, an agent question's Submit and Cancel, at 1280 and 900 wide. Each is checked whatever the one before it did.
+test("a double click that answers the last request, Allow once on an app request or Submit on a question, selects nothing on the page behind",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const app=page.getByTestId("mcp-elicitation"),modal=page.locator(".question-modal"),composer=page.getByTestId("composer"),asked=[];
+    for(const [pass,width] of [["dark",1280],["light",900]]){
+      if(pass==="light")await toggleMode(page);
+      await page.setViewportSize({width,height:800});
+      for(const [button,answer] of [["Allow once",{action:"accept",content:null,_meta:null}],["Cancel tool",{action:"cancel",content:null,_meta:null}]]){
+        const request=askApproval(harness,button+" fixture "+pass);asked.push(request);
+        await expect(app).toContainText(button+" fixture "+pass);
+        await doubleClick(page,app.getByRole("button",{name:button,exact:true}),()=>expect(app).toHaveCount(0));
+        expect(await request.answered).toEqual(answer);
+        expect.soft(await selectedText(page),`the second click of a double click on ${button} selected text on the page behind`).toBe("");
+      }
+      for(const button of ["Submit","Cancel"]){
+        const id=button.toLowerCase()+"-"+pass,request=askQuestion(harness,id,"Tag the release ("+id+")?");asked.push(request);
+        await expect(modal).toContainText("Tag the release ("+id+")?");
+        if(button==="Submit")await modal.getByRole("button",{name:"yes",exact:true}).click();
+        await doubleClick(page,modal.getByRole("button",{name:button,exact:true}),()=>expect(modal).toHaveCount(0));
+        expect(await request.answered).toEqual({answers:button==="Submit"?{[id]:{answers:["yes"]}}:{}});
+        expect.soft(await selectedText(page),`the second click of a double click on ${button} selected text on the page behind`).toBe("");
+      }
+      await expect(composer).toHaveValue("");
+      if(pass==="dark")await shoot(page,"after-double-click-answers");
+    }
+    await page.waitForTimeout(600);
+    for(const request of asked)expect(harness.answersTo(request)).toHaveLength(1);
+  }finally{await harness.close()}
+});
+
+// With another app request waiting, the second click of a double click on Allow once lands on that request, which comes up in the
+// first's place under the pointer, and does nothing to it: the request waits for its own answer, as the approval cards' and the
+// questions' do.
+test("a double click on an app request's Allow once leaves the next app request, which comes up under the pointer, waiting for its own answer",async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const app=page.getByTestId("mcp-elicitation");
+    const write=askApproval(harness,"Write fixture"),remove=askApproval(harness,"Delete fixture");
+    await expect(app).toContainText("Write fixture");
+    await doubleClick(page,app.getByRole("button",{name:"Allow once",exact:true}),()=>expect(app).toContainText("Delete fixture"));
+    expect(await write.answered).toEqual({action:"accept",content:null,_meta:null});
+    await page.waitForTimeout(600);
+    expect(harness.answersTo(remove),"the second click of the double click approved the next request unseen").toHaveLength(0);
+    await expect(app).toContainText("Delete fixture");expect(await selectedText(page)).toBe("");
+    await shoot(page,"app-request-after-double-click");
+    await app.getByRole("button",{name:"Cancel tool",exact:true}).click();
+    expect(await remove.answered).toEqual({action:"cancel",content:null,_meta:null});
+    await expect(app).toHaveCount(0);
+    expect(harness.answersTo(write)).toHaveLength(1);expect(harness.answersTo(remove)).toHaveLength(1);
+  }finally{await harness.close()}
+});
+
+// A double click on the × of a file attached in a question takes that file away only: the next file, which slides under the pointer
+// once the first has gone, stays and goes with the answer, and no text is selected.
+test("a double click on the × of a file attached in a question takes away that file only",async({page})=>{
+  test.setTimeout(45_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startRequestHarness([RELEASE,DEPLOY]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Release checklist");
+    const modal=page.locator(".question-modal"),files=modal.locator(".question-files > span"),names=numbers=>numbers.map(number=>`worker-${number}.log`);
+    const asked=harness.ask("item/tool/requestUserInput",{threadId:RELEASE.id,turnId:"turn-release",itemId:"q-logs",questions:[{id:"logs",header:"Logs",question:"Attach the failing logs?",options:[],allowMultiple:false}]});
+    await expect(modal).toContainText("Attach the failing logs?");
+    const [chooser]=await Promise.all([page.waitForEvent("filechooser"),modal.getByRole("button",{name:"Attach files"}).click()]);
+    await chooser.setFiles(names([1,2,3,4,5]).map(name=>textFile(name,name)));
+    await expect(files).toHaveText(names([1,2,3,4,5]));
+    await doubleClick(page,files.first().getByRole("button",{name:"Remove attachment"}),()=>expect(files).toHaveText(names([2,3,4,5])));
+    await page.waitForTimeout(600);
+    await expect(files,"the second click of the double click took away the next file too").toHaveText(names([2,3,4,5]));
+    expect(await selectedText(page),"the second click of the double click selected text in the question").toBe("");
+    await expect(modal).toContainText("4/100 attached");
+    await shoot(page,"question-file-after-double-click");
+    await modal.getByRole("button",{name:"Submit",exact:true}).click();
+    expect((await asked.answered).answers.logs.answers[0]).toMatch(/^Attached files:\n- .*worker-2\.log\n- .*worker-3\.log\n- .*worker-4\.log\n- .*worker-5\.log$/);
+  }finally{await harness.close()}
+});
 
 // An Escape answers only a request the person has had time to see: pressed twice on an app request, its second press leaves the
 // agent's question that comes up after it waiting. Read, the question is dismissed by the next Escape.

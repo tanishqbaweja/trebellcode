@@ -11,6 +11,7 @@ import {
   mcpElicitationKind,
   buildElicitationResponse,
 } from "../mcp-elicitation.js";
+import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 function pretty(value){
   if(typeof value==="string")return value;
@@ -79,6 +80,11 @@ function useEscapeToCancel(ref,active,cancelRef){
   },[ref,active,cancelRef]);
 }
 
+// A press answers a request once, as a queued follow-up's buttons run: the rest of it (the second click of a double click, Enter held)
+// does nothing, so it never lands on what comes up under the pointer once the dialog has gone: the next request, which it would answer
+// unseen, or the page behind, where it would select a word.
+function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
+
 export default function McpElicitationModal({request,onResolve,onVerify,verificationAvailable=true,verificationUnavailableReason=""}){
   const kind=mcpElicitationKind(request);
   const params=request?.params||{};
@@ -136,7 +142,7 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
 
   const message=String(params.message||"").trim();
   const title=kind==="approval"?"Approve app action":kind==="url"?"App needs browser input":kind==="verification"?"Verification required":"App needs input";
-  return <div className="modal-backdrop" data-testid="mcp-elicitation"><div className={"mcp-elicitation-modal kind-"+kind} role="dialog" aria-modal="true" aria-labelledby="mcp-elicitation-title" ref={dialogRef} tabIndex={-1}>
+  return <div className="modal-backdrop" data-testid="mcp-elicitation"><div className={"mcp-elicitation-modal kind-"+kind} role="dialog" aria-modal="true" aria-labelledby="mcp-elicitation-title" ref={dialogRef} tabIndex={-1} onClick={pressOnce}>
     <div className="modal-head"><div><span className="modal-head-icon">{kind==="approval"?<ShieldCheck size={16}/>:<PlugZap size={16}/>}</span><strong id="mcp-elicitation-title">{title}</strong></div><button className="modal-close" disabled={resolveBusy||verificationBusy} onClick={cancelRequest} aria-label="Cancel app request"><X size={16}/></button></div>
     {error&&<div className="inline-error" role="alert" ref={errorRef}>{error}</div>}
 

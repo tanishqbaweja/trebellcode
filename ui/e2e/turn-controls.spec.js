@@ -788,6 +788,40 @@ for(const order of ["Codex","the agent relay"]){
   });
 }
 
+// A double click on Compact compacts once. Its first click compacts and Compact goes while the compaction's turn runs, so the second
+// lands where Compact was, beside the meter's reading: it does nothing there, as the rest of a press on a queued follow-up's buttons
+// does nothing, and no text of the composer's footer is selected, then or once Compact is back. At 1280 and 900 wide.
+test("a double click on Compact compacts once, and its second click, where Compact was, selects nothing",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex compact"});
+  const compact=page.getByRole("button",{name:"Compact",exact:true}),meter=page.locator(".context-meter"),selected=()=>page.evaluate(()=>String(getSelection()));
+  const usage=percent=>({threadId:codex.thread.id,tokenUsage:{modelContextWindow:100_000,last:{inputTokens:percent*1000},total:{totalTokens:130_000}}});
+  try{
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    const threadId=codex.thread.id,compactions=()=>codex.calls.filter(method=>method==="thread/compact/start").length;
+    for(const [index,width] of [[1,1280],[2,900]]){
+      await page.setViewportSize({width,height:800});
+      codex.notify("thread/tokenUsage/updated",usage(93));await expect(meter).toHaveAttribute("aria-valuenow","93");
+      const box=await compact.boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2,turnId="codex-compact-turn-"+index;
+      await page.mouse.move(x,y);await page.mouse.down();await page.mouse.up();
+      await expect.poll(compactions).toBe(index);
+      codex.notify("turn/started",{threadId,turn:{id:turnId,status:"inProgress",items:[]}});await expect(compact).toHaveCount(0);
+      await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+      expect.soft(await selected(),"the second click of the double click selected text where Compact was").toBe("");
+      const item={type:"contextCompaction",id:"compaction-item-"+index};
+      codex.notify("item/started",{threadId,turnId,item});codex.notify("item/completed",{threadId,turnId,item,completedAtMs:Date.now()});codex.notify("thread/compacted",{threadId,turnId});
+      codex.notify("thread/tokenUsage/updated",usage(21));codex.notify("turn/completed",{threadId,turn:{id:turnId,status:"completed",items:[]}});
+      await expect(meter).toHaveAttribute("aria-valuenow","21");await expect(compact).toBeVisible();
+      expect(compactions(),"a double click on Compact compacted twice").toBe(index);
+      expect(await selected(),"the meter's reading and Compact are selected once Compact is back").toBe("");
+    }
+    await page.setViewportSize({width:1280,height:800});await shoot(page,"compact-double-click");
+  }finally{await codex.close()}
+});
+
 // Codex compacts by itself in the middle of a turn each time the context fills up: two compactions in one turn are two rows, live and
 // on the turn's card once the next turn starts, as the turn's history holds them (each compaction an item of its own).
 test("two compactions Codex makes in one turn are two rows, live and on the turn's card",async({page})=>{
