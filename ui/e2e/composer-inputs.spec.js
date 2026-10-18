@@ -1126,27 +1126,41 @@ async function openAgentsThread(page){
 }
 // The composer's right-hand controls as a person finds them: what the page answers at the middle of each (the control itself, or what
 // covers it), the ones that run over each other, whether the mic sits between the model picker and Send, and the model's name: whole,
-// or cut with an ellipsis.
+// or cut with an ellipsis, and then whether its row had room left for more of it. That room is the bar's width along the model
+// picker's row less the controls on that row and the gaps the layout puts between them (a group's gap, the bar's between the two
+// groups, a control's margins), so wherever the row lays its free space (between the groups, or before the right group on a row of its
+// own) it counts.
 const readComposerRight=page=>page.locator(".composer-bar").evaluate(bar=>{
   const parts={agent:".agent-picker",model:"[data-testid=model-picker]",mic:".mic-btn",send:"[data-testid=send]"},names=Object.keys(parts),nodes={},boxes={},hits={},overlaps=[];
   for(const name of names){nodes[name]=bar.querySelector(parts[name]);boxes[name]=nodes[name].getBoundingClientRect()}
   for(const name of names){const box=boxes[name],at=document.elementFromPoint(box.left+box.width/2,box.top+box.height/2);hits[name]=names.find(other=>nodes[other].contains(at))||String(at?.className||at?.tagName)}
   names.forEach((a,index)=>names.slice(index+1).forEach(b=>{const p=boxes[a],q=boxes[b];if(p.left<q.right-1&&q.left<p.right-1&&p.top<q.bottom-1&&q.top<p.bottom-1)overlaps.push(a+"/"+b)}));
-  const label=nodes.model.querySelector("strong");
-  return {hits,overlaps,micBetween:boxes.model.right<=boxes.mic.left+1&&boxes.mic.right<=boxes.send.left+1,label:label.scrollWidth<=label.clientWidth+1?"whole":getComputedStyle(label).textOverflow==="ellipsis"?"cut with an ellipsis":"cut"};
+  const barBox=bar.getBoundingClientRect(),barStyle=getComputedStyle(bar),model=boxes.model;
+  const row=[...bar.children].flatMap(group=>[...group.children].map(node=>({node,group,box:node.getBoundingClientRect()})))
+    .filter(({box})=>box.width>0&&box.top<model.bottom-1&&box.bottom>model.top+1).sort((a,b)=>a.box.left-b.box.left);
+  let free=0,end=barBox.left+parseFloat(barStyle.paddingLeft),previous=null;
+  for(const item of row){
+    const style=getComputedStyle(item.node),gap=previous?parseFloat(getComputedStyle(previous.group===item.group?item.group:bar).columnGap)||0:0;
+    free+=Math.max(0,item.box.left-parseFloat(style.marginLeft)-gap-end);end=item.box.right+parseFloat(style.marginRight);previous=item;
+  }
+  free+=Math.max(0,barBox.right-parseFloat(barStyle.paddingRight)-end);
+  const label=nodes.model.querySelector("strong"),whole=label.scrollWidth<=label.clientWidth+1;
+  const cut=getComputedStyle(label).textOverflow==="ellipsis"?"cut with an ellipsis":"cut";
+  return {hits,overlaps,micBetween:boxes.model.right<=boxes.mic.left+1&&boxes.mic.right<=boxes.send.left+1,label:whole?"whole":free<=2?cut+", its row full":`${cut}, ${Math.round(free)} px free in its row`};
 });
 const controlsClear={hits:{agent:"agent",model:"model",mic:"mic",send:"send"},overlaps:[],micBetween:true};
 
 // Beside OpenCode's agent picker, the model picker kept its whole label in a group held to about half the composer, so from 1000 wide
 // down it ran over the mic and a click there opened the model picker. The mic stays between the model picker and Send at every width,
-// in both modes, and a name too long for its pill is cut with an ellipsis, whole in the open picker.
+// in both modes, and a name too long for its pill is cut with an ellipsis only where its row has no room left for it (a cap of 32vw
+// cut the longer name at 700 with about 46 px of the row free), whole in the open picker.
 test("beside OpenCode's agent picker the mic stays clickable between the model picker and Send at every width, the model's name whole or cut with an ellipsis",async({page})=>{
-  test.setTimeout(120_000);
+  test.setTimeout(150_000);
   await scriptedDictation(page);
   const fixture=await openAgentsThread(page);
   try{
     const picker=page.getByTestId("model-picker"),mic=page.getByRole("button",{name:"Voice dictation"}),menu=page.locator(".model-picker-menu");
-    const shown=expect.stringMatching(/^(whole|cut with an ellipsis)$/);
+    const shown=expect.stringMatching(/^(whole|cut with an ellipsis, its row full)$/);
     await expect(picker).toContainText("OpenCode Fixture Fast");
     for(const mode of ["dark","light"]){
       await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
@@ -1157,20 +1171,31 @@ test("beside OpenCode's agent picker the mic stays clickable between the model p
         if([1280,900,700].includes(width))await page.screenshot({animations:"disabled",path:auditDir+`agent-picker-composer-${mode}-${width}x800.png`});
       }
     }
-    // The longer name, picked from the open picker, is whole there; at 700 its pill cuts it with an ellipsis, clear of the mic.
+    // The longer name, picked from the open picker, is whole there. In the composer it is whole wherever its row has room for it, and
+    // cut with an ellipsis only where that row is full, clear of the mic: at 1280 and 700, and with the right panel open at 1280 and
+    // 1100, which stacks the composer's two groups and, at 1100, leaves the right group's row too narrow for the whole name.
     await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
     await picker.click();await expect(menu).toBeVisible();
     expect(await menu.locator(":scope>button strong").evaluateAll(nodes=>nodes.map(node=>node.textContent+(node.scrollWidth>node.clientWidth+1?" (cut)":"")))).toEqual(["OpenCode Fixture Fast","OpenCode Fixture Large Context"]);
     await menu.getByRole("button",{name:/OpenCode Fixture Large Context/}).click();
     await expect(menu).toHaveCount(0);await expect(picker).toContainText("OpenCode Fixture Large Context");
+    const panelToggle=page.getByTestId("right-panel-toggle"),panel=page.getByTestId("right-panel");
     for(const mode of ["dark","light"]){
       await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
       for(const width of [1280,700]){
         await page.setViewportSize({width,height:800});
-        await expect.poll(()=>readComposerRight(page),{message:`the longer name at ${width}x800 in ${mode}`}).toEqual({...controlsClear,label:width===700?"cut with an ellipsis":shown});
+        await expect.poll(()=>readComposerRight(page),{message:`the longer name at ${width}x800 in ${mode}`}).toEqual({...controlsClear,label:shown});
         await mic.click({trial:true,timeout:5000});
       }
       await page.screenshot({animations:"disabled",path:auditDir+`agent-picker-longer-model-${mode}-700x800.png`});
+      await page.setViewportSize({width:1280,height:800});await panelToggle.click();await expect(panel).toBeVisible();
+      for(const width of [1280,1100]){
+        await page.setViewportSize({width,height:800});
+        await expect.poll(()=>readComposerRight(page),{message:`the longer name beside the right panel at ${width}x800 in ${mode}`}).toEqual({...controlsClear,label:shown});
+        await mic.click({trial:true,timeout:5000});
+        await page.screenshot({animations:"disabled",path:auditDir+`agent-picker-longer-model-panel-${mode}-${width}x800.png`});
+      }
+      await page.setViewportSize({width:1280,height:800});await panelToggle.click();await expect(panel).toHaveCount(0);
     }
     // At 900, a click where the mic is goes to the mic: it says the microphone is blocked, and the model picker stays closed.
     await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");await page.setViewportSize({width:900,height:800});
