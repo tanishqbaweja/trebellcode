@@ -1643,8 +1643,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // turn continues the thread in a fresh session, as it does for the lazy harnesses.
       if(!LAZY_SESSION_RUNTIMES.has(thread.runtime))await ensureSession(thread,context,{model:params.model||thread.model}).catch(error=>{if(!isHarnessSessionLost(error))throw error});
       const resumed=agentThreadResumePayload(peekThread(thread.id),params),collaborationMode=thread.runtime==="claude"||thread.runtime==="cursor"?resumed?.thread?.settings?.collaborationMode:null;
+      // A turn still running gives its reply so far, which the thread stores only once the turn ends: the thread opened again shows
+      // it from its start, and the deltas sent after this answer go on from it. A Native draft on show is that reply meanwhile.
+      const turn=lastTurnOf(thread.id),session=sessions.get(thread.id),draft=session?.__nativeDraft?.turnId===turn?.id?session.__nativeDraft:null;
+      const liveText=turn?.status==="inProgress"&&session?(draft?draft.emitted:String(session.__assistant||"")):"";
       // The composer shows the collaboration mode the thread last ran in (Claude Code's and Cursor's Plan mode).
-      return collaborationMode?.mode?{...resumed,collaborationMode}:resumed;
+      return {...resumed,...(collaborationMode?.mode?{collaborationMode}:{}),...(liveText?{trebellLiveReply:{turnId:turn.id,text:liveText}}:{})};
     }
     if(method==="thread/items/list"){
       const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");

@@ -1,8 +1,15 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { mkdtemp,rm,writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { attachAgentRelay } from "../../src/agent-relay.mjs";
+import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { routeCodexApp, startCodexHarness } from "./codex-history-harness.js";
 import { commandItem, fileChangeItem, replyItem, routeRelayApp, runCall, startRelayHarness, writeFileCall } from "./relay-history-harness.js";
+import { keepThreadMeta } from "./test-home.js";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/turn-activity-cards/",import.meta.url));
 mkdirSync(auditDir,{recursive:true});
@@ -18,6 +25,9 @@ const cardOf=(page,turnId)=>page.locator(`.turn-card [data-testid=activity-card]
 const pastCards=page=>page.locator(".turn-card [data-testid=activity-card]");
 const liveCard=page=>page.locator(".agent-block [data-testid=activity-card]");
 const reply=(page,text)=>page.locator(".history-assistant:not([data-testid=turn-outcome-row])").filter({hasText:text});
+// The reply text that holds text, wherever it shows: streaming under the live card, or in the conversation.
+const replyText=(page,text)=>page.locator(".agent-block .assistant-answer, .history-assistant .assistant-message-text").filter({hasText:text});
+const timesIn=(text,part)=>text.split(part).length-1;
 // The socket frames the page has received, so a test knows a notification reached the window before the person goes on.
 function socketFrames(page){const seen=[];page.on("websocket",socket=>socket.on("framereceived",frame=>seen.push(String(frame.payload||""))));return seen}
 const userRow=(page,text)=>page.locator(".user-row").filter({hasText:text});
@@ -728,6 +738,143 @@ test("a Codex turn that ends while another thread is shown keeps its diff row wi
       await expect(diff).toContainText("second change while away");await expect(diff).not.toContainText("first change");
       if(round==="back"){await auditCards(page,"returned-turn-ended-diff",card);await openThreadRow(page,"Docs review")}
     }
+  }finally{await harness.close()}
+});
+
+// A Codex reply streams on while the person reads another thread; Codex's history lists the reply in progress as it stands, or
+// only finished items. Back on the thread the reply reads from its start, with what came meanwhile and after, once and in order,
+// and once the turn ends it reads whole, once. Listed, it also opens that way after a reload while it streams.
+for(const listed of [false,true])test(`a Codex reply left streaming reads from its start back on its thread, once and in order, and whole once its turn ends (${listed?"listed":"not listed"} in its history)`,async({page})=>{
+  test.setTimeout(90_000);
+  const thread=codexThread("codex-away-reply","Write the notes"),other=codexThread("codex-away-reply-other","Other notes"),seen=socketFrames(page);
+  let live=null;
+  const harness=await startCodexHarness(thread,[
+    // The reply streams on until the test ends the turn.
+    (turn,tools)=>{
+      const answer={id:"agent-"+turn.id,type:"agentMessage",text:""};thread.status={type:"active",activeFlags:[]};if(listed)turn.items.push(answer);
+      const say=delta=>{answer.text+=delta;tools.emit({method:"item/agentMessage/delta",params:{threadId:tools.threadId,turnId:turn.id,itemId:answer.id,delta}})};
+      live={turn,tools,answer,say};
+      tools.emit({method:"turn/started",params:{threadId:tools.threadId,turn:{...turn,items:[]}}});
+      tools.emit({method:"item/started",params:{threadId:tools.threadId,turnId:turn.id,item:{...answer}}});say("First part of the notes. ");
+    },
+  ],{others:[other]});
+  try{
+    await routeCodexApp(page,harness,thread);
+    await page.goto("/");await openThreadRow(page,"Write the notes");
+    await page.getByTestId("composer").fill("Write the release notes.");await page.getByTestId("send").click();
+    await expect(replyText(page,"First part")).toHaveText("First part of the notes.",{timeout:10_000});
+    // The person reads another thread while the reply goes on.
+    await openThreadRow(page,"Other notes");await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
+    live.say("Second part, sent while away. ");await expect.poll(()=>seen.some(frame=>frame.includes("Second part, sent while away."))).toBe(true);
+    // Back on it, the reply reads from its start, with what came meanwhile, and goes on in the same place.
+    await openThreadRow(page,"Write the notes");await expect(page.getByRole("button",{name:"Stop"})).toBeVisible();
+    let full="First part of the notes. Second part, sent while away.";
+    await expect(replyText(page,"Second part")).toHaveText(full);
+    live.say("Third part, after the return. ");full+=" Third part, after the return.";
+    await expect(replyText(page,"Third part")).toHaveText(full);await expect(replyText(page,"First part")).toHaveCount(1);
+    await auditCards(page,"returned-reply-"+(listed?"listed":"not-listed"),replyText(page,"Third part"),{sizes:[[1280,800]]});
+    // A reload while it streams: the thread opens with the reply as its history lists it, and what comes next goes on from there,
+    // whether it comes while the thread shows or while the person reads the other thread.
+    if(listed)for(const away of [false,true]){
+      await page.reload();await openThreadRow(page,"Write the notes");await expect(page.getByRole("button",{name:"Stop"})).toBeVisible({timeout:10_000});
+      await expect(replyText(page,"Third part")).toHaveText(full);
+      if(away){await openThreadRow(page,"Other notes");await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0)}
+      const part=away?"Fifth part, sent while away again.":"Fourth part, after the reload.";live.say(part+" ");full+=" "+part;
+      if(away){await expect.poll(()=>seen.some(frame=>frame.includes(part))).toBe(true);await openThreadRow(page,"Write the notes");await expect(page.getByRole("button",{name:"Stop"})).toBeVisible()}
+      await expect(replyText(page,part)).toHaveText(full);await expect(replyText(page,"First part")).toHaveCount(1);
+    }
+    // The turn ends: the reply reads whole, once.
+    live.answer.text=full+" The end.";if(!listed)live.turn.items.push(live.answer);
+    live.tools.emit({method:"item/completed",params:{threadId:live.tools.threadId,turnId:live.turn.id,item:{...live.answer}}});thread.status={type:"idle"};live.tools.finish("completed");
+    await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
+    await expect(replyText(page,"The end.")).toHaveText(full+" The end.");
+    expect(timesIn(await page.locator(".conversation-column").innerText(),"First part of the notes.")).toBe(1);
+  }finally{await harness.close()}
+});
+
+// Gemini threads on the real agent relay, run by a fake ACP agent: a prompt runs a command step and streams its reply in parts, the
+// next part once the test writes its name beside the agent ("two", "three", "four"); "finish" ends the step and the turn.
+async function startAcpReplyHarness(page,names){
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-reply-")),agent=join(root,"fake-acp-reply.mjs");
+  await writeFile(agent,String.raw`
+import { existsSync } from "node:fs";
+import readline from "node:readline";
+let sessions=0;
+const written=name=>new Promise(resolve=>{const check=()=>existsSync(new URL("./"+name,import.meta.url))?resolve():setTimeout(check,50);check()});
+function send(value){process.stdout.write(JSON.stringify(value)+"\n")}
+async function handle(message){
+  if(!message.method||message.id==null)return;
+  if(message.method==="initialize")return send({jsonrpc:"2.0",id:message.id,result:{protocolVersion:1,agentInfo:{name:"fixture",version:"1"},agentCapabilities:{loadSession:true,sessionCapabilities:{resume:{},close:{}}}}});
+  if(message.method==="session/new"||message.method==="session/resume"||message.method==="session/load")return send({jsonrpc:"2.0",id:message.id,result:{sessionId:message.params?.sessionId||"fixture-session-"+(++sessions),models:{currentModelId:"fixture-model",availableModels:[{modelId:"fixture-model",name:"Fixture Model"}]},configOptions:[],modes:{currentModeId:"build",availableModes:[]}}});
+  if(message.method!=="session/prompt")return send({jsonrpc:"2.0",id:message.id,result:{}});
+  const sessionId=message.params?.sessionId,update=value=>send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:value}});
+  const say=text=>update({sessionUpdate:"agent_message_chunk",content:{type:"text",text}}),build=(status,rawOutput)=>update({sessionUpdate:"tool_call_update",toolCallId:"cmd-stream",title:"Fixture build",kind:"execute",status,rawOutput});
+  update({sessionUpdate:"tool_call",toolCallId:"cmd-stream",title:"Fixture build",kind:"execute",status:"in_progress",rawOutput:"phase one\n"});say("Starting the fixture build. ");
+  await written("two");build("in_progress","phase one\nphase two\n");say("Phase two is out. ");
+  await written("three");build("in_progress","phase one\nphase two\nphase three\n");say("Phase three is out. ");
+  await written("four");say("Still building. ");
+  await written("finish");build("completed","phase one\nphase two\nphase three\ndone\n");say("Fixture finished.");
+  send({jsonrpc:"2.0",id:message.id,result:{stopReason:"end_turn"}});
+}
+const lines=readline.createInterface({input:process.stdin,crlfDelay:Infinity});
+lines.on("line",line=>{try{handle(JSON.parse(line)).catch(error=>send({jsonrpc:"2.0",id:null,error:{code:-32603,message:error.message}}))}catch{}});
+lines.on("close",()=>process.exit(0));
+`,"utf8");
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  const meta=new Map(names.map(name=>[threadStore.create({runtime:"gemini",cwd:root,providerSessionId:"",model:"fixture-model",name}).id,{projectless:true,environmentId:null}]));
+  const instance={id:"gemini-default",kind:"gemini",displayName:"Fixture ACP",enabled:true};
+  const runtimeManager={
+    activeRuntime:()=>"gemini",activeInstance:()=>instance,instances:()=>[instance],
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>process.env,
+    executable:()=>process.execPath,acpArgs:()=>[agent],compatibleInstanceIds:()=>[instance.id],
+    probe:async()=>({id:instance.id,name:instance.displayName,available:true,authenticated:true,version:"fixture"}),
+  };
+  const state={settings:()=>({activeEnvironmentId:null,continueThreadsAfterRestart:false}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},recordUsage:()=>{}};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:null,state,version:"fixture"});
+  await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
+  const port=server.address().port,answer=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"gemini",agentRuntimeInstanceId:"gemini-default",modelProvider:"openai",defaultPermissionMode:"full",defaultWorkspaceMode:"current"};
+  await keepThreadMeta(page);
+  await page.route(/\/api\/bootstrap$/,route=>answer(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"gemini",agentRuntimeInstanceId:"gemini-default",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+port+"/api/agent/ws",cwd:root,platform:process.platform,version:"fixture",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/state$/,route=>answer(route,{settings,projects:[],threadMeta:Object.fromEntries(meta)}));
+  await page.route(/\/api\/models(?:\?.*)?$/,route=>answer(route,{models:["fixture-model"],metadata:{provider:"gemini",models:[{id:"fixture-model",name:"Fixture Model",provider:"gemini",agent:"Gemini"}]}}));
+  await page.route(/\/api\/projects(?:\?.*)?$/,route=>answer(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>answer(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>answer(route,{enabled:false,items:[]}));
+  return {
+    write:name=>writeFile(join(root,name),""),
+    async close(){await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})},
+  };
+}
+
+// An ACP harness's reply streams on while the person reads another thread: back on the thread, and after a reload while it still
+// streams, the reply reads from its start under its running step, once and in order, and once the turn ends it reads whole, once.
+test("an ACP reply left streaming reads from its start back on its thread and after a reload, once and in order, and whole once its turn ends",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startAcpReplyHarness(page,["ACP other thread","ACP reply fixture"]),seen=socketFrames(page);
+  const parts=["Starting the fixture build.","Phase two is out.","Phase three is out.","Still building."],soFar=count=>parts.slice(0,count).join(" ");
+  try{
+    await page.goto("/");await openThreadRow(page,"ACP reply fixture");
+    const composer=page.getByTestId("composer");await expect(composer).toBeEnabled({timeout:15_000});
+    await composer.fill("Run the fixture command");await page.getByTestId("send").click();
+    await expect(replyText(page,parts[0])).toHaveText(soFar(1),{timeout:15_000});
+    await harness.write("two");await expect(replyText(page,parts[1])).toHaveText(soFar(2));
+    // The person reads another thread while the reply goes on.
+    await openThreadRow(page,"ACP other thread");await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
+    await harness.write("three");await expect.poll(()=>seen.some(frame=>frame.includes(parts[2])),{timeout:10_000}).toBe(true);
+    // Back on it, the reply reads from its start under the running step, and goes on in the same place.
+    await openThreadRow(page,"ACP reply fixture");await expect(page.getByRole("button",{name:"Stop"})).toBeVisible({timeout:10_000});
+    await expect(replyText(page,parts[2])).toHaveText(soFar(3));
+    await expect(liveCard(page).locator(".tool-event.status-running").filter({hasText:"Fixture build"})).toHaveCount(1);
+    await auditCards(page,"returned-acp-reply",liveCard(page),{sizes:[[1280,800]]});
+    await harness.write("four");await expect(replyText(page,parts[3])).toHaveText(soFar(4));
+    // A reload while it streams: the thread opens with the reply so far, from its start.
+    await page.reload();await openThreadRow(page,"ACP reply fixture");await expect(page.getByRole("button",{name:"Stop"})).toBeVisible({timeout:10_000});
+    await expect(replyText(page,parts[3])).toHaveText(soFar(4));
+    // The turn ends: the reply reads whole, once.
+    await harness.write("finish");await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0,{timeout:10_000});
+    await expect(replyText(page,"Fixture finished.")).toHaveText(soFar(4)+" Fixture finished.");
+    expect(timesIn(await page.locator(".conversation-column").innerText(),parts[0])).toBe(1);
   }finally{await harness.close()}
 });
 

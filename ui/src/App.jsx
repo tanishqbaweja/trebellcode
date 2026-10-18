@@ -1021,7 +1021,10 @@ export default function App(){
   // The MCP progress of each running turn, by item id, and its diff (under ""), by thread and turn, kept whether the thread shows or
   // not: the harness's history has neither, so a thread opened again while the turn runs gets them back on its live card. The
   // turn's end drops its progress; its diff stays until the thread's next turn starts, for the turn's own card (withEndedDiffs).
-  const liveExtrasRef=useRef(new Map());
+  // liveRepliesRef: the reply each running turn streams, by thread and turn ({itemId,text,sync}), kept the same way as the live
+  // reply shows it: Codex's history may not list a reply in progress, and an ACP harness's lists it once the turn ends. One marked
+  // copy is the history's copy of the turn's latest reply, from a thread opened with no reply kept: its item's next delta goes on it.
+  const liveExtrasRef=useRef(new Map());const liveRepliesRef=useRef(new Map());
   // assistantStreamSyncRef: how much of the live reply is shown, so a Native draft delta lands where its offset says.
   const assistantStreamBufferRef=useRef(null);const assistantStreamSyncRef=useRef(EMPTY_ASSISTANT_STREAM);
   // Per thread and turn: the mode this window sent the turn with, and how and how fast it ended (see turn-outcome.js).
@@ -1219,6 +1222,19 @@ export default function App(){
       if(diff){if(next===rowsByTurn)next={...rowsByTurn};next[turnId]=[...rowsByTurn[turnId].filter(row=>row.id!==diff.id),restoredRow(diff)]}
     }
     return next;
+  }
+  // A delta of a turn's reply goes on the reply kept for the turn as it goes on the live reply (assistantStreamDelta); a copy, only
+  // when it is the delta's own reply.
+  function keepLiveReply(threadId,turnId,itemId,delta,offset){
+    const key=turnInfoKey(threadId,turnId);if(!key)return;
+    let kept=liveRepliesRef.current.get(key);if(kept?.copy&&kept.itemId!==String(itemId||""))kept=null;
+    kept=kept||{itemId:null,text:"",sync:EMPTY_ASSISTANT_STREAM};const step=assistantStreamDelta(kept.sync,delta,offset);
+    liveRepliesRef.current.set(key,{itemId:itemId?String(itemId):kept.itemId,text:(step.restart?"":kept.text)+step.append,sync:step.state});
+  }
+  // The live reply shows a turn's reply so far from its start, and goes on from it.
+  function showLiveReply(threadId,turnId,reply){
+    const key=turnInfoKey(threadId,turnId);if(key)liveRepliesRef.current.set(key,reply);
+    assistantStreamBufferRef.current?.reset();assistantStreamSyncRef.current=reply.sync;assistantTextRef.current=reply.text;activityTimelineRef.current?.setText(reply.text);
   }
   // Stored steps of the running turn (older than any live one) go in front of its live rows, in the list and in the record above:
   // the turn running when the thread opened, or one that starts again under its id (the relay's restart recovery).
@@ -2469,9 +2485,9 @@ export default function App(){
       try{
         await current.connect().catch(error=>{refused=Boolean(error?.trebellRpcResponse);throw error});if(disposed)return;refusals=0;
         // A reconnect replaced the socket: the open approvals, questions and app requests of the old one died with it. So does what
-        // was kept of the running turns' MCP progress and diffs: an end sent while the socket was down never came, and a thread opened
-        // again would show a step that ended as it was then.
-        dropServerRequestsExcept(current);liveExtrasRef.current.clear();
+        // was kept of the running turns' MCP progress, diffs and replies: an end sent while the socket was down never came, and a
+        // thread opened again would show a step that ended as it was then, or a reply without what it streamed meanwhile.
+        dropServerRequestsExcept(current);liveExtrasRef.current.clear();liveRepliesRef.current.clear();
         await recoverCodexAfterRestart(current);await ensureSections(current);
         const listed=await loadThreads(current);
         const pending=pendingRuntimeThreadRef.current;
@@ -2972,8 +2988,8 @@ export default function App(){
         if(outcomeStatus)setTurnInfo(prev=>({...prev,[outcomeKey]:recordTurnCompletion(prev[outcomeKey],{status:outcomeStatus,durationMs,completedAt:completedAtMs/1000,error})}));
       }
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});markThreadTurn(threadId,false);
-      // The turn's MCP progress ends with it, whether its thread shows or not; the diff it showed last stays with it.
-      const endedDiff=liveExtrasRef.current.get(outcomeKey)?.get("");
+      // The turn's reply and MCP progress end with it, whether its thread shows or not; the diff it showed last stays with it.
+      const endedDiff=liveExtrasRef.current.get(outcomeKey)?.get("");liveRepliesRef.current.delete(outcomeKey);
       if(endedDiff)liveExtrasRef.current.set(outcomeKey,new Map([["",endedDiff]]));else liveExtrasRef.current.delete(outcomeKey);
       // A queued turn that ends without having started takes its send with it.
       if(completedTurnId&&pendingSendsRef.current.get(String(threadId||""))?.turnId===String(completedTurnId))pendingSendsRef.current.delete(String(threadId||""));
@@ -3032,6 +3048,8 @@ export default function App(){
         const itemId=String(p.item.id||"");
         if(itemId){liveExtrasRef.current.get(turnInfoKey(threadId,p.turnId))?.delete(itemId);if(isCurrent){mcpProgressRef.current.delete(itemId);activityTimelineRef.current?.clearMcpProgress(itemId)}}
       }
+      // A finished reply is the thread's history from here: what was kept of it is done with.
+      if(p.item.type==="agentMessage"&&p.item.text?.trim())liveRepliesRef.current.delete(turnInfoKey(threadId,p.turnId));
       const item=activityRow({...p.item,status:completedItemStatus(p.item)},{turnId:p.turnId});
       const completedAtMs=p.completedAtMs||Date.now();
       const isActivityItem=!["userMessage","agentMessage","sessionHandoff"].includes(p.item.type);
@@ -3042,7 +3060,8 @@ export default function App(){
           // History that already has the message lists it by its item id (a held completion replayed over a fresh history).
           setMessages(prev=>prev.some(message=>message.id===id||(itemId&&String(message.id)===itemId))?prev:[...prev,{id,role:"user",text:draft.draftText||draft.text,attachments:draft.attachments,turnId:p.turnId||null}]);
         }
-        if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);resetAssistantStream()}
+        // A reply the history listed while it streamed reads as it ended.
+        if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>{const at=prev.findIndex(m=>m.id===p.item.id);if(at<0)return [...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}];if(prev[at].text===p.item.text)return prev;const next=prev.slice();next[at]={...prev[at],text:p.item.text};return next});resetAssistantStream()}
         // A fresh session took over a conversation the harness lost: the turn says so in its own row (a reload reads it from the turn).
         if(p.item.type==="sessionHandoff"){const handoff=sessionHandoffMessage(p.item,p.turnId);if(handoff)setMessages(prev=>withSessionHandoff(prev,handoff))}
         // A finished thought leaves the live activity for the conversation, where a reopened thread shows it too.
@@ -3087,9 +3106,16 @@ export default function App(){
         desktopNotify("Auto review warning",p.message||"Codex reported an auto-review warning.");
       }
     }
-    else if(message.method==="item/agentMessage/delta"&&isCurrent){const step=assistantStreamDelta(assistantStreamSyncRef.current,p.delta||p.text||"",p.offset);if(step.restart)clearAssistantText();assistantStreamSyncRef.current=step.state;if(step.append)appendAssistantStream(step.append)}
+    // A reply streams on the live reply of the thread shown, and on the reply kept for its turn whichever thread shows. The first
+    // delta of a reply the history listed as it stood when the thread opened takes that copy's place: the live reply goes on from it.
+    else if(message.method==="item/agentMessage/delta"){
+      const delta=p.delta||p.text||"",copy=liveRepliesRef.current.get(turnInfoKey(threadId,p.turnId));
+      if(isCurrent&&copy?.copy&&copy.itemId===String(p.itemId||"")&&!assistantStreamSyncRef.current.chars){setMessages(prev=>prev.filter(m=>String(m.id)!==copy.itemId));showLiveReply(threadId,p.turnId,{itemId:copy.itemId,text:copy.text,sync:copy.sync})}
+      keepLiveReply(threadId,p.turnId,p.itemId,delta,p.offset);
+      if(isCurrent){const step=assistantStreamDelta(assistantStreamSyncRef.current,delta,p.offset);if(step.restart)clearAssistantText();assistantStreamSyncRef.current=step.state;if(step.append)appendAssistantStream(step.append)}
+    }
     // A Native draft that went another way (a tool call, an error, steering, Stop) is taken off the screen.
-    else if(message.method==="item/agentMessage/reset"&&isCurrent)clearAssistantText();
+    else if(message.method==="item/agentMessage/reset"){liveRepliesRef.current.delete(turnInfoKey(threadId,p.turnId));if(isCurrent)clearAssistantText()}
     else if(message.method==="item/commandExecution/outputDelta"&&isCurrent)commandStreamBufferRef.current?.push(p.itemId||"command",p.delta||"");
     // A thought streams like command output, by its item id (Codex's summary parts and raw text, a relay harness's thinking).
     else if((message.method==="item/reasoning/summaryTextDelta"||message.method==="item/reasoning/textDelta")&&isCurrent&&p.itemId)commandStreamBufferRef.current?.push(p.itemId,p.delta||"");
@@ -3522,7 +3548,18 @@ export default function App(){
     // missed its turn/started or turn/completed (a reconnect), and would keep the thread running with a Stop that waits for nothing.
     if(pendingSendsRef.current.get(String(thread.id))?.turnId&&openedThread.status?.type!=="active")pendingSendsRef.current.delete(String(thread.id));
     const pendingSend=pendingSendsRef.current.get(String(thread.id)),resumedRunning=openedThread.status?.type==="active"||Boolean(pendingSend),resumedTurnId=resumedActiveTurnId(resumed);
-    const withPendingSend=history=>pendingSend?.message&&!resumedTurnId?[...history,pendingSend.message]:history;
+    // The reply the running turn streams shows under its live card from its start: the relay's so far (an ACP harness stores a reply
+    // once its turn ends), else the one kept while the thread was not shown, and a copy the history lists of it gives way. With
+    // neither, the history's copy of the turn's latest reply is the reply so far, and that reply's next delta goes on from it.
+    const relayReply=resumedTurnId&&String(resumed?.trebellLiveReply?.turnId||"")===resumedTurnId?String(resumed.trebellLiveReply.text||""):"";
+    const replyKey=turnInfoKey(thread.id,resumedTurnId),keptReply=liveRepliesRef.current.get(replyKey);
+    const liveReply=relayReply?{itemId:null,text:relayReply,sync:{chars:relayReply.length,desynced:false}}:keptReply?.text&&!keptReply.copy?keptReply:null;
+    const shownHistory=history=>{
+      const copy=replyKey&&!liveReply?.text?history.findLast(message=>message.role==="assistant"&&String(message.turnId||"")===resumedTurnId):null;
+      if(copy)liveRepliesRef.current.set(replyKey,{itemId:String(copy.id),text:String(copy.text),sync:{chars:String(copy.text).length,desynced:false},copy:true});
+      const shown=liveReply?.itemId?history.filter(message=>String(message.id)!==liveReply.itemId):history;
+      return pendingSend?.message&&!resumedTurnId?[...shown,pendingSend.message]:shown;
+    };
     // The composer is held only for a send of the thread shown: another thread opened releases it, as a new task does (showNewTask).
     // The send's files and context go with its hold: the thread opened does not show them (a send from it would carry them again),
     // and the send's own thread, opened again before its turn starts, has them back.
@@ -3543,6 +3580,7 @@ export default function App(){
     // The turn that still runs (resumedTurnId) gets back on its live card the MCP progress and the diff it had, those sent while the
     // thread was not shown among them; its stored steps go in front of the diff (seedLiveRows).
     for(const [id,value] of liveExtrasRef.current.get(turnInfoKey(thread.id,resumedTurnId))||[])if(id){mcpProgressRef.current.set(id,value);activityTimelineRef.current?.setMcpProgress(id,value)}else setEvents(prev=>upsertEvent(prev,value));
+    if(liveReply?.text)showLiveReply(thread.id,resumedTurnId,liveReply);
     // A send of this thread that failed while another view was shown gives its draft and its note back here (dispatchSend).
     // A thread whose own Codex app-server died says so, in one row: its resumes name the death until its next turn, under one id.
     const appServerExit=resumed?.trebellAppServerExit;if(appServerExit?.id)setEvents(prev=>upsertEvent(prev,{id:"app-server-exit-"+appServerExit.id,kind:"error",title:appServerExitText(appServerExit),status:"done",raw:appServerExit}));
@@ -3580,11 +3618,11 @@ export default function App(){
           openedCards={rows:cardRowsFromItemEntries([...(page.data||[])].reverse(),{activeTurnId:resumedTurnId}),merge:{mode:"older",complete:itemPageCompleteness(page.data||[],page.nextCursor||null)},boundaryTurnId};
           if(boundaryTurnId&&String(page.data?.[0]?.turnId||"")===boundaryTurnId&&openedCards.rows[boundaryTurnId]?.length)cutNewestTurnId=boundaryTurnId;
         }else openedCards={rows:cardRowsFromTurns([...(page.data||[])].reverse(),{activeTurnId:resumedTurnId}),merge:{mode:"replace",complete:true},boundaryTurnId:null};
-        setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,page.kind==="items"?page.turns||[]:page.data||[]));setMessages(withPendingSend(history));setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",itemHistory:page.kind==="items",loading:false});
+        setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,page.kind==="items"?page.turns||[]:page.data||[]));setMessages(shownHistory(history));setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",itemHistory:page.kind==="items",loading:false});
       }else{
         // The whole thread: cards for its newest 200 turns.
         openedCards={rows:cardRowsFromTurns((resumed.thread.turns||[]).slice(-200),{activeTurnId:resumedTurnId}),merge:{mode:"replace",complete:true},boundaryTurnId:null};
-        turnOutcomePagesRef.current=null;setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder((resumed.thread.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean),prev.threadId===resumed.thread.id?prev.ids:[])}));setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(withPendingSend(historyFromThread(resumed.thread,map)));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})
+        turnOutcomePagesRef.current=null;setTurnOrder(prev=>({threadId:resumed.thread.id,ids:appendTurnOrder((resumed.thread.turns||[]).map(turn=>String(turn?.id||"")).filter(Boolean),prev.threadId===resumed.thread.id?prev.ids:[])}));setTurnInfo(prev=>mergeTurnOutcomes(prev,resumed.thread.id,resumed.thread.turns||[]));setMessages(shownHistory(historyFromThread(resumed.thread,map)));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})
       }
       // The running turn's stored steps start its live card. The notifications handled as the thread shows read its cards from the
       // ref (a turn that starts again under its id gets its stored steps back), so the ref holds them from here, before the render.
