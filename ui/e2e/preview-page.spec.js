@@ -18,14 +18,16 @@ async function startSite(port=0){
 // after each move, as desktop/main.mjs does, and notes the calls the panel makes (and the sizes it is set to, and how many snapshots
 // it took). Its page has two elements to inspect. window.closeAgentWindow() closes its window as a person does outside the panel,
 // which the shell reports with its state; the window opened next is another, which its state and its snapshots name (windowId), as
-// the shell's do. The window it grants a recording is a canvas that keeps drawing, so the recorder encodes real frames, and
-// window.displayMediaCalls counts the recordings of it started.
+// the shell's do. window.openInPlace(url,title) opens a popup of its page (an export the page made, a target=_blank link) in place
+// in its window, as the shell does, with the title of the popup's document. The window it grants a recording is a canvas that keeps
+// drawing, so the recorder encodes real frames, and window.displayMediaCalls counts the recordings of it started.
 function scriptedAgentBrowser(){
-  const pages=[],listeners=new Set();let at=-1,windowId=1,size={width:1280,height:800};window.agentBrowserCalls=[];window.agentBrowserSizes=[];window.agentSnapshots=0;window.displayMediaCalls=0;
-  const current=()=>({open:at>=0,...(at>=0?{windowId}:{}),url:pages[at]||"",title:"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,...size});
+  const pages=[],titles={},listeners=new Set();let at=-1,windowId=1,size={width:1280,height:800};window.agentBrowserCalls=[];window.agentBrowserSizes=[];window.agentSnapshots=0;window.displayMediaCalls=0;
+  const current=()=>({open:at>=0,...(at>=0?{windowId}:{}),url:pages[at]||"",title:titles[pages[at]]||"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,...size});
   const report=()=>{for(const listener of listeners)listener(current())};
   const call=(name,move=()=>{})=>async(...args)=>{window.agentBrowserCalls.push(name);move(...args);report();return current()};
   window.closeAgentWindow=()=>{pages.length=0;at=-1;windowId++;report()};
+  window.openInPlace=(url,title)=>{pages.splice(at+1);pages.push(url);at=pages.length-1;titles[url]=title;report()};
   Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{
     state:async()=>current(),
     onState:listener=>{listeners.add(listener);return()=>listeners.delete(listener)},
@@ -33,7 +35,7 @@ function scriptedAgentBrowser(){
     back:call("back",()=>{if(at>0)at--}),
     forward:call("forward",()=>{if(at<pages.length-1)at++}),
     reload:call("reload"),
-    snapshot:async()=>{window.agentSnapshots++;return {windowId,url:pages[at]||"",title:"",elements:at<0?[]:[{ref:"e1",tag:"button",text:"Save profile",href:""},{ref:"e2",tag:"a",text:"Docs",href:pages[at]+"/docs"}]}},
+    snapshot:async()=>{window.agentSnapshots++;return {windowId,url:pages[at]||"",title:titles[pages[at]]||"",elements:at<0?[]:[{ref:"e1",tag:"button",text:"Save profile",href:""},{ref:"e2",tag:"a",text:"Docs",href:pages[at]+"/docs"}]}},
     setViewport:call("setViewport",(width,height)=>{size={width,height};window.agentBrowserSizes.push([width,height])}),
     armRecording:async()=>({ok:true,expiresAt:Date.now()+5000,sourceId:"window:1:0"}),
   }}});
@@ -391,7 +393,8 @@ test("the agent browser's elements go with the page they were read on, also whil
     await page.addInitScript(scriptedAgentBrowser);
     const {panel,address,frame}=await openBrowserPanel(page,request);
     const tabs=panel.locator(".context-panel-tab-scroll"),elements=panel.locator(".browser-elements button"),attach=panel.getByRole("button",{name:"Attach context",exact:true});
-    const none=panel.getByText("Open the agent browser and inspect the page to see model-addressable elements.");
+    // The card then shows the page the agent browser shows, and asks for its elements.
+    const none=panel.getByText("Inspect elements to see this page's model-addressable elements.");
     const agentOpens=to=>page.evaluate(url=>window.trebellDesktop.browser.navigate(url),site.url+to);
     const chooseElement=async()=>{await panel.getByRole("button",{name:"Inspect elements"}).click();await elements.filter({hasText:"Save profile"}).click();await expect(attach).toBeVisible()};
     const toFiles=async()=>{await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(address).toHaveCount(0)};
@@ -426,6 +429,38 @@ test("the agent browser's elements go with the page they were read on, also whil
     await expect(elements).toHaveCount(2);
     await expect.soft(panel.getByTestId("preview-annotation"),"the element chosen on the page before is not chosen on /b").toHaveCount(0);
     await shots(page,"preview-agent-page-opened-while-away");
+  }finally{await site.close()}
+});
+
+// A popup the agent browser's page opens (an export it made, a blob: document, or a target=_blank link) opens in place in its window,
+// as desktop/main.mjs opens one. The Agent browser card went on showing the page inspected before it, its title, address and
+// elements, until Inspect elements was clicked; with those taken away (the page they were read on is gone) it asked to open the agent
+// browser, whose Open agent browser takes it back to the address typed, away from the popup. It shows the page the agent browser
+// shows, with none of the page before's elements to pick or attach, and Inspect elements lists the popup's own, attached as its own.
+test("a popup that opens in place in the agent browser is the page its card shows, with none of the page before's elements to attach",async({page,request})=>{
+  const site=await startSite();
+  try{
+    await page.addInitScript(scriptedAgentBrowser);
+    const {panel,address}=await openBrowserPanel(page,request);
+    const card=panel.locator(".browser-inspector"),elements=card.locator(".browser-elements button"),attach=card.getByRole("button",{name:"Attach context",exact:true});
+    const exported="blob:"+site.url+"/9b1f4c2e-5a7d-4c0e-8f3b-2d6a1e0c7b54";
+    await typeAddress(page,address,site.url+"/rec");await page.keyboard.press("Enter");
+    await panel.getByRole("button",{name:"Open agent browser"}).click();
+    await expect(card.locator("p span")).toHaveText(site.url+"/rec");
+    await elements.filter({hasText:"Save profile"}).click();await expect(attach).toBeVisible();
+    await page.evaluate(url=>window.openInPlace(url,"Made here"),exported);
+    await expect.soft(card.locator("p strong"),"the card names the page the agent browser shows").toHaveText("Made here");
+    await expect.soft(card.locator("p span"),"at its address").toHaveText(exported);
+    await expect.soft(card.getByText("Inspect elements to see this page's model-addressable elements."),"and asks for its elements").toBeVisible();
+    await expect(elements,"none of the page before's elements are listed").toHaveCount(0);
+    await expect(attach,"or can be attached").toHaveCount(0);
+    await shots(page,"preview-agent-popup-in-place",card);
+    await panel.getByRole("button",{name:"Inspect elements"}).click();
+    await expect(card.locator("p strong")).toHaveText("Made here");await expect(elements).toHaveCount(2);
+    const stored=page.waitForRequest(asked=>asked.url().endsWith("/api/attachments/text")&&asked.method()==="POST");
+    await elements.filter({hasText:"Save profile"}).click();await attach.click();
+    const lines=(await stored).postDataJSON().text.split("\n");
+    expect(lines,"the element is attached as the popup's").toEqual(expect.arrayContaining(["URL: "+exported,"Title: Made here","Element ref: e1"]));
   }finally{await site.close()}
 });
 
