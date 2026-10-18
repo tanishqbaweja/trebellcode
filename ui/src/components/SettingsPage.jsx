@@ -918,7 +918,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           <option value="local">Local machine</option>
           {(workspaceScopeCatalog.environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}
         </select>
-        <small>{workspaceProject?workspaceProject.path:(workspaceEnvironment?workspaceEnvironment.name+" defaults":"Local environment defaults")}</small>
+        {/* A long project path is cut at its start (rtl), so the project's own folder at its end shows; the whole path is its title. */}
+        {workspaceProject?<small dir="rtl" title={workspaceProject.path}><bdi dir="ltr">{workspaceProject.path}</bdi></small>:<small>{workspaceEnvironment?workspaceEnvironment.name+" defaults":"Local environment defaults"}</small>}
       </div>}
       <div className="settings-grid">
       {settingsSection==="general"&&<div className="settings-card about-card" {...targetProps("general-about")}>

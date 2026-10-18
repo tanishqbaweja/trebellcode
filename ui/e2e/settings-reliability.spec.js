@@ -454,6 +454,39 @@ test("the scoped After inactive days field keeps every digit typed and saves the
   }
 });
 
+// The chosen project's path on Workspace's scope line ends with the project's own folder: cut at its end, a long path showed only its
+// first folders, hid the project's own and had nothing to hover for the rest. It is cut at its start, and the whole path shows on hover.
+test("Workspace's scope line shows the chosen project's own folder at the end of its path, and the whole path on hover",async({page,request})=>{
+  const root=join(e2eHome(),"scope-line"),folder=join(root,"a-project-folder-with-a-fairly-long-name-that-runs-past-the-end-of-the-scope-line","nested","repository");
+  await mkdir(folder,{recursive:true});await writeFile(join(folder,"README.md"),"# Scope line fixture\n");
+  const project=(await (await request.post("/api/projects",{data:{path:folder,name:"Long Path Project",activate:false}})).json()).project;
+  try{
+    await openSettings(page,request,"Scope Line Workspace");
+    await page.locator(".settings-nav").getByRole("button",{name:/Workspace/}).click();
+    const line=page.getByTestId("settings-scope-sentence"),path=line.locator("small");
+    await line.getByRole("combobox",{name:"Project scope"}).selectOption({label:"Long Path Project"});
+    await expect(path).toHaveText(project.path);
+    await expect.soft(path,"the whole path shows on hover").toHaveAttribute("title",project.path);
+    for(const mode of ["dark","light"])for(const width of [1280,900]){
+      await page.setViewportSize({width,height:800});await switchMode(page,mode);
+      // Where the path's first character and its last folder are drawn, against the line's box.
+      const shown=await path.evaluate(node=>{
+        const box=node.getBoundingClientRect(),text=document.createTreeWalker(node,NodeFilter.SHOW_TEXT).nextNode(),value=text.data;
+        const at=(from,to)=>{const range=document.createRange();range.setStart(text,from);range.setEnd(text,to);return range.getBoundingClientRect()};
+        const folder=at(value.search(/[^\\/]+$/),value.length),first=at(0,1),inside=rect=>rect.left>=box.left-.5&&rect.right<=box.right+.5;
+        return {cut:node.scrollWidth>node.clientWidth+1,folderShown:inside(folder),startShown:inside(first)};
+      });
+      expect(shown.cut,"the path is longer than the line").toBe(true);
+      expect.soft(shown,`the project's own folder shows whole at the end, the start of the path cut, at ${width} in ${mode}`).toEqual({cut:true,folderShown:true,startShown:false});
+      await page.screenshot({animations:"disabled",path:shots+`scope-line-project-path-${mode}-${width}.png`});
+    }
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+  }finally{
+    await request.delete("/api/projects?id="+encodeURIComponent(project.id));
+    await rm(root,{recursive:true,force:true});
+  }
+});
+
 // Waits until the page stops moving: what read() reads is the same twice in a row.
 async function settles(read){let last;await expect.poll(async()=>{const now=await read(),same=now===last;last=now;return same},{intervals:[150]}).toBe(true)}
 
