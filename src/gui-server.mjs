@@ -1955,13 +1955,23 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
             return json(res,200,{status:await agentRuntimes.probe(instance)});
           }
           if(body.action==="install"){
-            const installed=await agentRuntimes.install(body.runtime,{environmentId:Object.prototype.hasOwnProperty.call(body,"environmentId")?body.environmentId:undefined});
+            const installed=await agentRuntimes.install(body.runtime,{environmentId:Object.prototype.hasOwnProperty.call(body,"environmentId")?body.environmentId:undefined,id:typeof body.id==="string"?body.id.slice(0,100):null});
+            const snapshot=await agentRuntimes.snapshot();
+            const active=installed.runtime===snapshot.selectedRuntime;
+            return json(res,200,{installed,...snapshot,...(active?await runtimeRefreshPayload(req,{agentSnapshot:snapshot}):{})});
+          }
+          // The answer of an install on its way that this window did not start (another tab's, or its own from before a reload), as the
+          // install's own answer once it ends; waited:false with the harness list when none runs any more.
+          if(body.action==="install-wait"){
+            const waiting=agentRuntimes.waitForInstall(body.runtime);
+            if(!waiting)return json(res,200,{waited:false,...await agentRuntimes.snapshot()});
+            const installed=await waiting;
             const snapshot=await agentRuntimes.snapshot();
             const active=installed.runtime===snapshot.selectedRuntime;
             return json(res,200,{installed,...snapshot,...(active?await runtimeRefreshPayload(req,{agentSnapshot:snapshot}):{})});
           }
           return json(res,400,{error:"unknown agent runtime action"});
-        }catch(error){return json(res,400,{error:error.message});}
+        }catch(error){return json(res,400,{error:error.message,...(error?.code==="install-running"?{code:error.code,installId:error.installId}:{})});}
       }
       if(req.method==="DELETE"){
         const id=url.searchParams.get("id");if(!id)return json(res,400,{error:"id is required"});

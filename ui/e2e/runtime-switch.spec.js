@@ -90,13 +90,32 @@ async function startAgentRelay(activeRuntime,{turnDelayMs=0,reconnectInitializeD
 // gui-server can still be reading the catalog it bundles when a switch lands. server.holdSelect holds a selection before the server takes it.
 // threadMeta is the saved thread metadata the app starts with.
 async function startHarness(page,{runtime="claude",harnesses=HARNESSES,profiles=[],catalogs=CATALOGS,catalogGate=null,turnDelayMs=0,reconnectInitializeDelayMs=0,rejectSelect="",holdSelect=null,approvalTurns=false,holdTurns=null,profileEditing=false,installs=false,threadMeta={}}={}){
-  const server={runtime,rejectSelect,selects:[],versions:{},holdRuntimeReads:null,failRuntimeReads:"",holdInstall:null,holdInstallAnswer:null,failInstall:"",holdSelect:null,counts:{bootstrap:0,models:0,select:0,upsert:0,install:0,runtimeReads:0,runtimeReadsDone:0,direct:0}};
+  const server={runtime,rejectSelect,selects:[],versions:{},holdRuntimeReads:null,failRuntimeReads:"",holdInstall:null,holdInstallAnswer:null,failInstall:"",holdSelect:null,installing:new Map(),installEnded:new Map(),counts:{bootstrap:0,models:0,select:0,upsert:0,install:0,installWait:0,runtimeReads:0,runtimeReadsDone:0,direct:0}};
   const relay=await startAgentRelay(()=>server.runtime,{turnDelayMs,reconnectInitializeDelayMs,approvalTurns,holdTurns});
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const bootstrap=()=>({mock:false,provider:"openai",providerReady:true,agentRuntime:server.runtime,agentRuntimeInstanceId:server.runtime+"-default",agentRuntimeReady:true,appServerReady:true,wsUrl:relay.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const snapshot=()=>{
     const statuses=[...harnesses.map(([kind,name])=>({id:kind+"-default",kind,name})),...profiles.map(({id,kind,displayName})=>({id,kind,name:displayName}))].map(status=>({...status,available:true,installed:true,authenticated:true,version:server.versions[status.kind]||"1.0.0-fixture"}));
-    return {selectedRuntime:server.runtime,selectedInstanceId:server.runtime+"-default",definitions:harnesses.map(([id,name,protocol])=>({id,name,protocol,multipleInstances:profileEditing&&id==="claude"||profiles.some(profile=>profile.kind===id),...(installs&&(id==="claude"||id==="opencode")?{installable:true,packageName:id==="opencode"?"opencode-ai":"@anthropic-ai/claude-code"}:{})})),instances:statuses.map(({id,kind,name})=>({id,kind,displayName:name,enabled:true})),statuses};
+    return {selectedRuntime:server.runtime,selectedInstanceId:server.runtime+"-default",definitions:harnesses.map(([id,name,protocol])=>({id,name,protocol,multipleInstances:profileEditing&&id==="claude"||profiles.some(profile=>profile.kind===id),...(installs&&(id==="claude"||id==="opencode")?{installable:true,packageName:id==="opencode"?"opencode-ai":"@anthropic-ai/claude-code"}:{})})),instances:statuses.map(({id,kind,name})=>({id,kind,displayName:name,enabled:true})),statuses,
+      installs:{running:[...server.installing].map(([runtime,{id}])=>({runtime,id})),ended:[...server.installEnded].map(([runtime,ended])=>({runtime,...ended}))}};
+  };
+  // An install on its way, as AgentRuntimeManager.install runs one: held by the holdInstall of its start, failing with failInstall, and
+  // named in the harness list (installs) until it ends, then as the last one of its harness. done gives the install's answer: the
+  // harness list as it is when the install ends, with the bootstrap and catalog only when the harness installed is the one that runs
+  // then. server.beginInstall also starts one as another window would.
+  server.beginInstall=(runtime,id=null)=>{
+    server.counts.install++;const hold=server.holdInstall,entry={id:id||"fixture-install-"+server.counts.install,done:null};
+    entry.done=(async()=>{
+      await hold;
+      try{
+        if(server.failInstall){const error=server.failInstall;server.failInstall="";throw new Error(error)}
+        server.versions[runtime]="1.1.0-updated";server.installEnded.set(runtime,{id:entry.id,ok:true,error:null});
+      }catch(error){server.installEnded.set(runtime,{id:entry.id,ok:false,error:error.message});throw error}
+      finally{server.installing.delete(runtime)}
+      const current=snapshot(),active=runtime===server.runtime,refresh=active?{bootstrap:bootstrap(),catalog:await catalog(server.runtime)}:{};
+      return {installed:{ok:true,runtime,status:current.statuses.find(item=>item.kind===runtime)},...current,...refresh};
+    })();
+    entry.done.catch(()=>{});server.installing.set(runtime,entry);return entry;
   };
   const catalog=async active=>{await catalogGate?.(active);return catalogs[active]};
   await keepThreadMeta(page);
@@ -113,15 +132,16 @@ async function startHarness(page,{runtime="claude",harnesses=HARNESSES,profiles=
       if(raw!=null&&String(raw).trim()!==""&&(!Number.isInteger(value)||value<100_000||value>1_000_000)){await delay(300);return json(route,{error:"Claude auto-compact threshold must be an integer between 100000 and 1000000 tokens"},400)}
       const current=snapshot();return json(route,{instance:body.instance,...current,bootstrap:bootstrap(),catalog:await catalog(server.runtime)});
     }
-    if(body.action==="install"){
-      // As gui-server answers an install: the harness list as it is when the install ends, with the bootstrap and catalog only when the
-      // harness installed is the one that runs then.
-      server.counts.install++;await server.holdInstall;
-      if(server.failInstall){const error=server.failInstall;server.failInstall="";return json(route,{error},400)}
-      server.versions[body.runtime]="1.1.0-updated";
-      const current=snapshot(),active=body.runtime===server.runtime,refresh=active?{bootstrap:bootstrap(),catalog:await catalog(server.runtime)}:{};
+    if(body.action==="install"||body.action==="install-wait"){
+      // As gui-server answers an install, one at a time by harness (a second is refused, naming the one that runs), and the wait for
+      // one on its way (install-wait): its answer once it ends, or waited:false with the harness list when none runs any more.
+      const running=server.installing.get(body.runtime),name=harnesses.find(([id])=>id===body.runtime)?.[1]||body.runtime;
+      if(body.action==="install-wait"){server.counts.installWait++;if(!running)return json(route,{waited:false,...snapshot()})}
+      else if(running)return json(route,{error:name+" is already being installed or updated. Wait for it to finish first.",code:"install-running",installId:running.id},400);
+      const entry=running||server.beginInstall(body.runtime,body.id);
+      let answer=null;try{answer=await entry.done}catch(error){return json(route,{error:error.message},400)}
       await server.holdInstallAnswer;
-      return json(route,{installed:{ok:true,runtime:body.runtime,status:current.statuses.find(item=>item.kind===body.runtime)},...current,...refresh});
+      return json(route,answer);
     }
     if(body.action!=="select")return json(route,{error:"Unexpected agent runtime action in the runtime switch fixture: "+body.action},400);
     server.counts.select++;server.selects.push(body);await server.holdSelect;
@@ -1197,6 +1217,95 @@ test("an update's answer is said on the OpenCode row whose Update was pressed, i
       await page.screenshot({animations:"disabled",path:`${auditDir}harness-update-said-on-its-row-${mode}-${width}x800.png`});
     }
     expect(server.counts.install).toBe(4);
+  }finally{install.open();await close()}
+});
+
+// An update's answer that comes once the person has moved on, down the page past the harness rows and typing there, is said on its
+// row without moving the page: it scrolled the page up to the OpenCode row however long after the press it came (an npm install can
+// run for minutes), and the field being typed in went out of view while it kept the keyboard.
+test("an update's answer that comes while the person types further down Settings leaves the page where it is, said on its row",async({page})=>{
+  test.setTimeout(90_000);
+  const {server,close}=await startHarness(page,{runtime:"claude",installs:true,profileEditing:true,harnesses:UPDATE_HARNESSES});
+  await keepModeSaves(page);
+  const opencode=harnessRow(page,"OpenCode");
+  let install=gate();
+  try{
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    for(const [mode,width,fails] of [["dark",1280,false],["light",900,true]]){
+      await page.setViewportSize({width,height:800});await switchMode(page,mode);
+      await page.getByRole("button",{name:"Projects",exact:true}).click();await openHarnessSettings(page);
+      install=gate();server.holdInstall=install.held;if(fails)server.failInstall=UPDATE_REFUSED;
+      await pressUpdateOpenCode(page);
+      // While it runs: a new profile, then a custom model further down, scrolled to with the wheel, its id typed.
+      await page.getByRole("button",{name:"Add profile",exact:true}).click();await expect(page.locator(".runtime-profile-editor")).toBeVisible();
+      const add=page.getByRole("button",{name:"Add custom model",exact:true});await wheelIntoView(page,add);await add.click();
+      const field=page.getByLabel("Model ID",{exact:true});await field.click();await page.keyboard.type("fixture-model",{delay:20});
+      const row=await opencode.boundingBox();expect(row.y+row.height,"the OpenCode row is out of view, above the window").toBeLessThan(52);
+      const before=await field.boundingBox();
+      const installed=installAnswer(page);install.open();await installed;
+      const said=fails?opencode.getByRole("alert"):opencode.getByRole("status");
+      await expect(said).toHaveText(fails?"Could not update OpenCode: "+UPDATE_REFUSED:"OpenCode installed and ready.");
+      await page.waitForTimeout(400);
+      // The note the answer adds above it shifts nothing on screen but a pixel's rounding (the browser's scroll anchoring holds the field).
+      expect(Math.abs((await field.boundingBox()).y-before.y),"the field being typed in stays where it was on screen").toBeLessThanOrEqual(2);
+      await expect(field).toBeFocused();await page.keyboard.type("-2",{delay:20});await expect(field).toHaveValue("fixture-model-2");
+      await page.screenshot({animations:"disabled",path:`${auditDir}harness-update-answer-while-typing-below-${mode}-${width}x800.png`});
+      await wheelIntoView(page,said);
+      await page.screenshot({animations:"disabled",path:`${auditDir}harness-update-answer-while-typing-below-row-${mode}-${width}x800.png`});
+    }
+    expect(server.counts.install).toBe(2);
+  }finally{install.open();await close()}
+});
+
+// A window reloaded while an update runs (an environment switched on or off reloads it, so do Reload and F5) forgot the update it had
+// started: it offered Update at once, a press there was refused as the update still ran, and how the update went was said nowhere.
+// The server names the installs on their way and how the last one ended: the reloaded window says Installing… on the row and then how
+// the update went, also when it ended during the reload, and a window that did not know of an update (another tab's) waits for it.
+test("a window reloaded while an update runs says Installing… on its row and then how it went, also when it ended during the reload",async({page})=>{
+  test.setTimeout(150_000);
+  const {server,close}=await startHarness(page,{runtime:"claude",installs:true,profileEditing:true,harnesses:UPDATE_HARNESSES});
+  await keepModeSaves(page);
+  const opencode=harnessRow(page,"OpenCode"),installing=opencode.getByRole("button",{name:"Installing…",exact:true}),update=opencode.getByRole("button",{name:"Update",exact:true});
+  const reload=async()=>{await page.reload();await expect(page.getByTestId("composer")).toBeVisible()};
+  let install=gate();
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    // Reloaded while it runs, and it works.
+    server.holdInstall=install.held;
+    await openHarnessSettings(page);await pressUpdateOpenCode(page);
+    await reload();await openHarnessSettings(page);
+    await expect.soft(installing,"the reloaded window says the update is on its way").toBeDisabled();
+    if(await installing.count())await shootModes(page,"harness-update-running-after-reload",{widths:[1280,900],check:()=>installing.scrollIntoViewIfNeeded()});
+    install.open();await expect.poll(()=>server.installing.size).toBe(0);
+    await expect.soft(opencode.getByRole("status"),"the reloaded window says how it went").toHaveText("OpenCode installed and ready.");
+    await expect.soft(opencode,"with the version it brings").toContainText("1.1.0-updated");await expect(update).toBeEnabled();
+    // Reloaded while it runs, and it fails.
+    install=gate();server.holdInstall=install.held;server.failInstall=UPDATE_REFUSED;
+    await pressUpdateOpenCode(page);
+    await reload();await openHarnessSettings(page);
+    await expect.soft(installing,"the reloaded window says the update is on its way").toBeDisabled();
+    install.open();await expect.poll(()=>server.installing.size).toBe(0);
+    await expect.soft(opencode.getByRole("alert"),"the reloaded window says why it failed").toHaveText("Could not update OpenCode: "+UPDATE_REFUSED);
+    if(await opencode.getByRole("alert").count())await shootModes(page,"harness-update-failed-after-reload",{widths:[1280,900],check:()=>opencode.scrollIntoViewIfNeeded()});
+    // It ends during the reload, before Settings is opened again: said once Settings opens, and only once.
+    install=gate();server.holdInstall=install.held;
+    await expect(update).toBeEnabled();await pressUpdateOpenCode(page);
+    await reload();install.open();await expect.poll(()=>server.installing.size).toBe(0);
+    await openHarnessSettings(page);
+    await expect.soft(opencode.getByRole("status"),"an update that ended during the reload is said").toHaveText("OpenCode installed and ready.");
+    await leaveSettings(page);await openHarnessSettings(page);
+    await expect(update).toBeEnabled();await expect(opencode.getByRole("status"),"and said once").toHaveCount(0);
+    // Another window's update starts while this Settings shows Update: the press is refused as that one runs, and the row waits for it.
+    install=gate();server.holdInstall=install.held;server.beginInstall("opencode","another-window-update");
+    const refused=installAnswer(page),waits=server.counts.installWait;
+    await update.click();await page.getByRole("dialog").getByRole("button",{name:"Update OpenCode",exact:true}).click();
+    expect((await refused).status()).toBe(400);
+    await expect.soft.poll(()=>server.counts.installWait,{message:"the refused press waits for the update on its way"}).toBe(waits+1);
+    await expect.soft(installing,"the row waits for that update").toBeDisabled();await expect.soft(opencode.getByRole("alert"),"and says no refusal").toHaveCount(0);
+    install.open();await expect.poll(()=>server.installing.size).toBe(0);
+    await expect.soft(opencode.getByRole("status"),"then says how that update went").toHaveText("OpenCode installed and ready.");
+    expect(server.counts.install,"the refused press ran no install of its own").toBe(4);
   }finally{install.open();await close()}
 });
 

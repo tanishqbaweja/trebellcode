@@ -1,4 +1,5 @@
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, posix, resolve, win32 } from "node:path";
@@ -484,14 +485,34 @@ export class AgentRuntimeManager{
     return {runtime:instance.kind,instanceId:instance.id,name:RUNTIMES[instance.kind]?.name||instance.kind,command:this.executable(instance,{environmentId}),args};
   }
   // One install or update of a harness runs at a time: a second one asked for meanwhile (from Settings opened again, or another
-  // window) is refused, as two npm installs of one package at once can leave it half replaced.
-  #installing=new Set();
-  async install(kind,{environmentId=undefined}={}){
+  // window) is refused, as two npm installs of one package at once can leave it half replaced. The refusal names the install that
+  // runs (code, installId). Each install has an id (the window that asks gives it), and the harness list names the installs on their
+  // way and how the last one of each harness ended (installs()), so a window that did not start one (another tab, or the window
+  // reloaded, which forgets the install it started) says Installing… on its row and can wait for its answer (waitForInstall).
+  #installing=new Map();#installEnded=new Map();
+  async install(kind,{environmentId=undefined,id=null}={}){
     const target=this.installable(kind);const normalized=normalizeAgentRuntime(kind);
     if(!target)throw new Error((RUNTIMES[normalized]?.name||String(kind||"Harness"))+" is not installable from Trebell Code");
-    if(this.#installing.has(target.runtime))throw new Error((RUNTIMES[target.runtime]?.name||target.runtime)+" is already being installed or updated. Wait for it to finish first.");
-    this.#installing.add(target.runtime);
-    try{return await this.#install(target,environmentId)}finally{this.#installing.delete(target.runtime)}
+    const running=this.#installing.get(target.runtime);
+    if(running){
+      const error=new Error((RUNTIMES[target.runtime]?.name||target.runtime)+" is already being installed or updated. Wait for it to finish first.");
+      error.code="install-running";error.installId=running.id;throw error;
+    }
+    const entry={id:String(id||"")||randomUUID(),startedAt:Date.now(),done:null};
+    entry.done=this.#install(target,environmentId);this.#installing.set(target.runtime,entry);
+    try{
+      const value=await entry.done;this.#installEnded.set(target.runtime,{id:entry.id,ok:true,error:null,endedAt:Date.now()});return value;
+    }catch(error){
+      this.#installEnded.set(target.runtime,{id:entry.id,ok:false,error:String(error?.message||error),endedAt:Date.now()});throw error;
+    }finally{this.#installing.delete(target.runtime)}
+  }
+  // The installs on their way ({runtime,id,startedAt}) and how the last one of each harness ended ({runtime,id,ok,error,endedAt}).
+  installs(){
+    return {running:[...this.#installing].map(([runtime,{id,startedAt}])=>({runtime,id,startedAt})),ended:[...this.#installEnded].map(([runtime,ended])=>({runtime,...ended}))};
+  }
+  // The answer of the install of this harness on its way, as install() gives it (a failure rejects with its error), or null when none runs.
+  waitForInstall(kind){
+    const runtime=this.installable(kind)?.runtime;return runtime?this.#installing.get(runtime)?.done||null:null;
   }
   async #install(target,environmentId){
     if(target.runtime==="antigravity"){
@@ -942,6 +963,6 @@ export class AgentRuntimeManager{
     });
     const installCommand=id=>id==="opencode"?"npm install -g "+INSTALLABLE_PACKAGES.opencode+" (OpenCode 1.x), or opencode upgrade for an OpenCode from its own installer":INSTALLABLE_PACKAGES[id]?"npm install -g "+INSTALLABLE_PACKAGES[id]:null;
     const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,installCommand:installCommand(def.id),canAuthenticate:["codex","claude","cursor","grok","opencode","antigravity"].includes(def.id)}));
-    const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),capabilities:this.capabilities(active),definitions,instances:publicInstances,statuses};
+    const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),capabilities:this.capabilities(active),definitions,instances:publicInstances,statuses,installs:this.installs()};
   }
 }

@@ -442,6 +442,62 @@ test("a second install of a harness asked for while one runs is refused, and the
   }finally{release();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
+// A window that did not start an install (another tab, or the window reloaded, which forgets the install it started) learns of it
+// from the harness list: the installs on their way, by the id the window that asked gave them, and how the last one of each harness
+// ended. It can wait for the one on its way and gets its answer, failure included, and a second install asked for meanwhile is
+// refused with the id of the one that runs. Before, nothing but the window that asked knew of an install, so a reloaded window offered
+// Update at once and never learnt how the update went.
+test("the harness list names an install on its way and how the last one ended, and a wait for it gets its answer",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-install-known-"));const env={...process.env,TREBELL_HOME:home};
+  // OpenCode's npm install runs until release(); fail is the error the next one ends with. installed is the OpenCode the profile runs.
+  const installs=[],held=[],release=()=>{for(const resolve of held.splice(0))resolve()};let fail="",installed="1.14.10";
+  try{
+    const state=new TrebellStateStore(env);state.updateSettings({activeEnvironmentId:"ssh-fixture"});
+    const environments={
+      get:id=>id==="ssh-fixture"?{id,name:"Fixture SSH",type:"ssh",cwd:"/srv/app"}:null,
+      executeArgv:async(id,{command,args})=>{
+        if(command==="npm"&&args[0]==="--version")return {exitCode:0,stdout:"11.0.0\n",stderr:""};
+        if(command==="npm"&&args[0]==="view")return {exitCode:0,stdout:JSON.stringify("1.14.19")+"\n",stderr:""};
+        if(command==="npm"&&args[0]==="install"){
+          const spec=args.at(-1);installs.push(spec);await new Promise(resolve=>held.push(resolve));
+          if(fail){const stderr=fail;fail="";return {exitCode:1,stdout:"",stderr}}
+          installed=spec.split("@").at(-1);return {exitCode:0,stdout:"installed\n",stderr:""};
+        }
+        if(command==="opencode"&&args[0]==="--version")return {exitCode:0,stdout:"opencode "+installed+"\n",stderr:""};
+        if(command==="opencode"&&args[0]==="auth")return {exitCode:0,stdout:"— 1 credentials\n",stderr:""};
+        return {exitCode:1,stdout:"",stderr:"unexpected command"};
+      },
+    };
+    const manager=new AgentRuntimeManager({state,env,environments});
+    const npmRan=async count=>{while(installs.length<count)await new Promise(resolve=>setTimeout(resolve,5))};
+    const named=list=>list.map(({runtime,id,ok,error})=>({runtime,id,...(ok===undefined?{}:{ok,error})}));
+    assert.deepEqual(manager.installs(),{running:[],ended:[]});
+    assert.equal(manager.waitForInstall("opencode"),null,"no install to wait for");
+    const first=manager.install("opencode",{id:"window-one"}).then(value=>value,error=>error);
+    await npmRan(1);
+    assert.deepEqual(named(manager.installs().running),[{runtime:"opencode",id:"window-one"}],"the install on its way, by its window's id");
+    const refused=await manager.install("opencode",{id:"window-two"}).then(()=>null,error=>error);
+    assert.equal(refused?.code,"install-running");assert.equal(refused?.installId,"window-one","the refusal names the install that runs");
+    const waited=manager.waitForInstall("opencode").then(value=>value,error=>error);
+    assert.equal(manager.waitForInstall("claude"),null,"no install of Claude Code runs");
+    release();
+    const answer=await first;
+    assert.equal(answer?.targetVersion,"1.14.19");assert.equal(await waited,answer,"the wait gets the install's own answer");
+    assert.deepEqual(named(manager.installs().running),[]);
+    assert.deepEqual(named(manager.installs().ended),[{runtime:"opencode",id:"window-one",ok:true,error:null}],"how the last one ended");
+    assert.equal(manager.waitForInstall("opencode"),null,"nothing to wait for once it has ended");
+    // One asked for without an id gets one, and its failure is named as the last one's end and given to the wait.
+    installed="1.14.10";fail="npm ERR! code E404 opencode-ai@1.14.19 is not in the npm registry";
+    const second=manager.install("opencode").then(value=>value,error=>error);await npmRan(2);
+    const [{id}]=manager.installs().running;assert.match(id,/^[0-9a-f-]{36}$/);
+    const failedWait=manager.waitForInstall("opencode").then(value=>value,error=>error);
+    release();
+    assert.match(String((await second)?.message),/^npm ERR! code E404/);
+    assert.equal((await failedWait)?.message,(await second).message,"the wait gets the failure");
+    assert.deepEqual(named(manager.installs().ended),[{runtime:"opencode",id,ok:false,error:(await second).message}]);
+  }finally{release();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
 // The Windows command shim npm writes for a package's bin.
 const npmShim=target=>["@ECHO off","GOTO start",":find_dp0","SET dp0=%~dp0","EXIT /b",":start","SETLOCAL","CALL :find_dp0",`"%dp0%\\${target}"   %*`,""].join("\r\n");
 

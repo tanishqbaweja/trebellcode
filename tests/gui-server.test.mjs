@@ -129,6 +129,60 @@ test("runtime install endpoint bundles refresh state only for the active harness
   }
 });
 
+// A window that did not start an install (another tab, or one reloaded while it ran) reads it in the harness list and waits for its
+// answer (install-wait), which is the install's own once it ends; a press refused as it runs names it (code, installId).
+test("runtime install endpoint names the installs on their way, answers a wait with the install's answer, and names the one a refusal waits on",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-runtime-install-wait-test-"));
+  const original={install:AgentRuntimeManager.prototype.install,probe:AgentRuntimeManager.prototype.probe,installs:AgentRuntimeManager.prototype.installs,waitForInstall:AgentRuntimeManager.prototype.waitForInstall};
+  let finish=null,fail=null,running=null;const asked=[];
+  AgentRuntimeManager.prototype.install=async function(runtime,{id=null}={}){
+    asked.push({runtime,id});
+    if(running){const error=new Error("OpenCode is already being installed or updated. Wait for it to finish first.");error.code="install-running";error.installId=running.id;throw error}
+    running={runtime,id,done:new Promise((resolve,reject)=>{finish=resolve;fail=reject})};
+    try{return await running.done}finally{running=null}
+  };
+  AgentRuntimeManager.prototype.installs=function(){return {running:running?[{runtime:running.runtime,id:running.id,startedAt:1}]:[],ended:[]}};
+  AgentRuntimeManager.prototype.waitForInstall=function(runtime){return running?.runtime===runtime?running.done:null};
+  AgentRuntimeManager.prototype.probe=async function(instanceOrKind){
+    const instance=typeof instanceOrKind==="string"?this.instances().find(item=>item.id===instanceOrKind||item.kind===instanceOrKind):instanceOrKind;
+    const kind=instance?.kind||String(instanceOrKind||"codex");
+    return {id:instance?.id||`${kind}-default`,kind,name:kind,available:true,installed:true,authenticated:true,version:"fixture"};
+  };
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1"};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const post=body=>fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(async response=>({status:response.status,body:await response.json()}));
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:true,env});
+    assert.deepEqual((await post({action:"install-wait",runtime:"opencode"})).body.waited,false,"none to wait for");
+    const pressed=post({action:"install",runtime:"opencode",environmentId:null,id:"window-one"});
+    while(!running)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.deepEqual(asked,[{runtime:"opencode",id:"window-one"}],"the install takes the id its window gave");
+    assert.deepEqual((await fetch(gui.url+"/api/agent-runtimes").then(r=>r.json())).installs.running,[{runtime:"opencode",id:"window-one",startedAt:1}]);
+    const refused=await post({action:"install",runtime:"opencode",environmentId:null,id:"window-two"});
+    assert.equal(refused.status,400);assert.equal(refused.body.code,"install-running");assert.equal(refused.body.installId,"window-one");
+    const waited=post({action:"install-wait",runtime:"opencode"});
+    await new Promise(resolve=>setTimeout(resolve,100));
+    finish({ok:true,runtime:"opencode",status:{id:"opencode-default",kind:"opencode",name:"opencode",available:true,installed:true,authenticated:true,version:"fixture"}});
+    const [own,other]=await Promise.all([pressed,waited]);
+    assert.equal(own.status,200);assert.equal(other.status,200);
+    assert.deepEqual(other.body.installed,own.body.installed,"the wait answers with the install's own answer");
+    assert.equal(other.body.selectedRuntime,own.body.selectedRuntime);
+    // A failed install's wait says why.
+    const second=post({action:"install",runtime:"opencode",environmentId:null,id:"window-three"});
+    while(!running)await new Promise(resolve=>setTimeout(resolve,10));
+    const failedWait=post({action:"install-wait",runtime:"opencode"});
+    await new Promise(resolve=>setTimeout(resolve,100));
+    fail(new Error("npm ERR! code E404"));
+    const [secondAnswer,failedAnswer]=await Promise.all([second,failedWait]);
+    assert.equal(secondAnswer.status,400);assert.deepEqual(failedAnswer,{status:400,body:{error:"npm ERR! code E404"}});
+  }finally{
+    if(gui)await gui.close();
+    Object.assign(AgentRuntimeManager.prototype,original);
+    await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250});
+  }
+});
+
 test("the runtime status poll probes only the active harness",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-poll-probe-test-"));
   await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",onboardingComplete:true}}));

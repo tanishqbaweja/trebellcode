@@ -46,6 +46,31 @@ if(typeof window!=="undefined")window.addEventListener("trebell:runtime-switched
 // kept until they are left.
 let agentInstalls={running:[],note:null};const agentInstallViews=new Set();
 function keepAgentInstalls(change,info=null){agentInstalls={...agentInstalls,...change};for(const show of agentInstallViews)show(agentInstalls,info)}
+// The installs this window has started or waits on, by their id. The server names each install on its way and how the last one of
+// each harness ended (the harness list's installs), so this window also says Installing… for one it did not start (another tab's,
+// or its own from before a reload, which forgets the module state) and waits for its answer. tabInstalls keeps, for the tab's life,
+// the install of each harness this tab waits on, so one that ended during a reload is still said once.
+const handledInstalls=new Set();
+const TAB_INSTALLS_KEY="trebell-agent-installs";
+function tabInstalls(){try{const value=JSON.parse(sessionStorage.getItem(TAB_INSTALLS_KEY)||"{}");return value&&typeof value==="object"?value:{}}catch{return {}}}
+function keepTabInstall(kind,id){try{const value=tabInstalls();if(id)value[kind]=id;else delete value[kind];sessionStorage.setItem(TAB_INSTALLS_KEY,JSON.stringify(value))}catch{}}
+function newInstallId(){try{if(globalThis.crypto?.randomUUID)return globalThis.crypto.randomUUID()}catch{}return Date.now().toString(36)+"-"+Math.random().toString(36).slice(2)}
+// The install whose answer may still be scrolled into view under its row: from its Install or Update press until the person's next
+// scroll, click or key (the repeats of a key held down carry on from the press). An answer that comes later (an npm install can run
+// for minutes) is said on its row without moving the page against them, as followSettingTarget never scrolls against them.
+let followedInstall=null,stopInstallFollow=null;
+function followInstall(kind){
+  stopInstallFollow?.();
+  const inputs=["wheel","touchstart","mousedown","keydown"],press=event=>{if(!event.repeat)stop()};
+  function stop(){for(const name of inputs)window.removeEventListener(name,press,true);if(stopInstallFollow===stop){stopInstallFollow=null;followedInstall=null}}
+  for(const name of inputs)window.addEventListener(name,press,true);
+  followedInstall=kind;stopInstallFollow=stop;
+}
+// A window reloading (or going to another page) leaves the answer of an install it waits on to the page it loads next (tabInstalls):
+// its request ends with the page, and is not the install's answer.
+let pageLeaving=false;
+if(typeof window!=="undefined"){window.addEventListener("pagehide",()=>{pageLeaving=true});window.addEventListener("pageshow",()=>{pageLeaving=false})}
+const installedText=(label,status)=>status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.";
 // A shortcut or condition being typed is a draft. It is saved when the field is left or Enter is pressed, and only once it can work,
 // so a half-typed "Ctrl+" or "threadOpen &&" never replaces the one in use. A draft that cannot work stays in the field, marked
 // invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited. A saved
@@ -178,11 +203,28 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const showProviderMessage=(text,error=false)=>{setProviderMessage(text);setProviderMessageError(Boolean(error))};
   const [agentSelectionOverride,setAgentSelectionOverride]=useState(null);
   // The installs every Settings page knows of (agentInstalls). An answer that comes while this page is open brings it the harness
-  // list, and what the install did is scrolled into view under its row, as a refused save is in its editor.
+  // list, and what the install did is scrolled into view under its row, as a refused save is in its editor, while the person has not
+  // moved on since the press (followInstall): it never moves the page from a field they are typing in further down.
   const [installs,showInstalls]=useState(()=>agentInstalls);
   const installNoteRef=useRef(null),arrivedNoteRef=useRef(null);
   useEffect(()=>{const show=(next,info)=>{arrivedNoteRef.current=next.note;showInstalls(next);if(info)setAgentInfo(info)};agentInstallViews.add(show);showInstalls(agentInstalls);return()=>{agentInstallViews.delete(show)}},[]);
-  useEffect(()=>{if(installs.note&&installs.note===arrivedNoteRef.current)installNoteRef.current?.scrollIntoView({block:"nearest"})},[installs.note]);
+  useEffect(()=>{if(installs.note?.follow&&installs.note===arrivedNoteRef.current)installNoteRef.current?.scrollIntoView({block:"nearest"})},[installs.note]);
+  // An install on its way on the server that this window did not start (another tab's, or this tab's own from before a reload) says
+  // Installing… on its row, and its answer is said there once it comes (answerInstall); one this tab waited on that ended during a
+  // reload is said once.
+  useEffect(()=>{
+    const known=agentInfo?.installs;if(!known)return;
+    for(const {runtime,id} of known.running||[]){
+      if(!id||handledInstalls.has(id)||agentInstalls.running.includes(runtime))continue;
+      handledInstalls.add(id);keepTabInstall(runtime,id);keepAgentInstalls({running:[...agentInstalls.running,runtime],note:null});
+      answerInstall(runtime,id,()=>api("/api/agent-runtimes",{method:"POST",body:{action:"install-wait",runtime}}));
+    }
+    for(const [runtime,id] of Object.entries(tabInstalls())){
+      if(agentInstalls.running.includes(runtime))continue;
+      keepTabInstall(runtime,null);
+      if(!handledInstalls.has(id)&&(known.ended||[]).some(item=>item.runtime===runtime&&item.id===id)){handledInstalls.add(id);answerInstall(runtime,id,async()=>({waited:false,...agentInfo}))}
+    }
+  },[agentInfo]);
   const [authenticatingAgent,setAuthenticatingAgent]=useState(null);
   const [instanceDraft,setInstanceDraft]=useState(null);
   // The approved variables as typed, while their field is being edited. The list is made from them at each change and shows, one name
@@ -386,24 +428,51 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       :"Install or update "+label+" in the selected environment?\n\nTrebell will run: "+(definition.installCommand||"npm install -g "+packageName);
     // One install of a harness at a time, also from a Settings page opened while one runs.
     if(!await askConfirm(confirmation,{confirm:verb+" "+label,tone:"primary"})||agentInstalls.running.includes(kind))return;
+    const id=newInstallId();handledInstalls.add(id);keepTabInstall(kind,id);followInstall(kind);
     showAgentMessage("");keepAgentInstalls({running:[...agentInstalls.running,kind],note:null});
-    const ended=(note,info=null)=>keepAgentInstalls({running:agentInstalls.running.filter(item=>item!==kind),note:{kind,...note,seen:agentRowsShown>0}},info);
-    try{
-      const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"install",runtime:kind,environmentId:settings.activeEnvironmentId||null}});
-      setAgentInfo(result);
-      const status=result.installed?.status;
-      // What the install did is said at once on its row, on the Settings page open now, which takes the harness list too.
-      ended({text:status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready."},result);
-      // Reinstalling the harness in use reloads it once the install finishes; the transport stays usable during the install itself.
-      // The app decides, once the switches asked before this answer have settled: this page can show a switch still on its way, or be
-      // closed. A harness switched to meanwhile, here or by opening its thread, keeps its transport and open thread; a switch refused
-      // leaves this harness in use, and it reloads.
-      switchRuntime({runtime:kind,instanceId:result.selectedInstanceId||null,resetThread:true},async()=>result,{gate:false}).catch(()=>{});
-    }catch(error){
-      const failed=`Could not ${verb.toLowerCase()} ${label}`;ended({text:failed+": "+error.message,error:true});
+    await answerInstall(kind,id,()=>api("/api/agent-runtimes",{method:"POST",body:{action:"install",runtime:kind,environmentId:settings.activeEnvironmentId||null,id}}),verb);
+  }
+  // What an install did, said on its row with the harness list its answer brings (agentInstalls). request is the install pressed here,
+  // or the wait for one this window did not start (install-wait), whose waited:false answer is the harness list once that one has
+  // ended, its installs saying how. verb: the button's, Install or Update, else what the row offers. A press refused as another install
+  // of the harness runs (one this window did not know of) waits for that one's answer instead.
+  async function answerInstall(kind,id,request,verb=null){
+    const names=info=>{const definition=(info?.definitions||[]).find(item=>item.id===kind),status=runtimeStatusForKind(info,kind);return {label:definition?.name||kind,status,verb:verb||(status?.installed?"Update":"Install")}};
+    const ended=(note,info=null)=>{
+      keepTabInstall(kind,null);const follow=followedInstall===kind;if(follow)stopInstallFollow?.();
+      keepAgentInstalls({running:agentInstalls.running.filter(item=>item!==kind),...(note?{note:{kind,...note,seen:agentRowsShown>0,follow}}:{})},info);
+    };
+    const failed=(info,error)=>{
+      const {label,verb:said}=names(info),text=`Could not ${said.toLowerCase()} ${label}`;ended({text:text+": "+error.message,error:true});
       // With no harness rows on screen (Settings left, or another section open), the app's alert says it, as a refused switch.
-      if(!agentRowsShown)onActionError?.(error,failed);
+      if(!agentRowsShown)onActionError?.(error,text);
+    };
+    let result=null;
+    try{result=await request()}
+    catch(error){
+      if(pageLeaving)return;
+      const running=error?.data?.code==="install-running"?error.data.installId:null;
+      if(running&&!handledInstalls.has(running)){
+        handledInstalls.add(running);keepTabInstall(kind,running);
+        return answerInstall(kind,running,()=>api("/api/agent-runtimes",{method:"POST",body:{action:"install-wait",runtime:kind}}),verb);
+      }
+      return failed(lastAgentRuntimeInfo||agentInfo,error);
     }
+    if(pageLeaving)return;
+    if(result?.waited===false){
+      const last=(result.installs?.ended||[]).find(item=>item.runtime===kind&&item.id===id);
+      if(last&&!last.ok)return failed(result,new Error(last.error||"The install did not finish."));
+      const {label,status}=names(result);
+      return ended(last?{text:installedText(label,status)}:null,result);
+    }
+    setAgentInfo(result);
+    // What the install did is said at once on its row, on the Settings page open now, which takes the harness list too.
+    ended({text:installedText(names(result).label,result.installed?.status)},result);
+    // Reinstalling the harness in use reloads it once the install finishes; the transport stays usable during the install itself.
+    // The app decides, once the switches asked before this answer have settled: this page can show a switch still on its way, or be
+    // closed. A harness switched to meanwhile, here or by opening its thread, keeps its transport and open thread; a switch refused
+    // leaves this harness in use, and it reloads.
+    switchRuntime({runtime:kind,instanceId:result.selectedInstanceId||null,resetThread:true},async()=>result,{gate:false}).catch(()=>{});
   }
   // The sign-in terminal the answer opens asks for the keyboard as of this press (pressed, terminal-keyboard.js), so a press made
   // while the harness's sign in starts keeps it.
