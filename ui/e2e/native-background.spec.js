@@ -112,6 +112,13 @@ async function shootModes(page,show,name){
   for(const value of ["dark","light"]){await mode(value);for(const width of [1280,900]){await page.setViewportSize({width,height:800});await show.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+name+"-"+value+"-"+width+"x800.png"})}}
   await mode("dark");
 }
+// Whether node is drawn as its characters are written: its pixels as drawn, against the same once more with every ligature and
+// contextual alternate turned off on it.
+async function drawnAsWritten(node){
+  const drawn=await node.screenshot({animations:"disabled"});
+  await node.evaluate(element=>element.style.setProperty("font-variant-ligatures","none","important"));
+  try{return drawn.equals(await node.screenshot({animations:"disabled"}))}finally{await node.evaluate(element=>element.style.removeProperty("font-variant-ligatures"))}
+}
 
 test("Trebell Native exposes real thread-owned background processes in Runtime",async({page})=>{
   test.setTimeout(45_000);
@@ -226,5 +233,32 @@ test("while the harness is away, Runtime keeps the background processes it last 
     await expect(rows).toHaveCount(2);
     await background.getByRole("button",{name:"Stop all"}).click();
     await expect(background.locator(".agent-background-empty")).toHaveText("No agent background processes.",{timeout:10_000});
+  }finally{await native.close()}
+});
+
+// The Runtime tab drew a background process's command with JetBrains Mono's ligatures, as every place set in the mono face but code
+// did: the star and slash of /* and */ ran together, => read as an arrow and != as a crossed equals. The command, its folder and any
+// other text in that face are drawn as they were written, here also a line typed in that face elsewhere in the panel.
+test("the Runtime tab draws a background process's command as it was run, and text set in the mono face anywhere as written",async({page})=>{
+  test.setTimeout(60_000);
+  const native=await startNativeThreads(page,["Background command thread"]);
+  try{
+    const background=await native.open("Background command thread"),rows=background.locator(".agent-background-list>div");
+    await native.startTwo();
+    await expect(rows).toHaveCount(2,{timeout:10_000});
+    for(const index of [0,1]){
+      const command=rows.nth(index).locator("strong"),folder=rows.nth(index).locator("small");
+      await expect(command).toContainText("*/process.stdout.write('READY');setInterval(()=>{},1000)");
+      expect(await drawnAsWritten(command),"the command as it was run: "+await command.textContent()).toBe(true);
+      expect(await drawnAsWritten(folder),"its folder: "+await folder.textContent()).toBe(true);
+    }
+    // The same for a line in the mono face set by the font shorthand and by font-family, as the app's rules set it.
+    for(const style of ["font:500 12px/1.4 var(--mono)","font-family:var(--mono);font-size:12px"]){
+      await background.evaluate((node,style)=>{const line=document.createElement("span");line.className="mono-probe";line.setAttribute("style",style+";display:inline-block;white-space:pre");line.textContent="if (a => b != c) return x -> y; /* ok */ a == b && c || d";node.append(line)},style);
+      const line=background.locator(".mono-probe");
+      expect(await drawnAsWritten(line),"a line set with "+style).toBe(true);
+      await line.evaluate(node=>node.remove());
+    }
+    await shootModes(page,rows.first(),"native-background-command-as-run");
   }finally{await native.close()}
 });

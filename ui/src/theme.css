@@ -166,6 +166,10 @@ body{font-family:var(--font);font-size:13.5px;-webkit-font-smoothing:antialiased
 /* Code shows the characters it holds: JetBrains Mono's ligatures would draw |- as one glyph and -> as an arrow. The font
    shorthand in code rules resets this property, hence !important. */
 :where(code,pre,kbd,samp){font-variant-ligatures:none!important}
+/* So does every other text in the mono face, a command, a path or an address wherever it is set: the face itself draws JetBrains
+   Mono without its contextual alternates, where its ligatures are, which drew a background command's ()=> in the Runtime tab as an
+   arrow. Only its Latin face has them; declared again here, after the font's own, it is the one used for those characters. */
+@font-face{font-family:"JetBrains Mono Variable";font-style:normal;font-display:swap;font-weight:100 800;src:url(@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2) format("woff2-variations");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;font-feature-settings:"calt" 0}
 button,input,textarea,select{font-family:inherit}
 code,kbd,pre,samp,.mono{font-family:var(--mono)}
 input::placeholder,textarea::placeholder{color:var(--tx3)}
