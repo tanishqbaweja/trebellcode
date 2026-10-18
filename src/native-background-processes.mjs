@@ -36,6 +36,10 @@ function abortError(signal){
   const error=new Error(reason instanceof Error?(reason.message||"Native process wait was cancelled."):String(reason||"Native process wait was cancelled."));error.name="AbortError";return error;
 }
 
+// The one drain process releaseAll starts: it reads every pipe it inherited (fds 3 and up, as many as its argument says) until
+// the process writing to it closes it, and keeps nothing.
+const DRAIN_SCRIPT="const net=require('node:net');const count=Number(process.argv[1])||0;for(let fd=3;fd<3+count;fd++){try{const pipe=new net.Socket({fd,readable:true,writable:false});pipe.on('error',()=>{});pipe.resume()}catch{}}";
+
 const PROCESS_TOOLS=Object.freeze({trebell_process:new Set(["start","status","stop","list"]),trebell_terminal:new Set(["start_background","background_status","stop_background"])});
 const HANDLE_FIELD=/"(?:handle|process_id)"\s*:\s*"p(\d{1,9})"/gi;
 
@@ -182,5 +186,27 @@ export class NativeBackgroundProcessManager{
   }
   async closeAll(){
     const running=[...this.processes.values()].filter(record=>record.running);for(const record of running)await this.terminate(record.threadId,record.id).catch(()=>{});this.processes.clear();this.handles.clear();this.handleCounts.clear();
+  }
+  // For a run that ends on its own (the headless runner): lets this process exit and leaves every local process it started
+  // running, as the app leaves them when a turn ends. The run's end is not a request to stop the server, watcher or daemon the
+  // agent left up. Their output pipes pass to one detached Node process that reads them until they close, so a process that
+  // writes after this one has exited gets no EPIPE or SIGPIPE. Remote processes, and on Windows every process, are stopped as
+  // closeAll stops them. Returns the processes left running.
+  async releaseAll({execPath=process.execPath}={}){
+    const running=[...this.processes.values()].filter(record=>record.running);
+    const kept=this.platform==="win32"?[]:running.filter(record=>!record.remote&&record.child);
+    for(const record of running)if(!kept.includes(record))await this.terminate(record.threadId,record.id).catch(()=>{});
+    const pipes=kept.flatMap(record=>[record.child.stdout,record.child.stderr]).filter(pipe=>pipe&&!pipe.destroyed);
+    if(pipes.length){
+      // A drain that cannot start leaves the processes running anyway: a write to a closed pipe may fail, which still beats a stop.
+      try{const drain=spawn(execPath,["-e",DRAIN_SCRIPT,String(pipes.length)],{stdio:["ignore","ignore","ignore",...pipes],detached:true,windowsHide:true,env:{}});drain.once("error",()=>{});drain.unref()}catch{}
+    }
+    const released=kept.map(record=>{
+      for(const pipe of [record.child.stdout,record.child.stderr])pipe?.destroy();
+      record.child.unref?.();record.updatedAt=Date.now();this.#settle(record);
+      this.#emit(record,"native.background.released","completed",{osPid:record.child.pid??record.osPid??null});return this.#public(record);
+    });
+    this.processes.clear();this.handles.clear();this.handleCounts.clear();
+    return released;
   }
 }

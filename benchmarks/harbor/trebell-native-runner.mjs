@@ -201,6 +201,8 @@ const metrics={
   cacheCarryover:nativeCacheCarryover(requests.map(item=>item?.usage||{})),
   strategy:strategyMetrics,
   gateSnapshots:gateSnapshots.count,
+  // The agent's background processes still running at the end, which the run leaves running (releaseAll below).
+  backgroundProcessesAtEnd:backgroundProcesses.list("trebell-harbor",{limit:200}).data.map(item=>({handle:item.handle,command:item.command})),
   auditArtifacts:{toolCalls:toolCallsPath,finalDiff:finalDiff?{path:finalDiffPath,...finalDiff}:null},
   finalReply:assistantChunks.join("").trim().slice(-4000),
   error:error?String(error?.stack||error?.message||error).slice(-8000):null,
@@ -211,7 +213,11 @@ try{
   if(metrics.finalReply)console.log(metrics.finalReply);
   console.log("TREBELL_HARBOR_METRICS "+JSON.stringify(metrics));
 }finally{
-  await backgroundProcesses.closeAll().catch(()=>{});
+  // The processes the agent started and left running stay up after the run, as they do after a turn in the app: a server,
+  // watcher or daemon the task asked for is part of the result. Only remote ones are stopped.
+  const released=await backgroundProcesses.releaseAll().catch(()=>[]);
+  if(released.length)console.error(`Trebell Native left ${released.length===1?"1 background process":released.length+" background processes"} running: ${released.map(item=>`${item.handle} (pid ${item.osPid}) ${item.command}`).join("; ")}`);
+  await eventWrites;
   await session.close().catch(()=>{});
   manager.close();
 }

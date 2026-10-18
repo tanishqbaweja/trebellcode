@@ -56,7 +56,9 @@ test("Harbor Native runner keeps durable output retrieval available and avoids a
   assert.match(source,/NativeBackgroundProcessManager/);
   assert.match(source,/backgroundProcesses,threadId:"trebell-harbor"/);
   assert.match(source,/"trebell_workspace","trebell_terminal","trebell_process"/);
-  assert.match(source,/backgroundProcesses\.closeAll\(\)/);
+  // The run's end leaves the agent's processes running (a server the task asked for is part of the result); it never stops them all.
+  assert.match(source,/backgroundProcesses\.releaseAll\(\)/);assert.doesNotMatch(source,/backgroundProcesses\.closeAll\(\)/);
+  assert.match(source,/backgroundProcessesAtEnd:/);
   assert.match(source,/TREBELL_HARBOR_MAX_MODEL_TURNS\)\|\|500/);
   assert.match(source,/TREBELL_HARBOR_MAX_TOOL_CALLS\)\|\|5000/);
   assert.match(source,/maxWallTimeMs=.*null/);

@@ -5,6 +5,9 @@ import { PassThrough } from "node:stream";
 import { mkdtemp,mkdir,readFile,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { createNativeBuiltins } from "../src/native-builtins.mjs";
 import { NativeBackgroundProcessManager } from "../src/native-background-processes.mjs";
 
@@ -236,4 +239,52 @@ test("status with wait_ms waits for the exit through the built-in tools, on both
     const controller=new AbortController();setTimeout(()=>controller.abort(),40);
     await assert.rejects(()=>execute({namespace:"trebell_process",name:"status",arguments:{process_id:"p2",wait_ms:60_000},signal:controller.signal}),error=>error?.name==="AbortError");
   }finally{await manager.closeAll();await rm(root,{recursive:true,force:true})}
+});
+
+const execFileAsync=promisify(execFile);
+
+// The headless runner's end: the process that started a server exits, and the server stays up and can still write.
+test("releaseAll leaves a local process running after the process that started it exits, and its later writes still work",{skip:process.platform==="win32"&&"on Windows releaseAll stops every process"},async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-bg-release-")),beat=join(root,"beat.txt");
+  // The service writes to both pipes and counts in a file every 20 ms. Without a reader on its pipes, its first write after the
+  // starting process exits fails with EPIPE, which ends a Node process.
+  const service=`let n=0;setInterval(()=>{n++;process.stdout.write('out '+n+'\\n');process.stderr.write('err '+n+'\\n');require('node:fs').writeFileSync(${JSON.stringify(beat)},String(n))},20)`;
+  const host=[
+    `import { NativeBackgroundProcessManager } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname,"..","src","native-background-processes.mjs")).href)};`,
+    "const manager=new NativeBackgroundProcessManager(),events=[];manager.onEvent=event=>events.push(event.name);",
+    `const started=manager.start({threadId:"run",command:process.execPath,args:["-e",${JSON.stringify(service)}],cwd:${JSON.stringify(root)}});`,
+    "for(let i=0;i<300&&!manager.status('run',started.processId).stdout;i++)await new Promise(resolve=>setTimeout(resolve,10));",
+    "const released=await manager.releaseAll();",
+    "console.log(JSON.stringify({released,events,left:manager.list('run').data.length}));",
+  ].join("\n");
+  let pid=null;
+  try{
+    // The host must exit on its own: a released process holds nothing that keeps it alive.
+    const {stdout}=await execFileAsync(process.execPath,["--input-type=module","-e",host],{timeout:15_000});
+    const {released,events,left}=JSON.parse(stdout.trim().split("\n").pop());
+    assert.equal(released.length,1);assert.equal(released[0].running,true);assert.equal(left,0);
+    pid=released[0].osPid;assert.ok(Number.isInteger(pid)&&pid>0);
+    assert.ok(events.includes("native.background.released"));assert.ok(!events.includes("native.background.terminated"));
+    const before=Number(await readFile(beat,"utf8"));await new Promise(resolve=>setTimeout(resolve,500));const after=Number(await readFile(beat,"utf8"));
+    assert.ok(after>before+5,`the released process kept running and writing (${before} -> ${after})`);
+    process.kill(pid,0);
+  }finally{
+    if(pid){try{process.kill(-pid,"SIGKILL")}catch{}}
+    await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
+  }
+});
+
+test("releaseAll stops remote processes, and on Windows every process, as closeAll does",async()=>{
+  const {environments,children}=fakeRemoteEnvironment(),remote=new NativeBackgroundProcessManager({environments,environment:{}});
+  remote.start({threadId:"thread-r",command:"node",args:["server.js"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH"]});
+  let kills=0;children[0].kill=()=>{kills++;queueMicrotask(()=>children[0].emit("close",0,"SIGTERM"));return true};
+  assert.deepEqual(await remote.releaseAll(),[]);assert.equal(kills,1);assert.equal(remote.list("thread-r").data.length,0);
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-bg-release-win-")),windows=new NativeBackgroundProcessManager({platform:"win32"});
+  try{
+    const started=windows.start({threadId:"thread-w",command:process.execPath,args:["-e","setInterval(()=>{},1000)"],cwd:root});
+    assert.deepEqual(await windows.releaseAll(),[]);
+    let alive=true;
+    for(let attempt=0;attempt<40&&alive;attempt++){try{process.kill(started.osPid,0);await new Promise(resolve=>setTimeout(resolve,50))}catch(error){if(error?.code==="ESRCH")alive=false;else throw error}}
+    assert.equal(alive,false,"on Windows releaseAll stops the process");
+  }finally{await windows.closeAll();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
