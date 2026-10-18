@@ -2829,23 +2829,27 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       return json(res,200,await environmentWorkspaceDiff(url.searchParams.get("path")||process.cwd(),{environments,environmentId}));
     }
     if(url.pathname==="/api/visualization"&&(req.method==="GET"||req.method==="HEAD")){
+      const headers={
+        "content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff",
+        "content-security-policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+      };
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
         const result=await readVisualization({
           workspaceRoot:url.searchParams.get("root")||process.cwd(),path:url.searchParams.get("path")||null,file:url.searchParams.get("file")||null,
           threadId:url.searchParams.get("threadId")||null,environmentId,check:req.method==="HEAD",
         });
-        res.writeHead(200,{
-          "content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff",
-          "content-security-policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
-          "content-disposition":"inline; filename=\""+basename(result.path).replace(/\"/g,"")+"\"",
-        });
+        res.writeHead(200,{...headers,"content-disposition":"inline; filename=\""+basename(result.path).replace(/\"/g,"")+"\""});
         return res.end(req.method==="HEAD"?undefined:result.content);
       }catch(error){
-        // A missing file is named by its file name alone, so a reply never shows a local path (the card asks with HEAD first).
+        // A visualization that cannot be shown is named by its file name alone, so a reply never shows a local path (the card asks with
+        // HEAD first). A read that fails after that check (the file removed, or held open, in between) answers the card's frame with a
+        // page that says so and tells the card, which says it in its own line.
         const missing=error?.code==="ENOENT"||/ENOENT|no such file/i.test(String(error?.message||""));
         if(req.method==="HEAD"){res.writeHead(missing?404:400);return res.end()}
-        return json(res,missing?404:400,{error:missing?"Visualization not found: "+basename(String(url.searchParams.get("path")||url.searchParams.get("file")||"")):error instanceof Error?error.message:String(error)});
+        const said=((missing?"Visualization not found: ":"Could not show visualization ")+String(url.searchParams.get("path")||url.searchParams.get("file")||"").split(/[\\/]/).pop()).replace(/[&<>"']/g,ch=>"&#"+ch.charCodeAt(0)+";");
+        res.writeHead(missing?404:400,headers);
+        return res.end("<!doctype html><meta charset=utf-8><title>"+said+"</title><p>"+said+"</p><script>parent.postMessage({trebellVisualization:\""+(missing?"missing":"failed")+"\"},\"*\")</script>");
       }
     }
     if(url.pathname==="/api/workspace/raw"&&(req.method==="GET"||req.method==="HEAD")){

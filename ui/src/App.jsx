@@ -512,13 +512,16 @@ function SessionHandoffRow({message}){
   return <div className="session-handoff-row" data-testid="session-handoff" data-message-id={message.id} data-turn-id={message.turnId==null?undefined:String(message.turnId)}><History size={13} aria-hidden="true"/><p>{message.text}</p></div>;
 }
 // A visualization's frame opens once its file is known to be there (a HEAD request): one that is missing, or cannot be shown, is said
-// in the card by its file name, instead of the server's error inside the frame. Until the frame's content has loaded the card says it
-// is loading, and the frame waits unseen under that line at the size it shows at (a chart lays itself out as it loads).
+// in the card by its file name, instead of the server's error inside the frame. One whose content then cannot be read (removed, or
+// held open, in between) is told to the card by the server's answer in the frame (gui-server.mjs), and said in the card the same way.
+// Until the frame's content has loaded the card says it is loading, and the frame waits unseen under that line at the size it shows at
+// (a chart lays itself out as it loads).
 function InlineVisualization({visualization,src}){
   const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
-  const [found,setFound]=useState(null),[loaded,setLoaded]=useState(false);
+  const [found,setFound]=useState(null),[loaded,setLoaded]=useState(false),frame=useRef(null);
   useEffect(()=>{let live=true;setFound(null);setLoaded(false);fetch(src,{method:"HEAD"}).then(response=>{if(live)setFound(response.ok?"yes":response.status===404?"missing":"failed")},()=>{if(live)setFound("failed")});return()=>{live=false}},[src]);
-  return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div>{found==="yes"&&<iframe title={label} src={src} sandbox="allow-scripts" referrerPolicy="no-referrer" className={loaded?undefined:"loading"} onLoad={()=>setLoaded(true)}/>}{found&&found!=="yes"?<p className="inline-visualization-missing" data-testid="visualization-missing">{found==="missing"?"Visualization not found: ":"Could not show visualization "}{label}</p>:!loaded&&<p className="inline-visualization-wait" role="status">Loading visualization {label}…</p>}</div>;
+  useEffect(()=>{const told=event=>{const said=event.data?.trebellVisualization;if(event.source&&event.source===frame.current?.contentWindow&&(said==="missing"||said==="failed"))setFound(said)};window.addEventListener("message",told);return()=>window.removeEventListener("message",told)},[]);
+  return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div>{found==="yes"&&<iframe ref={frame} title={label} src={src} sandbox="allow-scripts" referrerPolicy="no-referrer" className={loaded?undefined:"loading"} onLoad={()=>setLoaded(true)}/>}{found&&found!=="yes"?<p className="inline-visualization-missing" data-testid="visualization-missing">{found==="missing"?"Visualization not found: ":"Could not show visualization "}{label}</p>:!loaded&&<p className="inline-visualization-wait" role="status">Loading visualization {label}…</p>}</div>;
 }
 const ConversationMessageRow=memo(function ConversationMessageRow({message,activeFind,allowRevert,projectPath,environmentId,threadId,onEditFromHere,heading="",outcomeLabel="",outcomeTone=""}){
   const parsed=useMemo(()=>message.role==="user"||message.role==="handoff"?null:parseVisualizationMessage(message.text),[message.role,message.text]);

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -892,9 +893,34 @@ test("a visualization whose file is missing is named by its file name alone, and
     const head=await fetch(at("chart.html"),{method:"HEAD"});assert.equal(head.status,200);assert.equal(await head.text(),"");
     assert.equal((await fetch(at("missing.html"),{method:"HEAD"})).status,404);
     const missing=await fetch(at("missing.html"));assert.equal(missing.status,404);
-    assert.deepEqual(await missing.json(),{error:"Visualization not found: missing.html"});
+    assert.match(await missing.text(),/<p>Visualization not found: missing\.html<\/p><script>parent\.postMessage\(\{trebellVisualization:"missing"\},"\*"\)<\/script>$/);
     assert.equal(await (await fetch(at("chart.html"))).text(),"<h1>Chart</h1>");
+    // A file name is said as text, never as markup of the page.
+    const named=await (await fetch(at("<img src=x onerror=alert(1)>.html"))).text();
+    assert.doesNotMatch(named,/<img/);assert.match(named,/&#60;img src=x onerror=alert\(1\)&#62;\.html<\/p>/);
   }finally{await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
+});
+
+// A visualization the card's HEAD found whose read then fails (a file the agent still holds open, which a read refuses on Windows,
+// EBUSY, while a stat still finds it; one of no permissions elsewhere) answers the card's frame by its file name alone, with a page
+// that tells the card, instead of Node's error with the file's full local path.
+test("a visualization whose read fails once HEAD found it is said by its file name alone, on a page that tells the card",{skip:process.platform!=="win32"&&process.getuid?.()===0},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-visualization-busy-"));
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const chart=join(home,"busy.html");await writeFile(chart,"<h1>Chart</h1>");
+  const gui=await createGuiServer({port:await freePort(),mock:true,env});
+  const at=path=>gui.url+"/api/visualization?"+new URLSearchParams({root:home,path});
+  // Held open with no sharing (libuv's UV_FS_O_EXLOCK) on Windows, as the agent holds a file it still writes; elsewhere unreadable.
+  let held=null;
+  try{
+    if(process.platform==="win32")held=await open(chart,constants.O_RDONLY|0x10000000);else await chmod(chart,0);
+    assert.equal((await fetch(at("busy.html"),{method:"HEAD"})).status,200);
+    const busy=await fetch(at("busy.html")),body=await busy.text();
+    assert.equal(busy.status,400);
+    assert.doesNotMatch(body,/EBUSY|EACCES|resource busy|permission denied/i);assert.equal(body.includes(home.split(/[\\/]/).pop()),false,"no local path");
+    assert.match(body,/<p>Could not show visualization busy\.html<\/p><script>parent\.postMessage\(\{trebellVisualization:"failed"\},"\*"\)<\/script>$/);
+    assert.match(busy.headers.get("content-type")||"",/^text\/html/);assert.match(busy.headers.get("content-security-policy")||"",/connect-src 'none'/);
+  }finally{await held?.close();await chmod(chart,0o644).catch(()=>{});await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });
 
 test("mock GUI server serves the default Native provider catalog and direct replies without provider requests",async()=>{

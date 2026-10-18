@@ -1,5 +1,5 @@
 import { test,expect } from "@playwright/test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -364,6 +364,48 @@ test("a reply's visualization whose file is missing says so by its file name in 
       if(!pass){const before=await page.locator("html").getAttribute("data-mode");await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).not.toHaveAttribute("data-mode",before||"")}
     }
   }finally{await harness.close();rmSync(fixtureFile,{force:true})}
+});
+
+// A chart the card found (its HEAD) whose content then cannot be read as its frame asks for it (its GET): one the agent still holds
+// open, which a read refuses on Windows (EBUSY) while a look at the file still finds it, and one removed in between. The server's
+// answer opened in the frame, raw JSON with Node's error and the file's full local path, on a white panel in dark mode too. The card
+// says each by its file name, as it says a file missing when it asked, with no frame and no local path.
+test("a reply's chart whose content cannot be read once its file was found says so by its file name in the card, without a local path",async({page})=>{
+  test.skip(process.platform!=="win32"&&process.getuid?.()===0,"a file of no permissions is still read by root");
+  test.setTimeout(45_000);
+  const busyFile=fileURLToPath(new URL("../../visual-audit/chart-busy.html",import.meta.url)),goneFile=fileURLToPath(new URL("../../visual-audit/chart-gone.html",import.meta.url));
+  const text="Here are both charts.\n\n::codex-inline-vis{path=\"visual-audit/chart-busy.html\"}\n\n::codex-inline-vis{path=\"visual-audit/chart-gone.html\"}";
+  const thread={...fixtureThread("visualization-unread","Unread visualization fixture"),turns:[{id:"turn-1",status:"completed",items:[
+    {type:"userMessage",id:"user-1",content:[{type:"text",text:"Draw the two charts."}]},{type:"agentMessage",id:"assistant-1",text}]}]};
+  const harness=await startHarness(thread);let held=null;
+  try{
+    for(const file of [busyFile,goneFile])writeFileSync(file,"<!doctype html><meta charset=utf-8><body style=\"font:14px sans-serif\"><h1>Chart fixture</h1></body>");
+    // The busy chart is held open with no sharing (libuv's UV_FS_O_EXLOCK), as the agent holds a file it still writes on Windows;
+    // elsewhere it is made unreadable. A stat finds it either way, and a read fails.
+    if(process.platform==="win32")held=openSync(busyFile,constants.O_RDONLY|0x10000000);else chmodSync(busyFile,0);
+    await page.setViewportSize({width:1280,height:800});
+    const saved={};
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(saved)})});
+    // The gone chart is removed once the card has found it, as its frame asks for its content.
+    await page.route(/\/api\/visualization\?.*chart-gone/,route=>{if(route.request().method()==="GET")rmSync(goneFile,{force:true});return route.continue()});
+    await openApp(page,{harness,thread});
+    const cards=page.locator(".inline-visualization-card");
+    await expect(cards).toHaveCount(2);
+    await expect.soft(cards.nth(0).getByTestId("visualization-missing"),"the chart held open").toHaveText("Could not show visualization chart-busy.html");
+    await expect.soft(cards.nth(1).getByTestId("visualization-missing"),"the chart removed in between").toHaveText("Visualization not found: chart-gone.html");
+    await expect.soft(cards.locator("iframe"),"no frame shows the server's answer").toHaveCount(0);
+    expect.soft(await page.locator(".conversation-column").innerText()).not.toMatch(/EBUSY|EACCES|ENOENT|TrebellFix|visual-audit/i);
+    for(const pass of [0,1]){
+      await cards.nth(0).scrollIntoViewIfNeeded();
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        const mode=await page.locator("html").getAttribute("data-mode");
+        await page.screenshot({path:join(shotsDir,`chat-visualization-unread-${mode}-${width}x800.png`),animations:"disabled"});
+      }
+      await page.setViewportSize({width:1280,height:800});
+      if(!pass){const before=await page.locator("html").getAttribute("data-mode");await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).not.toHaveAttribute("data-mode",before||"")}
+    }
+  }finally{if(held!==null)closeSync(held);await harness.close();rmSync(busyFile,{force:true});rmSync(goneFile,{force:true})}
 });
 
 // A chart card's head as a person sees it once a mode switch has finished fading the colours: whether its band is light or dark,
