@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 // benchmark itself, network-capable commands, git history beyond HEAD, probes of verifier, solution and
 // harness log paths, requests for user input, and commands the logs do not fully record. Each Codex call
 // is paired with its output, and Codex execution events (CommandExecution, Extension, McpToolCall) show
-// what actually ran, so a reviewer can see whether a fetch returned content.
+// what actually ran, so a reviewer can see whether a fetch returned content. Each Native command is paired
+// with what its call returned from agent/trebell-native-tool-calls.jsonl when the trial kept one.
 // Status: hosted web use, or an upstream/benchmark fetch that returned content, makes a lane invalid by
 // policy; a lane that ran commands none of which were recorded is unaudited; every other flag (including
 // partly recorded commands) needs review before the result counts.
@@ -137,6 +138,12 @@ const TOOL_LIST_NAME=/\\?"name\\?"\s*:\s*\\?"([A-Za-z0-9_]+)\\?"/g;
 // Native logging caps (src/native-agent-loop.mjs): gateCommand keeps 24,000 characters; builds before it
 // existed kept only a 1,200-character redactedCommand; background process events keep 1,000.
 const GATE_COMMAND_CAP=24_000,REDACTED_COMMAND_CAP=1_200,BACKGROUND_COMMAND_CAP=1_000;
+// The tool-calls log (benchmarks/harbor/native-audit-artifacts.mjs) caps each output at 8,000 characters and appends this.
+const TOOL_CALL_CAP_MARKER=/\.\.\.\[\d+ more chars\]$/;
+// A terminal run's output is its JSON envelope ({exitCode, signal, stdout, stderr, ..., cwd, command, args}); a quote inside a
+// JSON string is escaped, so these match only the fields themselves, also in an envelope the cap cut.
+const ENVELOPE_STRING_FIELD={stdout:/"stdout"\s*:\s*"/,stderr:/"stderr"\s*:\s*"/};
+const JSON_ESCAPES={b:"\b",f:"\f",n:"\n",r:"\r",t:"\t"};
 const SNIPPET_CHARS=600,OUTPUT_CHARS=400,MAX_FINDINGS=60,EVIDENCE_ITEMS=8;
 
 function unescapeJs(text){return String(text||"").replace(/\\n/g,"\n").replace(/\\t/g,"\t").replace(/\\"/g,'"').replace(/\\'/g,"'").replace(/\\\\/g,"\\")}
@@ -502,15 +509,75 @@ export function auditCodexExecStreamText(text,{file=null,context=null}={}){
   return withStats(findings,{auditedCommands});
 }
 
-export function auditNativeEventsText(text,{file=null,context=null}={}){
+// Rows of agent/trebell-native-tool-calls.jsonl by tool-call number (native.tool.requested's data.toolCall). Each row holds the
+// call's namespace and name and either its output or, for a call that threw, its error. The controller's own recovery reads and
+// writes carry the number of the call before them, so a number can hold more than one row.
+export function nativeToolCallsByNumber(text){
+  const calls=new Map();
+  for(const {row} of parseLines(text)){
+    if(!Number.isInteger(row?.toolCall))continue;
+    if(!calls.has(row.toolCall))calls.set(row.toolCall,[]);
+    calls.get(row.toolCall).push(row);
+  }
+  return calls;
+}
+// A JSON string field's value up to its closing quote or, in a text the cap cut, up to the cut.
+function jsonStringFieldPrefix(text,field){
+  const match=field.exec(text);
+  if(!match)return null;
+  let value="";
+  for(let index=match.index+match[0].length;index<text.length;){
+    const char=text[index];
+    if(char==='"')break;
+    if(char!=="\\"){value+=char;index++;continue}
+    const next=text[index+1];
+    if(next==="u"){const hex=text.slice(index+2,index+6);if(!/^[0-9a-f]{4}$/i.test(hex))break;value+=String.fromCharCode(parseInt(hex,16));index+=6;continue}
+    if(next==null)break;
+    value+=JSON_ESCAPES[next]??next;index+=2;
+  }
+  return value;
+}
+// What a Native call returned to the model, from its tool-calls row. A terminal run returned the stdout and stderr in its
+// envelope, never the envelope's JSON text (its command, cwd and args only echo the request); content the cap cut off still came
+// back up to the cut. A call that threw, or failed before running ({success:false, error}), returned nothing. Null when the row
+// has no output to read or one of a shape the audit does not know.
+function nativeCallReturned(row){
+  if(!row||typeof row!=="object")return null;
+  if(row.output==null)return row.error!=null?"":null;
+  const raw=String(row.output);let value;
+  try{value=JSON.parse(raw)}catch{
+    if(!TOOL_CALL_CAP_MARKER.test(raw))return raw;
+    const cut=raw.replace(TOOL_CALL_CAP_MARKER,"");
+    if(!/^\s*\{/.test(cut))return cut;
+    const stdout=jsonStringFieldPrefix(cut,ENVELOPE_STRING_FIELD.stdout),stderr=jsonStringFieldPrefix(cut,ENVELOPE_STRING_FIELD.stderr);
+    return stdout==null&&stderr==null?null:[stdout,stderr].filter(Boolean).join("\n");
+  }
+  if(value&&typeof value==="object"&&!Array.isArray(value)){
+    if(typeof value.stdout==="string"||typeof value.stderr==="string")return [value.stdout,value.stderr].filter(part=>typeof part==="string"&&part).join("\n");
+    if(value.success===false)return "";
+    return typeof value.output==="string"?value.output:typeof value.text==="string"?value.text:null;
+  }
+  return outputText(value);
+}
+
+// With toolCalls (nativeToolCallsByNumber of the trial's tool-calls log), each command is paired with what its call returned and
+// annotated as Codex commands are, so an upstream fetch is a leak only when content came back. Without it, contentReturned stays
+// null.
+export function auditNativeEventsText(text,{file=null,context=null,toolCalls=null}={}){
   // A background start request carries no command: the native.background.started event that follows records it (its first
   // 1,000 characters), so each such event audits the oldest start still waiting for one. A start whose process never started
   // stays unlogged.
-  const findings=[],byCall=new Map(),pendingStarts=[];let auditedCommands=0;
+  const findings=[],byCall=new Map(),pendingStarts=[],calls=toolCalls instanceof Map?toolCalls:null,paired=new Set();let auditedCommands=0;
+  // A request's row: the first not yet paired with the same number and tool, so each row answers one request.
+  const callRow=data=>{
+    const row=calls?.get(data.toolCall)?.find(candidate=>!paired.has(candidate)&&candidate?.namespace===data.namespace&&candidate?.name===data.name)??null;
+    if(row)paired.add(row);
+    return row;
+  };
   for(const {line,row} of parseLines(text)){
     const data=row?.data||{};
     if(row?.name==="native.tool.requested"){
-      const tool=`${data.namespace}.${data.name}`,audit=data.terminalAudit&&typeof data.terminalAudit==="object"?data.terminalAudit:null,callId=data.callId||null;
+      const tool=`${data.namespace}.${data.name}`,audit=data.terminalAudit&&typeof data.terminalAudit==="object"?data.terminalAudit:null,callId=data.callId||null,call=callRow(data);
       if(!/^trebell_(?:repo|workspace|output|terminal|process)\./.test(tool))findings.push({kind:"unknown-tool",tool,file,line,callId,snippet:JSON.stringify(data).slice(0,SNIPPET_CHARS)});
       if(NATIVE_BACKGROUND_START_TOOL.test(tool)&&!audit){const unlogged={kind:"unlogged-command",tool,file,line,callId,snippet:"process command is not recorded in the event log"};findings.push(unlogged);pendingStarts.push(unlogged);continue}
       const gate=audit?.gateCommand!=null?String(audit.gateCommand):null,redacted=audit?.redactedCommand!=null?String(audit.redactedCommand):null,command=gate??redacted??"";
@@ -524,6 +591,8 @@ export function auditNativeEventsText(text,{file=null,context=null}={}){
       if(!kinds.length)continue;
       const finding=commandFinding(kinds,command,{file,line,callId,context});
       finding.hosts=[...new Set([...(Array.isArray(audit.hosts)?audit.hosts.map(host=>String(host).toLowerCase()):[]),...finding.hosts])].filter(host=>!isLocalHost(host));
+      const returned=nativeCallReturned(call);
+      if(returned!=null)annotateOutput(finding,returned,context);
       findings.push(finding);if(callId)byCall.set(callId,finding);
     }else if(row?.name==="native.tool.completed"&&byCall.has(data.callId)){
       Object.assign(byCall.get(data.callId),{success:data.success===true,error:data.error?String(data.error).slice(0,OUTPUT_CHARS):null});
@@ -640,7 +709,7 @@ async function nativeToolCallsWithoutEvents(logPath,metricsPath){
 }
 
 export async function auditTrialDirectory(trialDir){
-  const context=taskContextFromTrialName(basename(trialDir)),findings=[],logFiles=[],rollouts=new Map(),nativeEvents=[];
+  const context=taskContextFromTrialName(basename(trialDir)),findings=[],logFiles=[],rollouts=new Map(),nativeEvents=[],nativeToolCallLogs=new Map();
   let logs=0,auditedCommands=0,codexStream=null,nativeLog=null,nativeMetrics=null;
   const consume=(audited,name)=>{findings.push(...audited);auditedCommands+=Number(audited.stats?.auditedCommands)||0;logs++;logFiles.push(name)};
   for(const path of await walkFiles(join(trialDir,"agent"))){
@@ -650,6 +719,7 @@ export async function auditTrialDirectory(trialDir){
       const key=name.split("/").pop(),previous=rollouts.get(key);
       if(!previous||text.length>previous.text.length)rollouts.set(key,{name,text});
     }else if(/\/trebell-native-events\.jsonl$/.test(name)){const text=await readText(path);if(text!=null)nativeEvents.push({name,text})}
+    else if(/\/trebell-native-tool-calls\.jsonl$/.test(name))nativeToolCallLogs.set(name,path);
     else if(/\/agent\/codex\.txt$/.test(name))codexStream={path,name};
     else if(/\/agent\/trebell-native\.txt$/.test(name))nativeLog=path;
     else if(/\/agent\/trebell-native-metrics\.json$/.test(name))nativeMetrics=path;
@@ -666,7 +736,12 @@ export async function auditTrialDirectory(trialDir){
       if(extra.length){findings.push(...extra.map(finding=>({...finding,note:"recorded in codex.txt but not in the rollout"})));logFiles.push(codexStream.name)}
     }
   }
-  for(const {name,text} of nativeEvents)consume(auditNativeEventsText(text,{file:name,context}),name);
+  for(const {name,text} of nativeEvents){
+    // What each call returned is in the tool-calls log beside the events log (builds before it existed kept none).
+    const callsName=name.replace(/trebell-native-events\.jsonl$/,"trebell-native-tool-calls.jsonl"),callsText=nativeToolCallLogs.has(callsName)?await readText(nativeToolCallLogs.get(callsName)):null;
+    consume(auditNativeEventsText(text,{file:name,context,toolCalls:callsText!=null?nativeToolCallsByNumber(callsText):null}),name);
+    if(callsText!=null)logFiles.push(callsName);
+  }
   if(!nativeEvents.length&&(nativeLog||nativeMetrics)){
     const toolCalls=await nativeToolCallsWithoutEvents(nativeLog,nativeMetrics);
     if(toolCalls>0)findings.push({kind:"unaudited-command",tool:"trebell_native",count:toolCalls,file:String(nativeLog||nativeMetrics).split("\\").join("/"),line:null,snippet:`${toolCalls} Native tool calls ran but the trial kept no event log`});

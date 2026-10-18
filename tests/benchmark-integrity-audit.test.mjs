@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createToolCallLogger } from "../benchmarks/harbor/native-audit-artifacts.mjs";
 import { auditCodexExecStreamText, auditCodexRolloutText, auditJobIntegrity, auditNativeEventsText, classifyCommandText, compactIntegrity, externalHosts, mergeIntegritySummaries, summarizeIntegrityFindings, taskContextFromTrialName } from "../scripts/benchmark-integrity-audit.mjs";
 
 const codexCall=(callId,input)=>({type:"response_item",payload:{type:"custom_tool_call",name:"exec",call_id:callId,input}});
@@ -373,6 +374,129 @@ test("project sites and installed copies of the project are review suspects, not
   assert.equal(ticketSummary.upstreamLeaks,0);assert.equal(ticketSummary.status,"review");
   const copy=summarizeIntegrityFindings(execRollout("sed -n 1,80p /opt/conda/lib/python3.11/site-packages/django/db/models/query.py","class QuerySet:",{context}));
   assert.equal(copy.projectCopyReads,1);assert.equal(copy.networkCommands,0);assert.equal(copy.status,"review");
+});
+
+// What Native calls returned (agent/trebell-native-tool-calls.jsonl).
+
+const PSF_TRIAL="psf__requests-6028__AbC1234";
+const upstreamUtils="python - <<'PY'\nimport urllib.request\nurl = 'https://raw.githubusercontent.com/psf/requests/v2.27.1/requests/utils.py'\ntext = urllib.request.urlopen(url, timeout=10).read().decode()\nstart = text.find('def prepend_scheme_if_needed')\nprint(text[start:start + 1200])\nPY";
+const fixedSource=[
+  "def prepend_scheme_if_needed(url, new_scheme):",'    """Given a URL that may or may not have a scheme, prepend the given scheme.',"    Does not replace a present scheme with the one provided as an argument.",'    """',
+  "    parsed = parse_url(url)","    scheme, auth, host, port, path, query, fragment = parsed","    netloc = parsed.netloc","    if not netloc:","        netloc, path = path, netloc",
+  "    if auth:","        netloc = '@'.join([auth, netloc])","    if scheme is None:","        scheme = new_scheme","    if path is None:","        path = ''",
+  "    return urlunparse((scheme, netloc, path, '', query, fragment))","",
+].join("\n");
+const traceback=(...lines)=>["Traceback (most recent call last):",'  File "<stdin>", line 4, in <module>',...lines,""].join("\n");
+// A Native trial as the Harbor runner leaves it: the events log and, unless toolCalls is false, the tool-calls log beside it,
+// written by the runner's own logger. Each call is a terminal run of `command` that returned an envelope with its stdout, stderr
+// and exitCode, the gateway's answer for a call that could not run (`failed`), or an error it threw (`threw`).
+async function writeNativeTrial(root,parts,calls,{toolCalls=true}={}){
+  const agent=join(root,...parts,"agent"),events=[];
+  await mkdir(agent,{recursive:true});
+  const log=createToolCallLogger({path:join(agent,"trebell-native-tool-calls.jsonl"),environment:{}});
+  for(const [index,call] of calls.entries()){
+    const toolCall=index+1,callId=`call_${toolCall}`,args=["-lc",call.command],gateCommand=["bash",...args].join(" ");
+    events.push({name:"native.tool.requested",data:{toolCall,callId,namespace:"trebell_terminal",name:"run",terminalAudit:{networkLike:true,hosts:externalHosts(gateCommand),redactedCommand:gateCommand.slice(0,1200),gateCommand}}});
+    const result=call.failed??{exitCode:call.exitCode??0,signal:null,stdout:call.stdout??"",stderr:call.stderr??"",timedOut:false,truncated:false,durationMs:640,cwd:"/testbed",command:"bash",args};
+    if(toolCalls)await log.wrap(async()=>{if(call.threw)throw new Error(call.threw);return result})({toolCall,modelTurn:toolCall,namespace:"trebell_terminal",name:"run",arguments:{command:"bash",args,cwd:"/testbed"}}).catch(()=>{});
+    events.push({name:"native.tool.completed",data:{toolCall,callId,namespace:"trebell_terminal",name:"run",success:!call.threw&&!call.failed,error:call.threw??call.failed?.error??null}});
+  }
+  await log.flush();
+  await writeFile(join(agent,"trebell-native-events.jsonl"),nativeLog(events));
+}
+const commandFindings=audit=>audit.trials.flatMap(trial=>trial.findings).filter(finding=>finding.kind==="command");
+
+test("a Native fetch of the task's upstream whose terminal envelope returned the fixed source is an upstream leak, also when the log's cap cut the envelope",async()=>{
+  await withJobs(async root=>{
+    await writeNativeTrial(root,["job-n",PSF_TRIAL],[{command:upstreamUtils,stdout:fixedSource}]);
+    const audit=await auditJobIntegrity(root,"job-n"),[finding]=commandFindings(audit);
+    assert.equal(audit.summary.status,"invalid");assert.equal(audit.summary.upstreamLeaks,1);
+    assert.deepEqual(finding.upstream,{target:"project",via:"url"});assert.equal(finding.contentReturned,true);
+    assert.match(finding.output,/^def prepend_scheme_if_needed\(url, new_scheme\):\n/,"the finding shows the decoded stdout, not the envelope's JSON");
+    assert.match(audit.trials[0].logFiles[1],/\/agent\/trebell-native-tool-calls\.jsonl$/);
+    // The whole module: the log keeps the envelope's first 8,000 characters, so its JSON no longer parses; what came back up to the cut still counts.
+    await writeNativeTrial(root,["job-cap",PSF_TRIAL],[{command:upstreamUtils.replace("[start:start + 1200]",""),stdout:fixedSource+"\n# utils.py goes on\n".repeat(600)}]);
+    const row=JSON.parse(await readFile(join(root,"job-cap",PSF_TRIAL,"agent","trebell-native-tool-calls.jsonl"),"utf8"));
+    assert.match(row.output,/\.\.\.\[\d+ more chars\]$/);assert.throws(()=>JSON.parse(row.output));
+    const capped=await auditJobIntegrity(root,"job-cap");
+    assert.equal(capped.summary.status,"invalid");assert.equal(capped.summary.upstreamLeaks,1);
+    assert.match(commandFindings(capped)[0].output,/^def prepend_scheme_if_needed\(/);
+  });
+});
+
+test("a Native upstream fetch whose envelope holds only an HTTP error or a traceback, or that never ran, returned nothing, however long the envelope's JSON",async()=>{
+  await withJobs(async root=>{
+    const pull="python - <<'PY'\nimport json, urllib.request\ndata = json.load(urllib.request.urlopen('https://api.github.com/repos/psf/requests/pulls/6028', timeout=10))\nprint(data['content'])\nPY";
+    const trials={
+      "psf__requests-6028__Http404x":{command:upstreamUtils,exitCode:1,stderr:traceback('  File "/opt/conda/lib/python3.9/urllib/request.py", line 641, in http_error_default',"    raise HTTPError(req.full_url, code, msg, hdrs, fp)","urllib.error.HTTPError: HTTP Error 404: Not Found")},
+      // As the envelope's JSON text this would count as content: one long line naming no network failure.
+      "psf__requests-6028__KeyErrxx":{command:pull,exitCode:1,stderr:traceback("KeyError: 'content'")},
+      "psf__requests-6028__Failedxx":{command:upstreamUtils,failed:{success:false,error:"spawn bash ENOENT",decision:"ALLOW",confirmationRequired:false,uncertain:false,retrySafe:false}},
+      "psf__requests-6028__Threwxxx":{command:upstreamUtils,threw:"Terminal command was cancelled because the turn was aborted"},
+    };
+    for(const [trial,call] of Object.entries(trials))await writeNativeTrial(root,["job-e",trial],[call]);
+    const audit=await auditJobIntegrity(root,"job-e");
+    assert.equal(audit.summary.upstreamLeaks,0);assert.equal(audit.summary.status,"review");
+    assert.equal(audit.trials.length,4);
+    for(const trial of audit.trials){
+      const [finding]=commandFindings({trials:[trial]});
+      assert.equal(finding.upstream?.target,"project",trial.trialDir);
+      assert.equal(finding.contentReturned,false,trial.trialDir);
+      assert.equal(finding.networkFailureSeen,/Http404x$/.test(trial.trialDir),trial.trialDir);
+    }
+  });
+});
+
+test("a Native command is paired with its own call's row, not with a recovery read the controller logged under the same number",async()=>{
+  await withJobs(async root=>{
+    const calls=join(root,"job-k",PSF_TRIAL,"agent","trebell-native-tool-calls.jsonl");
+    await mkdir(join(calls,".."),{recursive:true});
+    await writeFile(calls,JSON.stringify({toolCall:1,modelTurn:1,namespace:"trebell_workspace",name:"read_file",durationMs:2,arguments:'{"path":"requests/utils.py"}',output:fixedSource})+"\n");
+    await writeNativeTrial(root,["job-k",PSF_TRIAL],[{command:upstreamUtils,exitCode:1,stderr:traceback("urllib.error.HTTPError: HTTP Error 404: Not Found")}]);
+    const audit=await auditJobIntegrity(root,"job-k"),[finding]=commandFindings(audit);
+    assert.equal(finding.contentReturned,false);assert.equal(finding.networkFailureSeen,true);
+    assert.equal(audit.summary.upstreamLeaks,0);assert.equal(audit.summary.status,"review");
+  });
+});
+
+test("a Native documentation read that returned content is annotated with what it returned and stays in review, a project docs site too",async()=>{
+  await withJobs(async root=>{
+    const docs="python - <<'PY'\nimport urllib.request\ntext = urllib.request.urlopen('https://docs.python.org/3.8/whatsnew/3.8.html', timeout=10).read().decode()\nstart = text.find('notable-changes-in-python-3-8-12')\nprint(text[start:start + 2000])\nPY";
+    const notes="Notable changes in Python 3.8.12\nStarting with Python 3.8.12 the ipaddress module no longer accepts any leading zeros in IPv4 address strings.\nLeading zeros are ambiguous and interpreted as octal notation by some libraries.\n";
+    const proxies="Proxies\nIf you need to use a proxy, you can configure individual requests with the proxies argument to any request method.\n";
+    await writeNativeTrial(root,["job-d",PSF_TRIAL],[{command:docs,stdout:notes},{command:"curl -sL https://requests.readthedocs.io/en/latest/user/advanced/",stdout:proxies}]);
+    const audit=await auditJobIntegrity(root,"job-d"),[python,site]=commandFindings(audit);
+    assert.equal(audit.summary.status,"review");assert.equal(audit.summary.upstreamLeaks,0);assert.equal(audit.summary.networkCommands,2);
+    assert.deepEqual(python.hosts,["docs.python.org"]);assert.equal(python.upstream,undefined);
+    assert.match(python.output,/^Notable changes in Python 3\.8\.12\n/,"the read is annotated with what it returned");
+    assert.deepEqual(site.upstream,{target:"project-site",via:"url"});assert.equal(site.contentReturned,true);
+  });
+});
+
+test("without a tool-calls log a Native upstream fetch stays unconfirmed (contentReturned null), and the log beside the events log is what confirms it",async()=>{
+  await withJobs(async root=>{
+    await writeNativeTrial(root,["job-o",PSF_TRIAL],[{command:upstreamUtils,stdout:fixedSource}],{toolCalls:false});
+    const before=await auditJobIntegrity(root,"job-o"),[finding]=commandFindings(before);
+    assert.equal(before.summary.status,"review");assert.equal(before.summary.upstreamLeaks,0);
+    assert.deepEqual(finding.upstream,{target:"project",via:"url"});assert.equal(finding.contentReturned,null);assert.equal(finding.output,undefined);
+    assert.equal(before.trials[0].logFiles.length,1);
+    await writeNativeTrial(root,["job-o",PSF_TRIAL],[{command:upstreamUtils,stdout:fixedSource}]);
+    const after=await auditJobIntegrity(root,"job-o");
+    assert.equal(after.summary.status,"invalid","the same trial once its tool-calls log is there");assert.equal(after.summary.upstreamLeaks,1);
+  });
+});
+
+test("a Native pip install of an unrelated package stays a review network command, while a fetch of the project's own package that downloaded it is a leak",async()=>{
+  await withJobs(async root=>{
+    await writeNativeTrial(root,["job-p",PSF_TRIAL],[{command:"pip install idna==3.3",stdout:"Collecting idna==3.3\n  Downloading idna-3.3-py3-none-any.whl (61 kB)\nInstalling collected packages: idna\nSuccessfully installed idna-3.3\n"}]);
+    const unrelated=await auditJobIntegrity(root,"job-p"),[install]=commandFindings(unrelated);
+    assert.equal(unrelated.summary.status,"review");assert.equal(unrelated.summary.networkCommands,1);assert.equal(unrelated.summary.upstreamLeaks,0);
+    assert.ok(install.kinds.includes("package-install"));assert.equal(install.upstream,undefined);assert.equal(install.contentReturned,undefined);
+    await writeNativeTrial(root,["job-q",PSF_TRIAL],[{command:"pip download requests==2.27.1 --no-deps -d /tmp/up",stdout:"Collecting requests==2.27.1\n  Downloading requests-2.27.1-py2.py3-none-any.whl (63 kB)\nSaved /tmp/up/requests-2.27.1-py2.py3-none-any.whl\nSuccessfully downloaded requests\n"}]);
+    const own=await auditJobIntegrity(root,"job-q"),[download]=commandFindings(own);
+    assert.deepEqual(download.upstream,{target:"project",via:"package"});
+    assert.equal(own.summary.upstreamLeaks,1,"the project's own package came back");assert.equal(own.summary.status,"invalid");
+  });
 });
 
 // Native logging gaps.
