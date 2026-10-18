@@ -241,10 +241,13 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    --composer-reach: how far the composer stands above its foot: its height (--composer-height, which the composer measures) and the
    attachment chips on the shelf above it. The conversation, and the opening state over it, end there, so a draft of several lines, a
    second row of controls or the chips never cover the end of the last reply: App keeps a view at its end there as the view shrinks,
-   and a view scrolled up keeps its rows in place. The welcome is sized to the window, and keeps its place as a draft grows. */
+   and a view scrolled up keeps its rows in place. The welcome is sized to the window and keeps its place as a draft grows, less the
+   attachment chips: the rows of them in the composer (--composer-chips, which it measures too) and the shelf's, so a dozen of them
+   beside the open panel no longer cover its suggestions. */
 .chat-workspace{--composer-reach:calc(var(--composer-height,115px) + 1px)}
 .chat-workspace:has(>.composer-wrap>.attachment-shelf>span){--composer-reach:calc(var(--composer-height,115px) + 32px)}
-.chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:116px}
+.chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:calc(116px + var(--composer-chips,0px))}
+.chat-workspace:has(>.composer-wrap>.attachment-shelf>span) .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:calc(147px + var(--composer-chips,0px))}
 .chat-workspace .conversation-scroll{top:var(--top);bottom:calc(16px + var(--composer-reach));padding:max(34px,var(--thread-find-reserve,0px)) 28px 72px;scroll-padding-top:var(--thread-find-reserve,0px);scrollbar-width:auto;scrollbar-color:auto}
 .main-frame.terminal-open .chat-workspace .conversation-scroll{bottom:calc(var(--terminal-height,330px) + 12px + var(--composer-reach))}
 /* A thread that takes more than a moment to open (App: OPENING_COVER_DELAY_MS) names itself in the conversation area with a quiet
@@ -477,8 +480,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .chat-workspace .clone-banner:is(.failed,.cancelled) strong{color:var(--err)}
 
 /* ============ Empty-state hero ============ */
-.conversation-column .welcome{min-height:calc(100vh - 296px);padding:24px 24px 40px;justify-content:safe center}
-.app-shell.desktop-shell .conversation-column .welcome{min-height:calc(100vh - 328px)}
+.conversation-column .welcome{min-height:calc(100vh - 180px - var(--composer-reach,116px));padding:24px 24px 40px;justify-content:safe center}
+.app-shell.desktop-shell .conversation-column .welcome{min-height:calc(100vh - 212px - var(--composer-reach,116px))}
 .main-frame.terminal-open .conversation-column .welcome{min-height:0;padding:16px 24px 20px}
 .main-frame.terminal-open .conversation-column .welcome-mark{width:44px;height:44px;margin-bottom:14px}
 .main-frame.terminal-open .conversation-column .welcome-mark img{width:44px;height:44px}
@@ -820,8 +823,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    give way so the title and the starters stay in view instead of the column scrolling them under the topbar. */
 .main-frame.terminal-open .conversation-column .welcome{justify-content:safe center}
 .main-frame.terminal-open .chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){padding-top:12px;padding-bottom:12px}
-.main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - var(--top) - var(--terminal-height,330px) - 152px)}
-.app-shell.desktop-shell .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - 32px - var(--top) - var(--terminal-height,330px) - 152px)}
+.main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - 36px - var(--top) - var(--terminal-height,330px) - var(--composer-reach,116px))}
+.app-shell.desktop-shell .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - 68px - var(--top) - var(--terminal-height,330px) - var(--composer-reach,116px))}
 @media (max-height:799px){
   .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>.welcome-mark{display:none}
 }
@@ -831,8 +834,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 }
 @media (max-height:640px){
   .main-frame.terminal-open .chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){padding-top:6px;padding-bottom:6px}
-  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - var(--top) - var(--terminal-height,330px) - 140px)}
-  .app-shell.desktop-shell .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - 32px - var(--top) - var(--terminal-height,330px) - 140px)}
+  .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - 24px - var(--top) - var(--terminal-height,330px) - var(--composer-reach,116px))}
+  .app-shell.desktop-shell .main-frame.terminal-open .chat-workspace .conversation-column>.welcome{min-height:calc(100vh - 56px - var(--top) - var(--terminal-height,330px) - var(--composer-reach,116px))}
   .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>h1{font-size:18px}
   .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>.suggestions{margin-top:10px}
 }

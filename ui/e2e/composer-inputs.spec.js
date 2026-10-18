@@ -1295,6 +1295,73 @@ test("a draft of several lines and its attachment chips leave the end of the las
   }finally{await harness.close()}
 });
 
+// The desktop shell's agent browser, as far as the Browser panel's Attach screenshot goes: each capture is a small PNG.
+function screenshotBrowser(){
+  const state={open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:1280,height:800};
+  Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{state:async()=>state,onState:()=>()=>{},
+    screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="})}}});
+}
+// Attach screenshot pressed in the Browser panel count times, each press waited on until its chip is in the composer.
+async function attachScreenshots(page,count){
+  const capture=page.getByTestId("right-panel").getByRole("button",{name:"Attach screenshot",exact:true}),chip=page.getByTestId("context-chip"),before=await chip.count();
+  for(let press=1;press<=count;press++){await capture.click();await expect(chip).toHaveCount(before+press)}
+}
+// Each of the new task's suggestions against the composer: "clear" when it is wholly above the composer and its chips, inside the
+// conversation's view, and the page answers it at its middle, or else where it is and what the page answers there.
+const readSuggestions=page=>page.evaluate(()=>{
+  const wrap=document.querySelector(".chat-workspace .composer-wrap"),view=document.querySelector(".chat-workspace .conversation-scroll").getBoundingClientRect();
+  const top=Math.min(wrap.getBoundingClientRect().top,...[...wrap.querySelectorAll(".attachment-shelf>span")].map(chip=>chip.getBoundingClientRect().top));
+  return [...document.querySelectorAll(".welcome .suggestions button")].map(button=>{
+    const box=button.getBoundingClientRect(),at=document.elementFromPoint(box.left+box.width/2,box.top+box.height/2);
+    return box.bottom<=top+0.5&&box.top>=view.top&&box.bottom<=view.bottom+0.5&&button.contains(at)?"clear":`${button.textContent} ${Math.round(box.top)}-${Math.round(box.bottom)} answers ${String(at?.className||at?.tagName)}${at?.closest(".composer-wrap")?" in the composer":""}, composer top ${Math.round(top)}, view ${Math.round(view.top)}-${Math.round(view.bottom)}`;
+  });
+});
+const suggestionsClear=["clear","clear","clear"];
+
+// Browser screenshots attached in the Browser panel grow the composer a row of chips for every two or three. The thread ends above
+// them, but the new task's welcome kept its place over the composer, so a dozen of them beside the open panel covered the lower half
+// of its suggestions, as did fewer under a draft of several lines. The welcome makes room for the chips, the panel open or closed and
+// in narrower windows, and keeps its place as a draft grows; the thread at its end keeps the end of its last reply clear of ten.
+test("ten Browser screenshots attached leave the end of the last reply clear above the composer, and a dozen the new task's suggestions",async({page})=>{
+  test.setTimeout(150_000);
+  await page.addInitScript(screenshotBrowser);
+  const harness=await openComposerApp(page,{turns:[{user:"Explain the session flow",items:[replyItem("session-reply",LONG_REPLY)]},{user:"Explain the login flow",items:[replyItem("login-reply",LONG_REPLY)]}]});
+  try{
+    const composerTop=()=>page.locator(".chat-workspace .composer-wrap").evaluate(node=>Math.round(node.getBoundingClientRect().top));
+    await page.locator(".sidebar").getByRole("button",{name:"Browser",exact:true}).click();
+    await expect(page.getByTestId("right-panel").getByRole("button",{name:"Attach screenshot",exact:true})).toBeVisible();
+    // On the thread scrolled to its end, ten chips leave the end of its last reply clear.
+    await wheelThread(page,1200,6);
+    const before=await composerTop();
+    await attachScreenshots(page,10);
+    await wheelThread(page,1200,6);
+    await expect.poll(()=>readReplyEnd(page),{message:"ten chips, the thread at its end"}).toEqual(replyEndClear);
+    test.info().annotations.push({type:"thread with ten chips",description:JSON.stringify({composerTopBefore:before,composerTopAfter:await composerTop(),end:await readReplyEnd(page),lastLineBottom:await page.locator(".conversation-scroll p").filter({hasText:"Last line of the reply"}).last().evaluate(node=>Math.round(node.getBoundingClientRect().bottom)),viewBottom:await page.locator(".conversation-scroll").evaluate(node=>Math.round(node.getBoundingClientRect().bottom))})});
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`ten-chips-reply-end-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    // On New task, a dozen chips leave its suggestions clear, the Browser panel open (a narrow conversation, six rows of chips) or closed.
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await expect(page.locator(".welcome h1")).toHaveText("What do you want to build?");await expect(page.getByTestId("context-chip")).toHaveCount(0);
+    await attachScreenshots(page,12);
+    await expect.poll(()=>readSuggestions(page),{message:"a dozen chips on New task, the Browser panel open"}).toEqual(suggestionsClear);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`dozen-chips-welcome-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    await page.getByRole("button",{name:"Close right panel"}).click();await expect(page.getByTestId("right-panel")).toHaveCount(0);
+    for(const width of [1280,900,700]){
+      await page.setViewportSize({width,height:800});
+      await expect.poll(()=>readSuggestions(page),{message:`a dozen chips on New task at ${width}x800, the panel closed`}).toEqual(suggestionsClear);
+      if(width<1280)await page.screenshot({animations:"disabled",path:auditDir+`dozen-chips-welcome-dark-${width}x800.png`});
+    }
+    await page.setViewportSize({width:1280,height:800});
+    await page.getByRole("button",{name:"Fix a bug",exact:true}).click({trial:true,timeout:5000});
+    // A draft of several lines leaves the welcome where it was, the chips still clear.
+    const placed=await page.locator(".welcome h1").evaluate(node=>Math.round(node.getBoundingClientRect().top));
+    await page.getByTestId("composer").click();await typeLines(page,6);
+    await expect.poll(()=>readSuggestions(page),{message:"a six-line draft and a dozen chips on New task"}).toEqual(suggestionsClear);
+    expect(await page.locator(".welcome h1").evaluate(node=>Math.round(node.getBoundingClientRect().top)),"the welcome keeps its place as the draft grows").toBe(placed);
+  }finally{await harness.close()}
+});
+
 // The composer is off while a send goes (Sending…), and the browser drops the keyboard it had there, or on Send, on the page: the next
 // message typed went nowhere. Once the send has gone the keyboard is in the composer again, after Enter and after Send, while the reply
 // runs (Queue a follow-up…) and after it, so the next message typed at once lands there. A person typing types at 20 ms a key.

@@ -736,12 +736,14 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     if(!active||active===document.body||active===from)composerRef.current?.focus();
   },[composerOff]);
   // The composer's height, on the workspace (--composer-height), ends the thread above it (shell.css) as a draft of several lines, a
-  // second row of controls or context chips grow it. It lands a frame after the composer resizes, so the thread's own resize observer,
-  // which keeps a thread at its end there, sees its view resize in a frame of its own.
+  // second row of controls or context chips grow it, and the rows of its context chips (--composer-chips) end the new task's welcome
+  // above them. It lands a frame after the composer resizes, so the thread's own resize observer, which keeps a thread at its end
+  // there, sees its view resize in a frame of its own.
   useEffect(()=>{
     const wrap=wrapRef.current,host=wrap?.parentElement;if(!host||typeof ResizeObserver==="undefined")return;
-    let frame=0;const observer=new ResizeObserver(()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>host.style.setProperty("--composer-height",wrap.offsetHeight+"px"))});
-    observer.observe(wrap);return()=>{observer.disconnect();cancelAnimationFrame(frame);host.style.removeProperty("--composer-height")};
+    const set=(name,px)=>host.style.setProperty(name,px+"px");
+    let frame=0;const observer=new ResizeObserver(()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{set("--composer-height",wrap.offsetHeight);set("--composer-chips",wrap.querySelector(":scope>.context-chip-row")?.offsetHeight||0)})});
+    observer.observe(wrap);return()=>{observer.disconnect();cancelAnimationFrame(frame);host.style.removeProperty("--composer-height");host.style.removeProperty("--composer-chips")};
   },[]);
   useEffect(()=>{onModelPickerOpenChange?.(modelOpen)},[modelOpen,onModelPickerOpenChange]);
   useEffect(()=>{if(!modelOpen)setModelQuery("")},[modelOpen]);
