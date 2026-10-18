@@ -2263,9 +2263,11 @@ export default function App(){
       const incoming=result?.data||[];rememberThreadCatalog(incoming);
       setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
       setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
+      // Only older pages read to their end (Load older threads) mark every page of the source read. A first page with no next page
+      // does not: a runtime that listed few threads, or none while it started, may list more than a page later in the session.
       setThreadHistory(current=>{
         const sameSource=current.runtimeSource===sourceKey,alreadyExhausted=sameSource&&current.runtimeExhausted,nextCursor=result?.nextCursor||null;
-        return {...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:alreadyExhausted||!nextCursor,items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:alreadyExhausted?null:nextCursor,loading:false,retrying:false,error:""};
+        return {...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:alreadyExhausted,items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:alreadyExhausted?null:nextCursor,loading:false,retrying:false,error:""};
       });
     }).catch(error=>{
       if(cancelled)return;

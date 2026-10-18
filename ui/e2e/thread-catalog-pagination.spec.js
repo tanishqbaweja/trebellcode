@@ -13,10 +13,10 @@ async function freePort(){
   const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
-// control.listed is what thread/list answers, control.listError, when set, fails it, and control.hold, when set, holds the next one
-// until it resolves; control.lists counts the lists asked for.
+// control.listed is what thread/list answers, control.older, when set, the older page its next cursor reads, control.listError, when
+// set, fails it, and control.hold, when set, holds the next one until it resolves; control.lists counts the lists asked for.
 async function startRuntimeHarness(thread){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),control={listed:[thread],listError:null,hold:null,lists:0};
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),control={listed:[thread],older:null,listError:null,hold:null,lists:0};
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>ws.on("message",async raw=>{
     const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
@@ -24,7 +24,7 @@ async function startRuntimeHarness(thread){
     if(message.method==="thread/list"){control.lists++;if(control.hold){const held=control.hold;control.hold=null;await held}}
     if(message.method==="thread/list"&&control.listError)return ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:control.listError}}));
     if(message.method==="initialize")result={userAgent:"catalog-pagination-connected-fixture"};
-    else if(message.method==="thread/list")result={data:control.listed,nextCursor:null};
+    else if(message.method==="thread/list")result=message.params?.cursor==="older-page"?{data:control.older||[],nextCursor:null}:{data:control.listed,nextCursor:control.older?"older-page":null};
     else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null};
     else if(message.method==="thread/goal/get")result={goal:null};
     else if(message.method==="thread/continuity/get")result={continuity:null};
@@ -259,4 +259,60 @@ test("a Retry left before it answers starts History over when it is shown again"
     await expect(history.getByRole("button",{name:/Runtime later/})).toBeVisible();
     await expect(history.getByRole("alert")).toHaveCount(0);
   }finally{for(const release of releases.splice(0))release();await harness.close()}
+});
+
+// The runtime lists no threads when History first opens, and later six with a next page: History offers Load older threads for
+// that page. An answer with no next page was taken for every page read, so Load older threads never came back that session and
+// the older threads could not be reached until a reload. Once the older pages are read to their end, it stays away.
+test("Load older threads comes back once the runtime lists a next page after an answer with none",async({page})=>{
+  test.setTimeout(45_000);
+  const now=Date.now()/1000,runtimeThread=(id,name,ago)=>({id,name,preview:name+" preview",cwd:process.cwd(),model:"claude-test",runtime:"claude",status:{type:"idle"},createdAt:now-ago-60,updatedAt:now-ago,turns:[]});
+  const recent=Array.from({length:6},(_,index)=>runtimeThread("runtime-recent-"+index,"Recent thread "+(index+1),index*600)),older=Array.from({length:4},(_,index)=>runtimeThread("runtime-older-"+index,"Older thread "+(index+1),86400*3+index*600));
+  const harness=await startRuntimeHarness(recent[0]);harness.control.listed=[];
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const json=body=>({status:200,contentType:"application/json",body:JSON.stringify(body)});
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill(json({mock:false,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"history-next-page-fixture",runtimeCapabilities:{},activeEnvironmentId:null,activeEnvironment:null})));
+    await page.route(/\/api\/state$/,route=>route.fulfill(json({settings,projects:[],threadMeta:{}})));
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")settings={...settings,...route.request().postDataJSON()};return route.fulfill(json(settings))});
+    await page.route(/\/api\/models$/,route=>route.fulfill(json({agentRuntime:"claude",ready:true,models:["claude-test"],metadata:{agentRuntime:"claude",models:[{id:"claude-test",name:"Claude Test",agent:"Claude Code"}]}})));
+    await page.route(/\/api\/projects$/,route=>route.fulfill(json({projects:[]})));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill(json({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill(json({enabled:false,items:[]})));
+    await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>route.fulfill(json(route.request().method()==="POST"?route.request().postDataJSON()?.patch||{}:{threadMeta:{},nextCursor:null})));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    const historyButton=page.getByRole("button",{name:"History",exact:true}),newTask=page.getByRole("button",{name:"New task",exact:true});
+    const history=page.locator(".history-page"),rows=history.locator(".history-thread-row"),load=history.getByRole("button",{name:"Load older threads"});
+    let lists=harness.control.lists;
+    await historyButton.click();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await expect(history.getByText("No thread history yet",{exact:true})).toBeVisible();await expect(load).toHaveCount(0);
+    // A new task, and the runtime now has six threads on its first page and four older ones behind its next page.
+    await newTask.click();
+    harness.control.listed=recent;harness.control.older=older;
+    lists=harness.control.lists;
+    await historyButton.click();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await expect(rows).toHaveCount(6);
+    await expect(load,"the runtime's answer has a next page").toBeVisible();
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});
+      if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await load.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`polish/history/older-threads-after-empty-answer-${mode}-${width}.png`})}
+    }
+    await page.setViewportSize({width:1280,height:800});await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
+    await load.click();
+    await expect(rows).toHaveCount(10);await expect(history.getByRole("button",{name:/Older thread 4/})).toBeVisible();await expect(load).toHaveCount(0);
+    // History again, with a thread started since: the first page still has its next page, and every page of it is listed already.
+    await newTask.click();
+    harness.control.listed=[runtimeThread("runtime-newest","Newest thread",0),...recent];
+    lists=harness.control.lists;
+    await historyButton.click();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await expect(history.getByRole("button",{name:/Newest thread/})).toBeVisible();
+    await expect(rows).toHaveCount(11);await expect(load).toHaveCount(0);
+  }finally{await harness.close()}
 });
