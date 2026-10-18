@@ -154,6 +154,7 @@ for(const action of ["Delete","Archive"]){
 // opens (Codex answers with the thread as it is then), and drainQueue has Codex start the first follow-up of its
 // queue as a turn completes, as Codex does. project makes the thread a project thread, whose follow-ups wait in Trebell's own
 // queue (Codex's queue, codex.queue, holds only General chats'); settings adds to the app's settings.
+// thread/queue/start runs a follow-up of Codex's queue the app starts as a turn of its own.
 // names: several threads, the first opened. Each turn is its thread's; turn.fail refuses its turn/start, and a thread with a started
 // turn still running resumes active, with its turns. modes: the collaboration modes Codex lists. capabilities: the runtime's
 // capabilities, when they are not Codex's own. catalog: the app's state lists the threads' meta as the server does, as a catalog
@@ -225,6 +226,14 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
       if(message.method==="thread/queue/delete"){
         const before=codex.queue.length;codex.queue=codex.queue.filter(item=>item.id!==params.queuedSubmissionId);
         respond({deleted:codex.queue.length<before});notify("thread/queue/changed",{threadId:params.threadId});return;
+      }
+      // A follow-up of Codex's queue the app starts (Send now while no turn runs) leaves the queue and runs as a turn of its own,
+      // answered first and then started.
+      if(message.method==="thread/queue/start"){
+        const item=codex.queue.find(entry=>entry.id===params.queuedSubmissionId);codex.queue=codex.queue.filter(entry=>entry!==item);
+        const turn={id:"codex-turn-"+(codex.turns.length+1),threadId:params.threadId||thread.id,status:"inProgress",started:false,timer:null,queued:item||null};codex.turns.push(turn);
+        respond({turn:{id:turn.id,status:"inProgress",items:[],startedAt:Math.floor(Date.now()/1000)}});
+        setTimeout(()=>{notify("thread/queue/changed",{threadId:turn.threadId});run(turn)},0);return;
       }
       let result={};
       if(message.method==="initialize")result={userAgent:"turn-controls-codex"};
@@ -810,6 +819,59 @@ for(const kind of ["Trebell","Codex"]){
     }finally{await codex.close()}
   });
 }
+
+// A follow-up's file goes with it too when Send now sends it while no turn runs, the queue held by a Stop: Trebell's queue starts it
+// with a turn/start of its own, Codex's with thread/queue/start, Codex being asked with what it was given when it was queued. The
+// message it sent names its file.
+for(const kind of ["Trebell","Codex"]){
+  test(`a follow-up's pasted screenshot goes with it when Send now sends it from ${kind}'s queue while no turn runs`,async({page})=>{
+    test.setTimeout(90_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Held follow-ups with files",project:kind==="Trebell"});
+    const queue=page.locator(".queued-message p"),chips=page.locator(".attachment-shelf > span"),files=text=>page.locator(".user-bubble").filter({hasText:text}).locator(".user-attachments > span");
+    const askedFor=(method,text)=>codex.sent(method).find(params=>String(params.input?.[0]?.text||"").startsWith(text));
+    try{
+      codex.holdTurns=true;
+      await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+      await expect(stop(page)).toBeVisible();
+      await typeInComposer(page,"Queued alpha with a screenshot");await pasteImage(page,"screenshot.png");await expect(chips).toHaveText(["screenshot.png"]);
+      await page.keyboard.press("Enter");await expect(queue).toHaveText(["Queued alpha with a screenshot"]);await expect(chips).toHaveCount(0);
+      // Stopped, the queue waits for the person; Send now sends alpha, its screenshot with it.
+      await stop(page).click();
+      await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/,{timeout:10_000});await expect(stop(page)).toHaveCount(0);
+      await page.locator(".queued-message").filter({hasText:"Queued alpha"}).getByRole("button",{name:"Send now"}).click();
+      await expect.poll(()=>codex.turns.length).toBe(2);if(kind==="Trebell"){codex.turns[1].answer();codex.turns[1].start()}
+      await expect(stop(page)).toBeVisible();
+      await expect(files("Queued alpha"),"the message Send now sent while no turn ran names its file").toHaveText(["screenshot.png"]);
+      await expect(page.locator(".queued-message")).toHaveCount(0);
+      if(kind==="Codex")expect(codex.sent("thread/queue/start").map(params=>codex.turns[1].queued?.id===params.queuedSubmissionId),"the follow-up Codex was asked to start").toEqual([true]);
+      expect(sentFiles(kind==="Trebell"?askedFor("turn/start","Queued alpha"):codex.turns[1].queued),"what Codex was asked for the follow-up sent now").toEqual(["image screenshot.png with its image item"]);
+      await page.locator(".user-bubble").filter({hasText:"Queued alpha"}).scrollIntoViewIfNeeded();await shoot(page,"follow-up-file-sent-now-idle-"+kind.toLowerCase()+"-queue");
+    }finally{await codex.close()}
+  });
+}
+
+// With Follow-up behavior set to steer, a message sent while a turn runs is steered into it with its pasted screenshot: the message
+// names its file under it, and the steer asks Codex with the file.
+test("a message steered into the running turn by Enter, with the steer setting, takes its pasted screenshot with it",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Steered with a file",settings:{followUpMode:"steer"}});
+  const chips=page.locator(".attachment-shelf > span"),files=text=>page.locator(".user-bubble").filter({hasText:text}).locator(".user-attachments > span");
+  try{
+    codex.holdTurns=true;
+    await sendTyped(page,"Main task.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+    await expect(stop(page)).toBeVisible();
+    await typeInComposer(page,"Steer this in with a screenshot");await pasteImage(page,"screenshot.png");await expect(chips).toHaveText(["screenshot.png"]);
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>codex.sent("turn/steer").length).toBe(1);
+    await expect(files("Steer this in"),"the message steered in names its file").toHaveText(["screenshot.png"]);
+    await expect(chips).toHaveCount(0);await expect(page.locator(".queued-message")).toHaveCount(0);
+    expect(codex.sent("turn/steer").map(sentFiles),"what the steer asked Codex").toEqual([["image screenshot.png with its image item"]]);
+    expect(codex.turns).toHaveLength(1);
+    await page.locator(".user-bubble").filter({hasText:"Steer this in"}).scrollIntoViewIfNeeded();await shoot(page,"follow-up-file-steered-by-enter");
+  }finally{await codex.close()}
+});
 
 // A Compact the harness refuses ends the one compaction row as failed; nothing is left saying it still compacts.
 test("a Compact that fails ends its row as failed, with no compaction left running",async({page})=>{
