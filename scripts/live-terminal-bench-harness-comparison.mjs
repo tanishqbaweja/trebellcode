@@ -16,7 +16,7 @@ import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTermin
 import { estimateGpt6LunaCostFromAggregate, gpt6LunaPricingForServiceTier } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
-import { benchmarkRunPrefix, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, prewarmTerminalBenchDockerImages, terminalBenchCachedTaskArtifacts, prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName } from "./terminal-bench-task-cache.mjs";
+import { benchmarkRunPrefix, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, prewarmTerminalBenchDockerImages, terminalBenchCachedTaskArtifacts, prewarmTerminalBenchTaskCache, terminalBenchTaskQualifiedName, verifierDownloadCacheArgs } from "./terminal-bench-task-cache.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -48,6 +48,8 @@ if(!Number.isFinite(SETUP_TIMEOUT_MULTIPLIER)||SETUP_TIMEOUT_MULTIPLIER<1)throw 
 const agentTimeoutArg=process.argv.find(arg=>arg.startsWith("--agent-timeout-multiplier="));
 const AGENT_TIMEOUT_MULTIPLIER=Number(agentTimeoutArg?.slice("--agent-timeout-multiplier=".length)||process.env.TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER||1);
 if(!Number.isFinite(AGENT_TIMEOUT_MULTIPLIER)||AGENT_TIMEOUT_MULTIPLIER<=0)throw new Error("Terminal-Bench agent timeout multiplier must be > 0.");
+// Opt-in and the same for every lane; the report records it.
+const VERIFIER_DOWNLOAD_CACHE=String(process.env.TREBELL_VERIFIER_DOWNLOAD_CACHE||"").trim()||null,VERIFIER_CACHE_ARGS=verifierDownloadCacheArgs(VERIFIER_DOWNLOAD_CACHE);
 const sequentialRequested=process.argv.includes("--sequential")||String(process.env.TREBELL_TERMINAL_BENCH_SEQUENTIAL||"").trim()==="1";
 const parallelRequested=process.argv.includes("--parallel")||String(process.env.TREBELL_TERMINAL_BENCH_PARALLEL||"").trim()==="1";
 if(sequentialRequested&&parallelRequested)throw new Error("Terminal-Bench comparison cannot be both --parallel and --sequential.");
@@ -273,7 +275,7 @@ try{
     status:"pending",startedAt:null,finishedAt:null,runError:null,attempts:[],retryReason:null,retryCleanup:null,infrastructureFailureReason:null,
   }));
   const reportSnapshot=({complete=false}={})=>({
-    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,hostedWebSearch:"disabled",setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,datasetMembershipPreflight,taskCachePrewarm,networkPolicyPreflight,dockerImagePrewarm,nativeGateSnapshotArtifacts,
+    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,serviceTier:SERVICE_TIER,hostedWebSearch:"disabled",setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,verifierDownloadCache:VERIFIER_DOWNLOAD_CACHE,datasetMembershipPreflight,taskCachePrewarm,networkPolicyPreflight,dockerImagePrewarm,nativeGateSnapshotArtifacts,
     usesBaseAgentTimeout:AGENT_TIMEOUT_MULTIPLIER===1,
     timeoutComparability:AGENT_TIMEOUT_MULTIPLIER===1?"benchmark-base":"extended-agent-timeout",
     sameModel:true,sameReasoningEffort:true,sameServiceTier:true,sameHostedWebSearchPolicy:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
@@ -307,7 +309,7 @@ try{
     const {label,harness,authMode}=lane;
     const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":CODEX_INSTALL_MODE==="pinned"?"benchmarks.harbor.pinned_codex_agent:PinnedCodexAgent":"codex";
     const laneState=laneStates[laneIndex];let jobName=laneState.jobName;
-    const argsForJob=currentJobName=>["run","-d",DATASET,"-i",HARBOR_TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,...(SERVICE_TIER==="fast"?["--ak","service_tier=fast"]:[]),...(harness.startsWith("codex")?["--ak","web_search=disabled"]:[]),...(harness.startsWith("codex")&&CODEX_INSTALL_MODE==="pinned"?["--ak","apps=false"]:[]),"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y"];
+    const argsForJob=currentJobName=>["run","-d",DATASET,"-i",HARBOR_TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,...(SERVICE_TIER==="fast"?["--ak","service_tier=fast"]:[]),...(harness.startsWith("codex")?["--ak","web_search=disabled"]:[]),...(harness.startsWith("codex")&&CODEX_INSTALL_MODE==="pinned"?["--ak","apps=false"]:[]),"-n","1","-o",outputRoot,"--job-name",currentJobName,"-y",...VERIFIER_CACHE_ARGS];
     let args=argsForJob(jobName);
     const retainNativeEnvironment=STANDALONE_NATIVE_RERUN&&harness==="native";
     if(retainNativeEnvironment)args.push("--no-delete");

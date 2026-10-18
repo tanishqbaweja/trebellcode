@@ -11,7 +11,8 @@ import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor }
 import { windowsHarborEnv } from "../scripts/harbor-process-env.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
-import { benchmarkRunPrefix, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, terminalBenchTaskNoNetworkSectionsFromToml, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName } from "../scripts/terminal-bench-task-cache.mjs";
+import { benchmarkRunPrefix, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, terminalBenchTaskNoNetworkSectionsFromToml, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName, verifierDownloadCacheArgs } from "../scripts/terminal-bench-task-cache.mjs";
+import { rewriteIndex, upstreamFor } from "../scripts/verifier-download-cache.mjs";
 import { isSweBenchDataset, sweBenchVerifierReportMissing } from "../scripts/terminal-bench-verifier-summary.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
@@ -368,6 +369,38 @@ test("Benchmark run IDs carry the dataset family without renaming Terminal-Bench
   assert.match(launcher,/const id=`\$\{prefix\}-detached-/);
   const watchdog=await readFile(new URL("../scripts/terminal-bench-watchdog.mjs",import.meta.url),"utf8");
   assert.match(watchdog,/\/\^\[a-z0-9\]\+-\(\?:pair\|native-rerun\)-/);
+});
+
+test("A verifier download cache reaches only the verifier, is opt-in and the same for every lane",async()=>{
+  assert.deepEqual(verifierDownloadCacheArgs(""),[]);
+  assert.deepEqual(verifierDownloadCacheArgs(null),[]);
+  const cache="http://host.docker.internal:18090";
+  assert.deepEqual(verifierDownloadCacheArgs(cache+"/"),[
+    "--ve",`UV_INSTALLER_GITHUB_BASE_URL=${cache}/gh`,
+    "--ve",`UV_PYTHON_INSTALL_MIRROR=${cache}/gh/astral-sh/python-build-standalone/releases/download`,
+    "--ve",`UV_DEFAULT_INDEX=${cache}/pypi/simple`,
+    "--ve",`PIP_INDEX_URL=${cache}/pypi/simple`,
+    "--ve","PIP_TRUSTED_HOST=host.docker.internal",
+  ]);
+  assert.throws(()=>verifierDownloadCacheArgs("host.docker.internal:18090"),/must look like/);
+  assert.throws(()=>verifierDownloadCacheArgs("http://user:secret@cache:8080"),/must look like/);
+  const comparison=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
+  assert.match(comparison,/VERIFIER_CACHE_ARGS=verifierDownloadCacheArgs\(VERIFIER_DOWNLOAD_CACHE\)/);
+  assert.match(comparison,/"--job-name",currentJobName,"-y",\.\.\.VERIFIER_CACHE_ARGS\]/);
+  assert.match(comparison,/verifierDownloadCache:VERIFIER_DOWNLOAD_CACHE/);
+  assert.doesNotMatch(comparison,/"--ae"[^\n]*(UV_|PIP_)|harnessEnv\.(UV_|PIP_)/);
+});
+
+test("The verifier download cache maps only release assets and PyPI paths, and points index links at itself",()=>{
+  assert.deepEqual(upstreamFor("/gh/astral-sh/uv/releases/download/0.9.5/uv-x86_64-unknown-linux-gnu.tar.gz"),{kind:"file",url:"https://github.com/astral-sh/uv/releases/download/0.9.5/uv-x86_64-unknown-linux-gnu.tar.gz",cachePath:"gh/astral-sh/uv/releases/download/0.9.5/uv-x86_64-unknown-linux-gnu.tar.gz"});
+  assert.equal(upstreamFor("/gh/astral-sh/python-build-standalone/releases/download/20251014/cpython-3.13.9%2B20251014-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz").url,"https://github.com/astral-sh/python-build-standalone/releases/download/20251014/cpython-3.13.9%2B20251014-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz");
+  assert.deepEqual(upstreamFor("/pypi/simple/Pytest-JSON-CTRF/"),{kind:"index",url:"https://pypi.org/simple/pytest-json-ctrf/"});
+  assert.equal(upstreamFor("/pypi/files/packages/29/16/c8a903f4c4dffe7a12843191437d7cd8e32751d5de349d45d3fe69544e87/pytest-8.4.1-py3-none-any.whl.metadata").url,"https://files.pythonhosted.org/packages/29/16/c8a903f4c4dffe7a12843191437d7cd8e32751d5de349d45d3fe69544e87/pytest-8.4.1-py3-none-any.whl.metadata");
+  for(const path of ["/gh/astral-sh/uv/blob/main/README.md","/pypi/files/packages/../../etc/passwd","/pypi/files/../secret","/elsewhere","/gh/a/b/releases/download/t/x/y"])assert.equal(upstreamFor(path),null,path);
+  const html='<a href="https://files.pythonhosted.org/packages/aa/bb/x-1.0.tar.gz#sha256=00">x</a>';
+  assert.equal(rewriteIndex(html,"http://host.docker.internal:18090"),'<a href="http://host.docker.internal:18090/pypi/files/packages/aa/bb/x-1.0.tar.gz#sha256=00">x</a>');
+  const json='{"files":[{"url":"https://files.pythonhosted.org/packages/cc/x.whl","hashes":{"sha256":"11"}}]}';
+  assert.equal(JSON.parse(rewriteIndex(json,"http://h:1")).files[0].url,"http://h:1/pypi/files/packages/cc/x.whl");
 });
 
 test("Terminal-Bench Docker subnet retry only recognizes pre-agent exhaustion",()=>{

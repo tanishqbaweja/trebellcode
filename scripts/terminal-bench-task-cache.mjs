@@ -22,6 +22,26 @@ export function benchmarkRunPrefix(dataset){
   return (pkg.split("/").pop()||"").replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,20)||"bench";
 }
 
+// A verifier that installs its test tools at grade time (Terminal-Bench 2.0's test.sh fetches uv and Python from GitHub releases,
+// and pytest and the task's test libraries from PyPI) can take them from scripts/verifier-download-cache.mjs on the host. From
+// inside the Docker VM those downloads are slow, and GitHub's release CDN resets them partway. Harbor's --ve sets the variables
+// for the verifier only, so the agent's environment is unchanged. The files are the same bytes, checked by uv's installer
+// checksum and by the index's sha256.
+export function verifierDownloadCacheArgs(cache){
+  const url=String(cache||"").trim().replace(/\/+$/,"");
+  if(!url)return [];
+  const host=url.match(/^http:\/\/([a-z0-9.-]+):\d+$/i)?.[1];
+  if(!host)throw new Error(`Verifier download cache must look like http://host.docker.internal:18090, not ${url}`);
+  const env={
+    UV_INSTALLER_GITHUB_BASE_URL:`${url}/gh`,
+    UV_PYTHON_INSTALL_MIRROR:`${url}/gh/astral-sh/python-build-standalone/releases/download`,
+    UV_DEFAULT_INDEX:`${url}/pypi/simple`,
+    PIP_INDEX_URL:`${url}/pypi/simple`,
+    PIP_TRUSTED_HOST:host,
+  };
+  return Object.entries(env).flatMap(([key,value])=>["--ve",`${key}=${value}`]);
+}
+
 export function terminalBenchTaskDockerImagesFromToml(text){
   const images=[];let section="";
   for(const rawLine of String(text||"").split(/\r?\n/)){
