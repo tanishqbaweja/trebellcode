@@ -946,6 +946,35 @@ for(const order of ["Codex","the agent relay"]){
   });
 }
 
+// A turn the person asked something in, which Codex compacts first and then ends with no reply, says it finished without one under
+// its message, live and once the next turn starts, its card saying it compacted: only a compaction turn of its own (Compact's) has
+// no such row.
+test("a person's turn whose only step is a compaction Codex made first still says it finished without a reply when it ends with none",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex compact"});
+  const rows=page.locator(".tool-event").filter({hasText:/compact/i});
+  try{
+    await sendTyped(page,"Tidy the code.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();
+    const threadId=codex.thread.id,item={type:"contextCompaction",id:"auto-compaction-1"};
+    codex.notify("turn/started",{threadId,turn:{id:turn.id,status:"inProgress",items:[]}});await expect(stop(page)).toBeVisible();
+    codex.notify("item/started",{threadId,turnId:turn.id,item});codex.notify("item/completed",{threadId,turnId:turn.id,item,completedAtMs:Date.now()});codex.notify("thread/compacted",{threadId,turnId:turn.id});
+    turn.status="completed";codex.notify("turn/completed",{threadId,turn:{id:turn.id,status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
+    await expect(rows).toHaveCount(1);await expect(rows.locator("summary strong")).toHaveText("Context compacted");
+    const ended=page.locator(`[data-testid=turn-outcome-row][data-turn-id="${turn.id}"] .turn-outcome-message`);
+    await expect.soft(ended,"the person's turn, compacted and then ended with no reply, live").toHaveText("Finished without a reply.");
+    await rows.scrollIntoViewIfNeeded();await shoot(page,"compacted-turn-without-reply");
+    // Once the next turn starts, the turn's card says it compacted, and its row still says it ended with no reply.
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(2);const next=codex.turns[1];next.answer();next.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    const card=page.locator(`[data-testid=activity-card][data-turn-id="${turn.id}"]`);
+    await expect(card.locator(".activity-card-summary")).toHaveText("1 step");
+    await expect(ended,"the person's turn, compacted and then ended with no reply, once the next turn started").toHaveText("Finished without a reply.");
+  }finally{await codex.close()}
+});
+
 // A double click on Compact compacts once. Its first click compacts and Compact goes while the compaction's turn runs, so the second
 // lands where Compact was, beside the meter's reading: it does nothing there, as the rest of a press on a queued follow-up's buttons
 // does nothing, and no text of the composer's footer is selected, then or once Compact is back. At 1280 and 900 wide.

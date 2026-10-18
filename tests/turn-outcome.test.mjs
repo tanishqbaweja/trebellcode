@@ -276,8 +276,14 @@ test("a completed compaction, a turn whose steps are all compactions, has no row
   assert.deepEqual([...rows.keys()],["u3"]);
   assert.deepEqual(rows.get("u3"),[{turnId:"t3",heading:"Codex",outcomeLabel:"done · 0.7s",outcomeTone:"ok",message:"Finished without a reply.",latest:true}]);
   assert.deepEqual([...turnEndRows(messages,{...options,compactionTurnIds:new Set(["c2"])}).keys()],["u3"]);
-  // A compaction of the person's own turn (a harness's /compact after a reload) has none either; a stopped or failed one keeps its row.
-  assert.deepEqual([...turnEndRows(messages,{...options,compactionTurnIds:["c2","t3"]}).keys()],[]);
+  // A turn the person asked something in keeps its note when its only step was a compaction (Codex compacted first, then ended with
+  // no reply); a harness's /compact turn, which shows its "/compact" message after a reload, has none. A stopped or failed
+  // compaction keeps its row.
+  assert.deepEqual([...turnEndRows(messages,{...options,compactionTurnIds:["c2","t3"]}).keys()],["u3"]);
+  assert.deepEqual(turnEndRows(messages,{...options,compactionTurnIds:["c2","t3"]}).get("u3"),rows.get("u3"));
+  const relayed=[...messages,{id:"u4",role:"user",text:"/compact",turnId:"t4"}],relayedOptions={...options,turnInfo:{...turnInfo,[turnInfoKey("th","t4")]:{status:"completed",durationMs:600}},turnOrder:["t1","c2","t3","t4"]};
+  assert.deepEqual([...turnEndRows(relayed,relayedOptions).keys()],["u3","u4","a1"]);
+  assert.deepEqual([...turnEndRows(relayed,{...relayedOptions,compactionTurnIds:["c2","t4"]}).keys()],["u3"]);
   for(const [status,label,tone,message] of [["interrupted","stopped · 1.5s","warn",""],["failed","failed · 1.5s","err","Compaction failed."]]){
     const ended={...turnInfo,[turnInfoKey("th","c2")]:{status,durationMs:1500,...(message?{error:message}:{})}};
     assert.deepEqual(turnEndRows(messages,{...options,turnInfo:ended,compactionTurnIds:["c2"]}).get("a1"),[{turnId:"c2",heading:"Codex",outcomeLabel:label,outcomeTone:tone,message,latest:false}]);

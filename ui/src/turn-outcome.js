@@ -174,6 +174,8 @@ export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=nu
 // that is not loaded either, so it never reads as finished without one; nor does a turn the relay's history import made
 // ("import-…"): it keeps a conversation's messages only and calls every turn completed, an interrupted request too. A completed
 // compaction (compactionTurnIds: a turn whose steps are all compactions, as Compact's is) has no row: its card says it compacted.
+// That is a compaction turn of its own, with no message from the person (Compact's) or only a harness's "/compact" (the relay's,
+// after a reload): a turn the person asked something in, which compacted first and then ended with no reply, still says so.
 // latest: the row is the card's turn's own and reads below the card with the rest of that turn (conversation-order.js);
 // never in a virtualized list, which keeps its order.
 function turnEndPlacement(messages=[],{harnessLabel="",turnInfo=null,threadId=null,cardFailedTurnIds=null,cardTurnId=null,reorder=true,turnOrder=null,gapBeforeId=null,startLoaded=false,incompleteTurnIds=null,compactionTurnIds=null}={}){
@@ -189,10 +191,11 @@ function turnEndPlacement(messages=[],{harnessLabel="",turnInfo=null,threadId=nu
   const ends=new Map(),card=cardTurnId==null?"":String(cardTurnId),gap=gapBeforeId==null?null:String(gapBeforeId);
   const incomplete=incompleteTurnIds instanceof Set?incompleteTurnIds:new Set((incompleteTurnIds||[]).map(String));
   const compactions=compactionTurnIds instanceof Set?compactionTurnIds:new Set((compactionTurnIds||[]).map(String));
+  const compactionAlone=turnId=>{if(!compactions.has(turnId))return false;const at=lastUserRow.get(turnId);return at==null||String(list[at]?.text||"").trim()==="/compact"};
   const ending=turnId=>{
     const info=turnInfo?.[turnInfoKey(threadId,turnId)]||null,pill=turnOutcomePill(info);
     if(!pill||(pill.tone==="err"&&cardFailedTurnIds?.has?.(turnId)))return null;
-    if(pill.tone==="ok")return incomplete.has(turnId)||compactions.has(turnId)||turnId.startsWith("import-")?null:{info,pill,note:"Finished without a reply."};
+    if(pill.tone==="ok")return incomplete.has(turnId)||compactionAlone(turnId)||turnId.startsWith("import-")?null:{info,pill,note:"Finished without a reply."};
     return {info,pill};
   };
   const add=(key,turnId,{info,pill,note=""},index)=>{
