@@ -150,7 +150,8 @@ for(const action of ["Delete","Archive"]){
 // does, an interrupt for a turn not started yet is refused ("no active turn to interrupt"). interruptDelayMs holds the interrupt's
 // answer (Codex answers once the turn has stopped), interruptError refuses every interrupt with that message, the turn going on,
 // compactError fails thread/compact/start with that message, holdTurns keeps a turn running after its reply until it is set
-// false, steerHold, a gate, holds turn/steer's answer until it opens, and drainQueue has Codex start the first follow-up of its
+// false, steerHold, a gate, holds turn/steer's answer until it opens, resumeHold, a gate, holds thread/resume's answer until it
+// opens (Codex answers with the thread as it is then), and drainQueue has Codex start the first follow-up of its
 // queue as a turn completes, as Codex does. project makes the thread a project thread, whose follow-ups wait in Trebell's own
 // queue (Codex's queue, codex.queue, holds only General chats'); settings adds to the app's settings.
 // names: several threads, the first opened. Each turn is its thread's; turn.fail refuses its turn/start, and a thread with a started
@@ -209,6 +210,7 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
       }
       if(message.method==="thread/compact/start"&&codex.compactError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.compactError}}));return}
       if(message.method==="turn/steer"&&codex.steerHold){codex.steerHold.promise.then(()=>respond({}));return}
+      if(message.method==="thread/resume"&&codex.resumeHold){codex.resumeHold.promise.then(()=>respond({thread:live(threads.find(item=>item.id===params.threadId)||thread),itemsBackwardsCursor:null,turnsBackwardsCursor:null}));return}
       if(message.method==="turn/interrupt"){
         codex.interrupts.push({...params});const turn=codex.turns.find(item=>item.id===params.turnId);
         if(codex.interruptError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.interruptError}}));return}
@@ -662,6 +664,100 @@ test("a follow-up on its way says it is being sent, with Send now, Edit and Remo
     context.open();await expect.poll(()=>codex.turns.length).toBe(4);codex.turns[3].answer();codex.turns[3].start();
     await expect(page.locator(".queued-message")).toHaveCount(0);await expect(sent("Queued gamma")).toHaveCount(1);
     expect(codex.turns).toHaveLength(4);expect(codex.calls.filter(method=>method==="turn/steer")).toHaveLength(1);
+  }finally{await codex.close()}
+});
+
+// The turn/start requests that sent a follow-up, by the text it starts with.
+const startsOf=(codex,text)=>codex.sent("turn/start").filter(params=>String(params.input?.[0]?.text||"").startsWith(text)).length;
+
+// A follow-up whose turn starts while its thread is being opened again (Codex answers the open only once the turn has started) has
+// left the queue when the thread shows: its card is gone, not left reading as being sent with its buttons off, and it is sent once,
+// the next follow-up starting by itself when its turn ends.
+test("a follow-up whose turn starts while its thread opens again has left the queue when the thread shows, and is sent once",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Sent while it opens",project:true});
+  const queue=page.locator(".queued-message p"),labels=page.locator(".queued-message>span"),sent=text=>page.locator(".user-bubble").filter({hasText:text});
+  const resumes=()=>codex.calls.filter(method=>method==="thread/resume").length,written=[];
+  try{
+    // A follow-up's send waits on its repository context while context is a gate not yet open.
+    let context=null;await page.route(/\/api\/context\/packet$/,async route=>{await context?.promise;await route.fallback()});
+    // The queues the window writes for the thread, in order.
+    await page.route(/\/api\/thread-meta$/,route=>{const queued=route.request().method()==="POST"?route.request().postDataJSON()?.patch?.trebellQueue:null;if(Array.isArray(queued))written.push(queued.map(item=>item.text));return route.fallback()});
+    codex.holdTurns=true;
+    await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+    await expect(stop(page)).toBeVisible();
+    for(const text of ["Queued alpha","Queued beta"]){await sendTyped(page,text);await expect(page.locator(".queued-message").filter({hasText:text})).toHaveCount(1)}
+    // The turn ends and the queue starts alpha, whose send waits on its context.
+    context=gate();codex.holdTurns=false;
+    await expect(sent("Queued alpha")).toBeVisible({timeout:10_000});codex.holdTurns=true;
+    await expect(labels).toHaveText(["Sending…","Queued"]);
+    // Away, and back on the thread, which Codex has not answered yet when alpha's turn starts and the queue lets alpha go.
+    await newTask(page).click();await expectIdleNewTask(page);
+    const before=resumes();codex.resumeHold=gate();
+    await threadRow(page,"Sent while it opens").locator(".thread-main").click();
+    await expect.poll(resumes).toBe(before+1);
+    context.open();await expect.poll(()=>codex.turns.length).toBe(2);codex.turns[1].start();codex.turns[1].answer();
+    await expect.poll(()=>JSON.stringify(written.at(-1))).toBe(JSON.stringify(["Queued beta"]));await page.waitForTimeout(400);
+    codex.resumeHold.open();codex.resumeHold=null;
+    await expect(stop(page)).toBeVisible({timeout:10_000});await expect(composer(page)).toBeEnabled();
+    await expect.soft(queue,"the queue once the thread shows, alpha's turn started").toHaveText(["Queued beta"]);
+    await expect.soft(labels,"beta's card once the thread shows").toHaveText(["Queued"]);
+    await shoot(page,"follow-up-sent-while-its-thread-opens");
+    // alpha's turn ends: beta starts by itself, and alpha is not sent again.
+    codex.holdTurns=false;
+    await expect.poll(()=>codex.turns.length,{timeout:15_000}).toBe(3);
+    expect(startsOf(codex,"Queued alpha"),"the turn/start requests that sent alpha").toBe(1);
+    codex.turns[2].answer();codex.turns[2].start();
+    await expect(sent("Queued beta")).toBeVisible();await expect(page.locator(".queued-message")).toHaveCount(0);
+    await page.waitForTimeout(600);expect(startsOf(codex,"Queued alpha")).toBe(1);expect(startsOf(codex,"Queued beta")).toBe(1);
+  }finally{await codex.close()}
+});
+
+// Send now on a follow-up holds it from the press on: until its card reads as being sent (the write of its dispatch mark is slow
+// here) a second Send now, Edit and Remove, whose buttons are still on, leave it to that send, which sends it once. Remove no longer
+// takes away a follow-up that is sent anyway, Edit no longer puts it in the composer to be sent again, and a second Send now no longer
+// starts a second turn for it.
+test("Send now again, Edit and Remove on a follow-up just sent now, before its card says it is being sent, leave it to that send, which sends it once",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Sent now once",project:true});
+  const queue=page.locator(".queued-message p"),labels=page.locator(".queued-message>span"),sent=text=>page.locator(".user-bubble").filter({hasText:text});
+  const button=(text,name)=>page.locator(".queued-message").filter({hasText:text}).getByRole("button",{name,exact:true});
+  try{
+    codex.holdTurns=true;
+    await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+    await expect(stop(page)).toBeVisible();
+    for(const text of ["Queued alpha","Queued beta"]){await sendTyped(page,text);await expect(page.locator(".queued-message").filter({hasText:text})).toHaveCount(1)}
+    // Stopped, the queue waits for the person.
+    await stop(page).click();
+    await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/,{timeout:10_000});
+    await expect(labels).toHaveText(Array(2).fill("Queued · held after Stop"));
+    // The write of alpha's dispatch mark waits for the gate, so after Send now its card still reads as before, its buttons on.
+    const mark=gate();let marks=0;
+    await page.route(/\/api\/thread-meta$/,async route=>{
+      const queued=route.request().method()==="POST"?route.request().postDataJSON()?.patch?.trebellQueue:null;
+      if(Array.isArray(queued)&&queued.some(item=>item.text==="Queued alpha"&&item.dispatchingAt)){marks++;await mark.promise}
+      await route.fallback();
+    });
+    await button("Queued alpha","Send now").click();
+    await expect.poll(()=>marks).toBe(1);
+    await expect(labels).toHaveText(Array(2).fill("Queued · held after Stop"));
+    for(const name of ["Send now","Edit","Remove"])await expect(button("Queued alpha",name)).toBeEnabled();
+    // Pressed meanwhile, Send now, Edit and Remove leave it to the send that has it.
+    await button("Queued alpha","Send now").click();await page.waitForTimeout(200);
+    await button("Queued alpha","Edit").click();await page.waitForTimeout(200);
+    await expect.soft(composer(page),"Edit put the follow-up the send has into the composer").toHaveValue("");
+    await button("Queued alpha","Remove").click();await page.waitForTimeout(400);
+    await expect.soft(queue,"Remove took away the follow-up the send has").toHaveText(["Queued alpha","Queued beta"]);
+    // Its mark written, alpha reads as being sent and goes, once.
+    mark.open();
+    await expect.poll(()=>codex.turns.length).toBeGreaterThanOrEqual(2);codex.turns[1].answer();codex.turns[1].start();
+    await expect(sent("Queued alpha")).toHaveCount(1);
+    await expect(queue).toHaveText(["Queued beta"]);await expect(labels).toHaveText(["Queued"]);await expect(composer(page)).toHaveValue("");
+    await page.waitForTimeout(800);
+    expect(startsOf(codex,"Queued alpha"),"the turn/start requests that sent alpha").toBe(1);expect(marks,"the writes of alpha's dispatch mark").toBe(1);
+    expect(codex.turns).toHaveLength(2);
   }finally{await codex.close()}
 });
 
