@@ -5224,8 +5224,9 @@ export default function App(){
   // A welcome suggestion fills the composer and gives it the focus with the caret at the end, so Enter sends it and typing carries on.
   // It replaces the draft as an edit does, so a note about the draft it replaces goes.
   function suggestPrompt(text){composerPromptEdit();setPrompt(text);requestAnimationFrame(()=>{const node=document.querySelector('[data-testid="composer"]');if(!node)return;node.focus();node.setSelectionRange(text.length,text.length)})}
+  // keywords: another name a command is found by, the one the sidebar gives its destination.
   const paletteActions=paletteOpen?[
-    {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:shortcutHint(commandKey("newChat")),onRun:newTask},
+    {id:"new",label:"New thread",detail:"Start a clean coding task",keywords:"New task",shortcut:shortcutHint(commandKey("newChat")),onRun:newTask},
     {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
     ...(window.trebellDesktop?.pickDirectory?[{id:"folder",label:"Open workspace folder",detail:projectPath||"Choose a local folder",onRun:pickWorkspace}]:[]),
     {id:"projects",label:"Recent projects",detail:"Switch checkouts or clone a repository",onRun:()=>navigateSection("projects")},

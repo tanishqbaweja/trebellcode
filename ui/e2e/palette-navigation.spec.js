@@ -719,3 +719,39 @@ test("Opening an older thread keeps its place in the thread list and its age, af
     }
   }finally{await fixture.close()}
 });
+
+// The sidebar names Ctrl+N's destination New task: typed in the palette, that name finds its command (it said "No matching command or
+// thread."), as the command's own name does, and Enter on it opens a new task.
+test("the palette finds the command for Ctrl+N by New task, the sidebar's name for it, and Enter on it opens a new task",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const saved={};
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(saved)})});
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Review the release",preview:"Release"}]});
+  try{
+    await fixture.open("Review the release");
+    const palette=page.locator(".command-palette"),items=palette.locator(".command-palette-item"),header=page.locator(".workspace-header");
+    await expect(nav(page,"New task").locator("kbd")).toHaveText("Ctrl+N");
+    for(const pass of ["dark","light"]){
+      if(pass==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      await pressShortcut(page,"Control+K");await expect(palette).toBeVisible();
+      await page.keyboard.type("New task",{delay:25});
+      await expect(palette.getByText("No matching command or thread.")).toHaveCount(0);
+      await expect(items,"the commands New task finds").toHaveCount(1);
+      await expect(items.first()).toHaveClass(/selected/);await expect(items.first().locator("kbd")).toHaveText("Ctrl+N");
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(items.first()).toBeInViewport();await page.screenshot({animations:"disabled",path:`${shots}palette-new-task-${pass}-${width}x800.png`})}
+      await page.setViewportSize({width:1280,height:800});
+      if(pass==="dark"){await page.keyboard.press("Escape");await expect(palette).toHaveCount(0)}
+    }
+    // Enter runs it: the new task replaces the open thread, with the keyboard in its composer.
+    await expect(header).toContainText("Review the release");
+    await page.keyboard.press("Enter");
+    await expect(palette).toHaveCount(0);
+    await expect(header).toContainText("New Trebell task");await expect(page.getByTestId("composer")).toBeFocused();
+    // The command's own name finds it as before.
+    await pressShortcut(page,"Control+K");await expect(palette).toBeVisible();
+    await page.keyboard.type("New thread",{delay:25});
+    await expect(items).toHaveCount(1);await expect(items.first().locator("kbd")).toHaveText("Ctrl+N");
+    await page.keyboard.press("Escape");await expect(palette).toHaveCount(0);
+  }finally{await fixture.close()}
+});

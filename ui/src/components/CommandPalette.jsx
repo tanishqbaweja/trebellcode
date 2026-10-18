@@ -135,7 +135,8 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
       return {id:"thread:"+thread.id,kind:"thread",label:thread.name||thread.preview||"Untitled task",detail:excerpt?"Message · "+excerpt:environment+" · "+(thread.cwd||"Open thread"),messageMatch:Boolean(excerpt),onRun:()=>onOpenThread?.(thread)};
     });
     const all=actionOnly?commands:[...commands,...projectItems,...threadItems];
-    return (q?all.filter(item=>item.messageMatch||(item.label+" "+(item.detail||"")).toLowerCase().includes(q)):all).slice(0,24);
+    // A command is found by its name, its detail and the other name it goes by (keywords: "New task", as the sidebar calls New thread).
+    return (q?all.filter(item=>item.messageMatch||[item.label,item.detail,item.keywords].filter(Boolean).join(" ").toLowerCase().includes(q)):all).slice(0,24);
   },[actions,projects,threads,environmentNames,onOpenProject,onOpenThread,query,messageMatches]);
   useEffect(()=>{if(selected>=items.length)setSelected(Math.max(0,items.length-1))},[items.length,selected]);
   useEffect(()=>{
