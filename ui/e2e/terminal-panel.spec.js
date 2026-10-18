@@ -587,27 +587,38 @@ test("after the terminal worker dies its terminal shows it stopped, and New open
   }finally{await shell.close()}
 });
 
+// The drawer's terminal tabs: tab(name) is the button that selects one, startNew(count) presses New and waits for its prompt,
+// ended(name,mark,label) waits for a tab's mark of how its terminal ended, and inView(name) says whether that tab's box shows
+// whole inside the tab row, which scrolls when the tabs overflow it.
+function terminalTabs(page,drawer){
+  const tab=name=>drawer.locator(".terminal-tab-select").filter({has:page.getByText(name,{exact:true})});
+  return {
+    tab,
+    async startNew(count){
+      await drawer.getByRole("button",{name:"New",exact:true}).click();
+      await expect(drawer.locator(".terminal-tab")).toHaveCount(count,{timeout:20_000});
+      await expect(drawer.locator(".terminal-pane.active .terminal-screen")).toHaveText(PROMPT,{timeout:20_000});
+    },
+    // Its mark says how the terminal ended, to a hover (its title) and to a screen reader (the tab's name).
+    async ended(name,mark,label){
+      await expect(tab(name).locator("em"),name+"'s tab says it ended").toHaveText(mark,{timeout:15_000});
+      await expect(tab(name).locator("em")).toBeVisible();
+      await expect(tab(name).locator("em")).toHaveAttribute("title",label);
+      await expect(tab(name)).toHaveAccessibleName(name+" "+label);
+    },
+    inView:name=>tab(name).evaluate(node=>{const box=node.parentElement.getBoundingClientRect(),row=node.closest(".terminal-tab-list").getBoundingClientRect();return box.left>=row.left-1&&box.right<=row.right+1}),
+  };
+}
+
 // Every terminal that ends says so on its own tab, the one shown and the others, without being selected: that it stopped (a terminal
 // worker that dies leaves no exit code), or the exit code its shell ended with. After the worker died the shown tab's mark was empty,
-// and a tab not shown said nothing until it was selected.
+// and a tab not shown said nothing until it was selected. A tab's mark makes it wider, and the shown tab stays in view as it does.
 test("after the terminal worker dies each terminal's tab says it stopped, the one shown and the others, and a terminal not shown that exits shows its exit code, without being selected",async({page,request})=>{
   test.setTimeout(120_000);
   const shell=await realTerminals(page);
   try{
     const {drawer}=await openTerminal(page,request);
-    const tab=name=>drawer.locator(".terminal-tab-select").filter({has:page.getByText(name,{exact:true})});
-    const startNew=async count=>{
-      await drawer.getByRole("button",{name:"New",exact:true}).click();
-      await expect(drawer.locator(".terminal-tab")).toHaveCount(count,{timeout:20_000});
-      await expect(drawer.locator(".terminal-pane.active .terminal-screen")).toHaveText(PROMPT,{timeout:20_000});
-    };
-    // Its mark says how the terminal ended, to a hover (its title) and to a screen reader (the tab's name).
-    const ended=async(name,mark,label)=>{
-      await expect(tab(name).locator("em"),name+"'s tab says it ended").toHaveText(mark,{timeout:15_000});
-      await expect(tab(name).locator("em")).toBeVisible();
-      await expect(tab(name).locator("em")).toHaveAttribute("title",label);
-      await expect(tab(name)).toHaveAccessibleName(name+" "+label);
-    };
+    const {tab,startNew,ended,inView}=terminalTabs(page,drawer);
     await startNew(2);
     shell.terminals.child.kill();
     await ended("Terminal 2","stopped","Stopped");
@@ -615,17 +626,42 @@ test("after the terminal worker dies each terminal's tab says it stopped, the on
     await expect(tab("Terminal 2"),"the shown terminal stays the one shown").toHaveAttribute("aria-current","true");
     await expect(tab("Terminal 1")).not.toHaveAttribute("aria-current");
     await shots(page,"terminal-tabs-stopped-with-worker");
-    // Terminal 3's shell exits while Terminal 4 is shown (the test writes its exit to it, as a script ending in exit 3 does).
+    // Terminal 3's shell exits while Terminal 4 is shown (the test writes its exit to it, as a script ending in exit 3 does), in the
+    // 900 px window the shots end at, where the four tabs overflow the tab row and the shown one was scrolled into view as it opened.
+    expect(await page.evaluate(()=>window.innerWidth)).toBe(900);
     await startNew(3);await startNew(4);
+    await expect.poll(()=>inView("Terminal 4"),{message:"the new terminal's tab is in view"}).toBe(true);
     await expect(tab("Terminal 3").locator("em"),"a running terminal's tab has no mark").toHaveCount(0);
     await shell.terminals.write(shell.terminals.list(null).find(session=>session.name==="Terminal 3").id,"exit 3\r");
     await ended("Terminal 3","3","Exited with code 3");
+    // Terminal 3's mark makes its tab wider, and the shown tab beside it stays in view without any resize of the window.
+    await expect.poll(()=>inView("Terminal 4"),{message:"the shown terminal's tab stays in view as the tab before it gets its mark",timeout:3_000}).toBe(true);
     await expect(tab("Terminal 4")).toHaveAttribute("aria-current","true");
     await expect(tab("Terminal 4").locator("em")).toHaveCount(0);
     await expect(tab("Terminal 4")).toHaveAccessibleName("Terminal 4");
     await shots(page,"terminal-tab-exit-code-not-shown");
-    // The four tabs with their marks overflow the tab row of the 900 px window the shots end at: the shown one stays in view.
-    await expect.poll(()=>tab("Terminal 4").evaluate(node=>{const box=node.parentElement.getBoundingClientRect(),row=node.closest(".terminal-tab-list").getBoundingClientRect();return box.left>=row.left-1&&box.right<=row.right+1}),{message:"the shown terminal's tab is in view"}).toBe(true);
+    await expect.poll(()=>inView("Terminal 4"),{message:"the shown terminal's tab is in view"}).toBe(true);
+  }finally{await shell.close()}
+});
+
+// In a 900 px window four terminals overflow the tab row, and the last one, shown, was scrolled into view as it opened. When the
+// terminal worker dies every tab gets its "stopped" mark at once, the shown one too, which moved the shown tab out of the row's view.
+test("in a 900 px window with four terminals and the last one shown, the shown terminal's tab stays in view as every tab says it stopped when the worker dies",async({page,request})=>{
+  test.setTimeout(120_000);
+  const shell=await realTerminals(page);
+  try{
+    await page.setViewportSize({width:900,height:800});
+    const {drawer}=await openTerminal(page,request);
+    const {tab,startNew,ended,inView}=terminalTabs(page,drawer);
+    await startNew(2);await startNew(3);await startNew(4);
+    await expect(tab("Terminal 4")).toHaveAttribute("aria-current","true");
+    await expect.poll(()=>inView("Terminal 4"),{message:"the new terminal's tab is in view"}).toBe(true);
+    expect(await inView("Terminal 1"),"the four tabs overflow the tab row").toBe(false);
+    shell.terminals.child.kill();
+    for(const name of ["Terminal 4","Terminal 3","Terminal 2","Terminal 1"])await ended(name,"stopped","Stopped");
+    await expect.poll(()=>inView("Terminal 4"),{message:"the shown terminal's tab stays in view as every tab gets its mark",timeout:3_000}).toBe(true);
+    await expect(tab("Terminal 4")).toHaveAttribute("aria-current","true");
+    await shots(page,"terminal-four-tabs-stopped",[900,1280]);
   }finally{await shell.close()}
 });
 

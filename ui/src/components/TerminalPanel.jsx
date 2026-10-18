@@ -145,12 +145,15 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   // The active session tab stays in view when more tabs are open than the header row can show (the tab's box, which holds its
   // select and close buttons, is the one marked active).
   useEffect(()=>{tabListRef.current?.querySelector(".terminal-tab.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"})},[activeId,sessions.length]);
-  // The tab list shows once the sessions are listed.
+  // The tab list shows once the sessions are listed. The shown tab stays in view as the row or any tab in it changes width: a tab
+  // grows when it says its terminal ended (its mark), which moved the shown tab out of the row's view.
+  const tabIds=sessions.map(session=>session.id).join("|");
   useEffect(()=>{
     const list=tabListRef.current;if(!list||typeof ResizeObserver==="undefined")return;
     const observer=new ResizeObserver(()=>list.querySelector(".terminal-tab.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"}));
-    observer.observe(list);return()=>observer.disconnect();
-  },[listed]);
+    observer.observe(list);for(const tab of list.children)observer.observe(tab);
+    return()=>observer.disconnect();
+  },[listed,tabIds]);
 
   // Names take the lowest free number ("Terminal 2" again after it was closed) instead of the session count, which repeated
   // names once a middle terminal was closed; `created` covers sessions made earlier in the same action.
