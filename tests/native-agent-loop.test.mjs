@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderRejectedImage, nativeProviderRetryable, nativeTerminalAuditMetadata, readOnlyInspectionRun, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn as runNativeAgentTurnImpl } from "../src/native-agent-loop.mjs";
+import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderNetworkFailure, nativeProviderRejectedImage, nativeProviderRetryable, nativeTerminalAuditMetadata, readOnlyInspectionRun, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn as runNativeAgentTurnImpl } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
@@ -6710,6 +6710,53 @@ test("native agent waits out rate limits on their own bounded retry budget",asyn
     providerTurn:async()=>{cappedAttempts++;throw rateLimit()},executeTool:async()=>"",
   }),/rate limit reached/i);
   assert.equal(cappedAttempts,3);
+});
+
+test("native agent sends a request that never got an answer again after longer waits once the quick retries are spent",async()=>{
+  const dropped=()=>Object.assign(new TypeError("fetch failed"),{cause:Object.assign(new Error("other side closed"),{code:"UND_ERR_SOCKET"})});
+  const events=[];let attempts=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"through the outage"}],retryBaseDelayMs:0,networkRetryDelaysMs:[1,2,3,4],onEvent:event=>events.push(event),
+    providerTurn:async()=>{attempts++;if(attempts<=6)throw dropped();return {text:"back",toolCalls:[],usage:{inputTokens:2,outputTokens:1,totalTokens:3}}},executeTool:async()=>"",
+  });
+  assert.equal(result.text,"back");assert.equal(attempts,7);
+  const retries=events.filter(event=>event.name==="native.model.retrying").map(event=>event.data);
+  assert.deepEqual(retries.map(data=>data.delayMs),[0,0,1,2,3,4]);
+  assert.deepEqual(retries.map(data=>data.maxAttempts),[3,3,4,5,6,7]);
+  assert.deepEqual(retries.map(data=>data.networkRetry??null),[null,null,1,2,3,4]);
+  // The budget ends: the quick attempts plus four longer waits, then the failure is the turn's.
+  let spent=0;
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",messages:[],retryBaseDelayMs:0,networkRetryDelaysMs:[1],
+    providerTurn:async()=>{spent++;throw dropped()},executeTool:async()=>"",
+  }),/fetch failed/);
+  assert.equal(spent,7);
+  // Answers that came back, timeouts, and a budget of zero keep the three attempts they had.
+  for(const [failure,options] of [
+    [()=>Object.assign(new Error("temporarily unavailable"),{status:503}),{}],
+    [()=>new DOMException("The operation was aborted due to timeout","TimeoutError"),{}],
+    [dropped,{maxNetworkRetries:0}],
+  ]){
+    let tries=0;
+    await assert.rejects(()=>runNativeAgentTurn({model:"test-model",messages:[],retryBaseDelayMs:0,networkRetryDelaysMs:[1],...options,providerTurn:async()=>{tries++;throw failure()},executeTool:async()=>""}));
+    assert.equal(tries,3);
+  }
+  // A stop during a long wait ends the turn at once.
+  const controller=new AbortController(),started=Date.now();let stopped=0;
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",messages:[],signal:controller.signal,retryBaseDelayMs:0,networkRetryDelaysMs:[60_000],
+    providerTurn:async()=>{stopped++;if(stopped===3)setTimeout(()=>controller.abort(),20);throw dropped()},executeTool:async()=>"",
+  }),error=>error?.name==="AbortError");
+  assert.equal(stopped,3);assert.ok(Date.now()-started<10_000);
+  assert.equal(nativeProviderNetworkFailure(dropped()),true);
+  assert.equal(nativeProviderNetworkFailure(Object.assign(new Error("reset"),{code:"ECONNRESET"})),true);
+  assert.equal(nativeProviderNetworkFailure(new Error("Could not reach OpenAI: getaddrinfo EAI_AGAIN api.openai.com")),true);
+  assert.equal(nativeProviderNetworkFailure(Object.assign(new Error("socket closed after send"),{transportFailure:true})),true);
+  assert.equal(nativeProviderNetworkFailure(Object.assign(new Error("bad websocket protocol"),{protocolFailure:true,transportFailure:true})),false);
+  assert.equal(nativeProviderNetworkFailure(Object.assign(new Error("fetch failed upstream"),{status:502})),false);
+  assert.equal(nativeProviderNetworkFailure(new DOMException("The operation was aborted due to timeout","TimeoutError")),false);
+  assert.equal(nativeProviderNetworkFailure(new DOMException("cancelled by caller","AbortError")),false);
+  assert.equal(nativeProviderNetworkFailure(Object.assign(new Error("Rate limit reached"),{rateLimited:true,retryable:true})),false);
 });
 
 test("native agent retries only transient provider inference failures",async()=>{

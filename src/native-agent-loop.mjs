@@ -1182,6 +1182,21 @@ export function nativeProviderRetryable(error){
   return /\b(?:timeout|timed out|fetch failed|network error|socket hang up|connection reset|temporar(?:y|ily) unavailable|rate limit(?:ed)?)\b/.test(message);
 }
 
+// A request that never got an answer because the connection could not be made or was closed first (Wi-Fi dropping, a
+// sleeping laptop, a proxy restart). These outages often outlast the quick retries: on 2026-10-18 a benchmark run's first
+// request failed three times over 33 s with "fetch failed" (undici "other side closed" after the request was sent), while the
+// next launch a minute later worked. A timeout, an HTTP status and a WebSocket protocol failure are not this.
+const NETWORK_FAILURE_CODES=new Set(["ECONNRESET","ECONNREFUSED","ECONNABORTED","EPIPE","EAI_AGAIN","ENOTFOUND","ENETDOWN","ENETUNREACH","EHOSTUNREACH","UND_ERR_SOCKET","UND_ERR_CONNECT_TIMEOUT"]);
+export function nativeProviderNetworkFailure(error){
+  if(!error||error?.name==="AbortError"||error?.name==="TimeoutError"||error?.protocolFailure===true)return false;
+  if(Number(error.status||error.statusCode||0))return false;
+  if(error?.transportFailure===true)return true;
+  for(let cause=error,depth=0;cause&&depth<4;cause=cause.cause,depth++)if(NETWORK_FAILURE_CODES.has(String(cause.code||"").toUpperCase()))return true;
+  return /\b(?:fetch failed|could not reach|other side closed|socket hang up|connection reset|network error)\b/i.test(String(error.message||error));
+}
+// Once the quick retries are spent, a request that never got an answer is sent again after these waits (about 50 s in all).
+const NETWORK_RETRY_DELAYS_MS=[2_000,5_000,15_000,30_000];
+
 // A provider refuses a whole request when it cannot decode one of its images (OpenAI: HTTP 400 "The image data you provided
 // does not represent a valid image"), and the same request fails the same way every time, so one undecodable image from a
 // tool, an MCP server or an attachment used to end the run. The request's new images are replaced by a note and it is sent
@@ -1295,7 +1310,7 @@ export async function runNativeAgentTurn({
   maxCompletionRecoveryEpochs=1,
   // True when the session's permission profile refuses every change (Read only); see the request flags below.
   changesRefused=false,
-  maxProviderAttempts=3,maxRateLimitRetries=6,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
+  maxProviderAttempts=3,maxRateLimitRetries=6,maxNetworkRetries=NETWORK_RETRY_DELAYS_MS.length,networkRetryDelaysMs=NETWORK_RETRY_DELAYS_MS,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
   autoRerunVerification=false,semanticCompletionGate=false,abstractionRepairVerification=false,midTaskProgressCheckpoints=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,directGitStatus=false,directProcessRunningStatus=false,directBrowserRuntimeStatus=false,directBrowserScreenshot=false,prepareProviderMessages=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
@@ -2135,10 +2150,11 @@ export async function runNativeAgentTurn({
     const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
     if(Number(providerView?.count||0)>0)emit(onEvent,{name:"native.context.provider_view_compacted",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,count:Number(providerView.count||0),savedChars:Number(providerView.savedChars||0)}});
     emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:providerMessages.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),completionGate:completionGateMode,batchEvidencePrecommitGate:completionGateCandidate?.phase==="precommit",batchEvidencePostcommitGate:completionGateCandidate?.phase==="postcommit",abstractionRepairVerificationGate:abstractionRepairVerificationGateMode,requestMetrics}});
-    const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8}),rateLimitRetryLimit=boundedInteger(maxRateLimitRetries,6,{min:0,max:16});let response=null,rateLimitRetries=0,imageRecoveryScope=null;
+    const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8}),rateLimitRetryLimit=boundedInteger(maxRateLimitRetries,6,{min:0,max:16}),networkRetryLimit=boundedInteger(maxNetworkRetries,NETWORK_RETRY_DELAYS_MS.length,{min:0,max:8});let response=null,rateLimitRetries=0,networkRetries=0,imageRecoveryScope=null;
     // Rate limits are account back-pressure with a server-suggested wait, so they get their own
-    // bounded budget instead of consuming the attempts reserved for transient failures.
-    for(let attempt=1;attempt<=providerAttempts+rateLimitRetries;attempt++){
+    // bounded budget instead of consuming the attempts reserved for transient failures. A request that never got an answer
+    // gets a budget of its own too, with longer waits, once the quick retries are spent.
+    for(let attempt=1;attempt<=providerAttempts+rateLimitRetries+networkRetries;attempt++){
       try{
         response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens:requestMaxOutputTokens,temperature,reasoningEffort:requestReasoningEffort,parallelToolCalls,responseJsonSchema:officialOpenAiControlGate&&batchEvidenceGateSchemaRequired?{name:completionGateCandidate.phase==="precommit"?"trebell_batch_evidence_precommit_gate":"trebell_batch_evidence_postcommit_gate",strict:true,schema:completionGateCandidate.phase==="precommit"?BATCH_EVIDENCE_PRECOMMIT_RESPONSE_SCHEMA:COMPLETION_GATE_RESPONSE_SCHEMA}:null,signal:turnSignal,metadata:controlGateMode?{...(metadata&&typeof metadata==="object"?metadata:{}),completionGate:true,batchEvidencePrecommitGate:completionGateCandidate?.phase==="precommit",batchEvidencePostcommitGate:completionGateCandidate?.phase==="postcommit",abstractionRepairVerificationGate:abstractionRepairVerificationGateMode,controlGateRetry}:metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
       }catch(error){
@@ -2164,10 +2180,15 @@ export async function runNativeAgentTurn({
         }
         const retryable=nativeProviderRetryable(error),rateLimited=retryable&&error?.rateLimited===true;
         if(rateLimited&&rateLimitRetries<rateLimitRetryLimit)rateLimitRetries++;
-        if(!retryable||attempt>=providerAttempts+rateLimitRetries)throw error;
+        let networkRetry=false,networkWaitMs=0;
+        if(retryable&&!rateLimited&&attempt>=providerAttempts+rateLimitRetries+networkRetries&&networkRetries<networkRetryLimit&&nativeProviderNetworkFailure(error)){
+          const waits=Array.isArray(networkRetryDelaysMs)&&networkRetryDelaysMs.length?networkRetryDelaysMs:NETWORK_RETRY_DELAYS_MS;
+          networkWaitMs=Math.max(0,Math.min(60_000,Math.trunc(Number(waits[Math.min(networkRetries,waits.length-1)])||0)));networkRetries++;networkRetry=true;
+        }
+        if(!retryable||attempt>=providerAttempts+rateLimitRetries+networkRetries)throw error;
         const retryAfterMs=rateLimited&&Number.isFinite(Number(error.retryAfterMs))?Math.max(0,Math.ceil(Number(error.retryAfterMs))):null;
-        const delay=Math.max(Math.min(60_000,retryAfterMs||0),Math.max(0,Math.min(10_000,Math.trunc(Number(retryBaseDelayMs)||0)*2**(attempt-1))));
-        emit(onEvent,{name:"native.model.retrying",status:"retrying",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,attempt,nextAttempt:attempt+1,maxAttempts:providerAttempts+rateLimitRetries,delayMs:delay,rateLimited,retryAfterMs,status:Number(error.status||error.statusCode||0)||null,code:error.code||null,message:String(error.message||error).slice(0,500),providerTelemetry:error?.telemetry||null}});
+        const delay=networkRetry?networkWaitMs:Math.max(Math.min(60_000,retryAfterMs||0),Math.max(0,Math.min(10_000,Math.trunc(Number(retryBaseDelayMs)||0)*2**(attempt-1))));
+        emit(onEvent,{name:"native.model.retrying",status:"retrying",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,attempt,nextAttempt:attempt+1,maxAttempts:providerAttempts+rateLimitRetries+networkRetries,delayMs:delay,rateLimited,retryAfterMs,status:Number(error.status||error.statusCode||0)||null,code:error.code||null,message:String(error.message||error).slice(0,500),providerTelemetry:error?.telemetry||null,...(networkRetry?{networkRetry:networkRetries}:{})}});
         await retryDelay(delay,turnSignal);
       }
     }
