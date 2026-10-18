@@ -495,10 +495,12 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .composer-right{gap:6px}
 /* The left group asks for the width its pickers' values need. Where they and the right group do not fit on one row (Thinking and
    Speed beside a project's workspace picker in a 900 or 700 wide window), the right group goes under them, at the right as in the
-   stacked layout below, and pickers that do not fit beside each other wrap: none is cut to "Thinking…" or "Speed · …". */
+   stacked layout below, and pickers that do not fit beside each other wrap: none is cut to "Thinking…" or "Speed · …". The right
+   group asks for its controls' width too, up to the whole row: the legacy sheet held it to 52%, so beside a harness's agent picker
+   the model picker ran over the mic from 1000 wide down. */
 .composer-wrap .composer-bar{flex-wrap:wrap;row-gap:6px}
 .composer-wrap .composer-left{flex:1 1 auto;flex-wrap:wrap}
-.composer-wrap .composer-right{margin-left:auto}
+.composer-wrap .composer-right{margin-left:auto;max-width:100%}
 /* Narrow composer (inspector open at 1280, small windows): the legacy container query stacks the left group above
    the right group (e2e specs rely on that order). Keep the pills compact so the left group stays on one row where
    possible, and keep the model picker at its natural width next to voice and send instead of stretching it. */
@@ -518,7 +520,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap select:hover:not(:disabled){border-color:var(--line2);color:var(--tx0)}
 .composer-wrap select:disabled{opacity:.55;cursor:not-allowed}
 .composer-wrap .workspace-mode{max-width:160px}
-.composer-wrap .model-picker-button{height:30px;width:auto;min-width:0;max-width:min(260px,32vw);gap:8px;padding:0 9px 0 11px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--bg3);color:var(--tx1);font:500 11px var(--mono);transition:border-color .14s,color .14s}
+/* The model picker is never wider than its place in the row: a longer name is cut with an ellipsis, never drawn over the mic. */
+.composer-wrap .model-picker-wrap{max-width:min(260px,32vw)}
+.composer-wrap .model-picker-button{height:30px;width:auto;min-width:0;max-width:100%;gap:8px;padding:0 9px 0 11px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--bg3);color:var(--tx1);font:500 11px var(--mono);transition:border-color .14s,color .14s}
 .composer-wrap .model-picker-button:hover:not(:disabled){border-color:var(--line2);color:var(--tx0)}
 .composer-wrap .model-picker-button svg{flex:none;color:var(--tx2)}
 .composer-wrap .model-picker-button.multi{border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:var(--acsoft);color:var(--ac)}

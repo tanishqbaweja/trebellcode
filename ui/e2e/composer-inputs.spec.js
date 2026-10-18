@@ -1,11 +1,13 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { mkdir,writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WebSocket } from "ws";
+import { WebSocket,WebSocketServer } from "ws";
 import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 import { routeCodexApp,startCodexHarness } from "./codex-history-harness.js";
+import { keepThreadMeta } from "./test-home.js";
 
 // What a person puts into the composer besides typed text (files, slash commands, dictation, the welcome suggestions), over a
 // Trebell Native thread on the real agent relay. Attachments go to the GUI server as they do in the app.
@@ -1088,3 +1090,93 @@ test("Ctrl+S held stashes the draft once, and held on the empty composer brings 
     await page.keyboard.press("Control+b");await expect(shell).not.toHaveClass(/sidebar-collapsed/);
   }finally{await harness.close()}
 });
+
+// An OpenCode thread whose session lists provider agents, so the composer shows the agent picker ("build · primary") beside the
+// model picker, on a socket that answers what the window asks as it opens the thread. The catalog's second model has a longer name.
+async function openAgentsThread(page){
+  const thread={id:"opencode-agents-thread",runtime:"opencode",name:"OpenCode agents",preview:"Agents",agent:"build",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,status:{type:"idle"},turns:[],
+    providerMeta:{session_info_update:{agents:[{name:"build",mode:"primary"},{name:"plan",mode:"primary"},{name:"reviewer",mode:"subagent"}]}}};
+  const http=createServer(),wss=new WebSocketServer({noServer:true});
+  http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>ws.on("message",raw=>{
+    const message=JSON.parse(String(raw)),method=message.method;if(message.id==null||!method)return;
+    const result=method==="initialize"?{userAgent:"composer-agents-fixture"}:method==="thread/list"?{data:[thread],nextCursor:null}:method==="thread/resume"||method==="thread/read"?{thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null}
+      :method==="thread/goal/get"?{goal:null}:method==="thread/runtimeInstances/list"?{supported:false,currentInstanceId:null,items:[]}:method.endsWith("/list")?{data:[],nextCursor:null}:{};
+    ws.send(JSON.stringify({id:message.id,result}));
+  }));
+  await new Promise((resolve,reject)=>http.listen(0,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",agentRuntimeInstanceId:"opencode-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const status={id:"opencode-default",kind:"opencode",name:"OpenCode",available:true,installed:true,authenticated:true,version:"1.0.0-fixture"};
+  await keepThreadMeta(page);
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"opencode",agentRuntimeInstanceId:"opencode-default",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${http.address().port}/api/agent/ws`,cwd:process.cwd(),platform:process.platform,version:"composer-agents-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}}));
+  await page.route(/\/api\/settings$/,route=>json(route,route.request().method()==="POST"?Object.assign(settings,route.request().postDataJSON()||{}):settings));
+  await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,{agentRuntime:"opencode",ready:true,models:["opencode/fixture-fast","opencode/fixture-large"],defaultModel:"opencode/fixture-fast",error:null,
+    metadata:{models:[{id:"opencode/fixture-fast",name:"OpenCode Fixture Fast",agent:"opencode"},{id:"opencode/fixture-large",name:"OpenCode Fixture Large Context",agent:"opencode"}]}}));
+  await page.route(/\/api\/agent-runtimes(?:\?.*)?$/,route=>json(route,{selectedRuntime:"opencode",selectedInstanceId:status.id,definitions:[{id:"opencode",name:"OpenCode",protocol:"http"}],instances:[{id:status.id,kind:"opencode",displayName:"OpenCode",enabled:true}],statuses:[status]}));
+  for(const [path,value] of [[/\/api\/projects$/,{projects:[]}],[/\/api\/general-workspace$/,{path:process.cwd(),environmentId:null}],[/\/api\/stashes$/,{stashes:[]}],[/\/api\/recovery$/,{enabled:false,items:[]}],
+    [/\/api\/checkpoints(?:\?.*)?$/,{checkpoints:[]}],[/\/api\/environment\/themes$/,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}]])await page.route(path,route=>json(route,value));
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await page.locator('.thread-main[title="OpenCode agents"]').click();
+  await expect(page.locator(".agent-picker")).toHaveValue("build");
+  return {async close(){for(const ws of wss.clients)ws.terminate();wss.close();await new Promise(resolve=>http.close(resolve))}};
+}
+// The composer's right-hand controls as a person finds them: what the page answers at the middle of each (the control itself, or what
+// covers it), the ones that run over each other, whether the mic sits between the model picker and Send, and the model's name: whole,
+// or cut with an ellipsis.
+const readComposerRight=page=>page.locator(".composer-bar").evaluate(bar=>{
+  const parts={agent:".agent-picker",model:"[data-testid=model-picker]",mic:".mic-btn",send:"[data-testid=send]"},names=Object.keys(parts),nodes={},boxes={},hits={},overlaps=[];
+  for(const name of names){nodes[name]=bar.querySelector(parts[name]);boxes[name]=nodes[name].getBoundingClientRect()}
+  for(const name of names){const box=boxes[name],at=document.elementFromPoint(box.left+box.width/2,box.top+box.height/2);hits[name]=names.find(other=>nodes[other].contains(at))||String(at?.className||at?.tagName)}
+  names.forEach((a,index)=>names.slice(index+1).forEach(b=>{const p=boxes[a],q=boxes[b];if(p.left<q.right-1&&q.left<p.right-1&&p.top<q.bottom-1&&q.top<p.bottom-1)overlaps.push(a+"/"+b)}));
+  const label=nodes.model.querySelector("strong");
+  return {hits,overlaps,micBetween:boxes.model.right<=boxes.mic.left+1&&boxes.mic.right<=boxes.send.left+1,label:label.scrollWidth<=label.clientWidth+1?"whole":getComputedStyle(label).textOverflow==="ellipsis"?"cut with an ellipsis":"cut"};
+});
+const controlsClear={hits:{agent:"agent",model:"model",mic:"mic",send:"send"},overlaps:[],micBetween:true};
+
+// Beside OpenCode's agent picker, the model picker kept its whole label in a group held to about half the composer, so from 1000 wide
+// down it ran over the mic and a click there opened the model picker. The mic stays between the model picker and Send at every width,
+// in both modes, and a name too long for its pill is cut with an ellipsis, whole in the open picker.
+test("beside OpenCode's agent picker the mic stays clickable between the model picker and Send at every width, the model's name whole or cut with an ellipsis",async({page})=>{
+  test.setTimeout(120_000);
+  await scriptedDictation(page);
+  const fixture=await openAgentsThread(page);
+  try{
+    const picker=page.getByTestId("model-picker"),mic=page.getByRole("button",{name:"Voice dictation"}),menu=page.locator(".model-picker-menu");
+    const shown=expect.stringMatching(/^(whole|cut with an ellipsis)$/);
+    await expect(picker).toContainText("OpenCode Fixture Fast");
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const width of [1280,1100,1000,900,800,700]){
+        await page.setViewportSize({width,height:800});
+        await expect.poll(()=>readComposerRight(page),{message:`the composer's controls at ${width}x800 in ${mode}`}).toEqual({...controlsClear,label:shown});
+        await mic.click({trial:true,timeout:5000});
+        if([1280,900,700].includes(width))await page.screenshot({animations:"disabled",path:auditDir+`agent-picker-composer-${mode}-${width}x800.png`});
+      }
+    }
+    // The longer name, picked from the open picker, is whole there; at 700 its pill cuts it with an ellipsis, clear of the mic.
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+    await picker.click();await expect(menu).toBeVisible();
+    expect(await menu.locator(":scope>button strong").evaluateAll(nodes=>nodes.map(node=>node.textContent+(node.scrollWidth>node.clientWidth+1?" (cut)":"")))).toEqual(["OpenCode Fixture Fast","OpenCode Fixture Large Context"]);
+    await menu.getByRole("button",{name:/OpenCode Fixture Large Context/}).click();
+    await expect(menu).toHaveCount(0);await expect(picker).toContainText("OpenCode Fixture Large Context");
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const width of [1280,700]){
+        await page.setViewportSize({width,height:800});
+        await expect.poll(()=>readComposerRight(page),{message:`the longer name at ${width}x800 in ${mode}`}).toEqual({...controlsClear,label:width===700?"cut with an ellipsis":shown});
+        await mic.click({trial:true,timeout:5000});
+      }
+      await page.screenshot({animations:"disabled",path:auditDir+`agent-picker-longer-model-${mode}-700x800.png`});
+    }
+    // At 900, a click where the mic is goes to the mic: it says the microphone is blocked, and the model picker stays closed.
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");await page.setViewportSize({width:900,height:800});
+    await expect.poll(()=>readComposerRight(page),{message:"the composer's controls at 900x800"}).toEqual({...controlsClear,label:shown});
+    const box=await mic.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);
+    await expect(page.getByTestId("composer-alert")).toHaveText("The microphone is blocked. Allow microphone access for Trebell Code to dictate.");
+    await expect(menu).toHaveCount(0);
+  }finally{await fixture.close()}
+});
+
