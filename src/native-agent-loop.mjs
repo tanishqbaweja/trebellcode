@@ -1194,8 +1194,32 @@ export function nativeProviderNetworkFailure(error){
   for(let cause=error,depth=0;cause&&depth<4;cause=cause.cause,depth++)if(NETWORK_FAILURE_CODES.has(String(cause.code||"").toUpperCase()))return true;
   return /\b(?:fetch failed|could not reach|other side closed|socket hang up|connection reset|network error)\b/i.test(String(error.message||error));
 }
+// The connection could not be made at all: the provider's name did not resolve, there was no route to it, or the connect
+// timed out. The network itself is away then, so the request is waited out (Codex's ConnectionFailed). A refused connection
+// is not this: the host answered, so a local model server that is not running still fails after the bounded waits.
+const CONNECT_FAILURE_CODES=new Set(["EAI_AGAIN","ENOTFOUND","ENETDOWN","ENETUNREACH","EHOSTUNREACH","UND_ERR_CONNECT_TIMEOUT"]);
+export function nativeProviderConnectFailure(error){
+  if(!nativeProviderNetworkFailure(error))return false;
+  for(let cause=error,depth=0;cause&&depth<4;cause=cause.cause,depth++)if(CONNECT_FAILURE_CODES.has(String(cause.code||"").toUpperCase()))return true;
+  return /\b(?:getaddrinfo|EAI_AGAIN|ENOTFOUND|ENETDOWN|ENETUNREACH|EHOSTUNREACH)\b/.test(String(error.message||error));
+}
+// The deepest message under a failure that never got an answer ("getaddrinfo ENOTFOUND api.openai.com" under "fetch failed").
+function networkFailureDetail(error){
+  let detail=String(error?.message||error||"");
+  for(let cause=error?.cause,depth=0;cause&&depth<4;cause=cause.cause,depth++)if(cause.message)detail=String(cause.message);
+  return detail.replace(/\s+/g," ").trim().slice(0,300);
+}
 // Once the quick retries are spent, a request that never got an answer is sent again after these waits (about 50 s in all).
+// One whose connection could not be made at all is then sent again every minute for as long as that lasts, until it gets
+// through or the turn is stopped, as Codex 0.158.0 does (core/src/responses_retry.rs, UnboundedConnectionRetries: 5, 10, 20
+// and 40 s, then 60 s, with no limit). On 2026-10-19 the host's DNS failed for about half an hour: two Native lanes gave up
+// after seven tries in two minutes (getaddrinfo EAI_AGAIN and ENOTFOUND api.openai.com), while Codex's lanes on the same
+// tasks waited 26 and 18 minutes and then resolved both.
 const NETWORK_RETRY_DELAYS_MS=[2_000,5_000,15_000,30_000];
+const NETWORK_WAIT_MS=60_000;
+// A wait for the network is announced (the retry event's waitingForNetwork) from the third wait on, 15 s with the defaults:
+// a blip the first two waits ride out stays quiet, as it did before.
+const NETWORK_NOTICE_FROM_RETRY=3;
 
 // A provider refuses a whole request when it cannot decode one of its images (OpenAI: HTTP 400 "The image data you provided
 // does not represent a valid image"), and the same request fails the same way every time, so one undecodable image from a
@@ -1310,7 +1334,7 @@ export async function runNativeAgentTurn({
   maxCompletionRecoveryEpochs=1,
   // True when the session's permission profile refuses every change (Read only); see the request flags below.
   changesRefused=false,
-  maxProviderAttempts=3,maxRateLimitRetries=6,maxNetworkRetries=NETWORK_RETRY_DELAYS_MS.length,networkRetryDelaysMs=NETWORK_RETRY_DELAYS_MS,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
+  maxProviderAttempts=3,maxRateLimitRetries=6,maxNetworkRetries=NETWORK_RETRY_DELAYS_MS.length,networkRetryDelaysMs=NETWORK_RETRY_DELAYS_MS,waitForNetwork=true,networkWaitIntervalMs=NETWORK_WAIT_MS,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
   autoRerunVerification=false,semanticCompletionGate=false,abstractionRepairVerification=false,midTaskProgressCheckpoints=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,directGitStatus=false,directProcessRunningStatus=false,directBrowserRuntimeStatus=false,directBrowserScreenshot=false,prepareProviderMessages=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
@@ -2180,15 +2204,20 @@ export async function runNativeAgentTurn({
         }
         const retryable=nativeProviderRetryable(error),rateLimited=retryable&&error?.rateLimited===true;
         if(rateLimited&&rateLimitRetries<rateLimitRetryLimit)rateLimitRetries++;
-        let networkRetry=false,networkWaitMs=0;
-        if(retryable&&!rateLimited&&attempt>=providerAttempts+rateLimitRetries+networkRetries&&networkRetries<networkRetryLimit&&nativeProviderNetworkFailure(error)){
+        let networkRetry=false,networkWaitMs=0,waitingForNetwork=false;
+        if(retryable&&!rateLimited&&attempt>=providerAttempts+rateLimitRetries+networkRetries&&nativeProviderNetworkFailure(error)){
           const waits=Array.isArray(networkRetryDelaysMs)&&networkRetryDelaysMs.length?networkRetryDelaysMs:NETWORK_RETRY_DELAYS_MS;
-          networkWaitMs=Math.max(0,Math.min(60_000,Math.trunc(Number(waits[Math.min(networkRetries,waits.length-1)])||0)));networkRetries++;networkRetry=true;
+          // Past the bounded waits, only a connection that could not be made at all is waited out, every minute.
+          const away=waitForNetwork!==false&&nativeProviderConnectFailure(error);
+          if(networkRetries<networkRetryLimit){networkWaitMs=Math.max(0,Math.min(60_000,Math.trunc(Number(waits[Math.min(networkRetries,waits.length-1)])||0)));networkRetry=true}
+          // At least 1 ms: a wait of 0 does not yield, and an unbounded run of instant failures would never let a stop through.
+          else if(away){networkWaitMs=Math.max(1,Math.min(60_000,Math.trunc(Number(networkWaitIntervalMs)||0)));networkRetry=true}
+          if(networkRetry){networkRetries++;waitingForNetwork=away&&networkRetries>=NETWORK_NOTICE_FROM_RETRY}
         }
         if(!retryable||attempt>=providerAttempts+rateLimitRetries+networkRetries)throw error;
         const retryAfterMs=rateLimited&&Number.isFinite(Number(error.retryAfterMs))?Math.max(0,Math.ceil(Number(error.retryAfterMs))):null;
         const delay=networkRetry?networkWaitMs:Math.max(Math.min(60_000,retryAfterMs||0),Math.max(0,Math.min(10_000,Math.trunc(Number(retryBaseDelayMs)||0)*2**(attempt-1))));
-        emit(onEvent,{name:"native.model.retrying",status:"retrying",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,attempt,nextAttempt:attempt+1,maxAttempts:providerAttempts+rateLimitRetries+networkRetries,delayMs:delay,rateLimited,retryAfterMs,status:Number(error.status||error.statusCode||0)||null,code:error.code||null,message:String(error.message||error).slice(0,500),providerTelemetry:error?.telemetry||null,...(networkRetry?{networkRetry:networkRetries}:{})}});
+        emit(onEvent,{name:"native.model.retrying",status:"retrying",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,attempt,nextAttempt:attempt+1,maxAttempts:providerAttempts+rateLimitRetries+networkRetries,delayMs:delay,rateLimited,retryAfterMs,status:Number(error.status||error.statusCode||0)||null,code:error.code||null,message:String(error.message||error).slice(0,500),providerTelemetry:error?.telemetry||null,...(networkRetry?{networkRetry:networkRetries,waitingForNetwork,detail:networkFailureDetail(error)}:{})}});
         await retryDelay(delay,turnSignal);
       }
     }

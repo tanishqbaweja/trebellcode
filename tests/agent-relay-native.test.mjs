@@ -35,6 +35,7 @@ function client(ws){
     if(message.method){notifications.push(message);for(let index=waiters.length-1;index>=0;index--){const waiter=waiters[index];if(waiter.predicate(message)){waiters.splice(index,1);clearTimeout(waiter.timer);waiter.resolve(message)}}}
   });
   return {
+    notifications,
     request(method,params={}){return new Promise((resolve,reject)=>{const requestId=++id;pending.set(requestId,{resolve,reject});ws.send(JSON.stringify({id:requestId,method,params}))})},
     waitFor(predicate,timeoutMs=NOTIFICATION_BOUND_MS){const found=notifications.find(predicate);if(found)return Promise.resolve(found);return new Promise((resolve,reject)=>{const waiter={predicate,resolve,reject,timer:setTimeout(()=>{const index=waiters.indexOf(waiter);if(index>=0)waiters.splice(index,1);reject(new Error("Timed out waiting for relay notification"))},timeoutMs)};waiters.push(waiter)})},
   };
@@ -92,6 +93,31 @@ test("Trebell Native relay forwards an explicit reasoning effort and resets to p
     const first=(await rpc.request("turn/start",{threadId:thread.id,model:"gpt-6-luna",modelProvider:"openai",reasoningEffort:"high",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"first"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
     const second=(await rpc.request("turn/start",{threadId:thread.id,model:"model-b",modelProvider:"hcnsec",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"second"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);
     assert.deepEqual(seen,[{provider:"openai",model:"gpt-6-luna",reasoningEffort:"high"},{provider:"hcnsec",model:"model-b",reasoningEffort:null}]);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+test("Trebell Native relay says on the turn's retry row that a request waits for the network, and the turn goes on when it gets through",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-network-wait-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;
+  // The 2026-10-19 outage's failure, the provider's name not resolving: the two quick retries and the first two network waits
+  // (2 and 5 s) pass unannounced, and the third wait (15 s) is announced.
+  const nativeProviderTurn=async request=>{
+    calls++;if(calls<=5)throw Object.assign(new TypeError("fetch failed"),{cause:Object.assign(new Error("getaddrinfo ENOTFOUND api.openai.com"),{code:"ENOTFOUND"})});
+    return {id:"after-outage",provider:request.provider,model:request.model,text:"Back online.",toolCalls:[],finishReason:"stop",usage:{}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"gpt-6-luna",modelProvider:"openai",cwd:repo,projectless:false,approvalPolicy:"never",sandbox:"read-only",dynamicTools:[]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"gpt-6-luna",modelProvider:"openai",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"hello"}]})).turn;
+    const notice=await rpc.waitFor(message=>message.method==="error"&&message.params?.turnId===turn.id);
+    assert.deepEqual(notice.params,{threadId:thread.id,turnId:turn.id,willRetry:true,error:{message:"Waiting for the network (getaddrinfo ENOTFOUND api.openai.com). Trying again in 15 s."}});
+    const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);
+    assert.equal(completed.params.turn.status,"completed");assert.equal(calls,6);
+    assert.equal(rpc.notifications.filter(message=>message.method==="error").length,1);
+    const read=(await rpc.request("thread/read",{threadId:thread.id})).thread;
+    assert.ok(read.turns[0].items.some(item=>item.type==="agentMessage"&&/Back online/.test(item.text)));
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 

@@ -663,6 +663,12 @@ function formQuestions(params){
   }));
 }
 
+// The turn's retry row while a Native request waits for the network to come back: what failed, and when it is sent again.
+export function nativeNetworkWaitMessage(data={}){
+  const seconds=Math.max(1,Math.round(Number(data?.delayMs||0)/1000)),detail=String(data?.detail||data?.message||"").replace(/\s+/g," ").trim();
+  return `Waiting for the network${detail?` (${detail})`:""}. Trying again in ${seconds} s.`;
+}
+
 // claudeSdk: the Claude Agent SDK the relay's Claude Code sessions drive, when not the installed one (tests pass a scripted one).
 export function attachAgentRelay(server,{runtimeManager,threadStore,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null,claudeSdk=null}={}){
   const wss=new WebSocketServer({noServer:true});
@@ -1117,6 +1123,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
             const count=Math.max(0,Math.floor(Number(event?.data?.modelTurn)||0));
             if(active&&count>Number(active.modelTurns||0))threadStore.updateTurn(thread.id,active.id,{modelTurns:count});
           }
+          // The turn goes on while the request waits for the network, and its retry row says so, as Codex's does.
+          if(event?.name==="native.model.retrying"&&event.data?.waitingForNetwork===true&&activeTurnId)emit("error",{threadId:thread.id,turnId:activeTurnId,willRetry:true,error:{message:nativeNetworkWaitMessage(event.data)}});
           journal?.record?.({runtime:"native",provider:providerId,environmentId:current?.providerMeta?.environmentId??null,threadId:thread.id,turnId:activeTurnId,category,name:event.name,status:event.status,data:event.data||{}});
         },
       });

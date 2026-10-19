@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderNetworkFailure, nativeProviderRejectedImage, nativeProviderRetryable, nativeTerminalAuditMetadata, readOnlyInspectionRun, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn as runNativeAgentTurnImpl } from "../src/native-agent-loop.mjs";
+import { batchEvidencePrecommitRecordAuditCoverage, compactBatchEvidencePrecommitProviderMessages, compactCompletionGateProviderMessages, explicitPersistentArtifactTargets, nativeAgentBudget, nativeProviderConnectFailure, nativeProviderNetworkFailure,nativeProviderRejectedImage, nativeProviderRetryable, nativeTerminalAuditMetadata, readOnlyInspectionRun, requestsTaskMutation, requestsWorkspaceMutation, runNativeAgentTurn as runNativeAgentTurnImpl } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
@@ -6757,6 +6757,54 @@ test("native agent sends a request that never got an answer again after longer w
   assert.equal(nativeProviderNetworkFailure(new DOMException("The operation was aborted due to timeout","TimeoutError")),false);
   assert.equal(nativeProviderNetworkFailure(new DOMException("cancelled by caller","AbortError")),false);
   assert.equal(nativeProviderNetworkFailure(Object.assign(new Error("Rate limit reached"),{rateLimited:true,retryable:true})),false);
+});
+
+test("native agent waits out a network that is away, every minute until the request gets through, as Codex does",async()=>{
+  const unresolved=(code="ENOTFOUND")=>Object.assign(new TypeError("fetch failed"),{cause:Object.assign(new Error(`getaddrinfo ${code} api.openai.com`),{code,syscall:"getaddrinfo",hostname:"api.openai.com"})});
+  // The 2026-10-19 outage: the name did not resolve for many tries in a row, then the request went through.
+  const events=[];let attempts=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"through the outage"}],retryBaseDelayMs:0,networkRetryDelaysMs:[1,2,3,4],networkWaitIntervalMs:5,onEvent:event=>events.push(event),
+    providerTurn:async()=>{attempts++;if(attempts<=12)throw unresolved(attempts%2?"EAI_AGAIN":"ENOTFOUND");return {text:"back",toolCalls:[],usage:{inputTokens:2,outputTokens:1,totalTokens:3}}},executeTool:async()=>"",
+  });
+  assert.equal(result.text,"back");assert.equal(attempts,13);
+  const retries=events.filter(event=>event.name==="native.model.retrying").map(event=>event.data);
+  assert.deepEqual(retries.map(data=>data.delayMs),[0,0,1,2,3,4,5,5,5,5,5,5]);
+  assert.deepEqual(retries.map(data=>data.networkRetry??null),[null,null,1,2,3,4,5,6,7,8,9,10]);
+  // The wait is announced from the third wait on; the first two ride out a blip quietly.
+  assert.deepEqual(retries.slice(2).map(data=>data.waitingForNetwork),[false,false,true,true,true,true,true,true,true,true]);
+  assert.deepEqual([...new Set(retries.slice(2).map(data=>data.detail))],["getaddrinfo EAI_AGAIN api.openai.com","getaddrinfo ENOTFOUND api.openai.com"]);
+  // Without the wait, and for a refused connection or one closed after connecting, the bounded waits are the budget.
+  for(const [failure,options] of [
+    [()=>unresolved(),{waitForNetwork:false}],
+    [()=>Object.assign(new TypeError("fetch failed"),{cause:Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1234"),{code:"ECONNREFUSED"})}),{}],
+    [()=>Object.assign(new TypeError("fetch failed"),{cause:Object.assign(new Error("other side closed"),{code:"UND_ERR_SOCKET"})}),{}],
+  ]){
+    const seen=[];let tries=0;
+    await assert.rejects(()=>runNativeAgentTurn({model:"test-model",messages:[],retryBaseDelayMs:0,networkRetryDelaysMs:[1],networkWaitIntervalMs:1,onEvent:event=>seen.push(event),...options,providerTurn:async()=>{tries++;throw failure()},executeTool:async()=>""}),/fetch failed/);
+    assert.equal(tries,7);
+    const waited=seen.filter(event=>event.name==="native.model.retrying"&&event.data.networkRetry).map(event=>event.data.waitingForNetwork);
+    assert.deepEqual(waited,[false,false,false,false]);
+  }
+  // Past the four stepped waits the wait is a minute, and a stop during it ends the turn at once.
+  const controller=new AbortController(),started=Date.now(),waits=[];let stopped=0;
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",messages:[],signal:controller.signal,retryBaseDelayMs:0,networkRetryDelaysMs:[1],
+    onEvent:event=>{if(event.name!=="native.model.retrying")return;waits.push(event.data.delayMs);if(event.data.delayMs===60_000)setTimeout(()=>controller.abort(),20)},
+    providerTurn:async()=>{stopped++;throw unresolved()},executeTool:async()=>"",
+  }),error=>error?.name==="AbortError");
+  assert.deepEqual(waits,[0,0,1,1,1,1,60_000]);assert.equal(stopped,7);assert.ok(Date.now()-started<10_000);
+  // What counts as a connection that could not be made at all.
+  assert.equal(nativeProviderConnectFailure(unresolved()),true);
+  assert.equal(nativeProviderConnectFailure(unresolved("EAI_AGAIN")),true);
+  assert.equal(nativeProviderConnectFailure(new Error("Could not reach OpenAI: getaddrinfo EAI_AGAIN api.openai.com")),true);
+  assert.equal(nativeProviderConnectFailure(Object.assign(new TypeError("fetch failed"),{cause:Object.assign(new Error("Connect Timeout Error"),{code:"UND_ERR_CONNECT_TIMEOUT"})})),true);
+  assert.equal(nativeProviderConnectFailure(Object.assign(new Error("OpenAI Responses WebSocket failed to connect."),{transportFailure:true,replaySafe:true,cause:Object.assign(new Error("getaddrinfo ENOTFOUND api.openai.com"),{code:"ENOTFOUND"})})),true);
+  assert.equal(nativeProviderConnectFailure(Object.assign(new Error("OpenAI Responses WebSocket failed to connect."),{transportFailure:true,replaySafe:true,cause:new Error("Unexpected server response: 401")})),false);
+  assert.equal(nativeProviderConnectFailure(Object.assign(new TypeError("fetch failed"),{cause:Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1234"),{code:"ECONNREFUSED"})})),false);
+  assert.equal(nativeProviderConnectFailure(Object.assign(new Error("reset"),{code:"ECONNRESET"})),false);
+  assert.equal(nativeProviderConnectFailure(Object.assign(new Error("getaddrinfo ENOTFOUND upstream"),{status:502})),false);
+  assert.equal(nativeProviderConnectFailure(new DOMException("The operation was aborted due to timeout","TimeoutError")),false);
 });
 
 test("native agent retries only transient provider inference failures",async()=>{
