@@ -24,4 +24,7 @@ test("failed and declined tools share the error styling of error rows",()=>{
   assert.equal(toolEventFailed({kind:"commandExecution",status:"done"}),false);
   assert.equal(toolEventFailed({kind:"fileChange",status:"running"}),false);
   assert.equal(toolEventFailed(undefined),false);
+  // A harness retrying its request (activity-item.js retryActivityRow) has not failed: the turn goes on.
+  assert.equal(toolEventFailed({kind:"retry",status:"running"}),false);
+  assert.equal(toolEventFailed({kind:"retry",status:"stopped"}),false);
 });

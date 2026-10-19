@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { RESTORED_LIST_LIMIT, RESTORED_TEXT_LIMIT, activityRow, isCardItem, mergeLiveRow, restoredRow, settledRow } from "../ui/src/activity-item.js";
+import { RESTORED_LIST_LIMIT, RESTORED_TEXT_LIMIT, RETRY_RECOVERED_TITLE, RETRY_STOPPED_TITLE, activityRow, isCardItem, mergeLiveRow, restoredRow, retryActivityRow, retryRowId, settledRetryRows, settledRow } from "../ui/src/activity-item.js";
+import { codexErrorNotice } from "../ui/src/codex-turn-options.js";
+import { toolEventFailed } from "../ui/src/tool-event-status.js";
 import { cardRowsFromItemEntries } from "../ui/src/turn-activity.js";
 import { activityItemStatus } from "../ui/src/activity-details.js";
 import { dynamicToolLabel } from "../ui/src/tool-activity.js";
@@ -175,4 +177,29 @@ test("live rows merge the same way in the list and in the record a card is seale
   assert.equal(mergeLiveRow(withOutput,done,{phase:"completed"}).status,"done");
   assert.deepEqual(mergeLiveRow(null,done,{phase:"completed",streamed:"s"}),{...done,output:"s"});
   assert.equal(mergeLiveRow(undefined,done,{phase:"completed"}).output,"");
+});
+
+test("a harness's own retry is one running row per turn, not a failed step, and it settles once the turn goes on or ends",()=>{
+  // Native waiting for the network, and Codex reconnecting its stream, as their `error` notifications with willRetry read.
+  const native=codexErrorNotice({threadId:"th",turnId:"t1",willRetry:true,error:{message:"Waiting for the network (getaddrinfo ENOTFOUND api.openai.com). Trying again in 15 s."}});
+  const row=retryActivityRow(native,{turnId:"t1",threadId:"th",raw:{turnId:"t1"}});
+  assert.deepEqual(row,{id:"retry-t1",kind:"retry",title:"Retrying: Waiting for the network (getaddrinfo ENOTFOUND api.openai.com). Trying again in 15 s.",status:"running",output:"Waiting for the network (getaddrinfo ENOTFOUND api.openai.com). Trying again in 15 s.",raw:{turnId:"t1"},turnId:"t1"});
+  assert.equal(toolEventFailed(row),false);
+  const codex=retryActivityRow(codexErrorNotice({willRetry:true,error:{message:"Reconnecting... 2/5"}}),{turnId:7});
+  assert.equal(codex.title,"Retrying (2/5): Reconnecting... 2/5");assert.equal(codex.turnId,"7");assert.equal(codex.id,"retry-7");
+  // A notice with no turn is the thread's.
+  assert.equal(retryRowId(null,"th"),"retry-th");assert.equal(retryActivityRow({},{threadId:"th"}).title,"Retrying");
+  const other={...row,id:"retry-t0",turnId:"t0"},step={id:"c",kind:"commandExecution",status:"running",turnId:"t1"};
+  const rows=[other,row,step];
+  // The turn went on: its retry row says the request got through and keeps the last retry's text; other turns' rows and steps stay.
+  const recovered=settledRetryRows(rows,{turnId:"t1",outcome:"recovered"});
+  assert.deepEqual(recovered[1],{...row,status:"done",title:RETRY_RECOVERED_TITLE});
+  assert.equal(recovered[0],other);assert.equal(recovered[2],step);
+  // A turn that ended while it still retried (stopped, or failed) says it stopped.
+  assert.deepEqual(settledRetryRows(rows,{turnId:"t1",outcome:"stopped"})[1],{...row,status:"stopped",title:RETRY_STOPPED_TITLE});
+  assert.equal(toolEventFailed(settledRetryRows(rows,{turnId:"t1",outcome:"stopped"})[1]),false);
+  // Nothing to settle is the same list, so nothing re-renders: no retry row of the turn, or one settled already.
+  assert.equal(settledRetryRows(rows,{turnId:"t9"}),rows);
+  assert.equal(settledRetryRows(recovered,{turnId:"t1",outcome:"stopped"}),recovered);
+  const steps=[step];assert.equal(settledRetryRows(steps),steps);
 });

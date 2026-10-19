@@ -391,6 +391,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .timeline .tool-event.status-running summary em{border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:var(--acsoft);color:var(--ac)}
 .conversation-column .timeline .tool-event:is(.status-error,.kind-error) summary em{border-color:var(--errb);background:var(--errt);color:var(--err)}
 .conversation-column .timeline .tool-event.status-warning summary em{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
+/* A retry row while its harness retries: amber, as a degraded state that goes on (the turn has not failed). */
+.conversation-column .timeline .tool-event.kind-retry.status-running summary .timeline-marker{color:var(--warn)}
+.conversation-column .timeline .tool-event.kind-retry.status-running summary em{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
 .conversation-column .timeline .tool-event-body{margin:0 7px 8px 34px;padding:2px 0 0;border:0;border-radius:0;background:transparent}
 .conversation-column .timeline .tool-event-body pre{margin:0 0 6px;max-height:200px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg0);color:var(--tx2);font:11px/1.55 var(--mono)}
 .conversation-column .timeline .tool-event-body button{height:28px;padding:0 10px;gap:6px;border:1px solid var(--line2);border-radius:var(--r-s);background:var(--bg3);color:var(--tx1);font-size:11.5px}

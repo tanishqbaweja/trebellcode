@@ -58,6 +58,29 @@ export function storedRow(row){
   return settled!==row&&row.kind==="contextCompaction"?{...settled,title:"Context compacted"}:settled;
 }
 
+// A harness that retries its turn's request itself (an `error` notification with willRetry: Codex reconnecting its stream, Native
+// waiting for the network) has not failed a step: the turn goes on. Its one row per turn says what it retries while it retries,
+// and its output keeps the last retry's text, which the open row shows once the title no longer does.
+export const RETRY_RECOVERED_TITLE="Recovered after retrying",RETRY_STOPPED_TITLE="Stopped while retrying";
+export function retryRowId(turnId,threadId){
+  return "retry-"+String(turnId??threadId??"");
+}
+export function retryActivityRow(notice,{turnId=null,threadId=null,raw=null}={}){
+  return {id:retryRowId(turnId,threadId),kind:"retry",title:notice?.title||"Retrying",status:"running",output:notice?.message||"",raw,turnId:turnId==null?null:String(turnId)};
+}
+// A turn's retry row once the turn went on (any item of it, or its end): the request got through. One that ended while it still
+// retried (stopped, or failed) says it stopped instead. Rows of other turns and retry rows already settled stay as they are, and
+// the list is the same list when nothing changed.
+export function settledRetryRows(rows,{turnId=null,outcome="recovered"}={}){
+  let changed=false;
+  const next=rows.map(row=>{
+    if(row?.kind!=="retry"||row.status!=="running"||(turnId!=null&&row.turnId!=null&&row.turnId!==String(turnId)))return row;
+    changed=true;
+    return outcome==="stopped"?{...row,status:"stopped",title:RETRY_STOPPED_TITLE}:{...row,status:"done",title:RETRY_RECOVERED_TITLE};
+  });
+  return changed?next:rows;
+}
+
 // What a cut text keeps is a copy: a slice of a string keeps the whole string it was cut from in memory, so a row kept after its turn
 // would hold all of a long output or diff while it shows only its cut. A text cut once is left as it was cut: cut again, it would
 // count what the first cut left out wrongly.

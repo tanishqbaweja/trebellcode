@@ -1040,6 +1040,55 @@ test("two compactions Codex makes in one turn are two rows, live and on the turn
   }finally{await codex.close()}
 });
 
+// Codex retrying its stream (an `error` with willRetry, "Reconnecting... n/5") has not failed a step: the turn's one retry row reads
+// retrying, in amber, while Codex reconnects, then recovered once the turn goes on, or stopped when Stop ends the turn first, and
+// the card never counts it failed.
+for(const end of ["the turn goes on","Stop"]){
+  test(`a Codex retry reads retrying, then ${end==="Stop"?"stopped once Stop ends the turn":"recovered once the turn goes on"}, never failed`,async({page})=>{
+    test.setTimeout(60_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Codex retry"});
+    const row=page.locator(".tool-event.kind-retry"),card=page.getByTestId("activity-card").filter({has:row});
+    const details="stream disconnected before completion: error sending request for url (https://api.openai.com/v1/responses)";
+    try{
+      await sendTyped(page,"Count from one to ten.");
+      await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns,threadId=codex.thread.id;turn.answer();
+      turn.started=true;codex.notify("turn/started",{threadId,turn:{id:turn.id,status:"inProgress",items:[]}});await expect(stop(page)).toBeVisible();
+      for(const attempt of [1,2])codex.notify("error",{threadId,turnId:turn.id,willRetry:true,error:{message:`Reconnecting... ${attempt}/5`,additionalDetails:details}});
+      await expect(row).toHaveCount(1);await expect(row.locator("summary strong")).toHaveText("Retrying (2/5): "+details);
+      await expect(row.locator("summary em")).toHaveText("retrying");await expect(card.locator(".activity-card-failed")).toHaveCount(0);
+      // In the colors of a warning row of the same timeline, not an error's.
+      const colors=await row.evaluate(node=>{
+        const read=el=>Object.fromEntries([["marker","summary .timeline-marker"],["pill","summary em"],["title","summary strong"]].map(([key,selector])=>[key,getComputedStyle(el.querySelector(selector)).color]));
+        const probe=node.cloneNode(true);probe.className="tool-event status-warning kind-event";node.after(probe);const warning=read(probe);probe.remove();
+        return {retry:read(node),warning};
+      });
+      expect(colors.retry).toEqual(colors.warning);
+      // A steer landing in the turn is the person's message, not the model's stream getting through: the row still reads retrying.
+      const steer={type:"userMessage",id:"steer-"+turn.id,clientId:"trebell-queue-steer",content:[{type:"text",text:"Then count back down.",text_elements:[]}]};
+      codex.notify("item/started",{threadId,turnId:turn.id,item:steer});codex.notify("item/completed",{threadId,turnId:turn.id,item:steer});
+      await expect(page.getByText("Then count back down.",{exact:true})).toBeVisible();
+      await expect(row.locator("summary strong")).toHaveText("Retrying (2/5): "+details);await expect(row.locator("summary em")).toHaveText("retrying");
+      await page.screenshot({animations:"disabled",path:auditDir+"codex-retry-retrying-dark-1280x800.png"});
+      if(end==="Stop"){
+        await stop(page).click();await expect.poll(()=>codex.interrupts).toEqual([{threadId,turnId:turn.id}]);await expect(stop(page)).toHaveCount(0);
+        await expect(row.locator("summary strong")).toHaveText("Stopped while retrying");await expect(row.locator("summary em")).toHaveText("stopped");
+      }else{
+        // The reply streams: the row reads recovered while the turn still runs, and stays so once it ends.
+        codex.holdTurns=true;turn.start();
+        await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toBeVisible();
+        await expect(row.locator("summary strong")).toHaveText("Recovered after retrying");await expect(row.locator("summary em")).toHaveText("recovered");
+        codex.holdTurns=false;await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+        await expect(row.locator("summary strong")).toHaveText("Recovered after retrying");await expect(row.locator("summary em")).toHaveText("recovered");
+      }
+      await expect(row).not.toHaveClass(/status-running|status-error/);await expect(card.locator(".activity-card-failed")).toHaveCount(0);
+      // The open row keeps what Codex last said it was retrying.
+      await row.locator("summary").click();await expect(row.locator(".tool-event-body pre")).toHaveText(details);
+      await page.screenshot({animations:"disabled",path:auditDir+`codex-retry-${end==="Stop"?"stopped":"recovered"}-dark-1280x800.png`});
+    }finally{await codex.close()}
+  });
+}
+
 // A compaction that never completes says so, live and on its turn's card once the next turn starts: one stopped while it compacts
 // is not called compacted, and one Codex fails reads failed. Codex sends its item's start, then the interrupt's end or the error,
 // and never the item's completion or thread/compacted.

@@ -24,7 +24,7 @@ import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-me
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
 import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId, sessionHandoffMessage, withSessionHandoff } from "./thread-history.js";
 import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain, turnTrailers } from "./turn-outcome.js";
-import { activityRow, isCardItem, mergeLiveRow, restoredRow, settledRow } from "./activity-item.js";
+import { activityRow, isCardItem, mergeLiveRow, restoredRow, retryActivityRow, retryRowId, settledRetryRows, settledRow } from "./activity-item.js";
 import { cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeCompactionTurnIds, storeIncompleteTurnIds } from "./turn-activity.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { answeringClick, approvalResponse } from "./approval-utils.js";
@@ -1060,6 +1060,9 @@ export default function App(){
   // turnActivityRef. liveItemRowsRef: the live card's steps by thread and turn (trackLiveRow), which a turn's card takes once the turn
   // ends; liveTurnKeyRef: the open thread's running turn, the one stored steps may still join the live card for.
   const [turnActivity,setTurnActivity]=useState(()=>emptyTurnActivity(null));const turnActivityRef=useRef(turnActivity);turnActivityRef.current=turnActivity;const liveItemRowsRef=useRef(new Map());const liveTurnKeyRef=useRef(null);
+  // retryRowsRef: the live list's retry rows still retrying (retryActivityRow), by thread and row (retryRowKey), since turn ids are
+  // only unique inside a thread; each is settled once its turn goes on or ends.
+  const retryRowsRef=useRef(new Set());
   const [resolvedMode,setResolvedMode]=useState(()=>typeof document!=="undefined"&&document.documentElement.dataset.mode==="light"?"light":"dark");
   if(!assistantStreamBufferRef.current)assistantStreamBufferRef.current=createTextFrameBuffer({
     schedule:callback=>requestAnimationFrame(callback),
@@ -1294,6 +1297,15 @@ export default function App(){
       const known=prev.turns[id],older=(known?.rows||[]).filter(row=>!sealedIds.has(String(row.id)));
       return mergeTurnActivity(prev,{[id]:[...older,...sealed]},{mode:"replace",complete:!known||known.complete});
     });
+  }
+  // A turn whose harness retried its request goes on (outcome "recovered") or ends still retrying ("stopped"): the thread's current
+  // activity is no longer the retry, and the turn's retry row says what became of it (settledRetryRows), as does a row of the thread
+  // whose notice named no turn. Only the open thread's list holds retry rows (isCurrent).
+  function retryRowKey(threadId,turnId){return String(threadId||activeThreadRef.current?.id||"")+"\0"+retryRowId(turnId,threadId)}
+  function settleRetry(threadId,turnId,outcome,isCurrent){
+    if(threadId&&threadTelemetryRef.current[threadId]?.currentActivity?.kind==="retry")updateThreadTelemetry(threadId,current=>current.currentActivity?.kind==="retry"?{currentActivity:null}:{});
+    const ofTurn=turnId!=null&&retryRowsRef.current.delete(retryRowKey(threadId,turnId)),ofThread=retryRowsRef.current.delete(retryRowKey(threadId,null));
+    if((ofTurn||ofThread)&&isCurrent)setEvents(prev=>settledRetryRows(prev,{turnId,outcome}));
   }
   useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose();diffEventBufferRef.current?.dispose();for(const waiter of compactionWaitersRef.current.values()){clearTimeout(waiter.timer);waiter.reject?.(new Error("Trebell closed while context compaction was pending"))}compactionWaitersRef.current.clear()},[]);
   // Navigate back/forward (Ctrl+[ / Ctrl+]) and, in a browser tab, the browser's own Back and Forward move through one history
@@ -2945,6 +2957,9 @@ export default function App(){
     if(threadId&&heldNotificationsRef.current?.threadId===String(threadId)){heldNotificationsRef.current.messages.push([message,client,receivedAt]);return}
     turnNotesRef.current.notify(message);
     const isCurrent=notificationIsActive(threadId);
+    // A request the harness retried got through once its turn goes on: an item of the turn, or its reply or thought streaming. The
+    // person's own message (a steer sent while the harness still waits) is not the harness going on.
+    if(p.turnId!=null&&String(message.method||"").startsWith("item/")&&p.item?.type!=="userMessage")settleRetry(threadId,p.turnId,"recovered",isCurrent);
     if(message.method==="serverRequest/resolved"){
       // Request ids restart on every socket: only the request of this id from the socket that resolved it goes.
       const resolved={requestId:p.requestId,threadId:p.threadId||null,client};
@@ -3009,7 +3024,8 @@ export default function App(){
       keepReplyStart(threadId,id);
       // A turn that starts again (the relay's restart recovery) is running, not ended: its next completion is recorded whole.
       if(clockKey)setTurnInfo(prev=>{const known=turnStartedAgain(prev[clockKey]);return known===prev[clockKey]?prev:{...prev,[clockKey]:known}});
-      updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:receivedAt,lastActivityAt:Date.now()});markThreadTurn(threadId,true);
+      // A new turn is not the last one's error: the thread reads as working, and as failed again only if this turn fails.
+      updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:receivedAt,lastActivityAt:Date.now(),lastError:null});markThreadTurn(threadId,true);
       // The turn of a send Stop was pressed for before its turn started: from here Codex can interrupt it, whether turn/start has
       // answered (a queued turn, which is through now) or not yet.
       const starting=pendingSendsRef.current.get(String(threadId||""));
@@ -3055,6 +3071,8 @@ export default function App(){
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
       // A failed Codex turn ends with its error (T3 Code); an active Codex goal goes on with a turn Codex starts itself.
       const codexFailure=agentRuntime==="codex"?codexTurnFailure(p.turn):null,codexGoalContinues=agentRuntime==="codex"&&isCurrent&&goal?.status==="active";
+      // A retry the turn was still on when it ended: a turn that completed got its request through, any other one stopped retrying.
+      settleRetry(threadId,completedTurnId,outcomeStatus==="completed"||!outcomeStatus?"recovered":"stopped",isCurrent);
       if(isCurrent){
         sealLiveTurn(threadId,completedTurnId);if(liveTurnKeyRef.current===turnInfoKey(threadId||activeThreadRef.current?.id,completedTurnId))liveTurnKeyRef.current=null;
         setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>e.status==="running"?{...e,status:"done"}:e);return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{},turnId:completedTurnId?String(completedTurnId):null}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
@@ -3272,11 +3290,14 @@ export default function App(){
       // other harnesses send {message}.
       const notice=codexErrorNotice(p),codexTurnError=Boolean(p.error&&typeof p.error==="object"&&p.turnId);
       if(notice.willRetry){
-        // Codex retries the turn itself: it keeps running, with one row showing the retry.
-        updateThreadTelemetry(threadId,{lastError:notice.message,lastActivityAt:Date.now()});
-        if(isCurrent)setEvents(prev=>upsertEvent(prev,{id:"codex-retry-"+(p.turnId||threadId),kind:"error",title:notice.title,status:"running",raw:p,turnId:p.turnId?String(p.turnId):null}));
+        // The harness retries the turn's request itself (Codex reconnecting, Native waiting for the network): the turn goes on, so
+        // the retry is its current activity, not an error it ended with, and its one row reads as retrying until the turn goes on.
+        const row=retryActivityRow(notice,{turnId:p.turnId??null,threadId,raw:p}),at=Date.now();
+        updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===row.id?{...current.currentActivity,title:row.title}:{id:row.id,kind:row.kind,title:row.title,startedAtMs:at},lastActivityAt:at}));
+        if(isCurrent){retryRowsRef.current.add(retryRowKey(threadId,p.turnId??null));setEvents(prev=>upsertEvent(prev,row))}
         return;
       }
+      settleRetry(threadId,p.turnId??null,"stopped",isCurrent);
       if(threadId&&compactionWaitersRef.current.has(String(threadId)))settleCompactionWaiter(threadId,new Error(notice.message||"Context compaction failed"));
       updateThreadTelemetry(threadId,{currentActivity:null,lastError:notice.message,lastActivityAt:Date.now()});
       // A Codex turn error ends the turn at turn/completed, which reports it once more and notifies.

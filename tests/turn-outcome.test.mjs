@@ -181,7 +181,9 @@ test("the turns whose failure the card lists are the ones it shows an error row 
   const events=[
     {id:"codex-error-t1",kind:"error",title:"You've hit your usage limit. · See Usage for your Codex limits.",status:"done",raw:{message:"You've hit your usage limit."}},
     {id:"error-1700000000000",kind:"error",title:"Grok usage limit reached.",status:"done",raw:{threadId:"th",turnId:"t2",message:"Grok usage limit reached."}},
-    {id:"codex-retry-t3",kind:"error",title:"Retrying (1/5): stream disconnected",status:"done",raw:{threadId:"th",turnId:"t3"}},
+    // A harness's own retry is its own kind of row (activity-item.js retryActivityRow), retrying or settled.
+    {id:"retry-t3",kind:"retry",title:"Retrying (1/5): stream disconnected",status:"running",output:"stream disconnected",raw:{threadId:"th",turnId:"t3"},turnId:"t3"},
+    {id:"retry-t8",kind:"retry",title:"Stopped while retrying",status:"stopped",output:"stream disconnected",raw:{threadId:"th",turnId:"t8"},turnId:"t8"},
     {id:"queue-refresh-error-1",kind:"error",title:"Could not refresh queued follow-ups: offline",status:"done",raw:{}},
     {id:"cmd-1",kind:"commandExecution",title:"npm test",status:"done",raw:{turnId:"t4"}},
     // An auto review's denial or time-out, and a verification error, carry the turn's id but are not how the turn ended.

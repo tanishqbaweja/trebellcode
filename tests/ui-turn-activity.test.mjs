@@ -129,6 +129,8 @@ test("the card head counts steps and failures, and says when steps are not all l
   assert.deepEqual(activitySummary(rows.slice(0,1)),{text:"1 step",failed:0});
   assert.deepEqual(activitySummary(rows,{complete:false}),{text:"4 steps · some steps not loaded",failed:2});
   assert.deepEqual(activitySummary([]),{text:"0 steps",failed:0});
+  // A retry is a step, not a failure, while it retries and after it.
+  assert.deepEqual(activitySummary([...rows.slice(0,1),{id:"retry-t1",kind:"retry",status:"running"},{id:"retry-t2",kind:"retry",status:"done"}]),{text:"3 steps",failed:0});
   const many=Array.from({length:1200},(_,index)=>({id:"s"+index,status:"done"}));
   assert.equal(activitySummary(many).text,"1,200 steps");
 });

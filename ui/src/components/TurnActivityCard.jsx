@@ -1,5 +1,5 @@
 import React,{memo,useEffect,useId,useLayoutEffect,useMemo,useRef,useState} from "react";
-import { Check, ChevronDown, FileDiff, ListTodo, Sparkles, SquareTerminal, X, Zap } from "lucide-react";
+import { Check, ChevronDown, FileDiff, ListTodo, RefreshCw, Sparkles, SquareTerminal, X, Zap } from "lucide-react";
 import ReasoningRow from "./ReasoningRow.jsx";
 import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "../activity-window.js";
 import { commandFacts, commandLine, fileChangeRows, nativeEditChanges, turnDiffLines } from "../activity-details.js";
@@ -64,6 +64,8 @@ const TurnActivityCard=memo(function TurnActivityCard({threadId,turnId,rows,live
 });
 
 function EventIcon({event}){
+  // A retry is not a failed step (activity-item.js retryActivityRow): it retries, then went on or stopped with its turn.
+  if(event.kind==="retry")return event.status==="done"?<Check size={13}/>:<RefreshCw size={13}/>;
   if(toolEventFailed(event))return <X size={13}/>;
   if(event.status==="done")return <Check size={13}/>;
   if(event.kind==="commandExecution")return <SquareTerminal size={13}/>;
@@ -72,9 +74,15 @@ function EventIcon({event}){
   if(event.kind==="mcpToolCall")return <Zap size={13}/>;
   return <Sparkles size={13}/>;
 }
+// A row's pill: an error says error, a retry what became of it, any other step its status.
+function eventPill(event){
+  if(event.kind==="error")return "error";
+  if(event.kind==="retry")return event.status==="running"?"retrying":event.status==="done"?"recovered":event.status;
+  return event.status;
+}
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
   const [expanded,setExpanded]=useState(false);
-  return <details className={"tool-event status-"+(toolEventFailed(event)?"error":event.status)+" kind-"+(event.kind||"event")} onToggle={toggle=>setExpanded(toggle.currentTarget.open)}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
+  return <details className={"tool-event status-"+(toolEventFailed(event)?"error":event.status)+" kind-"+(event.kind||"event")} onToggle={toggle=>setExpanded(toggle.currentTarget.open)}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{eventPill(event)}</em></summary>
     {expanded&&<ActivityEventBody event={event} onInspectChanges={onInspectChanges}/>}
   </details>;
 });

@@ -276,7 +276,7 @@ export function turnTrailers(messages=[],options={}){
 
 // The turns whose failure the live activity card lists: the row of a failed Codex turn ("codex-error-<turn id>") and the row of
 // a harness's error notification for the turn ("error-<time>", its turnId in raw). Other error rows are not the turn's failure:
-// a retry (the turn went on after it), an auto review's denial or time-out, a verification or queue error.
+// an auto review's denial or time-out, a verification or queue error. A retry is not an error row (activity-item.js retryActivityRow).
 export function cardFailedTurnIds(events=[]){
   const ids=new Set();
   for(const event of events||[]){
