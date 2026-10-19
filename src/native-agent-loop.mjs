@@ -18,7 +18,9 @@ const TERMINAL_TOOL_TIMEOUT_DEFAULT_MS=30_000;
 const TERMINAL_TOOL_TIMEOUT_MAX_MS=300_000;
 const TERMINAL_TOOL_WATCHDOG_ABORT_GRACE_MS=500;
 const TERMINAL_TOOL_WATCHDOG_SETTLE_GRACE_MS=3_500;
-const ACTION_TURN_MAX_OUTPUT_TOKENS=32_768;
+// An action request cut at its ceiling is retried uncapped, and OpenAI does not carry a cut response's reasoning into the
+// retry, so a cut throws away everything it reasoned. At 32,768 the cuts were requests that run 33-46K uncapped.
+const ACTION_TURN_MAX_OUTPUT_TOKENS=65_536;
 const CONTROL_GATE_MAX_OUTPUT_TOKENS=8_192;
 const OPENAI_CONTROL_GATE_INITIAL_MAX_OUTPUT_TOKENS=12_288;
 const OPENAI_CONTROL_GATE_RETRY_MAX_OUTPUT_TOKENS=32_768;

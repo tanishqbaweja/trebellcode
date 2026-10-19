@@ -645,7 +645,7 @@ test("native agent completes a plain model turn without inventing tool work",asy
   assert.equal(requests.length,1);assert.equal(result.text,"hello back");assert.equal(result.modelTurns,1);assert.equal(result.toolCalls,0);
   assert.deepEqual(result.usage,{inputTokens:3,outputTokens:2,totalTokens:5,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0});
   assert.deepEqual(events.map(event=>event.name),["native.turn.started","native.model.action_output_cap","native.model.requested","native.model.completed","native.turn.completed"]);
-  const cap=events.find(event=>event.name==="native.model.action_output_cap");assert.equal(cap.data?.reason,"ordinary_action_ceiling");assert.equal(cap.data?.maxOutputTokens,32768);
+  const cap=events.find(event=>event.name==="native.model.action_output_cap");assert.equal(cap.data?.reason,"ordinary_action_ceiling");assert.equal(cap.data?.maxOutputTokens,65536);
   const requested=events.find(event=>event.name==="native.model.requested"),completed=events.find(event=>event.name==="native.model.completed");
   assert.equal(requested.data.inferenceId,"native:inference:1");assert.equal(completed.data.inferenceId,requested.data.inferenceId);
   assert.equal(typeof requested.data.requestMetrics.toolSchemaHash,"string");assert.equal(typeof requested.data.requestMetrics.stablePrefixHash,"string");
@@ -742,15 +742,15 @@ test("native bounds ordinary action output and relaxes once only when the cap pr
     providerTurn:async request=>{
       requests.push(structuredClone(request));turn++;
       if(turn===1){
-        assert.equal(request.maxOutputTokens,32768);assert.equal(request.reasoningEffort,"max");
-        return {text:"",toolCalls:[],finishReason:"incomplete",raw:{incomplete_details:{reason:"max_output_tokens"}},usage:{outputTokens:32768,reasoningOutputTokens:32768}};
+        assert.equal(request.maxOutputTokens,65536);assert.equal(request.reasoningEffort,"max");
+        return {text:"",toolCalls:[],finishReason:"incomplete",raw:{incomplete_details:{reason:"max_output_tokens"}},usage:{outputTokens:65536,reasoningOutputTokens:65536}};
       }
       if(turn===2){
         assert.equal(request.maxOutputTokens,null);assert.equal(request.reasoningEffort,"max");
         assert.ok(request.messages.some(message=>message.role==="developer"&&/bounded action-turn output allowance was reached/i.test(String(message.content||""))));
         return {text:"",toolCalls:[{id:"status",namespace:"trebell_terminal",name:"run",arguments:'{"command":"status"}'}],finishReason:"tool_calls",usage:{}};
       }
-      assert.equal(request.maxOutputTokens,32768);assert.equal(request.reasoningEffort,"max");
+      assert.equal(request.maxOutputTokens,65536);assert.equal(request.reasoningEffort,"max");
       return {text:"service is healthy",toolCalls:[],finishReason:"completed",usage:{}};
     },
     executeTool:async call=>{executed.push(call.id);return {success:true,exitCode:0,stdout:"healthy"}},
@@ -773,7 +773,7 @@ test("native bounds implementation-pressure output while preserving max reasonin
         {id:`read-${turn}-b`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-b`})},
       ],finishReason:"tool_calls",usage:{}};
       if(turn===5){
-        assert.equal(request.maxOutputTokens,32768);
+        assert.equal(request.maxOutputTokens,65536);
         assert.equal(request.reasoningEffort,"max");
         return {text:"",toolCalls:[{id:"write",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"src/feature.mjs",content:"export const ready = true;\n"})}],finishReason:"tool_calls",usage:{}};
       }
@@ -800,8 +800,8 @@ test("native relaxes an action output cap once when the provider hits the limit 
         {id:`read-${turn}-b`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-b`})},
       ],finishReason:"tool_calls",usage:{}};
       if(turn===5){
-        assert.equal(request.maxOutputTokens,32768);
-        return {text:"",toolCalls:[],finishReason:"incomplete",raw:{incomplete_details:{reason:"max_output_tokens"}},usage:{outputTokens:32768,reasoningOutputTokens:32768}};
+        assert.equal(request.maxOutputTokens,65536);
+        return {text:"",toolCalls:[],finishReason:"incomplete",raw:{incomplete_details:{reason:"max_output_tokens"}},usage:{outputTokens:65536,reasoningOutputTokens:65536}};
       }
       if(turn===6){
         assert.equal(request.maxOutputTokens,null);
@@ -4770,7 +4770,7 @@ test("native post-edit evidence rounds stop repeated batch-like scripts from byp
       if(turns>=2&&turns<=7)return {text:"",toolCalls:[{id:`batch-${turns}`,namespace:"trebell_terminal",name:"run",arguments:batchArgs(turns)}],usage:{}};
       if(turns===8){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit evidence checkpoint/i.test(String(message.content||""))));return {text:"",toolCalls:[{id:"batch-8",namespace:"trebell_terminal",name:"run",arguments:batchArgs(8)}],usage:{}}}
       if(turns===9)return {text:"",toolCalls:[{id:"batch-9",namespace:"trebell_terminal",name:"run",arguments:batchArgs(9)}],usage:{}};
-      if(turns===10){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit evidence escalation/i.test(String(message.content||""))));assert.equal(request.maxOutputTokens,32768);return {text:"",toolCalls:[{id:"blocked-batch",namespace:"trebell_terminal",name:"run",arguments:batchArgs(10)}],usage:{}}}
+      if(turns===10){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit evidence escalation/i.test(String(message.content||""))));assert.equal(request.maxOutputTokens,65536);return {text:"",toolCalls:[{id:"blocked-batch",namespace:"trebell_terminal",name:"run",arguments:batchArgs(10)}],usage:{}}}
       assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="blocked-batch"&&/post-edit evidence escalation/i.test(String(message.content||""))));
       return {text:"done",toolCalls:[],usage:{}};
     },
