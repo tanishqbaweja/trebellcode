@@ -25,6 +25,12 @@ const localCodexHome=join(localTestHome,"codex-home");
 const localClaudeConfigDir=join(localTestHome,"claude-config");
 const workerProcess=process.env.TEST_WORKER_INDEX!=null;
 const repoRoot=fileURLToPath(new URL("../",import.meta.url));
+// The specs import the server's modules from the repository's src/, which are plain ESM that Node runs as written, so
+// Playwright's Babel transform adds nothing to them. Its transpiled copy of src/acp-session-config.mjs, cached under TEMP,
+// has been flagged and quarantined by Windows Defender's script heuristic (Trojan:Script/ObfusScript.A!ml) on every run
+// that loaded it since 2026-10-18, so src/ stays out of the transform. Playwright also tests a RegExp against the path
+// with forward slashes, which this one is written for.
+const serverSources=new RegExp("^"+join(repoRoot,"src").replace(/\\/g,"/").replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"/","i");
 const viteBin=fileURLToPath(new URL("../node_modules/vite/bin/vite.js",import.meta.url));
 const viteConfig=fileURLToPath(new URL("./vite.config.mjs",import.meta.url));
 if(process.platform==="win32"&&process.env.COMSPEC) process.env.COMSPEC=process.env.COMSPEC.trim();
@@ -40,6 +46,7 @@ if(!hostedBaseUrl&&!workerProcess){
 
 export default defineConfig({
   testDir: "./e2e",
+  build: { external: [serverSources] },
   timeout: 30000,
   workers: 1,
   expect: { timeout: 5000 },
