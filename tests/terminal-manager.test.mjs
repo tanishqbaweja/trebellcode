@@ -210,6 +210,27 @@ test("when the terminal worker dies its terminals end: an open socket hears the 
   }finally{try{socket?.terminate()}catch{}attached.close();await new Promise(resolve=>server.close(resolve));await terminals.shutdown()}
 });
 
+// A server that dies without its shutdown (it crashed, or a test run was cut short) leaves its end of the worker's stdin closed. The
+// worker then ends its terminals' programs, and what they started, and exits: before, a cut-short test run left a project action's
+// dev server running for a day.
+test("a terminal worker whose server is gone ends its terminals' programs, and the programs they started, and exits",{timeout:60000},async()=>{
+  const terminals=new TerminalManager({persist:false});
+  const alive=pid=>{try{process.kill(pid,0);return true}catch(error){return error.code==="EPERM"}};
+  try{
+    // A program that starts one of its own and lives on, as a dev server a project action runs through a shell does.
+    const script="const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});console.log('started '+c.pid);setInterval(()=>{},1000)";
+    const session=await terminals.create({cwd:process.cwd(),shell:process.execPath,args:["-e",script]}),worker=terminals.child;
+    assert.ok(await until(()=>/started \d+/.test(terminals.snapshot(session.id).buffer),10000),"the program starts its own");
+    const started=Number(terminals.snapshot(session.id).buffer.match(/started (\d+)/)[1]);
+    assert.ok(alive(worker.pid)&&alive(session.pid)&&alive(started),"all three run");
+    const exited=new Promise(resolve=>worker.once("exit",()=>resolve(true)));
+    worker.stdin.end();
+    assert.equal(await Promise.race([exited,new Promise(resolve=>setTimeout(()=>resolve(false),15000))]),true,"the worker exits");
+    assert.ok(await until(()=>!alive(session.pid),5000),"the terminal's program has ended");
+    assert.ok(await until(()=>!alive(started),5000),"and so has the program it started");
+  }finally{await terminals.shutdown()}
+});
+
 // Each write of the history redacts and rewrites every terminal's scrollback (8 MB each at most) on the server's event loop, which in
 // the desktop app is its main process. A worker that dies ends all of its terminals at once, so their history is written once, not
 // once for each of them. The writes are counted where the manager makes them, through node:fs's renameSync.

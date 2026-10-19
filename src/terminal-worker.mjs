@@ -37,6 +37,17 @@ async function handle(msg){
     }else throw new Error("Unknown action");
   }catch(error){ fail(rid,error); }
 }
+// The server's end of stdin closed: the server is gone (it crashed, or something ended it before its shutdown), so its terminals
+// and the programs they run end with it, as on its shutdown, instead of running on with nothing left to stop them (a test run that
+// was cut short left a project action's dev server running for a day). Each kill gets up to 2 s to end its program first.
+function ownerGone(){
+  // The server's end of stdout is gone too: a terminal's exit told to it fails on the closed pipe, which must not end the worker
+  // before the other terminals' programs have ended.
+  process.stdout.on("error",()=>{});
+  const ended=[...sessions.values()].map(term=>new Promise(resolve=>{term.onExit(()=>resolve());try{term.kill();}catch{resolve();}}));
+  sessions.clear();
+  Promise.race([Promise.all(ended),new Promise(resolve=>setTimeout(resolve,2000))]).then(()=>process.exit(0));
+}
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{
   try{handle(JSON.parse(line));}catch(error){send({type:"workerError",error:String(error)})}
-});
+}).on("close",ownerGone);
