@@ -17,16 +17,17 @@ async function startSite(port=0){
 // The desktop bridge as desktop/preload.cjs gives it, scripted: an agent browser with a history of its own that reports its state
 // after each move, as desktop/main.mjs does, and notes the calls the panel makes (and the sizes it is set to, and how many snapshots
 // it took). Its page has two elements to inspect. window.closeAgentWindow() closes its window as a person does outside the panel,
-// which the shell reports with its state; the window opened next is another, which its state and its snapshots name (windowId), as
-// the shell's do. window.openInPlace(url,title) opens a popup of its page (an export the page made, a target=_blank link) in place
-// in its window, as the shell does, with the title of the popup's document. The window it grants a recording is a canvas that keeps
-// drawing, so the recorder encodes real frames, and window.displayMediaCalls counts the recordings of it started.
+// which the shell reports with its state, and ends the recording of it, as a closed window's capture ends (its track ends and says
+// so); close(), the panel's Close, closes it the same way. The window opened next is another, which its state and its snapshots name
+// (windowId), as the shell's do. window.openInPlace(url,title) opens a popup of its page (an export the page made, a target=_blank
+// link) in place in its window, as the shell does, with the title of the popup's document. The window it grants a recording is a
+// canvas that keeps drawing, so the recorder encodes real frames, and window.displayMediaCalls counts the recordings of it started.
 function scriptedAgentBrowser(){
-  const pages=[],titles={},listeners=new Set();let at=-1,windowId=1,size={width:1280,height:800};window.agentBrowserCalls=[];window.agentBrowserSizes=[];window.agentSnapshots=0;window.displayMediaCalls=0;
+  const pages=[],titles={},listeners=new Set(),captures=[];let at=-1,windowId=1,size={width:1280,height:800};window.agentBrowserCalls=[];window.agentBrowserSizes=[];window.agentSnapshots=0;window.displayMediaCalls=0;
   const current=()=>({open:at>=0,...(at>=0?{windowId}:{}),url:pages[at]||"",title:titles[pages[at]]||"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,...size});
   const report=()=>{for(const listener of listeners)listener(current())};
   const call=(name,move=()=>{})=>async(...args)=>{window.agentBrowserCalls.push(name);move(...args);report();return current()};
-  window.closeAgentWindow=()=>{pages.length=0;at=-1;windowId++;report()};
+  window.closeAgentWindow=()=>{pages.length=0;at=-1;windowId++;report();for(const track of captures.splice(0).flatMap(stream=>stream.getTracks())){track.stop();track.dispatchEvent(new Event("ended"))}};
   window.openInPlace=(url,title)=>{pages.splice(at+1);pages.push(url);at=pages.length-1;titles[url]=title;report()};
   Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{
     state:async()=>current(),
@@ -37,13 +38,14 @@ function scriptedAgentBrowser(){
     reload:call("reload"),
     snapshot:async()=>{window.agentSnapshots++;return {windowId,url:pages[at]||"",title:titles[pages[at]]||"",elements:at<0?[]:[{ref:"e1",tag:"button",text:"Save profile",href:""},{ref:"e2",tag:"a",text:"Docs",href:pages[at]+"/docs"}]}},
     setViewport:call("setViewport",(width,height)=>{size={width,height};window.agentBrowserSizes.push([width,height])}),
+    close:async()=>{window.agentBrowserCalls.push("close");window.closeAgentWindow();return {ok:true}},
     armRecording:async()=>({ok:true,expiresAt:Date.now()+5000,sourceId:"window:1:0"}),
   }}});
   if(navigator.mediaDevices)navigator.mediaDevices.getDisplayMedia=async()=>{
     window.displayMediaCalls++;
     const canvas=document.createElement("canvas");canvas.width=320;canvas.height=200;const context=canvas.getContext("2d");let frame=0;
     const draw=()=>{context.fillStyle=`hsl(${frame++*7%360} 60% 50%)`;context.fillRect(0,0,320,200)};draw();setInterval(draw,33);
-    return canvas.captureStream(30);
+    const stream=canvas.captureStream(30);captures.push(stream);return stream;
   };
 }
 
@@ -307,6 +309,67 @@ test("a Browser panel opened again while a recording is being saved says so, sav
     await expect(saved,"the recording is saved once").toHaveCount(1);
     await expect(record,"the panel opened again reads Record once the recording is saved").toHaveText(/Record/);
     await expect(record).toBeEnabled();
+  }finally{await site.close()}
+});
+
+// A recording records the agent browser's window, so it ends with that window: one closed outside the panel (with the panel on
+// Browser, or on Files, where the panel is not there to hear it) or by the panel's Close. It stops by itself, is attached at the
+// length it ran until the window closed, and the panel says so; the Browser tab and the header button no longer say a recording is
+// on. One the server cannot store says so in the error line. It went on reading Stop and counting, with both marks on, until Stop,
+// which attached it at the length to the press.
+test("a recording whose agent browser window closes stops by itself, is attached at the length it ran and says so: closed outside the panel, while the panel is on Files, or by the panel's Close",async({page,request})=>{
+  test.setTimeout(90_000);
+  const site=await startSite();
+  try{
+    const {panel,record,saved}=await openRecorder(page,request,site);
+    const tabs=panel.locator(".context-panel-tab-scroll"),browserTab=tabs.getByRole("button",{name:/^Browser/}),toggle=page.getByTestId("right-panel-toggle").first();
+    const said=panel.getByRole("status").filter({hasText:"Browser recording stopped"}),failed=panel.getByRole("alert").filter({hasText:"Browser recording stopped"}),now=()=>page.evaluate(()=>Date.now());
+    // Records until the button reads Stop 2s: the recording has run as long as it read then, and less than since the press.
+    const recordFor=async()=>{
+      const pressed=await now();await record.click();await expect(record).toHaveText(/Stop [2-9]s/,{timeout:8000});
+      await expect(said,"a recording going on says nothing of the last one's end").toHaveCount(0);await expect(failed).toHaveCount(0);
+      return {pressed,ran:Number((await record.innerText()).match(/(\d+)s/)[1])};
+    };
+    const unmarked=async how=>{
+      await expect(record,how+": the recording stops by itself").toHaveText(/Record/);
+      await expect(browserTab,how+": the Browser tab no longer says a recording is on").toHaveAccessibleName("Browser");await expect(browserTab.locator(".recording-mark")).toHaveCount(0);
+      await expect(toggle,how+": nor does the header button").toHaveAccessibleName("Open files and diff");await expect(toggle.locator(".recording-mark")).toHaveCount(0);
+    };
+    const stopped=async(how,count,{pressed,ran},closedAt)=>{
+      await unmarked(how);
+      await expect(saved,how+": it is attached").toHaveCount(count);
+      const length=Number((await saved.last().innerText()).match(/Browser recording\s*(\d+)s/)[1]);
+      expect(length,how+": at the length it ran until the window closed").toBeGreaterThanOrEqual(ran);expect(length,how+": not longer").toBeLessThanOrEqual(Math.floor((closedAt-pressed)/1000));
+      await expect(said,how+": and the panel says so").toHaveText(`Browser recording stopped when the agent browser closed, and its ${length}s were attached.`);
+    };
+    const reopen=async()=>{await panel.getByRole("button",{name:"Open agent browser"}).click();await expect(panel.locator(".browser-inspector p span")).toHaveText(site.url+"/rec")};
+    const closeOutside=()=>page.evaluate(()=>{window.closeAgentWindow();return Date.now()});
+    // The window closes outside the panel, with the panel on Browser.
+    let run=await recordFor();
+    await stopped("closed outside the panel",1,run,await closeOutside());
+    await shots(page,"preview-recording-stopped-with-its-window",said);
+    // It closes while the panel is on Files.
+    await reopen();run=await recordFor();
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(record).toHaveCount(0);
+    await expect(browserTab).toHaveAccessibleName("Browser, recording");
+    const closedAt=await closeOutside();
+    await expect(browserTab,"closed while the panel is on Files, the Browser tab no longer says a recording is on").toHaveAccessibleName("Browser");
+    await expect(saved,"and the recording is attached").toHaveCount(2);
+    await browserTab.click();
+    await stopped("closed while the panel was on Files",2,run,closedAt);
+    // The panel's own Close closes it.
+    await reopen();run=await recordFor();
+    await panel.getByRole("button",{name:"Close",exact:true}).click();
+    await stopped("closed by the panel's Close",3,run,await now());
+    expect(await page.evaluate(()=>window.agentBrowserCalls.filter(name=>name==="close").length),"the panel's Close closed the agent browser once").toBe(1);
+    // One the server cannot store is not attached, and the error line says why.
+    await page.route("**/api/attachments/blob",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"The disk is full."})}));
+    await reopen();await recordFor();
+    await closeOutside();
+    await unmarked("closed with the recording not stored");
+    await expect(failed).toHaveText("Browser recording stopped when the agent browser closed, but could not be attached: The disk is full.");
+    await expect(said).toHaveCount(0);await expect(saved).toHaveCount(3);
+    await shots(page,"preview-recording-stopped-not-attached",failed);
   }finally{await site.close()}
 });
 

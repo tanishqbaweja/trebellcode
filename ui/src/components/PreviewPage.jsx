@@ -28,7 +28,7 @@ function noneSet(result,from=""){
 // What the panel shows is kept while another tab is open or the panel is closed, and comes back with it: a look at Files used to
 // reset it while the agent browser still showed the page. The panel shown reads it as it is set, also by one that went away
 // meanwhile, so what lands then (the page an Open agent browser pressed before it went opens, and that page's elements) shows.
-const kept={draft:"http://localhost:3000",url:"",snapshot:null,selectedRef:null,annotation:"",shown:{pages:[],at:-1},previewZoom:1,phase:"idle"},keptListeners=new Set();
+const kept={draft:"http://localhost:3000",url:"",snapshot:null,selectedRef:null,annotation:"",shown:{pages:[],at:-1},previewZoom:1,phase:"idle",ended:null},keptListeners=new Set();
 function setKept(next){Object.assign(kept,next);if("phase" in next)setBrowserRecording(kept.phase==="recording");for(const listener of keptListeners)listener()}
 function onKept(listener){keptListeners.add(listener);return()=>keptListeners.delete(listener)}
 function useKept(name){return [useSyncExternalStore(onKept,()=>kept[name]),next=>setKept({[name]:typeof next==="function"?next(kept[name]):next})]}
@@ -40,7 +40,9 @@ function samePage(state,shot){return state.windowId===shot.windowId&&state.url==
 // browser's window, not the panel: it used to end unsaved when the panel went. Its phase (kept.phase: idle, starting, recording, or
 // stopping while it is saved) is every panel's, so one opened again while a recording starts or is saved offers no second Record
 // or Stop, and reads Record once it is saved; until it is stopped, the Browser tab and the header's panel button say it is on outside
-// the panel (browser-recording.js). rec holds the recording going on, with chunks of its own.
+// the panel (browser-recording.js). rec holds the recording going on, with chunks of its own, done, which settles as its recorder
+// stops, and unwatch, which stops it hearing the shell's state; kept.ended is what the panel says of the last one, which stopped by
+// itself as its window closed (endRecording), until another starts.
 const rec={since:0};
 // A press records, stops or attaches once, as a thread's menu item runs: the rest of it (the second click of a double click, Enter
 // held) does nothing. Record and Stop are one button, so the second click landed on the Stop of the recording the first click had
@@ -73,7 +75,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   const [unanswered,setUnanswered]=useState("");
   const [viewport,setViewport]=useState({width:1280,height:800});
   const [history,setHistory]=useState([]);
-  const [phase]=useKept("phase"),recording=phase==="recording"||phase==="stopping";
+  const [phase]=useKept("phase"),recording=phase==="recording"||phase==="stopping",[ended]=useKept("ended");
   const [recordingSeconds,setRecordingSeconds]=useState(0);
   const [previewZoom,setPreviewZoom]=useKept("previewZoom");
   const urlInputRef=useRef(null),attaching=useRef(new Set());
@@ -211,40 +213,50 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   async function startRecording(){
     if(kept.phase!=="idle")return;
     const browser=window.trebellDesktop?.browser;if(!browser?.armRecording||!navigator.mediaDevices?.getDisplayMedia||typeof MediaRecorder==="undefined")throw new Error("Browser recording is unavailable in this build.");
-    setKept({phase:"starting"});setBusy("recording");let stream=null;
+    setKept({phase:"starting",ended:null});setBusy("recording");let stream=null;
     try{
       await browser.armRecording();
       stream=await navigator.mediaDevices.getDisplayMedia({audio:false,video:{frameRate:{ideal:30,max:30}}});
       const choices=["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm","video/mp4;codecs=avc1"];
       const mimeType=choices.find(type=>MediaRecorder.isTypeSupported(type))||"",recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined),chunks=[];
-      recorder.ondataavailable=event=>{if(event.data?.size)chunks.push(event.data)};
-      recorder.start(250);Object.assign(rec,{since:Date.now(),recorder,stream,chunks});stream=null;setKept({phase:"recording"});
+      const done=new Promise(resolve=>{recorder.onstop=resolve}),end=()=>endRecording(recorder);
+      recorder.ondataavailable=event=>{if(event.data?.size)chunks.push(event.data)};done.then(end);for(const track of stream.getTracks())track.onended=end;
+      recorder.start(250);Object.assign(rec,{since:Date.now(),recorder,stream,chunks,done,unwatch:browser.onState?.(state=>{if(state?.open===false)end()})});stream=null;setKept({phase:"recording"});
     }finally{for(const track of stream?.getTracks()||[])try{track.stop()}catch{}if(kept.phase==="starting")setKept({phase:"idle"});setBusy("")}
   }
   // A recording is saved once: Stop pressed again while it is being saved (Enter pressed twice) saves nothing more, and a panel
   // opened again meanwhile reads Saving, then Record. It used to save it again, and the panel opened again kept reading Stop.
   async function stopRecording(){
     if(kept.phase!=="recording")return;
-    const {recorder,stream,chunks,since}=rec,seconds=Math.max(0,Math.floor((Date.now()-since)/1000));setKept({phase:"stopping"});setBusy("recording-stop");
+    const {recorder,stream,chunks,since,done,unwatch}=rec,seconds=Math.max(0,Math.floor((Date.now()-since)/1000));setKept({phase:"stopping"});setBusy("recording-stop");
     try{
       const stopped=new Promise((resolve,reject)=>{
         let settled=false;
         const finish=callback=>{if(settled)return;settled=true;clearTimeout(timeout);callback()};
         const timeout=setTimeout(()=>finish(()=>reject(new Error("Browser recording did not stop in time. Try recording again."))),3000);
-        recorder.addEventListener("stop",()=>setTimeout(()=>finish(resolve),50),{once:true});
+        // One that stopped by itself (its window's capture ended) has its last chunk once its recorder says it stopped.
+        done.then(()=>setTimeout(()=>finish(resolve),50));
         if(recorder.state!=="inactive"){
           try{recorder.requestData()}catch{}
           setTimeout(()=>{if(recorder.state!=="inactive")try{recorder.stop()}catch(error){finish(()=>reject(error))}},60);
-        }else finish(resolve);
+        }
       });
       await stopped;
       const type=recorder.mimeType||chunks[0]?.type||"video/webm";const blob=new Blob(chunks,{type});
       if(!blob.size)throw new Error("Browser recording produced no encoded video. Record for a little longer and try again.");
       if(onAttachFile){const ext=type.includes("mp4")?"mp4":"webm";await onAttachFile(new File([blob],`browser-recording-${Date.now()}.${ext}`,{type}),{kind:"browser",label:"Browser recording",detail:`${seconds}s · ${(blob.size/1024/1024).toFixed(1)} MB`})}
+      return seconds;
     }finally{
-      for(const track of stream?.getTracks?.()||[])try{track.stop()}catch{}
+      unwatch?.();for(const track of stream?.getTracks?.()||[])try{track.stop()}catch{}
       Object.assign(rec,{recorder:null,stream:null,chunks:null});setKept({phase:"idle"});setBusy("");
     }
+  }
+  // The window recorded closes (by Close here, outside the panel, or while the panel is away): the shell says the agent browser
+  // closed, and the window's capture ends. Its recording stops then by itself, is attached as Stop attaches it, at the length it ran,
+  // and the panel says so. It went on reading Stop, with the marks on, until Stop, which attached it at the length to the press.
+  function endRecording(recorder){
+    const why="Browser recording stopped when the agent browser closed";
+    if(kept.phase==="recording"&&rec.recorder===recorder)stopRecording().then(seconds=>setKept({ended:{text:why+", and its "+seconds+"s were attached."}}),error=>setKept({ended:{text:why+", but could not be attached: "+(error?.message||error),error:true}}));
   }
   // What is being attached (an element of a page, with its note) is attached once at a time: a press for it while it is on its way
   // (Enter pressed twice) attaches nothing more. Another element, or another note, still attaches meanwhile, and each says it was
@@ -275,7 +287,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     <div className="preview-bar"><Globe2 size={15}/>{desktopBrowserAvailable&&<><button title="Back" disabled={shown.at<1||!!busy} onClick={()=>step(-1)}><ArrowLeft size={13}/></button><button title="Forward" disabled={shown.at>=shown.pages.length-1||!!busy} onClick={()=>step(1)}><ArrowRight size={13}/></button></>}<input ref={urlInputRef} value={draft} onChange={e=>{setDraft(e.target.value);if(urlError)setUrlError("")}} onKeyDown={e=>e.key==="Enter"&&go()} aria-label="Page address" aria-invalid={urlError?"true":undefined} placeholder="http://localhost:3000" title={"Preview zoom "+Math.round(previewZoom*100)+"%"}/><button onClick={go}>Preview</button>{desktopBrowserAvailable&&<button title="Reload agent browser" onClick={reloadAgent} disabled={!!busy}><RefreshCw size={13}/></button>}{url&&<button aria-label="Open in browser" title="Open in browser" onClick={()=>openWebLink(url)}><ExternalLink size={13}/></button>}</div>
     {urlError&&<div className="inline-error preview-url-error" role="alert">{urlError}</div>}
 
-    {desktopBrowserAvailable&&<div className="browser-device-toolbar"><MonitorSmartphone size={13}/><select aria-label="Viewport preset" value={VIEWPORTS.find(item=>item.width===viewport.width&&item.height===viewport.height)?.id||"custom"} onChange={e=>{const preset=VIEWPORTS.find(item=>item.id===e.target.value);if(preset)applyViewport(preset.width,preset.height)}}><option value="custom">Custom</option>{VIEWPORTS.map(item=><option key={item.id} value={item.id}>{item.label} · {item.width}×{item.height}</option>)}</select><input type="number" aria-label="Viewport width" min="320" max="3840" value={viewport.width} onChange={e=>setViewport(v=>({...v,width:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)} onKeyDown={e=>e.key==="Enter"&&applyViewport(viewport.width,viewport.height)}/><span>×</span><input type="number" aria-label="Viewport height" min="240" max="2160" value={viewport.height} onChange={e=>setViewport(v=>({...v,height:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)} onKeyDown={e=>e.key==="Enter"&&applyViewport(viewport.width,viewport.height)}/><button title="Rotate viewport" onClick={()=>applyViewport(viewport.height,viewport.width)}><RotateCw size={12}/></button><button className={recording?"recording active":"recording"} disabled={phase==="starting"||phase==="stopping"||!recording&&!!busy} onClick={event=>{pressOnce(event);(recording?stopRecording():startRecording()).catch(error=>setBrowserError(error?.message||String(error)))}}>{recording?<Square size={11}/>:<Circle size={11}/>} {phase==="stopping"?"Saving…":recording?`Stop ${recordingSeconds}s`:"Record"}</button></div>}
+    {desktopBrowserAvailable&&<div className="browser-device-toolbar"><MonitorSmartphone size={13}/><select aria-label="Viewport preset" value={VIEWPORTS.find(item=>item.width===viewport.width&&item.height===viewport.height)?.id||"custom"} onChange={e=>{const preset=VIEWPORTS.find(item=>item.id===e.target.value);if(preset)applyViewport(preset.width,preset.height)}}><option value="custom">Custom</option>{VIEWPORTS.map(item=><option key={item.id} value={item.id}>{item.label} · {item.width}×{item.height}</option>)}</select><input type="number" aria-label="Viewport width" min="320" max="3840" value={viewport.width} onChange={e=>setViewport(v=>({...v,width:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)} onKeyDown={e=>e.key==="Enter"&&applyViewport(viewport.width,viewport.height)}/><span>×</span><input type="number" aria-label="Viewport height" min="240" max="2160" value={viewport.height} onChange={e=>setViewport(v=>({...v,height:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)} onKeyDown={e=>e.key==="Enter"&&applyViewport(viewport.width,viewport.height)}/><button title="Rotate viewport" onClick={()=>applyViewport(viewport.height,viewport.width)}><RotateCw size={12}/></button><button className={recording?"recording active":"recording"} disabled={phase==="starting"||phase==="stopping"||!recording&&!!busy} onClick={event=>{pressOnce(event);(recording?stopRecording():startRecording()).catch(error=>setBrowserError(error?.message||String(error)))}}>{recording?<Square size={11}/>:<Circle size={11}/>} {phase==="stopping"?"Saving…":recording?`Stop ${recordingSeconds}s`:"Record"}</button>{ended&&!ended.error&&<span className="browser-cookie-status" role="status">{ended.text}</span>}</div>}
 
     {history.length>0&&<details className="browser-history"><summary><History size={12}/> Recent pages</summary><div>{history.slice(0,12).map(item=><button key={item.url} onClick={()=>{setDraft(item.url);openAgentUrl(item.url)}}><span><strong>{item.title||new URL(item.url).host}</strong><small>{item.url}</small></span><time>{new Date(item.lastVisitedAt).toLocaleString()}</time></button>)}</div></details>}
 
@@ -284,7 +296,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
       {servers.length?<><div className="preview-server-list">{servers.map(server=><button key={server.port} onClick={()=>{setDraft(server.url);show(server.url);setKey(k=>k+1)}}><strong>:{server.port}</strong><span>{server.contentType||"HTTP "+server.status}</span></button>)}</div>{serverError&&<div className="inline-error" role="alert">{serverError}</div>}</>:<p>{serverError||"No common local web server detected. Start your dev action, then scan again."}</p>}
     </div>
 
-    {desktopBrowserAvailable?<><div className="agent-browser-toolbar"><button onClick={agentOpen} disabled={!!busy}><Globe2 size={13}/> Open agent browser</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.show?.()).then(()=>setBrowserError("")).catch(error=>setBrowserError(error?.message||String(error)||"Could not show Agent Browser."))}><Eye size={13}/> Show browser</button><button onClick={inspect} disabled={!!busy}><MousePointer2 size={13}/> Inspect elements</button><button onClick={capture} disabled={!!busy}><Camera size={13}/> Attach screenshot</button><button onClick={openProfileImport} disabled={!!busy}>Import profile</button><button onClick={importCookies} disabled={!!busy}>Import cookie JSON</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.close?.()).then(()=>{setBrowserError("");dropPage();setCookieStatus("")}).catch(error=>setBrowserError(error?.message||String(error)||"Could not close Agent Browser."))}><X size={13}/> Close</button>{cookieStatus&&<span className="browser-cookie-status" role="status" data-testid="browser-cookie-status">{cookieStatus}</span>}</div>{browserError&&<div className="browser-action-error" role="alert">{browserError}</div>}</>:<div className="agent-browser-unavailable"><strong>Desktop Agent Browser is unavailable here</strong><span>The hosted UI still supports iframe previews, local dev-server detection, and recent-page history.</span></div>}
+    {desktopBrowserAvailable?<><div className="agent-browser-toolbar"><button onClick={agentOpen} disabled={!!busy}><Globe2 size={13}/> Open agent browser</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.show?.()).then(()=>setBrowserError("")).catch(error=>setBrowserError(error?.message||String(error)||"Could not show Agent Browser."))}><Eye size={13}/> Show browser</button><button onClick={inspect} disabled={!!busy}><MousePointer2 size={13}/> Inspect elements</button><button onClick={capture} disabled={!!busy}><Camera size={13}/> Attach screenshot</button><button onClick={openProfileImport} disabled={!!busy}>Import profile</button><button onClick={importCookies} disabled={!!busy}>Import cookie JSON</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.close?.()).then(()=>{setBrowserError("");dropPage();setCookieStatus("")}).catch(error=>setBrowserError(error?.message||String(error)||"Could not close Agent Browser."))}><X size={13}/> Close</button>{cookieStatus&&<span className="browser-cookie-status" role="status" data-testid="browser-cookie-status">{cookieStatus}</span>}</div>{browserError&&<div className="browser-action-error" role="alert">{browserError}</div>}{ended?.error&&<div className="browser-action-error" role="alert">{ended.text}</div>}</>:<div className="agent-browser-unavailable"><strong>Desktop Agent Browser is unavailable here</strong><span>The hosted UI still supports iframe previews, local dev-server detection, and recent-page history.</span></div>}
     {importOpen&&<div className="browser-profile-import" data-testid="browser-profile-import"><div className="browser-profile-import-head"><div><strong>Import signed-in browser session</strong><span>One-time cookie copy into Trebell Agent Browser.</span></div><button aria-label="Close profile import" title="Close profile import" onClick={()=>setImportOpen(false)}><X size={12}/></button></div>{(browserImports?.sources||[]).length?(browserImports.sources||[]).map(source=><section key={source.id}><div><strong>{source.name}</strong><span>{source.running?"Close the browser before importing.":source.installed?`${source.profiles?.length||0} profile${source.profiles?.length===1?"":"s"} found`:"No readable profiles found"}</span></div>{(source.profiles||[]).map(profile=><button key={profile.id} disabled={source.running||!!busy} onClick={()=>importProfile(source,profile)}><span>{profile.name}</span><small>{source.running?"Browser running":"Import"}</small></button>)}</section>):<p>No supported browser profiles were found. On Windows, Firefox and Helium are supported; cookie JSON remains available as a fallback.</p>}</div>}
     <div className={"preview-layout"+(desktopBrowserAvailable?"":" hosted")}><div className="preview-frame">{!url?<div className="preview-empty-state"><Globe2 size={18}/><strong>No preview open</strong><span>Enter a local or web URL above to preview it here.</span></div>:unanswered===url?<div className="preview-empty-state preview-unanswered" role="alert"><Unplug size={18}/><strong>Nothing answered at {url}</strong><span>Start the server for this address, then press Preview to try again.</span></div>:<iframe key={key} title="Trebell preview" src={url} style={{transform:"scale("+previewZoom+")",transformOrigin:"0 0",width:(100/previewZoom)+"%",height:(100/previewZoom)+"%"}}/>}</div>
       {desktopBrowserAvailable&&<aside className="browser-inspector"><h3>Agent browser</h3>{shownPage?<><p><strong>{shownPage.title||"Untitled"}</strong><span>{shownPage.url}</span></p>{snapshot?<><div className="browser-elements">{(snapshot.elements||[]).map(el=><button className={selectedRef===el.ref?"active":""} key={el.ref} onClick={()=>{setSelectedRef(el.ref);setLastAttached({})}}><code>{el.ref}</code><span>{el.text||el.tag}</span><small>{el.tag}{el.href?" · link":""}</small></button>)}</div>{selectedElement&&<div className="browser-annotation" data-testid="preview-annotation"><div><strong>Annotate {selectedElement.ref}</strong><span>{selectedElement.text||selectedElement.tag}</span></div><textarea value={annotation} onChange={e=>setAnnotation(e.target.value)} placeholder="Add a note or instruction for the agent about this element…"/><div className="annotation-actions" onClick={pressOnce}><button onClick={()=>attachElement(selectedElement)}>Attach context</button>{/* The note attached is emptied, unless another was typed while it was on its way. */}<button className="primary" disabled={!annotation.trim()} onClick={async()=>{const sent=annotation;if(await attachElement(selectedElement,sent))setAnnotation(current=>current===sent?"":current)}}>Attach annotation</button>{lastAttached[selectedElement.ref]&&<span>{lastAttached[selectedElement.ref]}</span>}</div></div>}</>:<div className="empty-inspector">Inspect elements to see this page's model-addressable elements.</div>}</>:<div className="empty-inspector">Open the agent browser and inspect the page to see model-addressable elements.</div>}</aside>}
