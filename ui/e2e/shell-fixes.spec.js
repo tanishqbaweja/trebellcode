@@ -474,13 +474,15 @@ for(const [prCount,mode] of [[1,"dark"],[2,"dark"],[2,"light"],[3,"dark"]])test(
 });
 
 // Two linked pull requests fold into the first one's chip ("#101 +1") beside the open inspector, and the project crumb keeps a
-// shortened name, ended by its ellipsis, as it does beside one chip: the title keeps a readable width and the crumb has the room
-// left beside it (UI lane D, 2026-10-17: the fold took the crumb's name too, leaving its folder icon while the title showed whole).
-// In a narrower main column the theme and palette buttons step aside, which often frees more than the title needs, and the crumb
-// gets its shortened name back there too (at 1240 it kept its icon alone beside a whole title with room to spare): it keeps only
-// its icon where its shortened name would leave the title under its readable width. Beside a shortened crumb the title shows
-// whole while the crumb can shrink further. The crumb's tooltip gives the whole name at each width.
-for(const mode of ["dark","light"])test(`the project crumb keeps a shortened name beside two linked pull requests, at 1280 where they fold into one chip, at 1240 where the theme and palette buttons step aside, and at 900 and 700, and keeps only its icon where the title needs its room, in ${mode} mode`,async({page})=>{
+// shortened name, ended by its ellipsis, wherever the room left beside the title holds it (UI lane D, 2026-10-17: the fold took the
+// crumb's name too, leaving its folder icon while the title showed whole). At 1280 the title is whole only once the crumb keeps its
+// icon alone (level 2 left the 85px "Repo task one" 80px, "Repo task …" as "Repo task two" reads: UI lane D, 2026-10-20), and the
+// crumb's name there would be level 2 again, so the theme and palette buttons step aside for the crumb's name; at 1240 they step
+// aside for the title, freeing more room than it needs, and the crumb's name takes the rest. The crumb keeps only its icon where its
+// shortened name would cut the title: short of whole where the level shows it whole (at 1176 the name would leave it 83px of its
+// 85), or under its readable width where the level leaves it cut. Beside a shortened crumb the title shows whole while the crumb can
+// shrink further. The crumb's tooltip gives the whole name at each width.
+for(const mode of ["dark","light"])test(`the project crumb keeps a shortened name beside two linked pull requests, at 1280 where they fold into one chip and the theme and palette buttons step aside for it, at 1240, 900 and 700, and keeps only its icon where its name would cut the title, in ${mode} mode`,async({page})=>{
   test.setTimeout(60_000);
   const project={id:"header-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
   const thread={id:"header-thread",name:"Repo task one",preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at repo task one"}]},{type:"agentMessage",id:"assistant-1",text:"Looked at repo task one."}]}]};
@@ -505,15 +507,15 @@ for(const mode of ["dark","light"])test(`the project crumb keeps a shortened nam
       document.body.append(least);const width=least.getBoundingClientRect().width;least.remove();
       return {display:style.display,shown:node.clientWidth,whole:node.scrollWidth,least:width,overflow:style.textOverflow};
     });
-    // The main column beside the docked 460px inspector at 1280, 1240 and 1180, and beside the 224px sidebar at 1100; at 900 and
-    // below the inspector lies over it, and at 700 the sidebar has closed. At 1240 the theme and palette buttons have stepped
-    // aside, and at 1180 and 1100 the crumb has its shortened name or the title needs the room.
-    for(const [width,column,named] of [[1280,562,true],[900,704,true],[700,700,true],[1240,522,true],[1180,462,false],[1100,416,false]]){
+    // The main column beside the docked 460px inspector at 1280, 1240, 1180 and 1176, and beside the 224px sidebar at 1100; at 900
+    // and below the inspector lies over it, and at 700 the sidebar has closed. At 1280 and 1240 the theme and palette buttons have
+    // stepped aside, and at 1180, 1176 and 1100 the crumb has its shortened name or the title needs the room.
+    for(const [width,column,named] of [[1280,562,true],[900,704,true],[700,700,true],[1240,522,true],[1180,462,false],[1176,458,false],[1100,416,false]]){
       await page.setViewportSize({width,height:800});
       await expect.poll(()=>header.evaluate(node=>Math.round(node.getBoundingClientRect().width))).toBe(column);await settle(page);
       const chips=await header.locator(".header-pr").evaluateAll(nodes=>nodes.filter(node=>node.offsetParent).map(node=>node.innerText.replace(/\s+/g,"")));
       if(width===1280)expect(chips,"the pull requests fold into the first one's chip").toEqual(["#101+1"]);
-      if(width===1240)await expect(header.getByRole("button",{name:"Command palette",exact:true}),"the palette button has stepped aside").toBeHidden();
+      if(width===1280||width===1240)await expect(header.getByRole("button",{name:"Command palette",exact:true}),"the palette button has stepped aside").toBeHidden();
       const shown=await name(),titleBox=await title.evaluate(node=>({shown:node.clientWidth,whole:node.scrollWidth}));
       // The crumb's box and its least width, and the title's box and the width its text takes, to the fraction of a pixel.
       const squeeze=await header.evaluate(node=>{
@@ -529,12 +531,14 @@ for(const mode of ["dark","light"])test(`the project crumb keeps a shortened nam
         expect(shown.shown+1,`the crumb's name shows its first letter and the ellipsis at least at ${width}px`).toBeGreaterThanOrEqual(shown.least);
         if(shown.shown<shown.whole)expect(shown.overflow,`the crumb's name is cut with an ellipsis at ${width}px`).toBe("ellipsis");
       }else{
-        // Its icon alone, only because its shortened name (the header's data-crumb) would cut the title under its readable width.
+        // Its icon alone, only because its shortened name (the header's data-crumb) would cut the title: short of whole, where the
+        // level shows the title whole, or under its readable width where the level leaves it cut (this was held to the readable width
+        // either way, so at 1176, where the name would leave the title 83px of its 85, the header was right and the check failed).
         const withName=await header.evaluate(node=>{node.dataset.crumb="short";const strong=node.querySelector(".thread-title-button strong"),box={shown:strong.clientWidth,whole:strong.scrollWidth};delete node.dataset.crumb;return box});
-        expect(withName.shown+1,`the title beside the crumb's shortened name at ${width}px`).toBeLessThan(Math.min(withName.whole,80));
+        expect(withName.shown+1,`the title beside the crumb's shortened name at ${width}px`).toBeLessThan(titleBox.shown+1>=titleBox.whole?withName.whole:Math.min(withName.whole,80));
       }
-      // The 85px title, little longer than the readable 80px, shows whole at each width: a later level gives it its room (it read
-      // 80px of itself at 1280 and 82px at 1180, the levels after them not tried).
+      // The 85px title shows whole at each width: a level that folds no action gives it that (it read 80px of itself at 1280 and 82px
+      // at 1180, the levels after them not tried).
       expect(titleBox.shown+1,`the title's width at ${width}px`).toBeGreaterThanOrEqual(titleBox.whole);
       const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
       await expect(crumb).toHaveAttribute("title",project.name+" · Projects and workspaces");
@@ -545,16 +549,23 @@ for(const mode of ["dark","light"])test(`the project crumb keeps a shortened nam
   }finally{await harness.close()}
 });
 
-// A short thread title shows whole wherever a level of the header fit gives it its room (UI lane D, 2026-10-20: at 1280 beside the
-// Git inspector, once a second pull request was linked, the fit stopped where the title kept its readable 80px, 80 of its 85px,
-// and "Repo task one" read "Repo task …" as "Repo task two" beside it would, while at 1240 the next levels gave it whole). Cut to
-// the readable width, a short title loses only its last word, which can be all that tells it from another thread. The second pull
-// request is linked from the palette; from 1240 to 1366 a wider window never shows less of the title, and the crumb keeps a
-// shortened name beside it at 1280. Closing the sidebar with Ctrl+B and opening it from the header fits the header again.
-for(const mode of ["dark","light"])test(`a short thread title shows whole beside two linked pull requests at 1280 as at 1240 and 1366, never less in a wider window, in ${mode} mode`,async({page})=>{
+// A thread title shows whole wherever a level of the header fit that folds no action gives it that, however long it is (UI lane D,
+// 2026-10-20: at 1280 beside the Git inspector, once a second pull request was linked, the fit stopped where the title kept its
+// readable 80px, and "Repo task one", 80 of its 85px, read "Repo task …" as "Repo task two" beside it would, while at 1240 the next
+// levels gave it whole). Cut to the readable width, a title can lose just the words that tell it from another thread: "Repo task
+// number one" (131px), longer than the 120px up to which a title had to show whole, still read "Repo task …" at 1280, as "Repo task
+// number two" does, and showed more of itself at 1260 than at 1280. The header goes no further than the title and the crumb's
+// shortened name need: the level before the one it takes cuts the title, or the header is at level 4 with the crumb's shortened
+// name, which level 3 cannot hold (its name there is level 2 again, and level 2 cuts the title). So at 1280 both titles show whole
+// with the crumb's name beside them, the theme and palette buttons stepping aside for it, and past level 3 the crumb keeps only its
+// icon where its shortened name would cut the title (at 1240 it cut "Repo task number one" to 108px, where its icon left the title
+// whole). The second pull request is linked from the palette; from 1240 to 1366 the title shows whole, so a wider window never shows
+// less of it. Closing the sidebar with Ctrl+B and opening it from the header fits the header again.
+for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task number one","Repo task number two"]])for(const mode of ["dark","light"])test(`"${name}" shows whole beside "${sibling}" and two linked pull requests from 1240 to 1366, the header going no further than the title and the crumb's name need, in ${mode} mode`,async({page})=>{
   test.setTimeout(60_000);
   const project={id:"header-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
-  const threads=["Repo task one","Repo task two"].map((name,index)=>({id:"header-thread-"+(index+1),name,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+name.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+name.toLowerCase()+"."}]}]}));
+  const threads=[name,sibling].map((title,index)=>({id:"header-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const slug=name.toLowerCase().replace(/\s+/g,"-");
   const prs=[101,102].map(number=>({url:"https://github.com/lane-d/scratch/pull/"+number,number,title:"Scratch PR "+number,state:"open"}));
   let links=prs.slice(0,1);
   const harness=await startHarness(threads);
@@ -585,38 +596,64 @@ for(const mode of ["dark","light"])test(`a short thread title shows whole beside
       least.style.cssText="position:absolute;visibility:hidden;white-space:nowrap";least.textContent=name.textContent.trim().charAt(0)+"…";
       for(const key of ["fontFamily","fontSize","fontWeight","fontStyle","fontStretch","fontFeatureSettings","fontVariationSettings","letterSpacing"])least.style[key]=style[key];
       document.body.append(least);const leastWidth=least.getBoundingClientRect().width;least.remove();
-      return {fit:node.dataset.fit,title:strong.clientWidth,whole:strong.scrollWidth,name:style.display==="none"?0:name.clientWidth,least:leastWidth,overflow:node.scrollWidth-node.clientWidth,chips:[...node.querySelectorAll(".header-pr")].filter(chip=>chip.offsetParent).map(chip=>chip.innerText.replace(/\s+/g,""))};
+      return {fit:node.dataset.fit,crumb:node.dataset.crumb||"",title:strong.clientWidth,whole:strong.scrollWidth,name:style.display==="none"?0:name.clientWidth,least:leastWidth,overflow:node.scrollWidth-node.clientWidth,chips:[...node.querySelectorAll(".header-pr")].filter(chip=>chip.offsetParent).map(chip=>chip.innerText.replace(/\s+/g,""))};
     });
+    // What the title shows at another level, with the crumb as that level draws it (as the fit measures each level), and beside the
+    // crumb's shortened name at this level; the header is put back as it was.
+    const titleAt=level=>header.evaluate((node,level)=>{
+      const fit=node.dataset.fit,crumb=node.dataset.crumb,strong=node.querySelector(".thread-title-button strong");
+      node.dataset.fit=String(level);delete node.dataset.crumb;
+      const box={shown:strong.clientWidth,whole:strong.scrollWidth};
+      node.dataset.fit=fit;if(crumb)node.dataset.crumb=crumb;
+      return box;
+    },level);
+    const withName=()=>header.evaluate(node=>{
+      const crumb=node.dataset.crumb,strong=node.querySelector(".thread-title-button strong");
+      node.dataset.crumb="short";const box={shown:strong.clientWidth,whole:strong.scrollWidth};
+      if(crumb)node.dataset.crumb=crumb;else delete node.dataset.crumb;
+      return box;
+    });
+    const themeLabel=mode==="dark"?"Switch to light mode":"Switch to dark mode";
+    // The title shows whole, and the header goes no further than that and the crumb's name need: the level before its own cuts the
+    // title, or the header is at level 4 with the crumb's shortened name, which level 3 cannot hold beside the title (its name there
+    // would be level 2 again, which cuts it). A header at level 3 or below keeps its theme and palette buttons, and past level 3 a
+    // crumb kept to its icon is so only because its shortened name would cut the title.
     const at=async(width,column=width-258-460)=>{
       await page.setViewportSize({width,height:800});
       await expect.poll(()=>header.evaluate(node=>Math.round(node.getBoundingClientRect().width))).toBe(column);await settle(page);
-      const state=await read();
-      console.log(`header at ${width}: fit ${state.fit}, title ${state.title} of ${state.whole}px, crumb name ${state.name}px (least ${state.least.toFixed(1)}), chips ${state.chips.join(" ")}`);
+      const state=await read(),fit=Number(state.fit);
+      console.log(`header for "${name}" at ${width}: fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}, title ${state.title} of ${state.whole}px, crumb name ${state.name}px (least ${state.least.toFixed(1)}), chips ${state.chips.join(" ")}`);
       expect(state.overflow,`the header holds its row at ${width}px`).toBeLessThanOrEqual(1);
+      expect(state.title+1,`the title shows whole at ${width}px (${state.title} of ${state.whole}px at data-fit ${state.fit})`).toBeGreaterThanOrEqual(state.whole);
+      if(fit>0&&fit<6){
+        const named=fit===4&&state.crumb==="short",level=named?2:fit-1,before=await titleAt(level);
+        expect(before.shown+1,named?`level 2, which level 3 with the crumb's name would be, cuts the title at ${width}px (${before.shown} of ${before.whole}px)`:`level ${level} cuts the title at ${width}px (${before.shown} of ${before.whole}px), which needs level ${fit}`).toBeLessThan(before.whole);
+      }
+      if(fit<=3)for(const label of ["Command palette",themeLabel])await expect(header.getByRole("button",{name:label,exact:true}),`${label} at ${width}px`).toBeVisible();
+      if(fit>3&&!state.crumb){const named=await withName();expect(named.shown+1,`the crumb keeps its icon at ${width}px only where its shortened name would cut the title (${named.shown} of ${named.whole}px)`).toBeLessThan(named.whole)}
       return state;
     };
-    const whole=(state,width)=>expect(state.title+1,`the title shows whole at ${width}px (${state.title} of ${state.whole}px at data-fit ${state.fit})`).toBeGreaterThanOrEqual(state.whole);
     // At 1280 the pull requests fold into one chip and the title reads whole, the crumb keeping a shortened name beside it.
     const wide=await at(1280);
     expect(wide.chips,"the pull requests fold into the first one's chip").toEqual(["#101+1"]);
-    whole(wide,1280);
-    expect(wide.name+1,"the crumb keeps a shortened name beside the title at 1280px").toBeGreaterThanOrEqual(wide.least);
+    expect(wide.crumb,"the crumb keeps a shortened name beside the title at 1280px").toBe("short");
+    expect(wide.name+1,"the crumb's shortened name shows its first letter and the ellipsis at least at 1280px").toBeGreaterThanOrEqual(wide.least);
     await header.locator(".thread-title-button").hover();
-    await page.screenshot({path:join(shotsDir,`header-short-title-two-prs-${mode}-1280x800.png`),animations:"disabled"});
-    // Narrower and wider, and a wider window never shows less of the title than a narrower one.
+    await page.screenshot({path:join(shotsDir,`header-title-${slug}-two-prs-${mode}-1280x800.png`),animations:"disabled"});
+    // Narrower and wider: the title shows whole at each width, so a wider window never shows less of it than a narrower one.
     let narrower=null;
     for(const width of [1240,1260,1280,1300,1320,1340,1366]){
-      const state=await at(width);whole(state,width);
+      const state=await at(width);
       if(narrower)expect(state.title,`the title at ${width}px against ${narrower.width}px`).toBeGreaterThanOrEqual(narrower.title);
       narrower={width,title:state.title};
-      if(width===1240||width===1366)await page.screenshot({path:join(shotsDir,`header-short-title-two-prs-${mode}-${width}x800.png`),animations:"disabled"});
+      if(width===1240||width===1366)await page.screenshot({path:join(shotsDir,`header-title-${slug}-two-prs-${mode}-${width}x800.png`),animations:"disabled"});
     }
     // Ctrl+B closes the sidebar and the header's Open sidebar button opens it again: each time the header fits its new width.
     await at(1280);await page.getByTestId("composer").click();
     await page.keyboard.press("Control+b");await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
-    whole(await at(1280,1280-460),1280);
+    await at(1280,1280-460);
     await header.getByRole("button",{name:"Open sidebar"}).click();await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
-    const back=await at(1280);whole(back,1280);
+    const back=await at(1280);
     expect(back.name+1,"the crumb keeps a shortened name with the sidebar open again").toBeGreaterThanOrEqual(back.least);
   }finally{await harness.close()}
 });
