@@ -978,8 +978,16 @@
   grid-row:1;grid-column:2;min-width:0;height:40px;display:flex;align-items:center;gap:2px;padding:0 4px 0 0;overflow:visible;
   border:0!important;border-radius:0;background:transparent!important;color:var(--tx2)!important;
 }
-:root:root .terminal-drawer .real-terminal .terminal-tab-list{flex:1;min-width:0;height:100%;display:flex;align-items:center;gap:4px;padding:0 8px 0 0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain}
+:root:root .terminal-drawer .real-terminal .terminal-tab-list{flex:1;min-width:0;height:100%;display:flex;align-items:center;gap:4px;padding:0 8px 0 0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain;scroll-padding-inline:44px}
 :root:root .terminal-drawer .terminal-tab-list::-webkit-scrollbar{display:none}
+/* An edge of the row with tabs past it fades (data-more, set by TerminalPanel as the row scrolls and as it or a tab changes width),
+   which says more tabs are there; the tab cut there fades out and is gone short of the edge, so it ends neither as a lone x nor as
+   text run into the Terminal heading. A row whose tabs all fit has none. A tab scrolled into view, the shown one or one Tab reaches,
+   stops where the fade ends (the scroll padding). The start's clear part is the wider: a tab cut there ends in its close button,
+   which is left in the fade's fainter half beside a tab brought in, while one cut at the end shows its icon and name. */
+:root:root .terminal-drawer .terminal-tab-list[data-more~=start]{mask-image:linear-gradient(90deg,transparent 20px,#000 44px)}
+:root:root .terminal-drawer .terminal-tab-list[data-more~=end]{mask-image:linear-gradient(90deg,#000 calc(100% - 44px),transparent calc(100% - 12px))}
+:root:root .terminal-drawer .terminal-tab-list[data-more="start end"]{mask-image:linear-gradient(90deg,transparent 20px,#000 44px calc(100% - 44px),transparent calc(100% - 12px))}
 /* A tab is the button that selects it and its close button side by side, in one box. */
 :root:root .terminal-drawer .real-terminal .terminal-tab-list>.terminal-tab{
   flex:none;max-width:220px;height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 4px 0 0;

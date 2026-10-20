@@ -3,6 +3,7 @@ import { Columns2, Plus, Rows2, SquareTerminal, X, Paperclip } from "lucide-reac
 import { api,wsUrl } from "../api.js";
 import { createTerminalScreen,TERMINAL_SCROLLBACK_CHARS,TERMINAL_SCROLLBACK_LINES } from "../terminal-screen.js";
 import { terminalKeyboardAsked } from "../terminal-keyboard.js";
+import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 const MAX_SPLIT_PANES=4;
 const RECONNECTING="Terminal is reconnecting. Try again in a moment.";
@@ -24,6 +25,13 @@ function screenScrolled(event){
   else if(node.dataset.stick!=="false"&&node.scrollTop>=node.dataset.pinned-1)pinToEnd(node);
   else node.dataset.stick="false";
 }
+// A tab row with more tabs than it shows says so: data-more names each edge with tabs past it ("start", "end" or both), which
+// fades there (inspector.css), and is empty when the tabs all fit.
+const markHiddenTabs=list=>{list.dataset.more=(list.scrollLeft>1?"start ":"")+(list.scrollLeft+list.clientWidth<list.scrollWidth-1?"end":"")};
+// A press on a tab picks it once, as a thread menu's item runs once (ThreadSidebar.jsx): the rest of it (the second click of a double
+// click, Enter held) does nothing. A tab picked at an edge of the row is scrolled in clear of the fade, which can move the close button
+// of the tab before it, or its own, under the pointer, and the command line takes the keyboard.
+function pressOnce(event){if(event.target.closest(".terminal-tab-select"))ignorePressRest(!event.detail)}
 
 export default function TerminalPanel({projectPath,environmentId=null,environmentName="Local machine",onAttachExcerpt}){
   const [sessions,setSessions]=useState([]);
@@ -146,11 +154,12 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   // select and close buttons, is the one marked active).
   useEffect(()=>{tabListRef.current?.querySelector(".terminal-tab.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"})},[activeId,sessions.length]);
   // The tab list shows once the sessions are listed. The shown tab stays in view as the row or any tab in it changes width: a tab
-  // grows when it says its terminal ended (its mark), which moved the shown tab out of the row's view.
+  // grows when it says its terminal ended (its mark), which moved the shown tab out of the row's view. Its fades are marked again
+  // then, as on each scroll of the row.
   const tabIds=sessions.map(session=>session.id).join("|");
   useEffect(()=>{
     const list=tabListRef.current;if(!list||typeof ResizeObserver==="undefined")return;
-    const observer=new ResizeObserver(()=>list.querySelector(".terminal-tab.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"}));
+    const observer=new ResizeObserver(()=>{list.querySelector(".terminal-tab.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"});markHiddenTabs(list)});
     observer.observe(list);for(const tab of list.children)observer.observe(tab);
     return()=>observer.disconnect();
   },[listed,tabIds]);
@@ -273,7 +282,10 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
       {/* Session tabs scroll on their own so New and the split buttons stay in reach however many terminals are open. */}
       {/* A tab's close button stands beside the button that selects it (a button cannot hold another), so the keyboard reaches it and
           it has a name. Closing from either hands focus to the terminal that is then active, as the gone button cannot keep it. */}
-      <div className="terminal-tab-list" ref={tabListRef} onWheel={event=>{if(event.deltaY&&!event.deltaX)event.currentTarget.scrollLeft+=event.deltaY}}>{sessions.map(session=>{
+      {/* A tab the keyboard reaches comes whole into view clear of the row's fades, as the shown one does: the browser leaves a focused
+          button that is inside the row but under a fade where it is. Focus from a click leaves the row still, so the button pressed
+          stays under the pointer. */}
+      <div className="terminal-tab-list" ref={tabListRef} onClick={pressOnce} onScroll={event=>markHiddenTabs(event.currentTarget)} onFocus={event=>{if(event.target.matches(":focus-visible"))event.target.closest(".terminal-tab")?.scrollIntoView({block:"nearest",inline:"nearest"})}} onWheel={event=>{if(event.deltaY&&!event.deltaX)event.currentTarget.scrollLeft+=event.deltaY}}>{sessions.map(session=>{
         const name=session.name||"Terminal",closeTab=()=>close(session.id).then(closed=>closed&&setFocusTick(value=>value+1));
         // A stopped session's mark: its exit code, or "stopped" when it has none; its title and the tab's name say which.
         const code=session.exitCode,end=code==null?"Stopped":"Exited with code "+code;

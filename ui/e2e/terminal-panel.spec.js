@@ -665,6 +665,138 @@ test("in a 900 px window with four terminals and the last one shown, the shown t
   }finally{await shell.close()}
 });
 
+// The tab row shows it holds more tabs than it shows: an edge with tabs past it fades, that edge only, as the row scrolls, as the
+// drawer narrows and as the tabs grow, and a row whose tabs all fit has none. A tab brought into view, the shown one or one the
+// keyboard reaches, stops clear of the fade, with the close button of the tab cut before it in the fade's fainter half, and a double
+// click on a cut tab closes nothing. The row cut a tab at its edge and said nothing of the tabs past it: beside the Terminal heading
+// the cut tab could be a lone x.
+test("the terminal tab row fades at each edge with tabs past it as it scrolls, as the drawer narrows and as the tabs grow, at neither when they all fit, and Tab or a click brings a cut tab into view clear of the fade",async({page,request})=>{
+  test.setTimeout(150_000);
+  const shell=await realTerminals(page);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    const {drawer,input}=await openTerminal(page,request);
+    const {tab,startNew,ended,inView}=terminalTabs(page,drawer);
+    const row=drawer.locator(".terminal-tab-list"),panelToggle=page.getByTestId("right-panel-toggle");
+    // How far in from each edge of the row its mask fades it, 0 where it does not, and how far in that fade shows nothing at all
+    // (startClear, endClear): the mask is a gradient from the row's start to its end, clear up to a stop at an edge that fades and
+    // opaque from the stop beside it.
+    const fades=()=>row.evaluate(node=>{
+      const stops=getComputedStyle(node).maskImage.match(/rgba?\([^)]*\)[^,]*/g)||[],px=stop=>Number(/([\d.]+)px/.exec(stop)[1]);
+      const fade=(edge,next)=>/rgba\(0, 0, 0, 0\)/.test(edge||"")?[px(edge),px(next)]:[0,0];
+      const [startClear,start]=fade(stops[0],stops[1]),[endClear,end]=fade(stops.at(-1),stops.at(-2));
+      return {start,end,startClear,endClear};
+    });
+    const edges=async()=>{const {start,end}=await fades();return [start&&"start",end&&"end"].filter(Boolean).join(" ")};
+    // Whether a tab's box shows whole in the row and clear of its fades.
+    const clear=async name=>tab(name).evaluate((node,fade)=>{const box=node.parentElement.getBoundingClientRect(),row=node.closest(".terminal-tab-list").getBoundingClientRect();return box.left>=row.left+fade.start-1&&box.right<=row.right-fade.end+1},await fades());
+    const focused=name=>tab(name).evaluate(node=>node===document.activeElement);
+    // walk(key,name) presses key until name's tab has the keyboard, and each button of the row it reaches on the way, a tab or its
+    // close button, comes whole into view clear of the fade: hidden() names the focused button and where it is when it does not.
+    const hidden=async()=>page.evaluate(fade=>{
+      const node=document.activeElement,list=node.closest(".terminal-tab-list");if(!list)return "";
+      const box=node.getBoundingClientRect(),row=list.getBoundingClientRect();
+      return box.left>=row.left+fade.start-1&&box.right<=row.right-fade.end+1?"":(node.getAttribute("aria-label")||node.textContent)+" at "+Math.round(box.left-row.left)+" to "+Math.round(box.right-row.left)+" of "+Math.round(row.width);
+    },await fades());
+    const walk=async(key,name)=>{for(let press=0;press<8&&!await focused(name);press++){await page.keyboard.press(key);await expect.poll(hidden,{message:key+" brings the button it reaches whole into view, clear of the fade"}).toBe("")}};
+    await startNew(2);await startNew(3);await startNew(4);
+    // At 1280 the four tabs fit the row, which fades at neither edge.
+    for(const name of ["Terminal 1","Terminal 2","Terminal 3","Terminal 4"])expect(await inView(name),name+"'s tab shows").toBe(true);
+    expect(await edges(),"a row whose tabs all fit does not fade").toBe("");
+    // The right panel opens and the drawer narrows: the tabs overflow the row, and the shown one, the last, is kept in view at the
+    // row's end, so the row fades at its start, where the first tabs are hidden beside the Terminal heading, and not at its end.
+    await panelToggle.click();
+    await expect(page.getByTestId("right-panel")).toBeVisible();
+    await expect.poll(()=>inView("Terminal 1"),{message:"the four tabs overflow the narrower row"}).toBe(false);
+    await expect.poll(edges,{message:"the row fades at its start, where tabs are hidden, and not at its end"}).toBe("start");
+    expect((await fades()).start,"the fade reaches past a cut tab's close button, with the tab's padding and border").toBeGreaterThanOrEqual(26);
+    expect(await clear("Terminal 4"),"the shown tab stands clear of the fade").toBe(true);
+    await shots(page,"terminal-tab-row-fade-start",[1280]);
+    // The wheel over the row scrolls it to its start: its end fades now, and its start does not.
+    const box=await row.boundingBox();
+    await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+    await page.mouse.wheel(0,-1000);
+    await expect.poll(edges,{message:"scrolled to its start the row fades at its end only"}).toBe("end");
+    expect(await inView("Terminal 1")).toBe(true);
+    await shots(page,"terminal-tab-row-fade-end",[1280]);
+    // Wheeled on until the first tab shows only its close button beside the heading: both edges fade, and that x is in the fade.
+    await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+    await page.mouse.wheel(0,Math.round(await tab("Terminal 1").evaluate(node=>node.parentElement.getBoundingClientRect().right-node.closest(".terminal-tab-list").getBoundingClientRect().left-26)));
+    await expect.poll(edges,{message:"with tabs past both edges the row fades at both"}).toBe("start end");
+    const loneX=await drawer.getByRole("button",{name:"Close Terminal 1"}).evaluate((node,fade)=>{const box=node.getBoundingClientRect(),row=node.closest(".terminal-tab-list").getBoundingClientRect();return {left:box.left-row.left,right:box.right-row.left,fade:fade.start}},await fades());
+    expect(loneX.left>=0&&loneX.right<=loneX.fade,"the cut tab's close button beside the heading lies in the fade: "+JSON.stringify(loneX)).toBe(true);
+    await shots(page,"terminal-tab-row-fade-cut-tab",[1280]);
+    // Shift+Tab from the shown terminal's command line onto the tabs: the last tab, hidden past the row's end, comes into view
+    // clear of the fade, and the row fades at its start. On back to the first tab, hidden past the start, through the tabs between,
+    // each brought clear of the start's fade as it is reached: the row fades at its end. Then Tab forward to the last tab, hidden
+    // past the end again, each tab on the way brought clear of the end's fade.
+    await input.click();
+    await walk("Shift+Tab","Terminal 4");
+    await expect(tab("Terminal 4")).toBeFocused();
+    await expect.poll(()=>clear("Terminal 4"),{message:"Shift+Tab brings the last tab whole into view, clear of the fade"}).toBe(true);
+    await expect.poll(edges).toBe("start");
+    await walk("Shift+Tab","Terminal 1");
+    await expect(tab("Terminal 1")).toBeFocused();
+    await expect.poll(()=>clear("Terminal 1"),{message:"Shift+Tab brings the first tab whole into view, clear of the fade"}).toBe(true);
+    await expect.poll(edges).toBe("end");
+    await walk("Tab","Terminal 4");
+    await expect(tab("Terminal 4")).toBeFocused();
+    await expect.poll(()=>clear("Terminal 4"),{message:"Tab brings the last tab whole into view, clear of the fade"}).toBe(true);
+    await expect.poll(edges).toBe("start");
+    await shots(page,"terminal-tab-row-fade-keyboard",[1280]);
+    // A click on what shows of Terminal 2's name, cut at the row's start, shows that terminal: its tab comes whole into view clear of
+    // the fade, and the close button of Terminal 1, cut before it beside the heading, is left in the fade's fainter half. Then a click
+    // on the last tab shows that terminal again, at the row's end.
+    const second=await tab("Terminal 2").boundingBox(),shown=box.x+(await fades()).start;
+    expect(second.x+second.width,"the end of Terminal 2's name shows past the fade").toBeGreaterThan(shown+8);
+    await page.mouse.click((Math.max(second.x,shown)+second.x+second.width)/2,second.y+second.height/2);
+    await expect(tab("Terminal 2")).toHaveAttribute("aria-current","true");
+    await expect.poll(()=>clear("Terminal 2"),{message:"the clicked tab comes whole into view, clear of the fade"}).toBe(true);
+    await expect.poll(async()=>(await fades()).start,{message:"Terminal 1 stays cut at the row's start"}).toBeGreaterThan(0);
+    const cut=await drawer.getByRole("button",{name:"Close Terminal 1"}).evaluate((node,fade)=>{const box=node.getBoundingClientRect();return {middle:Math.round((box.left+box.right)/2-node.closest(".terminal-tab-list").getBoundingClientRect().left),fade}},await fades());
+    expect(cut.middle<=(cut.fade.startClear+cut.fade.start)/2,"Terminal 1's close button lies in the fainter half of the fade: "+JSON.stringify(cut)).toBe(true);
+    await shots(page,"terminal-tab-row-fade-shown-tab",[1280]);
+    await tab("Terminal 4").click();
+    await expect(tab("Terminal 4")).toHaveAttribute("aria-current","true");
+    await expect.poll(edges,{message:"with the last terminal shown again the row fades at its start"}).toBe("start");
+    // A double click on Terminal 2 where its first click, which brings it in, leaves Terminal 1's close button under the pointer: it
+    // shows Terminal 2 and closes nothing, as the second click does nothing. Then the last terminal is shown again.
+    const again=await tab("Terminal 2").boundingBox(),point=box.x+cut.middle,closes=[],onClose=sent=>sent.method()==="DELETE"&&closes.push(sent.url());
+    expect(again.x<point&&again.x+again.width>point,"the double click lands on what shows of Terminal 2").toBe(true);
+    page.on("request",onClose);
+    await page.mouse.dblclick(point,again.y+again.height/2);
+    await expect(tab("Terminal 2")).toHaveAttribute("aria-current","true");
+    await expect.poll(()=>clear("Terminal 2"),{message:"the double clicked tab comes whole into view, clear of the fade"}).toBe(true);
+    await page.evaluate(()=>new Promise(requestAnimationFrame));
+    page.off("request",onClose);
+    expect(closes,"the second click closes no terminal").toEqual([]);
+    await expect(drawer.locator(".terminal-tab")).toHaveCount(4);
+    await tab("Terminal 4").click();
+    await expect(tab("Terminal 4")).toHaveAttribute("aria-current","true");
+    await expect.poll(edges).toBe("start");
+    // The right panel closes: the four tabs fit again and the row does not fade. In a 900 px window they overflow it again, and the
+    // shown one, the last, is kept in view at the row's end, which fades at its start.
+    await panelToggle.click();
+    await expect(page.getByTestId("right-panel")).toBeHidden();
+    await expect.poll(edges,{message:"with every tab shown again the row does not fade"}).toBe("");
+    await page.setViewportSize({width:900,height:800});
+    await expect.poll(edges,{message:"the narrower window's row fades at its start"}).toBe("start");
+    expect(await clear("Terminal 4")).toBe(true);
+    await shots(page,"terminal-tab-row-fade-window",[900]);
+    // Three tabs fit the row at 900. Then the terminal worker dies and each tab grows by its "stopped" mark: the tabs overflow the
+    // row, and the shown one, the first, keeps its place, so the row fades at its end, and not at its start.
+    await drawer.getByRole("button",{name:"Close Terminal 4"}).click();
+    await expect(drawer.locator(".terminal-tab")).toHaveCount(3);
+    await expect(tab("Terminal 1")).toHaveAttribute("aria-current","true");
+    await expect.poll(edges,{message:"the three tabs fit the row at 900"}).toBe("");
+    shell.terminals.child.kill();
+    for(const name of ["Terminal 1","Terminal 2","Terminal 3"])await ended(name,"stopped","Stopped");
+    await expect.poll(edges,{message:"the tabs grown by their marks overflow the row, which fades at its end"}).toBe("end");
+    expect(await clear("Terminal 1")).toBe(true);
+    await shots(page,"terminal-tab-row-fade-grown",[900,1280]);
+  }finally{await shell.close()}
+});
+
 // A terminal's socket can drop under it (the server restarted, the machine slept). Input while it is away is refused with a notice
 // that it is reconnecting, and the socket comes back by itself, trying less and less often while the server stays away: it never
 // came back, so every later paste or command was refused the same way until the drawer was closed and opened again.
