@@ -13,11 +13,11 @@ async function freePort(){
   const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
-// control.listed is what thread/list answers, control.older, when set, the older page its next cursor reads, control.listError, when
-// set, fails it, and control.hold, when set, holds the next one until it resolves; control.lists counts the lists asked for and
-// control.cursors keeps the cursor each was asked with (null for the first page).
+// control.listed is what thread/list answers, control.older, when set, the older page its next cursor reads, control.oldest, when set,
+// the page after that, control.listError, when set, fails it, and control.hold, when set, holds the next one until it resolves;
+// control.lists counts the lists asked for and control.cursors keeps the cursor each was asked with (null for the first page).
 async function startRuntimeHarness(thread){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),control={listed:[thread],older:null,listError:null,hold:null,lists:0,cursors:[]};
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),control={listed:[thread],older:null,oldest:null,listError:null,hold:null,lists:0,cursors:[]};
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>ws.on("message",async raw=>{
     const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
@@ -25,7 +25,7 @@ async function startRuntimeHarness(thread){
     if(message.method==="thread/list"){control.lists++;control.cursors.push(message.params?.cursor||null);if(control.hold){const held=control.hold;control.hold=null;await held}}
     if(message.method==="thread/list"&&control.listError)return ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:control.listError}}));
     if(message.method==="initialize")result={userAgent:"catalog-pagination-connected-fixture"};
-    else if(message.method==="thread/list")result=message.params?.cursor==="older-page"?{data:control.older||[],nextCursor:null}:{data:control.listed,nextCursor:control.older?"older-page":null};
+    else if(message.method==="thread/list")result=message.params?.cursor==="oldest-page"?{data:control.oldest||[],nextCursor:null}:message.params?.cursor==="older-page"?{data:control.older||[],nextCursor:control.oldest?"oldest-page":null}:{data:control.listed,nextCursor:control.older?"older-page":null};
     else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null};
     else if(message.method==="thread/goal/get")result={goal:null};
     else if(message.method==="thread/continuity/get")result={continuity:null};
@@ -395,4 +395,44 @@ test("Load older threads reads the older page while History reads its newest thr
     await expect(load).toHaveCount(0);
     expect(olderReads()).toBe(1);
   }finally{for(const release of releases.splice(0))release();await harness.close()}
+});
+
+// Older pages read before History was left stay read when it is shown again: the next Load older threads reads the page after them.
+// The first page read again took History back to its own next page, the one already shown, so the next press read that page again
+// and added nothing, and only a second press reached the older threads.
+test("Load older threads goes on from the pages already shown when History is shown again",async({page})=>{
+  test.setTimeout(60_000);
+  const now=Date.now()/1000,recent=Array.from({length:6},(_,index)=>runtimeThreadAt(now,"runtime-recent-"+index,"Recent thread "+(index+1),index*600));
+  const older=Array.from({length:4},(_,index)=>runtimeThreadAt(now,"runtime-older-"+index,"Older thread "+(index+1),86400*3+index*600)),oldest=Array.from({length:3},(_,index)=>runtimeThreadAt(now,"runtime-oldest-"+index,"Oldest thread "+(index+1),86400*9+index*600));
+  const harness=await startRuntimeHarness(recent[0]);harness.control.listed=recent;harness.control.older=older;harness.control.oldest=oldest;
+  try{
+    await routeRuntimeHistory(page,harness,"history-return-older-fixture");
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    const historyButton=page.getByRole("button",{name:"History",exact:true}),newTask=page.getByRole("button",{name:"New task",exact:true});
+    const history=page.locator(".history-page"),rows=history.locator(".history-thread-row"),load=history.getByRole("button",{name:"Load older threads"});
+    let lists=harness.control.lists;
+    await historyButton.click();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await expect(rows).toHaveCount(6);
+    await load.click();
+    await expect(history.getByRole("button",{name:/Older thread 4/})).toBeVisible();await expect(rows).toHaveCount(10);
+    await expect(load,"a page of older threads is left").toBeVisible();
+    // A new task, and History again: the runtime's newest threads now start with it.
+    await newTask.click();
+    harness.control.listed=[runtimeThreadAt(now,"runtime-newest","Newest thread",0),...recent];
+    lists=harness.control.lists;
+    await historyButton.click();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await expect(history.getByRole("button",{name:/Newest thread/})).toBeVisible();await expect(rows).toHaveCount(11);
+    await expect(load).toBeVisible();
+    // The person has tabbed to Load older threads and presses Enter: the oldest page comes in at once, and there is none after it.
+    const read=harness.control.cursors.length;
+    await load.focus();await page.keyboard.press("Enter");
+    await expect(rows,"the press adds the page after the ones shown").toHaveCount(14);
+    await expect(history.getByRole("button",{name:/Oldest thread 3/})).toBeVisible();await expect(load).toHaveCount(0);
+    expect(harness.control.cursors.slice(read),"the press read the page after the ones shown, once").toEqual(["oldest-page"]);
+    await shootHistoryModes(page,history.getByRole("button",{name:/Oldest thread 3/}),"older-threads-after-return");
+  }finally{await harness.close()}
 });

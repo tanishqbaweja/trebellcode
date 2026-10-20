@@ -2286,9 +2286,10 @@ export default function App(){
       setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
       // Only older pages read to their end (Load older threads) mark every page of the source read. A first page with no next page
       // does not: a runtime that listed few threads, or none while it started, may list more than a page later in the session.
+      // Older pages read (runtimeOlderRead) keep the next page after them: the first page's own next page is shown already.
       setThreadHistory(current=>{
-        const sameSource=current.runtimeSource===sourceKey,alreadyExhausted=sameSource&&current.runtimeExhausted,nextCursor=result?.nextCursor||null;
-        return {...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:alreadyExhausted,items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:alreadyExhausted?null:nextCursor,loading:false,retrying:false,error:""};
+        const sameSource=current.runtimeSource===sourceKey,alreadyExhausted=sameSource&&current.runtimeExhausted,nextCursor=result?.nextCursor||null,olderRead=Boolean(sameSource&&current.runtimeOlderRead&&current.nextCursor&&nextCursor);
+        return {...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:alreadyExhausted,runtimeOlderRead:olderRead,items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:alreadyExhausted?null:olderRead?current.nextCursor:nextCursor,loading:false,retrying:false,error:""};
       });
     }).catch(error=>{
       if(cancelled)return;
@@ -2322,6 +2323,7 @@ export default function App(){
       runtime:"all",
       runtimeSource:sourceKey,
       runtimeExhausted:runtimeCursor&&nativeResult.status==="fulfilled"?!nativePage?.nextCursor:current.runtimeExhausted,
+      runtimeOlderRead:Boolean(runtimeCursor&&nativeResult.status==="fulfilled")||current.runtimeOlderRead,
       items:mergeThreadCatalog(current.items,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}),
       nextCursor:runtimeCursor?(nativeResult.status==="fulfilled"?(nativePage?.nextCursor||null):runtimeCursor):current.nextCursor,
       loadingOlder:false,
