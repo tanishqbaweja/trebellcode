@@ -672,7 +672,8 @@ export function nativeNetworkWaitMessage(data={}){
 // claudeSdk: the Claude Agent SDK the relay's Claude Code sessions drive, when not the installed one (tests pass a scripted one).
 export function attachAgentRelay(server,{runtimeManager,threadStore,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null,claudeSdk=null}={}){
   const wss=new WebSocketServer({noServer:true});
-  const sessions=new Map();
+  // Each change to sessions arms or stops the idle sweep below (armSessionSweep).
+  const sessions=new (class extends Map{set(key,value){super.set(key,value);armSessionSweep();return this}delete(key){const had=super.delete(key);if(had)armSessionSweep();return had}clear(){super.clear();armSessionSweep()}})();
   // A harness session idle for SESSION_IDLE_MS (no turn running, no approval, question or form waiting) is closed by a sweep every
   // SESSION_SWEEP_MS: each held its harness's processes (Grok 4 processes and 141 MB, Cursor 5 and 307 MB, OpenCode 4 and 499 MB),
   // none of them released before the server stopped. The thread's next turn starts the harness again and resumes its conversation
@@ -686,6 +687,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const sessionEnv=runtimeManager?.env||process.env,sessionUsed=new WeakMap(),sessionLeftWork=new WeakSet(),threadRequests=new Map();
   const SESSION_IDLE_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS):10*60_000;
   const SESSION_SWEEP_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS):60_000;
+  let sessionSweep=null;
   const socketContexts=new Set();
   // The approvals, questions, forms and app tool calls a harness asked of the person, until they are answered. They wait here, not with
   // the socket that showed them: a window that reloads or loses its socket leaves them waiting, and they are asked again, under the same
@@ -905,10 +907,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const run=startSession(thread,context,options);sessionStarts.set(thread.id,run);
     try{return usedSession(await run)}finally{if(sessionStarts.get(thread.id)===run)sessionStarts.delete(thread.id)}
   }
+  const sweptSession=session=>session instanceof AcpAgentSession||session instanceof OpenCodeAgentSession;
   function sweepIdleSessions(){
     const now=Date.now();
     for(const [threadId,session] of sessions){
-      if(!(session instanceof AcpAgentSession||session instanceof OpenCodeAgentSession)||session.busy||session.activePrompt||sessionLeftWork.has(session)||threadRequests.has(threadId))continue;
+      if(!sweptSession(session)||session.busy||session.activePrompt||sessionLeftWork.has(session)||threadRequests.has(threadId))continue;
       if(session instanceof AcpAgentSession&&!session.resumable)continue;
       if(now-(sessionUsed.get(session)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
       if(waitsOn(threadId))continue;
@@ -918,7 +921,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       emit("thread/closed",{threadId});
     }
   }
-  const sessionSweep=setInterval(sweepIdleSessions,SESSION_SWEEP_MS);sessionSweep.unref?.();
+  // The sweep runs only while sessions holds a session it may let go: the first such session arms it, and the last one to leave stops
+  // it. Armed for good, it fired every minute on an idle server with no harness session at all (B22).
+  function armSessionSweep(){
+    const held=!closing&&[...sessions.values()].some(sweptSession);
+    if(held&&!sessionSweep){sessionSweep=setInterval(sweepIdleSessions,SESSION_SWEEP_MS);sessionSweep.unref?.()}
+    else if(!held&&sessionSweep){clearInterval(sessionSweep);sessionSweep=null}
+  }
   // A session the relay lets go on its own (the idle sweep, a harness that died, a rewind that starts the conversation over) leaves
   // sessions at once and closes after: an ACP harness gets up to 5 s to answer session/close before its process tree is stopped. A
   // close or reset of the relay waits for those closes too (closeSessions), so no harness outlives the relay.
@@ -2249,7 +2258,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     for(const threadId of [...toolWrites.keys()])settleToolWrites(threadId);
   }
   return {reset:closeSessions,close:async()=>{
-    closing=true;stopModelUpdates();clearInterval(sessionSweep);
+    closing=true;stopModelUpdates();clearInterval(sessionSweep);sessionSweep=null;
     server.off("upgrade",upgrade);
     for(const context of socketContexts){try{context.ws.terminate()}catch{}}
     socketContexts.clear();

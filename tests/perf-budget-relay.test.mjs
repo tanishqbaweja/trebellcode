@@ -127,21 +127,22 @@ const BUDGET_INSTANCE=Object.freeze({id:"grok-default",kind:"grok",displayName:"
 const BUDGET_THREAD=Object.freeze({runtime:"grok",providerSessionId:"budget-session",model:"fixture-model",providerMeta:{runtimeInstanceId:"grok-default",permissionProfile:"supervised"}});
 // The client reads replies with the JSON.parse it had before a test counts the server's.
 const parseJson=JSON.parse;
-// instances: the harnesses the relay offers (the first is the active one); env: what the server's environment adds.
-async function budgetRelay(prefix,{instances=[BUDGET_INSTANCE],env:extra={}}={}){
+// instances: the harnesses the relay offers (the first is the active one); env: what the server's environment adds;
+// nativeProviderTurn: the model a Trebell Native thread's turns call.
+async function budgetRelay(prefix,{instances=[BUDGET_INSTANCE],env:extra={},nativeProviderTurn=null}={}){
   const root=await mkdtemp(join(tmpdir(),prefix)),agent=join(root,"budget-acp.mjs"),plan=join(root,"plan.json"),agents=join(root,"agents");
   await writeFile(agent,BUDGET_AGENT,"utf8");await writeFile(plan,"{}","utf8");await mkdir(agents,{recursive:true});
   const env={...process.env,TREBELL_HOME:join(root,"home"),...extra},threadStore=new AgentThreadStore(env),meta=new Map(),launches={n:0},modes=[];
   const runtimeManager={
     env,instances:()=>instances.map(item=>({...item})),activeInstance:()=>({...instances[0]}),activeRuntime:()=>instances[0].kind,compatibleInstanceIds:()=>instances.map(item=>item.id),
     probe:async instance=>({id:instance.id,name:instance.displayName,available:true,authenticated:true,version:"fixture"}),
-    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),childEnvironmentKeys:()=>[],
     // The relay asks for a harness's command only to build a session for it: each ask is a launch. The permission mode is the
     // launch argument Grok and Cursor take it in.
     executable:()=>{launches.n++;return process.execPath},acpArgs:(_instance,mode)=>{modes.push(mode);return [agent,plan,agents]},
   };
   const state={settings:()=>({activeEnvironmentId:null}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
-  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test",nativeProviderTurn});
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   const ws=new WebSocket("ws://127.0.0.1:"+server.address().port+"/api/agent/ws");await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
   let requestId=0;
@@ -569,4 +570,73 @@ test("the idle sweep lets an OpenCode session go whose turn only read and search
       else{await new Promise(done=>setTimeout(done,1000));assert.ok(!fixture.released(),"the session whose harness ran a command is kept")}
     }finally{await relay.close();await fixture.close()}
   }
+});
+
+// Counts the timers that fire while it is on, by kind and delay as scripts/perf/lib/server-tap.mjs keys them: every setTimeout and
+// setInterval made after it is installed. during(ms) waits ms on a timer of its own, which is not counted.
+function timerCounter(){
+  const realTimeout=globalThis.setTimeout,realInterval=globalThis.setInterval,fired={};let on=false;
+  const counted=(real,kind)=>function(callback,delay,...args){
+    if(typeof callback!=="function")return real(callback,delay,...args);
+    const key=kind+":"+(Number(delay)||0);
+    return real(function(...inner){if(on)fired[key]=(fired[key]||0)+1;return callback.apply(this,inner)},delay,...args);
+  };
+  globalThis.setTimeout=counted(realTimeout,"timeout");globalThis.setInterval=counted(realInterval,"interval");
+  const start=()=>{for(const key of Object.keys(fired))delete fired[key];on=true},stop=()=>{on=false;return {...fired}};
+  return {start,stop,async during(ms){start();await new Promise(resolve=>realTimeout(resolve,ms));return stop()},restore(){globalThis.setTimeout=realTimeout;globalThis.setInterval=realInterval}};
+}
+
+// B22: with a project thread open in Trebell Native and no harness session, the idle server fired its timers 3.33 times a minute
+// against 1.17 before (scripts/perf/run.mjs idle): the relay's idle sweep ran every minute with no session it could let go. It runs
+// only while a harness session it may let go is held now, from the first such session to the last one to go, and a Trebell Native
+// session (which it never sweeps) does not arm it. SWEEP_ENV shortens it to 50 ms here.
+const NATIVE_INSTANCE=Object.freeze({id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true});
+test("B22: an idle relay with no harness session fires no timer, and its idle sweep runs from the first harness session to the last",async t=>{
+  const nativeProviderTurn=async()=>{throw new Error("No Trebell Native turn runs here.")};
+  const timers=timerCounter();let relay=null;
+  const idle=async when=>{const fired=await timers.during(1000);t.diagnostic("timers fired in 1 s "+when+": "+JSON.stringify(fired));assert.deepEqual(fired,{},"timers fired in 1 s "+when)};
+  try{
+    relay=await budgetRelay("trebell-budget-b22-",{instances:[BUDGET_INSTANCE,NATIVE_INSTANCE],env:SWEEP_ENV,nativeProviderTurn});
+    await idle("with no session");
+    // A Trebell Native thread is opened, which starts its session, and the session stays.
+    const native=relay.threadStore.create({runtime:"native",cwd:relay.root,model:"fixture-model",providerMeta:{runtimeInstanceId:"native-default",permissionProfile:"supervised"}});
+    const opened=await relay.rpc("thread/resume",{threadId:native.id,cwd:relay.root,excludeTurns:true});
+    assert.match(String(opened.thread.providerSessionId),/^native_/,"opening the Trebell Native thread started its session");
+    await idle("with a Trebell Native session and no harness session");
+    // A harness turn: the sweep runs while its session is held, and lets it go once it is idle.
+    const thread=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:1,tools:[{kind:"read",title:"Read README.md"}]}),"utf8");
+    timers.start();
+    const completed=relay.notified("turn/completed");await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"What does the README say?"}]});await completed;
+    const [agent]=await relay.agentProcesses();
+    assert.ok(await eventually(()=>!alive(agent.pid)),"the idle harness session is let go");
+    const held=timers.stop();t.diagnostic("timers fired from the harness turn to its session's release: "+JSON.stringify(held));
+    assert.ok(held["interval:50"]>0,"the sweep ran while the harness session was held: "+JSON.stringify(held));
+    // What the release itself waits on ends first (taskkill gets 3 s).
+    await new Promise(done=>setTimeout(done,3500));
+    await idle("once the last harness session went, the Trebell Native one still held");
+  }finally{timers.restore();await relay?.close()}
+});
+
+// B22: the store's timer for the threads it keeps parsed was set while a reply streamed and fired a minute later to find that thread
+// used since, then once for each thread kept (the perf idle's timeout:60001, 71 and 2536 in its first idle minute). It fires only to
+// let threads go now: never while they are in use, and at most once for each thread at idle.
+test("B22: the thread store's idle timer fires only to let kept threads go, never while they are in use",async t=>{
+  t.mock.timers.enable({apis:["setTimeout","Date"],now:Date.now()});
+  const home=await mkdtemp(join(tmpdir(),"trebell-budget-b22-store-")),mocked=globalThis.setTimeout;let fired=0;
+  globalThis.setTimeout=function(callback,...rest){return mocked(typeof callback==="function"?function(...args){fired++;return callback.apply(this,args)}:callback,...rest)};
+  try{
+    const store=new AgentThreadStore({...process.env,TREBELL_HOME:home}),[streamed,opened]=["Streamed","Opened"].map(name=>store.create({...BUDGET_THREAD,cwd:home,name}).id);
+    const read=store.storage.read;let reads=0;store.storage.read=(...args)=>{reads++;return read.apply(store.storage,args)};
+    // A reply streams for three minutes, its thread read at each chunk; another thread opens 2.5 s after it ends, then both sit idle.
+    // Time goes on in short steps: a timer that one long tick runs reads the tick's end as the time.
+    const wait=ms=>{for(let at=0;at<ms;at+=50)t.mock.timers.tick(50)};
+    for(let at=0;at<3*60_000;at+=50){store.peek(streamed);t.mock.timers.tick(50)}
+    const inUse=fired;fired=0;
+    wait(2_500);store.peek(opened);assert.equal(reads,2,"each thread is read once while it is used");
+    wait(10*60_000);t.diagnostic("store timers fired: "+inUse+" in three minutes of use, "+fired+" in ten idle minutes");
+    assert.ok(fired<=2,"the store's timer fired "+fired+" times over ten idle minutes with two threads kept (and "+inUse+" times in the three minutes its one thread was read every 50 ms)");
+    assert.equal(inUse,0,"the store's timer fired while its one thread was read every 50 ms");
+    store.peek(streamed);store.peek(opened);assert.equal(reads,4,"both threads were let go");
+  }finally{globalThis.setTimeout=mocked;t.mock.timers.reset();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

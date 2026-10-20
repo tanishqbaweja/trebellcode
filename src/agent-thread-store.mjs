@@ -8,8 +8,8 @@ function clone(value){return JSON.parse(JSON.stringify(value))}
 const TERMINAL_TOOL_STATUSES=new Set(["completed","failed","cancelled","canceled","rejected","declined","skipped"]);
 const REASONING_PART_LIMIT=64*1024;
 // How much parsed history the store keeps: the 2 threads used last, at most 32 M characters of their stored JSON, each dropped after
-// a minute unused.
-const THREAD_CACHE=Object.freeze({entries:2,chars:32*1024*1024,idleMs:60_000});
+// 50 s to a minute unused (slackMs, see #armCacheTimer).
+const THREAD_CACHE=Object.freeze({entries:2,chars:32*1024*1024,idleMs:60_000,slackMs:10_000});
 // The items a turn's search rows come from: its user messages and its last agent message.
 const searchedItem=item=>item?.type==="userMessage"||item?.type==="agentMessage";
 
@@ -60,7 +60,7 @@ export class AgentThreadStore{
   // the CLI and the benchmarks only read them), and an entry changes only once sqlite has the write, built from the JSON text and
   // the row written, in sqlite's turn order, and is dropped on a failed write, so an entry is what a read of sqlite gives. Callers
   // of peek() share the entry and must not change it; every write builds new objects, so a peeked thread stays as it was.
-  #cache=new Map();#cacheChars=0;#cacheTimer=null;#shared=new WeakSet();
+  #cache=new Map();#cacheChars=0;#cacheTimer=null;#cacheDue=0;#shared=new WeakSet();
   constructor(env=process.env,{keepConnection=false}={}){
     this.env=env;
     this.storage=new SqliteAgentThreadStore(env,{keepConnection});
@@ -101,7 +101,7 @@ export class AgentThreadStore{
       const chars=read.metaChars+read.order.reduce((sum,turn)=>sum+turn.chars,0);
       // A thread with a turn that did not parse, or one larger than the whole bound, is served as read and not kept.
       if(!read.complete||chars>THREAD_CACHE.chars){this.#shared.add(read.thread);return read.thread}
-      entry={thread:read.thread,order:read.order,metaChars:read.metaChars,chars,usedAt:0};
+      entry={thread:read.thread,order:read.order,metaChars:read.metaChars,chars,usedAt:Date.now()};
       this.#cache.set(key,entry);this.#cacheChars+=chars;this.#trimCache();
     }
     entry.usedAt=Date.now();this.#armCacheTimer();this.#shared.add(entry.thread);return entry.thread;
@@ -131,19 +131,25 @@ export class AgentThreadStore{
     }
     this.#cacheChars+=chars-entry.chars;
     Object.assign(entry,{thread:threadFromRow(row,turns),order,metaChars:row.payload_json.length,chars,usedAt:Date.now()});
-    this.#cache.delete(key);this.#cache.set(key,entry);this.#trimCache();
+    this.#cache.delete(key);this.#cache.set(key,entry);this.#trimCache();this.#armCacheTimer();
   }
-  #forget(id){const key=String(id),entry=this.#cache.get(key);if(!entry)return;this.#cache.delete(key);this.#cacheChars-=entry.chars}
+  #forget(id){const key=String(id),entry=this.#cache.get(key);if(!entry)return;this.#cache.delete(key);this.#cacheChars-=entry.chars;this.#armCacheTimer()}
   #trimCache(){for(const key of this.#cache.keys()){if(this.#cache.size<=THREAD_CACHE.entries&&this.#cacheChars<=THREAD_CACHE.chars)break;this.#forget(key)}}
-  // One timer for the entry used longest ago; it does not keep the process alive.
+  // One timer, due once the entry used longest ago has been idle for idleMs; it does not keep the process alive. It lets go of every
+  // entry idle for idleMs less slackMs or more, so each time it fires it lets one go at least: a use or a drop that leaves it due over
+  // slackMs before that entry's time sets it again, and the last entry's drop stops it. Left where it was set, it fired a minute after
+  // a streamed reply set it to find that thread used since, then once for each thread kept (the perf idle's timeout:60001, 71 and
+  // 2536; B22).
   #armCacheTimer(){
-    if(this.#cacheTimer||!this.#cache.size)return;
-    const oldest=Math.min(...[...this.#cache.values()].map(entry=>entry.usedAt));
+    let oldest=Infinity;for(const entry of this.#cache.values())oldest=Math.min(oldest,entry.usedAt);
+    if(this.#cacheTimer&&oldest<Infinity&&this.#cacheDue>=oldest+THREAD_CACHE.idleMs-THREAD_CACHE.slackMs)return;
+    clearTimeout(this.#cacheTimer);this.#cacheTimer=null;if(oldest===Infinity)return;
+    this.#cacheDue=oldest+THREAD_CACHE.idleMs;
     this.#cacheTimer=setTimeout(()=>{
       this.#cacheTimer=null;const now=Date.now();
-      for(const [key,entry] of this.#cache)if(now-entry.usedAt>=THREAD_CACHE.idleMs)this.#forget(key);
+      for(const [key,entry] of this.#cache)if(now-entry.usedAt>=THREAD_CACHE.idleMs-THREAD_CACHE.slackMs){this.#cache.delete(key);this.#cacheChars-=entry.chars}
       this.#armCacheTimer();
-    },Math.max(0,oldest+THREAD_CACHE.idleMs-Date.now())+1);
+    },Math.max(0,this.#cacheDue-Date.now()));
     this.#cacheTimer.unref?.();
   }
   // Drops the parsed threads and closes the sqlite connection a store built with keepConnection holds. Later calls open their own.
