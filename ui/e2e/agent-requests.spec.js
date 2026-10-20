@@ -1,5 +1,5 @@
 import { test,expect } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync,writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
@@ -12,6 +12,11 @@ const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkd
 const now=Date.now()/1000;
 const RELEASE={id:"requests-release",name:"Release checklist",preview:"Release",historyMode:"paginated",cwd:process.cwd(),createdAt:now-20,updatedAt:now,turns:[]};
 const DEPLOY={id:"requests-deploy",name:"Deploy notes",preview:"Deploy",historyMode:"paginated",cwd:process.cwd(),createdAt:now-40,updatedAt:now-10,turns:[]};
+// A conversation a few screens long, with no paged history: it opens at its end.
+const LONG={id:"requests-long",name:"Long review",preview:"Long review",cwd:process.cwd(),createdAt:now-60,updatedAt:now-30,turns:Array.from({length:10},(_,index)=>({id:"turn-long-"+index,status:"completed",items:[
+  {type:"userMessage",id:"user-long-"+index,content:[{type:"text",text:"Review part "+(index+1)+" of the release."}]},
+  {type:"agentMessage",id:"assistant-long-"+index,text:"Part "+(index+1)+" is reviewed. "+"Its checks pass and its notes are up to date. ".repeat(10)},
+]}))};
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
 // calls: the methods the app asked for, in order.
@@ -59,7 +64,7 @@ async function routeFixture(page,harness,settings={}){
   await keepThreadMeta(page);
   await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(saved,route.request().postDataJSON()||{});return json(route,saved)});
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"agent-requests-fixture",activeEnvironmentId:null,activeEnvironment:null}));
-  await page.route(/\/api\/state$/,route=>json(route,{settings:saved,projects:[],threadMeta:{[RELEASE.id]:{projectless:true,environmentId:null},[DEPLOY.id]:{projectless:true,environmentId:null}}}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings:saved,projects:[],threadMeta:{[RELEASE.id]:{projectless:true,environmentId:null},[DEPLOY.id]:{projectless:true,environmentId:null},[LONG.id]:{projectless:true,environmentId:null}}}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
   await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
@@ -673,6 +678,76 @@ test("a double click on the last approval card's Allow once, Allow session or De
       if(pass==="dark")await shoot(page,"after-double-click-approval");
     }
     for(const request of asked)expect(harness.answersTo(request)).toHaveLength(1);
+  }finally{await harness.close()}
+});
+
+// An approval card that comes up at the end of a conversation the view follows shows whole, its buttons in view, also when it comes in
+// the moment after the step before it moved the view: that move's scroll event comes at the next frame, once the card is laid out
+// below it, and was taken for the person scrolling up, so the view stopped following and kept the card's buttons under the composer
+// (OpenCode's second approval in the live tours of 2026-10-20: the view moved 4 px, then its scroll event found the card 146 px past
+// the end). The page holds the harness's request and gives it to the app in the microtask after the step's render, as OpenCode's came.
+// A person reads each card before answering it, which also keeps the next card's click from being taken for the second click of a
+// double click on the card before (answeringClick).
+test("an approval card that comes up right after a command step at the end of a long conversation shows whole, its buttons in view",async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:800});
+  // A socket message whose text holds window.__holdNext waits in window.__held until the test gives it to the app.
+  await page.addInitScript(()=>{
+    const add=WebSocket.prototype.addEventListener;window.__held=[];window.__holdNext=null;
+    WebSocket.prototype.addEventListener=function(type,listener,options){
+      if(type!=="message"||typeof listener!=="function")return add.call(this,type,listener,options);
+      const socket=this;
+      return add.call(this,type,function(event){
+        const marker=window.__holdNext;
+        if(marker&&typeof event.data==="string"&&event.data.includes(marker)){window.__holdNext=null;window.__held.push(()=>listener.call(socket,{data:event.data}));return}
+        return listener.call(this,event);
+      },options);
+    };
+  });
+  const harness=await startRequestHarness([LONG,RELEASE]);
+  try{
+    await routeFixture(page,harness);await page.goto("/");await openThread(page,"Long review");
+    const view=page.locator(".conversation-scroll"),stop=page.getByRole("button",{name:"Stop",exact:true});
+    await expect.poll(()=>view.evaluate(node=>node.scrollHeight>2*node.clientHeight)).toBe(true);
+    harness.notify("turn/started",{threadId:LONG.id,turn:{id:"turn-again",status:"inProgress",items:[]}});await expect(stop).toBeVisible();
+    // How far each of the card's buttons is inside the conversation's view, from its top and from its bottom (negative: out of view).
+    const inView=card=>card.locator("button").evaluateAll(buttons=>buttons.map(button=>{
+      const box=button.closest(".conversation-scroll").getBoundingClientRect(),rect=button.getBoundingClientRect();
+      return {name:button.textContent,top:Math.round(rect.top-box.top),bottom:Math.round(box.bottom-rect.bottom)};
+    }));
+    const out=[],rounds=[];
+    for(let round=1;round<=4;round++){
+      // The person is at the end of the conversation, as after reading the reply before.
+      await view.hover();await page.mouse.wheel(0,20_000);
+      await expect.poll(()=>view.evaluate(node=>node.scrollHeight-node.clientHeight-node.scrollTop)).toBeLessThan(2);
+      const reason="Run the command again ("+round+")",command="echo again-"+round;
+      await page.evaluate(marker=>{window.__holdNext=marker},reason);
+      const request=harness.ask("item/commandExecution/requestApproval",{threadId:LONG.id,turnId:"turn-again",itemId:"again-"+round,command:["echo","again-"+round],reason});
+      await page.waitForFunction(()=>window.__held.length===1,null,{timeout:10_000});
+      // The command's step renders at the end and moves the view there; the held request goes to the app in the microtask after it.
+      await page.evaluate(text=>{
+        const node=document.querySelector(".conversation-scroll"),column=node.firstElementChild,top=node.scrollTop;window.__given=null;
+        const observer=new MutationObserver(()=>{
+          if(!column.textContent.includes(text))return;
+          observer.disconnect();const moved=node.scrollTop-top;window.__held.shift()();window.__given={moved};
+        });
+        observer.observe(column,{childList:true,subtree:true,characterData:true});
+      },command);
+      harness.notify("item/started",{threadId:LONG.id,turnId:"turn-again",item:{type:"commandExecution",id:"again-"+round,command,cwd:process.cwd(),status:"inProgress"},startedAtMs:Date.now()});
+      const given=await (await page.waitForFunction(()=>window.__given,null,{timeout:10_000})).jsonValue();
+      const card=page.locator(".inline-approval .approval-card").filter({hasText:reason});
+      await expect(card).toBeVisible();
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      const buttons=await inView(card);rounds.push({round,moved:given.moved,buttons});
+      if(buttons.some(button=>button.top<0||button.bottom<0))out.push({round,moved:given.moved,buttons});
+      if(round===1)await shoot(page,"approval-after-step");
+      await page.waitForTimeout(600);
+      await card.getByRole("button",{name:"Allow once",exact:true}).click();
+      expect(await request.answered).toEqual({decision:"accept"});await expect(card).toHaveCount(0);
+      harness.notify("item/completed",{threadId:LONG.id,turnId:"turn-again",item:{type:"commandExecution",id:"again-"+round,command,cwd:process.cwd(),status:"completed",aggregatedOutput:"again-"+round+"\n",exitCode:0},completedAtMs:Date.now()});
+    }
+    writeFileSync(test.info().outputPath("rounds.json"),JSON.stringify(rounds,null,1));
+    expect(out,"an approval card's buttons were out of the conversation's view").toEqual([]);
   }finally{await harness.close()}
 });
 

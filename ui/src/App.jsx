@@ -1213,7 +1213,7 @@ export default function App(){
   const runtimeInventoryRef=useRef(null);
   // Counts the new tasks and general chats shown (showNewTask): each comes up on its welcome at its top.
   const [newTaskView,setNewTaskView]=useState(0);
-  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyHoldRef=useRef(0);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const shownWelcomeRef=useRef(null);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
+  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyHoldRef=useRef(0);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const conversationEndTopRef=useRef(0);const shownWelcomeRef=useRef(null);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const modelsRef=useRef([]);const modelRef=useRef("");const modelsLoadingRef=useRef(false);const runtimeSwitchRef=useRef(null);const runtimeRequestRef=useRef(Promise.resolve());const runtimeSettledRef=useRef(Promise.resolve());const runtimeLandedRef=useRef(null);const runtimeSwitchSeqRef=useRef(0);const runtimeAppliedSeqRef=useRef(0);const agentRuntimeRef=useRef("codex");const providerRef=useRef(DEFAULT_MODEL_PROVIDER);
   modelsRef.current=models;modelRef.current=model;
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
@@ -1523,7 +1523,13 @@ export default function App(){
       setHistoryHold(node,historyHoldAfterScroll(node,historyHoldRef.current));
       if(historyHoldRef.current&&(node.firstElementChild?.getBoundingClientRect().height||0)>historyHoldRef.current+0.5)setHistoryHold(node,0);
     }
-    const position=captureConversationPosition(node);followConversationEndRef.current=position?.atEnd!==false;
+    let position=captureConversationPosition(node);
+    // Short of its end, a view that follows the end stops following only when its top is above where it was last at its end: the
+    // person scrolled up. Otherwise the conversation grew under it after its move to the end, whose scroll event comes once what grew
+    // is laid out (an approval card or a reply that came in the moment after that move, as OpenCode's do, which left the card's
+    // buttons or the reply under the composer), and it goes back to the end.
+    if(position&&!position.atEnd&&followConversationEndRef.current&&node.scrollTop>=conversationEndTopRef.current-1){keepConversationEnd(node);position=captureConversationPosition(node)}
+    followConversationEndRef.current=position?.atEnd!==false;if(position?.atEnd)conversationEndTopRef.current=node.scrollTop;
     const threadId=activeThreadRef.current?.id;if(threadId&&position)rememberThreadScrollPosition(threadScrollPositionsRef.current,threadId,position);
   }
   function stopHistoryAnchorSettle(){
@@ -1537,7 +1543,7 @@ export default function App(){
   function keepConversationEnd(node){
     const welcome=conversationWelcome(node);
     if(welcome){if(shownWelcomeRef.current!==welcome){shownWelcomeRef.current=welcome;node.scrollTop=0}return}
-    shownWelcomeRef.current=null;if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight);
+    shownWelcomeRef.current=null;if(followConversationEndRef.current){node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight);conversationEndTopRef.current=node.scrollTop}
   }
   // A send brings the newest message into view: the view follows the end again, and an older page's anchor stops holding it.
   function followConversationEnd(){stopHistoryAnchorSettle();pendingHistoryPrependRef.current=null;setHistoryAnchorItemId(null);setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true}
@@ -1576,7 +1582,7 @@ export default function App(){
       // A thread with nothing in it opens on its welcome, at its top (keepConversationEnd), not at the welcome's end as a thread
       // opens at its newest message: from 150% zoom that end had the welcome's picture and title under the header.
       if(conversationWelcome(node))keepConversationEnd(node);else node.scrollTop=restoredThreadScrollTop(position,node);
-      followConversationEndRef.current=position?.atEnd??true;
+      followConversationEndRef.current=position?.atEnd??true;if(followConversationEndRef.current)conversationEndTopRef.current=node.scrollTop;
       pendingThreadScrollRestoreRef.current=null;
       return;
     }
