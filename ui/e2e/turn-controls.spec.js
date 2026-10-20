@@ -42,8 +42,9 @@ async function keepSettings(page){
     return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(saved)});
   });
 }
-// Types into the composer as a person does, a key at a time.
-async function typeInComposer(page,text){await composer(page).click();await page.keyboard.type(text,{delay:8})}
+// Types into the composer as a person does, a key at a time, once a send on its way has gone: the composer takes what is typed while
+// it says Sending…, but its Enter waits for that send.
+async function typeInComposer(page,text){await expect(composer(page)).not.toHaveAttribute("placeholder",/^Sending/,{timeout:15_000});await composer(page).click();await page.keyboard.type(text,{delay:8})}
 async function sendTyped(page,text){await typeInComposer(page,text);await page.keyboard.press("Enter")}
 // The header's light and dark toggle, or its row in More actions where the header folded it away.
 async function toggleMode(page){
@@ -1240,8 +1241,8 @@ test("a new task opened while another thread's send is on its way is idle and se
   }finally{releaseContext();await fixture.close()}
 });
 
-// Opened again before that send is through, the thread shows it: its message, Stop, and its composer held as Sending, so nothing more
-// goes to the thread meanwhile; the reply then lands there.
+// Opened again before that send is through, the thread shows it: its message, Stop, and its composer saying Sending…, which takes what
+// is typed but sends nothing more to the thread meanwhile; the reply then lands there.
 test("a thread opened again while its send is on its way shows that send, and its reply lands there",async({page})=>{
   test.setTimeout(90_000);
   await page.setViewportSize({width:1280,height:800});
@@ -1252,7 +1253,7 @@ test("a thread opened again while its send is on its way shows that send, and it
     await newTask(page).click();await expectIdleNewTask(page);
     await threadRow(page,"Slow start").locator(".thread-main").click();
     await expect(stop(page)).toBeVisible({timeout:10_000});await expect(page.locator(".user-row")).toHaveText([/^Slow start task\./]);
-    await expect(composer(page)).toHaveAttribute("placeholder","Sending…");await expect(composer(page)).toBeDisabled();
+    await expect(composer(page)).toHaveAttribute("placeholder","Sending…");await expect(composer(page)).toBeEditable();await expect(page.getByTestId("send")).toBeDisabled();
     await shoot(page,"thread-opened-again-while-sending");
     releaseContext();
     await expect(page.getByText("The slow start answered in its own thread.",{exact:true})).toBeVisible({timeout:15_000});
@@ -1436,7 +1437,8 @@ test("a workspace file mentioned in another thread while a send of the same file
 });
 
 // The same for a thread's own send, which waits here for its file checkpoint: the file leaves the composer with the thread left, is
-// back in it (held as Sending) when that thread is opened again while the send still waits, and goes with that thread's turn.
+// back in it (the composer saying Sending…) when that thread is opened again while the send still waits, and goes with that thread's
+// turn.
 test("a thread's file sent and left for another thread before its turn starts shows only in its own thread's composer until the turn starts",async({page})=>{
   test.setTimeout(90_000);
   await page.setViewportSize({width:1280,height:800});
@@ -1458,7 +1460,7 @@ test("a thread's file sent and left for another thread before its turn starts sh
     await openRow("Other work","The other thread's own answer.");
     await expect(shelf,"the thread opened shows none of the sending thread's files").toHaveCount(0);
     await openRow("Sending work","The sending thread's own answer.");
-    await expect(composer(page)).toBeDisabled();
+    await expect(composer(page)).toBeEditable();await expect(page.getByTestId("send")).toBeDisabled();
     await expect(shelf,"the sending thread's composer holds its file while the send waits").toHaveCount(1);await expect(page.locator(".attachment-shelf")).toContainText("notes.txt");
     await page.screenshot({animations:"disabled",path:auditDir+"turn-controls-sent-file-back-in-its-thread-dark-1280x800.png"});
     for(const route of held.splice(0))await route.fallback();

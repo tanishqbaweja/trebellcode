@@ -86,7 +86,7 @@ test("Codex follow-ups use the native persistent queue",async({page})=>{
 
     const send=page.getByTestId("send");slowNextQueueAdd=true;
     await composer.fill("First queued follow-up");await send.click();
-    await expect(composer).toBeDisabled();await expect(send).toBeDisabled();
+    await expect(composer).toBeEditable();await expect(send).toBeDisabled();
     await expect(page.locator(".queued-message")).toHaveCount(1);await expect(composer).toBeEnabled();
     await composer.fill("Second queued follow-up");await expect(composer).toHaveValue("Second queued follow-up");await expect(send).toBeEnabled();await send.click();
     await expect(page.locator(".queued-message")).toHaveCount(2);await expect(page.locator(".queued-message").nth(0)).toContainText("First queued follow-up");

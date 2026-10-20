@@ -1623,3 +1623,83 @@ test("a field clicked or the palette opened while a send goes keeps the keyboard
     expect(sentTexts(harness)).toEqual(["Look at the login page","First message","Second message"]);
   }finally{hold?.open();await harness.close()}
 });
+
+// What a person types straight on after Enter or Send, while the composer says Sending…, lands in the composer, which keeps the
+// keyboard through the send: Send and Enter send none of it until the send has gone, as the line under the composer and Send's title
+// say, and then it is the next message. The send waits on its repository context (a slow context packet) while hold is a gate not yet
+// opened, and goes at once without one.
+test("text typed straight on after Enter or Send while the composer says Sending… stays in the composer and is the next message once the send has gone",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Reply number one."},{text:"Reply number two."},{text:"Reply number three."},{text:"Reply number four."}]});
+  let hold=null;await page.route(/\/api\/context\/packet$/,async route=>{await hold?.promise;await route.fallback()});
+  try{
+    const composer=page.getByTestId("composer"),send=page.getByTestId("send"),reply=text=>page.getByText(text,{exact:true}),idle="Ask Trebell Code anything…";
+    const waits=page.getByTestId("composer-sending"),waitsText=/^Sending.* · your draft stays here until the last message has gone\.$/;
+    // Enter (dark), the send held: the next message typed straight on is in the composer, and Enter there sends nothing yet.
+    hold=heldGate();
+    await composer.click();await typeOn(page,"First message");await page.keyboard.press("Enter");await typeOn(page,"Second message");
+    await expect(composer).toHaveAttribute("placeholder",/^Sending/);
+    await expect(composer,"the keyboard while the send goes").toBeFocused();await expect(composer).toHaveValue("Second message");await expect(send).toBeDisabled();
+    await expect(waits).toHaveText(waitsText);await expect(send).toHaveAttribute("title",/^Sending/);
+    await page.keyboard.press("Enter");await expect(composer).toHaveValue("Second message");
+    await shootHere(page,"typed-while-sending-after-enter");
+    hold.open();
+    await expect(reply("Reply number one.")).toBeVisible({timeout:15_000});await expect(composer).toHaveAttribute("placeholder",idle);await expect(waits).toHaveCount(0);
+    await expect(composer,"the keyboard once the send has gone").toBeFocused();await expect(composer).toHaveValue("Second message");
+    // Enter sends it, and what is typed straight on while that send goes at once lands there too.
+    await page.keyboard.press("Enter");await typeOn(page,"Third message");
+    await expect(reply("Reply number two.")).toBeVisible({timeout:15_000});await expect(composer).toHaveAttribute("placeholder",idle);
+    await expect(composer).toBeFocused();await expect(composer).toHaveValue("Third message");
+    // Send (light), held: the keyboard goes from Send, which turns off, to the composer, so what is typed straight on lands there.
+    await switchMode(page,"light");
+    hold=heldGate();
+    await send.click();await typeOn(page,"Fourth message");
+    await expect(composer).toHaveAttribute("placeholder",/^Sending/);
+    await expect(composer,"the keyboard while the send from Send goes").toBeFocused();await expect(composer).toHaveValue("Fourth message");await expect(send).toBeDisabled();
+    await expect(waits).toHaveText(waitsText);
+    await shootHere(page,"typed-while-sending-after-send-button");
+    hold.open();
+    await expect(reply("Reply number three.")).toBeVisible({timeout:15_000});await expect(composer).toHaveAttribute("placeholder",idle);await expect(waits).toHaveCount(0);
+    await expect(composer).toBeFocused();await expect(composer).toHaveValue("Fourth message");
+    await send.click();await expect(reply("Reply number four.")).toBeVisible({timeout:15_000});await expect(composer).toHaveValue("");
+    expect(sentTexts(harness)).toEqual(["Look at the login page","First message","Second message","Third message","Fourth message"]);
+  }finally{hold?.open();await harness.close()}
+});
+
+// What a person adds to the composer while a send goes (Sending…), a screenshot pasted or a file attached with +, stays there once the
+// send has gone and goes with the next message: only the files that went with the send leave the composer.
+test("a screenshot pasted or a file attached while the composer says Sending… stays for the next message once the send has gone",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Reply number one."},{text:"Reply number two."},{text:"Reply number three."},{text:"Reply number four."}]});
+  let hold=null;await page.route(/\/api\/context\/packet$/,async route=>{await hold?.promise;await route.fallback()});
+  try{
+    const composer=page.getByTestId("composer"),sentFiles=page.locator(".user-bubble").last().locator(".user-attachments > span"),reply=text=>page.getByText(text,{exact:true});
+    // Dark: a screenshot pasted while the first message goes stays on the shelf, and goes with the second.
+    hold=heldGate();
+    await composer.click();await typeOn(page,"First message");await page.keyboard.press("Enter");
+    await expect(composer).toHaveAttribute("placeholder",/^Sending/);
+    await pasteImage(page,"pasted-while-sending.png");await expect(chips(page)).toHaveText(["pasted-while-sending.png"]);
+    hold.open();
+    await expect(reply("Reply number one.")).toBeVisible({timeout:15_000});await expect(composer).toHaveAttribute("placeholder","Ask Trebell Code anything…");
+    await expect(chips(page),"the screenshot pasted while the send went").toHaveText(["pasted-while-sending.png"]);
+    await shootHere(page,"pasted-while-sending-kept");
+    await typeOn(page,"Second message");await page.keyboard.press("Enter");
+    await expect(reply("Reply number two.")).toBeVisible({timeout:15_000});
+    await expect(sentFiles).toHaveText(["pasted-while-sending.png"]);await expect(chips(page)).toHaveCount(0);
+    // Light: the file sent with the third message leaves the composer, and the one attached with + while it goes stays.
+    await switchMode(page,"light");
+    await chooseFiles(page,[{name:"sent-notes.txt",mimeType:"text/plain",buffer:Buffer.from("Notes sent with the third message.")}]);await expect(chips(page)).toHaveText(["sent-notes.txt"]);
+    hold=heldGate();
+    await composer.click();await typeOn(page,"Third message");await page.keyboard.press("Enter");
+    await expect(composer).toHaveAttribute("placeholder",/^Sending/);
+    await chooseFiles(page,[{name:"next-notes.txt",mimeType:"text/plain",buffer:Buffer.from("Notes for the next message.")}]);await expect(chips(page)).toHaveText(["sent-notes.txt","next-notes.txt"]);
+    hold.open();
+    await expect(reply("Reply number three.")).toBeVisible({timeout:15_000});await expect(composer).toHaveAttribute("placeholder","Ask Trebell Code anything…");
+    await expect(chips(page),"the file attached while the send went").toHaveText(["next-notes.txt"]);
+    await shootHere(page,"attached-while-sending-kept");
+    await composer.click();await typeOn(page,"Fourth message");await page.keyboard.press("Enter");
+    await expect(reply("Reply number four.")).toBeVisible({timeout:15_000});
+    await expect(sentFiles).toHaveText(["next-notes.txt"]);await expect(chips(page)).toHaveCount(0);
+    expect(sentTexts(harness)).toEqual(["Look at the login page","First message","Second message","Third message","Fourth message"]);
+  }finally{hold?.open();await harness.close()}
+});
