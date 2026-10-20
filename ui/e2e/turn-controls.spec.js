@@ -1599,8 +1599,8 @@ test("Edit on another queued follow-up waits while one is being edited, so the u
 // and the next follow-up comes up in its place under the pointer, where the second click lands: the rest of the press does nothing,
 // as on a thread's menu. In Codex's queue (a General chat's) and Trebell's own (a project thread's) alike. Enter held on Remove
 // takes out one follow-up: in Codex's queue the row waits for Codex's answer with the keyboard on it, and the key's repeats send no
-// second thread/queue/delete for it; in Trebell's the row goes at once and the keyboard leaves with it. A click of its own still
-// removes.
+// second thread/queue/delete for it; in Trebell's the row goes at once. Either way the keyboard goes on to the next follow-up's Remove,
+// which the repeats do not press. A click of its own still removes.
 for(const kind of ["Codex","Trebell"]){
   test(`a double click or Enter held on Remove in ${kind}'s queue removes only the follow-up it was aimed at`,async({page})=>{
     test.setTimeout(90_000);
@@ -1626,10 +1626,81 @@ for(const kind of ["Codex","Trebell"]){
       for(let repeat=0;repeat<6;repeat++)await page.keyboard.down("Enter");
       await page.keyboard.up("Enter");
       await expect(page.locator(".queued-message p")).toHaveText(["Queued gamma","Queued delta"]);
+      await expect(remove("Queued gamma"),"the keyboard after Enter held on Remove").toBeFocused();
       if(kind==="Codex")expect(codex.calls.filter(method=>method==="thread/queue/delete")).toHaveLength(2);
       await shoot(page,"queue-double-remove-"+kind.toLowerCase());
       await remove("Queued gamma").click();
       await expect(page.locator(".queued-message p")).toHaveText(["Queued delta"]);
+    }finally{await codex.close()}
+  });
+}
+
+// A follow-up's Remove pressed from the keyboard keeps the keyboard in the queue, as the sidebar's rows do, never on the page: it goes
+// to the Remove of the follow-up that came up in its place, or of the one before once the last has gone, and to the composer once the
+// queue is empty, where what is typed next lands. Move up and Move down keep it on the moved follow-up: on the button pressed, or on
+// its other move button once an end of the queue turned that one off. In Codex's queue (a General chat's) and Trebell's own (a
+// project thread's) alike, dark and light, and 900 wide.
+async function queueBehindTurn(page,codex,texts){
+  codex.holdTurns=true;
+  await sendTyped(page,"Main task with a queue.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+  await expect(stop(page)).toBeVisible();
+  for(const text of texts){await sendTyped(page,text);await expect(page.locator(".queued-message").filter({hasText:text})).toHaveCount(1)}
+}
+const queuedButton=(page,text,name)=>page.locator(".queued-message").filter({hasText:text}).getByRole("button",{name,exact:true});
+// Shift+Tab from the composer, as a person reaches a follow-up's button, until the keyboard is on the one wanted.
+async function reachByKeyboard(page,target){await composer(page).click();for(let press=0;press<24&&!await target.evaluate(node=>node===document.activeElement);press++)await page.keyboard.press("Shift+Tab");await expect(target).toBeFocused()}
+// The page in the mode and size it has, with the keyboard left where it is.
+async function shootHere(page,name){const mode=await page.locator("html").getAttribute("data-mode"),{width,height}=page.viewportSize();await page.screenshot({animations:"disabled",path:`${auditDir}turn-controls-${name}-${mode}-${width}x${height}.png`})}
+for(const kind of ["Codex","Trebell"]){
+  test(`Remove pressed from the keyboard in ${kind}'s queue hands the keyboard to the next follow-up's Remove, the one before's, or the composer`,async({page})=>{
+    test.setTimeout(90_000);
+    await page.setViewportSize({width:1280,height:1100});
+    const codex=await startCodex(page,{name:"Queue keyboard remove",project:kind==="Trebell"});
+    try{
+      await queueBehindTurn(page,codex,["Queued alpha","Queued beta","Queued gamma","Queued delta"]);
+      const texts=page.locator(".queued-message p"),remove=text=>queuedButton(page,text,"Remove");
+      // Dark: Remove on the last follow-up, and the keyboard is on the Remove of the one before.
+      await reachByKeyboard(page,remove("Queued delta"));await page.keyboard.press("Enter");
+      await expect(texts).toHaveText(["Queued alpha","Queued beta","Queued gamma"]);
+      await expect(remove("Queued gamma"),"the keyboard after the last follow-up's Remove").toBeFocused();
+      await shootHere(page,"queue-keyboard-remove-last-"+kind.toLowerCase());
+      // Light, 900 wide: Remove in the middle, then on the first, and the keyboard is on the next one's Remove each time; then on the
+      // composer once the queue is empty.
+      await toggleMode(page);await page.setViewportSize({width:900,height:1100});
+      await reachByKeyboard(page,remove("Queued beta"));await page.keyboard.press("Enter");
+      await expect(texts).toHaveText(["Queued alpha","Queued gamma"]);
+      await expect(remove("Queued gamma"),"the keyboard after a Remove in the middle").toBeFocused();
+      await reachByKeyboard(page,remove("Queued alpha"));await page.keyboard.press("Enter");
+      await expect(texts).toHaveText(["Queued gamma"]);
+      await expect(remove("Queued gamma"),"the keyboard after the first follow-up's Remove").toBeFocused();
+      await shootHere(page,"queue-keyboard-remove-first-"+kind.toLowerCase());
+      await page.keyboard.press("Enter");await expect(page.locator(".queued-message")).toHaveCount(0);
+      await expect(composer(page),"the keyboard once the queue is empty").toBeFocused();
+      await page.keyboard.type("Typed after the queue",{delay:8});await expect(composer(page)).toHaveValue("Typed after the queue");
+    }finally{await codex.close()}
+  });
+  test(`Move up and Move down pressed from the keyboard in ${kind}'s queue keep the keyboard on the moved follow-up`,async({page})=>{
+    test.setTimeout(90_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Queue keyboard move",project:kind==="Trebell"});
+    try{
+      await queueBehindTurn(page,codex,["Queued alpha","Queued beta","Queued gamma"]);
+      const texts=page.locator(".queued-message p"),up=queuedButton(page,"Queued gamma","Move queued follow-up up"),down=queuedButton(page,"Queued gamma","Move queued follow-up down");
+      // Dark: gamma up twice. The keyboard stays on its Move up, and is on its Move down once Move up is off at the top.
+      await reachByKeyboard(page,up);
+      await page.keyboard.press("Enter");await expect(texts).toHaveText(["Queued alpha","Queued gamma","Queued beta"]);
+      await expect(up,"the keyboard after a Move up").toBeFocused();
+      await page.keyboard.press("Enter");await expect(texts).toHaveText(["Queued gamma","Queued alpha","Queued beta"]);
+      await expect(down,"the keyboard once Move up is off at the top").toBeFocused();
+      await shootHere(page,"queue-keyboard-moved-to-top-"+kind.toLowerCase());
+      // Light: gamma down twice. The keyboard stays on its Move down, which moves with it, and is on its Move up once Move down is off
+      // at the end.
+      await toggleMode(page);await reachByKeyboard(page,down);
+      await page.keyboard.press("Enter");await expect(texts).toHaveText(["Queued alpha","Queued gamma","Queued beta"]);
+      await expect(down,"the keyboard after a Move down").toBeFocused();
+      await page.keyboard.press("Enter");await expect(texts).toHaveText(["Queued alpha","Queued beta","Queued gamma"]);
+      await expect(up,"the keyboard once Move down is off at the end").toBeFocused();
+      await shootHere(page,"queue-keyboard-moved-to-end-"+kind.toLowerCase());
     }finally{await codex.close()}
   });
 }
