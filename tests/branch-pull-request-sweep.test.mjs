@@ -25,7 +25,7 @@ const projectThreads=()=>({
   "thread-b":{cwd:"H:/repo",environmentId:null,branch:"feature/b",sectionName:"Active"},
 });
 
-test("a branch sweep that learns nothing new writes no thread meta",async()=>{
+test("B21: a branch sweep that learns nothing new writes no thread meta",async()=>{
   const state=fakeState(projectThreads()),{sync,clock,listed}=sweepOf(state,{reviews:[openReview(21,"feature/a")]});
   assert.equal((await sync()).written,2);
   assert.equal(state.meta["thread-a"].branchPullRequest.number,21);assert.equal(state.meta["thread-b"].branchPullRequest,null);
@@ -46,7 +46,7 @@ test("a branch sweep writes the review that changed, and only that thread's",asy
   assert.equal((await sync()).written,1);assert.equal(state.meta["thread-a"].branchPullRequest,null);
 });
 
-test("a repository the sweep cannot read is asked again after 1, 2, 4 and 8 minutes, then every 10, and its reason is written once",async()=>{
+test("B21: a repository the sweep cannot read is asked again after 1, 2, 4 and 8 minutes, then every 10, and its reason is written once",async()=>{
   const state=fakeState({"thread-a":projectThreads()["thread-a"]});
   const {sync,clock,asked}=sweepOf(state,{identity:()=>{throw new Error("This repository has no remote.")}});
   const start=clock.at;
