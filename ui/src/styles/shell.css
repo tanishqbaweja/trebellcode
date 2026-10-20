@@ -246,11 +246,15 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    second row of controls or the chips never cover the end of the last reply: App keeps a view at its end there as the view shrinks,
    and a view scrolled up keeps its rows in place. The welcome is sized to the window and keeps its place as a draft grows, less the
    attachment chips: the rows of them in the composer (--composer-chips, which it measures too) and the shelf's, so a dozen of them
-   beside the open panel no longer cover its suggestions. */
+   beside the open panel no longer cover its suggestions.
+   App names what the workspace holds in its classes (with-shelf-chips, with-clone-banner, with-clone-error), never a :has() on the
+   workspace: Chrome restyles everything inside an element a :has() rule tests whenever something under it may change the rule's
+   match, and React rewrites the composer's text on every key, so each key restyled the whole conversation (2.7 s of style work per
+   200 keys on a 1000-turn thread). */
 .chat-workspace{--composer-reach:calc(var(--composer-height,115px) + 1px)}
-.chat-workspace:has(>.composer-wrap>.attachment-shelf>span){--composer-reach:calc(var(--composer-height,115px) + 32px)}
+.chat-workspace.with-shelf-chips{--composer-reach:calc(var(--composer-height,115px) + 32px)}
 .chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:calc(116px + var(--composer-chips,0px))}
-.chat-workspace:has(>.composer-wrap>.attachment-shelf>span) .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:calc(147px + var(--composer-chips,0px))}
+.chat-workspace.with-shelf-chips .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:calc(147px + var(--composer-chips,0px))}
 .chat-workspace .conversation-scroll{top:var(--top);bottom:calc(16px + var(--composer-reach));padding:max(34px,var(--thread-find-reserve,0px)) 28px 72px;scroll-padding-top:var(--thread-find-reserve,0px);scrollbar-width:auto;scrollbar-color:auto}
 .main-frame.terminal-open .chat-workspace .conversation-scroll{bottom:calc(var(--terminal-height,330px) + 12px + var(--composer-reach))}
 /* A thread that takes more than a moment to open (App: OPENING_COVER_DELAY_MS) names itself in the conversation area with a quiet
@@ -466,14 +470,14 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    header, so it was drawn over the banner and took its buttons' hover and clicks: the banner stacks above it, and while it shows
    the conversation's first rows start below it (its 10px margin, its one-line height and a gap). */
 .chat-workspace .clone-banner{position:relative;z-index:4;margin:10px 16px 0;padding:10px 12px;gap:12px;grid-template-columns:minmax(0,1fr) minmax(90px,180px) auto auto;border:1px solid color-mix(in srgb,var(--ac) 30%,var(--line2));border-radius:var(--r-m);background:color-mix(in srgb,var(--ac) 6%,var(--bg2));box-shadow:var(--sh1)}
-.chat-workspace:has(>.clone-banner) .conversation-scroll{padding-top:max(92px,var(--thread-find-reserve,0px))}
+.chat-workspace.with-clone-banner .conversation-scroll{padding-top:max(92px,var(--thread-find-reserve,0px))}
 .chat-workspace .clone-banner>div{gap:3px}
 .chat-workspace .clone-banner strong{font-size:12.5px;font-weight:600;color:var(--tx0)}
 .chat-workspace .clone-banner span{font-size:12px;line-height:1.45;color:var(--tx2)}
 /* A progress read that failed is said under the banner's text in two lines at most, and the strip kept clear for the banner grows
    by those two lines while it shows: wrapped freely, it made the banner taller than the strip and drew it over the first row. */
 .chat-workspace .clone-banner .clone-refresh-error{color:var(--err);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
-.chat-workspace:has(>.clone-banner .clone-refresh-error) .conversation-scroll{padding-top:max(130px,var(--thread-find-reserve,0px))}
+.chat-workspace.with-clone-error .conversation-scroll{padding-top:max(130px,var(--thread-find-reserve,0px))}
 .chat-workspace .clone-banner i{height:6px;background:var(--bg4)}
 .chat-workspace .clone-banner i b{background:var(--ac)}
 .chat-workspace .clone-banner em{min-width:34px;font:500 11.5px/1 var(--mono);color:var(--tx2)}

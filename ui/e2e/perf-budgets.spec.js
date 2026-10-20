@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { markdownReply } from "../../scripts/perf/lib/fake-openai.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
 import { gate,live,startStreamingFixture } from "./native-stream-fixture.js";
-import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
+import { commandItem,replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 
 // Count budgets for the renderer (the perf plan's section 2): what the page does at idle and while a reply streams, measured as
 // counts that do not depend on how busy the machine is. Each budget holds the line its fix reached, or the baseline until then.
@@ -229,4 +229,35 @@ test("B13: opening a short thread sends the server at most 5 requests",async({pa
     expect(counted.length,JSON.stringify(byPath(counted))).toBeLessThanOrEqual(B13_OPEN.requests);
     expect(sent.filter(item=>item.path==="GET /api/git/info").length,"git/info around the open").toBeLessThanOrEqual(B13_OPEN.gitInfo);
   }finally{await harness.close();await rm(metaHome,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+// B20: the elements Chrome restyles for each key typed in the composer, from a trace's style recalculations (their elementCount)
+// over a thread of 40 turns. A :has() rule on the chat workspace had every key restyle the whole workspace, the conversation with it:
+// React rewrites the composer's text on each key, and Chrome takes that for a change under every :has() rule's element above it (884
+// elements a key, 2.7 s of style work per 200 keys, on the perf run's 1000-turn thread).
+const B20_TYPING={elementsPerKey:12};
+
+test("B20: a key typed in the composer restyles the composer, not the conversation above it",async({page,browser})=>{
+  test.setTimeout(60_000);
+  const harness=await startRelayHarness();
+  try{
+    harness.seedThread("Typing budget",Array.from({length:40},(_,index)=>({user:"Turn "+index+": say how the relay keeps the order of items.",items:[commandItem("b20-command-"+index,"npm test",{output:"ok "+index+"\n"}),replyItem("b20-reply-"+index,"The relay keeps **turn "+index+"** in order.\n\n- It writes `item/completed` once.\n- A reload reads the same history.")]})));
+    await routeRelayApp(page,harness);
+    await page.goto("/");await page.locator('.thread-row .thread-main[title="Typing budget"]').click();
+    await expect(page.locator(".assistant-message-text").filter({hasText:"turn 39 in order"})).toBeVisible({timeout:15_000});
+    const composer=page.getByTestId("composer");await composer.click();await page.waitForTimeout(500);
+    const workspaceElements=await page.locator(".chat-workspace").evaluate(node=>node.getElementsByTagName("*").length);
+    const cdp=await page.context().newCDPSession(page),{frameTree}=await cdp.send("Page.getFrameTree");
+    const typed="Refactor the relay so each chunk updates the live turn";
+    await browser.startTracing(page,{categories:["devtools.timeline"]});
+    await page.keyboard.type(typed,{delay:20});await page.waitForTimeout(300);
+    const trace=JSON.parse((await browser.stopTracing()).toString("utf8"));
+    await expect(composer).toHaveValue(typed);
+    const recalcs=(trace.traceEvents||trace).filter(event=>event.name==="UpdateLayoutTree"&&event.args?.beginData?.frame===frameTree.frame.id).map(event=>event.args.elementCount||0);
+    const elements=recalcs.reduce((sum,count)=>sum+count,0),elementsPerKey=Number((elements/typed.length).toFixed(1));
+    console.log("B20 typing:",JSON.stringify({keys:typed.length,workspaceElements,recalcs:recalcs.length,elements,elementsPerKey,largest:Math.max(0,...recalcs)}));
+    expect(workspaceElements,"a conversation large enough to show a restyle of the whole workspace").toBeGreaterThan(300);
+    expect(recalcs.length,"the trace has the page's style recalculations").toBeGreaterThanOrEqual(typed.length);
+    expect(elementsPerKey).toBeLessThanOrEqual(B20_TYPING.elementsPerKey);
+  }finally{await harness.close()}
 });
