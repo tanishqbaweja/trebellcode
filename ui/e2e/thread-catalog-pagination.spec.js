@@ -14,14 +14,15 @@ async function freePort(){
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
 // control.listed is what thread/list answers, control.older, when set, the older page its next cursor reads, control.listError, when
-// set, fails it, and control.hold, when set, holds the next one until it resolves; control.lists counts the lists asked for.
+// set, fails it, and control.hold, when set, holds the next one until it resolves; control.lists counts the lists asked for and
+// control.cursors keeps the cursor each was asked with (null for the first page).
 async function startRuntimeHarness(thread){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),control={listed:[thread],older:null,listError:null,hold:null,lists:0};
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),control={listed:[thread],older:null,listError:null,hold:null,lists:0,cursors:[]};
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>ws.on("message",async raw=>{
     const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
     let result={};
-    if(message.method==="thread/list"){control.lists++;if(control.hold){const held=control.hold;control.hold=null;await held}}
+    if(message.method==="thread/list"){control.lists++;control.cursors.push(message.params?.cursor||null);if(control.hold){const held=control.hold;control.hold=null;await held}}
     if(message.method==="thread/list"&&control.listError)return ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:control.listError}}));
     if(message.method==="initialize")result={userAgent:"catalog-pagination-connected-fixture"};
     else if(message.method==="thread/list")result=message.params?.cursor==="older-page"?{data:control.older||[],nextCursor:null}:{data:control.listed,nextCursor:control.older?"older-page":null};
@@ -315,4 +316,83 @@ test("Load older threads comes back once the runtime lists a next page after an 
     await expect(history.getByRole("button",{name:/Newest thread/})).toBeVisible();
     await expect(rows).toHaveCount(11);await expect(load).toHaveCount(0);
   }finally{await harness.close()}
+});
+
+// The app's requests around the runtime harness, routed as the tests above route them; the header's mode button saves the mode here,
+// so the page keeps this fixture's settings.
+async function routeRuntimeHistory(page,harness,version){
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const json=body=>({status:200,contentType:"application/json",body:JSON.stringify(body)});
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill(json({mock:false,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version,runtimeCapabilities:{},activeEnvironmentId:null,activeEnvironment:null})));
+  await page.route(/\/api\/state$/,route=>route.fulfill(json({settings,projects:[],threadMeta:{}})));
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")settings={...settings,...route.request().postDataJSON()};return route.fulfill(json(settings))});
+  await page.route(/\/api\/models$/,route=>route.fulfill(json({agentRuntime:"claude",ready:true,models:["claude-test"],metadata:{agentRuntime:"claude",models:[{id:"claude-test",name:"Claude Test",agent:"Claude Code"}]}})));
+  await page.route(/\/api\/projects$/,route=>route.fulfill(json({projects:[]})));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill(json({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})));
+  await page.route(/\/api\/recovery$/,route=>route.fulfill(json({enabled:false,items:[]})));
+  await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>route.fulfill(json(route.request().method()==="POST"?route.request().postDataJSON()?.patch||{}:{threadMeta:{},nextCursor:null})));
+}
+// Shots of History in dark and light, at 1280 and 900, with shown in view; the page is left dark at 1280.
+async function shootHistoryModes(page,shown,name){
+  for(const mode of ["dark","light"]){
+    await page.setViewportSize({width:1280,height:800});
+    if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await shown.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`polish/history/${name}-${mode}-${width}.png`})}
+  }
+  await page.setViewportSize({width:1280,height:800});await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
+}
+const runtimeThreadAt=(now,id,name,ago)=>({id,name,preview:name+" preview",cwd:process.cwd(),model:"claude-test",runtime:"claude",status:{type:"idle"},createdAt:now-ago-60,updatedAt:now-ago,turns:[]});
+
+// History shown again reads its newest threads again, which a slow runtime takes a while to answer. Load older threads is offered all
+// the while and reads the older page when pressed; only while that page is read does it say it is loading and refuse a press. It said
+// "Loading older threads…" through the whole re-read, and a click on it read nothing.
+test("Load older threads reads the older page while History reads its newest threads again",async({page})=>{
+  test.setTimeout(60_000);
+  const now=Date.now()/1000,recent=Array.from({length:6},(_,index)=>runtimeThreadAt(now,"runtime-recent-"+index,"Recent thread "+(index+1),index*600)),older=Array.from({length:4},(_,index)=>runtimeThreadAt(now,"runtime-older-"+index,"Older thread "+(index+1),86400*3+index*600));
+  const harness=await startRuntimeHarness(recent[0]);harness.control.listed=recent;harness.control.older=older;
+  const releases=[];const holdNext=()=>{let release;harness.control.hold=new Promise(resolve=>{release=resolve});releases.push(release);return release};
+  try{
+    await routeRuntimeHistory(page,harness,"history-reread-older-fixture");
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    const historyButton=page.getByRole("button",{name:"History",exact:true}),newTask=page.getByRole("button",{name:"New task",exact:true});
+    const history=page.locator(".history-page"),rows=history.locator(".history-thread-row"),load=history.getByRole("button",{name:"Load older threads"}),loading=history.getByRole("button",{name:"Loading older threads…"});
+    const olderReads=()=>harness.control.cursors.filter(cursor=>cursor==="older-page").length;
+    let lists=harness.control.lists;
+    await historyButton.click();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await expect(rows).toHaveCount(6);await expect(load).toBeVisible();
+    // A new task, and History again: the runtime holds its answer for the newest threads. History starts that read after it shows,
+    // so the person looks once two frames are painted, by when the page shows what the read set.
+    await newTask.click();
+    lists=harness.control.lists;const firstPage=holdNext();
+    await historyButton.click();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await expect(rows).toHaveCount(6);
+    await expect(loading,"nothing says older threads are loading while the newest threads are read again").toHaveCount(0);
+    await expect(load,"Load older threads is offered while the newest threads are read again").toBeVisible();
+    await expect(load).not.toHaveAttribute("aria-disabled","true");
+    await shootHistoryModes(page,load,"older-threads-offered-during-reread");
+    // The person double-clicks it, and the runtime holds that page too: it says it is loading, keeps the keyboard and refuses a press.
+    const olderPage=holdNext();
+    await load.dblclick();
+    await expect(loading).toBeFocused();await expect(loading).toHaveAttribute("aria-disabled","true");
+    await expect.poll(olderReads).toBe(1);
+    await page.screenshot({animations:"disabled",path:auditDir+"polish/history/older-threads-loading-during-reread-dark-1280.png"});
+    await page.keyboard.press("Enter");
+    // The older page comes in while the newest threads are still read: four rows more, and no next page.
+    olderPage();
+    await expect(history.getByRole("button",{name:/Older thread 4/})).toBeVisible();await expect(rows).toHaveCount(10);
+    await expect(load).toHaveCount(0);await expect(loading).toHaveCount(0);
+    expect(olderReads(),"the second click and the Enter while it loaded read nothing more").toBe(1);
+    // The newest threads answer, with one started since: it is listed, and every page is read.
+    harness.control.listed=[runtimeThreadAt(now,"runtime-newest","Newest thread",0),...recent];
+    firstPage();
+    await expect(history.getByRole("button",{name:/Newest thread/})).toBeVisible();await expect(rows).toHaveCount(11);
+    await expect(load).toHaveCount(0);
+    expect(olderReads()).toBe(1);
+  }finally{for(const release of releases.splice(0))release();await harness.close()}
 });
