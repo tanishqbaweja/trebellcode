@@ -7,12 +7,14 @@
 //   GET /pypi/files/<path>                                  <- https://files.pythonhosted.org/<path>
 // Files are byte-identical copies: uv's installer checks its own checksum, and uv and pip check the index's sha256. The launcher
 // points only the verifier at it (verifierDownloadCacheArgs in terminal-bench-task-cache.mjs), so agents never see it.
+// Index pages are kept too (serveIndex below), since PyPI's stall partway from this host.
 // Usage: node scripts/verifier-download-cache.mjs [--port=18090] [--root=<cache dir>] [--minutes=1440]
 import http from "node:http";
 import https from "node:https";
-import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readSync, renameSync, statSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
 
 export function upstreamFor(pathname){
   const gh=pathname.match(/^\/gh\/([\w.-]+)\/([\w.-]+)\/releases\/download\/([\w.%+-]+)\/([\w.%+-]+)$/);
@@ -43,8 +45,28 @@ function get(url,headers={},redirects=8){
 }
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
-export function createCache({root,log=()=>{},maxAttempts=12}){
-  const base=resolve(root),inflight=new Map();
+export function decodeBody(body,encoding){
+  const coding=String(encoding||"").trim().toLowerCase();
+  if(coding==="gzip"||coding==="x-gzip")return gunzipSync(body);
+  if(coding==="deflate")return inflateSync(body);
+  if(coding==="br")return brotliDecompressSync(body);
+  return body;
+}
+// One index page from PyPI, asked for gzip (a quarter of the bytes), tried three times when the transfer breaks off.
+async function fetchIndexUpstream(url,accept){
+  for(let attempt=1;;attempt++){
+    try{
+      const response=await get(url,{accept,"accept-encoding":"gzip"}),chunks=[];
+      for await(const chunk of response)chunks.push(chunk);
+      if(response.statusCode!==200)return {status:response.statusCode};
+      return {status:200,contentType:response.headers["content-type"]||"text/html",body:decodeBody(Buffer.concat(chunks),response.headers["content-encoding"]).toString("utf8")};
+    }catch(error){if(attempt>=3)throw error;await sleep(1_000*attempt);}
+  }
+}
+
+// fetchIndex, now, freshMs and deadlineMs are for the tests; the server uses the defaults.
+export function createCache({root,log=()=>{},maxAttempts=12,fetchIndex=fetchIndexUpstream,now=Date.now,freshMs=6*3_600_000,deadlineMs=20_000}){
+  const base=resolve(root),inflight=new Map(),indexInflight=new Map();
   const pathOf=cachePath=>{const file=resolve(base,cachePath);if(!file.startsWith(base+sep))throw new Error("path escapes the cache root");return file;};
   // Downloads url to <file>.part with positional writes, resuming with a Range request after each reset, then renames it.
   function fetchToCache(url,file){
@@ -99,19 +121,45 @@ export function createCache({root,log=()=>{},maxAttempts=12}){
       await sleep(200);
     }
   }
+  // PyPI's index pages run to a few MB and, from this host, stall partway: on 2026-10-20 modal's, numpy's and xxhash's took over
+  // the 30 s uv waits, so every SWE-bench parser installing through this cache failed and its lane went ungraded. Each page is
+  // kept on disk, one copy for the JSON form uv and pip ask for and one for HTML. A copy younger than freshMs is served without
+  // asking PyPI; an older one is served when PyPI has not answered within deadlineMs or fails. Requests for the same page share
+  // one fetch. The parsers and test tools pin their packages, so a page some hours old resolves the same.
+  async function serveIndex(target,req,res){
+    const accept=req.headers.accept||"text/html",form=/application\/vnd\.pypi\.simple\.v1\+json/i.test(accept)?"json":"html";
+    const file=pathOf(`pypi-index/index-${target.url.match(/\/simple\/([^/]+)\/$/)[1]}.${form}.json`);
+    let copy=null;
+    try{copy=JSON.parse(readFileSync(file,"utf8"));}catch{}
+    const send=page=>{res.writeHead(200,{"content-type":page.contentType});res.end(rewriteIndex(page.body,`http://${req.headers.host}`));};
+    if(copy&&now()-copy.fetchedAt<freshMs){send(copy);return;}
+    let pending=indexInflight.get(file);
+    if(!pending){
+      pending=Promise.resolve().then(()=>fetchIndex(target.url,accept)).then(page=>{
+        if(page.status===200){
+          try{mkdirSync(dirname(file),{recursive:true});writeFileSync(file+".part",JSON.stringify({url:target.url,contentType:page.contentType,fetchedAt:now(),body:page.body}));renameSync(file+".part",file);}
+          catch(error){log(`could not keep ${target.url}: ${error.message}`);}
+        }
+        return page;
+      }).finally(()=>indexInflight.delete(file));
+      indexInflight.set(file,pending);
+    }
+    const settled=pending.then(page=>({page}),error=>({error}));
+    const outcome=copy?await Promise.race([settled,sleep(deadlineMs).then(()=>({late:true}))]):await settled;
+    if(outcome.page?.status===200){send(outcome.page);return;}
+    if(copy&&(outcome.late||outcome.error||outcome.page.status>=500)){
+      log(`stale ${target.url}: ${outcome.late?`no answer within ${deadlineMs/1000} s`:outcome.error?outcome.error.message:`HTTP ${outcome.page.status}`}; served the copy of ${new Date(copy.fetchedAt).toISOString()}`);
+      send(copy);return;
+    }
+    if(outcome.error)throw outcome.error;
+    res.writeHead(outcome.page.status);res.end();
+  }
   async function handle(req,res){
     const pathname=new URL(req.url,"http://cache").pathname;
     if(req.method==="GET"&&pathname==="/health"){res.writeHead(200,{"content-type":"text/plain"});res.end(`ok ${inflight.size} in flight\n`);return;}
     const target=req.method==="GET"?upstreamFor(pathname):null;
     if(!target){res.writeHead(404);res.end();return;}
-    if(target.kind==="index"){
-      const response=await get(target.url,{accept:req.headers.accept||"text/html"}),chunks=[];
-      for await(const chunk of response)chunks.push(chunk);
-      if(response.statusCode!==200){res.writeHead(response.statusCode);res.end();return;}
-      res.writeHead(200,{"content-type":response.headers["content-type"]||"text/html"});
-      res.end(rewriteIndex(Buffer.concat(chunks).toString("utf8"),`http://${req.headers.host}`));
-      return;
-    }
+    if(target.kind==="index"){await serveIndex(target,req,res);return;}
     await serveFile(target.url,target.cachePath,res);
   }
   return {handle};

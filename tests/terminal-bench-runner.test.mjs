@@ -6,13 +6,14 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, parseWindowsProcessRows, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { windowsHarborEnv } from "../scripts/harbor-process-env.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isAgentAuthenticationFailure, isDockerExecTransportFailure, isDockerImagePullFailure, isNativeAgentExternalTermination, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
 import { benchmarkRunPrefix, localTaskPath, preflightLocalTaskMembership, preflightTerminalBenchDatasetTaskMembership, preflightTerminalBenchNetworkPolicy, terminalBenchCachedTaskToml, terminalBenchTaskNoNetworkSectionsFromToml, prewarmTerminalBenchDockerImages, prewarmTerminalBenchTaskCache, terminalBenchDatasetTaskNamesFromVersionMetadata, terminalBenchTaskDockerImagesFromToml, terminalBenchTaskPackageRef, terminalBenchTaskQualifiedName, verifierDownloadCacheArgs } from "../scripts/terminal-bench-task-cache.mjs";
-import { rewriteIndex, upstreamFor } from "../scripts/verifier-download-cache.mjs";
+import { createCache, decodeBody, rewriteIndex, upstreamFor } from "../scripts/verifier-download-cache.mjs";
 import { isSweBenchDataset, sweBenchVerifierReportMissing } from "../scripts/terminal-bench-verifier-summary.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
@@ -440,6 +441,57 @@ test("The verifier download cache maps only release assets and PyPI paths, and p
   assert.equal(rewriteIndex(html,"http://host.docker.internal:18090"),'<a href="http://host.docker.internal:18090/pypi/files/packages/aa/bb/x-1.0.tar.gz#sha256=00">x</a>');
   const json='{"files":[{"url":"https://files.pythonhosted.org/packages/cc/x.whl","hashes":{"sha256":"11"}}]}';
   assert.equal(JSON.parse(rewriteIndex(json,"http://h:1")).files[0].url,"http://h:1/pypi/files/packages/cc/x.whl");
+});
+
+test("The verifier download cache keeps index pages and serves its copy while PyPI stalls or fails",async()=>{
+  assert.equal(decodeBody(gzipSync(Buffer.from("page")),"gzip").toString(),"page");
+  assert.equal(decodeBody(Buffer.from("page"),undefined).toString(),"page");
+  const root=await mkdtemp(join(tmpdir(),"verifier-cache-")),logs=[];
+  let clock=1_000_000,calls=0,next;
+  const cache=createCache({root,log:line=>logs.push(line),now:()=>clock,freshMs:60_000,deadlineMs:50,fetchIndex:async(url,accept)=>{calls++;return next(url,accept);}});
+  const ask=async(path,accept="application/vnd.pypi.simple.v1+json, text/html;q=0.01")=>{
+    const res={status:null,body:"",writeHead(status){this.status=status;},end(body=""){this.body+=body;}};
+    await cache.handle({method:"GET",url:path,headers:{host:"h:1",accept}},res);
+    return res;
+  };
+  const page=n=>({status:200,contentType:"application/vnd.pypi.simple.v1+json",body:`{"n":${n},"files":[{"url":"https://files.pythonhosted.org/packages/aa/x.whl"}]}`});
+  const n=res=>JSON.parse(res.body).n,settle=()=>new Promise(r=>setTimeout(r,20));
+  try{
+    next=()=>page(1);
+    let res=await ask("/pypi/simple/Modal/");
+    assert.equal(res.status,200);
+    assert.equal(JSON.parse(res.body).files[0].url,"http://h:1/pypi/files/packages/aa/x.whl");
+    // A fresh copy answers without asking PyPI; the HTML form is a page of its own.
+    assert.equal(n(await ask("/pypi/simple/modal/")),1);
+    assert.equal(calls,1);
+    next=()=>({status:200,contentType:"text/html",body:"<a>html</a>"});
+    assert.equal((await ask("/pypi/simple/modal/","text/html")).body,"<a>html</a>");
+    assert.equal(calls,2);
+    // Past freshMs PyPI is asked again and its answer replaces the copy.
+    clock+=120_000;next=()=>page(2);
+    assert.equal(n(await ask("/pypi/simple/modal/")),2);
+    assert.equal(calls,3);
+    // A stall past deadlineMs gets the copy, and the late answer still replaces it.
+    clock+=120_000;let release;next=()=>new Promise(done=>{release=()=>done(page(3));});
+    assert.equal(n(await ask("/pypi/simple/modal/")),2);
+    assert.match(logs.at(-1),/^stale https:\/\/pypi\.org\/simple\/modal\/: no answer within 0\.05 s; served the copy of /);
+    release();await settle();clock+=1;
+    assert.equal(n(await ask("/pypi/simple/modal/")),3);
+    assert.equal(calls,4);
+    // A failed fetch gets the copy; with no copy the request fails, and PyPI's 404 passes through.
+    clock+=120_000;next=()=>{throw new Error("aborted");};
+    assert.equal(n(await ask("/pypi/simple/modal/")),3);
+    assert.match(logs.at(-1),/^stale https:\/\/pypi\.org\/simple\/modal\/: aborted;/);
+    await assert.rejects(ask("/pypi/simple/numpy/"),/aborted/);
+    next=()=>({status:404});
+    assert.equal((await ask("/pypi/simple/no-such-project/")).status,404);
+    // Requests for one page share one fetch.
+    calls=0;let go;next=()=>new Promise(done=>{go=()=>done(page(4));});
+    const both=Promise.all([ask("/pypi/simple/xxhash/"),ask("/pypi/simple/xxhash/")]);
+    await settle();go();
+    assert.deepEqual((await both).map(n),[4,4]);
+    assert.equal(calls,1);
+  }finally{await rm(root,{recursive:true,force:true});}
 });
 
 test("Terminal-Bench Docker subnet retry only recognizes pre-agent exhaustion",()=>{
