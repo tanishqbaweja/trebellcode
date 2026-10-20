@@ -3,6 +3,7 @@ import { mkdtemp,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { markdownReply } from "../../scripts/perf/lib/fake-openai.mjs";
+import { NATIVE_REPLY_STREAM } from "../../src/native-agent-session.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
 import { gate,live,startStreamingFixture } from "./native-stream-fixture.js";
 import { commandItem,replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
@@ -260,4 +261,55 @@ test("B20: a key typed in the composer restyles the composer, not the conversati
     expect(recalcs.length,"the trace has the page's style recalculations").toBeGreaterThanOrEqual(typed.length);
     expect(elementsPerKey).toBeLessThanOrEqual(B20_TYPING.elementsPerKey);
   }finally{await harness.close()}
+});
+
+// B23: the elements Chrome restyles for each delta of a reply streaming into a thread of 40 turns, from a trace's style
+// recalculations (their elementCount) over 4 s of the stream, at 24 characters a delta and 32 deltas a second as in B16, then over
+// 2.5 s with the undo toast of another thread archived meanwhile. The latest turn's reading order was set by :has() rules on the
+// conversation column, and the undo toast's place by a :has() on the app shell over all it holds: Chrome restyled the whole
+// conversation for each element the reply added, and the whole app with the toast up (110.1 and 169 elements a delta, up to 459 and
+// 757 at once). App now names the live block in the column's class (with-agent-block), and the toast's :has() looks only at the
+// app shell's children.
+const B23_STREAM={elementsPerDelta:40};
+
+test("B23: a streamed delta restyles the reply it grows, not the conversation around it",async({page,browser})=>{
+  test.setTimeout(90_000);
+  const text=markdownReply(14_000,{seed:3}),finish=gate();let deltas=0;
+  const harness=await startRelayHarness({replies:[async request=>{
+    const hook=request[NATIVE_REPLY_STREAM],start=Date.now();
+    for(let index=0;index*24<text.length;index++){const wait=start+index*1000/32-Date.now();if(wait>0)await new Promise(resolve=>setTimeout(resolve,wait));hook({type:"text",delta:text.slice(index*24,index*24+24)});deltas++}
+    await finish.promise;return {text};
+  }]});
+  try{
+    harness.seedThread("Archived while streaming",[{user:"Say hello.",items:[replyItem("b23-other-reply","Hello.")]}]);
+    harness.seedThread("Streaming budget",Array.from({length:40},(_,index)=>({user:"Turn "+index+": say how the relay keeps the order of items.",items:[commandItem("b23-command-"+index,"npm test",{output:"ok "+index+"\n"}),replyItem("b23-reply-"+index,"The relay keeps **turn "+index+"** in order.\n\n- It writes `item/completed` once.\n- A reload reads the same history.")]})));
+    await routeRelayApp(page,harness);
+    await page.goto("/");await page.locator('.thread-row .thread-main[title="Streaming budget"]').click();
+    await expect(page.locator(".assistant-message-text").filter({hasText:"turn 39 in order"})).toBeVisible({timeout:15_000});
+    await page.getByTestId("composer").fill("Explain how the relay streams a long reply. Do not change any files.");await page.getByTestId("send").click();
+    await expect(live(page).locator("h2").first()).toBeVisible({timeout:15_000});await page.waitForTimeout(1000);
+    const cdp=await page.context().newCDPSession(page),{frameTree}=await cdp.send("Page.getFrameTree");
+    const conversationElements=await page.locator(".conversation-column").evaluate(node=>node.getElementsByTagName("*").length);
+    expect(conversationElements,"a conversation large enough to show a restyle of the whole conversation").toBeGreaterThan(1000);
+    const traceStream=async(name,ms)=>{
+      await browser.startTracing(page,{categories:["devtools.timeline"]});
+      const from=deltas;await page.waitForTimeout(ms);const streamed=deltas-from,toasts=await page.getByTestId("thread-undo-toast").count();
+      const trace=JSON.parse((await browser.stopTracing()).toString("utf8"));
+      const recalcs=(trace.traceEvents||trace).filter(event=>event.name==="UpdateLayoutTree"&&event.args?.beginData?.frame===frameTree.frame.id).map(event=>event.args.elementCount||0);
+      const elements=recalcs.reduce((sum,count)=>sum+count,0),elementsPerDelta=Number((elements/Math.max(1,streamed)).toFixed(1));
+      console.log("B23 "+name+":",JSON.stringify({deltas:streamed,conversationElements,toasts,recalcs:recalcs.length,elements,elementsPerDelta,largest:Math.max(0,...recalcs)}));
+      expect(streamed,name+": deltas streamed while traced").toBeGreaterThanOrEqual(ms/40);
+      expect(recalcs.length,name+": the trace has the page's style recalculations").toBeGreaterThanOrEqual(ms/150);
+      return {elementsPerDelta,toasts};
+    };
+    const streaming=await traceStream("a reply streaming",4000);
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Archived while streaming"]')});
+    await row.hover();await row.locator("summary[title='Thread actions']").click();await row.getByRole("button",{name:"Archive",exact:true}).click();
+    await expect(page.getByTestId("thread-undo-toast")).toBeVisible({timeout:5000});await page.waitForTimeout(300);
+    const withToast=await traceStream("with the undo toast up",2500);
+    expect(withToast.toasts,"the undo toast showed all through the trace").toBe(1);
+    expect(streaming.elementsPerDelta,"elements restyled per delta").toBeLessThanOrEqual(B23_STREAM.elementsPerDelta);
+    expect(withToast.elementsPerDelta,"elements restyled per delta with the undo toast up").toBeLessThanOrEqual(B23_STREAM.elementsPerDelta);
+    finish.open();await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeHidden({timeout:30_000});
+  }finally{finish.open();await harness.close()}
 });

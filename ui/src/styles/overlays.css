@@ -307,7 +307,9 @@
   /* Attachment chips sit on a shelf just above the composer (a refused file is said while the others upload): the toast goes above
      its top row. */
   .workspace-shell:not(.right-maximized):has(.composer-wrap .attachment-shelf>span)>.app-action-error-toast:not(.secondary-surface-error):not(.with-thread-undo){bottom:calc(anchor(--tb-shelf top,120px) + 12px)}
-  .app-shell:not(:has(.workspace-shell.right-maximized))>.thread-undo-toast{bottom:calc(anchor(--tb-composer top,12px) + 12px);left:anchor(--tb-composer center,50%)}
+  /* The workspace shell is the app shell's child, and a :has() that looks only at the children is not retested for each element
+     a streaming reply adds while the undo toast shows, each of which restyled the whole app shell (shell.css, with-agent-block). */
+  .app-shell:not(:has(>.workspace-shell.right-maximized))>.thread-undo-toast{bottom:calc(anchor(--tb-composer top,12px) + 12px);left:anchor(--tb-composer center,50%)}
 }
 @supports not (anchor-name:--tb-composer){
   .app-shell:has(.chat-workspace)>.thread-undo-toast{top:calc(var(--top) + 12px);bottom:auto}

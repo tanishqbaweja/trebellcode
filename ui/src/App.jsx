@@ -459,8 +459,9 @@ function contextUsagePercent(tokenUsage){
 }
 
 // The live turn's block: its activity card (TurnActivityCard, open until the person closes it) and, below the card, the reply as
-// it streams, which stays in view while the card is closed.
-const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,threadId=null,turnId=null,initialAssistantText="",initialCommandOutputs,initialMcpProgress,onOpenPanel,canInspectChanges=true,onToggleLayout=null},ref){
+// it streams, which stays in view while the card is closed. onShown hears whether the block shows, before the frame that draws it
+// or takes it away (App names it in the conversation column's class, with-agent-block).
+const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,threadId=null,turnId=null,initialAssistantText="",initialCommandOutputs,initialMcpProgress,onOpenPanel,canInspectChanges=true,onToggleLayout=null,onShown=null},ref){
   const [assistantText,setAssistantText]=useState(initialAssistantText);
   const [commandOutputs,setCommandOutputs]=useState(()=>new Map(initialCommandOutputs||[]));
   const [mcpProgress,setMcpProgress]=useState(()=>new Map(initialMcpProgress||[]));
@@ -479,7 +480,9 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,threadI
     clearMcpProgress:key=>setMcpProgress(previous=>{const id=String(key||"");if(!previous.has(id))return previous;const next=new Map(previous);next.delete(id);return next}),
     resetStreams:()=>{setAssistantText("");setCommandOutputs(new Map());setMcpProgress(new Map())},
   }),[]);
-  if(!events.length&&!assistantText)return null;
+  const shown=events.length>0||Boolean(assistantText);
+  useLayoutEffect(()=>{onShown?.(shown)},[shown,onShown]);
+  if(!shown)return null;
   // A reply that streams without any tool or reasoning step has no activity to list, so it shows only its text.
   return <div className="agent-block">{events.length>0&&<TurnActivityCard live threadId={threadId} turnId={turnId} rows={events} defaultOpen onToggleLayout={onToggleLayout} onInspectChanges={canInspectChanges?openWorkspace:null} commandOutputs={commandOutputs} mcpProgress={mcpProgress}/>}{assistantText&&<div className="assistant-answer chat-markdown"><StreamingMarkdown text={assistantText}/></div>}</div>;
 }));
@@ -1081,6 +1084,8 @@ export default function App(){
   // retryRowsRef: the live list's retry rows still retrying (retryActivityRow), by thread and row (retryRowKey), since turn ids are
   // only unique inside a thread; each is settled once its turn goes on or ends.
   const retryRowsRef=useRef(new Set());
+  // Whether the live turn's block shows (ActivityTimeline says so), for the conversation column's class with-agent-block (shell.css).
+  const [agentBlockShown,setAgentBlockShown]=useState(false);
   const [resolvedMode,setResolvedMode]=useState(()=>typeof document!=="undefined"&&document.documentElement.dataset.mode==="light"?"light":"dark");
   if(!assistantStreamBufferRef.current)assistantStreamBufferRef.current=createTextFrameBuffer({
     schedule:callback=>requestAnimationFrame(callback),
@@ -5553,10 +5558,10 @@ export default function App(){
           <ThreadFindBar state={threadFind} covered={openingShown} inputRef={threadFindInputRef} barRef={threadFindBarRef} onQuery={query=>setThreadFind(current=>({...current,query,error:""}))} onPrevious={()=>stepThreadFind(-1)} onNext={()=>stepThreadFind(1)} onClose={closeThreadFind}/>
 
           {!openingOverPage&&<div className={"conversation-scroll"+(openingShown?" opening-covered":"")} ref={conversationScrollRef} onScroll={conversationScrolled}>
-            <div className="conversation-column">
+            <div className={"conversation-column"+(agentBlockShown?" with-agent-block":"")}>
               {worktreeSetup&&<LazySlot><WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");askTerminalKeyboard();if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/></LazySlot>}
               <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} historyError={historyPage.error} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={shownTurnOrder} turnActivity={shownTurnActivity} liveCardTurnId={liveCardTurnId} newestTurnId={newestTurnId} onToggleLayout={activityCardToggleLayout}/>
-              <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout}/>
+              <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout} onShown={setAgentBlockShown}/>
               {guardianDenials.map(review=><LazySlot key={review.reviewId}><div className="inline-approval"><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div></LazySlot>)}
               {shownApproval&&<div className="inline-approval"><ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {/* A follow-up's button runs once for a double click or Enter held on it, as a thread's menu item does: the rest of the press
