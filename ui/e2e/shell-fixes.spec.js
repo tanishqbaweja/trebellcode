@@ -533,13 +533,91 @@ for(const mode of ["dark","light"])test(`the project crumb keeps a shortened nam
         const withName=await header.evaluate(node=>{node.dataset.crumb="short";const strong=node.querySelector(".thread-title-button strong"),box={shown:strong.clientWidth,whole:strong.scrollWidth};delete node.dataset.crumb;return box});
         expect(withName.shown+1,`the title beside the crumb's shortened name at ${width}px`).toBeLessThan(Math.min(withName.whole,80));
       }
-      expect(titleBox.shown+1,`the title's width at ${width}px`).toBeGreaterThanOrEqual(Math.min(titleBox.whole,80));
+      // The 85px title, little longer than the readable 80px, shows whole at each width: a later level gives it its room (it read
+      // 80px of itself at 1280 and 82px at 1180, the levels after them not tried).
+      expect(titleBox.shown+1,`the title's width at ${width}px`).toBeGreaterThanOrEqual(titleBox.whole);
       const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
       await expect(crumb).toHaveAttribute("title",project.name+" · Projects and workspaces");
       // Beside the docked inspector the pointer reaches the crumb; below 900px the inspector's scrim lies over the header.
       if(width===1280)await crumb.hover();
       await page.screenshot({path:join(shotsDir,`header-crumb-beside-folded-prs-${mode}-${width}x800.png`),animations:"disabled"});
     }
+  }finally{await harness.close()}
+});
+
+// A short thread title shows whole wherever a level of the header fit gives it its room (UI lane D, 2026-10-20: at 1280 beside the
+// Git inspector, once a second pull request was linked, the fit stopped where the title kept its readable 80px, 80 of its 85px,
+// and "Repo task one" read "Repo task …" as "Repo task two" beside it would, while at 1240 the next levels gave it whole). Cut to
+// the readable width, a short title loses only its last word, which can be all that tells it from another thread. The second pull
+// request is linked from the palette; from 1240 to 1366 a wider window never shows less of the title, and the crumb keeps a
+// shortened name beside it at 1280. Closing the sidebar with Ctrl+B and opening it from the header fits the header again.
+for(const mode of ["dark","light"])test(`a short thread title shows whole beside two linked pull requests at 1280 as at 1240 and 1366, never less in a wider window, in ${mode} mode`,async({page})=>{
+  test.setTimeout(60_000);
+  const project={id:"header-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
+  const threads=["Repo task one","Repo task two"].map((name,index)=>({id:"header-thread-"+(index+1),name,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+name.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+name.toLowerCase()+"."}]}]}));
+  const prs=[101,102].map(number=>({url:"https://github.com/lane-d/scratch/pull/"+number,number,title:"Scratch PR "+number,state:"open"}));
+  let links=prs.slice(0,1);
+  const harness=await startHarness(threads);
+  try{
+    // The server keeps the thread's links: the Git tab syncs them, and Link pull request resolves the URL, then links it.
+    await page.route(/\/api\/source-control\/thread-link$/,route=>{
+      if(route.request().method()!=="POST")return route.fallback();
+      const body=route.request().postDataJSON()||{};
+      if(body.action==="link")links=[...links,body.pr];
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body.action==="resolve"?{pr:prs.find(pr=>pr.url===body.url)}:{links})});
+    });
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads,meta:{[threads[0].id]:{projectless:false,environmentId:null,linkedPullRequests:links},[threads[1].id]:{projectless:false,environmentId:null}},project,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),header=page.locator(".chat-workspace .workspace-header");
+    if(!(await right.isVisible())){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible()}
+    await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 1");
+    await page.getByTestId("composer").click();await page.keyboard.press("Control+K");
+    await page.keyboard.type("Link pull request",{delay:20});await page.keyboard.press("Enter");
+    await expect(page.locator("dialog.inspector-text-prompt").getByRole("textbox",{name:"Pull request URL"})).toBeFocused();
+    await page.keyboard.type(prs[1].url,{delay:5});await page.keyboard.press("Enter");
+    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 2");
+    // The title's box and its text's width, and the crumb's name and the least a shortened one shows (its first letter and the
+    // ellipsis, in its font), with the main column beside the 258px sidebar and the 460px inspector.
+    const read=()=>header.evaluate(node=>{
+      const strong=node.querySelector(".thread-title-button strong"),name=node.querySelector(".project-crumb:not(.sidebar-reopen)>span"),style=getComputedStyle(name),least=document.createElement("span");
+      least.style.cssText="position:absolute;visibility:hidden;white-space:nowrap";least.textContent=name.textContent.trim().charAt(0)+"…";
+      for(const key of ["fontFamily","fontSize","fontWeight","fontStyle","fontStretch","fontFeatureSettings","fontVariationSettings","letterSpacing"])least.style[key]=style[key];
+      document.body.append(least);const leastWidth=least.getBoundingClientRect().width;least.remove();
+      return {fit:node.dataset.fit,title:strong.clientWidth,whole:strong.scrollWidth,name:style.display==="none"?0:name.clientWidth,least:leastWidth,overflow:node.scrollWidth-node.clientWidth,chips:[...node.querySelectorAll(".header-pr")].filter(chip=>chip.offsetParent).map(chip=>chip.innerText.replace(/\s+/g,""))};
+    });
+    const at=async(width,column=width-258-460)=>{
+      await page.setViewportSize({width,height:800});
+      await expect.poll(()=>header.evaluate(node=>Math.round(node.getBoundingClientRect().width))).toBe(column);await settle(page);
+      const state=await read();
+      console.log(`header at ${width}: fit ${state.fit}, title ${state.title} of ${state.whole}px, crumb name ${state.name}px (least ${state.least.toFixed(1)}), chips ${state.chips.join(" ")}`);
+      expect(state.overflow,`the header holds its row at ${width}px`).toBeLessThanOrEqual(1);
+      return state;
+    };
+    const whole=(state,width)=>expect(state.title+1,`the title shows whole at ${width}px (${state.title} of ${state.whole}px at data-fit ${state.fit})`).toBeGreaterThanOrEqual(state.whole);
+    // At 1280 the pull requests fold into one chip and the title reads whole, the crumb keeping a shortened name beside it.
+    const wide=await at(1280);
+    expect(wide.chips,"the pull requests fold into the first one's chip").toEqual(["#101+1"]);
+    whole(wide,1280);
+    expect(wide.name+1,"the crumb keeps a shortened name beside the title at 1280px").toBeGreaterThanOrEqual(wide.least);
+    await header.locator(".thread-title-button").hover();
+    await page.screenshot({path:join(shotsDir,`header-short-title-two-prs-${mode}-1280x800.png`),animations:"disabled"});
+    // Narrower and wider, and a wider window never shows less of the title than a narrower one.
+    let narrower=null;
+    for(const width of [1240,1260,1280,1300,1320,1340,1366]){
+      const state=await at(width);whole(state,width);
+      if(narrower)expect(state.title,`the title at ${width}px against ${narrower.width}px`).toBeGreaterThanOrEqual(narrower.title);
+      narrower={width,title:state.title};
+      if(width===1240||width===1366)await page.screenshot({path:join(shotsDir,`header-short-title-two-prs-${mode}-${width}x800.png`),animations:"disabled"});
+    }
+    // Ctrl+B closes the sidebar and the header's Open sidebar button opens it again: each time the header fits its new width.
+    await at(1280);await page.getByTestId("composer").click();
+    await page.keyboard.press("Control+b");await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
+    whole(await at(1280,1280-460),1280);
+    await header.getByRole("button",{name:"Open sidebar"}).click();await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
+    const back=await at(1280);whole(back,1280);
+    expect(back.name+1,"the crumb keeps a shortened name with the sidebar open again").toBeGreaterThanOrEqual(back.least);
   }finally{await harness.close()}
 });
 

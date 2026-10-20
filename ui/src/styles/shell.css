@@ -759,8 +759,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    the project name, 4 also hides the theme and palette buttons (the palette, Settings and the sidebar's search reach both), 5
    leaves the pull request chip its icon and how many are linked, and 6 shows the More actions menu while actions fold into it
    one at a time from the end of the row (each one header-fit.js marks data-folded; Stop and the inspector toggle never fold).
-   From 4 on the project name comes back as at 2 (data-crumb="short") wherever the title keeps its readable width beside it.
-   Each control keeps its tooltip and accessible name. */
+   From 4 on the project name comes back as at 2 (data-crumb="short") wherever the title keeps its room beside it, and where 3
+   gives the title its room the header takes 4 for the name: the theme and palette buttons step aside before it does. A title
+   little longer than the readable width has its room only whole, wherever a level gives it that. Each control keeps its tooltip
+   and accessible name. */
 .workspace-header .workspace-breadcrumb{flex:1 1 auto}
 .workspace-header .project-crumb:not(.sidebar-reopen){flex:0 1000000 auto;min-width:calc(39px + 4ch)}
 .workspace-header .thread-title-button{flex:0 1 auto;min-width:0}
