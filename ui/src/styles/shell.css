@@ -553,8 +553,6 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .send-btn:disabled{opacity:1;background:var(--bg3);color:var(--tx3);box-shadow:none;cursor:default}
 .composer-wrap .login-btn{height:30px;padding:0 12px;border:1px solid color-mix(in srgb,var(--ac) 40%,var(--line));border-radius:var(--r-s);background:transparent;color:var(--ac);font-size:12px;font-weight:550}
 .composer-wrap .login-btn:hover{background:var(--acsoft)}
-.composer-wrap :is(.pill-btn,.stash-btn,.model-count){height:30px;border-radius:var(--r-s);color:var(--tx2);font-size:12px}
-.composer-wrap :is(.pill-btn,.stash-btn,.model-count):hover{background:var(--bg3);color:var(--tx0)}
 .composer-wrap .composer-status{flex-wrap:wrap;align-items:center;gap:4px 14px;margin:0;padding:6px 14px;border-top:1px solid var(--line);color:var(--tx3);font:400 10.5px/16px var(--mono)}
 .composer-wrap .composer-status>span{min-width:0;overflow-wrap:anywhere}
 .composer-wrap .composer-status>span:first-child{color:var(--tx2)}
@@ -707,8 +705,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .model-picker-button{background:var(--bg3)!important;border-color:var(--line)!important;color:var(--tx1)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .model-picker-button:hover:not(:disabled){border-color:var(--line2)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .model-picker-button.multi{background:var(--acsoft)!important;color:var(--ac)!important}
-:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap :is(.circle-btn,.mic-btn,.pill-btn,.stash-btn,.model-count){color:var(--tx2)!important}
-:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap :is(.circle-btn,.mic-btn,.pill-btn,.stash-btn,.model-count):hover:not(:disabled){background:var(--bg3)!important;color:var(--tx0)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap :is(.circle-btn,.mic-btn){color:var(--tx2)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap :is(.circle-btn,.mic-btn):hover:not(:disabled){background:var(--bg3)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .mic-btn.active{background:var(--acsoft)!important;color:var(--ac)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .send-btn{background:linear-gradient(135deg,var(--ac2),var(--ac))!important;border-color:transparent!important;color:#fff!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .send-btn:disabled{background:var(--bg3)!important;color:var(--tx3)!important}
