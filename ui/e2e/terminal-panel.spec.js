@@ -589,11 +589,23 @@ test("after the terminal worker dies its terminal shows it stopped, and New open
 
 // The drawer's terminal tabs: tab(name) is the button that selects one, startNew(count) presses New and waits for its prompt,
 // ended(name,mark,label) waits for a tab's mark of how its terminal ended, and inView(name) says whether that tab's box shows
-// whole inside the tab row, which scrolls when the tabs overflow it.
+// whole inside the tab row, which scrolls when the tabs overflow it. fades() reads how far in from each edge of the row its mask
+// fades it, 0 where it does not, and how far in that fade shows nothing at all (startClear, endClear): the mask is a gradient from
+// the row's start to its end, clear up to a stop at an edge that fades and opaque from the stop beside it. edges() names the edges
+// that fade, and clear(name) says whether that tab's box shows whole in the row and clear of its fades.
 function terminalTabs(page,drawer){
   const tab=name=>drawer.locator(".terminal-tab-select").filter({has:page.getByText(name,{exact:true})});
+  const row=drawer.locator(".terminal-tab-list");
+  const fades=()=>row.evaluate(node=>{
+    const stops=getComputedStyle(node).maskImage.match(/rgba?\([^)]*\)[^,]*/g)||[],px=stop=>Number(/([\d.]+)px/.exec(stop)[1]);
+    const fade=(edge,next)=>/rgba\(0, 0, 0, 0\)/.test(edge||"")?[px(edge),px(next)]:[0,0];
+    const [startClear,start]=fade(stops[0],stops[1]),[endClear,end]=fade(stops.at(-1),stops.at(-2));
+    return {start,end,startClear,endClear};
+  });
   return {
-    tab,
+    tab,row,fades,
+    edges:async()=>{const {start,end}=await fades();return [start&&"start",end&&"end"].filter(Boolean).join(" ")},
+    clear:async name=>tab(name).evaluate((node,fade)=>{const box=node.parentElement.getBoundingClientRect(),row=node.closest(".terminal-tab-list").getBoundingClientRect();return box.left>=row.left+fade.start-1&&box.right<=row.right-fade.end+1},await fades()),
     async startNew(count){
       await drawer.getByRole("button",{name:"New",exact:true}).click();
       await expect(drawer.locator(".terminal-tab")).toHaveCount(count,{timeout:20_000});
@@ -668,28 +680,17 @@ test("in a 900 px window with four terminals and the last one shown, the shown t
 // The tab row shows it holds more tabs than it shows: an edge with tabs past it fades, that edge only, as the row scrolls, as the
 // drawer narrows and as the tabs grow, and a row whose tabs all fit has none. A tab brought into view, the shown one or one the
 // keyboard reaches, stops clear of the fade, with the close button of the tab cut before it in the fade's fainter half, and a double
-// click on a cut tab closes nothing. The row cut a tab at its edge and said nothing of the tabs past it: beside the Terminal heading
-// the cut tab could be a lone x.
+// click on a cut tab closes nothing. A click on that faint close button, a click of its own, brings its tab in and shows it rather
+// than closing it: it was all that showed of that tab, and a click there to reach the tab closed it and killed its shell. The row
+// cut a tab at its edge and said nothing of the tabs past it: beside the Terminal heading the cut tab could be a lone x.
 test("the terminal tab row fades at each edge with tabs past it as it scrolls, as the drawer narrows and as the tabs grow, at neither when they all fit, and Tab or a click brings a cut tab into view clear of the fade",async({page,request})=>{
   test.setTimeout(150_000);
   const shell=await realTerminals(page);
   try{
     await page.setViewportSize({width:1280,height:800});
     const {drawer,input}=await openTerminal(page,request);
-    const {tab,startNew,ended,inView}=terminalTabs(page,drawer);
-    const row=drawer.locator(".terminal-tab-list"),panelToggle=page.getByTestId("right-panel-toggle");
-    // How far in from each edge of the row its mask fades it, 0 where it does not, and how far in that fade shows nothing at all
-    // (startClear, endClear): the mask is a gradient from the row's start to its end, clear up to a stop at an edge that fades and
-    // opaque from the stop beside it.
-    const fades=()=>row.evaluate(node=>{
-      const stops=getComputedStyle(node).maskImage.match(/rgba?\([^)]*\)[^,]*/g)||[],px=stop=>Number(/([\d.]+)px/.exec(stop)[1]);
-      const fade=(edge,next)=>/rgba\(0, 0, 0, 0\)/.test(edge||"")?[px(edge),px(next)]:[0,0];
-      const [startClear,start]=fade(stops[0],stops[1]),[endClear,end]=fade(stops.at(-1),stops.at(-2));
-      return {start,end,startClear,endClear};
-    });
-    const edges=async()=>{const {start,end}=await fades();return [start&&"start",end&&"end"].filter(Boolean).join(" ")};
-    // Whether a tab's box shows whole in the row and clear of its fades.
-    const clear=async name=>tab(name).evaluate((node,fade)=>{const box=node.parentElement.getBoundingClientRect(),row=node.closest(".terminal-tab-list").getBoundingClientRect();return box.left>=row.left+fade.start-1&&box.right<=row.right-fade.end+1},await fades());
+    const {tab,row,fades,edges,clear,startNew,ended,inView}=terminalTabs(page,drawer);
+    const panelToggle=page.getByTestId("right-panel-toggle");
     const focused=name=>tab(name).evaluate(node=>node===document.activeElement);
     // walk(key,name) presses key until name's tab has the keyboard, and each button of the row it reaches on the way, a tab or its
     // close button, comes whole into view clear of the fade: hidden() names the focused button and where it is when it does not.
@@ -756,6 +757,19 @@ test("the terminal tab row fades at each edge with tabs past it as it scrolls, a
     const cut=await drawer.getByRole("button",{name:"Close Terminal 1"}).evaluate((node,fade)=>{const box=node.getBoundingClientRect();return {middle:Math.round((box.left+box.right)/2-node.closest(".terminal-tab-list").getBoundingClientRect().left),fade}},await fades());
     expect(cut.middle<=(cut.fade.startClear+cut.fade.start)/2,"Terminal 1's close button lies in the fainter half of the fade: "+JSON.stringify(cut)).toBe(true);
     await shots(page,"terminal-tab-row-fade-shown-tab",[1280]);
+    // A click of its own on that faint x (as one after the double click's time, or a few pixels off it) brings Terminal 1 in and shows
+    // it, and closes nothing: the x was all that showed of Terminal 1, so a click there to reach Terminal 1 closed it and killed its
+    // shell. Brought in, its tab shows whole at the row's start, its close button clear of any fade.
+    const pressed=[],onPress=sent=>sent.method()==="DELETE"&&pressed.push(sent.url());
+    page.on("request",onPress);
+    await page.mouse.click(box.x+cut.middle,second.y+second.height/2);
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    page.off("request",onPress);
+    expect(pressed,"a click on a close button the fade covers closes no terminal").toEqual([]);
+    await expect(drawer.locator(".terminal-tab")).toHaveCount(4);
+    await expect(tab("Terminal 1"),"the click shows Terminal 1").toHaveAttribute("aria-current","true");
+    await expect.poll(()=>clear("Terminal 1"),{message:"Terminal 1 comes whole into view, clear of the fade"}).toBe(true);
+    await expect.poll(edges,{message:"Terminal 1 brought in, the row is at its start and fades at its end only"}).toBe("end");
     await tab("Terminal 4").click();
     await expect(tab("Terminal 4")).toHaveAttribute("aria-current","true");
     await expect.poll(edges,{message:"with the last terminal shown again the row fades at its start"}).toBe("start");
@@ -794,6 +808,141 @@ test("the terminal tab row fades at each edge with tabs past it as it scrolls, a
     await expect.poll(edges,{message:"the tabs grown by their marks overflow the row, which fades at its end"}).toBe("end");
     expect(await clear("Terminal 1")).toBe(true);
     await shots(page,"terminal-tab-row-fade-grown",[900,1280]);
+  }finally{await shell.close()}
+});
+
+// In a drawer beside the docked right panel (the main column held at 400px from 964 to 1120px wide, and narrower below) the tab row
+// can be too narrow for a long tab between two 44px fades: a setup terminal's tab ("<action> · delegated setup") is 220px. A tab
+// picked there, or kept shown as the window narrows, shows whole between fades narrowed to the room the row leaves it: the fades'
+// fixed clearance put its close button in the end's fade, or past the row's edge, where the row without fades had shown it whole.
+test("in a narrow drawer beside the docked right panel a long setup terminal's tab picked from either side shows whole between fades narrowed to the room left, as the window narrows and as the tabs grow",async({page,request})=>{
+  test.setTimeout(150_000);
+  const shell=await realTerminals(page);
+  try{
+    await page.setViewportSize({width:1024,height:800});
+    const {drawer}=await openTerminal(page,request);
+    const {tab,row,fades,edges,clear,startNew,ended}=terminalTabs(page,drawer);
+    const setupName="Install dependencies · delegated setup";
+    await startNew(2);
+    // The server starts the setup terminal and the app asks the drawer to show it, as a worktree's delegated setup does.
+    const setup=await shell.terminals.create({cwd:process.cwd(),cols:120,rows:32,name:setupName});
+    await page.evaluate(id=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:id})),setup.id);
+    await expect(drawer.locator(".terminal-tab")).toHaveCount(3);
+    await startNew(4);
+    await expect(tab("Terminal 3")).toHaveAttribute("aria-current","true");
+    // The right panel opens: the drawer narrows to the 400px main column and the row to about 290px.
+    const rowWidth=()=>row.evaluate(node=>node.clientWidth),panelToggle=page.getByTestId("right-panel-toggle");
+    await panelToggle.click();
+    await expect(page.getByTestId("right-panel")).toBeVisible();
+    await expect.poll(rowWidth,{message:"the row beside the docked right panel"}).toBeLessThan(300);
+    // The setup tab's box and its close button's end, from the row's start, and the row's width.
+    const setupBox=()=>tab(setupName).evaluate(node=>{const box=node.parentElement.getBoundingClientRect(),list=node.closest(".terminal-tab-list"),row=list.getBoundingClientRect(),close=node.nextElementSibling.getBoundingClientRect();return {left:box.left-row.left,right:box.right-row.left,width:box.width,row:list.clientWidth,closeRight:close.right-row.left}});
+    const long=await setupBox();
+    expect(long.width,"the setup terminal's tab is too wide for the row between two 44px fades: "+JSON.stringify(long)).toBeGreaterThan(long.row-88);
+    // A click on what shows of a tab's name (its button that selects it), short of the part of a fade that shows nothing.
+    const pick=async name=>{
+      const shown=await tab(name).evaluate((node,fade)=>{const box=node.getBoundingClientRect(),row=node.closest(".terminal-tab-list").getBoundingClientRect();return {left:Math.max(box.left,row.left+fade.startClear),right:Math.min(box.right,row.right-fade.endClear),y:box.top+box.height/2}},await fades());
+      expect(shown.right-shown.left,"some of "+name+"'s tab shows").toBeGreaterThan(8);
+      await page.mouse.click((shown.left+shown.right)/2,shown.y);
+      await expect(tab(name)).toHaveAttribute("aria-current","true");
+    };
+    // Each step leaves the setup tab whole in the row, its close button inside it, and clear of the fades, which are narrower than
+    // 44px there: unclear() says where the tab and its close button are, and the fades, when it is not.
+    const unclear=async()=>{
+      const box=await setupBox(),fade=await fades();
+      const whole=box.left>=fade.start-1&&box.right<=box.row-fade.end+1&&box.closeRight<=box.row+1;
+      return whole&&fade.start<44&&fade.end<44?"":`the setup tab at ${box.left.toFixed(1)} to ${box.right.toFixed(1)}px, its close button ending at ${box.closeRight.toFixed(1)}px, in the ${box.row}px row with fades of ${fade.start} and ${fade.end}px`;
+    };
+    const whole=message=>expect.poll(unclear,{message:message+": the setup tab shows whole, clear of fades narrowed to the room the row leaves it"}).toBe("");
+    // Dark and light shots of the narrow drawer at the window's width. Where the header has set its theme button aside (at 920), the
+    // mode is switched as a person would there: from More actions when the header shows it, else with the right panel closed for a
+    // moment, which gives the header its room back, and opened again.
+    const switchMode=async()=>{
+      const toggle=page.getByTestId("appearance-toggle"),more=page.getByRole("button",{name:"More actions",exact:true});
+      if(await toggle.isVisible())return toggle.click();
+      if(await more.isVisible()){await more.click();return page.getByRole("button",{name:/^Switch to (light|dark) mode$/}).click()}
+      await panelToggle.click();await expect(page.getByTestId("right-panel")).toBeHidden();
+      await toggle.click();
+      await panelToggle.click();await expect(page.getByTestId("right-panel")).toBeVisible();
+    };
+    const modeShots=async name=>{
+      const width=await page.evaluate(()=>window.innerWidth);
+      for(const mode of ["dark","light"]){
+        if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await switchMode();
+        await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+        await whole(name+" in "+mode+" mode");
+        await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+".png"});
+      }
+      await switchMode();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
+    };
+    // Terminal 1 shown, the row at its start: the setup tab is cut at the row's end, and picked from there.
+    await row.hover();await page.mouse.wheel(0,-2000);
+    await pick("Terminal 1");
+    await expect.poll(edges).toBe("end");
+    await pick(setupName);
+    await whole("picked from the row's end");
+    expect(await edges(),"with tabs past both edges the row fades at both").toBe("start end");
+    await modeShots("terminal-tab-row-narrow-from-end");
+    // Terminal 3 shown, the row at its end: the setup tab is cut at the row's start, and picked from there.
+    await row.hover();await page.mouse.wheel(0,2000);
+    await pick("Terminal 3");
+    await expect.poll(edges).toBe("start");
+    await pick(setupName);
+    await whole("picked from the row's start");
+    // The window narrows to 920 (a row of about 245px) and the shown setup tab keeps its place, whole between narrower fades still.
+    await page.setViewportSize({width:920,height:800});
+    await expect.poll(rowWidth,{message:"the row at 920"}).toBeLessThan(260);
+    await whole("at 920");
+    // The terminal worker dies and the other tabs grow by their marks: the setup tab stays whole.
+    shell.terminals.child.kill();
+    for(const name of ["Terminal 1","Terminal 2","Terminal 3",setupName])await ended(name,"stopped","Stopped");
+    await whole("as the tabs grow by their marks");
+    await modeShots("terminal-tab-row-narrow-grown");
+  }finally{await shell.close()}
+});
+
+// A row whose tabs fit it, though not with the 8px it keeps after its last tab, has no tab past either edge: it fades at neither,
+// at its start and with its last tab shown. Its end padding was taken for hidden tabs, so it faded at its end over the last tab's x
+// and said more tabs followed; and with the last tab shown, the row scrolled by those few pixels and faded at its start over the
+// first tab's icon, though only its padding was past the edge.
+test("a terminal tab row whose tabs fit it, but not with its end padding, fades at neither edge, with the last tab shown and at its start",async({page,request})=>{
+  test.setTimeout(120_000);
+  const shell=await realTerminals(page);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    const {drawer}=await openTerminal(page,request);
+    const {tab,row,edges,clear,startNew}=terminalTabs(page,drawer);
+    await startNew(2);await startNew(3);await startNew(4);
+    await expect(tab("Terminal 4")).toHaveAttribute("aria-current","true");
+    // The row's width and the width its tabs take, from the first one's start to the last one's end. The window is set so the
+    // tabs fit the row with 3px to spare, short of its 8px end padding (the row follows the window's width pixel for pixel).
+    const room=()=>row.evaluate(node=>{const first=node.firstElementChild.getBoundingClientRect(),last=node.lastElementChild.getBoundingClientRect();return {row:node.clientWidth,tabs:last.right-first.left}});
+    const frames=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    let width=1280,spare=0;
+    for(let tries=0;tries<5;tries++){
+      const {row:rowWidth,tabs}=await room();spare=rowWidth-tabs;
+      if(spare>=2&&spare<=5)break;
+      width+=Math.round(3-spare);await page.setViewportSize({width,height:800});await frames();
+    }
+    expect(spare,"the tabs fit the row with less room than its end padding, at "+width+"px").toBeGreaterThanOrEqual(1);
+    expect(spare).toBeLessThanOrEqual(7);
+    // The shown tab, the last, is kept in view as the row narrowed: every tab shows and the row fades at neither edge.
+    await expect.poll(edges,{message:"with the last tab shown the row whose tabs all fit fades at neither edge"}).toBe("");
+    for(const name of ["Terminal 1","Terminal 2","Terminal 3","Terminal 4"])expect(await clear(name),name+"'s tab shows whole").toBe(true);
+    await shots(page,"terminal-tab-row-fits-padding-last",[width]);
+    // Wheeled to its start, and with the first tab shown, it fades at neither edge either.
+    await row.hover();await page.mouse.wheel(0,-200);await frames();
+    expect(await edges(),"at its start the row whose tabs all fit fades at neither edge").toBe("");
+    await tab("Terminal 1").click();
+    await expect(tab("Terminal 1")).toHaveAttribute("aria-current","true");
+    await frames();
+    expect(await edges(),"with the first tab shown the row fades at neither edge").toBe("");
+    await tab("Terminal 4").click();
+    await expect(tab("Terminal 4")).toHaveAttribute("aria-current","true");
+    await frames();
+    expect(await edges(),"with the last tab shown again the row fades at neither edge").toBe("");
+    expect(await row.evaluate(node=>node.scrollLeft),"showing the last tab leaves the row at its start").toBeLessThanOrEqual(1);
+    await shots(page,"terminal-tab-row-fits-padding-first",[width]);
   }finally{await shell.close()}
 });
 

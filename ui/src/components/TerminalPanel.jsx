@@ -26,8 +26,43 @@ function screenScrolled(event){
   else node.dataset.stick="false";
 }
 // A tab row with more tabs than it shows says so: data-more names each edge with tabs past it ("start", "end" or both), which
-// fades there (inspector.css), and is empty when the tabs all fit.
-const markHiddenTabs=list=>{list.dataset.more=(list.scrollLeft>1?"start ":"")+(list.scrollLeft+list.clientWidth<list.scrollWidth-1?"end":"")};
+// fades there (inspector.css), and is empty when the tabs all fit. The first tab's start and the last one's end are measured, not the
+// row's scroll width, which holds the 8px the row keeps after its last tab: tabs that fit the row but not with it read as cut.
+const markHiddenTabs=list=>{
+  const first=list.firstElementChild,last=list.lastElementChild;let more="";
+  if(first){
+    const row=list.getBoundingClientRect(),start=first.getBoundingClientRect().left,end=last.getBoundingClientRect().right;
+    if(end-start>list.clientWidth+1)more=[start<row.left-1&&"start",end>row.right+1&&"end"].filter(Boolean).join(" ");
+  }
+  if(list.dataset.more!==more)list.dataset.more=more;
+};
+// Each fade is TAB_FADE px wide (inspector.css), or the room the row leaves a tab brought in when it is too narrow for that tab
+// between two such fades (--tab-fade): its close button and mark went into the end's fade, or past the row's edge.
+const TAB_FADE=44;
+const tabFade=list=>{const value=list.style.getPropertyValue("--tab-fade");return value?parseFloat(value):TAB_FADE};
+// Brings a tab whole into view clear of the row's fades, moving the row no more than it has to, as scrollIntoView's "nearest" does.
+// A row whose tabs all fit shows them from its start.
+function bringIn(list,tab){
+  const first=list?.firstElementChild;if(!first||!tab)return;
+  const row=list.getBoundingClientRect(),box=tab.getBoundingClientRect(),width=list.clientWidth,scroll=list.scrollLeft,most=list.scrollWidth-width;
+  const fade=Math.min(TAB_FADE,Math.max(0,(width-box.width)/2));
+  // Where the first tab starts and the last one ends, and where this tab does, in the row's scrolled content.
+  const from=first.getBoundingClientRect().left-row.left+scroll,to=list.lastElementChild.getBoundingClientRect().right-row.left+scroll;
+  const start=box.left-row.left+scroll,end=box.right-row.left+scroll;
+  let target=0;
+  // The furthest the row can scroll with the tab clear of the start's fade (or with no tab past the start), and the least with it
+  // clear of the end's fade (or as far as the row goes, its end padding shown after the last tab).
+  if(to-from>width+1){const latest=Math.max(from,start-fade),earliest=Math.min(most,end-width+fade);target=earliest>latest?latest:Math.min(latest,Math.max(earliest,scroll))}
+  target=Math.max(0,Math.min(most,target));
+  if(fade<TAB_FADE)list.style.setProperty("--tab-fade",fade+"px");else list.style.removeProperty("--tab-fade");
+  if(Math.abs(target-scroll)>.5)list.scrollLeft=target;
+  markHiddenTabs(list);
+}
+// Whether a button of the tab row shows whole, clear of the row's fades.
+function clearOfFades(list,node){
+  const row=list.getBoundingClientRect(),box=node.getBoundingClientRect(),more=list.dataset.more||"",fade=tabFade(list);
+  return box.left>=row.left+(more.includes("start")?fade:0)-1&&box.right<=row.right-(more.includes("end")?fade:0)+1;
+}
 // A press on a tab picks it once, as a thread menu's item runs once (ThreadSidebar.jsx): the rest of it (the second click of a double
 // click, Enter held) does nothing. A tab picked at an edge of the row is scrolled in clear of the fade, which can move the close button
 // of the tab before it, or its own, under the pointer, and the command line takes the keyboard.
@@ -152,14 +187,14 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   useEffect(()=>{if(activeId)setTimeout(()=>{if(terminalKeyboardAsked())inputRefs.current.get(activeId)?.focus()},0)},[activeId,focusTick]);
   // The active session tab stays in view when more tabs are open than the header row can show (the tab's box, which holds its
   // select and close buttons, is the one marked active).
-  useEffect(()=>{tabListRef.current?.querySelector(".terminal-tab.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"})},[activeId,sessions.length]);
+  useEffect(()=>{const list=tabListRef.current;bringIn(list,list?.querySelector(".terminal-tab.active"))},[activeId,sessions.length]);
   // The tab list shows once the sessions are listed. The shown tab stays in view as the row or any tab in it changes width: a tab
   // grows when it says its terminal ended (its mark), which moved the shown tab out of the row's view. Its fades are marked again
   // then, as on each scroll of the row.
   const tabIds=sessions.map(session=>session.id).join("|");
   useEffect(()=>{
     const list=tabListRef.current;if(!list||typeof ResizeObserver==="undefined")return;
-    const observer=new ResizeObserver(()=>{list.querySelector(".terminal-tab.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"});markHiddenTabs(list)});
+    const observer=new ResizeObserver(()=>{const active=list.querySelector(".terminal-tab.active");if(active)bringIn(list,active);else markHiddenTabs(list)});
     observer.observe(list);for(const tab of list.children)observer.observe(tab);
     return()=>observer.disconnect();
   },[listed,tabIds]);
@@ -285,13 +320,20 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
       {/* A tab the keyboard reaches comes whole into view clear of the row's fades, as the shown one does: the browser leaves a focused
           button that is inside the row but under a fade where it is. Focus from a click leaves the row still, so the button pressed
           stays under the pointer. */}
-      <div className="terminal-tab-list" ref={tabListRef} onClick={pressOnce} onScroll={event=>markHiddenTabs(event.currentTarget)} onFocus={event=>{if(event.target.matches(":focus-visible"))event.target.closest(".terminal-tab")?.scrollIntoView({block:"nearest",inline:"nearest"})}} onWheel={event=>{if(event.deltaY&&!event.deltaX)event.currentTarget.scrollLeft+=event.deltaY}}>{sessions.map(session=>{
+      <div className="terminal-tab-list" ref={tabListRef} onClick={pressOnce} onScroll={event=>markHiddenTabs(event.currentTarget)} onFocus={event=>{if(event.target.matches(":focus-visible"))bringIn(event.currentTarget,event.target.closest(".terminal-tab"))}} onWheel={event=>{if(event.deltaY&&!event.deltaX)event.currentTarget.scrollLeft+=event.deltaY}}>{sessions.map(session=>{
         const name=session.name||"Terminal",closeTab=()=>close(session.id).then(closed=>closed&&setFocusTick(value=>value+1));
         // A stopped session's mark: its exit code, or "stopped" when it has none; its title and the tab's name say which.
         const code=session.exitCode,end=code==null?"Stopped":"Exited with code "+code;
+        // A close button a fade covers, where its x shows faint or not at all, brings its tab in and shows it, as a press on what shows
+        // of the tab's name does, the rest of the press doing nothing: of a tab cut at the row's start it is often all that shows, and
+        // a press there to reach that tab closed it and killed its shell. Clear of the fades it closes its tab.
+        const pressClose=event=>{
+          const list=tabListRef.current;if(!list||clearOfFades(list,event.currentTarget))return closeTab();
+          ignorePressRest(!event.detail);bringIn(list,event.currentTarget.parentElement);selectSession(session.id);
+        };
         return <div key={session.id} className={"terminal-tab"+(session.id===activeId?" active":"")}>
           <button className="terminal-tab-select" onClick={()=>selectSession(session.id)} onKeyDown={event=>{if(event.key==="Delete"){event.preventDefault();closeTab()}}} aria-keyshortcuts="Delete" aria-current={session.id===activeId||undefined}><SquareTerminal size={13}/><bdi title={name}>{name}</bdi>{!session.running&&<em className={code==null?"exit-stopped":code===0?"exit-ok":"exit-failed"} role="img" aria-label={end} title={end}>{code??"stopped"}</em>}</button>
-          <button type="button" className="terminal-tab-close" onClick={closeTab} aria-label={"Close "+name} title={"Close "+name}><X size={11}/></button>
+          <button type="button" className="terminal-tab-close" onClick={pressClose} aria-label={"Close "+name} title={"Close "+name}><X size={11}/></button>
         </div>;
       })}</div>
       <button className="terminal-new" onClick={create} data-busy={creating||undefined}><Plus size={14}/> New</button>
