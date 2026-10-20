@@ -95,6 +95,7 @@ import {
 } from "./source-control-service.mjs";
 import { prViewedKey, updateViewedRecord, viewedStates } from "./pr-viewed-state.mjs";
 import { buildPullRequestLink, linkedPullRequestTerminalStatus, normalizePullRequestIdentity, parsePullRequestUrl, pullRequestForBranch, pullRequestIdentityKey } from "./pr-link-utils.mjs";
+import { createBranchPullRequestSweep } from "./branch-pull-request-sweep.mjs";
 
 const MIME = {
   ".html":"text/html; charset=utf-8",
@@ -909,47 +910,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     state.updateThreadMeta(threadId,patch);
     return {threadId,links:threadPullRequestLinks(threadId),lifecycle,pendingSettlement:patch.autoSettlePending||null};
   }
-  async function syncBranchPullRequests({force=false}={}){
-    const now=Date.now();const all=state.listThreadMeta();const candidates=[];
-    for(const [threadId,meta] of Object.entries(all)){
-      if(!meta?.cwd||!meta?.branch||meta.deletedAt||meta.archived||meta.sectionName==="Settled")continue;
-      if(!force&&now-Number(meta.lastBranchPullRequestSyncAt||0)<60_000)continue;
-      candidates.push({threadId,meta,environmentId:meta.environmentId||null,cwd:String(meta.cwd)});
-    }
-    if(!candidates.length)return {checked:0,repositories:0};
-    const locations=new Map();
-    for(const candidate of candidates){
-      const key=(candidate.environmentId||"local")+"|"+candidate.cwd;
-      if(!locations.has(key))locations.set(key,{environmentId:candidate.environmentId,cwd:candidate.cwd,threads:[]});
-      locations.get(key).threads.push(candidate);
-    }
-    const repositories=new Map();
-    for(const location of locations.values()){
-      try{
-        const repo=await inSourceControlEnvironment(location.environmentId,()=>sourceControlRepositoryIdentity(location.cwd));
-        const key=[location.environmentId||"local",repo.provider,repo.host,String(repo.repository||"").toLowerCase()].join("|");
-        if(!repositories.has(key))repositories.set(key,{environmentId:location.environmentId,cwd:location.cwd,provider:repo.provider,repo,threads:[]});
-        repositories.get(key).threads.push(...location.threads);
-      }catch(error){
-        for(const candidate of location.threads)state.updateThreadMeta(candidate.threadId,{branchPullRequestSyncError:error.message||String(error),lastBranchPullRequestAttemptAt:now});
-      }
-    }
-    for(const group of repositories.values()){
-      try{
-        const result=await inSourceControlEnvironment(group.environmentId,()=>listPullRequests(group.cwd,{provider:group.provider}));
-        if(!result?.ok)throw new Error(result?.error||"Could not list pull requests");
-        for(const candidate of group.threads){
-          const detected=pullRequestForBranch(candidate.meta.branch,result.items||[]);
-          state.updateThreadMeta(candidate.threadId,{
-            branchPullRequest:detected,lastBranchPullRequestSyncAt:now,lastBranchPullRequestAttemptAt:now,branchPullRequestSyncError:null,
-          });
-        }
-      }catch(error){
-        for(const candidate of group.threads)state.updateThreadMeta(candidate.threadId,{branchPullRequestSyncError:error.message||String(error),lastBranchPullRequestAttemptAt:now});
-      }
-    }
-    return {checked:candidates.length,repositories:repositories.size};
-  }
+  const syncBranchPullRequests=createBranchPullRequestSweep({
+    state,pullRequestForBranch,inEnvironment:inSourceControlEnvironment,repositoryIdentity:sourceControlRepositoryIdentity,listPullRequests,
+  });
   function remoteEnvironmentProfile(environmentId){
     const profile=environmentId?environments.get(environmentId):null;
     return profile&&profile.type!=="local"?profile:null;
