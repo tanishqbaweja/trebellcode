@@ -727,7 +727,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const [mentionBusy,setMentionBusy]=useState(false);
   const [slashIndex,setSlashIndex]=useState(0);
   const [slashDismissed,setSlashDismissed]=useState(null);
-  const composerRef=useRef(null),slashMenuRef=useRef(null),mentionMenuRef=useRef(null),modelMenuRef=useRef(null),modelButtonRef=useRef(null),wrapRef=useRef(null);
+  const composerRef=useRef(null),slashMenuRef=useRef(null),mentionMenuRef=useRef(null),modelMenuRef=useRef(null),modelButtonRef=useRef(null),wrapRef=useRef(null),shelfRef=useRef(null);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
   useLayoutEffect(()=>{resizeTextarea(composerRef.current,{min:40,max:160})},[prompt]);
   // A send turns the composer off until it has gone, and the browser drops the keyboard it had there (or on Send) on the page: it comes
@@ -740,15 +740,20 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     if(!active||active===document.body||active===from)composerRef.current?.focus();
   },[composerOff]);
   // The composer's height, on the workspace (--composer-height), ends the thread above it (shell.css) as a draft of several lines, a
-  // second row of controls or context chips grow it, and the rows of its context chips (--composer-chips) end the new task's welcome
-  // above them. It lands a frame after the composer resizes, so the thread's own resize observer, which keeps a thread at its end
-  // there, sees its view resize in a frame of its own.
+  // second row of controls or context chips grow it, the rows of its context chips (--composer-chips) end the new task's welcome
+  // above them, and the attachment shelf's height above the composer (--composer-shelf) ends both above its rows. It lands a frame
+  // after the composer or the shelf resizes, so the thread's own resize observer, which keeps a thread at its end there, sees its
+  // view resize in a frame of its own.
   useEffect(()=>{
-    const wrap=wrapRef.current,host=wrap?.parentElement;if(!host||typeof ResizeObserver==="undefined")return;
+    const wrap=wrapRef.current,host=wrap?.parentElement,shelf=shelfRef.current;if(!host||typeof ResizeObserver==="undefined")return;
     const set=(name,px)=>host.style.setProperty(name,px+"px");
-    let frame=0;const observer=new ResizeObserver(()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{set("--composer-height",wrap.offsetHeight);set("--composer-chips",wrap.querySelector(":scope>.context-chip-row")?.offsetHeight||0)})});
-    observer.observe(wrap);return()=>{observer.disconnect();cancelAnimationFrame(frame);host.style.removeProperty("--composer-height");host.style.removeProperty("--composer-chips")};
+    let frame=0;const observer=new ResizeObserver(()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{set("--composer-height",wrap.offsetHeight);set("--composer-chips",wrap.querySelector(":scope>.context-chip-row")?.offsetHeight||0);set("--composer-shelf",shelf?.offsetHeight||0)})});
+    observer.observe(wrap);if(shelf)observer.observe(shelf);
+    return()=>{observer.disconnect();cancelAnimationFrame(frame);host.style.removeProperty("--composer-height");host.style.removeProperty("--composer-chips");host.style.removeProperty("--composer-shelf")};
   },[]);
+  // A chip added to a shelf of more rows than it shows brings the shelf's last row, the newest chips, into view.
+  const shelfCount=attachments.length+uploadingFiles.length,shelfCountRef=useRef(shelfCount);
+  useLayoutEffect(()=>{const shelf=shelfRef.current,grew=shelfCount>shelfCountRef.current;shelfCountRef.current=shelfCount;if(grew&&shelf)shelf.scrollTop=shelf.scrollHeight},[shelfCount]);
   useEffect(()=>{onModelPickerOpenChange?.(modelOpen)},[modelOpen,onModelPickerOpenChange]);
   useEffect(()=>{if(!modelOpen)setModelQuery("")},[modelOpen]);
   // The menu opens on the checked model, centred, even far down a long catalog (gpt-6.1-sol is 65th of OpenAI's 79); the
@@ -1001,7 +1006,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     {slashMenuOpen&&<div className="slash-menu" ref={slashMenuRef}>{slashItems.map(([cmd,desc],index)=><button key={cmd} type="button" className={index===slashActive?"active":undefined} onMouseDown={e=>{e.preventDefault();chooseSlash(cmd)}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
     {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef}>{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={[[chip.label,chip.detail].filter(Boolean).join(" · "),chip.path].filter(Boolean).join("\n")}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveContext(chip.path))} title="Remove context"><X size={10}/></button></span>)}</div>}
-    <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/>{attachmentDisplayName(path)}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveAttachment(path))} title={"Remove "+attachmentDisplayName(path)}><X size={10}/></button></span>)}{uploadingFiles.map(file=><span key={file.id} className="uploading" aria-busy="true" title={"Uploading "+file.name+"…"}><LoaderCircle size={11} aria-hidden="true"/><bdi>{file.name}</bdi><small>Uploading…</small></span>)}</div>
+    <div className="attachment-shelf" ref={shelfRef}>{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/>{attachmentDisplayName(path)}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveAttachment(path))} title={"Remove "+attachmentDisplayName(path)}><X size={10}/></button></span>)}{uploadingFiles.map(file=><span key={file.id} className="uploading" aria-busy="true" title={"Uploading "+file.name+"…"}><LoaderCircle size={11} aria-hidden="true"/><bdi>{file.name}</bdi><small>Uploading…</small></span>)}</div>
     <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setDictationAlert(null);setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={composerPlaceholder} disabled={composerOff}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>

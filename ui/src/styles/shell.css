@@ -242,19 +242,20 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    --history-hold: when an older page lands above a newest page too short to fill the view, the column keeps the height that holds
    the rows in view where they were; rows arriving below fill it, and App lowers it as the view scrolls up.
    --composer-reach: how far the composer stands above its foot: its height (--composer-height, which the composer measures) and the
-   attachment chips on the shelf above it. The conversation, and the opening state over it, end there, so a draft of several lines, a
-   second row of controls or the chips never cover the end of the last reply: App keeps a view at its end there as the view shrinks,
-   and a view scrolled up keeps its rows in place. The welcome is sized to the window and keeps its place as a draft grows, less the
-   attachment chips: the rows of them in the composer (--composer-chips, which it measures too) and the shelf's, so a dozen of them
-   beside the open panel no longer cover its suggestions.
+   attachment chips on the shelf above it (--composer-shelf, which it measures too: a row is 32px, and the rows go up from there). The
+   conversation, and the opening state over it, end there, so a draft of several lines, a second row of controls or the chips never
+   cover the end of the last reply: App keeps a view at its end there as the view shrinks, and a view scrolled up keeps its rows in
+   place. The welcome is sized to the window and keeps its place as a draft grows, less the attachment chips: the rows of them in the
+   composer (--composer-chips, which it measures too) and the shelf's, so a dozen of them beside the open panel no longer cover its
+   suggestions.
    App names what the workspace holds in its classes (with-shelf-chips, with-clone-banner, with-clone-error), never a :has() on the
    workspace: Chrome restyles everything inside an element a :has() rule tests whenever something under it may change the rule's
    match, and React rewrites the composer's text on every key, so each key restyled the whole conversation (2.7 s of style work per
    200 keys on a 1000-turn thread). */
 .chat-workspace{--composer-reach:calc(var(--composer-height,115px) + 1px)}
-.chat-workspace.with-shelf-chips{--composer-reach:calc(var(--composer-height,115px) + 32px)}
+.chat-workspace.with-shelf-chips{--composer-reach:calc(var(--composer-height,115px) + max(32px,var(--composer-shelf,0px)))}
 .chat-workspace .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:calc(116px + var(--composer-chips,0px))}
-.chat-workspace.with-shelf-chips .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:calc(147px + var(--composer-chips,0px))}
+.chat-workspace.with-shelf-chips .conversation-scroll:has(>.conversation-column>.welcome){--composer-reach:calc(115px + max(32px,var(--composer-shelf,0px)) + var(--composer-chips,0px))}
 .chat-workspace .conversation-scroll{top:var(--top);bottom:calc(16px + var(--composer-reach));padding:max(34px,var(--thread-find-reserve,0px)) 28px 72px;scroll-padding-top:var(--thread-find-reserve,0px);scrollbar-width:auto;scrollbar-color:auto}
 .main-frame.terminal-open .chat-workspace .conversation-scroll{bottom:calc(var(--terminal-height,330px) + 12px + var(--composer-reach))}
 /* A thread that takes more than a moment to open (App: OPENING_COVER_DELAY_MS) names itself in the conversation area with a quiet
@@ -582,6 +583,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .context-chip button:hover{background:var(--bg3);color:var(--tx0)}
 /* An empty shelf takes no room, nor the clicks on the end of the reply above the composer. */
 .composer-wrap .attachment-shelf:empty{display:none}
+/* The shelf stands on the composer's top and its rows go up from there, three at most, then it scrolls (the composer shows the newest
+   chip): hung a row above the composer and wrapping down, a sixth screenshot at 1280 lay over the draft and a third row at 700 over
+   the + and the mode picker. */
+.composer-wrap .attachment-shelf{top:auto;bottom:calc(100% - 1px);max-height:92px;overflow-y:auto;scrollbar-width:thin}
 .composer-wrap .attachment-shelf>span{height:26px;gap:6px;padding:0 6px 0 9px;border:1px solid var(--line2);border-radius:var(--r-s);background:var(--bg2);color:var(--tx1);font-size:11px;box-shadow:var(--sh1)}
 .composer-wrap .attachment-shelf>span button{color:var(--tx3)}
 .composer-wrap .attachment-shelf>span button:hover{color:var(--tx0)}

@@ -1408,6 +1408,95 @@ test("ten Browser screenshots attached leave the end of the last reply clear abo
   }finally{await harness.close()}
 });
 
+// What a person sees of the composer with chips on its attachment shelf: the typed draft (at its first line's start and its middle),
+// the + (Attach files) and the mode picker (at their top edge and middle), each "clear" when no chip lies over it and the page answers
+// it there, or else the chips over it and what the page answers; and the chips, "whole" when the page answers each in the shelf's view.
+const readComposerClear=page=>page.evaluate(()=>{
+  const wrap=document.querySelector(".chat-workspace .composer-wrap"),shelf=wrap.querySelector(".attachment-shelf"),chips=[...shelf.children],view=shelf.getBoundingClientRect();
+  const named=node=>node?.closest(".attachment-shelf>span")?.title||(typeof node?.className==="string"&&node.className)||node?.tagName||"nothing";
+  const clear=(node,points)=>{
+    const box=node.getBoundingClientRect(),under=chips.filter(chip=>{const b=chip.getBoundingClientRect();return b.left<box.right-1&&box.left<b.right-1&&b.top<box.bottom-1&&box.top<b.bottom-1});
+    const at=points(box).map(([x,y])=>document.elementFromPoint(x,y));
+    return !under.length&&at.every(hit=>node.contains(hit))?"clear":`under ${under.map(named).join(", ")||"no chip"}, answers ${at.map(named).join(" and ")}`;
+  };
+  const edgeAndMiddle=box=>[[box.left+box.width/2,box.top+3],[box.left+box.width/2,box.top+box.height/2]];
+  const unseen=chips.filter(chip=>{const b=chip.getBoundingClientRect();return b.top<view.top-0.5||b.bottom>view.bottom+0.5||!chip.contains(document.elementFromPoint(b.left+b.width/2,b.top+b.height/2))});
+  return {draft:clear(wrap.querySelector("textarea"),box=>[[box.left+30,box.top+22],[box.left+box.width/2,box.top+box.height/2]]),attach:clear(wrap.querySelector('button[aria-label="Attach files"]'),edgeAndMiddle),
+    mode:clear(wrap.querySelector(".composer-left select.permission-picker"),edgeAndMiddle),chips:unseen.length?unseen.map(named).join(", ")+" out of view":"whole"};
+});
+const composerClear={draft:"clear",attach:"clear",mode:"clear",chips:"whole"};
+
+// Screenshots pasted one by one onto a typed draft: the attachment shelf stood a row above the composer and wrapped down onto it, so
+// at 1280 the sixth chip and those after it (at 900 the fifth) lay over the draft and took a click on it, and at 700 a third row lay
+// over the + and the mode picker, which took no click. The shelf's rows go up from the composer's top, the thread and a refused file's
+// message end above them, and past three rows the shelf scrolls, showing the newest, on a thread and on New task alike.
+test("screenshots pasted onto a draft stack up above the composer and leave the draft, the + and the mode picker clear to click, on a thread and on New task at 1280, 900 and 700",async({page},testInfo)=>{
+  test.setTimeout(180_000);
+  const harness=await openComposerApp(page,{turns:[{user:"Explain the login flow",items:[replyItem("login-reply",LONG_REPLY)]}]});
+  try{
+    const composer=page.getByTestId("composer"),uploading=page.locator(".attachment-shelf > span.uploading"),alert=page.getByTestId("app-action-error");
+    // Pasted one at a time, each waited on until it is in.
+    const paste=async(prefix,from,to)=>{for(let index=from;index<=to;index++){await pasteImage(page,`${prefix}-${String(index).padStart(2,"0")}.png`);await expect(chips(page)).toHaveCount(index);await expect(uploading).toHaveCount(0)}};
+    await wheelThread(page,1200,6);
+    await composer.click();await page.keyboard.type("Look at these screenshots",{delay:20});
+    await paste("screenshot",1,9);
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const width of [1280,900,700]){
+        await page.setViewportSize({width,height:800});
+        await expect.poll(()=>readComposerClear(page),{message:`nine screenshots on a thread at ${width}x800 in ${mode}`}).toEqual(composerClear);
+        await expect.poll(()=>readReplyEnd(page),{message:`the reply's end above nine screenshots at ${width}x800 in ${mode}`}).toEqual(replyEndClear);
+        await page.screenshot({animations:"disabled",path:auditDir+`nine-screenshots-thread-${mode}-${width}x800.png`});
+      }
+    }
+    // At 700, three rows of chips: the + opens the file chooser and the mode picker takes a click; there and at 1280, a click on the
+    // start of the draft puts the caret there.
+    const [chooser]=await Promise.all([page.waitForEvent("filechooser",{timeout:5000}),page.getByRole("button",{name:"Attach files"}).click({timeout:5000})]);await chooser.setFiles([]);
+    await page.locator(".composer-left select.permission-picker").first().click({trial:true,timeout:5000});
+    for(const width of [700,1280]){
+      await page.setViewportSize({width,height:800});
+      await page.locator(".conversation-scroll").click({position:{x:12,y:12}});await expect(composer).not.toBeFocused();
+      const box=await composer.boundingBox();await page.mouse.click(box.x+18,box.y+22);
+      await expect(composer,`a click on the start of the draft at ${width}x800`).toBeFocused();
+      expect(await composer.evaluate(node=>node.selectionStart)).toBeLessThanOrEqual(1);
+    }
+    await expect(composer).toHaveValue("Look at these screenshots");await expect(chips(page)).toHaveCount(9);
+    // A file refused beside them is said above the shelf's top row, at 1280 (two rows) and 700 (three).
+    const big=testInfo.outputPath("recording.bin");await writeFile(big,Buffer.alloc(51*1024*1024,7));
+    for(const width of [1280,700]){
+      await page.setViewportSize({width,height:800});
+      await chooseFiles(page,big);await expect(alert).toHaveText("Could not attach files: recording.bin: Attachment is larger than 50 MB",{timeout:2000});
+      const [toast,top]=await Promise.all([alert.boundingBox(),chips(page).first().boundingBox()]);
+      expect(toast.y+toast.height,`the refusal above the shelf's top row at ${width}x800`).toBeLessThanOrEqual(top.y);
+    }
+    await page.screenshot({animations:"disabled",path:auditDir+"nine-screenshots-refusal-light-700x800.png"});
+    await expect(alert).toBeHidden({timeout:10_000});
+    // On New task, six screenshots (two rows at 1280) leave the draft, the + and the mode picker clear, and the suggestions too.
+    await page.setViewportSize({width:1280,height:800});
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+    await expect(page.locator(".welcome h1")).toHaveText("What do you want to build?");await expect(chips(page)).toHaveCount(0);
+    await composer.click();await page.keyboard.type("New task with screenshots",{delay:20});
+    await paste("welcome",1,6);
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const width of [1280,900,700]){
+        await page.setViewportSize({width,height:800});
+        await expect.poll(()=>readComposerClear(page),{message:`six screenshots on New task at ${width}x800 in ${mode}`}).toEqual(composerClear);
+        await expect.poll(()=>readSuggestions(page),{message:`the suggestions above six screenshots at ${width}x800 in ${mode}`}).toEqual(suggestionsClear);
+        await page.screenshot({animations:"disabled",path:auditDir+`six-screenshots-new-task-${mode}-${width}x800.png`});
+      }
+    }
+    // Past three rows the shelf scrolls, and each screenshot pasted brings the newest into view, the controls still clear.
+    const shelfEnd=()=>page.locator(".attachment-shelf").evaluate(shelf=>{const view=shelf.getBoundingClientRect(),last=shelf.lastElementChild.getBoundingClientRect();return {scrolls:shelf.scrollHeight>shelf.clientHeight,newest:last.top>=view.top-0.5&&last.bottom<=view.bottom+0.5?"in view":"out of view"}});
+    for(const [width,count] of [[1280,17],[700,18]]){
+      await page.setViewportSize({width,height:800});await paste("welcome",await chips(page).count()+1,count);
+      await expect.poll(async()=>{const {draft,attach,mode}=await readComposerClear(page);return {draft,attach,mode,...await shelfEnd()}},{message:`${count} screenshots on New task at ${width}x800`}).toEqual({draft:"clear",attach:"clear",mode:"clear",scrolls:true,newest:"in view"});
+      await page.screenshot({animations:"disabled",path:auditDir+`${count}-screenshots-new-task-light-${width}x800.png`});
+    }
+    await expect(composer).toHaveValue("New task with screenshots");
+  }finally{await harness.close()}
+});
+
 // The composer is off while a send goes (Sending…), and the browser drops the keyboard it had there, or on Send, on the page: the next
 // message typed went nowhere. Once the send has gone the keyboard is in the composer again, after Enter and after Send, while the reply
 // runs (Queue a follow-up…) and after it, so the next message typed at once lands there. A person typing types at 20 ms a key.

@@ -301,10 +301,12 @@
 /* Composer-relative placement (Chromium / Electron). Fallback above: below the header, never over the composer. */
 @supports (anchor-name:--tb-composer){
   .chat-workspace .composer-wrap{anchor-name:--tb-composer}
+  .chat-workspace .composer-wrap>.attachment-shelf{anchor-name:--tb-shelf}
   .workspace-shell:not(.right-maximized)>.app-action-error-toast:not(.secondary-surface-error){top:auto;bottom:calc(anchor(--tb-composer top,120px) + 12px);left:anchor(--tb-composer center,var(--tb-toast-center,50%))}
   .workspace-shell:not(.right-maximized)>.app-action-error-toast.with-thread-undo:not(.secondary-surface-error){bottom:calc(anchor(--tb-composer top,120px) + 64px)}
-  /* Attachment chips sit on a shelf just above the composer (a refused file is said while the others upload): the toast goes above it. */
-  .workspace-shell:not(.right-maximized):has(.composer-wrap .attachment-shelf>span)>.app-action-error-toast:not(.secondary-surface-error):not(.with-thread-undo){bottom:calc(anchor(--tb-composer top,120px) + 44px)}
+  /* Attachment chips sit on a shelf just above the composer (a refused file is said while the others upload): the toast goes above
+     its top row. */
+  .workspace-shell:not(.right-maximized):has(.composer-wrap .attachment-shelf>span)>.app-action-error-toast:not(.secondary-surface-error):not(.with-thread-undo){bottom:calc(anchor(--tb-shelf top,120px) + 12px)}
   .app-shell:not(:has(.workspace-shell.right-maximized))>.thread-undo-toast{bottom:calc(anchor(--tb-composer top,12px) + 12px);left:anchor(--tb-composer center,50%)}
 }
 @supports not (anchor-name:--tb-composer){
