@@ -214,8 +214,12 @@ html[data-mode="light"] .workspace-window-footer button{background:#fff;border-c
 .app-action-error-toast{position:absolute;left:50%;bottom:132px;z-index:165;transform:translateX(-50%);width:min(520px,calc(100% - 32px));border:1px solid #643d48;background:#1b1015;color:#e0a2ad;border-radius:9px;padding:9px 11px;box-shadow:0 18px 55px rgba(0,0,0,.45);font-size:8px;line-height:1.4;text-align:center;overflow-wrap:anywhere}.app-action-error-toast.with-thread-undo{bottom:132px}
 .app-action-error-toast.secondary-surface-error{left:auto;right:18px;top:58px;bottom:auto;transform:none;width:min(460px,calc(100% - 36px))}
 .workspace-shell.right-open:not(.right-maximized)>.app-action-error-toast{left:calc((100% - var(--right-panel-width,460px))/2);top:58px;bottom:auto;width:min(480px,calc(100% - var(--right-panel-width,460px) - 32px))}
-.workspace-shell.right-maximized>.app-action-error-toast,.workspace-shell:has(.main-frame.terminal-open)>.app-action-error-toast{top:58px;bottom:auto}
-html:has(.file-mention-menu) .app-action-error-toast,html:has(.model-picker-menu) .app-action-error-toast,html:has(.composer-wrap.long-draft) .app-action-error-toast{top:58px;bottom:auto}
+/* The toast's places by what the workspace holds read the workspace shell's classes (with-terminal, with-long-draft, App.jsx): a :has()
+   over all the shell or the whole document had Chrome restyle all of it for each element a streaming reply added while the toast
+   showed (230 elements a delta, B23). The repeated class keeps the specificity the :has() gave the rule. An open composer menu's place
+   is overlays.css's alone: the file mention and model picker parts these lines had always lost to it. */
+.workspace-shell.right-maximized>.app-action-error-toast,.workspace-shell.with-terminal.with-terminal>.app-action-error-toast{top:58px;bottom:auto}
+html .workspace-shell.with-long-draft>.app-action-error-toast{top:58px;bottom:auto}
 html[data-mode="light"] .app-action-error-toast{background:#fff4f5;border-color:#e2b8bf;color:#914b58}
 html[data-custom-theme="true"] .app-action-error-toast{background:color-mix(in srgb,var(--panel) 86%,#7a2638)!important;border-color:color-mix(in srgb,var(--line) 60%,#b55367)!important;color:color-mix(in srgb,var(--theme-foreground) 78%,#f0a0ad)!important}
 

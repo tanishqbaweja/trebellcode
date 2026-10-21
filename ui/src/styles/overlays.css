@@ -305,10 +305,16 @@
   .workspace-shell:not(.right-maximized)>.app-action-error-toast:not(.secondary-surface-error){top:auto;bottom:calc(anchor(--tb-composer top,120px) + 12px);left:anchor(--tb-composer center,var(--tb-toast-center,50%))}
   .workspace-shell:not(.right-maximized)>.app-action-error-toast.with-thread-undo:not(.secondary-surface-error){bottom:calc(anchor(--tb-composer top,120px) + 64px)}
   /* Attachment chips sit on a shelf just above the composer (a refused file is said while the others upload): the toast goes above
-     its top row. */
-  .workspace-shell:not(.right-maximized):has(.composer-wrap .attachment-shelf>span)>.app-action-error-toast:not(.secondary-surface-error):not(.with-thread-undo){bottom:calc(anchor(--tb-shelf top,120px) + 12px)}
-  /* The workspace shell is the app shell's child, and a :has() that looks only at the children is not retested for each element
-     a streaming reply adds while the undo toast shows, each of which restyled the whole app shell (shell.css, with-agent-block). */
+     its top row. App names the chips in the workspace shell's class (with-shelf-chips), as it does an open composer menu
+     (with-composer-menu, below) and a long draft (styles.css): a :has() over all the shell held had Chrome restyle all of it for
+     each element a streaming reply added while the toast showed (B23). The repeated class keeps the specificity the :has() gave
+     the rule. */
+  html .workspace-shell.with-shelf-chips.with-shelf-chips:not(.right-maximized)>.app-action-error-toast:not(.secondary-surface-error):not(.with-thread-undo){bottom:calc(anchor(--tb-shelf top,120px) + 12px)}
+  /* The :has() looks at the app shell's own children (the workspace shell is one). Over all the app shell held, it had Chrome check
+     the app shell for each change anywhere inside it, and restyle all of it for each element a streaming reply added while the undo
+     toast showed (169 elements a delta); tied to the children, the reply's deltas leave it alone (B23). Looking at the children alone
+     does not keep a :has() from being tested again for changes deeper down, though: the conversation column's :has(> .agent-block)
+     was tested for the elements added deep in a reply, and restyled the whole conversation each time (shell.css, with-agent-block). */
   .app-shell:not(:has(>.workspace-shell.right-maximized))>.thread-undo-toast{bottom:calc(anchor(--tb-composer top,12px) + 12px);left:anchor(--tb-composer center,50%)}
 }
 @supports not (anchor-name:--tb-composer){
@@ -316,8 +322,10 @@
   .app-shell.desktop-shell:has(.chat-workspace)>.thread-undo-toast{top:calc(32px + var(--top) + 12px)}
   .workspace-shell>.app-action-error-toast.with-thread-undo:not(.secondary-surface-error){top:calc(var(--tb-toast-top) + 52px)}
 }
-/* Composer menus open upward over the space above the composer: keep the error below the header instead. */
-html:has(.composer-wrap :is(.file-mention-menu,.model-picker-menu,.slash-menu)) .workspace-shell.workspace-shell>.app-action-error-toast{top:var(--tb-toast-top);bottom:auto}
+/* Composer menus open upward over the space above the composer: keep the error below the header instead. App names an open one in
+   the workspace shell's class (with-composer-menu); the repeated class keeps the specificity of the :has() over the document this
+   was, above the toast's place beside an undo toast. */
+html .workspace-shell.workspace-shell.with-composer-menu.with-composer-menu>.app-action-error-toast{top:var(--tb-toast-top);bottom:auto}
 .workspace-shell.right-maximized.right-maximized>.app-action-error-toast{top:var(--tb-toast-top);bottom:auto;left:50%;translate:-50% 0}
 
 /* ============ Startup failure ============ */

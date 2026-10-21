@@ -264,25 +264,34 @@ test("B20: a key typed in the composer restyles the composer, not the conversati
 });
 
 // B23: the elements Chrome restyles for each delta of a reply streaming into a thread of 40 turns, from a trace's style
-// recalculations (their elementCount) over 4 s of the stream, at 24 characters a delta and 32 deltas a second as in B16, then over
-// 2.5 s with the undo toast of another thread archived meanwhile. The latest turn's reading order was set by :has() rules on the
-// conversation column, and the undo toast's place by a :has() on the app shell over all it holds: Chrome restyled the whole
-// conversation for each element the reply added, and the whole app with the toast up (110.1 and 169 elements a delta, up to 459 and
-// 757 at once). App now names the live block in the column's class (with-agent-block), and the toast's :has() looks only at the
-// app shell's children.
+// recalculations (their elementCount), at 24 characters a delta and 32 deltas a second as in B16: over 4 s of the stream, then while
+// the undo toast of a thread archived meanwhile shows, then while the app's error toast says the Undo of another was refused. The
+// latest turn's reading order was set by :has() rules on the conversation column, and the toasts' places by :has() rules on the app
+// shell, the workspace shell and the document over all they hold: Chrome restyled the whole conversation for each element the reply
+// added, and the whole app or document with a toast up (110.1 and 169 elements a delta, up to 459 and 757 at once, before the column's
+// and the undo toast's fixes, and 230.3 a delta with the error toast up after them). App names what those rules tested in classes now
+// (with-agent-block on the column; with-terminal, with-shelf-chips, with-composer-menu and with-long-draft on the workspace shell),
+// and the undo toast's looks only at the app shell's children.
+// A toast goes after 5 s (the undo toast) or 6 s (the error toast), so a toast's phase starts its trace before the action that brings
+// the toast up and counts only what happened while it showed, past the frame that drew it: from the stamp its second frame puts in the
+// trace to its going or the trace's end, and the deltas streamed meanwhile by the clock both sides read.
 const B23_STREAM={elementsPerDelta:40};
 
 test("B23: a streamed delta restyles the reply it grows, not the conversation around it",async({page,browser})=>{
-  test.setTimeout(90_000);
-  const text=markdownReply(14_000,{seed:3}),finish=gate();let deltas=0;
+  test.setTimeout(120_000);
+  const text=markdownReply(24_000,{seed:3}),finish=gate(),deltaTimes=[];
   const harness=await startRelayHarness({replies:[async request=>{
     const hook=request[NATIVE_REPLY_STREAM],start=Date.now();
-    for(let index=0;index*24<text.length;index++){const wait=start+index*1000/32-Date.now();if(wait>0)await new Promise(resolve=>setTimeout(resolve,wait));hook({type:"text",delta:text.slice(index*24,index*24+24)});deltas++}
+    for(let index=0;index*24<text.length;index++){const wait=start+index*1000/32-Date.now();if(wait>0)await new Promise(resolve=>setTimeout(resolve,wait));hook({type:"text",delta:text.slice(index*24,index*24+24)});deltaTimes.push(Date.now())}
     await finish.promise;return {text};
   }]});
   try{
     harness.seedThread("Archived while streaming",[{user:"Say hello.",items:[replyItem("b23-other-reply","Hello.")]}]);
+    const refused=harness.seedThread("Refused while streaming",[{user:"Say goodbye.",items:[replyItem("b23-refused-reply","Goodbye.")]}]);
     harness.seedThread("Streaming budget",Array.from({length:40},(_,index)=>({user:"Turn "+index+": say how the relay keeps the order of items.",items:[commandItem("b23-command-"+index,"npm test",{output:"ok "+index+"\n"}),replyItem("b23-reply-"+index,"The relay keeps **turn "+index+"** in order.\n\n- It writes `item/completed` once.\n- A reload reads the same history.")]})));
+    // The relay will not put the second thread back, so its Undo fails into the app's error toast (undoThreadAction).
+    const update=harness.threadStore.update.bind(harness.threadStore);
+    harness.threadStore.update=(threadId,patch,...rest)=>{if(threadId===refused.id&&patch?.archived===false)throw new Error("The relay could not put the thread back.");return update(threadId,patch,...rest)};
     await routeRelayApp(page,harness);
     await page.goto("/");await page.locator('.thread-row .thread-main[title="Streaming budget"]').click();
     await expect(page.locator(".assistant-message-text").filter({hasText:"turn 39 in order"})).toBeVisible({timeout:15_000});
@@ -291,25 +300,61 @@ test("B23: a streamed delta restyles the reply it grows, not the conversation ar
     const cdp=await page.context().newCDPSession(page),{frameTree}=await cdp.send("Page.getFrameTree");
     const conversationElements=await page.locator(".conversation-column").evaluate(node=>node.getElementsByTagName("*").length);
     expect(conversationElements,"a conversation large enough to show a restyle of the whole conversation").toBeGreaterThan(1000);
-    const traceStream=async(name,ms)=>{
-      await browser.startTracing(page,{categories:["devtools.timeline"]});
-      const from=deltas;await page.waitForTimeout(ms);const streamed=deltas-from,toasts=await page.getByTestId("thread-undo-toast").count();
-      const trace=JSON.parse((await browser.stopTracing()).toString("utf8"));
-      const recalcs=(trace.traceEvents||trace).filter(event=>event.name==="UpdateLayoutTree"&&event.args?.beginData?.frame===frameTree.frame.id).map(event=>event.args.elementCount||0);
+    const startTrace=()=>browser.startTracing(page,{categories:["devtools.timeline","blink.user_timing"]});
+    const stopTrace=async()=>{const trace=JSON.parse((await browser.stopTracing()).toString("utf8"));return trace.traceEvents||trace};
+    // The page's style recalculations from (and to) a trace time, when given, against the deltas streamed over those ms.
+    const perDelta=(name,events,{streamed,ms,from=-Infinity,until=Infinity})=>{
+      const recalcs=events.filter(event=>event.name==="UpdateLayoutTree"&&event.args?.beginData?.frame===frameTree.frame.id&&event.ts>=from&&event.ts<=until).map(event=>event.args.elementCount||0);
       const elements=recalcs.reduce((sum,count)=>sum+count,0),elementsPerDelta=Number((elements/Math.max(1,streamed)).toFixed(1));
-      console.log("B23 "+name+":",JSON.stringify({deltas:streamed,conversationElements,toasts,recalcs:recalcs.length,elements,elementsPerDelta,largest:Math.max(0,...recalcs)}));
+      console.log("B23 "+name+":",JSON.stringify({ms,deltas:streamed,conversationElements,recalcs:recalcs.length,elements,elementsPerDelta,largest:Math.max(0,...recalcs)}));
       expect(streamed,name+": deltas streamed while traced").toBeGreaterThanOrEqual(ms/40);
       expect(recalcs.length,name+": the trace has the page's style recalculations").toBeGreaterThanOrEqual(ms/150);
-      return {elementsPerDelta,toasts};
+      return elementsPerDelta;
+    };
+    const traceStream=async(name,ms)=>{
+      await startTrace();const from=deltaTimes.length;await page.waitForTimeout(ms);const streamed=deltaTimes.length-from;
+      return perDelta(name,await stopTrace(),{streamed,ms});
+    };
+    // parent: the toast's element, which a MutationObserver watches for the toast (testId) coming and going. The toast's second
+    // frame (after the one that drew it) and its going each stamp the trace (console.timeStamp and a mark) and read the clock.
+    const traceWhileShown=async(name,testId,parent,raise,ms)=>{
+      const key=testId+"-"+Date.now();
+      await page.evaluate(({key,testId,parent})=>{
+        const host=document.querySelector(parent),seen=window.__b23Toast={key,shown:null,from:null,gone:null,text:""};
+        const stamp=label=>{console.timeStamp(label);performance.mark(label);return Date.now()};
+        const check=()=>{
+          const toast=host.querySelector(':scope>[data-testid="'+testId+'"]');
+          if(toast&&seen.shown===null){seen.shown=Date.now();seen.text=toast.textContent;requestAnimationFrame(()=>requestAnimationFrame(()=>{if(seen.gone===null)seen.from=stamp(key+"-from")}))}
+          else if(!toast&&seen.shown!==null&&seen.gone===null){seen.gone=stamp(key+"-gone");seen.observer.disconnect()}
+        };
+        seen.observer=new MutationObserver(check);seen.observer.observe(host,{childList:true});
+      },{key,testId,parent});
+      await startTrace();await raise();
+      await page.waitForFunction(()=>window.__b23Toast.from!==null,null,{timeout:10_000});await page.waitForTimeout(ms);
+      const end=await page.evaluate(label=>{console.timeStamp(label);performance.mark(label);window.__b23Toast.observer.disconnect();return Date.now()},key+"-end");
+      const events=await stopTrace(),seen=await page.evaluate(()=>{const {from,gone,text}=window.__b23Toast;return {from,gone,text}});
+      const at=label=>events.find(event=>event.name==="TimeStamp"&&(event.args?.data?.message===label||event.args?.data?.name===label))?.ts??events.find(event=>event.name===label&&String(event.cat).includes("user_timing"))?.ts;
+      const from=at(key+"-from"),until=seen.gone===null?at(key+"-end"):at(key+"-gone"),shownUntil=seen.gone??end,shownMs=shownUntil-seen.from;
+      expect(Number.isFinite(from)&&Number.isFinite(until),name+": the trace has the toast's stamps").toBe(true);
+      expect(shownMs,name+": the toast showed for the time traced").toBeGreaterThanOrEqual(ms);
+      const streamed=deltaTimes.filter(time=>time>=seen.from&&time<=shownUntil).length;
+      return {elementsPerDelta:perDelta(name,events,{streamed,ms:shownMs,from,until}),text:seen.text};
+    };
+    const archive=async title=>{
+      const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="'+title+'"]')});
+      await row.hover();await row.locator("summary[title='Thread actions']").click();await row.getByRole("button",{name:"Archive",exact:true}).click();
     };
     const streaming=await traceStream("a reply streaming",4000);
-    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Archived while streaming"]')});
-    await row.hover();await row.locator("summary[title='Thread actions']").click();await row.getByRole("button",{name:"Archive",exact:true}).click();
-    await expect(page.getByTestId("thread-undo-toast")).toBeVisible({timeout:5000});await page.waitForTimeout(300);
-    const withToast=await traceStream("with the undo toast up",2500);
-    expect(withToast.toasts,"the undo toast showed all through the trace").toBe(1);
-    expect(streaming.elementsPerDelta,"elements restyled per delta").toBeLessThanOrEqual(B23_STREAM.elementsPerDelta);
-    expect(withToast.elementsPerDelta,"elements restyled per delta with the undo toast up").toBeLessThanOrEqual(B23_STREAM.elementsPerDelta);
+    const withUndo=await traceWhileShown("with the undo toast up","thread-undo-toast",".app-shell",()=>archive("Archived while streaming"),2500);
+    // The second archive's Undo is clicked once the first's toast has gone, so it is the second's.
+    await expect(page.getByTestId("thread-undo-toast")).toHaveCount(0,{timeout:10_000});
+    const withError=await traceWhileShown("with the error toast up","app-action-error",".workspace-shell",async()=>{
+      await archive("Refused while streaming");await page.getByTestId("thread-undo-toast").getByRole("button",{name:"Undo",exact:true}).click();
+    },2500);
+    expect(withError.text,"the error toast says the Undo was refused").toContain("Could not put back “Refused while streaming”");
+    expect(streaming,"elements restyled per delta").toBeLessThanOrEqual(B23_STREAM.elementsPerDelta);
+    expect(withUndo.elementsPerDelta,"elements restyled per delta with the undo toast up").toBeLessThanOrEqual(B23_STREAM.elementsPerDelta);
+    expect(withError.elementsPerDelta,"elements restyled per delta with the error toast up").toBeLessThanOrEqual(B23_STREAM.elementsPerDelta);
     finish.open();await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeHidden({timeout:30_000});
   }finally{finish.open();await harness.close()}
 });
