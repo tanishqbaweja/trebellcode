@@ -15,6 +15,9 @@ test("Harbor Native adapter stages the OpenAI key instead of passing it through 
   assert.ok(source.includes("command -v bun"));
   assert.ok(source.includes("bun {self._REMOTE_RUNNER} --version"));
   assert.ok(source.includes("command -v node"));
+  // An image Node without a global fetch (Node 16) answers the runner's --version but cannot run it, so it falls through.
+  const nodeProbe=source.indexOf("elif command -v node"),fetchProbe=source.indexOf("typeof fetch === 'function'");
+  assert.ok(nodeProbe>0&&fetchProbe>nodeProbe&&fetchProbe<source.indexOf("node {self._REMOTE_RUNNER} --version",nodeProbe),"an image Node is accepted only with a global fetch, before the runner's own probe");
   assert.ok(source.includes("No compatible preinstalled Bun/Node runtime"));
   assert.ok(source.includes('ensure_system_dependencies(environment, ("curl",))'));
   assert.ok(!source.includes('("curl", "bash", "git", "ripgrep", "coreutils")'));

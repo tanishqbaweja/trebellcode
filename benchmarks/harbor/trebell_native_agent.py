@@ -129,6 +129,11 @@ class TrebellNativeAgent(BaseInstalledAgent):
         # ships a compatible JavaScript runtime. Bun-based TB4 images are a
         # common example; the bundled Native runner is validated directly
         # before selection so incompatible runtimes fall through safely.
+        # An image's own Node must also have a global fetch (Node 18 and
+        # later): the runner answers --version before its module code runs, so
+        # preact-2757's /usr/bin/node v16.20.2 passed the probe alone and the
+        # runner then stopped at once on "fetch is not defined", before any
+        # model call (2026-10-21).
         runtime = None
         try:
             runtime_result = await self.exec_as_agent(
@@ -139,6 +144,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
                     f"bun {self._REMOTE_RUNNER} --version >/dev/null 2>&1; then "
                     "printf '%s\\n' bun; "
                     f"elif command -v node >/dev/null 2>&1 && "
+                    "node -e \"process.exit(typeof fetch === 'function' ? 0 : 1)\" >/dev/null 2>&1 && "
                     f"node {self._REMOTE_RUNNER} --version >/dev/null 2>&1; then "
                     "printf '%s\\n' node; "
                     "else exit 42; fi"
