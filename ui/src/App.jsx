@@ -5358,6 +5358,7 @@ export default function App(){
     onAttachText={async(name,text,meta={})=>addContextAttachment({name,text,kind:meta.kind||"browser",label:meta.label||"Browser context",detail:meta.detail||""})}
     onAttachImage={async(dataUrl)=>{const d=await api("/api/attachments/blob",{method:"POST",body:{name:"browser-screenshot.png",mime:"image/png",dataBase64:String(dataUrl).split(",")[1]||""}});const [path]=await prepareAttachmentPaths([d.path]);await addContextPath(path,{kind:"browser",label:"Browser screenshot",detail:"PNG capture"})}}
     onAttachFile={async(file,meta={})=>{const d=await blobAttachment(file);await addContextPath(d.path,{kind:meta.kind||"browser",label:meta.label||file.name,detail:meta.detail||`${Math.round(file.size/1024)} KB`})}}
+    onError={error=>showActionError(error,"")}
   />;
 
   function rightPanelContent(){

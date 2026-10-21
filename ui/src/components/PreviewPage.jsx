@@ -42,15 +42,18 @@ function samePage(state,shot){return state.windowId===shot.windowId&&state.url==
 // or Stop, and reads Record once it is saved; until it is stopped, the Browser tab and the header's panel button say it is on outside
 // the panel (browser-recording.js). rec holds the recording going on, with chunks of its own, done, which settles as its recorder
 // stops, and unwatch, which stops it hearing the shell's state; kept.ended is what the panel says of the last one, which stopped by
-// itself as its window closed (endRecording), until another starts.
-const rec={since:0};
+// itself as its window closed (endRecording): that it was attached, until another starts, or why it could not be, which the next
+// panel shown takes into its error line (endedError) and says once. panelsShown counts the panels drawn, none while the panel is on
+// another tab or closed.
+const rec={since:0};let panelsShown=0;
 // A press records, stops or attaches once, as a thread's menu item runs: the rest of it (the second click of a double click, Enter
 // held) does nothing. Record and Stop are one button, so the second click landed on the Stop of the recording the first click had
 // started once the shell armed it, and stopped it at once; and an element's attach can land before the second click comes, which
 // attached it again.
 function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
 
-export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAttachFile}){
+// onError: says a failure where the person is, while no panel is drawn to say it (App's action error).
+export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAttachFile,onError}){
   const [draft,setDraft]=useKept("draft");
   const [url,setUrl]=useKept("url");
   const [key,setKey]=useState(0);
@@ -76,9 +79,17 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   const [viewport,setViewport]=useState({width:1280,height:800});
   const [history,setHistory]=useState([]);
   const [phase]=useKept("phase"),recording=phase==="recording"||phase==="stopping",[ended]=useKept("ended");
+  // Why the last recording that stopped by itself could not be attached, said in the error line as the panel's other failures are:
+  // until an action of the panel works, and once, by the panel that is shown when it fails or the next one drawn. It stayed until the
+  // next Record, as a new alert each time the Browser tab was shown.
+  const [endedError,setEndedError]=useState("");
   const [recordingSeconds,setRecordingSeconds]=useState(0);
   const [previewZoom,setPreviewZoom]=useKept("previewZoom");
   const urlInputRef=useRef(null),attaching=useRef(new Set());
+  // An action of the panel that works (or is under way) clears its error line.
+  function clearErrors(){setBrowserError("");setEndedError("")}
+  useEffect(()=>{panelsShown++;return()=>{panelsShown--}},[]);
+  useEffect(()=>{if(ended?.error){setEndedError(ended.text);setKept({ended:null})}},[ended]);
 
   function remember(nextUrl,title=""){
     const normalized=normalizedHistoryUrl(nextUrl);if(!normalized)return;
@@ -135,7 +146,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
       if(action==="resetZoom"){setPreviewZoom(1);return}
       if(action==="refresh"){
         setKey(value=>value+1);
-        window.trebellDesktop?.browser?.reload?.().then(()=>setBrowserError("")).catch(error=>setBrowserError(error?.message||String(error)||"Could not reload Agent Browser."));
+        window.trebellDesktop?.browser?.reload?.().then(()=>clearErrors()).catch(error=>setBrowserError(error?.message||String(error)||"Could not reload Agent Browser."));
       }
     };
     window.addEventListener("trebell:preview-command",command);
@@ -159,17 +170,17 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   // The page opened comes with its own elements, none of them chosen: the element chosen on the page before, and its note, go.
   async function openAgentUrl(next){
     if(!next)return;setBusy("open");
-    try{const state=await window.trebellDesktop?.browser?.navigate?.(next);setBrowserError("");show(next);remember(next,state?.title);const shot=await window.trebellDesktop?.browser?.snapshot?.();dropPage();setSnapshot(shot)}
+    try{const state=await window.trebellDesktop?.browser?.navigate?.(next);clearErrors();show(next);remember(next,state?.title);const shot=await window.trebellDesktop?.browser?.snapshot?.();dropPage();setSnapshot(shot)}
     catch(error){setBrowserError(error?.message||String(error)||"Could not open Agent Browser.")}
     finally{setBusy("")}
   }
   async function agentOpen(){const next=normalized();if(next&&!previewableUrl(next)){setUrlError(INVALID_PREVIEW_URL);return}setUrlError("");return openAgentUrl(next)}
-  async function inspect(){setBusy("inspect");try{const next=await window.trebellDesktop?.browser?.snapshot?.();setBrowserError("");setSnapshot(next);if(selectedRef&&!next?.elements?.some(el=>el.ref===selectedRef))setSelectedRef(null)}catch(error){setBrowserError(error?.message||String(error)||"Could not inspect Agent Browser.")}finally{setBusy("")}}
-  async function capture(){setBusy("capture");try{const shot=await window.trebellDesktop?.browser?.screenshot?.();setBrowserError("");if(shot?.dataUrl)await onAttachImage?.(shot.dataUrl)}catch(error){setBrowserError(error?.message||String(error)||"Could not capture Agent Browser.")}finally{setBusy("")}}
+  async function inspect(){setBusy("inspect");try{const next=await window.trebellDesktop?.browser?.snapshot?.();clearErrors();setSnapshot(next);if(selectedRef&&!next?.elements?.some(el=>el.ref===selectedRef))setSelectedRef(null)}catch(error){setBrowserError(error?.message||String(error)||"Could not inspect Agent Browser.")}finally{setBusy("")}}
+  async function capture(){setBusy("capture");try{const shot=await window.trebellDesktop?.browser?.screenshot?.();clearErrors();if(shot?.dataUrl)await onAttachImage?.(shot.dataUrl)}catch(error){setBrowserError(error?.message||String(error)||"Could not capture Agent Browser.")}finally{setBusy("")}}
   // An import's notice shows in the status line under the toolbar; what it could not do shows in the error line, as the panel's other
   // failures do, in full and in the error colour, and so does an import that set none of the cookies it tried (noneSet).
   async function importCookies(){
-    setBusy("cookies");setCookieStatus("");setBrowserError("");
+    setBusy("cookies");setCookieStatus("");clearErrors();
     try{
       const result=await window.trebellDesktop?.browser?.importCookies?.();
       if(!result){setBrowserError("Cookie import is unavailable in this build.");return}
@@ -181,14 +192,14 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   }
   async function openProfileImport(){
     const browser=window.trebellDesktop?.browser;if(!browser?.importSources){setCookieStatus("");setBrowserError("Browser profile import is unavailable in this build.");return}
-    setBusy("profiles");setCookieStatus("");setBrowserError("");
+    setBusy("profiles");setCookieStatus("");clearErrors();
     try{const result=await browser.importSources();setBrowserImports(result||{sources:[]});setImportOpen(true)}
     catch(error){setBrowserError("Profile detection failed: "+String(error?.message||error))}
     finally{setBusy("")}
   }
   async function importProfile(source,profile){
     const browser=window.trebellDesktop?.browser;if(!browser?.importProfile)return;
-    setBusy("profile:"+profile.id);setCookieStatus("");setBrowserError("");
+    setBusy("profile:"+profile.id);setCookieStatus("");clearErrors();
     try{
       const result=await browser.importProfile(source.id,profile.id);
       const none=noneSet(result," from "+(result?.profileName||profile.name));if(none){setBrowserError("Profile import failed: "+none);return}
@@ -199,14 +210,14 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   }
   async function reloadAgent(){
     const browser=window.trebellDesktop?.browser;if(!browser)return;setBusy("reload");
-    try{const state=await browser.reload?.();setBrowserError("");if(state?.url){setDraft(state.url);show(state.url);remember(state.url,state.title)}}
+    try{const state=await browser.reload?.();clearErrors();if(state?.url){setDraft(state.url);show(state.url);remember(state.url,state.title)}}
     catch(error){setBrowserError(error?.message||String(error)||"Could not reload Agent Browser.")}
     finally{setBusy("")}
   }
   // A width or height typed in the device toolbar applies on Enter, as an address does, and when the field is left.
   async function applyViewport(width,height){
     const next={width:Math.max(320,Math.min(3840,Number(width)||1280)),height:Math.max(240,Math.min(2160,Number(height)||800))};setViewport(next);
-    try{await window.trebellDesktop?.browser?.setViewport?.(next.width,next.height);setBrowserError("")}
+    try{await window.trebellDesktop?.browser?.setViewport?.(next.width,next.height);clearErrors()}
     catch(error){setBrowserError(error?.message||String(error)||"Could not resize Agent Browser.")}
   }
   // Record starts one recording: in a panel that read Record while another was starting it starts nothing more.
@@ -252,11 +263,16 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     }
   }
   // The window recorded closes (by Close here, outside the panel, or while the panel is away): the shell says the agent browser
-  // closed, and the window's capture ends. Its recording stops then by itself, is attached as Stop attaches it, at the length it ran,
-  // and the panel says so. It went on reading Stop, with the marks on, until Stop, which attached it at the length to the press.
+  // closed, and the window's capture ends (the only word there is once another agent browser has taken the closed one's place). Its
+  // recording stops then by itself, is attached as Stop attaches it, at the length it ran, and the panel says so in a short notice, as
+  // its others are ("its 1s were attached." read wrong). It went on reading Stop, with the marks on, until Stop, which attached it at
+  // the length to the press. One that cannot be attached while no panel is drawn is said where the person is too (onError): the marks
+  // went as for one attached, and the error line it was said in was on a tab not shown.
   function endRecording(recorder){
     const why="Browser recording stopped when the agent browser closed";
-    if(kept.phase==="recording"&&rec.recorder===recorder)stopRecording().then(seconds=>setKept({ended:{text:why+", and its "+seconds+"s were attached."}}),error=>setKept({ended:{text:why+", but could not be attached: "+(error?.message||error),error:true}}));
+    if(kept.phase==="recording"&&rec.recorder===recorder)stopRecording().then(seconds=>setKept({ended:{text:why+" · "+seconds+"s attached"}}),error=>{
+      const text=why+", but could not be attached: "+(error?.message||error);setKept({ended:{text,error:true}});if(!panelsShown)onError?.(new Error(text));
+    });
   }
   // What is being attached (an element of a page, with its note) is attached once at a time: a press for it while it is on its way
   // (Enter pressed twice) attaches nothing more. Another element, or another note, still attaches meanwhile, and each says it was
@@ -267,7 +283,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     if(attaching.current.has(what))return false;attaching.current.add(what);
     const lines=["Browser element context","URL: "+(snapshot?.url||url),"Title: "+(snapshot?.title||""),"Element ref: "+element.ref,"Tag: "+element.tag,"Text: "+(element.text||""),"Href: "+(element.href||"")];
     if(cleanNote)lines.push("","Annotation: "+cleanNote);
-    setBrowserError("");
+    clearErrors();
     try{
       await onAttachText?.((cleanNote?"browser-annotation-":"browser-element-")+element.ref+".txt",lines.join("\n"),{kind:"browser",label:(cleanNote?"Annotated ":"Browser ")+element.ref,detail:cleanNote||(element.text||element.tag||"").slice(0,70)});
       setLastAttached(notices=>({...notices,[element.ref]:cleanNote?"Annotation attached":"Element context attached"}));
@@ -296,7 +312,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
       {servers.length?<><div className="preview-server-list">{servers.map(server=><button key={server.port} onClick={()=>{setDraft(server.url);show(server.url);setKey(k=>k+1)}}><strong>:{server.port}</strong><span>{server.contentType||"HTTP "+server.status}</span></button>)}</div>{serverError&&<div className="inline-error" role="alert">{serverError}</div>}</>:<p>{serverError||"No common local web server detected. Start your dev action, then scan again."}</p>}
     </div>
 
-    {desktopBrowserAvailable?<><div className="agent-browser-toolbar"><button onClick={agentOpen} disabled={!!busy}><Globe2 size={13}/> Open agent browser</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.show?.()).then(()=>setBrowserError("")).catch(error=>setBrowserError(error?.message||String(error)||"Could not show Agent Browser."))}><Eye size={13}/> Show browser</button><button onClick={inspect} disabled={!!busy}><MousePointer2 size={13}/> Inspect elements</button><button onClick={capture} disabled={!!busy}><Camera size={13}/> Attach screenshot</button><button onClick={openProfileImport} disabled={!!busy}>Import profile</button><button onClick={importCookies} disabled={!!busy}>Import cookie JSON</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.close?.()).then(()=>{setBrowserError("");dropPage();setCookieStatus("")}).catch(error=>setBrowserError(error?.message||String(error)||"Could not close Agent Browser."))}><X size={13}/> Close</button>{cookieStatus&&<span className="browser-cookie-status" role="status" data-testid="browser-cookie-status">{cookieStatus}</span>}</div>{browserError&&<div className="browser-action-error" role="alert">{browserError}</div>}{ended?.error&&<div className="browser-action-error" role="alert">{ended.text}</div>}</>:<div className="agent-browser-unavailable"><strong>Desktop Agent Browser is unavailable here</strong><span>The hosted UI still supports iframe previews, local dev-server detection, and recent-page history.</span></div>}
+    {desktopBrowserAvailable?<><div className="agent-browser-toolbar"><button onClick={agentOpen} disabled={!!busy}><Globe2 size={13}/> Open agent browser</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.show?.()).then(()=>clearErrors()).catch(error=>setBrowserError(error?.message||String(error)||"Could not show Agent Browser."))}><Eye size={13}/> Show browser</button><button onClick={inspect} disabled={!!busy}><MousePointer2 size={13}/> Inspect elements</button><button onClick={capture} disabled={!!busy}><Camera size={13}/> Attach screenshot</button><button onClick={openProfileImport} disabled={!!busy}>Import profile</button><button onClick={importCookies} disabled={!!busy}>Import cookie JSON</button><button onClick={()=>Promise.resolve().then(()=>window.trebellDesktop.browser.close?.()).then(()=>{clearErrors();dropPage();setCookieStatus("")}).catch(error=>setBrowserError(error?.message||String(error)||"Could not close Agent Browser."))}><X size={13}/> Close</button>{cookieStatus&&<span className="browser-cookie-status" role="status" data-testid="browser-cookie-status">{cookieStatus}</span>}</div>{browserError&&<div className="browser-action-error" role="alert">{browserError}</div>}{endedError&&<div className="browser-action-error" role="alert">{endedError}</div>}</>:<div className="agent-browser-unavailable"><strong>Desktop Agent Browser is unavailable here</strong><span>The hosted UI still supports iframe previews, local dev-server detection, and recent-page history.</span></div>}
     {importOpen&&<div className="browser-profile-import" data-testid="browser-profile-import"><div className="browser-profile-import-head"><div><strong>Import signed-in browser session</strong><span>One-time cookie copy into Trebell Agent Browser.</span></div><button aria-label="Close profile import" title="Close profile import" onClick={()=>setImportOpen(false)}><X size={12}/></button></div>{(browserImports?.sources||[]).length?(browserImports.sources||[]).map(source=><section key={source.id}><div><strong>{source.name}</strong><span>{source.running?"Close the browser before importing.":source.installed?`${source.profiles?.length||0} profile${source.profiles?.length===1?"":"s"} found`:"No readable profiles found"}</span></div>{(source.profiles||[]).map(profile=><button key={profile.id} disabled={source.running||!!busy} onClick={()=>importProfile(source,profile)}><span>{profile.name}</span><small>{source.running?"Browser running":"Import"}</small></button>)}</section>):<p>No supported browser profiles were found. On Windows, Firefox and Helium are supported; cookie JSON remains available as a fallback.</p>}</div>}
     <div className={"preview-layout"+(desktopBrowserAvailable?"":" hosted")}><div className="preview-frame">{!url?<div className="preview-empty-state"><Globe2 size={18}/><strong>No preview open</strong><span>Enter a local or web URL above to preview it here.</span></div>:unanswered===url?<div className="preview-empty-state preview-unanswered" role="alert"><Unplug size={18}/><strong>Nothing answered at {url}</strong><span>Start the server for this address, then press Preview to try again.</span></div>:<iframe key={key} title="Trebell preview" src={url} style={{transform:"scale("+previewZoom+")",transformOrigin:"0 0",width:(100/previewZoom)+"%",height:(100/previewZoom)+"%"}}/>}</div>
       {desktopBrowserAvailable&&<aside className="browser-inspector"><h3>Agent browser</h3>{shownPage?<><p><strong>{shownPage.title||"Untitled"}</strong><span>{shownPage.url}</span></p>{snapshot?<><div className="browser-elements">{(snapshot.elements||[]).map(el=><button className={selectedRef===el.ref?"active":""} key={el.ref} onClick={()=>{setSelectedRef(el.ref);setLastAttached({})}}><code>{el.ref}</code><span>{el.text||el.tag}</span><small>{el.tag}{el.href?" · link":""}</small></button>)}</div>{selectedElement&&<div className="browser-annotation" data-testid="preview-annotation"><div><strong>Annotate {selectedElement.ref}</strong><span>{selectedElement.text||selectedElement.tag}</span></div><textarea value={annotation} onChange={e=>setAnnotation(e.target.value)} placeholder="Add a note or instruction for the agent about this element…"/><div className="annotation-actions" onClick={pressOnce}><button onClick={()=>attachElement(selectedElement)}>Attach context</button>{/* The note attached is emptied, unless another was typed while it was on its way. */}<button className="primary" disabled={!annotation.trim()} onClick={async()=>{const sent=annotation;if(await attachElement(selectedElement,sent))setAnnotation(current=>current===sent?"":current)}}>Attach annotation</button>{lastAttached[selectedElement.ref]&&<span>{lastAttached[selectedElement.ref]}</span>}</div></div>}</>:<div className="empty-inspector">Inspect elements to see this page's model-addressable elements.</div>}</>:<div className="empty-inspector">Open the agent browser and inspect the page to see model-addressable elements.</div>}</aside>}

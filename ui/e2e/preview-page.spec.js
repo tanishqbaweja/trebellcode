@@ -18,7 +18,9 @@ async function startSite(port=0){
 // after each move, as desktop/main.mjs does, and notes the calls the panel makes (and the sizes it is set to, and how many snapshots
 // it took). Its page has two elements to inspect. window.closeAgentWindow() closes its window as a person does outside the panel,
 // which the shell reports with its state, and ends the recording of it, as a closed window's capture ends (its track ends and says
-// so); close(), the panel's Close, closes it the same way. The window opened next is another, which its state and its snapshots name
+// so); close(), the panel's Close, closes it the same way. window.endCapture() ends the recording's capture alone, with no word from
+// the shell, as when another agent browser has taken the closed one's place (desktop/main.mjs then sends no open:false). The window
+// opened next is another, which its state and its snapshots name
 // (windowId), as the shell's do. window.openInPlace(url,title) opens a popup of its page (an export the page made, a target=_blank
 // link) in place in its window, as the shell does, with the title of the popup's document. The window it grants a recording is a
 // canvas that keeps drawing, so the recorder encodes real frames, and window.displayMediaCalls counts the recordings of it started.
@@ -27,7 +29,8 @@ function scriptedAgentBrowser(){
   const current=()=>({open:at>=0,...(at>=0?{windowId}:{}),url:pages[at]||"",title:titles[pages[at]]||"",canGoBack:at>0,canGoForward:at>=0&&at<pages.length-1,loading:false,...size});
   const report=()=>{for(const listener of listeners)listener(current())};
   const call=(name,move=()=>{})=>async(...args)=>{window.agentBrowserCalls.push(name);move(...args);report();return current()};
-  window.closeAgentWindow=()=>{pages.length=0;at=-1;windowId++;report();for(const track of captures.splice(0).flatMap(stream=>stream.getTracks())){track.stop();track.dispatchEvent(new Event("ended"))}};
+  window.endCapture=()=>{for(const track of captures.splice(0).flatMap(stream=>stream.getTracks())){track.stop();track.dispatchEvent(new Event("ended"))}};
+  window.closeAgentWindow=()=>{pages.length=0;at=-1;windowId++;report();window.endCapture()};
   window.openInPlace=(url,title)=>{pages.splice(at+1);pages.push(url);at=pages.length-1;titles[url]=title;report()};
   Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{
     state:async()=>current(),
@@ -313,10 +316,10 @@ test("a Browser panel opened again while a recording is being saved says so, sav
 });
 
 // A recording records the agent browser's window, so it ends with that window: one closed outside the panel (with the panel on
-// Browser, or on Files, where the panel is not there to hear it) or by the panel's Close. It stops by itself, is attached at the
-// length it ran until the window closed, and the panel says so; the Browser tab and the header button no longer say a recording is
-// on. One the server cannot store says so in the error line. It went on reading Stop and counting, with both marks on, until Stop,
-// which attached it at the length to the press.
+// Browser, or on Files, where the panel is not there to hear it) or by the panel's Close, or one whose capture ends with no word from
+// the shell (another agent browser took the closed one's place). It stops by itself, is attached at the length it ran until the window
+// closed, and the panel says so, in a short notice as its others are; the Browser tab and the header button no longer say a recording
+// is on. It went on reading Stop and counting, with both marks on, until Stop, which attached it at the length to the press.
 test("a recording whose agent browser window closes stops by itself, is attached at the length it ran and says so: closed outside the panel, while the panel is on Files, or by the panel's Close",async({page,request})=>{
   test.setTimeout(90_000);
   const site=await startSite();
@@ -340,7 +343,7 @@ test("a recording whose agent browser window closes stops by itself, is attached
       await expect(saved,how+": it is attached").toHaveCount(count);
       const length=Number((await saved.last().innerText()).match(/Browser recording\s*(\d+)s/)[1]);
       expect(length,how+": at the length it ran until the window closed").toBeGreaterThanOrEqual(ran);expect(length,how+": not longer").toBeLessThanOrEqual(Math.floor((closedAt-pressed)/1000));
-      await expect(said,how+": and the panel says so").toHaveText(`Browser recording stopped when the agent browser closed, and its ${length}s were attached.`);
+      await expect(said,how+": and the panel says so").toHaveText(`Browser recording stopped when the agent browser closed · ${length}s attached`);
     };
     const reopen=async()=>{await panel.getByRole("button",{name:"Open agent browser"}).click();await expect(panel.locator(".browser-inspector p span")).toHaveText(site.url+"/rec")};
     const closeOutside=()=>page.evaluate(()=>{window.closeAgentWindow();return Date.now()});
@@ -362,14 +365,48 @@ test("a recording whose agent browser window closes stops by itself, is attached
     await panel.getByRole("button",{name:"Close",exact:true}).click();
     await stopped("closed by the panel's Close",3,run,await now());
     expect(await page.evaluate(()=>window.agentBrowserCalls.filter(name=>name==="close").length),"the panel's Close closed the agent browser once").toBe(1);
-    // One the server cannot store is not attached, and the error line says why.
+    // Its capture ends with no word from the shell, as when another agent browser has taken the closed one's place.
+    await reopen();run=await recordFor();
+    await stopped("its capture ended with no word from the shell",4,run,await page.evaluate(()=>{window.endCapture();return Date.now()}));
+    await shots(page,"preview-recording-stopped-with-its-capture",said);
+  }finally{await site.close()}
+});
+
+// A recording whose window closes and that the server cannot store is not attached. With the panel away (on Files), the app says so
+// where the person is, and the panel's error line says it once the panel is back, once only: a look at Files and back does not say it
+// again. With the panel there, its error line says it until an action of the panel works, as for the panel's other failures. The one
+// not stored while the panel was away went with nothing on screen to say so, and the error line said it, as a new alert each time the
+// Browser tab was shown, until the next Record.
+test("a recording whose window closes and that cannot be stored says so where the person is, then once in the panel's error line, until an action works",async({page,request})=>{
+  test.setTimeout(90_000);
+  const site=await startSite();
+  try{
+    const {panel,record,saved}=await openRecorder(page,request,site);
+    const tabs=panel.locator(".context-panel-tab-scroll"),browserTab=tabs.getByRole("button",{name:/^Browser/}),files=tabs.getByRole("button",{name:"Files",exact:true});
+    const failed=panel.getByRole("alert").filter({hasText:"Browser recording stopped"}),toast=page.getByTestId("app-action-error");
+    const notStored="Browser recording stopped when the agent browser closed, but could not be attached: The disk is full.";
+    const recordFor=async()=>{await record.click();await expect(record).toHaveText(/Stop [1-9]s/,{timeout:8000})};
+    const reopen=async()=>{await panel.getByRole("button",{name:"Open agent browser"}).click();await expect(panel.locator(".browser-inspector p span")).toHaveText(site.url+"/rec")};
+    const closeOutside=()=>page.evaluate(()=>window.closeAgentWindow());
     await page.route("**/api/attachments/blob",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"The disk is full."})}));
+    // The window closes while the panel is on Files.
+    await recordFor();
+    await files.click();await expect(record).toHaveCount(0);await expect(browserTab).toHaveAccessibleName("Browser, recording");
+    await closeOutside();
+    await expect(browserTab,"closed while the panel is on Files, the recording has stopped").toHaveAccessibleName("Browser");
+    await expect.soft(toast,"the app says where the person is that it could not be attached").toHaveText(notStored);
+    await page.screenshot({animations:"disabled",path:auditDir+"preview-recording-not-stored-while-away-dark-1280x800.png"});
+    await browserTab.click();
+    await expect(failed,"and the panel's error line says it once the panel is back").toHaveText(notStored);await expect(saved).toHaveCount(0);
+    await files.click();await browserTab.click();await expect(record).toHaveText(/Record/);
+    await expect.soft(failed,"once only: not again when the Browser tab is shown again").toHaveCount(0);
+    // The window closes with the panel there: its error line says so until Open agent browser, which works, clears it.
     await reopen();await recordFor();
     await closeOutside();
-    await unmarked("closed with the recording not stored");
-    await expect(failed).toHaveText("Browser recording stopped when the agent browser closed, but could not be attached: The disk is full.");
-    await expect(said).toHaveCount(0);await expect(saved).toHaveCount(3);
+    await expect(record).toHaveText(/Record/);await expect(failed).toHaveText(notStored);await expect(saved).toHaveCount(0);
     await shots(page,"preview-recording-stopped-not-attached",failed);
+    await reopen();
+    await expect.soft(failed,"an action of the panel that works clears it, as it clears the panel's other failures").toHaveCount(0);
   }finally{await site.close()}
 });
 
