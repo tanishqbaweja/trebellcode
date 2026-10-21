@@ -37,6 +37,20 @@ test("Harbor Native adapter stages the OpenAI key instead of passing it through 
   assert.doesNotMatch(source,/cwd="\/app"/,"the Native adapter must preserve Harbor's task-specific container working directory");
 });
 
+// An image Node the runner cannot use (preact-2757's Node 16, 2026-10-21) stays first on the PATH for the task's tests and the
+// agent's commands: the pinned Node goes to /opt/trebell-node with no /usr/local/bin links, and the runner starts by its path.
+// Linked into /usr/local/bin, Node 22 ran preact-2757's karma tests (webpack 4) and every one of them failed.
+test("Harbor Native adapter keeps an image's own Node in place beside the pinned one",async()=>{
+  const source=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
+  assert.ok(source.includes('_PRIVATE_NODE = "/opt/trebell-node/bin/node"'));
+  const probe=source.indexOf("elif command -v node"),imageNode=source.indexOf("image-node",probe),noNode=source.indexOf("else exit 42",probe);
+  assert.ok(probe>0&&imageNode>probe&&imageNode<noNode,"a Node the runner cannot use is reported as image-node, apart from no Node at all");
+  assert.ok(source.includes('links = "" if image_node else ('),"no /usr/local/bin links beside an image's own Node");
+  assert.ok(source.includes('await write_runtime_marker(self._PRIVATE_NODE if image_node else "node")'));
+  assert.ok(source.includes('elif [ "$runtime" = {shlex.quote(self._PRIVATE_NODE)} ]; then runtime_cmd="$runtime"'),"the runner starts by the private Node's path");
+  assert.ok(source.includes('elif [ "$runtime" = {shlex.quote(self._PRIVATE_NODE)} ]; then "$runtime" {self._REMOTE_RUNNER} --version'),"the version command asks the same Node");
+});
+
 // Harbor's own helper writes with Path.write_text, which on a Windows host turned every instruction line ending into CRLF
 // for Native only (the Codex lanes get the instruction as a shell argument). Checked byte for byte with Harbor's interpreter
 // on 2026-10-14: the helper wrote 8 CRs for a text holding 1, the override wrote the text exactly.

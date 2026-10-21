@@ -77,6 +77,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
     )
     _REMOTE_NODE_ARCHIVE = "/tmp/trebell-node-linux-x64.tar.gz"
     _REMOTE_NODE_ROOT = "/opt/trebell-node"
+    _PRIVATE_NODE = "/opt/trebell-node/bin/node"
     # What agent_timeout_stop.py looks for to stop the runner, and everything under it, at Harbor's agent timeout.
     _RUNNER_MARKER = "trebell-native-agent.mjs"
 
@@ -90,6 +91,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
         return (
             f'runtime="$(cat {self._REMOTE_RUNTIME} 2>/dev/null || true)"; '
             f'if [ "$runtime" = "bun" ]; then bun {self._REMOTE_RUNNER} --version; '
+            f'elif [ "$runtime" = {shlex.quote(self._PRIVATE_NODE)} ]; then "$runtime" {self._REMOTE_RUNNER} --version; '
             f"else . ~/.nvm/nvm.sh >/dev/null 2>&1 || true; "
             f"node {self._REMOTE_RUNNER} --version; fi"
         )
@@ -116,7 +118,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
             environment, bundle, self._REMOTE_RUNNER
         )
         async def write_runtime_marker(runtime: str) -> None:
-            if runtime not in {"bun", "node"}:
+            if runtime not in {"bun", "node", self._PRIVATE_NODE}:
                 raise ValueError(f"Unsupported Trebell Native runtime marker: {runtime!r}")
             marker = shlex.quote(self._REMOTE_RUNTIME)
             value = shlex.quote(runtime)
@@ -147,6 +149,8 @@ class TrebellNativeAgent(BaseInstalledAgent):
                     "node -e \"process.exit(typeof fetch === 'function' ? 0 : 1)\" >/dev/null 2>&1 && "
                     f"node {self._REMOTE_RUNNER} --version >/dev/null 2>&1; then "
                     "printf '%s\\n' node; "
+                    "elif command -v node >/dev/null 2>&1; then "
+                    "printf '%s\\n' image-node; "
                     "else exit 42; fi"
                 ),
             )
@@ -156,8 +160,15 @@ class TrebellNativeAgent(BaseInstalledAgent):
         if runtime in {"bun", "node"}:
             await write_runtime_marker(runtime)
             return
+        # An image whose own Node cannot run the runner keeps that Node first on
+        # the PATH: the task's tests and the agent's commands run on the
+        # project's Node, as in the Codex lanes, and only the runner uses the
+        # pinned one, by its path. preact-2757's karma tests (webpack 4) all
+        # failed on a pinned Node 22 linked into /usr/local/bin (2026-10-21).
+        image_node = runtime == "image-node"
         self.logger.info(
-            "No compatible preinstalled Bun/Node runtime; installing Node 22 fallback."
+            "No compatible preinstalled Bun/Node runtime; installing Node 22 fallback"
+            + (" beside the image's own Node." if image_node else ".")
         )
 
         pinned_node_value = os.environ.get("TREBELL_NODE_PINNED_TARBALL", "").strip()
@@ -179,27 +190,31 @@ class TrebellNativeAgent(BaseInstalledAgent):
             archive = shlex.quote(self._REMOTE_NODE_ARCHIVE)
             root = shlex.quote(self._REMOTE_NODE_ROOT)
             expected = shlex.quote(f"v{self._PINNED_NODE_VERSION}")
+            links = "" if image_node else (
+                f"ln -sf {root}/bin/node /usr/local/bin/node; "
+                f"ln -sf {root}/bin/npm /usr/local/bin/npm; "
+                f"ln -sf {root}/bin/npx /usr/local/bin/npx; "
+                f"if [ -e {root}/bin/corepack ]; then "
+                f"ln -sf {root}/bin/corepack /usr/local/bin/corepack; fi; "
+            )
+            node_cmd = shlex.quote(self._PRIVATE_NODE) if image_node else "node"
             await self.exec_as_root(
                 environment,
                 command=(
                     "set -euo pipefail; "
                     f"rm -rf {root}; mkdir -p {root}; "
                     f"tar -xzf {archive} -C {root} --strip-components=1; "
-                    f"ln -sf {root}/bin/node /usr/local/bin/node; "
-                    f"ln -sf {root}/bin/npm /usr/local/bin/npm; "
-                    f"ln -sf {root}/bin/npx /usr/local/bin/npx; "
-                    f"if [ -e {root}/bin/corepack ]; then "
-                    f"ln -sf {root}/bin/corepack /usr/local/bin/corepack; fi; "
+                    f"{links}"
                     f"rm -f {archive}; "
-                    'actual="$(node --version)"; '
+                    f'actual="$({node_cmd} --version)"; '
                     f'test "$actual" = {expected} || {{ echo "Unexpected Node version: $actual" >&2; exit 1; }}'
                 ),
             )
             await self.exec_as_agent(
                 environment,
-                command=f"node {self._REMOTE_RUNNER} --version >/dev/null 2>&1",
+                command=f"{node_cmd} {self._REMOTE_RUNNER} --version >/dev/null 2>&1",
             )
-            await write_runtime_marker("node")
+            await write_runtime_marker(self._PRIVATE_NODE if image_node else "node")
             return
 
         # Fallback only: curl is needed for nvm. Avoid Harbor's package-manager
@@ -325,6 +340,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 f'export OPENAI_API_KEY="$(cat {self._REMOTE_API_KEY})"; '
                 f"rm -f {self._REMOTE_API_KEY}; "
                 f'if [ "$runtime" = "bun" ]; then runtime_cmd=bun; '
+                f'elif [ "$runtime" = {shlex.quote(self._PRIVATE_NODE)} ]; then runtime_cmd="$runtime"; '
                 'else runtime_cmd=node; fi; '
                 # Pin the agent runtime before the login environment can put a project-provided node first.
                 'runtime_cmd="$(command -v "$runtime_cmd" || printf %s "$runtime_cmd")"; '
