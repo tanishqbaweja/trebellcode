@@ -6,6 +6,8 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { WebSocket } from "ws";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
@@ -669,4 +671,46 @@ test("B22: the thread store's idle timer fires only to let kept threads go, neve
     assert.equal(inUse,0,"the store's timer fired while its one thread was read every 50 ms");
     store.peek(streamed);store.peek(opened);assert.equal(reads,4,"both threads were let go");
   }finally{globalThis.setTimeout=mocked;t.mock.timers.reset();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// B24 (the server half): memory stays flat over thread opens. An open reads its thread's history through the store's peek() (the
+// resume and the item and turn pages beside it, B3), which keeps the 2 threads used last parsed (THREAD_CACHE in
+// src/agent-thread-store.mjs) and lets them go a minute after their last use. Six threads of 0.75 MB (246 turns, about 0.87 MB of
+// heap once parsed) are opened five times each in turn, 2 s apart, each open reading its thread three times, with WeakRefs to every
+// thread read to count those still alive after a GC; gc comes from V8 at run time, as node --test runs without --expose-gc. Measured
+// in 3 runs: at most 2 parsed threads alive after any open and none once the keep window had passed (the clock and the store's timer
+// mocked, as in B22), the heap 1.70-1.73 MB over the warm one while the two were kept, and -1, -1 and +36 KB over it once they were
+// let go. The limit, 512 KB, is 14 times the largest and under what one parsed thread holds, so a thread kept past the window, or a
+// copy kept of each thread read, fails it (a store keeping each thread it parsed had 36 alive and grew the heap 24.7 MB).
+const B24_STORE=Object.freeze({keptThreads:2,heapGrowthBytes:512*1024});
+test("B24: six 0.75 MB threads opened five times each keep at most two parsed, and the heap is back to its warm size once they are let go",async t=>{
+  setFlagsFromString("--expose-gc");const gc=runInNewContext("gc");
+  t.mock.timers.enable({apis:["setTimeout","Date"],now:Date.now()});
+  const home=await mkdtemp(join(tmpdir(),"trebell-budget-b24-"));
+  try{
+    const store=new AgentThreadStore({...process.env,TREBELL_HOME:home}),turns=seededTurns(0.75).length;
+    const ids=Array.from({length:6},(_,n)=>store.importHistory({...BUDGET_THREAD,providerSessionId:"budget-b24-"+n,cwd:home,name:"Memory "+n,turns:seededTurns(0.75)}).id);
+    const read=store.storage.read;let reads=0;store.storage.read=(...args)=>{reads++;return read.apply(store.storage,args)};
+    // Every thread an open reads is held here weakly, so those still alive after a GC are the ones the store (or anything) keeps.
+    const refs=[];
+    const open=id=>{for(let n=0;n<3;n++){const thread=store.peek(id);assert.equal(thread?.turns?.length,turns);refs.push(new WeakRef(thread))}};
+    // A WeakRef holds its thread until the job that made or read it ends, so the GC runs a turn later.
+    const collect=async()=>{await new Promise(resolve=>setImmediate(resolve));gc();gc()};
+    const alive=()=>new Set(refs.map(ref=>ref.deref()).filter(Boolean)).size;
+    const heapUsed=async()=>{await collect();return process.memoryUsage().heapUsed};
+    // Time goes on in short steps, as in B22.
+    const wait=ms=>{for(let at=0;at<ms;at+=50)t.mock.timers.tick(50)};
+    // Warm: each thread opened once, then left for the keep window.
+    for(const id of ids){open(id);wait(2_000)}
+    wait(70_000);await collect();const warmKept=alive();
+    const warm=await heapUsed();let most=0;
+    for(let round=0;round<5;round++)for(const id of ids){open(id);await collect();most=Math.max(most,alive());wait(2_000)}
+    const peak=await heapUsed();
+    wait(70_000);await collect();const left=alive(),end=await heapUsed(),growth=end-warm;
+    t.diagnostic("B24 store: "+JSON.stringify({reads,warmKept,mostKept:most,keptAfterWindow:left,warmMB:Number((warm/1048576).toFixed(2)),peakGrowthKB:Math.round((peak-warm)/1024),growthKB:Math.round(growth/1024)}));
+    assert.ok(most<=B24_STORE.keptThreads,"parsed threads alive after an open: "+most);
+    assert.deepEqual({warmKept,left},{warmKept:0,left:0},"parsed threads alive once the keep window has passed, after the warm-up and at the end");
+    assert.ok(growth<=B24_STORE.heapGrowthBytes,"heap growth over the warm heap: "+growth+" bytes");
+    assert.equal(reads,6+30,"each open read its thread from sqlite once, the two kept being the two opened before it");
+  }finally{t.mock.timers.reset();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

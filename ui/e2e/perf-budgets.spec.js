@@ -358,3 +358,56 @@ test("B23: a streamed delta restyles the reply it grows, not the conversation ar
     finish.open();await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeHidden({timeout:30_000});
   }finally{finish.open();await harness.close()}
 });
+
+// B24 (the page half): memory stays flat over a long session of thread opens (goal.md section 8.4). Six threads are opened by their
+// sidebar rows: two short ones (B13's), 40 turns of commands and Markdown replies (B20's and B23's), B23's 24 KB reply, 40 turns of
+// 6 KB Markdown replies, and the longest thread of the e2e fixtures, long-conversation.spec.js's 300 turns. Each is opened once to
+// warm the page (its lazy chunks, the code an open runs), the new-task screen shows, and after two forced GCs the page's JS heap, DOM
+// nodes and event listeners are read; 30 more opens cycle the six, and the same screen is read again. Measured in 3 runs: the heap
+// grew 675, 716 and 705 KB, the nodes and listeners 0. A heap snapshot diff over 40 opens put nearly all of the heap's growth (809 of
+// 880 KB) in V8's optimized code for the functions the opens make hot (InstructionStream and its tables), none in anything the app
+// keeps; the app keeping each open's history page (the thread, its item and turn pages, its messages) grew it 2437 KB. Limits: a heap
+// growth of 1.5 MB (2.1 times the largest), 60 nodes and 10 listeners.
+const B24_OPENS={heapBytes:1.5*1024*1024,nodes:60,listeners:10};
+
+test("B24: memory stays flat over 30 thread opens from the sidebar",async({page})=>{
+  test.setTimeout(240_000);
+  const harness=await startRelayHarness();
+  try{
+    const threads=[
+      {name:"Memory short first",shown:"Memory short first: each turn in order.",turns:[{user:"Say how the relay orders turns",items:[replyItem("b24-short-first","Memory short first: each turn in order.")]}]},
+      {name:"Memory short second",shown:"Memory short second: each turn in order.",turns:[{user:"Say how the relay orders turns",items:[replyItem("b24-short-second","Memory short second: each turn in order.")]}]},
+      {name:"Memory forty turns",shown:"turn 39 in order",turns:Array.from({length:40},(_,index)=>({user:"Turn "+index+": say how the relay keeps the order of items.",items:[commandItem("b24-command-"+index,"npm test",{output:"ok "+index+"\n"}),replyItem("b24-reply-"+index,"The relay keeps **turn "+index+"** in order.\n\n- It writes `item/completed` once.\n- A reload reads the same history.")]}))},
+      {name:"Memory long reply",shown:"Memory long reply ends here.",turns:[{user:"Explain how the relay streams a long reply.",items:[replyItem("b24-long-reply",markdownReply(24_000,{seed:3})+"\n\nMemory long reply ends here.")]}]},
+      {name:"Memory long replies",shown:"Reply 39 of the long replies ends here.",turns:Array.from({length:40},(_,index)=>({user:"Step "+index+": explain the next part of the relay.",items:[replyItem("b24-long-replies-"+index,markdownReply(6000,{seed:index})+"\n\nReply "+index+" of the long replies ends here.")]}))},
+      {name:"Memory 300 turns",shown:"Assistant message 299 ·",turns:Array.from({length:300},(_,index)=>({user:"User message "+index+" · "+"request ".repeat(4+(index%7)),items:[replyItem("b24-assistant-"+index,"Assistant message "+index+" · "+"response ".repeat(10+(index%11)))]}))},
+    ];
+    for(const thread of threads)harness.seedThread(thread.name,thread.turns);
+    await routeRelayApp(page,harness);
+    await page.goto("/");await expect(page.locator('.thread-row .thread-main[title="Memory 300 turns"]')).toBeVisible({timeout:15_000});
+    const open=async thread=>{
+      await page.locator('.thread-row .thread-main[title="'+thread.name+'"]').click();
+      await expect(page.locator(".assistant-message-text").filter({hasText:thread.shown}).first()).toBeVisible({timeout:15_000});
+      await page.waitForTimeout(300);
+    };
+    const newTask=async()=>{
+      await page.getByRole("button",{name:"New thread",exact:true}).click();await expect(page.locator(".welcome")).toBeVisible({timeout:10_000});
+      await page.mouse.move(2,2);await page.waitForTimeout(1500);
+    };
+    const cdp=await page.context().newCDPSession(page);await cdp.send("Performance.enable");await cdp.send("HeapProfiler.enable");
+    const measure=async()=>{
+      for(let pass=0;pass<2;pass++)await cdp.send("HeapProfiler.collectGarbage");
+      const {metrics}=await cdp.send("Performance.getMetrics"),value=name=>metrics.find(metric=>metric.name===name)?.value;
+      return {heapBytes:value("JSHeapUsedSize"),nodes:value("Nodes"),listeners:value("JSEventListeners")};
+    };
+    for(const thread of threads)await open(thread);
+    await newTask();const before=await measure();
+    for(let index=0;index<30;index++)await open(threads[index%threads.length]);
+    await newTask();const after=await measure();
+    const growth={heapBytes:after.heapBytes-before.heapBytes,nodes:after.nodes-before.nodes,listeners:after.listeners-before.listeners};
+    console.log("B24 30 thread opens:",JSON.stringify({before,after,growth,heapGrowthKB:Math.round(growth.heapBytes/1024)}));
+    expect.soft(growth.heapBytes,"JS heap growth in bytes over 30 opens").toBeLessThanOrEqual(B24_OPENS.heapBytes);
+    expect.soft(growth.nodes,"DOM node growth over 30 opens").toBeLessThanOrEqual(B24_OPENS.nodes);
+    expect.soft(growth.listeners,"event listener growth over 30 opens").toBeLessThanOrEqual(B24_OPENS.listeners);
+  }finally{await harness.close()}
+});
