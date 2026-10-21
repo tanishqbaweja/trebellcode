@@ -16,15 +16,20 @@ async function freePort(){
 // control.listed is what thread/list answers, control.older, when set, the older page its next cursor reads, control.oldest, when set,
 // the page after that, control.listError, when set, fails it, and control.hold, when set, holds the next one until it resolves;
 // control.lists counts the lists asked for and control.cursors keeps the cursor each was asked with (null for the first page).
+// control.pages(cursor), when set, answers each list in their place: a page ({data, nextCursor}), or {error} for a cursor the runtime
+// refuses.
 async function startRuntimeHarness(thread){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),control={listed:[thread],older:null,oldest:null,listError:null,hold:null,lists:0,cursors:[]};
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),control={listed:[thread],older:null,oldest:null,listError:null,hold:null,pages:null,lists:0,cursors:[]};
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>ws.on("message",async raw=>{
     const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
     let result={};
     if(message.method==="thread/list"){control.lists++;control.cursors.push(message.params?.cursor||null);if(control.hold){const held=control.hold;control.hold=null;await held}}
     if(message.method==="thread/list"&&control.listError)return ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:control.listError}}));
+    const page=message.method==="thread/list"&&control.pages?control.pages(message.params?.cursor||null):null;
+    if(page?.error)return ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:page.error}}));
     if(message.method==="initialize")result={userAgent:"catalog-pagination-connected-fixture"};
+    else if(page)result=page;
     else if(message.method==="thread/list")result=message.params?.cursor==="oldest-page"?{data:control.oldest||[],nextCursor:null}:message.params?.cursor==="older-page"?{data:control.older||[],nextCursor:control.oldest?"oldest-page":null}:{data:control.listed,nextCursor:control.older?"older-page":null};
     else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null};
     else if(message.method==="thread/goal/get")result={goal:null};
@@ -434,5 +439,96 @@ test("Load older threads goes on from the pages already shown when History is sh
     await expect(history.getByRole("button",{name:/Oldest thread 3/})).toBeVisible();await expect(load).toHaveCount(0);
     expect(harness.control.cursors.slice(read),"the press read the page after the ones shown, once").toEqual(["oldest-page"]);
     await shootHistoryModes(page,history.getByRole("button",{name:/Oldest thread 3/}),"older-threads-after-return");
+  }finally{await harness.close()}
+});
+
+// History's next page belongs to the environment it was read in. After a project opened in another environment, whose runtime then
+// answers History, Load older threads reads that runtime's own next page. Every environment's Codex has the one address, so the next
+// page kept from the environment left went to the other runtime, which refused it or read from wherever it fell in its own list, and
+// that runtime's older threads were never listed.
+test("Load older threads after a project opened in another environment reads that environment's own next page",async({page})=>{
+  test.setTimeout(60_000);
+  const now=Date.now()/1000,threads=(id,name,count,from)=>Array.from({length:count},(_,index)=>runtimeThreadAt(now,id+"-"+index,name+" "+(index+1),from+index*600));
+  const pages={
+    local:{first:{data:threads("local-recent","Local thread",6,0),nextCursor:"local-2"},"local-2":{data:threads("local-older","Local older thread",4,86400*3),nextCursor:"local-3"},"local-3":{data:threads("local-oldest","Local oldest thread",3,86400*9),nextCursor:null}},
+    remote:{first:{data:threads("remote-recent","Remote thread",5,300),nextCursor:"remote-2"},"remote-2":{data:threads("remote-older","Remote older thread",3,86400*4),nextCursor:null}},
+  };
+  let environment="local";
+  const harness=await startRuntimeHarness(pages.local.first.data[0]);harness.control.pages=cursor=>pages[environment][cursor||"first"]||{error:"No thread list page at "+cursor};
+  try{
+    await routeRuntimeHistory(page,harness,"history-environment-switch-fixture");
+    // A project in another environment, and the switch to that environment, as the GUI server answers them.
+    const project={id:"remote-project",name:"Remote repo",path:"/srv/remote-repo",environmentId:"build-box",effectiveSettings:{}},json=body=>({status:200,contentType:"application/json",body:JSON.stringify(body)});
+    let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeEnvironmentId:null};
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill(json({mock:false,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"history-environment-switch-fixture",runtimeCapabilities:{},activeEnvironmentId:settings.activeEnvironmentId,activeEnvironment:null})));
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")settings={...settings,...route.request().postDataJSON()};return route.fulfill(json(settings))});
+    await page.route(/\/api\/projects$/,route=>route.fulfill(json(route.request().method()==="POST"?{project}:{projects:[project]})));
+    await page.route(/\/api\/environments$/,route=>route.fulfill(json({profiles:[{id:"build-box",name:"Build box",type:"ssh",enabled:true}],activeEnvironmentId:settings.activeEnvironmentId})));
+    await page.route(/\/api\/environment\/activate$/,route=>{environment="remote";settings={...settings,activeEnvironmentId:"build-box"};return route.fulfill(json({ok:true,activeEnvironmentId:"build-box",agentRuntime:"claude",agentRuntimeReady:true}))});
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>route.fulfill(json({isGit:false,root:project.path,branch:null,status:[],remotes:[],worktrees:[]})));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    const historyButton=page.getByRole("button",{name:"History",exact:true}),newTask=page.getByRole("button",{name:"New task",exact:true});
+    const history=page.locator(".history-page"),load=history.getByRole("button",{name:"Load older threads"}),failure=history.getByRole("alert");
+    // On this machine: History, and Load older threads once, which leaves a page.
+    await historyButton.click();await expect(history.getByRole("button",{name:/Local thread 6/})).toBeVisible();
+    await load.click();await expect(history.getByRole("button",{name:/Local older thread 4/})).toBeVisible();await expect(load).toBeVisible();
+    // A new task, and the remote project opened from the palette: its environment's runtime answers from then on.
+    await newTask.click();
+    await page.keyboard.press("Control+K");const palette=page.getByTestId("command-palette");await expect(palette).toBeVisible();
+    await palette.getByRole("textbox").fill("Remote repo");await palette.locator(".command-palette-item").filter({hasText:"Remote repo"}).click();
+    await expect.poll(()=>environment).toBe("remote");await expect(palette).toHaveCount(0);
+    // History again: the remote runtime's newest threads, and Load older threads reads the remote's next page.
+    const read=harness.control.cursors.length;
+    await historyButton.click();await expect(history.getByRole("button",{name:/Remote thread 5/})).toBeVisible();
+    await expect(load).toBeVisible();await load.click();
+    await expect(history.getByRole("button",{name:/Remote older thread 3/}),"the remote runtime's older threads").toBeVisible();
+    await expect(failure).toHaveCount(0);await expect(load).toHaveCount(0);
+    expect(harness.control.cursors.slice(read).filter(Boolean),"the next pages asked of the remote runtime").toEqual(["remote-2"]);
+    await shootHistoryModes(page,history.getByRole("button",{name:/Remote older thread 3/}),"older-threads-after-environment-switch");
+  }finally{await harness.close()}
+});
+
+// A next page the runtime refuses (the thread it starts from was archived since) gives way to the first page's own next page once
+// History is shown again, so Load older threads reads the older threads again from there. The page refused stayed kept, and every
+// press said again that it could not load older threads, until a reload.
+test("Load older threads works again after History is shown again once the runtime refused its next page",async({page})=>{
+  test.setTimeout(60_000);
+  const now=Date.now()/1000,recent=Array.from({length:6},(_,index)=>runtimeThreadAt(now,"runtime-recent-"+index,"Recent thread "+(index+1),index*600));
+  const older=Array.from({length:4},(_,index)=>runtimeThreadAt(now,"runtime-older-"+index,"Older thread "+(index+1),86400*3+index*600)),oldest=Array.from({length:3},(_,index)=>runtimeThreadAt(now,"runtime-oldest-"+index,"Oldest thread "+(index+1),86400*9+index*600));
+  // The cursor of the oldest page names the thread it starts from: archived elsewhere, that thread takes its cursor with it. newest:
+  // threads started since, first on the newest page.
+  let oldestCursor="oldest-page",newest=[];
+  const harness=await startRuntimeHarness(recent[0]);
+  harness.control.pages=cursor=>!cursor?{data:[...newest,...recent],nextCursor:"older-page"}:cursor==="older-page"?{data:older,nextCursor:oldestCursor}:cursor===oldestCursor?{data:oldest,nextCursor:null}:{error:"Thread list cursor no longer exists"};
+  try{
+    await routeRuntimeHistory(page,harness,"history-refused-cursor-fixture");
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    const historyButton=page.getByRole("button",{name:"History",exact:true}),newTask=page.getByRole("button",{name:"New task",exact:true});
+    const history=page.locator(".history-page"),rows=history.locator(".history-thread-row"),load=history.getByRole("button",{name:"Load older threads"}),failure=history.getByRole("alert");
+    let lists=harness.control.lists;
+    await historyButton.click();await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);await expect(rows).toHaveCount(6);
+    await load.click();await expect(rows).toHaveCount(10);await expect(load).toBeVisible();
+    // The thread the next page starts from is archived elsewhere: the press is refused, and says so.
+    oldestCursor="oldest-page-2";
+    await load.click();
+    await expect(failure).toHaveText("Could not load older threads: runtime history: Thread list cursor no longer exists");
+    // Leaving History and showing it again (a thread started meanwhile, which its newest page lists, says that page has answered), the
+    // next press reads the first page's own next page, and the one after it is good.
+    await newTask.click();lists=harness.control.lists;newest=[runtimeThreadAt(now,"runtime-newest","Newest thread",-60)];
+    await historyButton.click();await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await expect(history.getByRole("button",{name:/Newest thread/})).toBeVisible();await expect(rows).toHaveCount(11);
+    const read=harness.control.cursors.length;
+    await load.focus();await page.keyboard.press("Enter");
+    const pagesRead=()=>harness.control.cursors.slice(read).filter(Boolean);
+    await expect.poll(pagesRead,{message:"the next page the press after History was shown again read"}).toEqual(["older-page"]);
+    await expect(failure).toHaveCount(0);await expect(load).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(history.getByRole("button",{name:/Oldest thread 3/})).toBeVisible();await expect(rows).toHaveCount(14);await expect(load).toHaveCount(0);
+    expect(pagesRead()).toEqual(["older-page","oldest-page-2"]);
+    await shootHistoryModes(page,history.getByRole("button",{name:/Oldest thread 3/}),"older-threads-after-refused-page");
   }finally{await harness.close()}
 });

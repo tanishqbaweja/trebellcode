@@ -2275,7 +2275,8 @@ export default function App(){
       setThreadHistory(current=>({...current,runtime:"all",items:threads,nextCursor:null,loading:false,retrying:false,error:"",olderError:""}));
       return;
     }
-    const sourceKey=[agentRuntime,settings.agentRuntimeInstanceId||"",bootstrap.wsUrl||""].join("\0");
+    // The source is the runtime in the environment active (historySource): every environment's Codex has the one address.
+    const sourceKey=historySource();
     // A first page that failed says so with Retry (retrying): its failure stays until the list answers, so the keyboard stays on
     // Retry, and one that fails again says it still could not, as a new message (failures keys it). While it is read, Load older
     // threads goes on reading this source's next page; another source's next page is not kept.
@@ -2302,6 +2303,10 @@ export default function App(){
     if(section!=="history")return;
     setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items,threads,{threadMeta})}));
   },[section,threads,threadMeta]);
+  // What History's pages are read from: the runtime, its instance and its address, in the environment active, whose own catalog
+  // answers there (the GUI server starts the catalog's harness again for an environment switched to). A next page kept from another
+  // environment went to this one's runtime, which refused it or read from wherever it fell in its own list.
+  function historySource(){return [agentRuntime,settings.agentRuntimeInstanceId||"",bootstrap.wsUrl||"",settings.activeEnvironmentId||""].join("\0")}
   // An older page's read has a state of its own (loadingOlder), which its button says: the first page read again (loading) neither
   // makes the button say older threads are loading nor refuses its press, and the first page's failure stays.
   async function loadOlderThreadHistory(){
@@ -2318,13 +2323,15 @@ export default function App(){
     if(Object.keys(catalogMeta).length)setThreadMeta(previous=>({...previous,...catalogMeta}));
     if(incoming.length||catalogThreads.length)setThreads(previous=>mergeThreadCatalog(previous,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}));
     if(catalogCursor&&catalogResult.status==="fulfilled")setThreadCatalogCursor(catalogPage?.nextCursor||null);
-    const sourceKey=[agentRuntime,settings.agentRuntimeInstanceId||"",bootstrap.wsUrl||""].join("\0");
+    // A next page the runtime refused (its answer an error: the thread it starts from archived since) is not kept past the next first
+    // page, whose own next page History then reads; one it did not answer (a timeout, a connection lost) is still good, and stays.
+    const sourceKey=historySource(),refused=Boolean(runtimeCursor&&nativeResult.status==="rejected"&&nativeResult.reason?.trebellRpcResponse);
     setThreadHistory(current=>({
       ...current,
       runtime:"all",
       runtimeSource:sourceKey,
       runtimeExhausted:runtimeCursor&&nativeResult.status==="fulfilled"?!nativePage?.nextCursor:current.runtimeExhausted,
-      runtimeOlderRead:Boolean(runtimeCursor&&nativeResult.status==="fulfilled")||current.runtimeOlderRead,
+      runtimeOlderRead:!refused&&(Boolean(runtimeCursor&&nativeResult.status==="fulfilled")||Boolean(current.runtimeOlderRead)),
       items:mergeThreadCatalog(current.items,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}),
       nextCursor:runtimeCursor?(nativeResult.status==="fulfilled"?(nativePage?.nextCursor||null):runtimeCursor):current.nextCursor,
       loadingOlder:false,
