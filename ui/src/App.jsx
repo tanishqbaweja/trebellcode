@@ -4349,7 +4349,7 @@ export default function App(){
     try{await api("/api/stashes",{method:"POST",body:draft});return{ok:true,error:""}}
     catch(error){return{ok:false,error:error?.message||String(error)||"Unknown stash error"}}
   }
-  // A fan-out that cannot start keeps the draft ("kept"): the composer gives it back (dispatchSend).
+  // A fan-out that cannot start keeps the draft ("kept"): the composer gives it back (dispatchSend), or still holds it (sendInBackground).
   async function sendModelFanout(text){
     const fanout=[...new Set(selectedModels.filter(id=>models.includes(id)))];if(activeThread?.id||running||fanout.length<2)return false;
     if(!runtimeCapabilities.multiModelFanout)return false;
@@ -4358,7 +4358,8 @@ export default function App(){
     if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"fanout-video-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return "kept"}
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"fanout-attachment-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return "kept"}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd};
-    // Its text left the composer as the send started; its files and context leave it now, and what was added meanwhile stays.
+    // Its text left the composer as the send started (dispatchSend), or leaves it once the fan-out has launched (sendInBackground); its
+    // files and context leave it now, and what was added meanwhile stays.
     setPromptHistoryIndex(-1);dropSentDraft(draft);setEvents([]);resetAssistantStream();setSection("chat");
     const launches=fanout.map(modelId=>startDetachedTurn(draft.text,draft.attachments,modelId,{forceWorktree:true,basePath:draft.projectPath,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips)}).then(result=>({ok:true,modelId,result})).catch(error=>({ok:false,modelId,error})));
     // What came of each launch is told once all have answered, by background-send-outcome.js, which loads then: should it not load,
@@ -4503,7 +4504,10 @@ export default function App(){
     if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
     if(text.startsWith("/")){await send(promptOverride);return}
     try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
-    if(await sendModelFanout(text))return;
+    // A fan-out that has launched takes the text it sent out of the composer, as Enter and Send take a draft out as its send starts
+    // (dispatchSend): what the person typed on after it while the fan-out waited for a clone or checked its files stays there, for the
+    // next message. The text stayed, and a second Enter launched the same fan-out again. One that cannot start ("kept") leaves it.
+    const fanned=await sendModelFanout(text);if(fanned){if(fanned===true)setPrompt(current=>current.startsWith(visiblePrompt)?current.slice(visiblePrompt.length).replace(/^\s+/,""):current);return}
     if(bootstrap.mock||!rpc||rpcStatus!=="connected"||runtimeSwitchRef.current||!modelsRef.current.includes(model)){await send(promptOverride);return}
     if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}

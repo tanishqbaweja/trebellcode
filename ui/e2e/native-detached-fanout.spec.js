@@ -67,6 +67,83 @@ test("Trebell Native multi-model fan-out launches real isolated worktrees and pr
   }finally{await fanout.close()}
 });
 
+const heldGate=()=>{let open=()=>{};const promise=new Promise(resolve=>{open=resolve});return {promise,open}};
+// Model A, the first model, with Model B picked by Shift-click for a new task's fan-out; the composer it is sent from.
+async function pickBothModels(page){
+  const picker=page.getByTestId("model-picker"),menu=page.locator(".model-picker-menu");
+  await picker.click();await menu.getByRole("button",{name:/Model B/}).click({modifiers:["Shift"]});await expect(picker).toContainText("2 models");
+  await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+  return page.getByTestId("composer");
+}
+// The first message of each Native thread, as the relay keeps it: its text, and the names of its files.
+const sentMessages=threadStore=>threadStore.list("native").map(thread=>{const content=threadStore.get(thread.id)?.turns?.[0]?.items?.find(item=>item.type==="userMessage")?.content||[];return {text:content.find(part=>part.type==="text")?.text,files:content.filter(part=>part.type!=="text").map(part=>part.name)}});
+// The window as it is, in dark and then in light at 1280x800 (the theme button takes the keyboard from the composer).
+async function shootModes(page,name){
+  const html=page.locator("html");
+  for(const mode of ["dark","light"]){
+    if(await html.getAttribute("data-mode")!==mode){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(html).toHaveAttribute("data-mode",mode)}
+    await page.screenshot({animations:"disabled",path:`${auditDir}native-fanout-${name}-${mode}-1280x800.png`});
+  }
+}
+
+// A fan-out sent with Control+Enter from New task (a background send) takes its text out of the composer once it has launched, as one
+// sent with Enter or Send does as its send starts. The text stayed there, and a second Enter launched the same fan-out again, with as
+// many more worktrees and model runs.
+test("a multi-model fan-out sent with Control+Enter launches once and leaves the composer empty",async({page})=>{
+  test.setTimeout(60_000);
+  const fanout=await startNativeFanout(page,{models:["model-a","model-b"]}),{threadStore,providerCalls,worktrees}=fanout,task="Run this task in the background with both Native models";
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.locator(".branch-control")).toContainText(fanout.baseBranch,{timeout:10_000});
+    const composer=await pickBothModels(page);
+    await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
+    await expect.poll(()=>worktrees.length,{timeout:10_000}).toBe(2);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(2);
+    expect(new Set(providerCalls.map(call=>call.model))).toEqual(new Set(["model-a","model-b"]));await expect(page.locator(".thread-row")).toHaveCount(2);
+    // Soft, so that the old build also shows what the second Enter does.
+    await expect.soft(composer,"the composer once the fan-out has launched").toHaveValue("");
+    await shootModes(page,"ctrl-enter-launched");
+    // Enter again in the composer sends nothing, so nothing more launches.
+    await composer.click();await page.keyboard.press("Enter");await page.waitForTimeout(2_000);
+    expect(worktrees.length,"the worktrees made").toBe(2);expect(providerCalls.length,"the model runs").toBe(2);await expect(page.locator(".thread-row")).toHaveCount(2);
+    expect(sentMessages(threadStore),"what each model was sent").toEqual([{text:task,files:[]},{text:task,files:[]}]);
+  }finally{await fanout.close()}
+});
+
+// What the person types on while a Control+Enter fan-out checks its files stays in the composer once the fan-out has launched, without
+// the text the fan-out sent, and is the next message. The fan-out goes with what the composer held as it was sent and its file.
+test("text typed on while a Control+Enter fan-out checks its files stays in the composer, without the text sent, for the next message",async({page})=>{
+  test.setTimeout(60_000);
+  const fanout=await startNativeFanout(page,{models:["model-a","model-b"]}),{threadStore,providerCalls,worktrees}=fanout;
+  const task="Look at the notes with both Native models",next="Then check the signup page",note="fanout-notes.txt";
+  // The fan-out's own check of the composer's files waits for the gate armed before it; the launches' checks go on.
+  let armed=null,held=false;await page.route(/\/api\/attachments\/validate$/,async route=>{const gate=armed;armed=null;if(gate){held=true;await gate.promise}await route.fallback()});
+  const gate=heldGate();
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.locator(".branch-control")).toContainText(fanout.baseBranch,{timeout:10_000});
+    const composer=await pickBothModels(page),chips=page.locator(".attachment-shelf > span");
+    const [chooser]=await Promise.all([page.waitForEvent("filechooser"),page.getByRole("button",{name:"Attach files"}).click()]);
+    await chooser.setFiles([{name:note,mimeType:"text/plain",buffer:Buffer.from("Notes on the login page.")}]);await expect(chips).toHaveText([note]);
+    armed=gate;
+    await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
+    await expect.poll(()=>held,{message:"the fan-out checks its files"}).toBe(true);
+    await expect(composer).toBeFocused();await page.keyboard.type(" "+next,{delay:5});await expect(composer).toHaveValue(task+" "+next);
+    expect(worktrees.length,"no worktree before the check has answered").toBe(0);
+    await shootModes(page,"ctrl-enter-typed-on-while-files-checked");
+    gate.open();
+    await expect.poll(()=>worktrees.length,{timeout:10_000}).toBe(2);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(2);
+    await expect(composer,"what was typed on, without the text sent").toHaveValue(next);await expect(chips).toHaveCount(0);
+    await shootModes(page,"ctrl-enter-typed-on-launched");
+    const sent=sentMessages(threadStore);expect(sent.map(message=>message.text),"what each model was sent").toEqual([task,task]);
+    for(const message of sent)expect(message.files,"the file went to each model").toEqual([expect.stringMatching(/fanout-notes\.txt$/)]);
+    // Control+Enter again sends what was typed on as a fan-out of its own.
+    await composer.click();await page.keyboard.press("Control+Enter");
+    await expect.poll(()=>worktrees.length,{timeout:10_000}).toBe(4);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(4);
+    await expect(composer).toHaveValue("");await expect(page.locator(".thread-row")).toHaveCount(4);
+    expect(sentMessages(threadStore).map(message=>message.text).sort(),"what each model was sent").toEqual([next,next,task,task].sort());
+  }finally{gate.open();await fanout.close()}
+});
+
 // The fan-out's threads each run on their own model. Opened, one shows that model in its picker, not the composer's pick of several,
 // and a follow-up sent there goes to it: the follow-up went to the first model picked, which the relay then made the thread's model.
 test("a follow-up in a Native fan-out thread goes to that thread's own model, the one its picker shows",async({page})=>{
