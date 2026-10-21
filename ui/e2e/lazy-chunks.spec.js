@@ -260,7 +260,8 @@ test("a send made before the turn support has loaded waits for it and starts wit
 });
 
 // A slash command sent before the turn support has come waits for it too, and runs once it is in: /plan fills the composer with the
-// plan prompt to send, and nothing goes to the model.
+// plan prompt to send, and nothing goes to the model. Meanwhile the composer says Sending…, the command gone from it as the send
+// started, so what is typed then is not dropped.
 test("a slash command sent before the turn support has loaded waits for it and runs",async({page})=>{
   test.setTimeout(60_000);
   const held=[];
@@ -271,7 +272,7 @@ test("a slash command sent before the turn support has loaded waits for it and r
     await fixture.open("Native streaming");
     await fixture.send("/plan the release");
     await page.waitForTimeout(500);
-    await expect(page.getByTestId("composer")).toHaveValue("/plan the release");
+    await expect(page.getByTestId("composer")).toHaveAttribute("placeholder",/^Sending/);await expect(page.getByTestId("composer")).toHaveValue("");
     for(const route of held.splice(0))await route.continue();
     await expect(page.getByTestId("composer")).toHaveValue("Create a clear execution plan, then carry it out. the release",{timeout:10_000});
     await expect(page.getByRole("alert").filter({hasText:"Not sent"})).toHaveCount(0);

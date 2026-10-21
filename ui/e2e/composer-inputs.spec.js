@@ -15,19 +15,21 @@ const auditDir=fileURLToPath(new URL("../../visual-audit/composer-inputs/",impor
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 
 // One thread, "Composer thread", open, unless newTask leaves the window on New task. replies answers the provider's calls in order.
-// refuse(message), when given, names an error to answer a request with instead of the relay (a harness refusing it). turns are the
-// thread's turns from before the window opened, in place of its one short reply. others names more threads, each with a short reply.
-async function openComposerApp(page,{newTask=false,replies=[],refuse=null,turns=[{user:"Look at the login page",items:[replyItem("seed-reply-1","The login page renders.")]}],others=[]}={}){
+// refuse(message), when given, names an error to answer a request with instead of the relay (a harness refusing it), and hold(message)
+// a promise the request waits on before it goes to the relay (a harness slow to answer it). turns are the thread's turns from before
+// the window opened, in place of its one short reply. others names more threads, each with a short reply.
+async function openComposerApp(page,{newTask=false,replies=[],refuse=null,hold=null,turns=[{user:"Look at the login page",items:[replyItem("seed-reply-1","The login page renders.")]}],others=[]}={}){
   const harness=await startRelayHarness({replies});
   harness.seedThread("Composer thread",turns);
   others.forEach((name,index)=>harness.seedThread(name,[{user:"Look at "+name,items:[replyItem("other-reply-"+index,name+" is ready.")]}]));
   await routeRelayApp(page,harness);
-  if(refuse)await page.routeWebSocket(harness.wsUrl,ws=>{
+  if(refuse||hold)await page.routeWebSocket(harness.wsUrl,ws=>{
     const server=ws.connectToServer();
-    ws.onMessage(message=>{
+    ws.onMessage(async message=>{
       let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
-      const refusal=parsed?.id!=null&&parsed.method?refuse(parsed):null;
+      const request=parsed?.id!=null&&parsed.method?parsed:null,refusal=request&&refuse?refuse(request):null;
       if(refusal){ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:refusal}}));return}
+      const wait=request&&hold?hold(request):null;if(wait)await wait;
       server.send(message);
     });
   });
@@ -1724,4 +1726,73 @@ test("a screenshot pasted or a file attached while the composer says Sending… 
     await expect(sentFiles).toHaveText(["next-notes.txt"]);await expect(chips(page)).toHaveCount(0);
     expect(sentTexts(harness)).toEqual(["Look at the login page","First message","Second message","Third message","Fourth message"]);
   }finally{hold?.open();await harness.close()}
+});
+
+// A send Stop ends while what the person typed on waits in the composer gives its draft back before that text, as a draft of its own:
+// nothing failed and nothing ran in the background. It came back under a "recovered failed background draft" line, which went into
+// the next message unless the person deleted it.
+test("a send stopped while text typed on waits in the composer gives its draft back before that text, with no note",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Reply number one."}]});
+  let hold=null;await page.route(/\/api\/context\/packet$/,async route=>{await hold?.promise;await route.fallback()});
+  try{
+    const composer=page.getByTestId("composer"),stopButton=page.getByRole("button",{name:"Stop",exact:true});
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      hold=heldGate();
+      await composer.click();await typeOn(page,"Fix the login bug");await page.keyboard.press("Enter");await typeOn(page,"and the signup page");
+      await expect(composer).toHaveAttribute("placeholder",/^Sending/);await expect(composer).toHaveValue("and the signup page");
+      await stopButton.click();hold.open();
+      await expect(composer,"the draft back before what was typed on").toHaveValue("Fix the login bug\n\nand the signup page");
+      await expect(composer).not.toHaveAttribute("placeholder",/^Sending/);await expect(page.getByTestId("composer-alert")).toHaveCount(0);
+      await shootHere(page,"stopped-send-draft-before-typed");
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+    }
+    expect(sentTexts(harness)).toEqual(["Look at the login page"]);
+  }finally{hold?.open();await harness.close()}
+});
+
+// The draft leaves the composer as the send starts, before the send first waits (its files checked with the server, a running clone,
+// a command such as /goal), so what the person types straight on lands there and is the next message, as the line under the composer
+// says. The composer held the draft being sent, read-only, through each of those waits, and dropped every key typed, saying nothing.
+test("text typed straight on while a send's files are checked lands in the composer and is the next message",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Reply number one."},{text:"Reply number two."}]});
+  let check=null;await page.route(/\/api\/attachments\/validate$/,async route=>{await check?.promise;await route.fallback()});
+  try{
+    const composer=page.getByTestId("composer"),waits=page.getByTestId("composer-sending"),files=text=>page.locator(".user-bubble").filter({hasText:text}).locator(".user-attachments > span");
+    for(const [mode,answer] of [["dark","Reply number one."],["light","Reply number two."]]){
+      await switchMode(page,mode);
+      const note=mode+"-notes.txt",message=`Look at the ${mode} notes`,next=`Next ${mode} message`;
+      await chooseFiles(page,[{name:note,mimeType:"text/plain",buffer:Buffer.from("Notes on the login page.")}]);await expect(chips(page)).toHaveText([note]);
+      check=heldGate();
+      await composer.click();await typeOn(page,message);await page.keyboard.press("Enter");await typeOn(page,next);
+      await expect(composer).toHaveAttribute("placeholder",/^Sending/);
+      await expect(composer,"what was typed while the files were checked").toHaveValue(next);await expect(composer).toBeFocused();
+      await expect(waits).toHaveText(/^Sending.* · your draft stays here until the last message has gone\.$/);
+      await shootHere(page,"typed-while-files-checked");
+      check.open();
+      await expect(files(message),"the message went with its file").toHaveText([note]);
+      await expect(page.getByText(answer,{exact:true})).toBeVisible({timeout:15_000});await expect(composer).not.toHaveAttribute("placeholder",/^Sending/);
+      await expect(composer,"what was typed is the next message").toHaveValue(next);await expect(chips(page)).toHaveCount(0);
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+    }
+    expect(sentTexts(harness)).toEqual(["Look at the login page","Look at the dark notes","Look at the light notes"]);
+  }finally{check?.open();await harness.close()}
+});
+
+test("text typed straight on while /goal sets the thread's goal lands in the composer and stays once the goal is set",async({page})=>{
+  test.setTimeout(90_000);
+  const goalSet=heldGate();
+  const harness=await openComposerApp(page,{hold:message=>message.method==="thread/goal/set"&&message.params?.objective?goalSet.promise:null});
+  try{
+    const composer=page.getByTestId("composer"),panel=page.getByTestId("goal-panel"),objective="Make the login page load in a second";
+    await composer.click();await typeOn(page,"/goal "+objective);await page.keyboard.press("Enter");await typeOn(page,"Then check the signup page");
+    await expect(composer,"what was typed while /goal ran").toHaveValue("Then check the signup page");await expect(composer).toBeFocused();
+    await shootHere(page,"typed-while-goal-is-set");
+    await switchMode(page,"light");await shootHere(page,"typed-while-goal-is-set");
+    goalSet.open();
+    await expect(panel.getByLabel("Objective",{exact:true})).toHaveValue(objective);
+    await expect(composer,"what was typed stays once the goal is set").toHaveValue("Then check the signup page");
+  }finally{goalSet.open();await harness.close()}
 });

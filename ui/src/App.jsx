@@ -731,17 +731,17 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
   useLayoutEffect(()=>{resizeTextarea(composerRef.current,{min:40,max:160})},[prompt]);
   // A send leaves the composer on, with the keyboard, so what the person types straight on while it goes (Sending…) lands there: only
-  // Send and Enter wait for it to have gone, and the draft being sent stays as it is until it has left the composer (sentTextRef).
-  // Send, which turns off with the send, gives the keyboard to the composer. A composer off (a harness not ready, a thread opening)
-  // drops the keyboard on the page: it comes back once the composer is on again. Either way it stays where the person put it
-  // meanwhile (a click outside the composer, another field, a shortcut). sentFromRef: what had the keyboard when the draft was sent.
-  const composerOff=!providerReady||openingThread,sentFromRef=useRef(null),sentTextRef=useRef(null);
+  // Send and Enter wait for it to have gone. The draft sent leaves the composer as the send starts (App's dispatchSend), so no key
+  // typed meanwhile is dropped. Send, which turns off with the send, gives the keyboard to the composer. A composer off (a harness not
+  // ready, a thread opening) drops the keyboard on the page: it comes back once the composer is on again. Either way it stays where the
+  // person put it meanwhile (a click outside the composer, another field, a shortcut). sentFromRef: what had the keyboard when the
+  // draft was sent.
+  const composerOff=!providerReady||openingThread,sentFromRef=useRef(null);
   useEffect(()=>{const away=event=>{if(!wrapRef.current?.contains(event.target))sentFromRef.current=null};window.addEventListener("pointerdown",away,true);return()=>window.removeEventListener("pointerdown",away,true)},[]);
   useLayoutEffect(()=>{
     const from=sentFromRef.current,active=document.activeElement;if(composerOff||!from)return;if(!submitting)sentFromRef.current=null;
     if(!active||active===document.body||active===from)composerRef.current?.focus();
   },[composerOff,submitting]);
-  useLayoutEffect(()=>{if(!submitting||prompt!==sentTextRef.current)sentTextRef.current=null},[prompt,submitting]);
   // The composer's height, on the workspace (--composer-height), ends the thread above it (shell.css) as a draft of several lines, a
   // second row of controls or context chips grow it, the rows of its context chips (--composer-chips) end the new task's welcome
   // above them, and the attachment shelf's height above the composer (--composer-shelf) ends both above its rows. It lands a frame
@@ -844,7 +844,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     requestAnimationFrame(()=>{const node=composerRef.current;if(!node)return;node.focus();const end=node.value.length;node.setSelectionRange(end,end);setCaret(end)});
   }
   // The note about dictation goes once the draft is sent, and how the send went shows in its place.
-  function sendDraft(send){setDictationAlert(null);sentFromRef.current=document.activeElement||document.body;sentTextRef.current=prompt;send?.(prompt)}
+  function sendDraft(send){setDictationAlert(null);sentFromRef.current=document.activeElement||document.body;send?.(prompt)}
   function keyDown(e){
     // A held Enter acts once: only its press completes a command, picks a file or sends, so its repeats do not send what the press
     // completed, or the message only begun with the file it picked.
@@ -1002,7 +1002,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // While a turn runs the same Send button queues or steers; its label and tooltip name which (the icon stays the send icon).
   const sendLabel=running&&!steerFollowUps?"Queue follow-up":running?"Steer agent":"Send message";
   // A draft typed while a send goes waits for it to have gone: the line under the composer says so, and Send's title.
-  const sendingText=sendWaiting?`Sending · waiting for ${agentRuntimeLabel}…`:"Sending…",draftWaits=submitting&&Boolean(prompt.trim())&&prompt!==sentTextRef.current;
+  const sendingText=sendWaiting?`Sending · waiting for ${agentRuntimeLabel}…`:"Sending…",draftWaits=submitting&&Boolean(prompt.trim());
   // starting: Trebell's first load has not yet said which harness runs, so the composer names none. threadSettingsWait: another
   // thread's opening state covers the open thread, so the pickers that change the open thread's own mode and agent wait for it.
   const composerPlaceholder=openingThread?"Opening thread…":submitting?sendingText:starting?"Starting Trebell Code…"
@@ -1014,7 +1014,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef}>{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={[[chip.label,chip.detail].filter(Boolean).join(" · "),chip.path].filter(Boolean).join("\n")}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveContext(chip.path))} title="Remove context"><X size={10}/></button></span>)}</div>}
     <div className="attachment-shelf" ref={shelfRef}>{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/>{attachmentDisplayName(path)}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveAttachment(path))} title={"Remove "+attachmentDisplayName(path)}><X size={10}/></button></span>)}{uploadingFiles.map(file=><span key={file.id} className="uploading" aria-busy="true" title={"Uploading "+file.name+"…"}><LoaderCircle size={11} aria-hidden="true"/><bdi>{file.name}</bdi><small>Uploading…</small></span>)}</div>
-    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setDictationAlert(null);setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={composerPlaceholder} readOnly={submitting&&prompt===sentTextRef.current} disabled={composerOff}/>
+    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setDictationAlert(null);setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={composerPlaceholder} disabled={composerOff}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
@@ -2937,7 +2937,7 @@ export default function App(){
       const dispatching=queued.map(item=>item.id===next.id?{...item,dispatchingAt:Date.now(),autoStartFailed:false}:item);
       try{
         if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
-        await startTurn(next.text,next.attachments,next.model||model,null,null,repositoryFocusPaths(next.attachments,next.contextChips));
+        await startTurn(next.text,next.attachments,next.model||model,null,null,repositoryFocusPaths(next.attachments,next.contextChips),{sentChips:next.contextChips||[]});
         // Its turn exists: only it leaves the queue, as that is now (queueNow). Writing it back from this send's copy would drop a
         // follow-up queued meanwhile, here and below.
         await persistLocalQueue(threadId,queueNow(threadId).filter(item=>item.id!==next.id));
@@ -3712,7 +3712,7 @@ export default function App(){
     // A send of this thread that failed while another view was shown gives its draft and its note back here (dispatchSend).
     // A thread whose own Codex app-server died says so, in one row: its resumes name the death until its next turn, under one id.
     const appServerExit=resumed?.trebellAppServerExit;if(appServerExit?.id)setEvents(prev=>upsertEvent(prev,{id:"app-server-exit-"+appServerExit.id,kind:"error",title:appServerExitText(appServerExit),status:"done",raw:appServerExit}));
-    const failedSend=turnNotesRef.current.takeFailedSend(thread.id);if(failedSend){restoreFailedDraft(failedSend.draft);if(failedSend.alert)setComposerAlert(failedSend.alert)}
+    const failedSend=turnNotesRef.current.takeFailedSend(thread.id);if(failedSend){restoreSentDraft(failedSend.draft);if(failedSend.alert)setComposerAlert(failedSend.alert)}
     if(restoredLocalQueue.some(item=>item.recoveredUncertainDispatch))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(projectError)throw projectError;else if(!openedThread.cwd)setProjectPath(projectPath);
@@ -4159,8 +4159,11 @@ export default function App(){
     rpcRef.current?.request("turn/interrupt",{threadId,turnId}).catch(error=>{turnNotesRef.current.stopFailed(send.threadId,turnId);holdQueue(send.threadId,false);if(String(activeThreadRef.current?.id||"")===send.threadId){stopKeyRef.current=null;setStoppingThreadId(null)}showActionError(error,"Could not stop turn")});
   }
   // pressed: the presses counted at the press that sent it (terminal-keyboard.js), as of which its new worktree's setup terminal asks
-  // for the keyboard when it opens the drawer, seconds later.
-  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false,pressed=terminalPresses()}={}){
+  // for the keyboard when it opens the drawer, seconds later. sentChips: the context chips that went with it, which leave the composer
+  // with its files once it has gone: a follow-up's own (the queue's, Send now's), none for a goal resumed, and otherwise the composer's
+  // as the send was made (a recipe, a goal set). The composer's chips as the queue started a follow-up went, a chip cited there
+  // meanwhile for the next message among them, and their files stayed on the shelf as plain attachments.
+  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false,sentChips=goalResume?[]:contextChips,pressed=terminalPresses()}={}){
     // The view the send was made from: its composer's hold (send()) and the open count (openThread, newChat). A new task's send keeps
     // that view only while no thread is shown or opening and the hold is still its own (another thread opened, or a new task opened
     // from one, released it); with no hold, while nothing was opened since.
@@ -4232,7 +4235,7 @@ export default function App(){
       if(turnId){const key=turnInfoKey(thread.id,turnId),mode=permissionModeLabel(permissionModeOverride||permissionMode),sentModel=modelMeta?.[modelId]?.name||compactModelLabel(modelId);if(key&&(mode||sentModel))setTurnInfo(prev=>({...prev,[key]:{...prev[key],...(sentModel?{model:sentModel}:{}),...(mode?{mode}:{})}}))}
       // The files and context sent leave the composer once the send has gone; what the person added there meanwhile (a screenshot
       // pasted while it said Sending…) stays for the next message.
-      setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}if(shown())dropSentDraft({attachments:paths,contextChips});return{thread,turnId};
+      setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}if(shown())dropSentDraft({attachments:paths,contextChips:sentChips});return{thread,turnId};
     }catch(error){
       if(pendingSends.get(pendingSend.threadId)===pendingSend)pendingSends.delete(pendingSend.threadId);
       if(pendingSend.stopped&&error&&typeof error==="object")error.trebellSendStopped=true;
@@ -4311,22 +4314,29 @@ export default function App(){
     }catch{}
     return result;
   }
+  // The files and context chips that went with a send leave the composer, each chip with its file (addContextPath), so a chip never
+  // goes while its file stays on the shelf as a plain attachment.
   function dropSentDraft(draft){
-    const files=new Set(draft?.attachments||[]),chips=new Set((draft?.contextChips||[]).map(item=>typeof item==="string"?item:JSON.stringify(item)));
+    const sentChips=draft?.contextChips||[],files=new Set([...(draft?.attachments||[]),...sentChips.map(item=>item?.path).filter(Boolean)]),chips=new Set(sentChips.map(item=>typeof item==="string"?item:JSON.stringify(item)));
     if(files.size)setAttachments(current=>current.filter(path=>!files.has(path)));
     if(chips.size)setContextChips(current=>current.filter(item=>!chips.has(typeof item==="string"?item:JSON.stringify(item))));
   }
   // The files and context of a send still on its way, back beside what the composer holds (its text is in the conversation).
   function returnSentDraft(draft){if(draft&&(draft.attachments?.length||draft.contextChips?.length))restoreFailedDraft({attachments:draft.attachments,contextChips:draft.contextChips})}
-  function restoreFailedDraft(draft){
+  // A send from the composer that does not go (it failed, Stop ended it, or it was kept: a harness switch, a check that failed) gives
+  // its draft back before what the person typed on meanwhile, a blank line between, its files and context beside the ones added
+  // since. It went back only into an empty composer, so a follow-up typed on after was lost, and a send's under a note that called it
+  // a failed background draft, which went into the next message.
+  function restoreSentDraft(draft){restoreFailedDraft(draft,"\n\n")}
+  function restoreFailedDraft(draft,between="\n\n--- recovered failed background draft ---\n"){
     setPrompt(current=>{
       const next=String(draft?.text||"");if(!next)return current;
       if(!String(current||"").trim())return next;
       if(String(current).includes(next))return current;
-      return next+"\n\n--- recovered failed background draft ---\n"+current;
+      return next.replace(/\s+$/,"")+between+current;
     });
-    setAttachments(current=>[...new Set([...(draft?.attachments||[]),...(current||[])])]);
-    setContextChips(current=>{
+    if(draft?.attachments?.length)setAttachments(current=>[...new Set([...draft.attachments,...(current||[])])]);
+    if(draft?.contextChips?.length)setContextChips(current=>{
       const merged=[];const seen=new Set();
       for(const item of [...(draft?.contextChips||[]),...(current||[])]){
         const key=typeof item==="string"?item:JSON.stringify(item);
@@ -4339,15 +4349,17 @@ export default function App(){
     try{await api("/api/stashes",{method:"POST",body:draft});return{ok:true,error:""}}
     catch(error){return{ok:false,error:error?.message||String(error)||"Unknown stash error"}}
   }
+  // A fan-out that cannot start keeps the draft ("kept"): the composer gives it back (dispatchSend).
   async function sendModelFanout(text){
     const fanout=[...new Set(selectedModels.filter(id=>models.includes(id)))];if(activeThread?.id||running||fanout.length<2)return false;
     if(!runtimeCapabilities.multiModelFanout)return false;
-    const workspaceError=fanoutWorkspaceError(gitInfo);if(workspaceError){setEvents(prev=>[...prev,{id:"fanout-workspace-"+Date.now(),kind:"error",title:workspaceError,status:"done",raw:{}}]);return true}
-    if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"fanout-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{}}]);return true}
-    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"fanout-video-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return true}
-    try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"fanout-attachment-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return true}
+    const workspaceError=fanoutWorkspaceError(gitInfo);if(workspaceError){setEvents(prev=>[...prev,{id:"fanout-workspace-"+Date.now(),kind:"error",title:workspaceError,status:"done",raw:{}}]);return "kept"}
+    if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"fanout-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{}}]);return "kept"}
+    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"fanout-video-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return "kept"}
+    try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"fanout-attachment-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return "kept"}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd};
-    setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
+    // Its text left the composer as the send started; its files and context leave it now, and what was added meanwhile stays.
+    setPromptHistoryIndex(-1);dropSentDraft(draft);setEvents([]);resetAssistantStream();setSection("chat");
     const launches=fanout.map(modelId=>startDetachedTurn(draft.text,draft.attachments,modelId,{forceWorktree:true,basePath:draft.projectPath,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips)}).then(result=>({ok:true,modelId,result})).catch(error=>({ok:false,modelId,error})));
     // What came of each launch is told once all have answered, by background-send-outcome.js, which loads then: should it not load,
     // the draft of a launch that failed goes back to the composer.
@@ -4355,13 +4367,17 @@ export default function App(){
     return true;
   }
   // A send that starts with "/" may be a command rather than a message (a project's recipe or one of the composer's commands), which
-  // turn-support.js runs (runSlashCommand): true when it ran, "kept" when the composer keeps what it holds, false for text that names
-  // no command. A send made before that module has loaded waits for it; one that cannot load it is not sent, and the draft is kept.
-  async function handleSpecial(text){
+  // turn-support.js runs (runSlashCommand): true when it ran, "kept" when the composer keeps the draft, which goes back (keepDraft), or
+  // what the command put there (/plan), false for text that names no command. A send made before that module has loaded waits for it;
+  // one that cannot load it is not sent, and the draft is kept. What the person typed while it ran stays, after what comes back.
+  async function handleSpecial(text,keepDraft){
     if(!text.startsWith("/"))return null;
     let support;try{support=await loadTurnSupport()}
-    catch(error){setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return "kept"}
-    return support.runSlashCommand({currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,running,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt,setGoal,setEvents,setComposerAlert},text);
+    catch(error){keepDraft();setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return "kept"}
+    let filled=false;const fill=value=>{filled=true;restoreSentDraft({text:typeof value==="function"?value(""):String(value??"")})};
+    const result=await support.runSlashCommand({currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,running,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt:fill,setGoal,setEvents,setComposerAlert},text);
+    if(result==="kept"&&!filled)keepDraft();
+    return result;
   }
   async function compactContext(){
     if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
@@ -4385,57 +4401,67 @@ export default function App(){
     const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim(),sendView=submittingRef.current,pressed=terminalPresses();if(!text)return;
     setComposerAlert(null);
     if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
-    if(text.startsWith("/")){const special=await handleSpecial(text);if(special){if(special===true)setPrompt("");return}}
+    // The draft's text leaves the composer as the send starts, before the send first waits (a command such as /goal or /compact, a
+    // clone that runs, its files checked with the server), so what the person types straight on lands there, for the next message, as
+    // the line under the composer says. A send kept here (a harness switch, a check that failed) gives it back before what was typed
+    // meanwhile (keepDraft), as one that fails does. The composer held it, read-only, through those waits, and dropped every key typed.
+    setPrompt(current=>current===visiblePrompt?"":current);
+    const keepDraft=()=>restoreSentDraft({text:visiblePrompt});
+    if(text.startsWith("/")){const special=await handleSpecial(text,keepDraft);if(special)return}
     // Nothing new is sent while a harness switch is pending: the server may already run the new harness behind the current transport.
-    if(runtimeSwitchRef.current){const label=agentRuntimeName(runtimeSwitchRef.current.to);setEvents(prev=>[...prev.filter(item=>item.id!=="runtime-switching"),{id:"runtime-switching",kind:"error",title:`Trebell is switching to ${label}. Your draft was kept; send it again once ${label} is ready.`,status:"done",raw:{}}]);return}
+    if(runtimeSwitchRef.current){keepDraft();const label=agentRuntimeName(runtimeSwitchRef.current.to);setEvents(prev=>[...prev.filter(item=>item.id!=="runtime-switching"),{id:"runtime-switching",kind:"error",title:`Trebell is switching to ${label}. Your draft was kept; send it again once ${label} is ready.`,status:"done",raw:{}}]);return}
     // Never route a prompt elsewhere while the harness transport is down: keep the draft until it reconnects.
-    if(!bootstrap.mock&&(!rpc||rpcStatus!=="connected")){setEvents(prev=>[...prev.filter(item=>item.id!=="transport-reconnecting"),{id:"transport-reconnecting",kind:"error",title:`${agentRuntimeLabel} is ${transportConnectedRef.current?"reconnecting":"not connected yet"}. Your draft was kept; send it again once ${agentRuntimeLabel} is connected.`,status:"done",raw:{}}]);return}
+    if(!bootstrap.mock&&(!rpc||rpcStatus!=="connected")){keepDraft();setEvents(prev=>[...prev.filter(item=>item.id!=="transport-reconnecting"),{id:"transport-reconnecting",kind:"error",title:`${agentRuntimeLabel} is ${transportConnectedRef.current?"reconnecting":"not connected yet"}. Your draft was kept; send it again once ${agentRuntimeLabel} is connected.`,status:"done",raw:{}}]);return}
     // A started thread continues only on the harness that owns it (T3 Code locks a started thread to its provider).
     const threadOwner=threadOwnerElsewhere(activeThreadRef.current,threadMeta[activeThreadRef.current?.id],agentRuntime);
-    if(threadOwner){const label=agentRuntimeName(threadOwner);setEvents(prev=>[...prev.filter(item=>item.id!=="thread-owned-elsewhere"),{id:"thread-owned-elsewhere",kind:"error",title:`This chat belongs to ${label}. Your draft was kept; open the chat from the sidebar to continue it in ${label}.`,status:"done",raw:{}}]);return}
-    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
+    if(threadOwner){keepDraft();const label=agentRuntimeName(threadOwner);setEvents(prev=>[...prev.filter(item=>item.id!=="thread-owned-elsewhere"),{id:"thread-owned-elsewhere",kind:"error",title:`This chat belongs to ${label}. Your draft was kept; open the chat from the sidebar to continue it in ${label}.`,status:"done",raw:{}}]);return}
+    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){keepDraft();setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
+    // A follow-up's edit, a follow-up queued or one steered that does not go comes back before what was typed on meanwhile, with its
+    // files and context (restoreSentDraft).
     if(runtimeCapabilities.nativeQueue&&queuedEditId&&rpc&&activeThread&&queueMode!=="local"){
-      const draft={text,attachments:[...attachments],contextChips:[...contextChips]};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
+      const draft={text,attachments:[...attachments],contextChips:[...contextChips]};setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
       try{
         if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips,{queuedId:queuedEditId}))return;
-        setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-update-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not support editing native queued follow-ups.`,status:"done",raw:{}}]);return;
-      }catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
+        restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"queue-update-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not support editing native queued follow-ups.`,status:"done",raw:{}}]);return;
+      }catch(error){restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
     }
-    // An edit of a follow-up in Trebell's own queue is saved in its place there.
+    // An edit of a follow-up in Trebell's own queue is saved in its place there; its files and context leave the composer once it is.
     if(queuedEditId&&activeThread?.id&&queued.some(item=>item.id===queuedEditId&&!item.native)){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips]};
-      try{await validateAttachmentPaths(draft.attachments);await persistLocalQueue(activeThread.id,queued.map(item=>item.id===queuedEditId?{...item,...draft}:item));setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setQueuedEditId(null)}
-      catch(error){setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}
+      try{await validateAttachmentPaths(draft.attachments);await persistLocalQueue(activeThread.id,queued.map(item=>item.id===queuedEditId?{...item,...draft}:item));setPromptHistoryIndex(-1);dropSentDraft(draft);setQueuedEditId(null)}
+      catch(error){keepDraft();setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}
       return;
     }
     // A follow-up waits in the queue of the thread it follows, which sends it once the turn ends; with no thread shown there is no
-    // such queue, and the draft starts a thread of its own.
+    // such queue, and the draft starts a thread of its own. A steer that fails says why, as a queueing that fails does: it was thrown
+    // to a send no one waited for, and nothing said it had not gone.
     if(running&&activeThread?.id){
-      const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
-      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,attachments:draft.attachments,turnId:activeTurnId}])}catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);throw error}return}
+      const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
+      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,attachments:draft.attachments,turnId:activeTurnId}])}catch(error){restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"steer-error-"+Date.now(),kind:"error",title:"Could not steer the agent: "+(error.message||String(error)),status:"done",raw:{}}])}return}
       if(runtimeCapabilities.nativeQueue&&rpc&&activeThread&&queueMode!=="local"){
         try{
           if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips))return;
           const item={id:crypto.randomUUID(),createdAt:Date.now(),...draft};await persistLocalQueue(activeThread.id,[...queued,item]);return;
         }
-        catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-add-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
+        catch(error){restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"queue-add-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
       }
       try{await validateAttachmentPaths(draft.attachments);const item={id:crypto.randomUUID(),createdAt:Date.now(),...draft};await persistLocalQueue(activeThread.id,[...queued,item])}
-      catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-local-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}return;
+      catch(error){restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"queue-local-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}return;
     }
     // Never start a turn with a model the active runtime does not list: a stale pick from another harness, or a catalog that is loading or failed.
     if(!modelsRef.current.includes(model)&&selectedModels.filter(id=>modelsRef.current.includes(id)).length<2){
+      keepDraft();
       const reason=modelsLoadingRef.current||!initialLoaded?`${agentRuntimeLabel} models are still loading`:modelError?`${agentRuntimeLabel} has no usable model: ${modelError}`:`No ${agentRuntimeLabel} model is available`;
       setEvents(prev=>[...prev.filter(item=>item.id!=="model-unavailable"),{id:"model-unavailable",kind:"error",title:reason+". Your draft was kept; send it again once a model is selected.",status:"done",raw:{model:model||null}}]);return;
     }
-    try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
-    if(await sendModelFanout(text))return;
-    try{await validateAttachmentPaths(attachments)}catch(e){setEvents(prev=>[...prev,{id:"attachment-error-"+Date.now(),kind:"error",title:e.message,status:"done",raw:{}}]);return}
+    try{await waitForActiveClone()}catch(error){keepDraft();setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
+    const fanned=await sendModelFanout(text);if(fanned){if(fanned==="kept")keepDraft();return}
+    try{await validateAttachmentPaths(attachments)}catch(e){keepDraft();setEvents(prev=>[...prev,{id:"attachment-error-"+Date.now(),kind:"error",title:e.message,status:"done",raw:{}}]);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};if(sendView)sendDraftsRef.current.set(sendView,draft);
-    setPrompt("");setPromptHistoryIndex(-1);setSection("chat");
+    setPromptHistoryIndex(-1);setSection("chat");
     if(bootstrap.mock){
       if(draft.attachments.length||draft.contextChips.length){
-        restoreFailedDraft(draft);
+        restoreSentDraft(draft);
         setEvents([{id:"error",kind:"error",title:"Direct fallback cannot send attachments or context. Reconnect the agent harness and retry.",status:"done",raw:{}}]);
         return;
       }
@@ -4444,21 +4470,21 @@ export default function App(){
         const d=await api("/api/chat/direct",{method:"POST",body:{prompt:draft.text,model:draft.model}});
         setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:(modelProviderLabel(provider)||"Provider")+" direct response",status:"done",raw:{}}]);
       }catch(e){
-        setMessages(prev=>prev.filter(message=>message.id!==clientId));restoreFailedDraft(draft);setEvents([{id:"error",kind:"error",title:e.message,status:"done",raw:{}}]);
+        setMessages(prev=>prev.filter(message=>message.id!==clientId));restoreSentDraft(draft);setEvents([{id:"error",kind:"error",title:e.message,status:"done",raw:{}}]);
       }finally{setRunning(false)}
       return;
     }
     // A turn/start that fails has no turn to show it on: the error goes next to the composer that kept the draft, never onto the
     // last turn's card (a worktree that could not be set up says why in its own card).
-    // A send Stop ended before its turn existed puts the draft back as it was, with no note: nothing went wrong.
+    // A send Stop ended before its turn existed puts the draft back with no note: nothing went wrong.
     // A send whose thread another thread or a new task replaced on screen, or is replacing (an open on its way), leaves that view
     // alone: its draft and note wait for its own thread (openThread). One that failed before it had a thread puts its draft back
     // beside the composer's. The files and context of one that goes through left the composer with its hold when another view was
     // shown (openThread), so what the composer shown holds was added there and stays, the same workspace file too.
-    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips),{pressed}).catch(e=>{
+    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips),{pressed,sentChips:draft.contextChips}).catch(e=>{
       const alert=!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e))?{kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."}:null;
       if(e?.trebellSendThreadId&&String(openingThreadRef.current||activeThreadRef.current?.id||"")!==e.trebellSendThreadId){turnNotesRef.current.failSend(e.trebellSendThreadId,{draft,alert});return}
-      restoreFailedDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents([]);if(alert)setComposerAlert(alert);
+      restoreSentDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents([]);if(alert)setComposerAlert(alert);
     });
   }
   // A send belongs to the thread it was made in: a new task opened from there while it is on its way releases the composer
@@ -4487,6 +4513,21 @@ export default function App(){
     // composer.
     startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips)}).catch(error=>import("./background-send-outcome.js").then(({settleFailedBackgroundSend})=>settleFailedBackgroundSend({error,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),()=>{restoreFailedDraft(draft);showActionError(error,"Background task failed")}));
   }
+  // A follow-up's button pressed from the keyboard keeps the keyboard, as the sidebar's rows do, instead of dropping it on the page with
+  // the button its action takes away or turns off: Edit gives it to the composer, where the edit is made; Send now and Remove, whose
+  // follow-up leaves the queue, give it to the same button of the follow-up that comes up in its place, or of the one before, or to the
+  // composer once none is left; a move keeps it on the moved follow-up's button, or its other move button once an end of the queue
+  // turns that one off. A click leaves the focus to the browser, so a space typed next presses no button the person did not aim at.
+  // queueKeysRef: the press, until its action has done what it does (queueKeysDone), which the layout effect below then acts on; one
+  // whose action fails or does nothing is let go. A press waits for its own action only: Codex starting a follow-up meanwhile, which
+  // moved the pressed one up, was taken for it, and a press Codex refused pulled the keyboard to its follow-up's button the next time
+  // the queue moved that follow-up. queueShownRef: the queue as the last layout showed it.
+  const queueKeysRef=useRef(null),queueShownRef=useRef(queued);
+  function pressQueued(event,item,index,button,action,label){
+    const press=event.detail?null:{id:item.id,at:index,button,threadId:activeThreadRef.current?.id,done:false};queueKeysRef.current=press;
+    return runUserAction(async()=>{try{return await action()}finally{if(press&&!press.done&&queueKeysRef.current===press)queueKeysRef.current=null}},label);
+  }
+  function queueKeysDone(id){const press=queueKeysRef.current;if(press?.id===id)press.done=true}
   async function sendQueuedNow(item){
     // The follow-up being edited waits for its edit (its Send now is disabled, and the keyboard's steer skips it): sending it now
     // would send the text the composer is changing. One on its way is being sent already (queuedOnItsWay).
@@ -4501,7 +4542,7 @@ export default function App(){
         try{
           await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});
           await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:originalInput});
-          setQueued(prev=>prev.filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
+          setQueued(prev=>prev.filter(q=>q.id!==item.id));queueKeysDone(item.id);followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
         }catch(error){
           let restored;
           try{
@@ -4520,7 +4561,7 @@ export default function App(){
       }
       if(running)return;
       const result=await rpc.request("thread/queue/start",{threadId:activeThread.id,queuedSubmissionId:item.id});const turnId=result?.turn?.id||null;
-      setRunning(Boolean(turnId));setActiveTurnId(turnId);setQueued(prev=>prev.filter(q=>q.id!==item.id));
+      setRunning(Boolean(turnId));setActiveTurnId(turnId);setQueued(prev=>prev.filter(q=>q.id!==item.id));queueKeysDone(item.id);
       if(turnId){followConversationEnd();setMessages(prev=>[...prev,{id:item.clientUserMessageId||("queue-start-"+item.id),role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId}])}return;
     }
     // From the press on it is on its way (localQueueStartRef), until what became of it is written: its files are checked and its
@@ -4537,7 +4578,7 @@ export default function App(){
         try{
           await persistLocalQueue(activeThread.id,queueNow(activeThread.id).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now()}:q));
           await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});steered=true;
-          await persistLocalQueue(activeThread.id,queueNow(activeThread.id).filter(q=>q.id!==item.id));followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
+          await persistLocalQueue(activeThread.id,queueNow(activeThread.id).filter(q=>q.id!==item.id));queueKeysDone(item.id);followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
         }catch(error){if(!steered)await clearQueuedDispatch(activeThread.id,item.id);throw error}
       }
       if(running)return;
@@ -4545,8 +4586,8 @@ export default function App(){
       const threadId=activeThread?.id||null,dispatching=queueNow(threadId).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now(),autoStartFailed:false}:q);
       if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
       try{
-        await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips));
-        await persistLocalQueue(threadId,queueNow(threadId).filter(q=>q.id!==item.id));
+        await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips),{sentChips:item.contextChips||[]});
+        await persistLocalQueue(threadId,queueNow(threadId).filter(q=>q.id!==item.id));queueKeysDone(item.id);
       }catch(error){
         // Stop ended it before its turn existed: it stays in its place in the queue, which is left as it is but for its dispatch mark, as
         // when the queue starts it. A start that failed marks only it to retry, in the queue as that is now (queueNow).
@@ -4563,33 +4604,37 @@ export default function App(){
     // one on its way goes as it is, so an edit of it would send it twice (queuedOnItsWay).
     if(queuedEditId||queuedOnItsWay(item))return;
     if(prompt.trim()||attachments.length||contextChips.length)setQueueEditDraft({text:prompt,attachments:[...attachments],contextChips:[...contextChips]});
-    setQueuedEditId(item.id);setPrompt(item.draftText??item.text??"");setAttachments(item.attachments||[]);setContextChips(item.contextChips||[]);
+    setQueuedEditId(item.id);setPrompt(item.draftText??item.text??"");setAttachments(item.attachments||[]);setContextChips(item.contextChips||[]);queueKeysDone(item.id);
   }
   function cancelQueuedEdit(){setPrompt("");setAttachments([]);setContextChips([]);setQueuedEditId(null)}
   async function removeQueued(item){
     if(queuedOnItsWay(item))return;
-    if(item?.native&&rpc&&activeThread?.id){await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});if(queuedEditId===item.id)cancelQueuedEdit();setQueued(prev=>prev.filter(entry=>entry.id!==item.id));return}
+    if(item?.native&&rpc&&activeThread?.id){await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});if(queuedEditId===item.id)cancelQueuedEdit();setQueued(prev=>prev.filter(entry=>entry.id!==item.id));queueKeysDone(item.id);return}
     if(activeThread?.id)await persistLocalQueue(activeThread.id,queued.filter(entry=>entry.id!==item.id));else setQueued(prev=>prev.filter(entry=>entry.id!==item.id));
-    if(queuedEditId===item.id)cancelQueuedEdit();
+    queueKeysDone(item.id);if(queuedEditId===item.id)cancelQueuedEdit();
   }
   async function moveQueued(item,direction){
     if(queuedOnItsWay(item))return;
     const next=reorderQueue(queued,item.id,direction);if(next===queued||next.map(entry=>entry.id).join("\0")===queued.map(entry=>entry.id).join("\0"))return;
-    if(item?.native&&rpc&&activeThread?.id){await rpc.request("thread/queue/reorder",{threadId:activeThread.id,queuedSubmissionIds:next.map(entry=>entry.id)});setQueued(next);return}
+    if(item?.native&&rpc&&activeThread?.id){await rpc.request("thread/queue/reorder",{threadId:activeThread.id,queuedSubmissionIds:next.map(entry=>entry.id)});setQueued(next);queueKeysDone(item.id);return}
     if(activeThread?.id)await persistLocalQueue(activeThread.id,next);else setQueued(next);
+    queueKeysDone(item.id);
   }
-  // A follow-up's Remove, Move up or Move down pressed from the keyboard keeps the keyboard in the queue, as the sidebar's rows do,
-  // instead of dropping it on the page with the follow-up taken away, or with the button a move took along or turned off at an end of
-  // the queue: it goes to the same button of the follow-up that came up in its place, or of the one before, or to the composer once none
-  // is left, and after a move to the moved follow-up's button, or its other move button. A click leaves the focus to the browser, so a
-  // space typed next presses no button the person did not aim at. queueKeysRef: the press, until the queue shows what it did.
-  const queueKeysRef=useRef(null);
   useLayoutEffect(()=>{
-    const press=queueKeysRef.current,at=press?queued.findIndex(item=>item.id===press.id):-1;if(!press||at===press.at)return;queueKeysRef.current=null;
-    const active=document.activeElement;if(press.threadId!==activeThreadRef.current?.id||active&&active!==document.body&&!active.closest(".queued-message"))return;
-    const cards=conversationScrollRef.current?.querySelectorAll(".queued-message")||[],button=(card,index)=>{const node=card?.querySelectorAll(":scope>.queued-message-actions>button")[index];return node&&!node.disabled?node:null};
-    (at<0?button(cards[press.at],press.button)||button(cards[press.at-1],press.button)||document.querySelector('[data-testid="composer"]'):button(cards[at],press.button)||button(cards[at],press.button===2?3:2))?.focus();
-  },[queued]);
+    const before=queueShownRef.current;queueShownRef.current=queued;
+    const press=queueKeysRef.current;if(!press?.done)return;queueKeysRef.current=null;
+    const active=document.activeElement,composer=document.querySelector('[data-testid="composer"]');
+    if(press.threadId!==activeThreadRef.current?.id||active&&active!==document.body&&!active.closest(".queued-message"))return;
+    if(press.button===1){if(queuedEditId===press.id&&composer){composer.focus();composer.setSelectionRange(composer.value.length,composer.value.length)}return}
+    const cards=conversationScrollRef.current?.querySelectorAll(".queued-message")||[],button=(index,which)=>{const node=index<0?null:cards[index]?.querySelectorAll(":scope>.queued-message-actions>button")[which];return node&&!node.disabled?node:null};
+    const at=queued.findIndex(item=>item.id===press.id);
+    if(at>=0){(button(at,press.button)||(press.button===2||press.button===3?button(at,press.button===2?3:2):null))?.focus();return}
+    // Gone: the follow-up after it that is still queued, or else the one before it, as the queue was just before it went.
+    const was=before.findIndex(item=>item.id===press.id),ids=queued.map(item=>item.id),still=item=>ids.includes(item.id);
+    const after=was<0?null:before.slice(was+1).find(still),previous=was<0?null:before.slice(0,was).reverse().find(still);
+    const next=was<0?button(press.at,press.button)||button(press.at-1,press.button):button(after?ids.indexOf(after.id):-1,press.button)||button(previous?ids.indexOf(previous.id):-1,press.button);
+    (next||composer)?.focus();
+  },[queued,queuedEditId]);
   async function stop(){
     // A send whose turn has not started stops too. The agent relay ends it where it waits (for the harness to start, or before its
     // prompt) and the send puts its draft back; Codex can interrupt a turn only once it has started it (turn/started), so that Stop
@@ -5512,9 +5557,9 @@ export default function App(){
               {shownApproval&&<div className="inline-approval"><ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {/* A follow-up's button runs once for a double click or Enter held on it, as a thread's menu item does: the rest of the press
                   does nothing, so the second click never lands on the next follow-up's button, which comes up in its place once the first
-                  takes this one out or moves it. A follow-up on its way reads as being sent, its buttons off (queuedOnItsWay). Its move
-                  buttons and Remove (the third to fifth) pressed from the keyboard keep the keyboard in the queue (queueKeysRef). */}
-              {queued.map((item,index)=>{const sending=!item.native&&Boolean(item.dispatchingAt),sendingTitle=sending?"This follow-up is already being sent":undefined;return <div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span title={sending?"This follow-up is being sent: it leaves the queue once it has gone, and stays here if it cannot be sent.":queueHeld&&!item.native&&!item.autoStartFailed?"A Stop holds the queue: it goes on once this thread runs a turn again. Send now sends this follow-up now.":undefined}>{item.native?`Queued in ${agentRuntimeLabel}`:sending?"Sending…":item.autoStartFailed?"Queued · retry needed":queueHeld?"Queued · held after Stop":"Queued"}{queuedEditId===item.id?" · editing"+(queueEditDraft?" · your draft returns after":""):""}</span><p>{item.text}</p><div className="queued-message-actions" onClick={event=>{const button=event.target.closest("button");if(!button)return;ignorePressRest(!event.detail);const pressed=[...event.currentTarget.children].indexOf(button);queueKeysRef.current=!event.detail&&pressed>1?{id:item.id,at:index,button:pressed,threadId:activeThreadRef.current?.id}:null}}><button disabled={sending||(running&&!runtimeCapabilities.steering)||queuedEditId===item.id} title={sendingTitle||(queuedEditId===item.id?"Save the edit with Enter, or press Escape, before sending it":running&&!runtimeCapabilities.steering?cannotSteerReason:undefined)} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>runUserAction(()=>editQueued(item),"Could not edit queued follow-up")} disabled={sending||Boolean(queuedEditId)||item.editable===false} title={sendingTitle||(queuedEditId&&queuedEditId!==item.id?"Save the follow-up you are editing, or press Escape, first":undefined)}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={sending||index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={sending||index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button disabled={sending} title={sendingTitle} onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>})}
+                  takes this one out or moves it. A follow-up on its way reads as being sent, its buttons off (queuedOnItsWay). Its buttons
+                  pressed from the keyboard keep the keyboard (pressQueued): Edit in the composer, the others in the queue. */}
+              {queued.map((item,index)=>{const sending=!item.native&&Boolean(item.dispatchingAt),sendingTitle=sending?"This follow-up is already being sent":undefined;return <div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span title={sending?"This follow-up is being sent: it leaves the queue once it has gone, and stays here if it cannot be sent.":queueHeld&&!item.native&&!item.autoStartFailed?"A Stop holds the queue: it goes on once this thread runs a turn again. Send now sends this follow-up now.":undefined}>{item.native?`Queued in ${agentRuntimeLabel}`:sending?"Sending…":item.autoStartFailed?"Queued · retry needed":queueHeld?"Queued · held after Stop":"Queued"}{queuedEditId===item.id?" · editing"+(queueEditDraft?" · your draft returns after":""):""}</span><p>{item.text}</p><div className="queued-message-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}><button disabled={sending||(running&&!runtimeCapabilities.steering)||queuedEditId===item.id} title={sendingTitle||(queuedEditId===item.id?"Save the edit with Enter, or press Escape, before sending it":running&&!runtimeCapabilities.steering?cannotSteerReason:undefined)} onClick={event=>pressQueued(event,item,index,0,()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={event=>pressQueued(event,item,index,1,()=>editQueued(item),"Could not edit queued follow-up")} disabled={sending||Boolean(queuedEditId)||item.editable===false} title={sendingTitle||(queuedEditId&&queuedEditId!==item.id?"Save the follow-up you are editing, or press Escape, first":undefined)}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={sending||index===0} onClick={event=>pressQueued(event,item,index,2,()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={sending||index===queued.length-1} onClick={event=>pressQueued(event,item,index,3,()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button disabled={sending} title={sendingTitle} onClick={event=>pressQueued(event,item,index,4,()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>})}
               {!messages.length&&!events.length&&!storeCardTurnIds(shownTurnActivity).length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>

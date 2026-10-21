@@ -161,10 +161,12 @@ for(const action of ["Delete","Archive"]){
 // capabilities, when they are not Codex's own. catalog: the app's state lists the threads' meta as the server does, as a catalog
 // whose full entries (the follow-ups queued among them) a thread reads as it opens, so a reload finds what the window saved.
 // codex.calls: the methods the app asked for, in order; codex.sent(method): the params of each request for that method.
+// codex.held[method], a gate, holds the next request for that method until it opens, others going on meanwhile, and
+// codex.failing[method] refuses the next one with that message, Codex doing nothing of it; each is for one request.
 async function startCodex(page,{name,names=[name],project=false,settings={},modes=[],capabilities=null,catalog=false}){
   const cwd=project?await mkdtemp(join(tmpdir(),"turn-controls-codex-")):process.cwd(),now=Date.now()/1000;
   const threads=names.map((threadName,index)=>({id:"codex-stop-thread"+(index?"-"+(index+1):""),name:threadName,preview:threadName,cwd,createdAt:now-60+index,updatedAt:now-index,status:{type:"idle"},turns:[]})),[thread]=threads;
-  const codex={thread,threads,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null,queue:[],calls:[],requests:[]};
+  const codex={thread,threads,turns:[],interrupts:[],interruptDelayMs:0,holdTurns:false,socket:null,queue:[],calls:[],requests:[],held:{},failing:{}};
   codex.sent=method=>codex.requests.filter(message=>message.method===method).map(message=>message.params||{});
   const live=item=>{const turns=codex.turns.filter(turn=>turn.threadId===item.id&&turn.status!=="refused");return {...item,status:turns.some(turn=>turn.started&&turn.status==="inProgress")?{type:"active",activeFlags:[]}:{type:"idle"},turns:turns.map(turn=>({id:turn.id,status:turn.status,items:[]}))}};
   const upstream=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
@@ -200,9 +202,11 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
   codex.notify=notify;
   wss.on("connection",ws=>{
     sockets.add(ws);codex.socket=ws;ws.on("close",()=>sockets.delete(ws));
-    ws.on("message",raw=>{
+    ws.on("message",async raw=>{
       const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;codex.calls.push(message.method);codex.requests.push(message);
       const params=message.params||{},respond=result=>{if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,result}))};
+      const held=codex.held[message.method];if(held){delete codex.held[message.method];await held.promise}
+      const failure=codex.failing[message.method];if(failure){delete codex.failing[message.method];if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:failure}}));return}
       if(message.method==="turn/start"){
         const turn={id:"codex-turn-"+(codex.turns.length+1),threadId:params.threadId||thread.id,status:"inProgress",started:false,timer:null};codex.turns.push(turn);
         turn.answer=()=>respond({turn:{id:turn.id,status:"inProgress",items:[],startedAt:turn.started?Math.floor(Date.now()/1000):null}});
@@ -227,6 +231,11 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
       if(message.method==="thread/queue/delete"){
         const before=codex.queue.length;codex.queue=codex.queue.filter(item=>item.id!==params.queuedSubmissionId);
         respond({deleted:codex.queue.length<before});notify("thread/queue/changed",{threadId:params.threadId});return;
+      }
+      // An edit of a follow-up in Codex's queue (Edit, then Enter) is saved in its place there.
+      if(message.method==="thread/queue/update"){
+        const item=codex.queue.find(entry=>entry.id===params.queuedSubmissionId)||null;if(item)item.input=params.input;
+        respond({queuedSubmission:item});notify("thread/queue/changed",{threadId:params.threadId});return;
       }
       // A follow-up of Codex's queue the app starts (Send now while no turn runs) leaves the queue and runs as a turn of its own,
       // answered first and then started.
@@ -1705,7 +1714,148 @@ for(const kind of ["Codex","Trebell"]){
       await shootHere(page,"queue-keyboard-moved-to-end-"+kind.toLowerCase());
     }finally{await codex.close()}
   });
+  // Edit and Send now keep the keyboard too: Edit, which turns itself off, gives it to the composer, where the edit is made and saved
+  // with Enter; Send now, whose follow-up leaves the queue (in Trebell's, once its card says it is being sent), gives it to the Send now
+  // of the follow-up that comes up in its place, or to the composer once none is left. Both dropped it on the page.
+  test(`Edit and Send now pressed from the keyboard in ${kind}'s queue keep the keyboard: in the composer for the edit, then on the next follow-up's Send now`,async({page})=>{
+    test.setTimeout(90_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Queue keyboard send now",project:kind==="Trebell"});
+    try{
+      await queueBehindTurn(page,codex,["Queued alpha","Queued beta"]);
+      const texts=page.locator(".queued-message p"),edit=text=>queuedButton(page,text,"Edit"),sendNow=text=>queuedButton(page,text,"Send now");
+      // Dark: Edit on alpha, and the person types on in the composer and saves it with Enter.
+      await reachByKeyboard(page,edit("Queued alpha"));await page.keyboard.press("Enter");
+      await expect(composer(page)).toHaveValue("Queued alpha");
+      await expect(composer(page),"the keyboard after Edit").toBeFocused();
+      await page.keyboard.type(" with the staging config",{delay:8});await expect(composer(page)).toHaveValue("Queued alpha with the staging config");
+      await shootHere(page,"queue-keyboard-edit-"+kind.toLowerCase());
+      await page.keyboard.press("Enter");await expect(texts).toHaveText(["Queued alpha with the staging config","Queued beta"]);
+      // Light: Send now on alpha steers it into the turn, and the keyboard is on beta's Send now; Send now there empties the queue.
+      await toggleMode(page);
+      await reachByKeyboard(page,sendNow("Queued alpha with the staging config"));await page.keyboard.press("Enter");
+      await expect(texts).toHaveText(["Queued beta"]);
+      await expect(sendNow("Queued beta"),"the keyboard after Send now").toBeFocused();
+      await shootHere(page,"queue-keyboard-send-now-"+kind.toLowerCase());
+      await page.keyboard.press("Enter");await expect(page.locator(".queued-message")).toHaveCount(0);
+      await expect(composer(page),"the keyboard once Send now has emptied the queue").toBeFocused();
+      await page.keyboard.type("Typed after Send now",{delay:8});await expect(composer(page)).toHaveValue("Typed after Send now");
+      expect(codex.sent("turn/steer").map(params=>params.input?.[0]?.text),"what Send now steered into the turn").toEqual(["Queued alpha with the staging config","Queued beta"]);
+    }finally{await codex.close()}
+  });
 }
+
+// A press from the keyboard waits only for what its own action does. One Codex refuses waits for nothing more: once the person has put
+// the keyboard on the page, the queue changing later (Codex starting its first follow-up as the turn ends) leaves it there. It was
+// never let go, and the first change that moved its follow-up pulled the keyboard back to that follow-up's Remove.
+// drainOne: Codex starts the first follow-up of its queue as the running turn ends, and that turn runs on.
+async function drainOne(page,codex,left){
+  const turns=codex.turns.length;codex.drainQueue=true;codex.holdTurns=false;
+  await expect.poll(()=>codex.turns.length).toBe(turns+1);codex.holdTurns=true;codex.drainQueue=false;
+  await expect(page.locator(".queued-message p")).toHaveText(left);
+}
+test("a Remove Codex refuses, pressed from the keyboard, says so and leaves the keyboard where the person puts it when the queue changes later",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:1100});
+  const codex=await startCodex(page,{name:"Queue keyboard refused"});
+  try{
+    await queueBehindTurn(page,codex,["Queued alpha","Queued beta","Queued gamma","Queued delta"]);
+    const texts=page.locator(".queued-message p"),remove=text=>queuedButton(page,text,"Remove"),onPage=()=>page.evaluate(()=>document.activeElement===document.body);
+    codex.failing["thread/queue/delete"]="Deliberate delete refusal";
+    await reachByKeyboard(page,remove("Queued delta"));await page.keyboard.press("Enter");
+    await expect(page.getByTestId("app-action-error")).toHaveText("Could not remove queued follow-up: Deliberate delete refusal");
+    await expect(texts).toHaveText(["Queued alpha","Queued beta","Queued gamma","Queued delta"]);
+    await expect(remove("Queued delta"),"the keyboard stays on the Remove refused").toBeFocused();
+    await shootHere(page,"queue-keyboard-remove-refused");
+    // The person clicks the follow-up's text, which puts the keyboard on the page; then Codex starts alpha as the turn ends.
+    await texts.filter({hasText:"Queued beta"}).click();await expect.poll(onPage,{message:"the keyboard on the page"}).toBe(true);
+    await drainOne(page,codex,["Queued beta","Queued gamma","Queued delta"]);
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await expect(remove("Queued delta"),"the queue changing later does not pull the keyboard to the Remove refused").not.toBeFocused();
+    expect(await onPage(),"the keyboard is still on the page").toBe(true);
+  }finally{await codex.close()}
+});
+
+// A Remove pressed from the keyboard hands the keyboard on once its own follow-up has gone: Codex starting another follow-up meanwhile,
+// which moves this one up, is not what the press did. It was taken for it, so the keyboard fell on the page when the follow-up went.
+test("a Remove pressed from the keyboard in Codex's queue hands the keyboard on once its own follow-up has gone, though Codex starts another meanwhile",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:1100});
+  const codex=await startCodex(page,{name:"Queue keyboard drain"});
+  try{
+    await queueBehindTurn(page,codex,["Queued alpha","Queued beta","Queued gamma","Queued delta"]);
+    const texts=page.locator(".queued-message p"),remove=text=>queuedButton(page,text,"Remove");
+    // Codex answers the Remove of delta slowly; meanwhile it starts alpha as the turn ends, and delta moves up.
+    const answer=gate();codex.held["thread/queue/delete"]=answer;
+    await reachByKeyboard(page,remove("Queued delta"));await page.keyboard.press("Enter");
+    await drainOne(page,codex,["Queued beta","Queued gamma","Queued delta"]);
+    await expect(remove("Queued delta"),"the keyboard waits on the Remove while Codex answers").toBeFocused();
+    answer.open();
+    await expect(texts).toHaveText(["Queued beta","Queued gamma"]);
+    await expect(remove("Queued gamma"),"the keyboard on the Remove of the one before, once delta has gone").toBeFocused();
+    await shootHere(page,"queue-keyboard-remove-after-codex-started-one");
+  }finally{await codex.close()}
+});
+
+// A follow-up whose queueing or steer fails comes back to the composer before what the person typed straight on while it said
+// Sending…, and its file beside the one added meanwhile: it went back only into an empty composer, so once the person had typed on, the
+// follow-up's words and its files were lost. A steer that fails says why, as a queueing that fails does; it said nothing.
+for(const how of ["queue","steer"]){
+  test(`a follow-up whose ${how==="queue"?"queueing":"steer"} fails comes back before what was typed on while it said Sending…, with its file`,async({page})=>{
+    test.setTimeout(60_000);
+    await page.setViewportSize({width:1280,height:800});
+    const codex=await startCodex(page,{name:"Follow-up "+how+" fails",settings:how==="steer"?{followUpMode:"steer"}:{}});
+    const chips=page.locator(".attachment-shelf > span"),method=how==="queue"?"thread/queue/add":"turn/steer";
+    try{
+      codex.holdTurns=true;
+      await sendTyped(page,"Main task.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+      await expect(stop(page)).toBeVisible();
+      await typeInComposer(page,"Use the staging config");await pasteImage(page,"staging.png");await expect(chips).toHaveText(["staging.png"]);
+      const answer=gate();codex.held[method]=answer;codex.failing[method]="Deliberate "+how+" failure";
+      await page.keyboard.press("Enter");
+      await expect(composer(page)).toHaveValue("");await expect(chips).toHaveCount(0);
+      await page.keyboard.type("and rerun",{delay:20});await pasteImage(page,"rerun.png");
+      await expect(composer(page),"what was typed on while it said Sending…").toHaveValue("and rerun");await expect(chips).toHaveText(["rerun.png"]);
+      answer.open();
+      await expect(composer(page),"the follow-up back before what was typed on").toHaveValue("Use the staging config\n\nand rerun");
+      await expect(chips,"its file back beside the one added meanwhile").toHaveText(["staging.png","rerun.png"]);
+      await expect(page.locator(".tool-event.kind-error").filter({hasText:"Deliberate "+how+" failure"}),"why it did not go").toContainText((how==="queue"?"Could not queue follow-up":"Could not steer the agent")+": Deliberate "+how+" failure");
+      await expect(page.locator(".queued-message")).toHaveCount(0);
+      await shoot(page,"follow-up-"+how+"-failed-typed-on");
+    }finally{await codex.close()}
+  });
+}
+
+// A follow-up the queue starts takes only its own files and context from the composer: a context chip cited there meanwhile, for the
+// next message, stays a context chip. Its chip went, and its file stayed on the shelf as a plain attachment, to go with the next message
+// as one.
+test("a context chip cited while a follow-up waits in Trebell's queue stays a context chip once the queue starts the follow-up",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Queue start with a chip",project:true});
+  const context=page.getByTestId("context-chip"),chips=page.locator(".attachment-shelf > span"),cite=page.getByRole("button",{name:"Cite selected assistant text"});
+  try{
+    await sendTyped(page,"First task.");await expect.poll(()=>codex.turns.length).toBe(1);codex.turns[0].answer();codex.turns[0].start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    codex.holdTurns=true;
+    await sendTyped(page,"Second task.");await expect.poll(()=>codex.turns.length).toBe(2);codex.turns[1].answer();codex.turns[1].start();
+    await expect(stop(page)).toBeVisible();
+    await sendTyped(page,"A queued follow-up");await expect(page.locator(".queued-message")).toHaveCount(1);
+    // The person drags across the first reply and cites it for the next message.
+    const box=await page.locator(".assistant-message-text").first().evaluate(node=>{const range=document.createRange();range.selectNodeContents(node);const {left,right,top,bottom}=range.getBoundingClientRect();return {left,right,y:(top+bottom)/2}});
+    await page.mouse.move(box.left+1,box.y);await page.mouse.down();await page.mouse.move(box.right-1,box.y,{steps:6});await page.mouse.up();
+    await cite.click();await expect(context).toHaveCount(1);await expect(chips).toHaveCount(0);
+    // The second turn ends, and the queue starts the follow-up.
+    codex.holdTurns=false;
+    await expect.poll(()=>codex.turns.length,{timeout:10_000}).toBe(3);codex.turns[2].answer();codex.turns[2].start();
+    await expect(page.locator(".queued-message")).toHaveCount(0);await expect(page.locator(".user-bubble").filter({hasText:"A queued follow-up"})).toHaveCount(1);
+    await expect.poll(()=>codex.sent("turn/start").length).toBe(3);
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await expect(context,"the context chip cited for the next message").toHaveCount(1);
+    await expect(chips,"its file is not on the shelf as a plain attachment").toHaveCount(0);
+    await shoot(page,"queue-start-keeps-context-chip");
+  }finally{await codex.close()}
+});
 
 // On a harness that cannot steer a running turn, Send now on a queued follow-up is off while the turn runs, and its title says why
 // and what the person can do, as it does for the follow-up being edited; the shortcut that sends the oldest follow-up now says so
