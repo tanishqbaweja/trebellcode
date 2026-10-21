@@ -77,17 +77,18 @@ test("each level past the last non-folding one folds one more action, up to all 
 });
 
 // A header with a crumb and three foldable actions. The room each level gives the title: the labels 20px, the folded chip 20px,
-// the crumb's icon alone 33px, the theme and palette buttons 68px (gains can set others) and the count-only chip 34px; then each
-// folded action 34px, the first paying for the More actions button. The crumb's shortened name (data-crumb) takes its 33px back.
-// fitted(base,title) fits it with the title that wide and level 0 leaving it base px, and says what the header shows.
+// the crumb's icon alone 33px, the theme and palette buttons 34px (they step aside into More actions, whose button takes the room
+// of one of them; gains can set others) and the count-only chip 34px; then each folded action 34px. The crumb's shortened name
+// (data-crumb) takes its 33px back. fitted(base,title) fits it with the title that wide and level 0 leaving it base px, and says
+// what the header shows.
 function crumbHeader(){
   const control=fold=>{const attributes=new Set();return {dataset:{fold},hasAttribute:name=>attributes.has(name),toggleAttribute:(name,on)=>{if(on)attributes.add(name);else attributes.delete(name);return on}}};
   const controls=["goal","terminal","review"].map(control);
   const folded=()=>controls.filter(node=>node.hasAttribute("data-folded")).map(node=>node.dataset.fold);
-  let gains=[0,20,40,73,141,175],base=0,whole=85;
+  let gains=[0,20,40,73,107,141],base=0,whole=85;
   const header={dataset:{},querySelectorAll:()=>controls,querySelector:()=>({get clientWidth(){
     const fit=Number(header.dataset.fit),count=folded().length;
-    const room=base+gains[Math.min(fit,gains.length-1)]+(count?34*(count-1):0)-(header.dataset.crumb==="short"?33:0);
+    const room=base+gains[Math.min(fit,gains.length-1)]+34*count-(header.dataset.crumb==="short"?33:0);
     return Math.max(0,Math.min(whole,room));
   },get scrollWidth(){return whole}})};
   return {
@@ -96,26 +97,29 @@ function crumbHeader(){
   };
 }
 
-test("from the level where the project crumb keeps only its icon, the crumb gets its shortened name back wherever the title keeps what the level gave it, the theme and palette buttons stepping aside for it at level 3",()=>{
+test("from the level where the project crumb keeps only its icon, the crumb gets its shortened name back wherever the title keeps what the level gave it, the theme and palette buttons stepping aside into More actions for it at level 3",()=>{
   const {fitted,setGains}=crumbHeader();
   // At 1280 beside the Git inspector level 2 leaves the 85px "Repo task one" 80px ("Repo task …", as "Repo task two" reads) and
   // level 3 shows it whole. The crumb's name there would be level 2 again, so the header takes level 4 for it: the theme and
-  // palette buttons step aside for the crumb's name, which it keeps beside the whole title.
+  // palette buttons step aside into More actions for the crumb's name, which it keeps beside the whole title.
   assert.deepEqual(fitted(40),{fit:"4",crumb:"short",folded:[]});
   // So does a title of any length: a 300px one no level shows whole, which level 3 first leaves the readable width, takes level 4
   // the same way, the crumb's name leaving it readable.
   assert.deepEqual(fitted(10,300),{fit:"4",crumb:"short",folded:[]});
-  // Level 3 leaves the title 83px: level 4 shows it whole, the crumb's name with it.
-  assert.deepEqual(fitted(10),{fit:"4",crumb:"short",folded:[]});
-  // Level 3 leaves the title 73px, and level 4 shows it whole with room left for the crumb's shortened name (1240 wide).
-  assert.deepEqual(fitted(0),{fit:"4",crumb:"short",folded:[]});
-  // Level 4 shows it whole, and the crumb's name would cut it to 58px: the crumb keeps its icon.
-  assert.deepEqual(fitted(-50),{fit:"4",crumb:undefined,folded:[]});
-  // Level 4 leaves the title 82px and the count-only chip shows it whole, the crumb keeping its icon, as its name would cut the
-  // title to 83px.
+  // Level 3 leaves the title 83px and level 4 shows it whole, which the crumb's name would cut to 84px: the one pixel a whole
+  // title's measure allows, where the title's ellipsis would show. The crumb keeps its icon.
+  assert.deepEqual(fitted(10),{fit:"4",crumb:undefined,folded:[]});
+  // Level 3 leaves the title 73px, and level 4 shows it whole; the crumb's name would cut it to 74px (1240 wide): the crumb keeps
+  // its icon. (With the theme and palette buttons gone and no More actions button in their place, it had room for its name there.)
+  assert.deepEqual(fitted(0),{fit:"4",crumb:undefined,folded:[]});
+  // Level 4 leaves the title 57px and the count-only chip shows it whole; the crumb's name would cut it to 58px.
+  assert.deepEqual(fitted(-50),{fit:"5",crumb:undefined,folded:[]});
+  // No level that folds nothing shows the title whole (the count-only chip leaves it 82px): level 5 is the first that leaves it
+  // readable, and the crumb's name would cut it to 49px.
   assert.deepEqual(fitted(-59),{fit:"5",crumb:undefined,folded:[]});
-  // Level 4 leaves the title 78px; the count-only chip shows it whole, and the crumb's name would cut it to 79px.
-  assert.deepEqual(fitted(-63),{fit:"5",crumb:undefined,folded:[]});
+  // The count-only chip leaves the title 78px, under its readable width: one action folds, which shows it whole, and the crumb's
+  // name would cut it to 79px.
+  assert.deepEqual(fitted(-63),{fit:String(HEADER_FIT_LEVELS),crumb:undefined,folded:["goal"]});
   // A title no level that folds nothing shows whole has its room at the readable width: at 1280 level 2 (the 80px it had), and
   // where two folded actions give it 112px, the crumb's name comes back only where the title keeps a readable width.
   assert.deepEqual(fitted(40,300),{fit:"2",crumb:undefined,folded:[]});
@@ -130,21 +134,26 @@ test("from the level where the project crumb keeps only its icon, the crumb gets
   // the header goes back to level 3, the crumb keeping its icon.
   setGains([0,20,40,73,73,107]);
   assert.deepEqual(fitted(12),{fit:"3",crumb:undefined,folded:[]});
+  // Level 3 leaves the title 84px of its 85, whole to within the pixel its measure allows, which its ellipsis still shows, and level
+  // 4 all of it, which the crumb's name would cut to 78px: the header keeps level 4 with the crumb's icon instead of going back.
+  setGains([0,20,40,73,100,134]);
+  assert.deepEqual(fitted(11),{fit:"4",crumb:undefined,folded:[]});
 });
 
 test("the crumb's shortened name never cuts a title its icon leaves whole, and a title past 120px shows whole where a level that folds nothing gives it that",()=>{
   const {fitted}=crumbHeader();
-  // "Repo task number one" (131px) beside "Repo task number two", 20px narrower than 1280 beside the Git inspector: level 4 shows it
-  // whole, and the crumb's name would cut it to 128px; at 1240 to 108px ("Repo task numb…", as "Repo task number two" reads). The
-  // crumb keeps its icon. (Its name came back wherever the title kept the readable width, so it cut a title its icon left whole.)
-  assert.deepEqual(fitted(20,131),{fit:"4",crumb:undefined,folded:[]});
-  assert.deepEqual(fitted(0,131),{fit:"4",crumb:undefined,folded:[]});
-  // At 1280 levels 2 and 3 cut it, and level 4 shows it whole with the crumb's name beside it. (Past 120px a title had its room at
-  // the readable width: the header stopped at level 2, 80px of it reading "Repo task …".)
-  assert.deepEqual(fitted(40,131),{fit:"4",crumb:"short",folded:[]});
+  // "Repo task number one" (131px) beside "Repo task number two", 20px narrower than 1280 beside the Git inspector: level 4 leaves
+  // it 127px and the count-only chip shows it whole, and the crumb's name would cut it to 128px; at 1240 to 108px ("Repo task
+  // numb…", as "Repo task number two" reads). The crumb keeps its icon. (Its name came back wherever the title kept the readable
+  // width, so it cut a title its icon left whole.)
+  assert.deepEqual(fitted(20,131),{fit:"5",crumb:undefined,folded:[]});
+  assert.deepEqual(fitted(0,131),{fit:"5",crumb:undefined,folded:[]});
+  // At 1280 levels 2 and 3 cut it, and level 4 shows it whole; the crumb's name would cut it to 114px, so the crumb keeps its icon.
+  // (Past 120px a title had its room at the readable width: the header stopped at level 2, 80px of it reading "Repo task …".)
+  assert.deepEqual(fitted(40,131),{fit:"4",crumb:undefined,folded:[]});
   // Just past 120px as just short of it: no length tells a title's room.
-  assert.deepEqual(fitted(40,118),{fit:"4",crumb:"short",folded:[]});
-  assert.deepEqual(fitted(40,122),{fit:"4",crumb:"short",folded:[]});
+  assert.deepEqual(fitted(40,118),{fit:"4",crumb:undefined,folded:[]});
+  assert.deepEqual(fitted(40,122),{fit:"4",crumb:undefined,folded:[]});
 });
 
 test("a header folds only as many actions as its title needs, and gives them back as it widens",()=>{
@@ -152,19 +161,19 @@ test("a header folds only as many actions as its title needs, and gives them bac
   // The row's six actions and, as while the menu is open, the menu items of two of them.
   const controls=[...["source","open-in","script","review","terminal","goal"].map(control),control("terminal"),control("goal")];
   const folded=()=>[...new Set(controls.filter(node=>node.hasAttribute("data-folded")).map(node=>node.dataset.fold))];
-  // Each level up to the last that folds nothing gives the title 20px; each folded action gives 34px, but the first pays for the
-  // More actions button.
+  // Each level up to the last that folds nothing gives the title 20px (level 4 sets the theme and palette buttons aside for the More
+  // actions button); each folded action gives 34px.
   let base=-80;
   const header={dataset:{},querySelectorAll:()=>controls,querySelector:()=>({get clientWidth(){
     const state=Math.min(Number(header.dataset.fit),HEADER_FIT_LEVELS-1),count=folded().length;
-    return Math.max(0,base+20*state+(count?34*(count-1):0));
+    return Math.max(0,base+20*state+34*count);
   },scrollWidth:600})};
   observeHeaderFit(header)();
-  // Level 5 leaves 20px, one fold 20px, two 54px, three 88px: past the readable width.
+  // Level 5 leaves 20px, one fold 54px, two 88px: past the readable width.
   assert.equal(header.dataset.fit,String(HEADER_FIT_LEVELS));
-  assert.deepEqual(new Set(folded()),new Set(["goal","terminal","review"]));
+  assert.deepEqual(new Set(folded()),new Set(["goal","terminal"]));
   // The menu items of the folded actions are marked too.
-  assert.equal(controls.filter(node=>node.hasAttribute("data-folded")).length,5);
+  assert.equal(controls.filter(node=>node.hasAttribute("data-folded")).length,4);
   // Wider, level 4 is enough: nothing stays folded.
   base=0;observeHeaderFit(header)();
   assert.equal(header.dataset.fit,"4");

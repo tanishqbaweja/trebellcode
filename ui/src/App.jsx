@@ -5553,8 +5553,8 @@ export default function App(){
               <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={toggleRightPanel} aria-label={panelToggleLabel[0]} title={panelToggleLabel[1]}><PanelRight size={16}/>{recordingMark}</button>
               <button className="header-control icon-only theme-toggle" data-testid="appearance-toggle" onClick={toggleAppearanceMode} aria-label={appearanceToggleLabel} title={appearanceToggleLabel}>{resolvedMode==="dark"?<Sun size={15}/>:<Moon size={15}/>}</button>
               <button className="header-control icon-only palette-control" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title={withKey("Command palette",sidebarShortcuts.commandPalette)}><Command size={15}/></button>
-              {/* Shown once actions fold: the folded ones in the row's order, then the theme and palette buttons, which the row has
-                  set aside by then. */}
+              {/* Shown from the fit level that sets the theme and palette buttons aside (data-fit 4): the folded actions in the row's
+                  order, then those two. */}
               <HeaderOverflowMenu items={[
                 gitInfo?.isGit&&projectControlsShown&&{id:"source",fold:"source",Icon:GitBranch,label:"Source control",detail:gitInfo.branch||"detached",onSelect:()=>openRightPanel("source")},
                 headerOpenInShown&&projectControlsShown&&{id:"open-in",fold:"open-in",render:close=><OpenInControl openIn={headerOpenIn} onOpen={()=>{close();openProjectFromMenu()}}/>},
@@ -5564,8 +5564,8 @@ export default function App(){
                 activeThread?.id&&!openingShown&&gitInfo?.isGit&&{id:"review",fold:"review",Icon:ShieldCheck,label:"Review",title:reviewHint,disabled:running,onSelect:reviewFromHeader},
                 {id:"terminal",fold:"terminal",Icon:PanelBottom,label:"Terminal",pressed:panel==="terminal",onSelect:toggleTerminalPanel},
                 activeThread?.id&&!openingShown&&{id:"goal",fold:"goal",Icon:Target,label:"Thread goal",title:goal?.objective||"Set thread goal",pressed:rightPanelOpen&&rightPanelTab==="goal",onSelect:()=>openRightPanel("goal")},
-                {id:"appearance",Icon:resolvedMode==="dark"?Sun:Moon,label:appearanceToggleLabel,onSelect:toggleAppearanceMode},
-                {id:"palette",Icon:Command,label:"Command palette",hint:shortcutHint(sidebarShortcuts.commandPalette),onSelect:()=>setPaletteOpen(true)},
+                {id:"appearance",twin:"theme-toggle",Icon:resolvedMode==="dark"?Sun:Moon,label:appearanceToggleLabel,onSelect:toggleAppearanceMode},
+                {id:"palette",twin:"palette-control",Icon:Command,label:"Command palette",hint:shortcutHint(sidebarShortcuts.commandPalette),onSelect:()=>setPaletteOpen(true)},
               ]}/>
             </div>
           </header>

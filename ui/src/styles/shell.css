@@ -763,14 +763,15 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    its last letters beside every shortened crumb); then header-fit.js measures the title and, while it is cut, sets data-fit: 1
    drops the labels of the labelled actions, 2 folds several linked pull requests into the first one's chip ("#482 +1", as the
    sidebar row reads) and lets the project crumb shrink to its first letter and the ellipsis, 3 also drops the project name, 4
-   also hides the theme and palette buttons (the palette, Settings and the sidebar's search reach both), 5 leaves the pull request
-   chip its icon and how many are linked, and 6 shows the More actions menu while actions fold into it one at a time from the end
-   of the row (each one header-fit.js marks data-folded; Stop and the inspector toggle never fold). The title shows whole wherever
+   also moves the theme and palette buttons into the More actions menu, which shows from there on, 5 leaves the pull request chip
+   its icon and how many are linked, and 6 folds actions into the menu one at a time from the end of the row (each one
+   header-fit.js marks data-folded; Stop and the inspector toggle never fold). The title shows whole wherever
    one of 0 to 5 gives it that, at the first that does; where none does, the fit stops at the first level that leaves it a readable
    width, folding actions only as far as that needs. From 3 on the project name comes back as at 2 (data-crumb="short") wherever
    the title keeps what the level gave it beside it, all of itself or its readable width; at 3 that name would be 2 again, so a
-   header whose title fits at 3 takes 4 with the name, the theme and palette buttons stepping aside for it, and 3 shows only where 4
-   frees nothing for the name. Each control keeps its tooltip and accessible name. */
+   header whose title fits at 3 takes 4 with the name, the theme and palette buttons stepping aside into More actions for it, and 3
+   shows only where 4 has no room for the name and no more of the title to show (a title 3 cuts by the pixel its measure allows
+   keeps 4, with the crumb's icon). Each control keeps its tooltip and accessible name. */
 .workspace-header .workspace-breadcrumb{flex:1 1 auto}
 .workspace-header .project-crumb:not(.sidebar-reopen){flex:0 1000000 auto;min-width:calc(39px + 4ch)}
 .workspace-header .thread-title-button{flex:0 1 auto;min-width:0}
@@ -793,7 +794,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .workspace-header:is([data-fit="5"],[data-fit="6"]) .header-pr>.header-pr-number{display:none}
 .workspace-header:is([data-fit="5"],[data-fit="6"]) .header-pr>.header-pr-count{display:inline}
 .workspace-header .header-overflow{position:relative;display:none;flex:none}
-.workspace-header[data-fit="6"] .header-overflow{display:flex}
+.workspace-header:is([data-fit="4"],[data-fit="5"],[data-fit="6"]) .header-overflow{display:flex}
 /* A folded action leaves the row for the menu; the menu lists only the folded ones (and the theme and palette buttons). */
 .workspace-header .workspace-header-actions>[data-folded]{display:none}
 .workspace-header .header-overflow-menu>[data-fold]:not([data-folded]){display:none}

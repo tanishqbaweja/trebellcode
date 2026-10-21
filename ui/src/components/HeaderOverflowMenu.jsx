@@ -1,22 +1,24 @@
 import React,{useEffect,useRef,useState} from "react";
 import { MoreHorizontal } from "lucide-react";
 
-// The workspace header's More actions menu. header-fit.js shows it once the row has to fold actions, and the menu lists the
-// folded ones, so every action stays reachable however narrow the main column is. Each item is
-// {id,fold,Icon,label,detail,hint,title,pressed,disabled,onSelect}, or {id,fold,render} for a control that draws itself (the Open-in
-// picker): render(close) returns it, and it calls close when it runs its action. An item with fold (its row control's data-fold)
-// shows only while that control is folded; one without shows whenever the menu does. Falsy items are skipped. It closes like
+// The workspace header's More actions menu. The header shows it from the fit level that sets the row's theme and palette buttons
+// aside (data-fit 4, header-fit.js), and the menu lists the actions folded into it before those two, so every action stays
+// reachable however narrow the main column is. Each item is
+// {id,fold,twin,Icon,label,detail,hint,title,pressed,disabled,onSelect}, or {id,fold,render} for a control that draws itself (the
+// Open-in picker): render(close) returns it, and it calls close when it runs its action. An item with fold (its row control's
+// data-fold) shows only while that control is folded; one without shows whenever the menu does, and its twin names the class of
+// the row's own button it stands for (the theme and palette buttons). Falsy items are skipped. It closes like
 // the other menus: Escape (focus returns to its button), a click outside it, focus moving out of it and its button (Tab past the
-// last item), a chosen action (focus that was in the menu returns to its button), and the header giving every action back to
-// the row (the inspector closes, a turn ends).
+// last item), a chosen action (focus that was in the menu returns to its button), and the header giving the row back every
+// action and the theme and palette buttons (the inspector closes, the window widens).
 const focusable=node=>Boolean(node?.offsetParent)&&!node.disabled&&node.tabIndex>=0;
 
-// Where focus in the menu (an item, or its button) goes when the row takes every action back and the button hides, and the
-// menu with it: to the row's own control for the action the focused item stood for, else to the last control shown before the
-// button, so it stays in the header instead of falling to the page.
+// Where focus in the menu (an item, or its button) goes when the row takes everything back and the button hides, and the menu
+// with it: to the row's own control for what the focused item stood for (a folded action, or the theme or palette button), else
+// to the last control shown before the button, so it stays in the header instead of falling to the page.
 function focusAfterUnfold(header,wrap,focused){
-  const item=focused.closest("[data-fold]"),fold=item&&wrap.contains(item)?item.dataset.fold:null;
-  const twin=fold?[...header.querySelectorAll(".workspace-header-actions>[data-fold]")].find(node=>node.dataset.fold===fold):null;
+  const item=focused.closest("[data-fold],[data-twin]"),mine=Boolean(item&&wrap.contains(item)),fold=mine?item.dataset.fold:null;
+  const twin=fold?[...header.querySelectorAll(".workspace-header-actions>[data-fold]")].find(node=>node.dataset.fold===fold):mine&&item.dataset.twin?header.querySelector(".workspace-header-actions>."+item.dataset.twin):null;
   const own=twin?[twin,...twin.querySelectorAll(focused.tagName)].find(node=>node.tagName===focused.tagName&&focusable(node)):null;
   if(own)return own;
   const controls=[...header.querySelectorAll("button,select,input,a[href]")].filter(node=>!wrap.contains(node)&&focusable(node));
@@ -62,7 +64,7 @@ export default function HeaderOverflowMenu({items=[]}){
   return <div className="header-overflow" ref={wrapRef}>
     <button ref={buttonRef} type="button" className={"header-control icon-only"+(open?" active":"")} onClick={()=>setOpen(value=>!value)} aria-label="More actions" title="More actions" aria-expanded={open}><MoreHorizontal size={16}/></button>
     {open&&<div className="header-overflow-menu" data-testid="header-overflow-menu">
-      {shown.map(item=>item.render?<div className="header-overflow-node" key={item.id} data-fold={item.fold}>{item.render(close)}</div>:<button key={item.id} type="button" data-fold={item.fold} onClick={()=>choose(item)} disabled={Boolean(item.disabled)} title={item.title||undefined} aria-pressed={item.pressed==null?undefined:Boolean(item.pressed)}>
+      {shown.map(item=>item.render?<div className="header-overflow-node" key={item.id} data-fold={item.fold}>{item.render(close)}</div>:<button key={item.id} type="button" data-fold={item.fold} data-twin={item.twin} onClick={()=>choose(item)} disabled={Boolean(item.disabled)} title={item.title||undefined} aria-pressed={item.pressed==null?undefined:Boolean(item.pressed)}>
         {item.Icon&&<item.Icon size={14} aria-hidden="true"/>}<span>{item.label}</span>{item.detail&&<small>{item.detail}</small>}{item.hint&&<kbd className="tb-kbd">{item.hint}</kbd>}
       </button>)}
     </div>}
