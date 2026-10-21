@@ -588,10 +588,12 @@ function timerCounter(){
 
 // B22: with a project thread open in Trebell Native and no harness session, the idle server fired its timers 3.33 times a minute
 // against 1.17 before (scripts/perf/run.mjs idle): the relay's idle sweep ran every minute with no session it could let go. It runs
-// only while a harness session it may let go is held now, from the first such session to the last one to go, and a Trebell Native
-// session (which it never sweeps) does not arm it. SWEEP_ENV shortens it to 50 ms here.
+// only while a harness session it may let go is held now, from the first such session to the last one to go, and a session it never
+// sweeps does not arm it: Trebell Native's, and a harness session it keeps until its thread closes (a harness that cannot take its
+// conversation up again, or whose turn ran a command), which kept it firing every minute for most harness chats. SWEEP_ENV shortens
+// it to 50 ms here.
 const NATIVE_INSTANCE=Object.freeze({id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true});
-test("B22: an idle relay with no harness session fires no timer, and its idle sweep runs from the first harness session to the last",async t=>{
+test("B22: an idle relay with no harness session it may let go fires no timer, and its idle sweep runs from the first such session to the last",async t=>{
   const nativeProviderTurn=async()=>{throw new Error("No Trebell Native turn runs here.")};
   const timers=timerCounter();let relay=null;
   const idle=async when=>{const fired=await timers.during(1000);t.diagnostic("timers fired in 1 s "+when+": "+JSON.stringify(fired));assert.deepEqual(fired,{},"timers fired in 1 s "+when)};
@@ -615,6 +617,34 @@ test("B22: an idle relay with no harness session fires no timer, and its idle sw
     // What the release itself waits on ends first (taskkill gets 3 s).
     await new Promise(done=>setTimeout(done,3500));
     await idle("once the last harness session went, the Trebell Native one still held");
+    // A harness session the sweep keeps until its thread closes does not hold it on either: one whose harness can neither load nor
+    // resume a conversation never arms it, and one whose turn ran a command (which may have left work running past the turn) stops it
+    // from that command on. Armed by either, it fired every 50 ms here until the relay closed.
+    const unresumable=relay.threadStore.create({...BUDGET_THREAD,providerSessionId:"",cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:1,agentCapabilities:{loadSession:false}}),"utf8");
+    timers.start();
+    let done=relay.notified("turn/completed");await relay.rpc("turn/start",{threadId:unresumable.id,input:[{type:"text",text:"Hello"}]});await done;
+    const unresumableTurn=timers.stop();t.diagnostic("timers fired over the turn of a harness that cannot resume: "+JSON.stringify(unresumableTurn));
+    assert.equal(unresumableTurn["interval:50"]||0,0,"the sweep ran for a harness session it never lets go: "+JSON.stringify(unresumableTurn));
+    await idle("with a harness session held whose harness cannot take its conversation up again");
+    const command=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:1,tools:[{kind:"execute",title:"npm test"}]}),"utf8");
+    done=relay.notified("turn/completed");await relay.rpc("turn/start",{threadId:command.id,input:[{type:"text",text:"Run the tests"}]});await done;
+    // What the turn's command row still writes ends first (TOOL_WRITE_MS).
+    await new Promise(resolve=>setTimeout(resolve,700));
+    await idle("with harness sessions held that the sweep keeps: one that cannot resume, one whose turn ran a command");
+    assert.equal((await relay.agentProcesses()).filter(agent=>alive(agent.pid)).length,2,"both kept sessions' harnesses still run");
+    // A session it may let go arms it again beside them, and the sweep stops once that one is let go.
+    const reader=relay.threadStore.create({...BUDGET_THREAD,cwd:relay.root});
+    await writeFile(relay.plan,JSON.stringify({chunks:1,tools:[{kind:"read",title:"Read README.md"}]}),"utf8");
+    timers.start();
+    done=relay.notified("turn/completed");await relay.rpc("turn/start",{threadId:reader.id,input:[{type:"text",text:"What does the README say?"}]});await done;
+    const readerAgent=(await relay.agentProcesses()).at(-1);
+    assert.ok(await eventually(()=>!alive(readerAgent.pid)),"the session that only read a file is let go beside the kept ones");
+    const again=timers.stop();t.diagnostic("timers fired from that turn to its session's release: "+JSON.stringify(again));
+    assert.ok(again["interval:50"]>0,"the sweep ran while that session was held: "+JSON.stringify(again));
+    await new Promise(resolve=>setTimeout(resolve,3500));
+    await idle("once that session went, with the two kept ones still held");
   }finally{timers.restore();await relay?.close()}
 });
 

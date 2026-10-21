@@ -672,7 +672,7 @@ export function nativeNetworkWaitMessage(data={}){
 // claudeSdk: the Claude Agent SDK the relay's Claude Code sessions drive, when not the installed one (tests pass a scripted one).
 export function attachAgentRelay(server,{runtimeManager,threadStore,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null,claudeSdk=null}={}){
   const wss=new WebSocketServer({noServer:true});
-  // Each change to sessions arms or stops the idle sweep below (armSessionSweep).
+  // Each change to sessions arms or stops the idle sweep below (armSessionSweep), as does a session the sweep comes to keep (keepSession).
   const sessions=new (class extends Map{set(key,value){super.set(key,value);armSessionSweep();return this}delete(key){const had=super.delete(key);if(had)armSessionSweep();return had}clear(){super.clear();armSessionSweep()}})();
   // A harness session idle for SESSION_IDLE_MS (no turn running, no approval, question or form waiting) is closed by a sweep every
   // SESSION_SWEEP_MS: each held its harness's processes (Grok 4 processes and 141 MB, Cursor 5 and 307 MB, OpenCode 4 and 499 MB),
@@ -907,12 +907,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const run=startSession(thread,context,options);sessionStarts.set(thread.id,run);
     try{return usedSession(await run)}finally{if(sessionStarts.get(thread.id)===run)sessionStarts.delete(thread.id)}
   }
-  const sweptSession=session=>session instanceof AcpAgentSession||session instanceof OpenCodeAgentSession;
+  // The sessions the sweep may let go: an ACP or OpenCode harness's, but not one it keeps until its thread closes (see sessionLeftWork
+  // above), whose harness ran a tool that can outlive its turn or can neither load nor resume a conversation. An ACP session's
+  // capabilities are known from its start, before it enters sessions.
+  const sweptSession=session=>(session instanceof OpenCodeAgentSession||session instanceof AcpAgentSession&&session.resumable)&&!sessionLeftWork.has(session);
+  function keepSession(session){if(sessionLeftWork.has(session))return;sessionLeftWork.add(session);armSessionSweep()}
   function sweepIdleSessions(){
     const now=Date.now();
     for(const [threadId,session] of sessions){
-      if(!sweptSession(session)||session.busy||session.activePrompt||sessionLeftWork.has(session)||threadRequests.has(threadId))continue;
-      if(session instanceof AcpAgentSession&&!session.resumable)continue;
+      if(!sweptSession(session)||session.busy||session.activePrompt||threadRequests.has(threadId))continue;
       if(now-(sessionUsed.get(session)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
       if(waitsOn(threadId))continue;
       sessions.delete(threadId);releaseSession(session,error=>log("Could not close an idle harness session: "+(error?.message||String(error))));
@@ -921,8 +924,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       emit("thread/closed",{threadId});
     }
   }
-  // The sweep runs only while sessions holds a session it may let go: the first such session arms it, and the last one to leave stops
-  // it. Armed for good, it fired every minute on an idle server with no harness session at all (B22).
+  // The sweep runs only while sessions holds a session it may let go: the first such session arms it, and the last one to leave, or
+  // to become one it keeps (keepSession), stops it. Armed for good, it fired every minute on an idle server with no harness session at
+  // all, and armed by any harness session, every minute for one it keeps, as for most harness chats, whose turns run a command (B22).
   function armSessionSweep(){
     const held=!closing&&[...sessions.values()].some(sweptSession);
     if(held&&!sessionSweep){sessionSweep=setInterval(sweepIdleSessions,SESSION_SWEEP_MS);sessionSweep.unref?.()}
@@ -1418,7 +1422,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // A chunk needs only the last turn's id and status; reading the stored thread for each one read and parsed all of its history.
     const update=params?.update||{};const lastTurn=lastTurnOf(threadId);if(!lastTurn)return;const turnId=lastTurn.id||null;
     const type=update.sessionUpdate;
-    if(type==="tool_call"||type==="tool_call_update"){endReasoning(threadId);if(!SETTLED_TOOL_KINDS.has(update.kind)){const live=sessions.get(threadId);if(live)sessionLeftWork.add(live)}}
+    if(type==="tool_call"||type==="tool_call_update"){endReasoning(threadId);if(!SETTLED_TOOL_KINDS.has(update.kind)){const live=sessions.get(threadId);if(live)keepSession(live)}}
     if(type==="agent_message_chunk"){
       const session=sessions.get(threadId),text=agentTextAfterToolCall(session,update.content?.type==="text"?update.content.text||"":"");
       if(text)endReasoning(threadId);
