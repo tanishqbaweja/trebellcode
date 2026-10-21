@@ -269,6 +269,78 @@ test("six digits typed into Snooze's Until year leave a four-digit year that the
   }finally{await harness.close()}
 });
 
+// Digits typed into a part of Snooze's Until field are kept when the minute has turned since the dialog last drew, or turns while the
+// part is being typed. The field's min, the next minute, was worked out at each render, so the first key after the turn drew the field
+// with a new min and Chrome started the part again: a year typed after the turn read 0028 for 2028, one typed two digits either side of
+// it 0008, an hour 01 for 11. A time that has passed while the dialog was open is still refused, with the hint asking for a time in the
+// future. The page's clock is held 20 s into a minute and moved on where the test turns the minute; the light run types in a 700 px
+// window.
+test("digits typed into Snooze's Until field after or across a minute's turn are kept, and a time that passes while the dialog is open is refused",async({page})=>{
+  test.setTimeout(90_000);
+  const {harness,meta,id}=await openSidebarApp(page);
+  const dialog=snoozeDialog(page),hint=dialog.locator(".snooze-hint"),submit=dialog.getByRole("button",{name:"Snooze",exact:true}),until=dialog.getByLabel("Snooze until");
+  let now=Math.floor(Date.now()/60_000)*60_000+20_000;await page.clock.setFixedTime(now);
+  const minutesPass=async minutes=>{now+=minutes*60_000;await page.clock.setFixedTime(now)};
+  const next=String(await page.evaluate(()=>new Date().getFullYear()+1)),later=String(Number(next)+1),start=next+"-06-15T10:00";
+  const wakes=year=>new RegExp("^Wakes .*\\b"+year+"\\b.*\\.$");
+  // A click on the field's first part, as a person clicks into it, then the arrow keys to the part at index: the parts are in the order
+  // of the system's date format.
+  const toPart=async index=>{for(let step=0;step<6;step++)await page.keyboard.press("ArrowLeft");for(let step=0;step<index;step++)await page.keyboard.press("ArrowRight")};
+  const clickPart=async index=>{const box=await until.boundingBox();await page.mouse.click(box.x+14,box.y+box.height/2);await toPart(index)};
+  let part=null;
+  try{
+    for(const [mode,width] of [["dark",1280],["light",700]]){
+      await switchMode(page,mode);
+      const row=await rowMenu(page,"Bulk three");await row.getByRole("button",{name:"Snooze…",exact:true}).click();
+      await expect(dialog).toBeVisible();
+      await dialog.getByRole("button",{name:"Until date & time",exact:true}).click();await expect(until).toBeFocused();
+      await page.setViewportSize({width,height:800});
+      // Each part is found by what its ArrowUp changes in June 15, 10:00.
+      if(!part){
+        part={};
+        for(let index=0;index<6;index++){
+          await until.fill(start);await toPart(index);await page.keyboard.press("ArrowUp");
+          const [date,time]=(await until.inputValue()).split("T"),[year,month,day]=date.split("-");
+          if(year===later)part.year??=index;else if(month==="07")part.month??=index;else if(day==="16")part.day??=index;
+          else if(time==="11:00")part.hour??=index;else if(time==="10:01")part.minute??=index;else if(time==="22:00")part.dayPeriod??=index;
+        }
+        expect(Object.keys(part).filter(type=>type!=="dayPeriod").sort()).toEqual(["day","hour","minute","month","year"]);
+      }
+      // The year typed once the minute has turned, with no key pressed since the field drew.
+      await until.fill(start);await minutesPass(1);
+      await clickPart(part.year);await page.keyboard.type(later,{delay:20});
+      await expect(until).toHaveValue(later+"-06-15T10:00");await expect(hint).toHaveText(wakes(later));await expect(submit).toBeEnabled();
+      // The year typed two digits before the turn and two after it.
+      await until.fill(start);await clickPart(part.year);
+      await page.keyboard.type(later.slice(0,2),{delay:20});await minutesPass(1);await page.keyboard.type(later.slice(2),{delay:20});
+      await expect(until).toHaveValue(later+"-06-15T10:00");await expect(hint).toHaveText(wakes(later));await expect(submit).toBeEnabled();
+      // The hour typed after a turn.
+      await until.fill(later+"-06-15T10:00");await minutesPass(1);
+      await clickPart(part.hour);await page.keyboard.type("11",{delay:20});
+      await expect(until).toHaveValue(later+"-06-15T11:00");await expect(hint).toHaveText(wakes(later));await expect(submit).toBeEnabled();
+      await page.screenshot({animations:"disabled",path:auditDir+"sidebar-snooze-typed-after-minute-turn-"+mode+"-"+width+"x800.png"});
+      if(mode==="dark"){await dialog.getByRole("button",{name:"Cancel",exact:true}).click();await expect(dialog).toHaveCount(0);continue}
+      // A time two minutes on wakes the thread; once the clock has passed it, Snooze snoozes nothing and the hint asks for a time in the
+      // future.
+      const soon=await page.evaluate(time=>{const date=new Date(time),pad=number=>String(number).padStart(2,"0");return date.getFullYear()+"-"+pad(date.getMonth()+1)+"-"+pad(date.getDate())+"T"+pad(date.getHours())+":"+pad(date.getMinutes())},now+120_000);
+      await until.fill(soon);await expect(hint).toHaveText(/^Wakes .*\.$/);await expect(submit).toBeEnabled();
+      await minutesPass(3);await submit.click();
+      await expect(hint).toHaveText("Choose a time in the future.");await expect(hint).toHaveClass(/invalid/);await expect(submit).toBeDisabled();
+      await expect(dialog).toBeVisible();await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+      await page.screenshot({animations:"disabled",path:auditDir+"sidebar-snooze-time-passed-"+mode+"-"+width+"x800.png"});
+      // The whole date and time typed from the keyboard after another turn, part by part in the field's order, then Snooze.
+      const typed={day:"20",month:"07",year:later,hour:"11",minute:"45",dayPeriod:"A"};
+      await minutesPass(1);await clickPart(0);
+      for(const [type] of Object.entries(part).sort((a,b)=>a[1]-b[1]))await page.keyboard.type(typed[type],{delay:20});
+      await expect(until).toHaveValue(later+"-07-20T11:45");await expect(hint).toHaveText(wakes(later));await expect(submit).toBeEnabled();
+      await submit.click();await expect(dialog).toHaveCount(0);
+      await expect.poll(()=>groups(page)).toEqual([["Active",["Bulk one","Bulk two","Bulk four"]],["Snoozed",["Bulk three"]]]);
+      const saved=new Date(Number(meta[id("Bulk three")].snoozedUntil)),pad=number=>String(number).padStart(2,"0");
+      expect(saved.getFullYear()+"-"+pad(saved.getMonth()+1)+"-"+pad(saved.getDate())+"T"+pad(saved.getHours())+":"+pad(saved.getMinutes())).toBe(later+"-07-20T11:45");
+    }
+  }finally{await harness.close()}
+});
+
 test("a bulk Archive the harness refuses for every thread says its reason once and keeps the threads in view",async({page})=>{
   test.setTimeout(120_000);
   const list=Array.from({length:10},(_,index)=>"Payments refactor step "+String(index+1).padStart(2,"0")+" with the refund flow");
