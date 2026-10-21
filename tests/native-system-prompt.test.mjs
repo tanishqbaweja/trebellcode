@@ -166,8 +166,17 @@ test("Native does not add or run repository tests unless asked",()=>{
   assert.equal(rule.length,1);
   assert.match(rule[0],/unless the user asks you to test or verify implementation/);
   assert.match(rule[0],/Do not create or modify repository tests, test fixtures, or test data unless the user or the repository's instructions explicitly ask for them/);
-  assert.ok(prompt.indexOf("- Make the smallest coherent fix")<prompt.indexOf(rule[0]),"the rule sits with the scope rules, before verification guidance");
+  assert.ok(prompt.indexOf("- Fix the cause, not only the instance")<prompt.indexOf(rule[0]),"the rule sits with the scope rules, before verification guidance");
   assert.ok(prompt.indexOf(rule[0])<prompt.indexOf("- When the user explicitly asks for testing or verification after an edit"));
+});
+
+test("Native fixes the cause where the same faulty logic repeats for the same purpose, keeping the change focused",()=>{
+  const prompt=nativeSystemPrompt({permissionMode:"full",projectless:false,tools:[{name:"trebell_workspace"},{name:"trebell_terminal"}]});
+  const rule=prompt.split("\n").filter(line=>line.startsWith("- Fix the cause"));
+  assert.deepEqual(rule,["- Fix the cause, not only the instance the user reported: where code you have read repeats the same faulty logic for the same purpose, fix those copies too. Keep the change focused and preserve unrelated user work."]);
+  assert.ok(!prompt.includes("smallest coherent fix"),"no smallest-fix line narrows the fix to the reported instance");
+  // With the scope rules, before the line that holds testing guidance back until the user asks.
+  assert.ok(prompt.indexOf(rule[0])<prompt.indexOf("- Testing, smoke-check, benchmark, and verification guidance below applies only"));
 });
 
 test("Native keeps every named symptom or surface in scope and accounts for each before finishing",()=>{
