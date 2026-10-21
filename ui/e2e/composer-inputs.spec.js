@@ -1575,6 +1575,106 @@ test("with screenshots on the shelf and the / or @ menu open, a failed Ctrl+S sa
   }finally{await harness.close()}
 });
 
+// An archive's undo toast against the attachment shelf: its place (just above the shelf's top row, or where it is), an error toast's
+// beside it, and the chips, "whole" when the page answers each chip and its remove button at their middle, or else the ones it does not.
+const readUndoToast=page=>page.evaluate(()=>{
+  const undo=document.querySelector("[data-testid=thread-undo-toast]").getBoundingClientRect(),error=document.querySelector("[data-testid=app-action-error]")?.getBoundingClientRect();
+  const chips=[...document.querySelectorAll(".chat-workspace .attachment-shelf>span")],rowTop=Math.min(...chips.map(chip=>chip.getBoundingClientRect().top));
+  const answers=node=>{const box=node.getBoundingClientRect();return node.contains(document.elementFromPoint(box.left+box.width/2,box.top+box.height/2))};
+  const hidden=chips.filter(chip=>!answers(chip)||!answers(chip.querySelector("button"))).map(chip=>chip.title);
+  return {undo:undo.bottom<=rowTop&&undo.bottom>=rowTop-16?"above the shelf's top row":`${Math.round(undo.top)}-${Math.round(undo.bottom)}, the shelf's top row at ${Math.round(rowTop)}`,
+    ...(error?{error:error.bottom<=undo.top?"above the undo toast":`${Math.round(error.top)}-${Math.round(error.bottom)}, the undo toast at ${Math.round(undo.top)}-${Math.round(undo.bottom)}`}:{}),
+    chips:hidden.length?hidden.join(", ")+" under a toast":"whole"};
+});
+const threadRow=(page,name)=>page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
+// Archive from the thread's row menu in the sidebar, as a person does, and its Undo on the toast it brings.
+async function archiveThread(page,name){
+  const row=threadRow(page,name);await row.hover();await row.locator(".thread-menu summary").click();await expect(row.locator(".thread-menu")).toHaveAttribute("open","");
+  await row.getByRole("button",{name:"Archive",exact:true}).click();await expect(row).toHaveCount(0);await expect(page.getByTestId("thread-undo-toast")).toContainText("Thread archived");
+}
+async function undoArchive(page){
+  const toast=page.getByTestId("thread-undo-toast");await toast.getByRole("button",{name:"Undo",exact:true}).click();await expect(toast).toHaveCount(0);
+}
+
+// The undo toast of an archive sat 12 px above the composer's top, where the attachment shelf now stands, over the middle of its rows:
+// chips' names and remove buttons under it could not be read or clicked for its 5 s. It sits above the shelf's top row, as the error
+// toast does, and the error toast of a refused Undo above it.
+test("an archive's undo toast sits above the attachment shelf's top row, so every chip and its remove button stay clickable, and a refused Undo's error toast sits above it",async({page})=>{
+  test.setTimeout(120_000);
+  let refuseUndo=false;
+  const harness=await openComposerApp(page,{others:["Archive me A","Archive me B"],refuse:message=>refuseUndo&&message.method==="thread/unarchive"?"Archive store is read-only":null});
+  try{
+    const composer=page.getByTestId("composer"),undoToast=page.getByTestId("thread-undo-toast"),alert=page.getByTestId("app-action-error");
+    // Nine screenshots pasted one at a time onto a typed draft: two rows of chips at 1280, three at 900.
+    await composer.click();await page.keyboard.type("Look at these screenshots",{delay:20});
+    for(let index=1;index<=9;index++){await pasteImage(page,`shelf-${String(index).padStart(2,"0")}.png`);await expect(chips(page)).toHaveCount(index);await expect(page.locator(".attachment-shelf > span.uploading")).toHaveCount(0)}
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      await archiveThread(page,"Archive me A");
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        await expect.poll(()=>readUndoToast(page),{message:`the undo toast over nine chips at ${width}x800 in ${mode}`}).toEqual({undo:"above the shelf's top row",chips:"whole"});
+        await page.screenshot({animations:"disabled",path:auditDir+`undo-toast-nine-chips-${mode}-${width}x800.png`});
+      }
+      await page.setViewportSize({width:1280,height:800});
+      await undoArchive(page);await expect(threadRow(page,"Archive me A")).toHaveCount(1);
+    }
+    // An Undo the harness refuses says so in the error toast; an archive meanwhile brings an undo toast beside it, under it.
+    refuseUndo=true;await archiveThread(page,"Archive me A");await undoArchive(page);
+    await expect(alert).toHaveText("Could not put back “Archive me A”: Archive store is read-only.");
+    refuseUndo=false;await archiveThread(page,"Archive me B");
+    await expect.poll(()=>readUndoToast(page),{message:"the error toast and the undo toast over nine chips"}).toEqual({undo:"above the shelf's top row",error:"above the undo toast",chips:"whole"});
+    await page.screenshot({animations:"disabled",path:auditDir+"undo-and-error-toasts-nine-chips-light-1280x800.png"});
+    // A click on the remove button of the third chip, at the toast's height, removes that chip and leaves the undo toast up.
+    const remove=await chips(page).getByRole("button",{name:"Remove shelf-03.png",exact:true}).boundingBox();
+    await page.mouse.click(remove.x+remove.width/2,remove.y+remove.height/2);
+    await expect(chips(page)).toHaveCount(8);await expect(chips(page).filter({hasText:"shelf-03.png"})).toHaveCount(0);await expect(undoToast).toContainText("Thread archived");
+    await undoArchive(page);await expect(threadRow(page,"Archive me B")).toHaveCount(1);
+    await expect(composer).toHaveValue("Look at these screenshots");
+  }finally{await harness.close()}
+});
+
+// The two toasts against the header and an open / or @ menu: the undo toast's place, the error toast's against it, and the menu,
+// "clear" when neither toast lies over any part of it.
+const readMenuToasts=page=>page.evaluate(()=>{
+  const box=selector=>document.querySelector(selector)?.getBoundingClientRect(),over=(a,b)=>Boolean(a&&b&&a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom);
+  const header=box(".chat-workspace .workspace-header"),undo=box("[data-testid=thread-undo-toast]"),error=box("[data-testid=app-action-error]"),menu=box(".composer-wrap .slash-menu")||box(".composer-wrap [data-testid=file-mention-menu]");
+  const at=node=>`${Math.round(node.top)}-${Math.round(node.bottom)}`;
+  return {undo:undo.top>=header.bottom&&undo.top<=header.bottom+16?"under the header":at(undo),
+    ...(error?{error:error.top>=undo.bottom?"under the undo toast":`${at(error)}, the undo toast at ${at(undo)}`}:{}),
+    menu:over(undo,menu)||over(error,menu)?"under a toast":"clear"};
+});
+
+// The menus open upward over the space above the composer, where an archive's undo toast sat, over their last rows. With a menu open
+// the undo toast shows under the header, as the error toast does, and a failed action's toast under it.
+test("with the / or @ menu open, an archive's undo toast shows under the header, clear of the menu, and a failed Ctrl+S's toast under it",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page,{others:["Archive me A"]});await failStashes(page);
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("app-action-error");
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const [typed,menu,kind] of [["/",page.locator(".composer-wrap .slash-menu"),"slash"],["Check @log",page.getByTestId("file-mention-menu"),"mention"]]){
+        await expect(alert).toHaveCount(0,{timeout:10_000});
+        await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");
+        await page.keyboard.type(typed,{delay:20});await expect(menu).toBeVisible();
+        await archiveThread(page,"Archive me A");await expect(menu).toBeVisible();
+        await expect.poll(()=>readMenuToasts(page),{message:`the undo toast with the ${kind} menu open in ${mode}`}).toEqual({undo:"under the header",menu:"clear"});
+        await page.keyboard.press("Control+s");await expect(alert).toHaveText(stashFailed);
+        for(const width of [1280,900]){
+          await page.setViewportSize({width,height:800});await expect(menu).toBeVisible();
+          await expect.poll(()=>readMenuToasts(page),{message:`both toasts with the ${kind} menu open at ${width}x800 in ${mode}`}).toEqual({undo:"under the header",error:"under the undo toast",menu:"clear"});
+          await page.screenshot({animations:"disabled",path:auditDir+`undo-and-error-toasts-${kind}-menu-${mode}-${width}x800.png`});
+        }
+        await page.setViewportSize({width:1280,height:800});
+        await undoArchive(page);await expect(threadRow(page,"Archive me A")).toHaveCount(1);
+        await expect(composer).toHaveValue(typed);
+      }
+    }
+  }finally{await harness.close()}
+});
+
 // The composer is off while a send goes (Sending…), and the browser drops the keyboard it had there, or on Send, on the page: the next
 // message typed went nowhere. Once the send has gone the keyboard is in the composer again, after Enter and after Send, while the reply
 // runs (Queue a follow-up…) and after it, so the next message typed at once lands there. A person typing types at 20 ms a key.
