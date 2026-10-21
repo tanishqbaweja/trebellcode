@@ -1486,13 +1486,35 @@ test("screenshots pasted onto a draft stack up above the composer and leave the 
         await page.screenshot({animations:"disabled",path:auditDir+`six-screenshots-new-task-${mode}-${width}x800.png`});
       }
     }
-    // Past three rows the shelf scrolls, and each screenshot pasted brings the newest into view, the controls still clear.
-    const shelfEnd=()=>page.locator(".attachment-shelf").evaluate(shelf=>{const view=shelf.getBoundingClientRect(),last=shelf.lastElementChild.getBoundingClientRect();return {scrolls:shelf.scrollHeight>shelf.clientHeight,newest:last.top>=view.top-0.5&&last.bottom<=view.bottom+0.5?"in view":"out of view"}});
+    // Past about three rows the shelf scrolls, with the theme's own scrollbar as the conversation has it, and each screenshot pasted
+    // brings the newest into view with a part of the row above it showing, so the older chips are seen to be there, the controls still
+    // clear; a composer drawn again (New task again after Settings) shows the newest too. It scrolled with the platform's thin bar, which
+    // macOS shows only while it scrolls, cut exactly between rows, and a composer drawn again opened on its oldest rows: 18 screenshots
+    // showed 10, and nothing said 8 more were attached. rowAbove: what shows of the row above the shelf's top.
+    const shelfEnd=()=>page.locator(".attachment-shelf").evaluate(shelf=>{
+      const view=shelf.getBoundingClientRect(),last=shelf.lastElementChild.getBoundingClientRect();
+      const above=Math.max(0,...[...shelf.children].map(chip=>chip.getBoundingClientRect()).filter(box=>box.top<view.top-0.5).map(box=>Math.round(Math.min(box.bottom,view.bottom)-view.top)));
+      return {scrolls:shelf.scrollHeight>shelf.clientHeight,newest:last.top>=view.top-0.5&&last.bottom<=view.bottom+0.5?"in view":"out of view",rowAbove:above>=6?"shows in part":`hidden (${above}px)`};
+    });
+    const scrollbars=()=>page.evaluate(()=>{
+      const bar=node=>{const {scrollbarWidth,scrollbarColor}=getComputedStyle(node);return {scrollbarWidth,scrollbarColor}},shelf=document.querySelector(".chat-workspace .attachment-shelf");
+      return {shelf:bar(shelf),conversation:bar(document.querySelector(".chat-workspace .conversation-scroll")),shelfGutter:shelf.offsetWidth-shelf.clientWidth};
+    });
+    const capped={scrolls:true,newest:"in view",rowAbove:"shows in part"};
     for(const [width,count] of [[1280,17],[700,18]]){
       await page.setViewportSize({width,height:800});await paste("welcome",await chips(page).count()+1,count);
-      await expect.poll(async()=>{const {draft,attach,mode}=await readComposerClear(page);return {draft,attach,mode,...await shelfEnd()}},{message:`${count} screenshots on New task at ${width}x800`}).toEqual({draft:"clear",attach:"clear",mode:"clear",scrolls:true,newest:"in view"});
+      await expect.poll(async()=>{const {draft,attach,mode}=await readComposerClear(page),{scrolls,newest}=await shelfEnd();return {draft,attach,mode,scrolls,newest}},{message:`${count} screenshots on New task at ${width}x800`}).toEqual({draft:"clear",attach:"clear",mode:"clear",scrolls:true,newest:"in view"});
+      expect.soft((await shelfEnd()).rowAbove,`a part of the row above the newest shows with ${count} screenshots at ${width}x800`).toBe("shows in part");
+      const bars=await scrollbars();testInfo.annotations.push({type:`scrollbars with ${count} screenshots at ${width}x800`,description:JSON.stringify(bars)});
+      expect.soft(bars.shelf,`the shelf's scrollbar at ${width}x800 is the theme's, as the conversation's`).toEqual(bars.conversation);
       await page.screenshot({animations:"disabled",path:auditDir+`${count}-screenshots-new-task-light-${width}x800.png`});
     }
+    await page.setViewportSize({width:1280,height:800});
+    const destinations=page.getByRole("navigation",{name:"Destinations"});
+    await destinations.getByRole("button",{name:"Settings",exact:true}).click();await expect(composer).toHaveCount(0);
+    await destinations.getByRole("button",{name:"New task",exact:true}).click();await expect(chips(page)).toHaveCount(18);
+    await expect.poll(shelfEnd,{message:"18 screenshots on New task again after Settings"}).toEqual(capped);
+    await page.screenshot({animations:"disabled",path:auditDir+"18-screenshots-new-task-after-settings-light-1280x800.png"});
     await expect(composer).toHaveValue("New task with screenshots");
   }finally{await harness.close()}
 });

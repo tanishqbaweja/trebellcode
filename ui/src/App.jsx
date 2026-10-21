@@ -754,8 +754,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     observer.observe(wrap);if(shelf)observer.observe(shelf);
     return()=>{observer.disconnect();cancelAnimationFrame(frame);host.style.removeProperty("--composer-height");host.style.removeProperty("--composer-chips");host.style.removeProperty("--composer-shelf")};
   },[]);
-  // A chip added to a shelf of more rows than it shows brings the shelf's last row, the newest chips, into view.
-  const shelfCount=attachments.length+uploadingFiles.length,shelfCountRef=useRef(shelfCount);
+  // A chip added to a shelf of more rows than it shows brings the shelf's last row, the newest chips, into view, and so does a composer
+  // drawn again with its chips (New task or the thread again after Settings, Projects or History): it opened on its oldest rows.
+  const shelfCount=attachments.length+uploadingFiles.length,shelfCountRef=useRef(0);
   useLayoutEffect(()=>{const shelf=shelfRef.current,grew=shelfCount>shelfCountRef.current;shelfCountRef.current=shelfCount;if(grew&&shelf)shelf.scrollTop=shelf.scrollHeight},[shelfCount]);
   useEffect(()=>{onModelPickerOpenChange?.(modelOpen)},[modelOpen,onModelPickerOpenChange]);
   useEffect(()=>{if(!modelOpen)setModelQuery("")},[modelOpen]);

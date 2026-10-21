@@ -583,10 +583,12 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .context-chip button:hover{background:var(--bg3);color:var(--tx0)}
 /* An empty shelf takes no room, nor the clicks on the end of the reply above the composer. */
 .composer-wrap .attachment-shelf:empty{display:none}
-/* The shelf stands on the composer's top and its rows go up from there, three at most, then it scrolls (the composer shows the newest
-   chip): hung a row above the composer and wrapping down, a sixth screenshot at 1280 lay over the draft and a third row at 700 over
-   the + and the mode picker. */
-.composer-wrap .attachment-shelf{top:auto;bottom:calc(100% - 1px);max-height:92px;overflow-y:auto;scrollbar-width:thin}
+/* The shelf stands on the composer's top and its rows go up from there, three and a part of the row above them at most, then it
+   scrolls (the composer shows the newest chip) with the theme's own scrollbar, as the conversation does: hung a row above the composer
+   and wrapping down, a sixth screenshot at 1280 lay over the draft and a third row at 700 over the + and the mode picker. Cut exactly
+   between rows (92px: three 26px rows, their gaps and the 6px under them) and with the platform's thin bar, which turns the theme's
+   off and which macOS shows only while it scrolls, a shelf scrolled to its newest row showed nothing of the chips above it. */
+.composer-wrap .attachment-shelf{top:auto;bottom:calc(100% - 1px);max-height:108px;overflow-y:auto}
 .composer-wrap .attachment-shelf>span{height:26px;gap:6px;padding:0 6px 0 9px;border:1px solid var(--line2);border-radius:var(--r-s);background:var(--bg2);color:var(--tx1);font-size:11px;box-shadow:var(--sh1)}
 .composer-wrap .attachment-shelf>span button{color:var(--tx3)}
 .composer-wrap .attachment-shelf>span button:hover{color:var(--tx0)}
