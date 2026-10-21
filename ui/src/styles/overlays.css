@@ -308,8 +308,9 @@
      its top row. App names the chips in the workspace shell's class (with-shelf-chips), as it does an open composer menu
      (with-composer-menu, below) and a long draft (styles.css): a :has() over all the shell held had Chrome restyle all of it for
      each element a streaming reply added while the toast showed (B23). The repeated class keeps the specificity the :has() gave
-     the rule. */
-  html .workspace-shell.with-shelf-chips.with-shelf-chips:not(.right-maximized)>.app-action-error-toast:not(.secondary-surface-error):not(.with-thread-undo){bottom:calc(anchor(--tb-shelf top,120px) + 12px)}
+     the rule. An open menu's place wins: with both, the toast took its foot from this rule and its head from the menu's, and
+     stretched from the header to the shelf over the menu. */
+  html .workspace-shell.with-shelf-chips.with-shelf-chips:not(.right-maximized):not(.with-composer-menu)>.app-action-error-toast:not(.secondary-surface-error):not(.with-thread-undo){bottom:calc(anchor(--tb-shelf top,120px) + 12px)}
   /* The :has() looks at the app shell's own children (the workspace shell is one). Over all the app shell held, it had Chrome check
      the app shell for each change anywhere inside it, and restyle all of it for each element a streaming reply added while the undo
      toast showed (169 elements a delta); tied to the children, the reply's deltas leave it alone (B23). Looking at the children alone

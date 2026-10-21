@@ -1521,6 +1521,60 @@ test("screenshots pasted onto a draft stack up above the composer and leave the 
   }finally{await harness.close()}
 });
 
+// A stash store that takes no draft, so each Ctrl+S fails into the app's error toast, and two files for the @ menu to list on "@log".
+const failStashes=page=>page.route(/\/api\/stashes(?:\?.*)?$/,route=>route.request().method()==="POST"?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"The stash store is read-only."})}):json(route,{stashes:[]}));
+const stashFailed="Could not stash or restore draft: The stash store is read-only.";
+async function writeLoginFiles(harness){
+  await mkdir(join(harness.repo,"src"),{recursive:true});
+  for(const name of ["login","logout"])await writeFile(join(harness.repo,"src",name+".js"),`export function ${name}(){}\n`);
+}
+// The app's error toast as a person sees it: its lines, its place (under the header, or just above the attachment shelf's top row, or
+// where it is), and the open / or @ menu, "clear" when the toast lies over no part of it.
+const readErrorToast=page=>page.evaluate(()=>{
+  const toast=document.querySelector("[data-testid=app-action-error]"),menu=document.querySelector(".composer-wrap .slash-menu,.composer-wrap [data-testid=file-mention-menu]");
+  const header=document.querySelector(".chat-workspace .workspace-header").getBoundingClientRect(),rowTop=Math.min(...[...document.querySelectorAll(".chat-workspace .attachment-shelf>span")].map(chip=>chip.getBoundingClientRect().top));
+  const box=toast.getBoundingClientRect(),style=getComputedStyle(toast),open=menu?.getBoundingClientRect();
+  return {lines:Math.round((toast.clientHeight-parseFloat(style.paddingTop)-parseFloat(style.paddingBottom))/parseFloat(style.lineHeight)),
+    place:box.top>=header.bottom&&box.top<=header.bottom+16?"under the header":box.bottom<=rowTop&&box.bottom>=rowTop-16?"above the shelf's top row":`${Math.round(box.top)}-${Math.round(box.bottom)}`,
+    menu:!open?"none":box.bottom<=open.top||box.top>=open.bottom||box.right<=open.left||box.left>=open.right?"clear":"under the toast"};
+});
+
+// With chips on the shelf and the / or @ menu open, the rule that sets the toast's foot above the shelf and the one that sets its head
+// under the header both applied, so a failed action's toast stretched from the header to the shelf, a red box over the conversation and
+// the menu. With a menu open the toast goes under the header in its one line, as with no chips; with the menu closed, above the shelf.
+test("with screenshots on the shelf and the / or @ menu open, a failed Ctrl+S says so in a one-line toast under the header, clear of the menu, and above the shelf once the menu closes",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page);await failStashes(page);
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("app-action-error");
+    await composer.click();
+    for(const name of ["menu-shot-1.png","menu-shot-2.png"]){await pasteImage(page,name);await expect(chips(page).filter({hasText:name})).toBeVisible()}
+    await expect(page.locator(".attachment-shelf > span.uploading")).toHaveCount(0);
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      // A command word whose menu Escape closed keeps it closed when typed again, so the light pass types another.
+      for(const [typed,menu,kind] of [[mode==="dark"?"/":"/p",page.locator(".composer-wrap .slash-menu"),"slash"],["Check @log",page.getByTestId("file-mention-menu"),"mention"]]){
+        await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");
+        await page.keyboard.type(typed,{delay:20});await expect(menu).toBeVisible();
+        await page.keyboard.press("Control+s");await expect(alert).toHaveText(stashFailed);
+        for(const width of [1280,900]){
+          await page.setViewportSize({width,height:800});await expect(menu).toBeVisible();
+          await expect.poll(()=>readErrorToast(page),{message:`the toast with the ${kind} menu open at ${width}x800 in ${mode}`}).toEqual({lines:1,place:"under the header",menu:"clear"});
+          await page.screenshot({animations:"disabled",path:auditDir+`chips-${kind}-menu-failed-stash-${mode}-${width}x800.png`});
+        }
+        // Escape closes the menu, and the toast goes down above the shelf's top row; the next Ctrl+S's toast is there too.
+        await page.setViewportSize({width:1280,height:800});
+        await page.keyboard.press("Escape");await expect(menu).toBeHidden();
+        await expect.poll(()=>readErrorToast(page),{message:`the toast once the ${kind} menu closed in ${mode}`}).toEqual({lines:1,place:"above the shelf's top row",menu:"none"});
+        await page.keyboard.press("Control+s");await expect(alert).toHaveText(stashFailed);
+        await expect.poll(()=>readErrorToast(page),{message:`the next toast with the ${kind} menu closed in ${mode}`}).toEqual({lines:1,place:"above the shelf's top row",menu:"none"});
+        await expect(composer).toHaveValue(typed);await expect(chips(page)).toHaveCount(2);
+      }
+    }
+  }finally{await harness.close()}
+});
+
 // The composer is off while a send goes (Sending…), and the browser drops the keyboard it had there, or on Send, on the page: the next
 // message typed went nowhere. Once the send has gone the keyboard is in the composer again, after Enter and after Send, while the reply
 // runs (Queue a follow-up…) and after it, so the next message typed at once lands there. A person typing types at 20 ms a key.
