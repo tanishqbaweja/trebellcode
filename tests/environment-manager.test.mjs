@@ -313,6 +313,31 @@ test("remote runtime argv can clear the login environment and re-expose only app
   assert.match(remoteEnvironmentCommand("'tool'",[],{FIXTURE:"visible"}),/^env -i FIXTURE='visible' 'tool'$/);
 });
 
+// Native's toolchain names reach a remote command from the host's own environment. One the host does not set stays unset there
+// (cargo refuses an empty CARGO_TARGET_DIR, make runs an empty CC), and a value that carries credentials is dropped on the host.
+test("a remote command forwards guarded names only when the host sets them and their values carry no credentials",{skip:!posixShell&&"no POSIX shell on this machine"},async()=>{
+  const profile={id:"ssh",name:"Build box",type:"ssh",cwd:"/srv/app",host:"build.example",user:"dev",port:22};
+  const manager=new EnvironmentManager({state:stateFor([profile]),platform:"linux"});
+  let launch=null;manager.spawnSession=(_id,options)=>{launch=options;return {pid:123}};
+  const shown=["GEM_HOME","BUNDLE_APP_CONFIG","CARGO_TARGET_DIR","RUSTUP_DIST_SERVER","MAVEN_OPTS","GRADLE_OPTS","LOG_LEVEL","OPENAI_API_KEY"];
+  const script=`process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(shown)}.map(name=>[name,process.env[name]??null]))))`;
+  // SYSTEMROOT, as Git for Windows' sh spells it, lets this machine's Node start when the test runs on Windows.
+  manager.spawnArgv("ssh",{command:process.execPath,args:["-e",script],environmentNames:["PATH","HOME","SYSTEMROOT"],environment:{LOG_LEVEL:"debug"},
+    guardedEnvironmentNames:["GEM_HOME","BUNDLE_APP_CONFIG","CARGO_TARGET_DIR","RUSTUP_DIST_SERVER","MAVEN_OPTS","GRADLE_OPTS","LOG_LEVEL","not-a-name?"]});
+  assert.doesNotMatch(launch.command,/not-a-name/);
+  const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
+  const host=Object.entries({
+    GEM_HOME:"fixture gems; $(exit 9) 'quoted'",BUNDLE_APP_CONFIG:"",RUSTUP_DIST_SERVER:"https://fixture-user:fixture-pass@mirror.example/rustup",
+    MAVEN_OPTS:"-Xmx1g -Dhttps.proxyPassword=fixture-pass",GRADLE_OPTS:"-Xmx2g -Dfile.encoding=UTF-8",LOG_LEVEL:"host-value",OPENAI_API_KEY:"sk-fixture-host",
+  }).map(([name,value])=>"export "+name+"="+quote(value)).join("; ");
+  const run=await sh("unset CARGO_TARGET_DIR; "+host+"; "+launch.command);
+  assert.equal(run.code,0,run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout),{
+    GEM_HOME:"fixture gems; $(exit 9) 'quoted'",BUNDLE_APP_CONFIG:null,CARGO_TARGET_DIR:null,RUSTUP_DIST_SERVER:null,MAVEN_OPTS:null,
+    GRADLE_OPTS:"-Xmx2g -Dfile.encoding=UTF-8",LOG_LEVEL:"debug",OPENAI_API_KEY:null,
+  });
+});
+
 test("remote stdin argv forwards its environment allowlist to the spawned session",async()=>{
   const profile={id:"ssh",name:"Build box",type:"ssh",cwd:"/srv/app",host:"build.example",user:"dev",port:22};
   const manager=new EnvironmentManager({state:stateFor([profile]),platform:"linux"});let launch=null;

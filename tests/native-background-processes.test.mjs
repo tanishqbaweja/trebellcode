@@ -43,6 +43,37 @@ test("Native background processes preserve remote argv isolation metadata instea
   }finally{await manager.closeAll()}
 });
 
+// What a Node child needs from this machine to start, and nothing else of its environment: no one's real secrets reach these tests.
+function hostBaseline(){
+  const wanted=new Set(["PATH","SYSTEMROOT","WINDIR","COMSPEC","TEMP","TMP","TMPDIR","HOME","USERPROFILE"]);
+  return Object.fromEntries(Object.keys(process.env).filter(name=>wanted.has(name.toUpperCase())).map(name=>[name,process.env[name]]));
+}
+
+test("Native background processes keep the project's toolchain variables, and a remote one forwards their names through the guarded list",async()=>{
+  const toolchain={GEM_HOME:"/fixture/bundle",BUNDLE_PATH:"/fixture/bundle",CARGO_HOME:"/fixture/cargo",RUSTUP_HOME:"/fixture/rustup",JAVA_HOME:"/fixture/jdk",GOPATH:"/fixture/go",VIRTUAL_ENV:"/fixture/venv"};
+  const secrets={OPENAI_API_KEY:"sk-fixture-openai",ANTHROPIC_API_KEY:"sk-ant-fixture",GITHUB_TOKEN:"ghp_fixture",AWS_SECRET_ACCESS_KEY:"fixture-aws-secret",NATIVE_FIXTURE_TOKEN:"fixture-token",BUNDLE_GEMS__EXAMPLE__COM:"fixture-user:fixture-pass"};
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-bg-toolchain-")),manager=new NativeBackgroundProcessManager({environment:{...hostBaseline(),...toolchain,...secrets}});
+  try{
+    const names=[...Object.keys(toolchain),...Object.keys(secrets)];
+    const script=`process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(names)}.map(name=>[name,process.env[name]??null]))))`;
+    const started=manager.start({threadId:"thread-t",command:process.execPath,args:["-e",script],cwd:root});
+    await manager.waitForExit("thread-t",started.processId,{waitMs:15_000});
+    const status=manager.status("thread-t",started.processId);assert.equal(status.exitCode,0,status.stderr);
+    assert.deepEqual(JSON.parse(status.stdout),{...toolchain,...Object.fromEntries(Object.keys(secrets).map(name=>[name,null]))});
+  }finally{await manager.closeAll();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+  const child=new EventEmitter();Object.assign(child,{stdout:new PassThrough(),stderr:new PassThrough(),pid:4321,kill(){queueMicrotask(()=>child.emit("close",0,"SIGTERM"));return true}});
+  let launch=null;const environments={get:id=>id==="ssh-1"?{id:"ssh-1",name:"Build",type:"ssh",cwd:"/srv/app"}:null,spawnArgv:(id,options)=>{launch={id,options};return child}};
+  const remote=new NativeBackgroundProcessManager({environments,environment:{...toolchain,...secrets}});
+  try{
+    const started=remote.start({threadId:"thread-r",command:"cargo",args:["test"],cwd:"/srv/app",environmentId:"ssh-1",environmentNames:["PATH","HOME"]});
+    assert.deepEqual(launch.options.environmentNames,["PATH","HOME"]);assert.equal(launch.options.environment,null);
+    const guarded=launch.options.guardedEnvironmentNames||[];
+    for(const name of Object.keys(toolchain))assert.ok(guarded.includes(name),name);
+    for(const name of Object.keys(secrets))assert.equal(guarded.includes(name),false,name);
+    await remote.terminate("thread-r",started.processId);
+  }finally{await remote.closeAll()}
+});
+
 test("Native background process stop terminates local descendants",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-bg-tree-")),pidPath=join(root,"descendant.pid"),manager=new NativeBackgroundProcessManager();
   try{

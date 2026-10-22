@@ -46,3 +46,55 @@ test("Antigravity inherits only its explicit Google auth lane plus the OS baseli
   const env=buildRuntimeEnvironment("antigravity",{parent:{PATH:"/bin",GEMINI_HOME:"/tmp/gemini",GEMINI_API_KEY:"gem-value",GOOGLE_CLOUD_PROJECT:"project-value",OPENAI_API_KEY:"nope",GITHUB_TOKEN:"nope"},platform:"linux"});
   assert.equal(env.GEMINI_HOME,"/tmp/gemini");assert.equal(env.GEMINI_API_KEY,"gem-value");assert.equal(env.GOOGLE_CLOUD_PROJECT,"project-value");assert.equal(env.OPENAI_API_KEY,undefined);assert.equal(env.GITHUB_TOKEN,undefined);
 });
+
+// The benchmark's Ruby images keep their gems under /usr/local/bundle (GEM_HOME, BUNDLE_*) and its Rust images keep rustup's
+// toolchains under RUSTUP_HOME: a command Native runs without them cannot load an installed gem or pick a default toolchain.
+test("Native's command environment keeps the toolchain variables a project's commands need and still drops credentials",()=>{
+  const toolchain={
+    GEM_HOME:"/usr/local/bundle",GEM_PATH:"/usr/local/bundle:/usr/local/lib/ruby/gems/3.3.0",BUNDLE_PATH:"/usr/local/bundle",BUNDLE_APP_CONFIG:"/usr/local/bundle",
+    CARGO_HOME:"/usr/local/cargo",RUSTUP_HOME:"/usr/local/rustup",JAVA_HOME:"/opt/java/openjdk",GOPATH:"/go",VIRTUAL_ENV:"/opt/venv",
+  };
+  const secrets={
+    OPENAI_API_KEY:"sk-fixture-openai",ANTHROPIC_API_KEY:"sk-ant-fixture",GITHUB_TOKEN:"ghp_fixture",AWS_SECRET_ACCESS_KEY:"fixture-aws-secret",
+    CI_DEPLOY_TOKEN:"fixture-deploy-token",BUNDLE_GEMS__CONTRIBSYS__COM:"fixture-user:fixture-pass",NPM_CONFIG__AUTH:"fixture-npm-auth",
+    CARGO_REGISTRIES_PRIVATE_TOKEN:"fixture-cargo-token",DATABASE_PASSWORD:"fixture-db-pass",APP_SECRET:"fixture-app-secret",COMPOSER_AUTH:"{\"github-oauth\":{}}",
+    GOPROXY:"https://fixture-user:fixture-pass@proxy.example/go",PIP_INDEX_URL:"https://fixture-user:fixture-pass@pypi.example/simple",
+  };
+  const parent={PATH:"/usr/local/bundle/bin:/usr/local/cargo/bin:/usr/bin",HOME:"/root",...toolchain,...secrets};
+  const env=buildRuntimeEnvironment("native",{parent,platform:"linux",toolchain:true});
+  assert.equal(env.PATH,parent.PATH);assert.equal(env.HOME,"/root");
+  for(const [name,value] of Object.entries(toolchain))assert.equal(env[name],value,name);
+  for(const name of Object.keys(secrets))assert.equal(env[name],undefined,name);
+  // Without the option the environment is the baseline alone, as Trebell's own git, diagnostics and transports keep it.
+  const plain=buildRuntimeEnvironment("native",{parent,platform:"linux"});
+  assert.equal(plain.PATH,parent.PATH);for(const name of Object.keys(toolchain))assert.equal(plain[name],undefined,name);
+});
+
+test("a toolchain variable whose value carries credentials is dropped while its plain values pass",()=>{
+  const build=values=>buildRuntimeEnvironment("native",{parent:{PATH:"/bin",...values},platform:"linux",toolchain:true});
+  assert.equal(build({RUSTUP_DIST_SERVER:"https://fixture-user:fixture-pass@mirror.example/rustup"}).RUSTUP_DIST_SERVER,undefined);
+  assert.equal(build({RUSTUP_DIST_SERVER:"https://ghp_fixture@mirror.example/rustup"}).RUSTUP_DIST_SERVER,undefined,"a token as the URL's user is userinfo too");
+  assert.equal(build({RUSTUP_DIST_SERVER:"https://mirror.example/rustup"}).RUSTUP_DIST_SERVER,"https://mirror.example/rustup");
+  assert.equal(build({MAVEN_OPTS:"-Xmx2g -Dmaven.repo.remote=https://fixture-user:fixture-pass@repo.example/maven2"}).MAVEN_OPTS,undefined);
+  assert.equal(build({MAVEN_OPTS:"-Xmx2g -Dhttps.proxyPassword=fixture-pass"}).MAVEN_OPTS,undefined);
+  assert.equal(build({GRADLE_OPTS:"-Dorg.gradle.project.repoToken=fixture"}).GRADLE_OPTS,undefined);
+  assert.equal(build({JAVA_TOOL_OPTIONS:"-Djavax.net.ssl.trustStorePassword=fixture"}).JAVA_TOOL_OPTIONS,undefined);
+  assert.equal(build({MAVEN_OPTS:"-Xmx2g -Dmaven.repo.local=/opt/m2"}).MAVEN_OPTS,"-Xmx2g -Dmaven.repo.local=/opt/m2");
+  assert.equal(build({NODE_OPTIONS:"--max-old-space-size=4096"}).NODE_OPTIONS,"--max-old-space-size=4096");
+  assert.equal(build({RUSTFLAGS:"--cfg tokio_unstable"}).RUSTFLAGS,"--cfg tokio_unstable");
+  // An @ that is not a URL's userinfo, as in a scoped package folder, is no credential.
+  assert.equal(build({NODE_PATH:"/srv/node_modules/@scope"}).NODE_PATH,"/srv/node_modules/@scope");
+  // A name the person approved explicitly passes as it is, as approved names always have.
+  const approved=buildRuntimeEnvironment("native",{parent:{PATH:"/bin",MAVEN_OPTS:"-Dhttps.proxyPassword=fixture-pass"},approved:["MAVEN_OPTS"],platform:"linux",toolchain:true});
+  assert.equal(approved.MAVEN_OPTS,"-Dhttps.proxyPassword=fixture-pass");
+});
+
+test("on Windows Native's commands find the toolchain variables whatever their case, and the places Windows toolchains look",()=>{
+  const env=buildRuntimeEnvironment("native",{parent:{
+    Path:"C:\\Tools",Java_Home:"C:\\jdk-21",GoPath:"C:\\Users\\me\\go",PROGRAMFILES:"C:\\Program Files","ProgramFiles(x86)":"C:\\Program Files (x86)",
+    OS:"Windows_NT",PROCESSOR_ARCHITECTURE:"AMD64",GITHUB_TOKEN:"fixture",Random_Token:"fixture",
+  },platform:"win32",toolchain:true});
+  assert.equal(env.PATH,"C:\\Tools");assert.equal(env.JAVA_HOME,"C:\\jdk-21");assert.equal(env.GOPATH,"C:\\Users\\me\\go");
+  assert.equal(env.ProgramFiles,"C:\\Program Files");assert.equal(env["ProgramFiles(x86)"],"C:\\Program Files (x86)");
+  assert.equal(env.OS,"Windows_NT");assert.equal(env.PROCESSOR_ARCHITECTURE,"AMD64");assert.equal(env.GITHUB_TOKEN,undefined);assert.equal(env.RANDOM_TOKEN,undefined);assert.equal(env.Random_Token,undefined);
+});

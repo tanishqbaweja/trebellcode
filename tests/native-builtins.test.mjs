@@ -287,6 +287,51 @@ test("Native terminal uses a least-privilege environment and workspace cwd",asyn
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
+// What a Node child needs from this machine to start, and nothing else of its environment: no one's real secrets reach these tests.
+function hostBaseline(){
+  const wanted=new Set(["PATH","SYSTEMROOT","WINDIR","COMSPEC","TEMP","TMP","TMPDIR","HOME","USERPROFILE","PROGRAMFILES"]);
+  return Object.fromEntries(Object.keys(process.env).filter(name=>wanted.has(name.toUpperCase())).map(name=>[name,process.env[name]]));
+}
+const NATIVE_TOOLCHAIN_FIXTURE=Object.freeze({GEM_HOME:"/fixture/bundle",BUNDLE_PATH:"/fixture/bundle",CARGO_HOME:"/fixture/cargo",RUSTUP_HOME:"/fixture/rustup",JAVA_HOME:"/fixture/jdk",GOPATH:"/fixture/go",VIRTUAL_ENV:"/fixture/venv"});
+const NATIVE_SECRET_FIXTURE=Object.freeze({
+  OPENAI_API_KEY:"sk-fixture-openai",ANTHROPIC_API_KEY:"sk-ant-fixture",GITHUB_TOKEN:"ghp_fixture",AWS_SECRET_ACCESS_KEY:"fixture-aws-secret",
+  NATIVE_FIXTURE_TOKEN:"fixture-token",BUNDLE_GEMS__EXAMPLE__COM:"fixture-user:fixture-pass",RUSTUP_DIST_SERVER:"https://fixture-user:fixture-pass@mirror.example/rustup",
+});
+function environmentEcho(names){return `process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(names)}.map(name=>[name,process.env[name]??null]))))`}
+
+test("Native terminal commands keep the project's toolchain variables and never the app's or the person's secrets",async()=>{
+  const root=await workspace();
+  try{
+    const host=hostBaseline(),execute=createNativeBuiltins({root,environment:{...host,...NATIVE_TOOLCHAIN_FIXTURE,...NATIVE_SECRET_FIXTURE}});
+    // On Windows the toolchains also look in the program folders (Visual Studio's vswhere, the .NET SDK).
+    const windows=process.platform==="win32"?Object.keys(host).filter(name=>/^ProgramFiles$/i.test(name)):[];
+    const names=[...Object.keys(NATIVE_TOOLCHAIN_FIXTURE),...Object.keys(NATIVE_SECRET_FIXTURE),...windows];
+    const result=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e",environmentEcho(names)],timeout_ms:15000,max_output_bytes:65536}});
+    assert.equal(result.exitCode,0,result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout),{...NATIVE_TOOLCHAIN_FIXTURE,...Object.fromEntries(Object.keys(NATIVE_SECRET_FIXTURE).map(name=>[name,null])),...Object.fromEntries(windows.map(name=>[name,host[name]]))});
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+test("Native terminal commands on a remote host forward the toolchain names through the guarded list, not the plain one",async()=>{
+  let launch=null;
+  const environments={
+    get:()=>({id:"ssh-1",name:"Build",type:"ssh",cwd:"/workspace"}),
+    executeArgv:async(_id,options)=>({exitCode:0,stdout:String(options.args[0])+"\n"}),
+    spawnArgv:(id,options)=>{
+      launch={id,options};const child=new EventEmitter();child.stdout=Readable.from([]);child.stderr=Readable.from([]);child.pid=4321;
+      process.nextTick(()=>child.emit("close",0,null));return child;
+    },
+  };
+  const execute=createNativeBuiltins({root:"/workspace",environments,environmentId:"ssh-1",environment:{...NATIVE_TOOLCHAIN_FIXTURE,...NATIVE_SECRET_FIXTURE}});
+  const result=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:"cargo",args:["test"],timeout_ms:5000}});
+  assert.equal(result.exitCode,0);assert.equal(launch.id,"ssh-1");assert.equal(launch.options.command,"cargo");
+  const guarded=launch.options.guardedEnvironmentNames||[],plain=launch.options.environmentNames||[];
+  for(const name of Object.keys(NATIVE_TOOLCHAIN_FIXTURE))assert.ok(guarded.includes(name),name);
+  for(const name of Object.keys(NATIVE_TOOLCHAIN_FIXTURE))assert.equal(plain.includes(name),false,name+" is checked on the host, not forwarded as it is");
+  for(const name of [...Object.keys(NATIVE_SECRET_FIXTURE).filter(name=>name!=="RUSTUP_DIST_SERVER"),"GOPROXY","PIP_INDEX_URL","UV_INDEX_URL","HTTPS_PROXY"])assert.equal(guarded.includes(name)||plain.includes(name),false,name);
+  assert.equal(Object.prototype.hasOwnProperty.call(launch.options,"environment")&&launch.options.environment!=null,false,"the parent's values never travel to the host");
+});
+
 test("Native terminal rejects cwd escapes and cancellation kills the running process",async()=>{
   const root=await workspace();
   try{
