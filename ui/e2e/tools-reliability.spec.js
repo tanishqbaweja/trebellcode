@@ -184,6 +184,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // `control.skillsByCwd` names for the workspace read, and waits while `holdSkills` is set, until `releaseSkills()`. It lists
 // `threads` and resumes them, and the account's shared plugins as `control.shared` holds them: a checkout gives its plugin a local
 // copy and a delete takes the share off the list, once answered; while `holdShare` is set they wait, until `releaseShare()`.
+// `drop()` closes the app's connections while the fixture keeps listening, so the app connects again.
 async function startHeldMcpFixture({threads=[]}={}){
   const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[],holdShare:false,heldShare:[]};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
@@ -248,6 +249,7 @@ async function startHeldMcpFixture({threads=[]}={}){
     releaseInit(){control.holdInit=false;for(const answer of control.heldInit.splice(0))answer()},
     releaseSkills(){control.holdSkills=false;for(const answer of control.heldSkills.splice(0))answer()},
     releaseShare(){for(const answer of control.heldShare.splice(0))answer()},
+    drop(){for(const socket of sockets)try{socket.terminate()}catch{}},
     async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
 // projects are the saved projects (activeProjectId the open one); opening one answers with it, as the server does.
@@ -684,4 +686,43 @@ test("Tools Shared plugins says Checking out… or Deleting… on the row whose 
     fixture.releaseShare();
     await expect(rows).toHaveCount(2);await expect(busy).toHaveCount(0);
   }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// A checkout cut off by a dropped Codex connection. While Codex is away the page says it is not connected; once Codex is back, the
+// card says the checkout did not go through, in the app's words for the lost connection, and the page is where the person had
+// scrolled to. On 01143dbe the refresh run as Codex came back wiped that reason before it ever showed, and the page came back at
+// its top.
+test("Tools says a checkout cut off by a dropped Codex connection did not finish, and is back where the person was once Codex reconnects",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.shared=[share("short","lane-g-shared","2.0.0"),share("long","lane-g-shared-plugin-with-a-longer-name"),share("third","lane-g-shared-three","2.0.2")];
+  fixture.control.holdShare=true;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    const refresh=page.locator(".capabilities-toolbar button");
+    await expect(refresh).toHaveText("Refresh");
+    const card=page.locator(".capabilities-page .capability-card").filter({has:page.getByText("Shared plugins",{exact:true})}).first();
+    const rows=card.locator(".shared-plugin-list>div"),reason=card.locator(".capability-error");
+    await wheelTo(page,card);
+    const place=(await card.boundingBox()).y;
+    await rows.nth(1).getByRole("button",{name:"Checkout",exact:true}).click();
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    fixture.drop();
+    await expect(page.getByText("Codex harness is not connected",{exact:true})).toBeVisible();
+    // Codex is back (the fixture still listens), and the page has read it again.
+    await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible({timeout:15_000});
+    await expect(refresh).toHaveText("Refresh",{timeout:15_000});
+    expect.soft(Math.abs((await card.boundingBox()).y-place),"the Shared plugins card is where the person had it").toBeLessThanOrEqual(4);
+    await expect(reason).toHaveText("Could not check out lane-g-shared-plugin-with-a-longer-name: Codex disconnected");
+    await expect(reason).toBeInViewport({ratio:1});
+    // The checkout did not finish: its row offers Checkout again, which nothing holds now.
+    await expect(rows.nth(1).getByRole("button",{name:"Checkout",exact:true})).toBeEnabled();
+    for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`tools-shared-plugin-checkout-dropped-${mode}-1280x800.png`,fullPage:false})}
+    // A checkout that goes through gives the row its local copy, and the reason goes.
+    fixture.control.holdShare=false;
+    await rows.nth(1).getByRole("button",{name:"Checkout",exact:true}).click();
+    await expect(rows.nth(1).getByRole("button")).toHaveText(["Open","Delete share"]);
+    await expect(reason).toHaveCount(0);
+  }finally{await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });

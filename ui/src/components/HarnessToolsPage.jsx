@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState} from "react";
+import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { Blocks, Brain, CheckCircle2, ChevronRight, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { api } from "../api.js";
 import { openWebLink } from "../web-link.js";
@@ -67,6 +67,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // The page loads as it opens, so it starts out loading: the first paint already waits for the runtime's answers.
   const [loading,setLoading]=useState(true);
   const refreshRun=useRef(0);
+  // Whether the page has shown its not-connected state since its last refresh. The refresh run as Codex is back reads the lists again
+  // but keeps what the actions said, so an action the dropped connection cut off is told once the page is back.
+  const away=useRef(false);
   const [busy,setBusy]=useState("");
   const [marketplaceSource,setMarketplaceSource]=useState("");
   const [migrations,setMigrations]=useState(null);
@@ -122,10 +125,10 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function refresh(){
     // Not connected, the page shows no cards. It waits as loading, so as Codex connects the cards say what is loading rather than
     // that the runtime reported nothing, and a refresh begun on a connection that has since closed does not land.
-    if(!rpc||rpcStatus!=="connected"){refreshRun.current++;setLoading(true);return}
+    if(!rpc||rpcStatus!=="connected"){refreshRun.current++;away.current=true;setLoading(true);return}
     // Only the latest refresh lands: one started for an earlier thread or project neither writes its answers nor ends loading.
-    const run=++refreshRun.current,latest=()=>run===refreshRun.current;
-    setLoading(true);setErrors({});
+    const run=++refreshRun.current,latest=()=>run===refreshRun.current,back=away.current;away.current=false;
+    setLoading(true);setErrors(prev=>back?Object.fromEntries(Object.entries(prev).filter(([name])=>!LOAD_FAILURES[name])):{});
     const threadId=activeThread?.id||null;
     const load=(name,params)=>request(name,params).catch(error=>{if(latest())setErrors(prev=>({...prev,[name]:loadFailure(name,error)}));return null});
     const [permissions,mcp,plugins,apps,installedApps,hooks,features,sharedPlugins,loadedThreads,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,importHistories,windowsSandbox]=await Promise.all([
@@ -277,6 +280,14 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     window.addEventListener("trebell:windows-sandbox-setup",completed);window.addEventListener("trebell:windows-sandbox-warning",warning);
     return()=>{window.removeEventListener("trebell:windows-sandbox-setup",completed);window.removeEventListener("trebell:windows-sandbox-warning",warning)};
   },[rpc,rpcStatus,projectPath,activeThread?.id,platform]);
+  // The not-connected state is short, so a dropped connection takes the page to its top: the place the person scrolled to is noted
+  // as they scroll and given back as the cards come back.
+  const pageRef=useRef(null),place=useRef(0),connected=rpcStatus==="connected";
+  useLayoutEffect(()=>{
+    const scroller=pageRef.current?.parentElement;if(!scroller)return;
+    scroller.scrollTop=place.current;const note=()=>{place.current=scroller.scrollTop};
+    scroller.addEventListener("scroll",note);return()=>scroller.removeEventListener("scroll",note);
+  },[connected]);
 
   const plugins=useMemo(()=>(data.marketplaces||[]).flatMap(m=>(m.plugins||[]).map(p=>({...p,marketplace:m}))),[data.marketplaces]);
   const installedAppsById=useMemo(()=>Object.fromEntries((data.installedApps||[]).map(app=>[app.id,app])),[data.installedApps]);
@@ -529,7 +540,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
 
   if(rpcStatus!=="connected")return <div className="empty-state capabilities-empty-state"><Wrench size={24}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>;
 
-  return <div className="capabilities-page">
+  return <div className="capabilities-page" ref={pageRef}>
     <div className="capabilities-toolbar"><div><h2>Harness capabilities</h2><p>Live inventory from the bundled Codex app-server. These are real runtime capabilities, not a hard-coded parity list.</p></div><button onClick={()=>{refresh();onSkillsReload?.()}} disabled={loading}><RefreshCw size={13}/>{loading?"Refreshing…":"Refresh"}</button></div>
 
     <div className="capability-grid">
