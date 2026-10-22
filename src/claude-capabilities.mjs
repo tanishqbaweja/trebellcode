@@ -1,5 +1,8 @@
-import { query as claudeAgentQuery } from "@anthropic-ai/claude-agent-sdk";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
+
+// The Claude Agent SDK loads with the first probe that needs it, not with the server (budget B25).
+let claudeAgentSdk=null;
+const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent-sdk");
 
 // Claude Code reports its models, slash commands, agents, account and plan usage through the SDK initialize handshake.
 // The probe (as T3 Code's ClaudeProvider does it) offers a prompt that never yields, so no message reaches the model API:
@@ -35,14 +38,15 @@ export function claudeCapabilitiesProbeOptions({command,cwd=null,env={},spawnPro
   };
 }
 
-export async function probeClaudeCapabilities({command,cwd=null,env={},spawnProcess=null,includeUsage=true,query=claudeAgentQuery,timeoutMs=CLAUDE_CAPABILITIES_TIMEOUT_MS}={}){
+export async function probeClaudeCapabilities({command,cwd=null,env={},spawnProcess=null,includeUsage=true,query=null,timeoutMs=CLAUDE_CAPABILITIES_TIMEOUT_MS}={}){
+  const startQuery=query||(await loadClaudeAgentSdk()).query;
   const abortController=new AbortController();
   const prompt=(async function*(){
     await new Promise(resolve=>{if(abortController.signal.aborted)resolve();else abortController.signal.addEventListener("abort",()=>resolve(),{once:true})});
   })();
   let runtime=null;
   try{
-    runtime=query({prompt,options:claudeCapabilitiesProbeOptions({command,cwd,env,spawnProcess,abortController})});
+    runtime=startQuery({prompt,options:claudeCapabilitiesProbeOptions({command,cwd,env,spawnProcess,abortController})});
     const init=await withTimeout(runtime.initializationResult(),timeoutMs,"Claude Code did not report its capabilities in time.");
     // Usage has its own deadline so a slow optional read cannot discard the initialization answer. skipBehaviors skips the
     // local transcript scan: only the plan rate limits are read.

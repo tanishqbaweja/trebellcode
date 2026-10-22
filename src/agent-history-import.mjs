@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { getSessionMessages, listSessions } from "@anthropic-ai/claude-agent-sdk";
 import { codexHome } from "./paths.mjs";
+
+// Claude Code's sessions are listed and read through the Claude Agent SDK, which loads with the first scan or import that needs it,
+// not with the server (budget B25).
+let claudeAgentSdk=null;
+const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent-sdk");
 
 const MAX_CODEX_SCAN_FILES=240;
 const MAX_CODEX_SCAN_BYTES=1024*1024;
@@ -104,8 +109,14 @@ export async function scanCodexHistory({env=process.env,sourceHome=null,excludeH
   }
   return candidates.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).slice(0,maxSessions);
 }
-export async function scanClaudeHistory({listSessionsFn=listSessions,maxSessions=MAX_CLAUDE_SESSIONS}={}){
-  let sessions=[];try{sessions=await listSessionsFn({limit:maxSessions,offset:0,includeProgrammatic:false})}catch{return []}
+// The folder the SDK's listSessions reads every project's sessions from (Claude Agent SDK 0.3.276: CLAUDE_CONFIG_DIR of this process,
+// else ~/.claude, then projects). Without it the list is empty, so the SDK is not loaded to say so: a first run's onboarding asks
+// for this list as it opens.
+function claudeProjectsFolder(){return join((process.env.CLAUDE_CONFIG_DIR??join(homedir(),".claude")).normalize("NFC"),"projects")}
+export async function scanClaudeHistory({listSessionsFn=null,maxSessions=MAX_CLAUDE_SESSIONS}={}){
+  if(!listSessionsFn&&!existsSync(claudeProjectsFolder()))return [];
+  const list=listSessionsFn||(await loadClaudeAgentSdk()).listSessions;
+  let sessions=[];try{sessions=await list({limit:maxSessions,offset:0,includeProgrammatic:false})}catch{return []}
   const candidates=[];
   for(const session of sessions||[]){
     const sessionId=String(session?.sessionId||"").trim(),cwd=String(session?.cwd||"").trim();
@@ -152,10 +163,11 @@ export function claudeMessagesToTurns(messages,{createdAt=Date.now()}={}){
   }
   finish();return turns.slice(-MAX_IMPORTED_TURNS);
 }
-export async function importClaudeHistory(agentThreads,candidate,{getSessionMessagesFn=getSessionMessages}={}){
+export async function importClaudeHistory(agentThreads,candidate,{getSessionMessagesFn=null}={}){
   const existing=agentThreads.findProviderSession?.("claude",candidate.providerSessionId);
   if(existing)return {status:"skipped",reason:"already_imported",thread:existing};
-  const messages=await getSessionMessagesFn(candidate.providerSessionId,{dir:candidate.cwd,limit:MAX_CLAUDE_MESSAGES,offset:0,includeSystemMessages:false});
+  const read=getSessionMessagesFn||(await loadClaudeAgentSdk()).getSessionMessages;
+  const messages=await read(candidate.providerSessionId,{dir:candidate.cwd,limit:MAX_CLAUDE_MESSAGES,offset:0,includeSystemMessages:false});
   const turns=claudeMessagesToTurns(messages,{createdAt:candidate.createdAt||candidate.updatedAt});
   if(!turns.length)throw new Error("Claude session has no visible user/assistant history to import");
   const thread=agentThreads.importHistory({

@@ -1,4 +1,3 @@
-import { OpenCode } from "@opencode/client";
 import { randomUUID } from "node:crypto";
 import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2ModelId, openCodePermissionDisposition, openCodePermissionRules, openCodePrimaryAgents, openCodeRefusal, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
@@ -6,11 +5,14 @@ import { normalizePermissionKind, normalizePermissionMode } from "./permission-p
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 
 const STOPPED=Symbol("opencode2-stopped");
+// OpenCode 2.x's client loads with the first OpenCode 2.x session, before it starts its server, not with the server (budget B25).
+let openCodeClient=null;
+const loadOpenCodeClient=()=>openCodeClient??=import("@opencode/client");
 
 function authHeader(password=""){
   return "Basic "+Buffer.from("opencode:"+String(password),"utf8").toString("base64");
 }
-function clientFor(server){
+function clientFor(OpenCode,server){
   return OpenCode.make({baseUrl:server.url,headers:{Authorization:authHeader(server.password)}});
 }
 function modelKey(model){return openCode2ModelId(model)}
@@ -65,10 +67,11 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   }
 
   async start({providerSessionId=null,model=null}={}){
+    const {OpenCode}=await loadOpenCodeClient();
     this.server=await startOpenCode2Server({command:this.command,cwd:this.cwd,env:this.env,serverUrl:this.serverUrl});
     if(this.closed){this.server.close?.();throw new Error("OpenCode was stopped while it started.")}
     this.server.child?.once?.("exit",(code,signal)=>{this.serverExit={code,signal}});
-    this.client=clientFor(this.server);
+    this.client=clientFor(OpenCode,this.server);
     await this.client.server.info();
     const location={directory:this.cwd};
     if(this.repositoryMcp){

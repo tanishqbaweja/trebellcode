@@ -1,21 +1,23 @@
 import { createServer as createNetServer } from "node:net";
 import { execFileSync } from "node:child_process";
 import { randomBytes, randomInt } from "node:crypto";
-import { OpenCode as OpenCode2 } from "@opencode/client";
 import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { Readable } from "node:stream";
-import { createOpencodeClient } from "@opencode-ai/sdk";
-import { createOpencodeClient as createOpencodeV2Client } from "@opencode-ai/sdk/v2";
 import spawn from "cross-spawn";
 import { fileUriPath } from "./file-uri.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
+
+// OpenCode's SDK clients load with the first OpenCode server Trebell talks to, before it starts one, not with the server (budget B25).
+let openCodeSdk=null,openCodeV2Sdk=null,openCode2Client=null;
+const loadOpenCodeClients=()=>Promise.all([openCodeSdk??=import("@opencode-ai/sdk"),openCodeV2Sdk??=import("@opencode-ai/sdk/v2")]);
+const loadOpenCode2Client=()=>openCode2Client??=import("@opencode/client");
 
 // OpenCode reads a file part itself: it sends an image or a PDF to the model and reads any other file as text. Audio and video are
 // named by their saved path instead, as T3 Code names every attachment it does not send as an image, text or PDF.
@@ -106,7 +108,7 @@ export async function startOpenCode2Server({command="opencode",cwd,env=process.e
   delete serverEnv.OPENCODE_SERVER_PASSWORD;serverEnv.OPENCODE_PASSWORD=password;
   const server=await startServer({command,cwd,env:serverEnv});return {...server,password};
 }
-function createOpenCode2Client(server){
+function createOpenCode2Client(OpenCode2,server){
   return OpenCode2.make({baseUrl:server.url,headers:{Authorization:openCode2Authorization(server.password)}});
 }
 
@@ -240,6 +242,7 @@ async function openCodeInventory(client,v2Client,directory){
 }
 
 export async function discoverOpenCodeModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null,readText}={}){
+  const [{createOpencodeClient},{createOpencodeClient:createOpencodeV2Client}]=await loadOpenCodeClients();
   const server=await startServer({command,cwd,env,serverUrl});
   const client=createOpencodeClient({baseUrl:server.url,directory:cwd}),v2Client=createOpencodeV2Client({baseUrl:server.url,directory:cwd});
   try{
@@ -280,7 +283,8 @@ export async function waitForOpenCode2Models(client,location,{timeoutMs=15_000,i
   return result;
 }
 export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null}={}){
-  const server=await startOpenCode2Server({command,cwd,env,serverUrl}),client=createOpenCode2Client(server),location={directory:cwd};
+  const {OpenCode:OpenCode2}=await loadOpenCode2Client();
+  const server=await startOpenCode2Server({command,cwd,env,serverUrl}),client=createOpenCode2Client(OpenCode2,server),location={directory:cwd};
   try{
     await client.server.info();
     const [modelResult,providerResult,defaultResult,commands,skills,agents]=await Promise.all([
@@ -512,6 +516,7 @@ export class OpenCodeAgentSession{
     this.subagentSessions=new Map();this.assistantTextParts=new Set();this.reasoningParts=new Set();this.childRules=new Set();
   }
   async start({providerSessionId=null,model=null}={}){
+    const [{createOpencodeClient},{createOpencodeClient:createOpencodeV2Client}]=await loadOpenCodeClients();
     this.server=await startServer({command:this.command,cwd:this.cwd,env:this.env,serverUrl:this.serverUrl});
     // A session closed while its server started had no server to stop then, so it stops it now.
     if(this.closed){this.server.close?.();throw new Error("OpenCode was stopped while it started.")}

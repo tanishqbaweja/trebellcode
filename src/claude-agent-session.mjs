@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { deleteSession, forkSession, getSessionInfo, getSessionMessages, query, renameSession } from "@anthropic-ai/claude-agent-sdk";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
 import { fileUriPath } from "./file-uri.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
@@ -28,6 +27,9 @@ const CLAUDE_EXPLAINED_API_ERRORS=new Set(["invalid_request","model_not_found","
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // What Claude Code prints, and exits on, when it is asked to resume a session it has no transcript for.
 const CLAUDE_NO_CONVERSATION=/No conversation found with session ID/i;
+// The Claude Agent SDK loads with the first session that starts, not with the server (budget B25).
+let claudeAgentSdk=null;
+const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent-sdk");
 
 function sdkPermissionMode(mode,collaborationMode="default"){
   if(collaborationMode==="plan")return "plan";
@@ -234,7 +236,8 @@ export class ClaudeAgentSession{
     this.capabilityScope=spawnProcess?String(capabilityScope||""):"";
     this.autoCompactWindow=Number.isInteger(Number(autoCompactWindow))&&Number(autoCompactWindow)>=100_000&&Number(autoCompactWindow)<=1_000_000?Number(autoCompactWindow):null;
     this.mcpServers=mcpServers&&typeof mcpServers==="object"?{...mcpServers}:{};
-    this.sdk=sdk||{query,getSessionInfo,forkSession,renameSession,getSessionMessages,deleteSession};
+    // The installed SDK is set once the session starts (#loadSdk); tests pass a scripted one.
+    this.sdk=sdk||null;
     // The shared capability cache probes the real CLI; an injected SDK (tests) brings its own or none.
     this.capabilities=capabilities!==undefined?capabilities:(sdk?null:claudeCapabilities);
     this.idleReleaseMs=Math.max(1,Number(idleReleaseMs)||CLAUDE_IDLE_RELEASE_MS);
@@ -250,6 +253,7 @@ export class ClaudeAgentSession{
   }
 
   async start({providerSessionId=null,model=null}={}){
+    await this.#loadSdk();
     this.sessionId=providerSessionId||randomUUID();
     this.model=model||null;
     if(this.pendingFork){this.pendingFork.targetSessionId=this.sessionId;this.startedOnce=false}
@@ -349,8 +353,9 @@ export class ClaudeAgentSession{
   #requireHostSessionHelper(operation){
     if(!this.helperSharesRuntime)throw new Error(`Claude ${operation} is unavailable through the host session helper for this custom or remote Claude home.`);
   }
-  async rename(name){this.#requireHostSessionHelper("rename");return this.sdk.renameSession(this.sessionId,name,{dir:this.cwd})}
-  async history(){this.#requireHostSessionHelper("history");return this.sdk.getSessionMessages(this.sessionId,{dir:this.cwd,includeSystemMessages:false})}
+  async #loadSdk(){return this.sdk||(this.sdk=await loadClaudeAgentSdk())}
+  async rename(name){this.#requireHostSessionHelper("rename");return (await this.#loadSdk()).renameSession(this.sessionId,name,{dir:this.cwd})}
+  async history(){this.#requireHostSessionHelper("history");return (await this.#loadSdk()).getSessionMessages(this.sessionId,{dir:this.cwd,includeSystemMessages:false})}
   // Edit from here: the next query resumes the conversation at the kept turn's last assistant message into a new session id
   // (resumeSessionAt only); with no kept turn the thread starts a fresh session, as T3 Code's rollback to thread start does.
   async rewindConversation(upToMessageId){
@@ -370,7 +375,7 @@ export class ClaudeAgentSession{
     await this.#closeLive();
     if(turn&&!turn.settled)this.#finishTurn(turn);
   }
-  async delete(){await this.close();this.#requireHostSessionHelper("delete");return this.sdk.deleteSession(this.sessionId,{dir:this.cwd})}
+  async delete(){await this.close();this.#requireHostSessionHelper("delete");return (await this.#loadSdk()).deleteSession(this.sessionId,{dir:this.cwd})}
 
   #emit(update){this.onUpdate?.({sessionId:this.sessionId,update})}
   #probeInput(cwd=this.cwd){return {command:this.command,cwd,env:this.env,spawnProcess:this.spawnProcess,scope:this.capabilityScope}}
@@ -401,6 +406,7 @@ export class ClaudeAgentSession{
     });
   }
   async #ensureLive(){
+    if(!this.sdk)await this.#loadSdk();
     const key=this.#queryKey(),live=this.live;
     if(live&&!live.closed&&live.key===key){
       // Claude can switch its own mode (EnterPlanMode, a denied ExitPlanMode): put the process back in the thread's mode.

@@ -1,9 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { query as claudeAgentQuery } from "@anthropic-ai/claude-agent-sdk";
-import { createOpencodeClient } from "@opencode-ai/sdk";
-import { createOpencodeClient as createOpencodeV2Client } from "@opencode-ai/sdk/v2";
 import { AcpClient } from "./acp-client.mjs";
 import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "./acp-session-config.mjs";
@@ -27,6 +24,11 @@ export const HARNESS_TEXT_INSTRUCTIONS="You are writing Git text (a commit subje
 const HARNESS_NAMES=Object.freeze({codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"});
 const ACP_HARNESSES=new Set(["cursor","grok","antigravity"]);
 const EXPECTED_CODES=new Set(["HARNESS_TEXT_TIMEOUT","HARNESS_TEXT_CANCELLED","HARNESS_UNAVAILABLE","HARNESS_TEXT_EMPTY"]);
+// The Claude Agent SDK and OpenCode's SDK load with the first Git text that needs one, not with the server (budget B25).
+let claudeAgentSdk=null,openCodeSdk=null,openCodeV2Sdk=null;
+const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent-sdk");
+const loadOpenCodeSdk=()=>openCodeSdk??=import("@opencode-ai/sdk");
+const loadOpenCodeV2Sdk=()=>openCodeV2Sdk??=import("@opencode-ai/sdk/v2");
 
 export function harnessTextTimeout(value){const ms=Number(value);return Number.isFinite(ms)&&ms>0?Math.min(HARNESS_TEXT_TIMEOUT_MS,Math.round(ms)):HARNESS_TEXT_TIMEOUT_MS}
 function modelCandidates(models){return [...new Set((Array.isArray(models)?models:[models]).map(value=>String(value??"").trim()).filter(Boolean))]}
@@ -134,12 +136,12 @@ async function codexText(ctx){
 
 // Claude Code: one turn, no built-in or MCP tools, hooks off, every permission denied, no session written to disk.
 async function claudeText(ctx){
-  const {runtimeManager,instance,environmentId}=ctx;
+  const {runtimeManager,instance,environmentId}=ctx,query=ctx.deps.claudeQuery||(await loadClaudeAgentSdk()).query;
   const command=runtimeManager.executable(instance,{environmentId}),spawnProcess=runtimeManager.processSpawner?.(instance,environmentId)||null;
   const cwd=runtimeManager.runtimeCwd?.(ctx.cwd,environmentId)||ctx.cwd,model=claudeTextModel(ctx.models),abortController=new AbortController();
   const abort=()=>abortController.abort();if(ctx.signal.aborted)abort();else ctx.signal.addEventListener("abort",abort,{once:true});
   const env={...runtimeManager.childEnv(instance),CLAUDE_AGENT_SDK_CLIENT_APP:`trebell-code/${ctx.version}`};
-  const runtime=(ctx.deps.claudeQuery||claudeAgentQuery)({prompt:ctx.prompt,options:{
+  const runtime=query({prompt:ctx.prompt,options:{
     cwd,...(model?{model}:{}),
     // A Windows .cmd shim cannot be spawned directly; the SDK runs a native binary or a .js entry itself.
     pathToClaudeCodeExecutable:spawnProcess?command:resolveWindowsCommandShim(command,{allowScripts:true}),
@@ -244,10 +246,11 @@ async function openCodeText(ctx){
   // Trebell starts its own `opencode serve` in an empty folder, so the repository's .opencode plugins and opencode.json never load (plugin
   // code would run as the user and see the diff). A profile's own server URL keeps the repository as its directory: Trebell does not own
   // that server's working folder, and a local temp path may not exist on its host.
+  const createClient=ctx.deps.openCodeClient||(await loadOpenCodeSdk()).createOpencodeClient,createV2Client=ctx.deps.openCodeV2Client||(await loadOpenCodeV2Sdk()).createOpencodeClient;
   const cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx),env=runtimeManager.childEnv(instance);
   const server=await (ctx.deps.openCodeServer||startOpenCodeServer)({command:runtimeManager.executable(instance,{environmentId}),cwd,env,serverUrl:instance.serverUrl||null});
   ctx.defer(()=>server?.close?.());ctx.check();
-  const client=(ctx.deps.openCodeClient||createOpencodeClient)({baseUrl:server.url,directory:cwd});
+  const client=createClient({baseUrl:server.url,directory:cwd});
   const providers=checkedOpenCodeProviders(openCodeData(await client.provider.list({query:{directory:cwd}}),"provider list"));ctx.check();
   // The thread's model when OpenCode has it; otherwise the model OpenCode itself would pick: configured, then recently used, then a
   // connected provider's default (the recent list is read only for the server Trebell started here).
@@ -257,7 +260,7 @@ async function openCodeText(ctx){
   const session=openCodeData(await client.session.create({query:{directory:cwd},body:{title:"Trebell Git text",permission:OPENCODE_GIT_TEXT_PERMISSION}}),"session create");
   const sessionId=String(session?.id||"");if(!sessionId)throw new Error("OpenCode did not create the Git text session");
   ctx.defer(async()=>{await within(client.session.abort({path:{id:sessionId},query:{directory:cwd}}),1500);await client.session.delete({path:{id:sessionId},query:{directory:cwd}})});ctx.check();
-  const refusals=refuseOpenCodeAsks({client,v2Client:(ctx.deps.openCodeV2Client||createOpencodeV2Client)({baseUrl:server.url,directory:cwd}),directory:cwd,sessionId});
+  const refusals=refuseOpenCodeAsks({client,v2Client:createV2Client({baseUrl:server.url,directory:cwd}),directory:cwd,sessionId});
   let result;
   try{
     await refusals.ready;ctx.check();

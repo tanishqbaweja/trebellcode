@@ -1154,7 +1154,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const claudeMcpServers=claudeMcpServersForSession(state?.settings?.().mcpServers||[],{environmentId});
     if(instance.kind==="claude"&&contextEngine){
       const repoIo=remoteIo?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
-      claudeMcpServers.trebell_repository=createClaudeRepositoryMcp({contextEngine,root:runtimeCwd,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,version});
+      claudeMcpServers.trebell_repository=await createClaudeRepositoryMcp({contextEngine,root:runtimeCwd,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,version});
     }
     const create=()=>instance.kind==="claude"
       ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,capabilityScope:environmentId||"",autoCompactWindow:instance.autoCompactWindow||null,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,persistedTurns:claudePersistedTurns(threadStore.get(thread.id)||thread),onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),mcpServers:claudeMcpServers,...(claudeSdk?{sdk:claudeSdk}:{})})

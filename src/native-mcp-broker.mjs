@@ -1,8 +1,18 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
-import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+// The MCP client modules (with the zod schemas of every MCP message) load with the first Native session that has an MCP server to
+// connect, not with the server (budget B25).
+let mcpClientModules=null;
+function loadMcpClient(){
+  return mcpClientModules??=Promise.all([
+    import("@modelcontextprotocol/sdk/client/index.js"),
+    import("@modelcontextprotocol/sdk/client/stdio.js"),
+    import("@modelcontextprotocol/sdk/client/streamableHttp.js"),
+    import("@modelcontextprotocol/sdk/shared/stdio.js"),
+    import("@modelcontextprotocol/sdk/types.js"),
+  ]).then(([client,stdio,http,shared,types])=>({
+    Client:client.Client,StdioClientTransport:stdio.StdioClientTransport,StreamableHTTPClientTransport:http.StreamableHTTPClientTransport,
+    ReadBuffer:shared.ReadBuffer,serializeMessage:shared.serializeMessage,ElicitRequestSchema:types.ElicitRequestSchema,
+  }));
+}
 
 const MAX_TOOLS_PER_SERVER=100;
 const MAX_TOTAL_TOOLS=200;
@@ -118,10 +128,12 @@ export function mcpResultContent(result={}){
 export class EnvironmentStdioClientTransport{
   constructor({environments,environmentId,command,args=[],cwd=null,environmentNames=[],environment={}}={}){
     if(!environments||!environmentId)throw new Error("Remote MCP stdio transport requires a Trebell environment.");
-    this.environments=environments;this.environmentId=environmentId;this.command=command;this.args=[...args];this.cwd=cwd;this.environmentNames=[...environmentNames];this.environment={...environment};this.buffer=new ReadBuffer({maxBufferSize:10*1024*1024});this.process=null;this.closed=false;
+    this.environments=environments;this.environmentId=environmentId;this.command=command;this.args=[...args];this.cwd=cwd;this.environmentNames=[...environmentNames];this.environment={...environment};this.buffer=null;this.serializeMessage=null;this.process=null;this.closed=false;
   }
   async start(){
     if(this.process)throw new Error("MCP stdio transport is already started.");
+    const {ReadBuffer,serializeMessage}=await loadMcpClient();
+    this.buffer=new ReadBuffer({maxBufferSize:10*1024*1024});this.serializeMessage=serializeMessage;
     const child=this.environments.spawnArgv(this.environmentId,{command:this.command,args:this.args,cwd:this.cwd,stdio:["pipe","pipe","pipe"],environmentNames:this.environmentNames,environment:this.environment});this.process=child;
     child.stdout?.on("data",chunk=>{try{this.buffer.append(chunk);for(;;){const message=this.buffer.readMessage();if(message==null)break;this.onmessage?.(message)}}catch(error){this.onerror?.(error)}});
     child.stdout?.on("error",error=>this.onerror?.(error));child.stdin?.on("error",error=>this.onerror?.(error));child.stderr?.on("data",chunk=>{this.onstderr?.(String(chunk))});
@@ -130,10 +142,10 @@ export class EnvironmentStdioClientTransport{
   }
   async send(message){
     if(!this.process?.stdin)throw new Error("MCP stdio transport is not connected.");
-    const payload=serializeMessage(message);await new Promise((resolve,reject)=>{const stdin=this.process.stdin;const onError=error=>{cleanup();reject(error)},cleanup=()=>stdin.off("error",onError);stdin.once("error",onError);if(stdin.write(payload)){cleanup();resolve()}else stdin.once("drain",()=>{cleanup();resolve()})});
+    const payload=this.serializeMessage(message);await new Promise((resolve,reject)=>{const stdin=this.process.stdin;const onError=error=>{cleanup();reject(error)},cleanup=()=>stdin.off("error",onError);stdin.once("error",onError);if(stdin.write(payload)){cleanup();resolve()}else stdin.once("drain",()=>{cleanup();resolve()})});
   }
   async close(){
-    if(this.closed)return;this.closed=true;const child=this.process;this.process=null;if(!child){this.buffer.clear();this.onclose?.();return}
+    if(this.closed)return;this.closed=true;const child=this.process;this.process=null;if(!child){this.buffer?.clear();this.onclose?.();return}
     try{child.stdin?.end()}catch{}
     const closed=new Promise(resolve=>child.once("close",resolve));await Promise.race([closed,new Promise(resolve=>setTimeout(resolve,1000))]);
     if(child.exitCode==null)try{child.kill("SIGTERM")}catch{}
@@ -160,6 +172,7 @@ export class NativeMcpBroker{
   event(name,status,data={}){try{this.onEvent?.({name,status,data,at:Date.now()})}catch{}}
   async connect(){
     if(this.started)return this.namespaces();this.started=true;const namespaceNames=new Set();let remaining=MAX_TOTAL_TOOLS;
+    const {Client,StdioClientTransport,StreamableHTTPClientTransport,ElicitRequestSchema}=this.servers.length?await loadMcpClient():{};
     for(const server of this.servers){
       const namespace=uniqueName(safeName("mcp_"+(server.id||server.name),{prefix:"mcp",max:60}),namespaceNames,60),entry={server,namespace,client:null,transport:null,tools:[],resources:[],resourceTemplates:[],resourceError:null,error:null};this.entries.push(entry);
       try{

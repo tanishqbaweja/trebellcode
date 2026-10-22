@@ -155,14 +155,15 @@ test("B18: a server with Native active runs no child process before a thread ope
 });
 
 // B25: the server process's own RSS at start was still about 15 MB over the 2026-10-12 baseline (DoD 4's target 3): it imported every
-// harness SDK as it started, though only a thread, probe or import of that harness uses one. On top of what the Native benchmark
-// bundle needs too (zod, ws, cross-spawn, @babel/parser), the Claude Agent SDK, the MCP client (with the zod schemas of every MCP
-// message), OpenCode's SDKs and extract-zip cost a fresh process 29-30 MB of RSS, 17 MB of heap and 620-660 ms (perf/import-cost.mjs;
-// the Claude Agent SDK alone 27 MB and 318 ms). Each now loads the first time something needs it. The server runs as shipped (not
-// mock) on a fresh home with Native active and onboarding still open, with a resolve hook preloaded that lists every module it loads
-// (fixtures/module-load-recorder.mjs): none of these packages once it listens, nor after the requests the app makes as it opens
-// (onboarding's history scan among them), while opening a Claude Code thread, whose CLI is a stand-in (fixtures/fake-claude-cli.mjs),
-// loads the Claude Agent SDK and none of the others.
+// harness SDK as it started, though only a thread, probe or import of that harness uses one: the Claude Agent SDK, the MCP client
+// (with the zod schemas of every MCP message), OpenCode's SDKs and extract-zip. Each now loads the first time something needs it. On
+// the real server with a fresh home and Native active (12 ABBA pairs against b50ae934, medians of the paired differences), that has
+// it listen 249 ms sooner with 281 ms less CPU, at 22 MB less RSS and 26 MB less heap, and hold 16 MB less RSS and 15 MB less heap
+// after the app's opening requests, 10 s and a GC (91.5 against 107.9 MB of RSS). The
+// server runs as shipped (not mock) on a fresh home with Native active and onboarding still open, with a resolve hook preloaded that
+// lists every module it loads (fixtures/module-load-recorder.mjs): none of these packages once it listens, nor after the requests the
+// app makes as it opens (onboarding's history scan among them), while opening a Claude Code thread, whose CLI is a stand-in
+// (fixtures/fake-claude-cli.mjs), loads the Claude Agent SDK and none of the others.
 const HARNESS_PACKAGES=["@anthropic-ai/claude-agent-sdk","@modelcontextprotocol/sdk","@opencode-ai/sdk","@opencode/client","extract-zip"];
 function loadedPackages(log){
   let text="";try{text=readFileSync(log,"utf8")}catch{}

@@ -5,8 +5,11 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import extractZip from "extract-zip";
 import { trebellHome } from "./paths.mjs";
+
+// extract-zip loads with the first install, not with the server (budget B25).
+let extractZipModule=null;
+const loadExtractZip=()=>extractZipModule??=import("extract-zip");
 
 export const ACP_REGISTRY_URL="https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const ANTIGRAVITY_AUTH_METHODS=new Set(["oauth-personal","oauth-business","gemini-api-key","agent-platform"]);
@@ -62,8 +65,9 @@ async function findFile(root,name){
   return null;
 }
 
-export async function installAntigravityRuntime({env=process.env,fetchImpl=globalThis.fetch,platform=process.platform,arch=process.arch,extractImpl=extractZip}={}){
+export async function installAntigravityRuntime({env=process.env,fetchImpl=globalThis.fetch,platform=process.platform,arch=process.arch,extractImpl=null}={}){
   const target=antigravityRegistryTarget(platform,arch);if(!target)throw new Error(`Antigravity ACP is not supported on ${platform}/${arch}`);
+  const extract=extractImpl||(await loadExtractZip()).default;
   const registryResponse=await fetchImpl(ACP_REGISTRY_URL,{headers:{accept:"application/json"}});
   if(!registryResponse?.ok)throw new Error(`Could not read the ACP registry (${registryResponse?.status||"network error"})`);
   const registry=await registryResponse.json();
@@ -76,7 +80,7 @@ export async function installAntigravityRuntime({env=process.env,fetchImpl=globa
     const response=await fetchImpl(distribution.archive,{redirect:"follow"});
     if(!response?.ok||!response.body)throw new Error(`Could not download Google Antigravity ACP (${response?.status||"network error"})`);
     await pipeline(Readable.fromWeb(response.body),createWriteStream(archivePath,{mode:0o600}));
-    await extractImpl(archivePath,{dir:extracted});
+    await extract(archivePath,{dir:extracted});
     const source=await findFile(extracted,distribution.binaryName);if(!source)throw new Error(`Downloaded Antigravity archive did not contain ${distribution.binaryName}`);
     // Keep the full sibling payload rather than only the launcher. Google's
     // Windows/Linux ACP distributions may ship helper binaries next to the

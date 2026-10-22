@@ -139,7 +139,7 @@ test("Claude query options keep Claude Code's own prompt, settings sources, MCP 
 
 test("Claude preserves live SDK-hosted MCP server instances",async()=>{
   const {sdk,calls}=fakeClaude(),contextEngine={searchSymbols:async()=>({data:[]}),fileRelations:async()=>({})};
-  const repository=createClaudeRepositoryMcp({contextEngine,root:"/repo",version:"fixture"});
+  const repository=await createClaudeRepositoryMcp({contextEngine,root:"/repo",version:"fixture"});
   const claude=session(sdk,{mcpServers:{trebell_repository:repository}});
   await claude.start();await claude.prompt([{type:"text",text:"inspect symbols"}]);
   assert.equal(calls[0].options.mcpServers.trebell_repository.instance,repository.instance);

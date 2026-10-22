@@ -74,9 +74,9 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
   ]);
 });
 
-test("Claude repository MCP is an SDK-hosted server instead of a spawned duplicate index",()=>{
+test("Claude repository MCP is an SDK-hosted server instead of a spawned duplicate index",async()=>{
   const contextEngine={searchSymbols:async()=>({data:[]}),searchFiles:async()=>({data:[]}),repositoryMap:async()=>({data:[]}),projectCommands:async()=>({declared:[]}),verificationPlan:async()=>({steps:[]}),assessVerification:()=>({status:"incomplete"}),nextVerificationAction:()=>({action:"verify"}),fileRelations:async()=>({}),relatedTests:async()=>({data:[]}),callHierarchy:async()=>({callers:[],callees:[]}),diagnostics:async()=>({diagnostics:[]}),languageSymbol:async()=>({data:[]}),codeActions:async()=>({actions:[]}),organizeImports:async()=>({changes:[]}),renamePreview:async()=>({locations:[]}),symbolReferences:async()=>({data:[]}),searchCode:async()=>({data:[]}),readSourceRange:async()=>({}),gitContext:async()=>({}),gitHistory:async()=>({data:[]}),gitBlame:async()=>({data:[]})};
-  const server=createClaudeRepositoryMcp({contextEngine,root:"/repo",version:"fixture"});
+  const server=await createClaudeRepositoryMcp({contextEngine,root:"/repo",version:"fixture"});
   assert.equal(server.type,"sdk");
   assert.equal(server.name,"trebell_repository");
   assert.ok(server.instance);
