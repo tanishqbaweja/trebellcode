@@ -11,10 +11,13 @@
 // tuned for. Levels: 0 everything labelled, 1 labelled actions icon-only, 2 one pull request chip and the project crumb down to its
 // first letter, 3 the project crumb icon-only, 4 the theme and palette buttons in the More actions menu, 5 the pull request chip
 // without numbers, then data-fit 6 with one more action folded at each level.
-// The title shows whole wherever a level that folds no action (0 to 5) gives it that, at the first such level, however long it
-// is: cut to the readable width (80px) it can lose just the words that tell it from the thread beside it ("Repo task one" beside
-// "Repo task two", or "Repo task number one" beside "Repo task number two"). Where none of those levels shows it whole, the header
-// takes the first level that leaves it the readable width, folding actions only as far as that needs.
+// The title shows whole wherever a level up to the first that folds an action (0 to 5, and data-fit 6 with one action folded)
+// gives it that, at the first such level, however long it is: cut to the readable width (80px) it can lose just the words that
+// tell it from the thread beside it ("Repo task one" beside "Repo task two", or "Repo task number one" beside "Repo task number
+// two"). That first fold adds no button, More actions showing from level 4, so it gives the title the room level 5 gave it before
+// More actions showed there (without it "Repo task one" read 82 of its 85px at level 5 beside the 460px inspector at 1176, while
+// 1100 folded an action and showed it whole). Where none of those levels shows it whole, the header takes the first level that
+// leaves it the readable width, folding actions only as far as that needs.
 // From level 3 on the crumb gets its shortened name back (data-crumb "short", as level 2 shows it) wherever the title keeps what
 // the level gave it beside it, all of itself or its readable width, so the crumb's name never cuts a title its icon leaves whole: a
 // later level often frees more than the title needs, and the crumb kept only its icon beside a whole title. At level 3 its name
@@ -39,13 +42,14 @@ export function titleReadable({clientWidth=0,scrollWidth=0}={},readable=TITLE_RE
   return clientWidth+1>=Math.min(scrollWidth,readable);
 }
 
-// The level the header takes: the first at which the title shows whole among the levels that fold no action, when one does, else
-// the first at which it is readable, folding actions as far as that needs, else the last level. Each level leaves the title at least
-// the room of the one before, so the last that folds nothing tells whether any of them shows it whole. apply(level) sets a level,
-// and whole() and readable() measure the header after it.
+// The level the header takes: the first at which the title shows whole among the levels up to the first that folds an action,
+// when one does, else the first at which it is readable, folding actions as far as that needs, else the last level. Each level
+// leaves the title at least the room of the one before, so the first that folds an action (the last that folds nothing, where no
+// action can fold) tells whether any of them shows it whole. apply(level) sets a level, and whole() and readable() measure the
+// header after it.
 export function fitLevel(apply,whole,levels=HEADER_FIT_LEVELS,readable=whole){
   apply(0);if(whole())return 0;
-  apply(Math.min(levels,HEADER_FIT_LEVELS)-1);
+  apply(Math.min(levels,HEADER_FIT_LEVELS+1)-1);
   const fits=whole()?whole:readable;
   for(let level=0;level<levels;level++){apply(level);if(fits())return level}
   return levels-1;

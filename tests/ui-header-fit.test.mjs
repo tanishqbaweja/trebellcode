@@ -17,7 +17,7 @@ test("a title is whole when it shows all of itself, and readable when it shows a
   assert.equal(titleReadable({clientWidth:40,scrollWidth:40}),true);
 });
 
-test("the header takes the first level that shows the title whole among those that fold nothing, else the first that leaves it readable, else the last",()=>{
+test("the header takes the first level that shows the title whole among those up to the first fold, else the first that leaves it readable, else the last",()=>{
   // Whole from level 2: once the last level that folds nothing shows it whole, the levels are tried again from the first.
   const tried=[];
   assert.equal(fitLevel(level=>tried.push(level),()=>tried.at(-1)>=2),2);
@@ -33,6 +33,17 @@ test("the header takes the first level that shows the title whole among those th
   // Whole only once two actions fold, readable once one does: one folds, no more than readable needs.
   const folds=[];
   assert.equal(fitLevel(level=>folds.push(level),()=>folds.at(-1)>=HEADER_FIT_LEVELS+1,HEADER_FIT_LEVELS+3,()=>folds.at(-1)>=HEADER_FIT_LEVELS),HEADER_FIT_LEVELS);
+  // Whole once one action folds, readable from the last level that folds nothing: the first fold, which adds no button (More
+  // actions shows from level 4, where the theme and palette buttons step aside into it), shows it whole, as that level did before
+  // More actions showed there. (The header stopped at the last level that folds nothing, the title cut, while a narrower window,
+  // where that level left it under the readable width, folded the action and showed it whole.)
+  const firstFold=[];
+  assert.equal(fitLevel(level=>firstFold.push(level),()=>firstFold.at(-1)>=HEADER_FIT_LEVELS,HEADER_FIT_LEVELS+3,()=>firstFold.at(-1)>=HEADER_FIT_LEVELS-1),HEADER_FIT_LEVELS);
+  assert.deepEqual(firstFold,[0,HEADER_FIT_LEVELS,...Array.from({length:HEADER_FIT_LEVELS+1},(_,level)=>level)]);
+  // No action to fold: the last level that folds nothing tells.
+  const noFold=[];
+  assert.equal(fitLevel(level=>noFold.push(level),()=>false,HEADER_FIT_LEVELS,()=>noFold.at(-1)>=HEADER_FIT_LEVELS-1),HEADER_FIT_LEVELS-1);
+  assert.equal(noFold[1],HEADER_FIT_LEVELS-1);
   // Neither, at any level: the last one.
   const none=[];
   assert.equal(fitLevel(level=>none.push(level),()=>false,HEADER_FIT_LEVELS+2),HEADER_FIT_LEVELS+1);
@@ -114,9 +125,10 @@ test("from the level where the project crumb keeps only its icon, the crumb gets
   assert.deepEqual(fitted(0),{fit:"4",crumb:undefined,folded:[]});
   // Level 4 leaves the title 57px and the count-only chip shows it whole; the crumb's name would cut it to 58px.
   assert.deepEqual(fitted(-50),{fit:"5",crumb:undefined,folded:[]});
-  // No level that folds nothing shows the title whole (the count-only chip leaves it 82px): level 5 is the first that leaves it
-  // readable, and the crumb's name would cut it to 49px.
-  assert.deepEqual(fitted(-59),{fit:"5",crumb:undefined,folded:[]});
+  // No level that folds nothing shows the title whole (the count-only chip leaves it 82px, as beside the 460px inspector at 1176),
+  // and the first fold, which adds no button, does: one action folds, and the crumb's name would cut it to 83px. (The header took
+  // level 5, the first that leaves it readable, and the title read 82 of its 85px.)
+  assert.deepEqual(fitted(-59),{fit:String(HEADER_FIT_LEVELS),crumb:undefined,folded:["goal"]});
   // The count-only chip leaves the title 78px, under its readable width: one action folds, which shows it whole, and the crumb's
   // name would cut it to 79px.
   assert.deepEqual(fitted(-63),{fit:String(HEADER_FIT_LEVELS),crumb:undefined,folded:["goal"]});
