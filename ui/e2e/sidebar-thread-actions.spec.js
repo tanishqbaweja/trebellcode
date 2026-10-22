@@ -272,10 +272,11 @@ test("six digits typed into Snooze's Until year leave a four-digit year that the
 // Digits typed into a part of Snooze's Until field are kept when the minute has turned since the dialog last drew, or turns while the
 // part is being typed. The field's min, the next minute, was worked out at each render, so the first key after the turn drew the field
 // with a new min and Chrome started the part again: a year typed after the turn read 0028 for 2028, one typed two digits either side of
-// it 0008, an hour 01 for 11. A time that has passed while the dialog was open is still refused, with the hint asking for a time in the
-// future. The page's clock is held 20 s into a minute and moved on where the test turns the minute; the light run types in a 700 px
-// window.
-test("digits typed into Snooze's Until field after or across a minute's turn are kept, and a time that passes while the dialog is open is refused",async({page})=>{
+// it 0008, an hour 01 for 11. Nor does the field lose the parts typed when it is left with a part empty, or a day its month does not
+// have, after a turn, and come back to (the min set again as it lost focus wiped them all). A time that has passed while the dialog was
+// open is still refused by the dialog itself, with the hint asking for a time in the future. The page's clock is held 20 s into a
+// minute and moved on where the test turns the minute; the light run types in a 700 px window.
+test("digits typed into Snooze's Until field after or across a minute's turn are kept, also when the field is left with a part empty and come back to, and a time that passes while the dialog is open is refused",async({page})=>{
   test.setTimeout(90_000);
   const {harness,meta,id}=await openSidebarApp(page);
   const dialog=snoozeDialog(page),hint=dialog.locator(".snooze-hint"),submit=dialog.getByRole("button",{name:"Snooze",exact:true}),until=dialog.getByLabel("Snooze until");
@@ -319,6 +320,25 @@ test("digits typed into Snooze's Until field after or across a minute's turn are
       await clickPart(part.hour);await page.keyboard.type("11",{delay:20});
       await expect(until).toHaveValue(later+"-06-15T11:00");await expect(hint).toHaveText(wakes(later));await expect(submit).toBeEnabled();
       await page.screenshot({animations:"disabled",path:auditDir+"sidebar-snooze-typed-after-minute-turn-"+mode+"-"+width+"x800.png"});
+      // A part left empty (dark: the day cleared with Backspace) or a day its month does not have (light: 31 in June), the minute
+      // turned, and the field left (dark: a click on the dialog's words; light: Tab on to Cancel) and clicked back into: the parts
+      // still filled keep their digits. Leaving the field set its min again, and Chrome lays a field that gives no value out again
+      // with every part empty, so the month, year, hour and minute had to be typed again.
+      await until.fill(later+"-06-15T10:00");await clickPart(part.day);
+      if(mode==="dark")await page.keyboard.press("Backspace");else await page.keyboard.type("31",{delay:20});
+      await expect(until).toHaveValue("");await expect(hint).toHaveText("That date is incomplete or does not exist. Choose another date and time.");
+      await minutesPass(1);
+      if(mode==="dark")await dialog.locator(":scope>p").first().click();
+      else{
+        const cancel=dialog.getByRole("button",{name:"Cancel",exact:true});
+        for(let step=0;step<8&&!(await cancel.evaluate(node=>node===document.activeElement));step++)await page.keyboard.press("Tab");
+        await expect(cancel).toBeFocused();
+      }
+      await expect(until).not.toBeFocused();await clickPart(part.day);
+      await page.screenshot({animations:"disabled",path:auditDir+"sidebar-snooze-incomplete-date-left-and-back-"+mode+"-"+width+"x800.png"});
+      const day=mode==="dark"?"20":"30";await page.keyboard.type(day,{delay:20});
+      await expect(until,"the parts still filled keep their digits once the field is left after a minute's turn and come back to").toHaveValue(later+"-06-"+day+"T10:00");
+      await expect(hint).toHaveText(wakes(later));await expect(submit).toBeEnabled();
       if(mode==="dark"){await dialog.getByRole("button",{name:"Cancel",exact:true}).click();await expect(dialog).toHaveCount(0);continue}
       // A time two minutes on wakes the thread; once the clock has passed it, Snooze snoozes nothing and the hint asks for a time in the
       // future.
@@ -327,6 +347,10 @@ test("digits typed into Snooze's Until field after or across a minute's turn are
       await minutesPass(3);await submit.click();
       await expect(hint).toHaveText("Choose a time in the future.");await expect(hint).toHaveClass(/invalid/);await expect(submit).toBeDisabled();
       await expect(dialog).toBeVisible();await expect.poll(()=>groups(page)).toEqual([["Active",names]]);
+      // The dialog refuses it itself: the field's blur draws it again before the release, so Snooze is off by the click. One that
+      // sent the time on had the app refuse it ("Could not snooze “Bulk three”: Choose a future snooze time."), which the checks above
+      // pass with too.
+      await expect(dialog.getByRole("alert"),"the dialog refused the passed time itself, with no snooze for the app to refuse").toHaveCount(0);
       await page.screenshot({animations:"disabled",path:auditDir+"sidebar-snooze-time-passed-"+mode+"-"+width+"x800.png"});
       // The whole date and time typed from the keyboard after another turn, part by part in the field's order, then Snooze.
       const typed={day:"20",month:"07",year:later,hour:"11",minute:"45",dayPeriod:"A"};

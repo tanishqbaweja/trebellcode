@@ -39,8 +39,10 @@ export default function SnoozeDialog({request,onSubmit,onCancel,focusFallback}){
   const [dateTime,setDateTime]=useState(()=>localDateTimeValue(Date.now()+3_600_000));
   // Until's min, the minute after the field showed or last lost focus, is not worked out at each render: Chrome starts the part
   // being typed again when min changes, so the first key after a minute turned lost that part's digits ('2026' read 0026). A time
-  // that has passed since is refused as any past time is (invalid, below).
-  const [minAt,setMinAt]=useState(()=>Date.now()),refreshMin=()=>setMinAt(Date.now());
+  // that has passed since is refused as any past time is (invalid, below). Nor does it move while the field shows a date it gives
+  // no value for (badInput): Chrome lays the field out again for a new min, and one with no value comes back with every part empty,
+  // so leaving it with a part cleared, or a day its month does not have, wiped the parts typed.
+  const [minAt,setMinAt]=useState(()=>Date.now()),refreshMin=()=>{if(!dateRef.current?.validity.badInput)setMinAt(Date.now())};
   // The field shows a date it gives no value for: a day its month does not have (31-11, 29-02 in a year that is not a leap year), or
   // a part left empty. The page cannot tell the two apart (validity.badInput is true for both), so the hint names both. The field
   // comes back blank after For a duration, so leaving it ends this.
