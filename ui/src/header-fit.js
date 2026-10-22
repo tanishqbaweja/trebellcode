@@ -4,23 +4,26 @@
 // letter, then the project crumb keeps only its icon, then the theme and command palette buttons step aside into the More actions
 // menu, which shows from there on (its items switch the theme and open the palette), then the pull request chip keeps only its
 // icon and count (its tooltip names them all), and last the actions fold into that menu one at a time,
-// from the end of the row, until the title has a readable width: beside the desktop window's minimum width and a wide inspector, a
-// row of icons alone leaves the title no room, and folding no more than the title needs keeps the rest where they were (a turn's
-// Stop button moves an action or two, not the whole row). Stop and the inspector toggle never fold. The header is measured, so any
-// branch name, project action, number of linked pull requests or window width is covered, not only the widths a breakpoint was
-// tuned for. Levels: 0 everything labelled, 1 labelled actions icon-only, 2 one pull request chip and the project crumb down to its
-// first letter, 3 the project crumb icon-only, 4 the theme and palette buttons in the More actions menu, 5 the pull request chip
-// without numbers, then data-fit 6 with one more action folded at each level.
-// The title shows whole wherever a level up to the first that folds an action (0 to 5, and data-fit 6 with one action folded)
-// gives it that, at the first such level, however long it is: cut to the readable width (80px) it can lose just the words that
-// tell it from the thread beside it ("Repo task one" beside "Repo task two", or "Repo task number one" beside "Repo task number
-// two"). That first fold adds no button, More actions showing from level 4, so it gives the title the room level 5 gave it before
-// More actions showed there (without it "Repo task one" read 82 of its 85px at level 5 beside the 460px inspector at 1176, while
-// 1100 folded an action and showed it whole). Where none of those levels shows it whole, the header takes the first level that
-// leaves it the readable width, folding actions only as far as that needs, and one action further where that shows it whole: a
-// fold leaves the title the readable width and less than an action's room more, so a title a few pixels past the readable width
-// was cut where a narrower window, folding one action more for that width, showed it whole ("Repo task one" read 80 of its 85px
-// at 1140 beside the 460px inspector with one action folded, while 1136 folded two and showed it whole).
+// from the end of the row, until the title shows whole, or where no level shows it whole, until it has a readable width: beside the
+// desktop window's minimum width and a wide inspector, a row of icons alone leaves the title no room, and folding no more than the
+// title needs keeps the rest where they were (a turn's Stop button moves an action or two, not the whole row). Stop and the
+// inspector toggle never fold. The header is measured, so any branch name, project action, number of linked pull requests or
+// window width is covered, not only the widths a breakpoint was tuned for. Levels: 0 everything labelled, 1 labelled actions
+// icon-only, 2 one pull request chip and the project crumb down to its first letter, 3 the project crumb icon-only, 4 the theme and
+// palette buttons in the More actions menu, 5 the pull request chip without numbers, then data-fit 6 with one more action folded
+// at each level.
+// The title shows whole wherever a level gives it that, at the first such level, however long it is and however many actions that
+// folds: cut to the readable width (80px) it can lose just the words that tell it from the thread beside it ("Repo task one"
+// beside "Repo task two", or "Repo task number one" beside "Repo task number two"). Each level leaves the title at least the room
+// of the one before and gives it more in a wider main column, so a title shown whole in one column is shown whole in every wider
+// one, at the same level or an earlier one. Taking a level that folds only so far past the readable width (one action, or none)
+// left a band of titles whole or cut by where the width fell, the wider window cutting what the narrower one showed: a fold leaves
+// the title the readable width and less than an action's room more, and the next fold whole only up to that much longer ("Repo
+// task one" read 80 of its 85px at 1140 beside the 460px inspector with one action folded, while 1136 folded two and showed it
+// whole; folding one further, "Repo task number one" read 80 of its 135px at 1140 while 1136 folded three). Where no level shows
+// it whole, the header takes the first level that leaves it the readable width, folding actions only as far as that needs; so
+// where a title first shows whole, with every action folded, a column a pixel narrower keeps the readable width with fewer of
+// them folded.
 // From level 3 on the crumb gets its shortened name back (data-crumb "short", as level 2 shows it) wherever the title keeps what
 // the level gave it beside it, all of itself or its readable width, so the crumb's name never cuts a title its icon leaves whole: a
 // later level often frees more than the title needs, and the crumb kept only its icon beside a whole title. At level 3 its name
@@ -45,22 +48,16 @@ export function titleReadable({clientWidth=0,scrollWidth=0}={},readable=TITLE_RE
   return clientWidth+1>=Math.min(scrollWidth,readable);
 }
 
-// The level the header takes: the first at which the title shows whole among the levels up to the first that folds an action,
-// when one does, else the first at which it is readable, folding actions as far as that needs (one fold further where that level,
-// the first fold or a later one, cuts the title and the next shows it whole), else the last level. Each level leaves the title at
-// least the room of the one before, so the first that folds an action (the last that folds nothing, where no action can fold)
-// tells whether any of them shows it whole. apply(level) sets a level, and whole() and readable() measure the header after it;
-// the header is left at the level returned.
+// The level the header takes: the first at which the title shows whole, when one does, else the first at which it is readable,
+// folding actions as far as that needs, else the last level. Each level leaves the title at least the room of the one before, so
+// the last (every action folded, or the last that folds nothing where no action can fold) tells whether any of them shows it
+// whole. apply(level) sets a level, and whole() and readable() measure the header after it; the header is left at the level
+// returned.
 export function fitLevel(apply,whole,levels=HEADER_FIT_LEVELS,readable=whole){
   apply(0);if(whole())return 0;
-  const firstFold=Math.min(levels,HEADER_FIT_LEVELS+1)-1;
-  apply(firstFold);
+  apply(levels-1);
   const fits=whole()?whole:readable;
-  for(let level=0;level<levels;level++){apply(level);if(!fits())continue;
-    // Readable but cut from the first fold on: one more fold, when it shows the title whole.
-    if(fits!==whole&&level>=firstFold&&level+1<levels&&!whole()){apply(level+1);if(whole())return level+1;apply(level)}
-    return level;
-  }
+  for(let level=0;level<levels;level++){apply(level);if(fits())return level}
   return levels-1;
 }
 

@@ -769,9 +769,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    also moves the theme and palette buttons into the More actions menu, which shows from there on, 5 leaves the pull request chip
    its icon and how many are linked, and 6 folds actions into the menu one at a time from the end of the row (each one
    header-fit.js marks data-folded; Stop and the inspector toggle never fold). The title shows whole wherever
-   one of 0 to 5, or 6 with its first fold (which adds no button, the menu showing from 4), gives it that, at the first that does;
-   where none does, the fit stops at the first level that leaves it a readable width, folding actions only as far as that needs,
-   and one further where that shows it whole. From 3 on the project name comes back as at 2 (data-crumb="short") wherever
+   a level gives it that, at the first that does, however many actions it folds, so a wider main column never cuts a title a
+   narrower one shows whole; where none does, the fit stops at the first level that leaves it a readable width, folding actions
+   only as far as that needs. From 3 on the project name comes back as at 2 (data-crumb="short") wherever
    the title keeps what the level gave it beside it, all of itself or its readable width; at 3 that name would be 2 again, so a
    header whose title fits at 3 takes 4 with the name, the theme and palette buttons stepping aside into More actions for it, and 3
    shows only where 4 has no room for the name and no more of the title to show (a title 3 cuts by the pixel its measure allows

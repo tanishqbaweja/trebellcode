@@ -671,16 +671,20 @@ for(const [name,sibling,crumbNamed] of [["Repo task one","Repo task two",true],[
   }finally{await harness.close()}
 });
 
-// "Repo task one" shows whole beside "Repo task two", the Git inspector and two linked pull requests at every width the window is
-// dragged through, 4px at a time from 1100 to 1300 and back (UI lane D, 2026-10-21: at 1140, and at 1108 beside the 224px sidebar,
-// the fit stopped at the first level that left the title its readable 80px, "Repo task …" as "Repo task two" reads, while 1136
-// folded one action more into More actions and showed it whole: a wider window showed less of the title than a narrower one).
-// Actions fold no further than the whole title needs (the level before cuts it), and a wider main column never folds more of
-// them than a narrower one. 1140 is reached from 1280, 1120 and 1160 too.
-for(const mode of ["dark","light"])test(`"Repo task one" shows whole beside the Git inspector and two linked pull requests at every width from 1100 to 1300, the window widened and narrowed 4px at a time, folding actions only as far as that needs, in ${mode} mode`,async({page})=>{
+// "Repo task one" (85px) shows whole beside "Repo task two", the Git inspector and two linked pull requests at every width the
+// window is dragged through, 4px at a time from 1100 to 1300 and back, and so does "Repo task number one" (135px) beside "Repo task
+// number two". UI lane D, 2026-10-21: at 1140, and at 1108 beside the 224px sidebar, the fit stopped at the first level that left
+// "Repo task one" its readable 80px, "Repo task …" as "Repo task two" reads, while 1136 folded one action more into More actions
+// and showed it whole: a wider window showed less of the title than a narrower one. Folding one action past the readable width
+// moved that to longer titles: "Repo task number one" read "Repo task …" at 1140 with one action folded while 1136 folded three
+// and showed it whole, and 1152 folded one while 1164 folded two. Actions fold no further than the whole title needs (the level
+// before cuts it, by the measure the fit uses), and a wider main column never folds more of them than a narrower one. 1140 is
+// reached from 1280, 1120 and 1160 too.
+for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task number one","Repo task number two"]])for(const mode of ["dark","light"])test(`"${name}" shows whole beside the Git inspector and two linked pull requests at every width from 1100 to 1300, the window widened and narrowed 4px at a time, folding actions only as far as that needs, in ${mode} mode`,async({page})=>{
   test.setTimeout(180_000);
   const project={id:"header-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
-  const threads=["Repo task one","Repo task two"].map((title,index)=>({id:"header-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const threads=[name,sibling].map((title,index)=>({id:"header-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const slug=name.toLowerCase().replace(/\s+/g,"-");
   const prs=[102,103].map(number=>({url:"https://github.com/lane-d/scratch/pull/"+number,number,title:"Scratch PR "+number,state:"open"}));
   let links=prs.slice(0,1);
   const harness=await startHarness(threads);
@@ -729,19 +733,23 @@ for(const mode of ["dark","light"])test(`"Repo task one" shows whole beside the 
       const state=await read(),where=`at ${width}px (data-fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""}, title ${state.title} of ${state.whole}px, chips ${state.chips.join(" ")})`;
       seen.push({width,...state});
       expect.soft(state.overflow,`the header holds its row ${where}`).toBeLessThanOrEqual(1);
-      expect.soft(state.title+1,`"Repo task one" shows whole ${where}`).toBeGreaterThanOrEqual(state.whole);
-      if(state.before)expect.soft(state.before.shown,`the level before cuts the title (${state.before.shown} of ${state.before.whole}px), so the header goes no further than it needs, ${where}`).toBeLessThan(state.before.whole);
+      expect.soft(state.title+1,`"${name}" shows whole ${where}`).toBeGreaterThanOrEqual(state.whole);
+      // The level before cuts the title by the fit's own measure, which counts a title a pixel short of whole as whole (the pixel its
+      // ellipsis shows), but for level 3 before level 4 with the crumb's icon: the header takes level 4 where level 3 cuts the title
+      // by that pixel and level 4 shows all of it.
+      const pixel=state.fit==="4"&&!state.crumb?0:1;
+      if(state.before)expect.soft(state.before.shown+pixel,`the level before cuts the title (${state.before.shown} of ${state.before.whole}px), so the header goes no further than it needs, ${where}`).toBeLessThan(state.before.whole);
       return state;
     };
     const wide=await at(1280);
     expect(wide.chips,"the pull requests fold into the first one's chip").toEqual(["#102+1"]);
     // 1140 from 1280, from 1120 and from 1160.
     for(const from of [null,1120,1160]){if(from)await at(from);await at(1140)}
-    await page.screenshot({path:join(shotsDir,`header-title-repo-task-one-git-inspector-${mode}-1140x800.png`),animations:"disabled"});
+    await page.screenshot({path:join(shotsDir,`header-title-${slug}-git-inspector-${mode}-1140x800.png`),animations:"disabled"});
     for(let width=1100;width<=1300;width+=4)await at(width);
-    for(let width=1300;width>=1100;width-=4){await at(width);if(width===1108)await page.screenshot({path:join(shotsDir,`header-title-repo-task-one-git-inspector-${mode}-1108x800.png`),animations:"disabled"})}
+    for(let width=1300;width>=1100;width-=4){await at(width);if(width===1108||width===1152)await page.screenshot({path:join(shotsDir,`header-title-${slug}-git-inspector-${mode}-${width}x800.png`),animations:"disabled"})}
     const line=seen.map(state=>`${state.width}:${state.fit}${state.folded.length?"+"+state.folded.length:""}:${state.title}/${state.whole}`).join(" ");
-    console.log(`header for "Repo task one" beside the Git inspector in ${mode} (width:fit+folds:title/whole): ${line}`);
+    console.log(`header for "${name}" beside the Git inspector in ${mode} (width:fit+folds:title/whole): ${line}`);
     // A wider main column never folds more actions than a narrower one (the column narrows where the sidebar widens at 1121).
     const more=new Set();for(const state of seen)for(const other of seen)if(other.column>state.column&&other.folded.length>state.folded.length)more.add(`${other.width}px (${other.column}px of column) folds ${other.folded.length}, ${state.width}px (${state.column}px) ${state.folded.length}`);
     expect.soft([...more],"a wider main column never folds more actions than a narrower one").toEqual([]);
@@ -820,22 +828,26 @@ async function tabToMenuItem(page,menu,name){
 const focusVisible=locator=>locator.evaluate(node=>node.matches(":focus-visible"));
 // The order the header's actions fold in (their data-fold), from the end of the row; Stop and the inspector toggle never fold.
 const HEADER_FOLD_ORDER=["goal","terminal","review","script","open-in","source"];
-// The header's foldable actions and the folded ones, in the order they fold, and the title's width (shown and whole) now and
-// with the last folded action given back to the row. The fit folds no more than the title needs, so that width is short of
-// the readable 80px, or of the whole title where the last fold shows it whole.
+// The header's foldable actions and the folded ones, in the order they fold, and the title's width (shown and whole) now, with
+// the last folded action given back to the row, and with every action folded, the last two with the crumb's icon as the fit
+// measures each level; the header is put back as it was. The fit takes the first level that shows the title whole, however many
+// actions that folds, so one action fewer folded cuts a whole title; where every action folded cuts it too, it folds no more than
+// a readable title needs, so one action fewer folded leaves it short of the readable 80px.
 const headerFold=header=>header.evaluate((node,order)=>{
   const row=node.querySelector(".workspace-header-actions"),title=node.querySelector(".thread-title-button strong");
   const present=order.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`)),folded=present.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`).hasAttribute("data-folded"));
-  let titleWithOneLess=null;
+  const fit=node.dataset.fit,crumb=node.dataset.crumb,marked=[...node.querySelectorAll("[data-fold]")],markedFolded=marked.filter(control=>control.hasAttribute("data-folded"));
+  const state={fit,present,folded,title:title.clientWidth,whole:title.scrollWidth,titleWithOneLess:null,titleAllFolded:null};
+  delete node.dataset.crumb;
   if(folded.length){
-    const last=[...node.querySelectorAll(`[data-fold="${folded.at(-1)}"]`)],fit=node.dataset.fit;
-    for(const control of last)control.removeAttribute("data-folded");
+    for(const control of marked)if(control.dataset.fold===folded.at(-1))control.removeAttribute("data-folded");
     if(folded.length===1)node.dataset.fit="5";
-    titleWithOneLess=title.clientWidth;
-    for(const control of last)control.setAttribute("data-folded","");
-    node.dataset.fit=fit;
+    state.titleWithOneLess=title.clientWidth;
   }
-  return {fit:node.dataset.fit,present,folded,title:title.clientWidth,whole:title.scrollWidth,titleWithOneLess};
+  node.dataset.fit=present.length?"6":"5";for(const control of marked)control.toggleAttribute("data-folded",present.includes(control.dataset.fold));
+  state.titleAllFolded=title.clientWidth;
+  node.dataset.fit=fit;if(crumb)node.dataset.crumb=crumb;for(const control of marked)control.toggleAttribute("data-folded",markedFolded.includes(control));
+  return state;
 },HEADER_FOLD_ORDER);
 // Which of the row's controls draws the line that parts the labelled actions from the icon toggles.
 const headerSeparators=header=>header.locator(".workspace-header-actions>*").evaluateAll(nodes=>nodes.filter(node=>node.offsetParent&&getComputedStyle(node,"::before").content!=="none").map(node=>node.getAttribute("aria-label")||node.className));
@@ -843,8 +855,11 @@ const firstShownToggle=header=>header.locator(".workspace-header-actions>.header
 async function expectFoldedOnlyAsNeeded(header,state){
   expect(state.folded,"folded actions").toEqual(state.present.slice(0,state.folded.length));
   expect(state.title+1,"title width").toBeGreaterThanOrEqual(Math.min(state.whole,80));
-  // Actions fold as far as a readable title needs, or one further where that fold shows the title whole.
-  if(state.folded.length)expect(state.titleWithOneLess+1,"title width with one action fewer folded").toBeLessThan(state.title+1>=state.whole?state.whole:Math.min(state.whole,80));
+  // The title shows whole wherever a level shows it so: a cut title is cut with every action folded too. Actions fold as far as the
+  // whole title needs, or where no level shows it whole as far as a readable one needs.
+  const whole=state.title+1>=state.whole;
+  if(!whole)expect(state.titleAllFolded+1,"title width with every action folded, beside a cut title").toBeLessThan(state.whole);
+  if(state.folded.length)expect(state.titleWithOneLess+1,"title width with one action fewer folded").toBeLessThan(whole?state.whole:Math.min(state.whole,80));
   for(const id of state.present)await expect(header.locator(`.workspace-header-actions>[data-fold="${id}"]`),id).toBeVisible({visible:!state.folded.includes(id)});
   // More actions shows from the level that sets the theme and palette buttons aside, which comes before any fold.
   await expect(header.getByRole("button",{name:"More actions",exact:true})).toBeVisible({visible:Number(state.fit)>=4});
@@ -1217,7 +1232,7 @@ for(const mode of ["dark","light"])test(`keyboard focus in the More actions menu
 // 1180, 900 and 700, with the sidebar open and closed and the docked inspector open and closed: at each the theme is switched from
 // the header and back, and the palette opened from it. Then, beside the sidebar and the inspector, the window narrows 10px at a
 // time through every level the header takes, each checked, with the theme and palette used from the header the first time at each
-// and the title whole wherever the first fold, which More actions showing from level 4 leaves without a button to add, shows it so.
+// and the title whole wherever a level shows it so, however many actions that folds.
 for(const mode of ["dark","light"])test(`the header keeps a way to switch the theme and open the command palette at every fit level, for a short and a long title, with and without the sidebar and the inspector, in ${mode} mode`,async({page})=>{
   test.setTimeout(300_000);
   const short={id:"short-thread",name:"Repo task number one",preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-120,updatedAt:now()-30,turns:[{id:"turn-s1",status:"completed",items:[{type:"userMessage",id:"user-s1",content:[{type:"text",text:"Tidy the repo task."}]},{type:"agentMessage",id:"assistant-s1",text:"Tidied."}]}]};
@@ -1248,16 +1263,16 @@ for(const mode of ["dark","light"])test(`the header keeps a way to switch the th
     await expect.poll(()=>header.evaluate(node=>Math.round(node.getBoundingClientRect().width)),{message:`the main column at ${width}px`}).toBe(column);await settle(page);
     const state=await read();levels.add(state.fit);return state;
   };
-  // The title's width at the first level that folds an action (data-fit 6, the first of the row's actions to fold folded, the crumb
-  // keeping its icon), read with the header set there for the moment and put back as it was.
-  const titleAtFirstFold=()=>header.evaluate((node,order)=>{
+  // The title's width at the last level, which leaves it the most room (data-fit 6 with every action folded, the crumb keeping its
+  // icon), read with the header set there for the moment and put back as it was.
+  const titleAllFolded=()=>header.evaluate(node=>{
     const strong=node.querySelector(".thread-title-button strong"),fit=node.dataset.fit,crumb=node.dataset.crumb,marked=[...node.querySelectorAll("[data-fold]")];
-    const folded=marked.filter(control=>control.hasAttribute("data-folded")),first=order.find(id=>marked.some(control=>control.dataset.fold===id));
-    node.dataset.fit="6";delete node.dataset.crumb;for(const control of marked)control.toggleAttribute("data-folded",control.dataset.fold===first);
+    const folded=marked.filter(control=>control.hasAttribute("data-folded"));
+    node.dataset.fit=marked.length?"6":"5";delete node.dataset.crumb;for(const control of marked)control.setAttribute("data-folded","");
     const box={shown:strong.clientWidth,whole:strong.scrollWidth};
     node.dataset.fit=fit;if(crumb)node.dataset.crumb=crumb;for(const control of marked)control.toggleAttribute("data-folded",folded.includes(control));
     return box;
-  },HEADER_FOLD_ORDER);
+  });
   const offers=(state,where,quiet)=>{
     const offered=Boolean(state.theme&&state.palette||state.more);
     if(!quiet)console.log(`header for ${where} in ${mode}: fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""}, title ${state.title} of ${state.whole}px, ${state.theme&&state.palette?"theme and palette buttons":state.more?"More actions":"no theme or palette control"}`);
@@ -1287,16 +1302,15 @@ for(const mode of ["dark","light"])test(`the header keeps a way to switch the th
         if(offers(state,`"${name}" at ${width}x800${sidebar?" with the sidebar":""}${inspector?" with the inspector":""}`))await use(shot);
         else await page.screenshot({path:shot,animations:"disabled"});
       }
-      // Beside the sidebar and the inspector, from 1600 to 1180, 10px at a time. The title shows whole wherever the first level that
-      // folds an action shows it whole: that fold adds no button, More actions showing from level 4, so it gives the title the room
-      // level 5 gave it before More actions showed there. (From about 1350 to 1420 the header stopped at the last level that folds
+      // Beside the sidebar and the inspector, from 1600 to 1180, 10px at a time. The title shows whole wherever a level shows it
+      // whole, which every action folded does if any does. (From about 1350 to 1420 the header stopped at the last level that folds
       // nothing, which cut "Repo task number one", and at 1360 the crumb's "Billi…" took 30px more of it, "Repo task n…".)
       const tried=new Set();
       for(let width=1600;width>=1180;width-=10){
         const state=await at(width,true,true),first=!tried.has(state.fit);tried.add(state.fit);
         if(offers(state,`"${name}" at ${width}x800 with the sidebar and the inspector`,!first)&&first)await use();
-        const folded=await titleAtFirstFold();
-        if(folded.shown+1>=folded.whole)expect.soft(state.title+1,`"${name}" at ${width}x800 with the sidebar and the inspector shows whole, as the first fold shows it (${state.title} of ${state.whole}px at data-fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""})`).toBeGreaterThanOrEqual(state.whole);
+        const folded=await titleAllFolded();
+        if(folded.shown+1>=folded.whole)expect.soft(state.title+1,`"${name}" at ${width}x800 with the sidebar and the inspector shows whole, as it does with every action folded (${state.title} of ${state.whole}px at data-fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""})`).toBeGreaterThanOrEqual(state.whole);
       }
     }
     // The levels that set the two buttons aside were all checked: 4, 5 (the chip's count too) and 6 (actions folded too).
