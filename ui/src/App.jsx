@@ -774,9 +774,11 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   },[modelOpen]);
   useEffect(()=>{
     if(!modelOpen)return;
+    // A press on a toast leaves the picker open too: the toasts stand under the header while it is open (with-composer-menu,
+    // overlays.css), and closing it took them back down before the release, so a click on the undo toast's Undo reached the page.
     const pointerDown=event=>{
       const target=event.target;
-      if(target instanceof Element&&target.closest(".model-picker-wrap"))return;
+      if(target instanceof Element&&target.closest(".model-picker-wrap,.thread-undo-toast,.app-action-error-toast"))return;
       setModelOpen(false);
     };
     const keyDown=event=>{

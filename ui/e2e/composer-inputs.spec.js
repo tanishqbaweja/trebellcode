@@ -1634,11 +1634,11 @@ test("an archive's undo toast sits above the attachment shelf's top row, so ever
   }finally{await harness.close()}
 });
 
-// The two toasts against the header and an open / or @ menu: the undo toast's place, the error toast's against it, and the menu,
-// "clear" when neither toast lies over any part of it.
+// The two toasts against the header and an open / or @ menu or model picker: the undo toast's place, the error toast's against it,
+// and the menu, "clear" when neither toast lies over any part of it.
 const readMenuToasts=page=>page.evaluate(()=>{
   const box=selector=>document.querySelector(selector)?.getBoundingClientRect(),over=(a,b)=>Boolean(a&&b&&a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom);
-  const header=box(".chat-workspace .workspace-header"),undo=box("[data-testid=thread-undo-toast]"),error=box("[data-testid=app-action-error]"),menu=box(".composer-wrap .slash-menu")||box(".composer-wrap [data-testid=file-mention-menu]");
+  const header=box(".chat-workspace .workspace-header"),undo=box("[data-testid=thread-undo-toast]"),error=box("[data-testid=app-action-error]"),menu=box(".composer-wrap .slash-menu")||box(".composer-wrap [data-testid=file-mention-menu]")||box(".composer-wrap .model-picker-menu");
   const at=node=>`${Math.round(node.top)}-${Math.round(node.bottom)}`;
   return {undo:undo.top>=header.bottom&&undo.top<=header.bottom+16?"under the header":at(undo),
     ...(error?{error:error.top>=undo.bottom?"under the undo toast":`${at(error)}, the undo toast at ${at(undo)}`}:{}),
@@ -1671,6 +1671,88 @@ test("with the / or @ menu open, an archive's undo toast shows under the header,
         await undoArchive(page);await expect(threadRow(page,"Archive me A")).toHaveCount(1);
         await expect(composer).toHaveValue(typed);
       }
+    }
+  }finally{await harness.close()}
+});
+
+// The model picker closes on a press anywhere outside it, and while it is open the toasts stand under the header: a press on the
+// undo toast's Undo closed the picker, the toast went back above the composer between the press and the release, and the click went
+// to the page instead of Undo, so the thread stayed archived with the toast out of reach. A press on either toast leaves the picker
+// open, so the toast stays where it was pressed: a mouse click on Undo brings the thread back, and a drag over a failed action's
+// words selects them.
+test("with the model picker open, a mouse click on the undo toast's Undo brings the archived thread back, and a drag over a failed action's toast selects its words, the picker staying open and the toasts where they were pressed",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page,{others:["Archive me A"]});await failStashes(page);
+  try{
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker"),menu=page.locator(".composer-wrap .model-picker-menu");
+    const undoToast=page.getByTestId("thread-undo-toast"),alert=page.getByTestId("app-action-error");
+    const place=locator=>locator.evaluate(node=>{const box=node.getBoundingClientRect();return [box.left,box.top,box.width,box.height].map(Math.round).join(",")});
+    for(const [mode,width] of [["dark",1280],["light",900]]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      await expect(alert).toHaveCount(0,{timeout:10_000});
+      await archiveThread(page,"Archive me A");
+      await picker.click();await expect(menu).toBeVisible();
+      await expect.poll(()=>readMenuToasts(page),{message:`the undo toast with the model picker open at ${width}x800 in ${mode}`}).toEqual({undo:"under the header",menu:"clear"});
+      await page.screenshot({animations:"disabled",path:auditDir+`undo-toast-model-picker-${mode}-${width}x800.png`});
+      // Undo clicked with the mouse, as a person clicks it: the press, then the release where it was pressed.
+      const undo=await undoToast.getByRole("button",{name:"Undo",exact:true}).boundingBox();
+      await page.mouse.click(undo.x+undo.width/2,undo.y+undo.height/2);
+      await expect(threadRow(page,"Archive me A"),`the archived thread is back after a click on Undo at ${width}x800 in ${mode}`).toHaveCount(1);
+      await expect(undoToast).toHaveCount(0);await expect(menu,"the picker stays open after a click on a toast").toBeVisible();
+      await page.screenshot({animations:"disabled",path:auditDir+`undo-clicked-model-picker-${mode}-${width}x800.png`});
+      await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+      // A failed Ctrl+S with the picker open: its toast under the header, and a drag across its words selects them where it stands.
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.type("Draft to stash",{delay:20});
+      await picker.click();await expect(menu).toBeVisible();
+      await page.keyboard.press("Control+s");await expect(alert).toHaveText(stashFailed);
+      await expect.poll(()=>readErrorToast(page),{message:`the failed action's toast with the model picker open at ${width}x800 in ${mode}`}).toMatchObject({place:"under the header"});
+      const before=await place(alert),box=await alert.boundingBox();
+      await page.mouse.move(box.x+36,box.y+box.height/2);await page.mouse.down();
+      await page.mouse.move(box.x+box.width-12,box.y+box.height/2,{steps:8});await page.mouse.up();
+      expect(await page.evaluate(()=>String(window.getSelection())),`the words a drag across the failed action's toast selects at ${width}x800 in ${mode}`).toContain("stash or restore draft");
+      expect(await place(alert),"the failed action's toast stays where the drag began").toBe(before);
+      await expect(menu,"the picker stays open after a drag over a toast").toBeVisible();
+      await page.screenshot({animations:"disabled",path:auditDir+`error-toast-selected-model-picker-${mode}-${width}x800.png`});
+      await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");
+    }
+  }finally{await harness.close()}
+});
+
+// With the right panel maximized the undo toast stays at the window's foot, as with no menu open, while a / typed keeps its menu
+// open behind the panel. A failed action's toast beside the undo toast took the place an open menu gives it under the undo toast,
+// 52 px below the header with nothing above it. It keeps its place under the header there.
+test("with the right panel maximized over an open / menu, a failed Ctrl+S's toast beside an archive's undo toast shows under the header, the undo toast at the window's foot",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page,{others:["Archive me A"]});await failStashes(page);
+  try{
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("app-action-error"),slash=page.locator(".composer-wrap .slash-menu");
+    const workspace=page.locator(".workspace-shell"),right=page.getByTestId("right-panel");
+    // The error toast against its place under the header (the workspace shell's --tb-toast-top), the undo toast against the window's
+    // foot, and whether the two lie apart.
+    const readToasts=()=>page.evaluate(()=>{
+      const shell=document.querySelector(".workspace-shell"),probe=document.createElement("div");
+      probe.style.cssText="position:absolute;top:var(--tb-toast-top);height:0;visibility:hidden";shell.append(probe);
+      const under=probe.getBoundingClientRect().top;probe.remove();
+      const error=document.querySelector("[data-testid=app-action-error]").getBoundingClientRect(),undo=document.querySelector("[data-testid=thread-undo-toast]").getBoundingClientRect();
+      const at=box=>`${Math.round(box.top)}-${Math.round(box.bottom)}`;
+      return {error:Math.abs(error.top-under)<1?"under the header":`${at(error)}, ${Math.round(error.top-under)} px below its place under the header`,
+        undo:Math.abs(innerHeight-24-undo.bottom)<1?"at the window's foot":at(undo),apart:error.bottom<=undo.top||undo.bottom<=error.top};
+    });
+    for(const [mode,width] of [["dark",1280],["light",900]]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      await expect(alert).toHaveCount(0,{timeout:10_000});
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");
+      await page.keyboard.type("/",{delay:20});await expect(slash).toBeVisible();
+      await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible();
+      await right.getByRole("button",{name:"Maximize right panel",exact:true}).click();await expect(workspace).toHaveClass(/right-maximized/);
+      await archiveThread(page,"Archive me A");
+      await page.keyboard.press("Control+s");await expect(alert).toHaveText(stashFailed);await expect(alert).toHaveClass(/with-thread-undo/);
+      await expect.poll(readToasts,{message:`both toasts with the right panel maximized over the / menu at ${width}x800 in ${mode}`}).toEqual({error:"under the header",undo:"at the window's foot",apart:true});
+      await page.screenshot({animations:"disabled",path:auditDir+`undo-and-error-toasts-maximized-panel-${mode}-${width}x800.png`});
+      await undoArchive(page);await expect(threadRow(page,"Archive me A")).toHaveCount(1);
+      await right.getByRole("button",{name:"Close right panel",exact:true}).click();await expect(right).toHaveCount(0);
+      await expect(composer).toHaveValue("/");
     }
   }finally{await harness.close()}
 });

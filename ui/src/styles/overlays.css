@@ -325,6 +325,10 @@
   .app-shell>.workspace-shell.with-shelf-chips:not(.right-maximized)~.thread-undo-toast{bottom:calc(anchor(--tb-shelf top,12px) + 12px)}
   .app-shell>.workspace-shell.with-composer-menu:not(.right-maximized)~.thread-undo-toast{top:calc(var(--top) + 12px);bottom:auto}
   .app-shell.desktop-shell>.workspace-shell.with-composer-menu:not(.right-maximized)~.thread-undo-toast{top:calc(32px + var(--top) + 12px)}
+  /* The right panel maximized keeps the undo toast at the window's foot, though a menu typed open stays open behind it: the error
+     toast beside it keeps its place under the header, where the open menu's place under the undo toast (below) left it 52 px down
+     with nothing above it. Without anchor positioning the undo toast is under the header there too, so that place stands. */
+  html .workspace-shell.workspace-shell.right-maximized.with-composer-menu.with-composer-menu>.app-action-error-toast.with-thread-undo{top:var(--tb-toast-top)}
 }
 @supports not (anchor-name:--tb-composer){
   .app-shell:has(.chat-workspace)>.thread-undo-toast{top:calc(var(--top) + 12px);bottom:auto}
