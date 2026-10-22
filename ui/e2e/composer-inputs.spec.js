@@ -807,6 +807,85 @@ test("an attachment chip removed with the mouse leaves focus in the composer, so
   }finally{await harness.close()}
 });
 
+// What a person sees of each chip in the shelf's view (and of the one whose remove button has focus), by its name: the name "whole",
+// "cut with an ellipsis" or "cut with no ellipsis"; the remove button "at the chip's end" when it lies whole inside the chip at its
+// right end and the page answers it at its middle, or else how far past the chip's end it lies or what the page answers there; and
+// with focus on the button, the name "from its start", or how far the chip scrolled it.
+const readChipEnds=page=>chips(page).evaluateAll(nodes=>{
+  const view=nodes[0].parentElement.getBoundingClientRect();
+  return Object.fromEntries(nodes.filter(chip=>{const box=chip.getBoundingClientRect();return chip.contains(document.activeElement)||box.top>=view.top-0.5&&box.bottom<=view.bottom+0.5}).map(chip=>{
+    const box=chip.getBoundingClientRect(),button=chip.querySelector("button"),x=button.getBoundingClientRect(),at=document.elementFromPoint(x.left+x.width/2,x.top+x.height/2);
+    // The element that holds the name: the chip itself while the name is a bare text node in its row.
+    const holder=[...chip.querySelectorAll("*")].find(node=>node.textContent===chip.title)||chip,style=getComputedStyle(holder);
+    const name=holder.scrollWidth<=holder.clientWidth+1?"whole":style.textOverflow==="ellipsis"&&style.overflowX!=="visible"&&!/flex|grid/.test(style.display)?"cut with an ellipsis":"cut with no ellipsis";
+    const remove=x.right>box.right+0.5?`${Math.round(x.right-box.right)} px past the chip's end`:!button.contains(at)?`answers ${at?.closest(".attachment-shelf>span")===chip?"the chip's name":at?.tagName||"nothing"}`:box.right-x.right>12?`${Math.round(box.right-x.right)} px from the chip's end`:"at the chip's end";
+    const scrolled=Math.round(chip.scrollLeft+holder.scrollLeft);
+    return [chip.title,{name,remove,...(button===document.activeElement?{focused:scrolled?`the name scrolled ${scrolled} px`:"from its start"}:{})}];
+  }));
+});
+
+// A name too long for its chip was a bare text node in the chip's row: it kept its whole width, was cut with no ellipsis and pushed
+// the remove button out past the chip's end, so a click there removed nothing, and Shift+Tab to the button scrolled the name to its
+// end (lane H, p109). The name gives way, cut with an ellipsis, and the button stays whole at the chip's end, the shelf scrolling too.
+test("a long file name on an attachment chip is cut with an ellipsis and its remove button stays whole at the chip's end, where a click removes it and Shift+Tab reaches it with the name kept from its start, also on a shelf that scrolls, at 1280 and 700",async({page},testInfo)=>{
+  test.setTimeout(150_000);
+  const harness=await openComposerApp(page,{newTask:true});
+  try{
+    const composer=page.getByTestId("composer"),remove=name=>chips(page).getByRole("button",{name:"Remove "+name,exact:true});
+    const long=["quarterly-figures-final-2026.xlsx","meeting-notes-from-monday.md","customer-interview-transcript-03.txt"],files=[long[0],"a.txt",long[1],"short.md",long[2],"plan.md"];
+    const reports=Array.from({length:20},(_,index)=>`report-${String(index+1).padStart(2,"0")}-quarterly-figures.txt`);
+    const ends=names=>Object.fromEntries(names.map(name=>[name,{name:long.includes(name)||reports.includes(name)?"cut with an ellipsis":"whole",remove:"at the chip's end"}]));
+    for(const name of [...files,...reports])await writeFile(testInfo.outputPath(name),"contents of "+name);
+    await chooseFiles(page,files.map(name=>testInfo.outputPath(name)));
+    await expect(page.locator(".attachment-shelf > span:not(.uploading)")).toHaveCount(6);await expect(chips(page)).toHaveCount(6);
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const width of [1280,700]){
+        await page.setViewportSize({width,height:800});
+        await expect.poll(()=>readChipEnds(page),{message:`three long names and three short ones at ${width}x800 in ${mode}`}).toEqual(ends(files));
+        await page.screenshot({animations:"disabled",path:auditDir+`long-chip-names-${mode}-${width}x800.png`});
+      }
+    }
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+    // A click on a long-named chip's end, where its x is, removes that chip, and the draft keeps the keyboard.
+    await composer.click();await page.keyboard.type("Check these files",{delay:20});
+    const box=await chips(page).filter({hasText:long[0]}).boundingBox();
+    await page.mouse.click(box.x+box.width-12,box.y+box.height/2);
+    await expect(chips(page).filter({hasText:long[0]}),"a click on the long-named chip's end removes it").toHaveCount(0);await expect(chips(page)).toHaveCount(5);await expect(composer).toBeFocused();
+    // Shift+Tab from the draft goes back through the remove buttons, each whole at its chip's end with the name kept from its start,
+    // and Enter on the first removes it, focus going on to the next.
+    const order=await chips(page).evaluateAll(nodes=>nodes.map(node=>node.title));
+    for(let at=order.length-1;at>=0;at--){
+      await page.keyboard.press("Shift+Tab");await expect(remove(order[at])).toBeFocused();
+      expect((await readChipEnds(page))[order[at]],`${order[at]} with focus on its remove button`).toEqual({...ends([order[at]])[order[at]],focused:"from its start"});
+    }
+    await page.keyboard.press("Enter");await expect(chips(page)).toHaveCount(4);await expect(remove(order[1])).toBeFocused();
+    await expect(composer).toHaveValue("Check these files");
+    // Ten more at 1280 and ten more at 700, most of the shelf long names: past three rows it scrolls, showing the newest, and the chips
+    // in its view, the newest under the mouse and those Shift+Tab reaches show the same.
+    for(const [width,picked] of [[1280,reports.slice(0,10)],[700,reports.slice(10)]]){
+      await page.setViewportSize({width,height:800});
+      const count=await chips(page).count();await chooseFiles(page,picked.map(name=>testInfo.outputPath(name)));
+      await expect(page.locator(".attachment-shelf > span:not(.uploading)")).toHaveCount(count+10);await expect(chips(page)).toHaveCount(count+10);
+      expect(await page.locator(".attachment-shelf").evaluate(shelf=>shelf.scrollHeight>shelf.clientHeight),`the shelf scrolls at ${width}x800`).toBe(true);
+      const newest=await chips(page).last().getAttribute("title");
+      await expect.poll(async()=>{const seen=await readChipEnds(page);return seen[newest]&&Object.keys(seen).length>=6&&JSON.stringify(seen)===JSON.stringify(ends(Object.keys(seen)))?"as they should":seen},{message:`the chips in the shelf's view at ${width}x800, the newest among them`}).toBe("as they should");
+      await page.screenshot({animations:"disabled",path:auditDir+`long-chip-names-scrolling-shelf-dark-${width}x800.png`});
+      const end=await chips(page).last().boundingBox();
+      await composer.click();await page.mouse.click(end.x+end.width-12,end.y+end.height/2);
+      await expect(chips(page).filter({hasText:newest}),`a click on the newest chip's end at ${width}x800 removes it`).toHaveCount(0);
+      await expect(chips(page)).toHaveCount(count+9);await expect(composer).toBeFocused();
+      const shown=await chips(page).evaluateAll(nodes=>nodes.map(node=>node.title));
+      for(let at=shown.length-1;at>=shown.length-8;at--){
+        await page.keyboard.press("Shift+Tab");await expect(remove(shown[at])).toBeFocused();
+        expect((await readChipEnds(page))[shown[at]],`${shown[at]} with focus on its remove button at ${width}x800`).toEqual({...ends([shown[at]])[shown[at]],focused:"from its start"});
+      }
+      await page.screenshot({animations:"disabled",path:auditDir+`long-chip-name-remove-focused-dark-${width}x800.png`});
+    }
+    await expect(chips(page)).toHaveCount(22);await expect(composer).toHaveValue("Check these files");
+  }finally{await harness.close()}
+});
+
 // A screenshot as a person pastes it: a PNG drawn in the page, handed over in the paste event's files.
 const pasteImage=(page,name)=>page.getByTestId("composer").evaluate(async(node,name)=>{
   const canvas=document.createElement("canvas");canvas.width=64;canvas.height=40;const pen=canvas.getContext("2d");pen.fillStyle="#3b82f6";pen.fillRect(0,0,64,40);
