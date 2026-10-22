@@ -1,6 +1,6 @@
 import { TREBELL_USER_AGENT } from "./version.mjs";
 import { adaptAnthropicResponse, ANTHROPIC_PRE_SERIALIZED_MESSAGES, chatToAnthropic, createAnthropicMessageProjector, providerTurnAnthropicScaffold, providerTurnToAnthropic } from "./anthropic-chat-adapter.mjs";
-import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY, normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses, providerToolsToChat, responsesReasoningToReplay } from "./provider-turn.mjs";
+import { dropResponsesReasoning, NATIVE_CHAT_MESSAGE_CACHE_IDENTITY, normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses, providerToolsToChat, responsesReasoningToReplay } from "./provider-turn.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -239,6 +239,15 @@ function officialOpenAiTextVerbosity(request={}){
   const major=Number(match[1]||0),minor=Number(match[2]||0);
   return major>5||(major===5&&minor>=5)?"low":null;
 }
+// The models that reason: gpt-5 and later, the o-series and codex-mini, the families Codex builds its reasoning parameter for.
+// Their chat variants (chat-latest, gpt-6-chat-latest) and every other model (gpt-4.1, gpt-4o, gpt-3.5-turbo, gpt-oss) do not,
+// and a fine-tune is judged by its base model.
+function officialOpenAiReasoningModel(model=""){
+  const text=String(model||"").trim().toLowerCase(),id=(text.startsWith("ft:")?text.split(":")[1]||"":text).replace(/^.*\//,"");
+  if(/(?:^|[^a-z0-9])chat(?:[^a-z0-9]|$)/.test(id))return false;
+  const gpt=id.match(/^gpt-(\d+)/);
+  return gpt?Number(gpt[1])>=5:/^(?:o\d|codex-)/.test(id);
+}
 function normalizedOpenAiPromptCacheDiagnostics(body={}){
   const value=body?.prompt_cache_diagnostics;
   if(!value||typeof value!=="object")return null;
@@ -324,9 +333,11 @@ function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKey
     const comparisonResponseId=String(effectiveRequest.promptCacheComparisonResponseId||"").trim();
     body.prompt_cache_options={mode:"implicit",...(comparisonResponseId?{comparison_response_id:comparisonResponseId}:{})};
   }
-  // Each reasoning item comes back with its encrypted_content, so a request rebuilt in full can carry its turn's reasoning again
-  // (reasoningReplay): WebSocket requests go with store:false, and nothing but the socket that made a response can continue from it.
-  body.include=["reasoning.encrypted_content"];
+  // A model that reasons returns each reasoning item with its encrypted_content, so a request rebuilt in full can carry its turn's
+  // reasoning again (reasoningReplay): WebSocket requests go with store:false, and nothing but the socket that made a response can
+  // continue from it. The API has refused include on a model that does not reason (HTTP 400, "Encrypted content is not supported
+  // with this model"), and Codex sends it only with the reasoning parameter it builds for the families that reason.
+  if(officialOpenAiReasoningModel(effectiveRequest.model))body.include=["reasoning.encrypted_content"];
   body.prompt_cache_key=typeof promptCacheKeyForBody==="function"?promptCacheKeyForBody(body,toolManifest?.toolsJson):officialOpenAiPromptCacheKey(body,toolManifest?.toolsJson);
   if(toolManifest?.toolsJson&&body.tools===toolManifest.tools)attachPreSerializedTopLevel(body,"tools",body.tools,toolManifest.toolsJson);
   return body;
@@ -889,10 +900,13 @@ export class ProviderManager {
     let fullResponsesBody=null,openAiContinuation=null,responsesBody=null,openAiParentId="",compactedResend=null,openAiWebSocketLane=false,replayInput;
     // A body sent without previous_response_id carries again the reasoning the current turn's replies kept (providerTurnToResponses'
     // reasoningReplay), which the server no longer holds for it; a continuation never does. The continuation tracker keeps proving
-    // prefixes on the input built without it, which every full body of a turn shares.
+    // prefixes on the input built without it, which every full body of a turn shares. Only a model that reasons is sent any, and a
+    // completion gate none: a judge rebuilt in full is sent the transcript without the coder's reasoning, as before (a batch-evidence
+    // precommit gate starts mid-turn, right after a tool output, and is rebuilt in full whenever its compacted view drops one of the
+    // turn's developer messages).
     const replayedInput=()=>{
       if(replayInput===undefined){
-        const input=provider.id==="openai"&&responsesReasoningToReplay(request.messages)?this.#officialOpenAiResponsesBody({...request,model},{reasoningReplay:true}).input:null;
+        const input=provider.id==="openai"&&request?.metadata?.completionGate!==true&&officialOpenAiReasoningModel(model)&&responsesReasoningToReplay(request.messages)?this.#officialOpenAiResponsesBody({...request,model},{reasoningReplay:true}).input:null;
         replayInput=input?.some(item=>item?.type==="reasoning")?input:null;
       }
       return replayInput;
@@ -909,7 +923,7 @@ export class ProviderManager {
     // without a usable socket) and the server had compacted this chain, the request is resent as the compaction item and what
     // followed it (the server's own context) instead of the whole local transcript; a resend the API refuses is sent whole.
     // Anything else that cannot continue its parent (an expired parent, another model or prefix, a session without the
-    // WebSocket lane) is sent whole, as before.
+    // WebSocket lane) is sent whole, as before, with the reasoning kept since the turn's last compaction (recordResponse).
     const compactedOrFull=(full,parentId)=>{
       if(!openAiWebSocketLane)return sentFull(full);
       if(!compactedResend){const resend=this.openAiResponseContinuations.compactedResend(full,parentId);if(resend){const body=sentCompactedResend(resend);compactedResend={...resend,body,inputCount:body.input.length,rejected:false}}}
@@ -919,6 +933,14 @@ export class ProviderManager {
     // The server compaction a response was produced on top of: the one a compacted resend carried, the parent's for a continuation
     // (undefined lets the tracker inherit it), and none for the whole transcript.
     const sentCompaction=()=>sentCompacted()?compactedResend.compaction:openAiContinuation?.used&&!continuationFallback?undefined:null;
+    // A compaction in a response's own output stands for everything its request held, the reasoning its replies kept too, so that
+    // reasoning leaves the messages: no body sent later in the turn carries it again, whether it is sent whole (an expired parent,
+    // another prefix) or after a whole one the tracker records without the compaction. A judge's compaction forks off the coding
+    // lane and drops nothing.
+    const recordResponse=result=>{
+      this.openAiResponseContinuations.record(result.id,openAiContinuation,result,{baseCompaction:sentCompaction()});
+      if(result.serverCompaction&&request?.metadata?.completionGate!==true)dropResponsesReasoning(request.messages);
+    };
     const compactedResendTelemetry=()=>compactedResend?{compactedResend:{compactionResponseId:compactedResend.compactionResponseId,omittedInputCount:compactedResend.omittedInputCount,inputCount:compactedResend.inputCount,rejected:compactedResend.rejected===true}}:{};
     if(provider.wireApi==="responses"){
       if(provider.id==="openai"){
@@ -977,7 +999,7 @@ export class ProviderManager {
           }
           const socketStarted=performance.now(),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal,idleTimeoutMs:this.requestTimeoutMs,...(sink?{onEvent:sink.responsesEvent}:{})}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
           this.openAiResponsesWebSocketTransientFailures=0;
-          this.openAiResponseContinuations.record(result.id,openAiContinuation,result,{baseCompaction:sentCompaction()});
+          recordResponse(result);
           this.#recordOpenAiWebSocketResponseOrigin(result.id,transport);
           result.telemetry={
             endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:Number(socketResult.requestBytes||0),responseBytes:Number(socketResult.telemetry?.responseBytes||0),
@@ -1042,7 +1064,7 @@ export class ProviderManager {
       try{
         const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs:this.requestTimeoutMs,...(sink?{onEvent:sink.responsesEvent}:{})}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
-        this.openAiResponseContinuations.record(result.id,openAiContinuation,result,{baseCompaction:sentCompaction()});
+        recordResponse(result);
         result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,requestedServiceTier,serviceTier:result.serviceTier||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),reasoningContext:normalizedOpenAiReasoningContext(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...compactedResendTelemetry(),...reasoningReplayTelemetry(),...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null};
         return result;
       }catch(error){
@@ -1097,7 +1119,7 @@ export class ProviderManager {
     const result=provider.wireApi==="responses"
       ?normalizeResponsesTurnResponse(parsed,provider.id,model)
       :normalizeChatTurnResponse(parsed,provider.id,model);
-    if(provider.id==="openai")this.openAiResponseContinuations.record(result.id,openAiContinuation,result,{baseCompaction:sentCompaction()});
+    if(provider.id==="openai")recordResponse(result);
     result.telemetry={
       ...baseTelemetry,
       providerResponseId:result.id||null,

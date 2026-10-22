@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_MODEL_PROVIDER, MODEL_PROVIDERS, ProviderManager, normalizeProviderId } from "../src/provider-manager.mjs";
 import { RETIRED_MODEL_PROVIDERS } from "../src/legacy-provider-migration.mjs";
+import { compactBatchEvidencePrecommitProviderMessages } from "../src/native-agent-loop.mjs";
 import { nativeRequestMetrics, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 import { OpenAiResponsesWebSocket } from "../src/openai-responses-websocket.mjs";
@@ -2268,5 +2269,156 @@ test("a compacted resend carries the reasoning that came after the compaction an
     assert.equal(JSON.stringify(httpBodies[1]).includes("enc-before-compaction"),false);
     assert.deepEqual(third.telemetry.responseContinuation.compactedResend,{compactionResponseId:"resp-compacted",omittedInputCount:3,inputCount:4,rejected:false});
     assert.equal(third.telemetry.responseContinuation.replayedReasoningItems,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+const keptSearch=(callId,encrypted,summary=[])=>[{before:"function_call",callId,item:{type:"reasoning",id:"rs_"+callId,summary,encrypted_content:encrypted}}];
+const searchCall=callId=>({id:callId,namespace:"trebell_repo",name:"search_files",arguments:'{"query":"Session"}'});
+const replayedTypes=body=>body.input.map(item=>item.type==="reasoning"?item:item.type);
+
+test("Native asks for reasoning.encrypted_content only on models that reason, and a model that does not is sent none of a turn's kept reasoning",async()=>{
+  // Codex sends include only with the reasoning parameter it builds for the families that reason, and the API has answered include
+  // on other models with HTTP 400 ("Encrypted content is not supported with this model"): the legacy chat models the catalog keeps.
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-reasoning-include-")),bodies=[];
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");bodies.push(body);return Response.json({id:"resp_"+bodies.length,model:body.model,status:"completed",output:[outputMessage("msg_"+bodies.length,"final_answer","ok")],usage:{input_tokens:5,output_tokens:1,total_tokens:6}})}});
+    manager.setKey("openai","oa-include-key");
+    const reasoning=["gpt-6-luna","gpt-6.1-sol","gpt-6-codex","gpt-5","o4-mini","codex-mini-latest","ft:gpt-6-luna:acme::R1"];
+    const other=["gpt-4.1","gpt-4o","gpt-3.5-turbo","chat-latest","chatgpt-4o-latest","gpt-6-chat-latest","gpt-oss-120b","ft:gpt-4.1-2025-04-14:acme:search-bot:S1"];
+    for(const model of [...reasoning,...other])await manager.turn("openai",{model,messages:[{role:"user",content:"Say ok"}],tools:[]});
+    assert.deepEqual(bodies.map(body=>[body.model,body.include??null]),[...reasoning.map(model=>[model,["reasoning.encrypted_content"]]),...other.map(model=>[model,null])]);
+    // The same transcript, holding a reply whose reasoning was kept, sent in full to each kind of model.
+    const messages=[{role:"user",content:"Find Session"},{role:"assistant",content:"",toolCalls:[searchCall("call_1")],[REASONING]:keptSearch("call_1","enc-include-1")},{role:"tool",toolCallId:"call_1",content:"src/session.js"}];
+    await manager.turn("openai",{model:"gpt-4.1",messages,tools:hookTools});await manager.turn("openai",{model:"gpt-6-luna",messages,tools:hookTools});
+    const [legacy,current]=bodies.slice(-2);
+    assert.deepEqual(replayedTypes(legacy),["message","function_call","function_call_output"],"a model that does not reason is never sent reasoning");
+    assert.deepEqual(replayedTypes(current),["message",{type:"reasoning",summary:[],encrypted_content:"enc-include-1"},"function_call","function_call_output"]);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a batch-evidence precommit gate whose view drops the closure-audit prompt is sent in full without the coder's reasoning",async()=>{
+  // The gate starts mid-turn, right after a tool output, and judges a compacted view without this turn's other developer
+  // messages: one that drops any does not continue the coder's response and is rebuilt in full, and as before it carries no reasoning.
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-reasoning-precommit-")),socketBodies=[];
+  const reply=(id,output)=>({requestBytes:40,response:{id,model:"gpt-6-luna",status:"completed",output,usage:{input_tokens:100,output_tokens:5,total_tokens:105}},telemetry:{responseBytes:30,totalLatencyMs:1,timeToFirstTokenMs:1}});
+  const reasoningItem=(id,encrypted)=>({type:"reasoning",id,summary:[],encrypted_content:encrypted}),runCall=(id,callId)=>({type:"function_call",id,status:"completed",call_id:callId,name:"trebell_terminal__run",arguments:'{"command":"node","args":["audit.mjs"]}'});
+  const replies=[
+    reply("resp_coder_1",[reasoningItem("rs_1","enc-coder-1"),runCall("fc_1","probe-1")]),
+    reply("resp_coder_2",[reasoningItem("rs_2","enc-coder-2"),runCall("fc_2","closure-audit")]),
+    reply("resp_gate",[outputMessage("msg_gate","final_answer",'{"status":"complete"}')]),
+    reply("resp_coder_full",[outputMessage("msg_full","final_answer","rebuilt")]),
+  ];
+  try{
+    const manager=compactedChainManager({root,fetchFn:async()=>{throw new Error("the socket stays healthy")},webSocket:()=>({request:async body=>{socketBodies.push(structuredClone(body));return replies[socketBodies.length-1]}})});
+    const token={},tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],user={role:"user",content:"For every queued case, reconcile authoritative evidence and submit the complete decision batch to the remote system."};
+    const coder=(messages,parent=null)=>({model:"gpt-6-luna",messages,tools,metadata:{sessionId:"native-precommit"},...(parent?{openAiContinuationResponseId:parent,promptCacheComparisonResponseId:parent}:{}),[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+    const first=await manager.turn("openai",coder([user]),{streamResponses:true});
+    const audit={role:"developer",content:"Trebell batch-evidence closure audit. Use exactly one bounded, read-only terminal command immediately before persistence."};
+    const conversation=[user,keptReply(first),{role:"tool",toolCallId:"probe-1",content:"probe output"},audit];
+    const second=await manager.turn("openai",coder([...conversation],first.id),{streamResponses:true});
+    assert.equal(socketBodies[1].previous_response_id,"resp_coder_1");
+    conversation.push(keptReply(second),{role:"tool",toolCallId:"closure-audit",content:"fresh per-record closure evidence"},{role:"developer",content:"Trebell staged-mutation binding. Audit only this exact candidate.\n\nTrebell semantic completion gate — batch-evidence precommit audit. Return only one JSON object."});
+    const view=compactBatchEvidencePrecommitProviderMessages(conversation,1);
+    assert.equal(view.removedDeveloperMessages,1);assert.equal(view.messages.includes(audit),false);assert.equal(view.messages.filter(message=>message?.[REASONING]).length,2,"the view keeps the coder's replies, and the reasoning they kept");
+    // As NativeAgentSession forks the judge: its own lane, the coder's last response as the parent, the loop's gate metadata.
+    const gate=await manager.turn("openai",{model:"gpt-6-luna",messages:view.messages,tools:[],metadata:{sessionId:"gate-native-precommit",completionGate:true,batchEvidencePrecommitGate:true},openAiContinuationResponseId:second.id,promptCacheComparisonResponseId:second.id,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token},{streamResponses:true});
+    const judged=socketBodies[2];assert.equal(Object.hasOwn(judged,"previous_response_id"),false,"the view does not extend the coder's response");
+    assert.deepEqual(replayedTypes(judged),["message","function_call","function_call_output","function_call","function_call_output","message"]);
+    assert.equal(JSON.stringify(judged).includes("enc-coder"),false);
+    assert.equal(gate.telemetry.responseContinuation.used,false);assert.equal(Object.hasOwn(gate.telemetry.responseContinuation,"replayedReasoningItems"),false);
+    // The coder's own request rebuilt in full from the same messages carries the reasoning: only the judge goes without it.
+    await manager.turn("openai",coder(view.messages),{streamResponses:true});
+    assert.deepEqual(socketBodies[3].input.filter(item=>item.type==="reasoning").map(item=>item.encrypted_content),["enc-coder-1","enc-coder-2"]);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a request whose parent expired on a healthy socket carries the turn's kept reasoning in its full frame, in order and without ids",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-reasoning-expired-"));
+  const {Socket,sockets}=closingResponsesSocket([
+    {events:[reasoningDone(0,"rs_1","enc-rs-1"),commentaryDone(1,"msg_1","Searching first."),searchCallDone(2,"fc_1","call_1","Session"),completedTurn("resp_1")]},
+    {events:[reasoningDone(0,"rs_2","enc-rs-2",[{type:"summary_text",text:"Narrowing the search."}]),searchCallDone(1,"fc_2","call_2","class Session"),completedTurn("resp_2")]},
+    {events:[commentaryDone(0,"msg_3","Session is defined in src/session.js."),completedTurn("resp_3")]},
+  ]);
+  try{
+    const manager=responsesManager({root,Socket,fetchFn:async()=>{throw new Error("the socket stays healthy, so nothing goes over HTTPS")}});
+    const chain=reasoningChain({sessionId:"native-reasoning-expired",token:{}});
+    const first=await manager.turn("openai",chain.first,{streamResponses:true});
+    const secondRequest=chain.next(chain.first,first,"src/a.js"),second=await manager.turn("openai",secondRequest,{streamResponses:true});
+    // A build that ran past the 240 s the server keeps a WebSocket parent for.
+    const started=Date.now();manager.openAiResponseContinuations.now=()=>started+300_000;
+    const third=await manager.turn("openai",chain.next(secondRequest,second,"src/session.js"),{streamResponses:true});
+    const frames=sockets.flatMap(socket=>socket.sent).map(frame=>JSON.parse(frame));
+    assert.equal(third.text,"Session is defined in src/session.js.");assert.equal(frames.length,3);assert.equal(frames[1].previous_response_id,"resp_1");
+    const rebuilt=frames[2];assert.equal(Object.hasOwn(rebuilt,"previous_response_id"),false);assert.equal(rebuilt.store,false);
+    assert.deepEqual(replayedTypes(rebuilt),[
+      "message",{type:"reasoning",summary:[],encrypted_content:"enc-rs-1"},"message","function_call","function_call_output",
+      {type:"reasoning",summary:[{type:"summary_text",text:"Narrowing the search."}],encrypted_content:"enc-rs-2"},"function_call","function_call_output",
+    ],"each reasoning item goes back, without its id, right before the reply text or function call it came before");
+    const continuation=third.telemetry.responseContinuation;
+    assert.equal(continuation.parentExpired,true);assert.equal(continuation.used,false);assert.equal(continuation.replayedReasoningItems,2);
+    manager.close();
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a session without the WebSocket lane carries the turn's kept reasoning in a full body, after a refused continuation and after an expired parent",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-reasoning-https-")),bodies=[];
+  const reasoningItem=(id,encrypted)=>({type:"reasoning",id,summary:[],encrypted_content:encrypted}),callItem=(id,callId)=>({type:"function_call",id,status:"completed",call_id:callId,name:"trebell_repo__search_files",arguments:'{"query":"Session"}'});
+  const done=(body,id,output)=>Response.json({id,model:body.model,status:"completed",output,usage:{input_tokens:20,output_tokens:5,total_tokens:25}});
+  const replies=[
+    body=>done(body,"resp_1",[reasoningItem("rs_1","enc-https-1"),callItem("fc_1","call_1")]),
+    ()=>httpError(404,"Previous response with id 'resp_1' not found."),
+    body=>done(body,"resp_2",[reasoningItem("rs_2","enc-https-2"),callItem("fc_2","call_2")]),
+    body=>done(body,"resp_3",[outputMessage("msg_3","final_answer","Session is defined in src/session.js.")]),
+  ];
+  try{
+    const manager=compactedChainManager({root,env:{TREBELL_OPENAI_RESPONSES_WEBSOCKET:"0"},webSocket:()=>{throw new Error("the WebSocket lane is off")},fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");bodies.push(body);return replies[bodies.length-1](body)}});
+    const chain=reasoningChain({sessionId:"native-reasoning-https",token:{}});
+    const first=await manager.turn("openai",chain.first,{streamResponses:true});
+    const secondRequest=chain.next(chain.first,first,"src/a.js"),second=await manager.turn("openai",secondRequest,{streamResponses:true});
+    assert.equal(bodies[1].previous_response_id,"resp_1");assert.equal(Object.hasOwn(bodies[2],"previous_response_id"),false);
+    assert.deepEqual(replayedTypes(bodies[2]),["message",{type:"reasoning",summary:[],encrypted_content:"enc-https-1"},"function_call","function_call_output"],"a refusal on plain HTTPS is sent whole, with the turn's reasoning");
+    assert.equal(second.telemetry.responseContinuation.fallbackReason,"previous_response_unavailable");assert.equal(second.telemetry.responseContinuation.replayedReasoningItems,1);
+    const started=Date.now();manager.openAiResponseContinuations.now=()=>started+300_000;
+    const third=await manager.turn("openai",chain.next(secondRequest,second,"src/session.js"),{streamResponses:true});
+    assert.equal(third.text,"Session is defined in src/session.js.");assert.equal(bodies.length,4);assert.equal(Object.hasOwn(bodies[3],"previous_response_id"),false);
+    assert.deepEqual(replayedTypes(bodies[3]),[
+      "message",{type:"reasoning",summary:[],encrypted_content:"enc-https-1"},"function_call","function_call_output",
+      {type:"reasoning",summary:[],encrypted_content:"enc-https-2"},"function_call","function_call_output",
+    ]);
+    assert.equal(third.telemetry.responseContinuation.parentExpired,true);assert.equal(third.telemetry.responseContinuation.replayedReasoningItems,2);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a compacted chain sent whole after an expired parent carries only the reasoning that followed the compaction, and so does a later whole send",async()=>{
+  // On the runner's 272k window a chain compacts above 245k, much of it the turn's reasoning: what the compaction stands for is not
+  // sent again, even once a whole send has left the tracker without the compaction.
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-reasoning-compacted-expired-")),socketBodies=[];
+  const reasoningItem=(id,encrypted)=>({type:"reasoning",id,summary:[],encrypted_content:encrypted}),runCall=(id,callId)=>({type:"function_call",id,call_id:callId,name:"trebell_terminal__run",arguments:'{"command":"make"}'});
+  const reply=(body,id,output,inputTokens)=>({requestBytes:50,response:{id,model:body.model,status:"completed",output,usage:{input_tokens:inputTokens,output_tokens:5,total_tokens:inputTokens+5}},telemetry:{responseBytes:40,totalLatencyMs:1,timeToFirstTokenMs:1}});
+  const replies=[
+    body=>reply(body,"resp-1",[reasoningItem("rs_1","enc-before-compaction"),runCall("fc-0","call-0")],200000),
+    body=>reply(body,"resp-compacted",[COMPACTION_ITEM,reasoningItem("rs_2","enc-after-compaction"),runCall("fc-1","call-1")],250000),
+    body=>reply(body,"resp-whole",[reasoningItem("rs_3","enc-after-whole-send"),runCall("fc-2","call-2")],160000),
+    body=>reply(body,"resp-final",[outputMessage("msg_final","final_answer","built")],170000),
+  ];
+  try{
+    const manager=compactedChainManager({root,fetchFn:async()=>{throw new Error("the socket stays healthy")},webSocket:()=>({request:async body=>{socketBodies.push(structuredClone(body));return replies[socketBodies.length-1](body)}})});
+    const token={},user={role:"user",content:"Build the project and fix what fails"},contextManagement=[{type:"compaction",compactThreshold:245_000}];
+    const request=(messages,parent)=>({model:"gpt-6-luna",messages,tools:[],metadata:{sessionId:"native_reasoning_compacted_expired"},contextManagement,...(parent?{promptCacheComparisonResponseId:parent}:{}),[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+    const first=await manager.turn("openai",request([user]),{streamResponses:true});
+    const secondMessages=[user,keptReply(first),{role:"tool",toolCallId:"call-0",content:"make: *** [all] Error 2"}],second=await manager.turn("openai",request(secondMessages,first.id),{streamResponses:true});
+    assert.deepEqual(second.serverCompaction,{items:1});assert.equal(socketBodies[1].previous_response_id,"resp-1");
+    const started=Date.now();manager.openAiResponseContinuations.now=()=>started+300_000;
+    const thirdMessages=[...secondMessages,keptReply(second),{role:"tool",toolCallId:"call-1",content:"exit 0"}],third=await manager.turn("openai",request(thirdMessages,second.id),{streamResponses:true});
+    const whole=socketBodies[2];assert.equal(Object.hasOwn(whole,"previous_response_id"),false);assert.equal(whole.input[0].role,"user","an expired parent is sent whole, as before");
+    assert.deepEqual(replayedTypes(whole),["message","function_call","function_call_output",{type:"reasoning",summary:[],encrypted_content:"enc-after-compaction"},"function_call","function_call_output"],"the compaction stands for the reasoning before it");
+    assert.equal(third.telemetry.responseContinuation.parentExpired,true);assert.equal(third.telemetry.responseContinuation.replayedReasoningItems,1);assert.equal(Object.hasOwn(third.telemetry.responseContinuation,"compactedResend"),false);
+    // Sent whole, resp-whole rests on no compaction; its parent expires too.
+    manager.openAiResponseContinuations.now=()=>started+600_000;
+    const final=await manager.turn("openai",request([...thirdMessages,keptReply(third),{role:"tool",toolCallId:"call-2",content:"exit 0"}],third.id),{streamResponses:true});
+    assert.equal(final.text,"built");const again=socketBodies[3];assert.equal(Object.hasOwn(again,"previous_response_id"),false);
+    assert.deepEqual(replayedTypes(again),["message","function_call","function_call_output",{type:"reasoning",summary:[],encrypted_content:"enc-after-compaction"},"function_call","function_call_output",{type:"reasoning",summary:[],encrypted_content:"enc-after-whole-send"},"function_call","function_call_output"]);
+    assert.equal(socketBodies.some(body=>JSON.stringify(body.input).includes("enc-before-compaction")),false);
+    assert.equal(final.telemetry.responseContinuation.replayedReasoningItems,2);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
