@@ -886,6 +886,102 @@ test("a long file name on an attachment chip is cut with an ellipsis and its rem
   }finally{await harness.close()}
 });
 
+// The title of the button the page answers at a point, or what it answers there.
+const titleAt=(page,x,y)=>page.evaluate(([x,y])=>{const node=document.elementFromPoint(x,y),button=node?.closest("button");return button?button.title:node?.tagName||"nothing"},[x,y]);
+const chipTitles=page=>chips(page).evaluateAll(nodes=>nodes.map(node=>node.title));
+// count files whose names are too long for their chips, attached with Attach files; their chips are all one width. Says the chips'
+// names in the shelf's order.
+async function attachLongNames(page,testInfo,count){
+  const names=Array.from({length:count},(_,index)=>`report-${String(index+1).padStart(2,"0")}-quarterly-figures.txt`);
+  for(const name of names)await writeFile(testInfo.outputPath(name),"contents of "+name);
+  await chooseFiles(page,names.map(name=>testInfo.outputPath(name)));
+  await expect(page.locator(".attachment-shelf > span:not(.uploading)")).toHaveCount(count);await expect(chips(page)).toHaveCount(count);
+  return chipTitles(page);
+}
+// Opens the Browser panel and attaches count screenshots from it, each a context chip reading "Browser screenshot".
+async function attachBrowserScreenshots(page,count){
+  await page.locator(".sidebar").getByRole("button",{name:"Browser",exact:true}).click();
+  await expect(page.getByTestId("right-panel").getByRole("button",{name:"Attach screenshot",exact:true})).toBeVisible();
+  await attachScreenshots(page,count);
+}
+
+// A double click on a chip's remove button removes that chip only. Chips with names too long for them are all one width, so each
+// chip's x sits where the one before had its x: the first click removed the chip at once, the next chip moved into its place, and
+// the second click landed on its x and removed it too. Browser screenshots' context chips all read the same, and did the same. The
+// rest of the press does nothing, as on a queued follow-up's Remove; a click of its own removes the chip under the pointer.
+test("a double click on an attachment chip's or a context chip's remove button removes only that chip, where the next chip's x comes up under the pointer",async({page},testInfo)=>{
+  test.setTimeout(120_000);
+  await page.addInitScript(screenshotBrowser);
+  const harness=await openComposerApp(page,{newTask:true});
+  try{
+    const composer=page.getByTestId("composer"),remove=name=>chips(page).getByRole("button",{name:"Remove "+name,exact:true});
+    const shown=await attachLongNames(page,testInfo,4);
+    expect(new Set(await chips(page).evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().width)))).size,"the long-named chips are one width").toBe(1);
+    // The person writes, then double-clicks the first chip's x: the first click removes it, and the next chip's x comes up under the
+    // pointer, where the second click lands.
+    await composer.click();await page.keyboard.type("Check these files",{delay:20});
+    const box=await remove(shown[0]).boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+    await page.mouse.move(x,y);await page.mouse.down();await page.mouse.up();
+    await expect(chips(page)).toHaveCount(3);
+    expect(await titleAt(page,x,y),"the next chip's x under the pointer").toBe("Remove "+shown[1]);
+    await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});await frames(page);
+    expect.soft(await chipTitles(page),"the second click of the double click removes nothing").toEqual(shown.slice(1));
+    await expect(composer).toBeFocused();await expect(composer).toHaveValue("Check these files");
+    await shootBoth(page,"attachment-chip-double-click");
+    // A click of its own removes the chip whose x is under the pointer.
+    const left=await chipTitles(page);
+    await page.mouse.click(x,y);await expect(chips(page)).toHaveCount(left.length-1);
+    expect(await chipTitles(page)).toEqual(left.slice(1));
+    // Three Browser screenshots, the panel closed again so the composer has them on one row, and a double click on the first one's x.
+    await attachBrowserScreenshots(page,3);
+    await page.getByRole("button",{name:"Close right panel"}).click();await expect(page.getByTestId("right-panel")).toHaveCount(0);
+    const context=page.getByTestId("context-chip");
+    expect(new Set(await context.evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)))).size,"the three context chips share a row").toBe(1);
+    const contextBox=await context.first().getByRole("button",{name:"Remove context"}).boundingBox();
+    const cx=contextBox.x+contextBox.width/2,cy=contextBox.y+contextBox.height/2;
+    await composer.click();
+    await page.mouse.move(cx,cy);await page.mouse.down();await page.mouse.up();
+    await expect(context).toHaveCount(2);
+    expect(await titleAt(page,cx,cy),"the next context chip's x under the pointer").toBe("Remove context");
+    await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});await frames(page);
+    expect.soft(await context.count(),"the second click of the double click removes no context chip").toBe(2);
+    await expect(composer).toBeFocused();await expect(composer).toHaveValue("Check these files");
+    await shootBoth(page,"context-chip-double-click");
+  }finally{await harness.close()}
+});
+
+// Enter held on a chip's remove button removes that chip only: removing a chip from the keyboard gives the keyboard to the next
+// chip's x, which the key's repeats pressed, so they removed chip after chip. The rest of the press does nothing, as on a queued
+// follow-up's Remove; a press of its own removes the chip it is on. Eight chips, more than the repeats could take out.
+test("Enter held on an attachment chip's or a context chip's remove button removes only that chip and leaves the keyboard on the next chip's x",async({page},testInfo)=>{
+  test.setTimeout(120_000);
+  await page.addInitScript(screenshotBrowser);
+  const harness=await openComposerApp(page,{newTask:true});
+  try{
+    const composer=page.getByTestId("composer"),remove=name=>chips(page).getByRole("button",{name:"Remove "+name,exact:true});
+    const shown=await attachLongNames(page,testInfo,8);
+    await composer.click();await page.keyboard.type("Check these files",{delay:20});
+    await remove(shown[0]).focus();
+    await holdKey(page,"Enter",()=>expect(chips(page)).toHaveCount(7));
+    expect.soft(await chipTitles(page),"Enter held removes one chip").toEqual(shown.slice(1));
+    await expect.soft(remove(shown[1]),"the keyboard after Enter held on a chip's x").toBeFocused();
+    await shootBoth(page,"attachment-chip-enter-held");
+    // A press of its own removes the chip it is on, the keyboard going on to the next.
+    const left=await chipTitles(page);
+    await remove(left[0]).focus();await page.keyboard.press("Enter");
+    await expect(chips(page)).toHaveCount(left.length-1);await expect(remove(left[1])).toBeFocused();
+    // Eight Browser screenshots, and Enter held on the first one's x.
+    await attachBrowserScreenshots(page,8);
+    const context=page.getByTestId("context-chip"),removeContext=context.getByRole("button",{name:"Remove context"});
+    await removeContext.first().focus();
+    await holdKey(page,"Enter",()=>expect(context).toHaveCount(7));
+    expect.soft(await context.count(),"Enter held removes one context chip").toBe(7);
+    await expect.soft(removeContext.first(),"the keyboard after Enter held on a context chip's x").toBeFocused();
+    await shootBoth(page,"context-chip-enter-held");
+    await expect(composer).toHaveValue("Check these files");
+  }finally{await harness.close()}
+});
+
 // A screenshot as a person pastes it: a PNG drawn in the page, handed over in the paste event's files.
 const pasteImage=(page,name)=>page.getByTestId("composer").evaluate(async(node,name)=>{
   const canvas=document.createElement("canvas");canvas.width=64;canvas.height=40;const pen=canvas.getContext("2d");pen.fillStyle="#3b82f6";pen.fillRect(0,0,64,40);
