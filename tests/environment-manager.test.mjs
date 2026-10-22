@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,6 +12,35 @@ import * as remotePaths from "../src/environment-manager.mjs";
 // A POSIX shell, as a WSL or SSH host has, where this machine has one (Git for Windows' sh, or the system's).
 function sh(script){return new Promise(resolve=>execFile("sh",["-c",script],{windowsHide:true,timeout:20_000},(error,stdout,stderr)=>resolve({code:error?(typeof error.code==="number"?error.code:-1):0,stdout:String(stdout),stderr:String(stderr)})))}
 const posixShell=(await sh("printf ok")).stdout==="ok";
+const bashShell=posixShell&&(await sh("bash -c 'printf ok'")).stdout==="ok";
+function finished(child){
+  return new Promise(resolve=>{
+    let stdout="",stderr="";child.stdout?.on("data",chunk=>{stdout+=chunk});child.stderr?.on("data",chunk=>{stderr+=chunk});
+    child.once("error",error=>resolve({code:-1,stdout,stderr:stderr+error.message}));child.once("close",code=>resolve({code,stdout,stderr}));
+  });
+}
+
+// wsl.exe as a distro showed it (wsl.exe -d docker-desktop -- sh -c 'x=1; echo "[$x]"' printed [], and with --exec [1]): with
+// --exec or -e it runs the words it is given; after -- it hands the rest of its command line, as Node quoted it for Windows
+// (libuv's quote_cmd_arg), to the distro's default shell, which parses it before the command does. This machine's sh stands in.
+function windowsQuoted(word){
+  if(word==="")return '""';
+  if(!/[ \t"]/.test(word))return word;
+  if(!/["\\]/.test(word))return '"'+word+'"';
+  const reversed=[];let beforeQuote=true;
+  for(let index=word.length-1;index>=0;index--){
+    const char=word[index];reversed.push(char);
+    if(beforeQuote&&char==="\\")reversed.push("\\");
+    else if(char==='"'){beforeQuote=true;reversed.push("\\")}
+    else beforeQuote=false;
+  }
+  return '"'+reversed.reverse().join("")+'"';
+}
+function asWsl(args){
+  const at=args.findIndex(arg=>arg==="--"||arg==="--exec"||arg==="-e");assert.ok(at>=0,"wsl.exe is given a command");
+  const words=args.slice(at+1);
+  return args[at]==="--"?["sh",["-c",words.map(windowsQuoted).join(" ")]]:[words[0],words.slice(1)];
+}
 
 function stateFor(profiles){
   return {
@@ -172,7 +201,7 @@ test("terminal specs keep interactive shells inside local, WSL and SSH environme
 
   const wsl=manager.terminalSpec("wsl",{cwd:"/work/repo"});
   assert.equal(wsl.shell,"wsl.exe");
-  assert.deepEqual(wsl.args.slice(0,4),["-d","Ubuntu","--","bash"]);
+  assert.deepEqual(wsl.args.slice(0,4),["-d","Ubuntu","--exec","bash"]);
   assert.equal(wsl.args.at(-1).includes("cd '/work/repo'"),true);
   assert.equal(wsl.args.at(-1).includes("/bin/bash"),true);
 
@@ -336,6 +365,38 @@ test("a remote command forwards guarded names only when the host sets them and t
     GEM_HOME:"fixture gems; $(exit 9) 'quoted'",BUNDLE_APP_CONFIG:null,CARGO_TARGET_DIR:null,RUSTUP_DIST_SERVER:null,MAVEN_OPTS:null,
     GRADLE_OPTS:"-Xmx2g -Dfile.encoding=UTF-8",LOG_LEVEL:"debug",OPENAI_API_KEY:null,
   });
+});
+
+// Native's commands reach a WSL host as bash -lc parses them, once, as an SSH host's shell does: the toolchain names guarded there,
+// and the command's own $ and backquotes as they are.
+test("a WSL host runs Native's commands with their guarded toolchain names as bash parses them once",{skip:!bashShell&&"no POSIX sh and bash on this machine"},async()=>{
+  const profile={id:"wsl",name:"Ubuntu dev",type:"wsl",cwd:"",distro:"Ubuntu"},launched=[];
+  // The distro's own values: a toolchain variable it sets, and one whose value carries a credential.
+  const distro={GEM_HOME:"fixture-gems",MAVEN_OPTS:"-Dhttps.proxyPassword=fixture-pass"};
+  const manager=new EnvironmentManager({state:stateFor([profile]),platform:"win32",spawnProcess:(file,args,options)=>{
+    launched.push([file,...args]);const [command,words]=asWsl(args);return spawn(command,words,{...options,env:{...options.env,...distro}});
+  }});
+  const shown=["GEM_HOME","MAVEN_OPTS","CARGO_TARGET_DIR"];
+  const script=`process.stdout.write(JSON.stringify({...Object.fromEntries(${JSON.stringify(shown)}.map(name=>[name,process.env[name]??null])),argument:process.argv[1]}))`;
+  const child=manager.spawnArgv("wsl",{command:process.execPath,args:["-e",script,"$HOME and `backquotes` stay as they are"],stdio:["ignore","pipe","pipe"],
+    environmentNames:["PATH","HOME","SYSTEMROOT"],guardedEnvironmentNames:shown});
+  const run=await finished(child);
+  assert.equal(run.code,0,run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout),{GEM_HOME:"fixture-gems",MAVEN_OPTS:null,CARGO_TARGET_DIR:null,argument:"$HOME and `backquotes` stay as they are"});
+  assert.deepEqual(launched[0].slice(0,5),["wsl.exe","-d","Ubuntu","--exec","bash"]);
+});
+
+// A project hook or the WSL network check (awk's $3) is the host's bash's to parse, and a sign-in terminal's command gets its
+// arguments as they are.
+test("a WSL host's commands and sign-in terminals are parsed once there",{skip:!bashShell&&"no POSIX sh and bash on this machine"},async()=>{
+  const profile={id:"wsl",name:"Ubuntu dev",type:"wsl",cwd:"",distro:"Ubuntu"};
+  const manager=new EnvironmentManager({state:stateFor([profile]),platform:"win32",spawnProcess:(file,args,options)=>{const [command,words]=asWsl(args);return spawn(command,words,options)}});
+  const hook=await manager.execute("wsl",{command:"trebell_fixture=parsed-once; printf '%s|%s' \"$trebell_fixture\" '$HOME'; echo 'a b c' | awk '{printf \"|%s\", $3}'",timeoutMs:20_000});
+  assert.equal(hook.exitCode,0,hook.stderr);assert.equal(hook.stdout,"parsed-once|$HOME|c");
+  const spec=manager.terminalArgvSpec("wsl",{command:process.execPath,args:["-e","process.stdout.write(process.argv[1])","$HOME and `backquotes` stay as they are"]});
+  assert.equal(spec.shell,"wsl.exe");
+  const [command,words]=asWsl(spec.args),signIn=await finished(spawn(command,words,{windowsHide:true,stdio:["ignore","pipe","pipe"]}));
+  assert.equal(signIn.code,0,signIn.stderr);assert.equal(signIn.stdout,"$HOME and `backquotes` stay as they are");
 });
 
 test("remote stdin argv forwards its environment allowlist to the spawned session",async()=>{

@@ -154,6 +154,7 @@ async function runProcess(command,args=[],{
   env=process.env,
   timeoutMs=15000,
   maxOutput=MAX_OUTPUT,
+  spawnProcess=spawn,
 }={}){
   return await new Promise((resolve,reject)=>{
     let settled=false;
@@ -162,7 +163,7 @@ async function runProcess(command,args=[],{
     let timedOut=false;
     let terminationTimer=null;
     const processGroup=process.platform!=="win32";
-    const child=spawn(command,args,{cwd,env,windowsHide:true,stdio:["ignore","pipe","pipe"],detached:processGroup});
+    const child=spawnProcess(command,args,{cwd,env,windowsHide:true,stdio:["ignore","pipe","pipe"],detached:processGroup});
     const append=(current,chunk)=>{
       if(Buffer.byteLength(current,"utf8")>=maxOutput) return current;
       const next=current+String(chunk);
@@ -207,6 +208,14 @@ export function listedWslDistros(stdout){
 // and runs the Codex that host was set up with, as its app-server does (environment-app-server.mjs).
 function hostCommand(profile,command){
   return command==="codex"&&profile?.codexPath?profile.codexPath:command;
+}
+
+// wsl.exe's arguments for a host command: with --exec wsl.exe starts bash -lc itself, so bash parses the command once, as an SSH
+// host's shell does. After -- wsl.exe would hand the rest of its command line, as Node quoted it for Windows, to the distro's
+// default shell, which parses it first; inside those double quotes single quotes protect nothing, so the command's $names, "$@"
+// and backquotes would be expanded before bash saw them (on a distro, wsl.exe -- sh -c 'x=1; echo "[$x]"' prints [], --exec [1]).
+function wslArgs(profile,command){
+  return [...(profile.distro?["-d",profile.distro]:[]),"--exec","bash","-lc",command];
 }
 
 function normalizedPort(value){
@@ -265,13 +274,14 @@ function validateProfile(input={}){
 
 export class EnvironmentManager {
   // discoveryRun: how host discovery runs ssh -V and wsl --list (offline browser E2E answers them as a fixed host instead,
-  // offline-e2e-host.mjs).
-  constructor({state,env=process.env,platform=process.platform,discoveryRun=runProcess}={}){
+  // offline-e2e-host.mjs). spawnProcess: how the sessions and commands of an environment start (tests stand in for wsl.exe).
+  constructor({state,env=process.env,platform=process.platform,discoveryRun=runProcess,spawnProcess=spawn}={}){
     if(!state) throw new Error("EnvironmentManager requires a TrebellStateStore");
     this.state=state;
     this.env=env;
     this.platform=platform;
     this.discoveryRun=discoveryRun;
+    this.spawnProcess=spawnProcess;
   }
 
   list(){ return this.state.environments(); }
@@ -389,15 +399,13 @@ export class EnvironmentManager {
     if(profile.type==="local"){
       executable=this.platform==="win32"?"cmd.exe":"/bin/sh";
       args=this.platform==="win32"?["/d","/s","/c",text]:["-lc",text];
-      return spawn(executable,args,{cwd:working||undefined,env:this.env,windowsHide:true,stdio,detached});
+      return this.spawnProcess(executable,args,{cwd:working||undefined,env:this.env,windowsHide:true,stdio,detached});
     }
     if(profile.type==="wsl"){
       if(this.platform!=="win32") throw new Error("WSL environments are available only on Windows");
       executable="wsl.exe";
-      args=[];
-      if(profile.distro) args.push("-d",profile.distro);
-      args.push("--","bash","-lc",remoteShellCommand(text,working));
-      return spawn(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio,detached});
+      args=wslArgs(profile,remoteShellCommand(text,working));
+      return this.spawnProcess(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio,detached});
     }
     if(profile.type==="ssh"){
       executable=this.platform==="win32"?"ssh.exe":"ssh";
@@ -405,7 +413,7 @@ export class EnvironmentManager {
       if(profile.identityFile) args.push("-i",profile.identityFile);
       const target=profile.user?(profile.user+"@"+profile.host):profile.host;
       args.push(target,remoteShellCommand(text,working));
-      return spawn(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio,detached});
+      return this.spawnProcess(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio,detached});
     }
     throw new Error("Unsupported environment type");
   }
@@ -429,9 +437,7 @@ export class EnvironmentManager {
       :"exec "+remoteShell+" -l";
     if(profile.type==="wsl"){
       if(this.platform!=="win32")throw new Error("WSL environments are available only on Windows");
-      const args=[];
-      if(profile.distro)args.push("-d",profile.distro);
-      args.push("--","bash","-lc",launch);
+      const args=wslArgs(profile,launch);
       return {
         environmentId:profile.id,
         environmentName:profile.name,
@@ -477,9 +483,7 @@ export class EnvironmentManager {
     const remoteCommand=REMOTE_TOOL_PATH_SCRIPT+"\n"+(working?("cd "+quotePosix(working)+" && "):"")+"exec "+shellCommand(hostCommand(profile,executable),args);
     if(profile.type==="wsl"){
       if(this.platform!=="win32")throw new Error("WSL environments are available only on Windows");
-      const launchArgs=[];if(profile.distro)launchArgs.push("-d",profile.distro);
-      launchArgs.push("--","bash","-lc",remoteCommand);
-      return {environmentId:profile.id,environmentName:profile.name,environmentType:"wsl",cwd:undefined,shell:"wsl.exe",args:launchArgs};
+      return {environmentId:profile.id,environmentName:profile.name,environmentType:"wsl",cwd:undefined,shell:"wsl.exe",args:wslArgs(profile,remoteCommand)};
     }
     if(profile.type==="ssh"){
       const shell=this.platform==="win32"?"ssh.exe":"ssh";
@@ -509,7 +513,7 @@ export class EnvironmentManager {
     const text=String(command||"").trim();
     if(!text) throw new Error("command is required");
     const working=String(cwd??profile.cwd??"").trim();
-    let executable,args,options={env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)),maxOutput:Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT))};
+    let executable,args,options={env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)),maxOutput:Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT)),spawnProcess:this.spawnProcess};
 
     if(profile.type==="local"){
       executable=this.platform==="win32"?"cmd.exe":"/bin/sh";
@@ -518,10 +522,7 @@ export class EnvironmentManager {
     }else if(profile.type==="wsl"){
       if(this.platform!=="win32") throw new Error("WSL environments are available only on Windows");
       executable="wsl.exe";
-      args=[];
-      if(profile.distro) args.push("-d",profile.distro);
-      const remoteCommand=remoteShellCommand(text,working);
-      args.push("--","bash","-lc",remoteCommand);
+      args=wslArgs(profile,remoteShellCommand(text,working));
     }else if(profile.type==="ssh"){
       executable=this.platform==="win32"?"ssh.exe":"ssh";
       args=["-o","BatchMode=yes","-o","ConnectTimeout=8","-o","ServerAliveInterval=15","-p",String(normalizedPort(profile.port))];
@@ -543,7 +544,7 @@ export class EnvironmentManager {
     if(!profile)throw new Error("Environment profile was not found");
     if(profile.type==="local"){
       const startedAt=Date.now();
-      const result=await runProcess(String(command||""),Array.isArray(args)?args:[],{cwd:String(cwd??profile.cwd??"").trim()||undefined,env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)),maxOutput:Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT))});
+      const result=await runProcess(String(command||""),Array.isArray(args)?args:[],{cwd:String(cwd??profile.cwd??"").trim()||undefined,env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)),maxOutput:Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT)),spawnProcess:this.spawnProcess});
       return {...result,profile:{id:profile.id,name:profile.name,type:profile.type},durationMs:Date.now()-startedAt};
     }
     return this.execute(id,{command:isolatedRemoteEnvironment(shellCommand(hostCommand(profile,String(command||"")),Array.isArray(args)?args:[]),environmentNames),cwd,timeoutMs,maxOutput});
