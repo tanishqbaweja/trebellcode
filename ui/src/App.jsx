@@ -2335,7 +2335,12 @@ export default function App(){
   async function loadOlderThreadHistory(){
     const runtimeCursor=threadHistory.nextCursor,catalogCursor=threadCatalogCursor;if((!runtimeCursor&&!catalogCursor)||threadHistory.loadingOlder)return;
     setThreadHistory(current=>({...current,loadingOlder:true}));
-    const nativeRequest=runtimeCursor&&rpc&&rpcStatus==="connected"?rpc.request("thread/list",{...threadListParams(100),cursor:runtimeCursor}):Promise.resolve(null);
+    // A press while the transport is not connected asks the runtime for nothing, so it reads no page and marks none read: it says why,
+    // and the next page stays for a press once the transport is back. (A read the transport took with it as it closed, for a project
+    // opened in another environment from the palette over History, puts its button back while the new transport connects; a press
+    // there counted as reading the last page of the environment switched to, which then never offered its older threads again.)
+    const asked=Boolean(runtimeCursor&&rpc&&rpcStatus==="connected");
+    const nativeRequest=asked?rpc.request("thread/list",{...threadListParams(100),cursor:runtimeCursor}):runtimeCursor?Promise.reject(new Error(agentRuntimeName(agentRuntime)+" is not connected")):Promise.resolve(null);
     const catalogRequest=catalogCursor?api("/api/thread-meta?"+new URLSearchParams({view:"catalog",limit:"100",cursor:catalogCursor})):Promise.resolve(null);
     const [nativeResult,catalogResult]=await Promise.allSettled([nativeRequest,catalogRequest]);
     const errors=[];let nativePage=null,catalogPage=null;
@@ -2347,13 +2352,14 @@ export default function App(){
     if(incoming.length||catalogThreads.length)setThreads(previous=>mergeThreadCatalog(previous,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}));
     if(catalogCursor&&catalogResult.status==="fulfilled")setThreadCatalogCursor(catalogPage?.nextCursor||null);
     // A next page the runtime refused (its answer an error: the thread it starts from archived since) is not kept past the next first
-    // page, whose own next page History then reads; one it did not answer (a timeout, a connection lost) is still good, and stays.
-    const sourceKey=historySource(),refused=Boolean(runtimeCursor&&nativeResult.status==="rejected"&&nativeResult.reason?.trebellRpcResponse),read=Boolean(runtimeCursor&&nativeResult.status==="fulfilled");
+    // page, whose own next page History then reads; one it did not answer (a timeout, a connection lost) is still good, and stays. One
+    // it was not asked for leaves the source's pages as they were.
+    const sourceKey=historySource(),refused=Boolean(asked&&nativeResult.status==="rejected"&&nativeResult.reason?.trebellRpcResponse),read=Boolean(asked&&nativeResult.status==="fulfilled");
     const nextCursor=read?(nativePage?.nextCursor||null):runtimeCursor,pages=kept=>({exhausted:read?!nextCursor:Boolean(kept?.exhausted),olderRead:!refused&&(read||Boolean(kept?.olderRead)),nextCursor});
     setThreadHistory(current=>({
       ...current,
       runtime:"all",
-      runtimePages:runtimeCursor?{...current.runtimePages,[sourceKey]:pages(current.runtimePages?.[sourceKey])}:current.runtimePages,
+      runtimePages:asked?{...current.runtimePages,[sourceKey]:pages(current.runtimePages?.[sourceKey])}:current.runtimePages,
       items:mergeThreadCatalog(current.items,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}),
       nextCursor:runtimeCursor?nextCursor:current.nextCursor,
       loadingOlder:false,

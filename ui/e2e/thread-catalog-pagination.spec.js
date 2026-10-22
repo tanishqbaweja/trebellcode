@@ -17,13 +17,16 @@ async function freePort(){
 // the page after that, control.listError, when set, fails it, and control.hold, when set, holds the next one until it resolves;
 // control.lists counts the lists asked for and control.cursors keeps the cursor each was asked with (null for the first page).
 // control.pages(cursor), when set, answers each list in their place: a page ({data, nextCursor}), or {error} for a cursor the runtime
-// refuses.
+// refuses. control.holdInitialize, when set, holds the next initialize until it resolves (a transport that takes a while to
+// connect). pause() stops reading what the sockets open now send until resume(), so a socket the page closes meanwhile stays
+// closing, its requests unanswered and not yet failed, until then.
 async function startRuntimeHarness(thread){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),control={listed:[thread],older:null,oldest:null,listError:null,hold:null,pages:null,lists:0,cursors:[]};
-  http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),control={listed:[thread],older:null,oldest:null,listError:null,hold:null,holdInitialize:null,pages:null,lists:0,cursors:[]},sockets=new Set(),paused=new Set();
+  http.on("upgrade",(req,socket,head)=>{sockets.add(socket);socket.once("close",()=>sockets.delete(socket));wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req))});
   wss.on("connection",ws=>ws.on("message",async raw=>{
     const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
     let result={};
+    if(message.method==="initialize"&&control.holdInitialize){const held=control.holdInitialize;control.holdInitialize=null;await held}
     if(message.method==="thread/list"){control.lists++;control.cursors.push(message.params?.cursor||null);if(control.hold){const held=control.hold;control.hold=null;await held}}
     if(message.method==="thread/list"&&control.listError)return ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:control.listError}}));
     const page=message.method==="thread/list"&&control.pages?control.pages(message.params?.cursor||null):null;
@@ -38,7 +41,10 @@ async function startRuntimeHarness(thread){
     ws.send(JSON.stringify({id:message.id,result}));
   }));
   const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
-  return {control,wsUrl:"ws://127.0.0.1:"+port+"/rpc",async close(){for(const client of wss.clients)try{client.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
+  return {control,wsUrl:"ws://127.0.0.1:"+port+"/rpc",
+    pause(){for(const socket of sockets){socket.pause();paused.add(socket)}},
+    resume(){for(const socket of paused)socket.resume();paused.clear()},
+    async close(){for(const socket of paused)socket.resume();for(const client of wss.clients)try{client.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
 
 test("History pages older Trebell catalog rows even without a connected runtime",async({page})=>{
@@ -544,14 +550,83 @@ test("Load older threads back in an environment left reads the page after the on
     await expect(history.getByRole("button",{name:/Local oldest thread 3/})).toBeVisible();await expect(failure).toHaveCount(0);await expect(load).toHaveCount(0);
     await shootHistoryModes(page,history.getByRole("button",{name:/Local oldest thread 3/}),"older-threads-after-environment-return");
     // Back in the remote environment, whose pages are read to their end: once History has its newest threads again (with one started
-    // since, which only that read lists), it offers no Load older threads.
+    // since, which only that read lists), it offers no Load older threads. History is shown once the project has opened (the composer
+    // shows): the open's last requests can come after the new transport has listed the threads, and the open ends on the thread view,
+    // which would take History away again.
     lists=harness.control.lists;
     await projectsButton.click();await openCard("Remote repo").click();
     await expect.poll(()=>environment).toBe("remote");await expect.poll(()=>harness.control.lists,{message:"the new transport lists the threads"}).toBeGreaterThan(lists);
+    await expect(page.getByTestId("composer")).toBeVisible();
     pages.remote.first={...pages.remote.first,data:[runtimeThreadAt(now,"remote-newest","Newest remote thread",-60),...pages.remote.first.data]};
     await historyButton.click();await expect(history.getByRole("button",{name:/Newest remote thread/})).toBeVisible();
     await expect(rows).toHaveCount(22);await expect(load).toHaveCount(0);await expect(failure).toHaveCount(0);
   }finally{await harness.close()}
+});
+
+// A press of Load older threads while the transport is not connected asks the runtime for nothing, so it reads no page and marks none
+// read. On History, a project opened in another environment from the palette closes the transport an older read went on: as its
+// socket closes, that read fails and puts Load older threads back, while the palette stays open over History as the project opens
+// (Escape closes it). A press there, before the new transport connected, counted as a page read with none after it: the environment
+// switched to was marked as read to its end, and its History offered no Load older threads again until a reload.
+test("Load older threads pressed while the transport of an environment switched to connects reads nothing and marks no page of it read",async({page})=>{
+  test.setTimeout(90_000);
+  const now=Date.now()/1000,threads=(id,name,count,from)=>Array.from({length:count},(_,index)=>runtimeThreadAt(now,id+"-"+index,name+" "+(index+1),from+index*600));
+  const pages={
+    local:{first:{data:threads("local-recent","Local thread",6,0),nextCursor:"local-2"},"local-2":{data:threads("local-older","Local older thread",4,86400*3),nextCursor:null}},
+    remote:{first:{data:threads("remote-recent","Remote thread",5,300),nextCursor:"remote-2"},"remote-2":{data:threads("remote-older","Remote older thread",3,86400*4),nextCursor:null}},
+  };
+  let environment="local";
+  const gate=()=>{let open=()=>{};const promise=new Promise(resolve=>{open=resolve});return {promise,open}};
+  const olderHeld=gate(),connectHeld=gate(),saveHeld=gate();
+  const harness=await startRuntimeHarness(pages.local.first.data[0]);harness.control.pages=cursor=>pages[environment][cursor||"first"]||{error:"No thread list page at "+cursor};
+  try{
+    await routeRuntimeHistory(page,harness,"history-press-while-connecting-fixture");
+    // A project in another environment, and the switch to it, as the GUI server answers them; the new transport's initialize waits
+    // (connectHeld), and so does the project's save (saveHeld), so the open runs on with the palette over History.
+    const project={id:"remote-project",name:"Remote repo",path:"/srv/remote-repo",environmentId:"build-box",effectiveSettings:{}},json=body=>({status:200,contentType:"application/json",body:JSON.stringify(body)});
+    let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeEnvironmentId:null};
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill(json({mock:false,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"history-press-while-connecting-fixture",runtimeCapabilities:{},activeEnvironmentId:settings.activeEnvironmentId,activeEnvironment:null})));
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")settings={...settings,...route.request().postDataJSON()};return route.fulfill(json(settings))});
+    await page.route(/\/api\/projects$/,async route=>{if(route.request().method()!=="POST")return route.fulfill(json({projects:[project]}));await saveHeld.promise;return route.fulfill(json({project}))});
+    await page.route(/\/api\/environments$/,route=>route.fulfill(json({profiles:[{id:"build-box",name:"Build box",type:"ssh",enabled:true}],activeEnvironmentId:settings.activeEnvironmentId})));
+    await page.route(/\/api\/environment\/activate$/,route=>{environment="remote";settings={...settings,activeEnvironmentId:"build-box"};harness.control.holdInitialize=connectHeld.promise;return route.fulfill(json({ok:true,activeEnvironmentId:"build-box",agentRuntime:"claude",agentRuntimeReady:true}))});
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>route.fulfill(json({isGit:false,root:project.path,branch:null,status:[],remotes:[],worktrees:[]})));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    const historyButton=page.getByRole("button",{name:"History",exact:true}),palette=page.getByTestId("command-palette");
+    const history=page.locator(".history-page"),rows=history.locator(".history-thread-row"),load=history.getByRole("button",{name:"Load older threads"}),failure=history.getByRole("alert");
+    const loadOrLoading=history.getByRole("button",{name:/^Load(ing)? older threads/}),asked=()=>harness.control.cursors.filter(Boolean);
+    // On this machine: History, and Load older threads, whose page the runtime holds.
+    await historyButton.click();await expect(rows).toHaveCount(6);await expect(load).toBeVisible();
+    harness.control.hold=olderHeld.promise;
+    await load.click();await expect.poll(asked).toEqual(["local-2"]);
+    // From History, the remote project opened from the palette with the keys. Its transport closes, and History, waiting for the new
+    // one, drops the next page; then the socket's close goes through, which fails the read and puts its button back.
+    harness.pause();
+    await page.keyboard.press("Control+K");await expect(palette).toBeVisible();
+    await page.keyboard.type("Remote repo");await expect(palette.locator(".command-palette-item").filter({hasText:"Remote repo"})).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>environment).toBe("remote");await expect(loadOrLoading).toHaveCount(0);
+    harness.resume();
+    await expect(failure).toHaveText("Could not load older threads: runtime history: Claude Code disconnected");await expect(load).toBeVisible();
+    await page.keyboard.press("Escape");await expect(palette).toHaveCount(0);
+    // A press there while the new transport connects: the runtime is asked for nothing, the press says why, and the button stays.
+    await load.click();
+    await expect.soft(failure,"the press says why it read nothing").toHaveText("Could not load older threads: runtime history: Claude Code is not connected");
+    await expect.soft(load,"the press leaves Load older threads").toBeVisible();
+    expect.soft(asked(),"the press asks the runtime for nothing").toEqual(["local-2"]);
+    await shootHistoryModes(page,rows.last(),"older-threads-pressed-while-connecting");
+    // The new transport connects: History lists the remote runtime's newest threads and offers its older ones, which a press reads.
+    connectHeld.open();
+    await expect(history.getByRole("button",{name:/Remote thread 5/})).toBeVisible();await expect(failure).toHaveCount(0);
+    await expect(load,"the environment switched to offers its older threads").toBeVisible();
+    await load.click();
+    await expect(history.getByRole("button",{name:/Remote older thread 3/})).toBeVisible();await expect(failure).toHaveCount(0);await expect(load).toHaveCount(0);
+    expect(asked(),"the next pages asked for").toEqual(["local-2","remote-2"]);
+    // The project's save answers, and the open ends on the thread view.
+    saveHeld.open();await expect(page.getByTestId("composer")).toBeVisible();
+  }finally{olderHeld.open();connectHeld.open();saveHeld.open();await harness.close()}
 });
 
 // A next page the runtime refuses (the thread it starts from was archived since) gives way to the first page's own next page once
