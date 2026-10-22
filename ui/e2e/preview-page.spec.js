@@ -410,6 +410,47 @@ test("a recording whose window closes and that cannot be stored says so where th
   }finally{await site.close()}
 });
 
+// Record pressed after a recording that could not be attached (by a click, by Enter, or by a double click in a narrow window) clears
+// the panel's error line as it starts, as it clears the notice of the last one's end, so the new recording is never said beside a line
+// saying a recording could not be attached: while it goes on, or once its window closes and it is attached. The line stayed until
+// another action of the panel worked, under the new one's notice that it was attached.
+test("Record after a recording that could not be attached clears the error line, so the new recording, going on or attached, is said alone",async({page,request})=>{
+  test.setTimeout(120_000);
+  const site=await startSite();
+  try{
+    const {panel,record,saved}=await openRecorder(page,request,site);
+    const said=panel.getByRole("status").filter({hasText:"Browser recording stopped"}),failed=panel.getByRole("alert").filter({hasText:"Browser recording stopped"}),errors=panel.locator(".browser-action-error");
+    const notStored="Browser recording stopped when the agent browser closed, but could not be attached: The disk is full.";
+    const full=route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"The disk is full."})});
+    const closeOutside=()=>page.evaluate(()=>window.closeAgentWindow());
+    // Record pressed with the agent browser closed opens it again, as the shell's arm does (desktop/main.mjs, browser:recording:arm).
+    await page.evaluate(url=>{const browser=window.trebellDesktop.browser,arm=browser.armRecording;browser.armRecording=async()=>{if(!(await browser.state()).open)await browser.navigate(url);return arm()}},site.url+"/rec");
+    for(const [index,how] of ["click","Enter","double click"].entries()){
+      if(how==="double click")await page.setViewportSize({width:900,height:800});
+      // A recording whose window closes while the server cannot store it: the error line says it could not be attached.
+      await page.route("**/api/attachments/blob",full);
+      await record.click();await expect(record).toHaveText(/Stop [1-9]\d*s/,{timeout:8000});
+      await closeOutside();
+      await expect(record).toHaveText(/Record/);await expect(failed).toHaveText(notStored);await expect(saved).toHaveCount(index);
+      // The server stores again, and Record is pressed straight away.
+      await page.unroute("**/api/attachments/blob",full);
+      if(how==="click")await record.click();
+      else if(how==="Enter"){await record.focus();await page.keyboard.press("Enter")}
+      else await record.dblclick({delay:120});
+      await expect(record).toHaveText(/Stop [1-9]\d*s/,{timeout:8000});
+      await expect.soft(failed,how+" on Record clears the line saying the last recording could not be attached as the new one starts").toHaveCount(0);
+      await expect.soft(errors,how+": the new recording goes on with nothing said wrong").toHaveCount(0);
+      if(!index)await shots(page,"preview-record-after-not-attached",record);
+      // Its window closes too, and it is attached: the panel says so, alone.
+      await closeOutside();
+      await expect(record).toHaveText(/Record/);await expect(saved,how+": the new recording is attached").toHaveCount(index+1);
+      await expect(said).toHaveText(/^Browser recording stopped when the agent browser closed · [1-9]\d*s attached$/);
+      await expect(failed,how+": and said alone, with no line beside it saying a recording could not be attached").toHaveCount(0);
+      if(!index)await shots(page,"preview-attached-after-not-attached",said);
+    }
+  }finally{await site.close()}
+});
+
 // What the Browser panel shows stays while the person looks at another tab or closes the panel, and comes back as it was left: the
 // address as typed, the page previewed with Back to the one before, the agent browser's elements with the one chosen and the note
 // begun on it, and the zoom. It used to come back as at first (http://localhost:3000, No preview open) while the agent browser still

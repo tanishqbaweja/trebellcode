@@ -220,11 +220,13 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     try{await window.trebellDesktop?.browser?.setViewport?.(next.width,next.height);clearErrors()}
     catch(error){setBrowserError(error?.message||String(error)||"Could not resize Agent Browser.")}
   }
-  // Record starts one recording: in a panel that read Record while another was starting it starts nothing more.
+  // Record starts one recording: in a panel that read Record while another was starting it starts nothing more. It clears the error
+  // line as it starts, as it clears the notice of the last one's end: the line saying the last one could not be attached stayed,
+  // beside the new one's notice that it was attached.
   async function startRecording(){
     if(kept.phase!=="idle")return;
     const browser=window.trebellDesktop?.browser;if(!browser?.armRecording||!navigator.mediaDevices?.getDisplayMedia||typeof MediaRecorder==="undefined")throw new Error("Browser recording is unavailable in this build.");
-    setKept({phase:"starting",ended:null});setBusy("recording");let stream=null;
+    setKept({phase:"starting",ended:null});clearErrors();setBusy("recording");let stream=null;
     try{
       await browser.armRecording();
       stream=await navigator.mediaDevices.getDisplayMedia({audio:false,video:{frameRate:{ideal:30,max:30}}});
