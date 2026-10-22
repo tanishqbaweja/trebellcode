@@ -1132,7 +1132,7 @@ export default function App(){
     }),
   });
   const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
-  const [threadHistory,setThreadHistory]=useState({runtime:null,runtimeSource:null,runtimeExhausted:false,items:[],nextCursor:null,loading:false,error:""});
+  const [threadHistory,setThreadHistory]=useState({runtime:null,runtimePages:{},items:[],nextCursor:null,loading:false,error:""});
   const [threadCatalogCursor,setThreadCatalogCursor]=useState(null);
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   // opening: the thread an open is fetching, from the click until the open is done (sends wait meanwhile): {thread, token (the
@@ -2296,8 +2296,8 @@ export default function App(){
     const sourceKey=historySource();
     // A first page that failed says so with Retry (retrying): its failure stays until the list answers, so the keyboard stays on
     // Retry, and one that fails again says it still could not, as a new message (failures keys it). While it is read, Load older
-    // threads goes on reading this source's next page; another source's next page is not kept.
-    setThreadHistory(current=>({...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:current.runtimeSource===sourceKey?current.runtimeExhausted:false,items:mergeThreadCatalog(current.items?.length?current.items:threads,[],{threadMeta}),nextCursor:current.runtimeSource===sourceKey&&!current.runtimeExhausted?(current.nextCursor||null):null,loading:true,error:current.retrying?current.error:"",olderError:""}));
+    // threads goes on reading this source's next page, which each source keeps (runtimePages) while History reads another's.
+    setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items?.length?current.items:threads,[],{threadMeta}),nextCursor:current.runtimePages?.[sourceKey]?.nextCursor||null,loading:true,error:current.retrying?current.error:"",olderError:""}));
     rpc.request("thread/list",threadListParams(100)).then(result=>{
       if(cancelled)return;
       const incoming=result?.data||[];rememberThreadCatalog(incoming);
@@ -2305,10 +2305,10 @@ export default function App(){
       setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
       // Only older pages read to their end (Load older threads) mark every page of the source read. A first page with no next page
       // does not: a runtime that listed few threads, or none while it started, may list more than a page later in the session.
-      // Older pages read (runtimeOlderRead) keep the next page after them: the first page's own next page is shown already.
+      // Older pages read (olderRead) keep the next page after them: the first page's own next page is shown already.
       setThreadHistory(current=>{
-        const sameSource=current.runtimeSource===sourceKey,alreadyExhausted=sameSource&&current.runtimeExhausted,nextCursor=result?.nextCursor||null,olderRead=Boolean(sameSource&&current.runtimeOlderRead&&current.nextCursor&&nextCursor);
-        return {...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:alreadyExhausted,runtimeOlderRead:olderRead,items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:alreadyExhausted?null:olderRead?current.nextCursor:nextCursor,loading:false,retrying:false,error:""};
+        const kept=current.runtimePages?.[sourceKey]||{},listed=result?.nextCursor||null,olderRead=Boolean(kept.olderRead&&kept.nextCursor&&listed),nextCursor=kept.exhausted?null:olderRead?kept.nextCursor:listed;
+        return {...current,runtime:"all",runtimePages:{...current.runtimePages,[sourceKey]:{...kept,olderRead,nextCursor}},items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor,loading:false,retrying:false,error:""};
       });
     }).catch(error=>{
       if(cancelled)return;
@@ -2322,7 +2322,8 @@ export default function App(){
   },[section,threads,threadMeta]);
   // What History's pages are read from: the runtime, its instance and its address, in the environment active, whose own catalog
   // answers there (the GUI server starts the catalog's harness again for an environment switched to). A next page kept from another
-  // environment went to this one's runtime, which refused it or read from wherever it fell in its own list.
+  // environment went to this one's runtime, which refused it or read from wherever it fell in its own list. Each source keeps its own
+  // (runtimePages), so back in an environment Load older threads goes on after the pages of it shown.
   function historySource(){return [agentRuntime,settings.agentRuntimeInstanceId||"",bootstrap.wsUrl||"",settings.activeEnvironmentId||""].join("\0")}
   // An older page's read has a state of its own (loadingOlder), which its button says: the first page read again (loading) neither
   // makes the button say older threads are loading nor refuses its press, and the first page's failure stays.
@@ -2342,15 +2343,14 @@ export default function App(){
     if(catalogCursor&&catalogResult.status==="fulfilled")setThreadCatalogCursor(catalogPage?.nextCursor||null);
     // A next page the runtime refused (its answer an error: the thread it starts from archived since) is not kept past the next first
     // page, whose own next page History then reads; one it did not answer (a timeout, a connection lost) is still good, and stays.
-    const sourceKey=historySource(),refused=Boolean(runtimeCursor&&nativeResult.status==="rejected"&&nativeResult.reason?.trebellRpcResponse);
+    const sourceKey=historySource(),refused=Boolean(runtimeCursor&&nativeResult.status==="rejected"&&nativeResult.reason?.trebellRpcResponse),read=Boolean(runtimeCursor&&nativeResult.status==="fulfilled");
+    const nextCursor=read?(nativePage?.nextCursor||null):runtimeCursor,pages=kept=>({exhausted:read?!nextCursor:Boolean(kept?.exhausted),olderRead:!refused&&(read||Boolean(kept?.olderRead)),nextCursor});
     setThreadHistory(current=>({
       ...current,
       runtime:"all",
-      runtimeSource:sourceKey,
-      runtimeExhausted:runtimeCursor&&nativeResult.status==="fulfilled"?!nativePage?.nextCursor:current.runtimeExhausted,
-      runtimeOlderRead:!refused&&(Boolean(runtimeCursor&&nativeResult.status==="fulfilled")||Boolean(current.runtimeOlderRead)),
+      runtimePages:runtimeCursor?{...current.runtimePages,[sourceKey]:pages(current.runtimePages?.[sourceKey])}:current.runtimePages,
       items:mergeThreadCatalog(current.items,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}),
-      nextCursor:runtimeCursor?(nativeResult.status==="fulfilled"?(nativePage?.nextCursor||null):runtimeCursor):current.nextCursor,
+      nextCursor:runtimeCursor?nextCursor:current.nextCursor,
       loadingOlder:false,
       olderError:errors.join(" · "),
     }));

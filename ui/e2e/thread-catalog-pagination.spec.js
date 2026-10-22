@@ -490,6 +490,70 @@ test("Load older threads after a project opened in another environment reads tha
   }finally{await harness.close()}
 });
 
+// Each environment's pages of History stay read while another's are read: back in an environment, Load older threads reads the page
+// after the ones of it shown, and one read to its end offers no more. Only the last environment's next page was kept, so back on this
+// machine the first page read again took History to its own next page, shown already, and the first press read it again and added
+// nothing.
+test("Load older threads back in an environment left reads the page after the ones of it shown",async({page})=>{
+  test.setTimeout(90_000);
+  const now=Date.now()/1000,threads=(id,name,count,from)=>Array.from({length:count},(_,index)=>runtimeThreadAt(now,id+"-"+index,name+" "+(index+1),from+index*600));
+  const pages={
+    local:{first:{data:threads("local-recent","Local thread",6,0),nextCursor:"local-2"},"local-2":{data:threads("local-older","Local older thread",4,86400*3),nextCursor:"local-3"},"local-3":{data:threads("local-oldest","Local oldest thread",3,86400*9),nextCursor:null}},
+    remote:{first:{data:threads("remote-recent","Remote thread",5,300),nextCursor:"remote-2"},"remote-2":{data:threads("remote-older","Remote older thread",3,86400*4),nextCursor:null}},
+  };
+  let environment="local";
+  const harness=await startRuntimeHarness(pages.local.first.data[0]);harness.control.pages=cursor=>pages[environment][cursor||"first"]||{error:"No thread list page at "+cursor};
+  try{
+    await routeRuntimeHistory(page,harness,"history-environment-return-fixture");
+    // A project on this machine and one in another environment, and the switches between them, as the GUI server answers them.
+    const projects=[{id:"local-project",name:"Local repo",path:process.cwd(),environmentId:null,effectiveSettings:{}},{id:"remote-project",name:"Remote repo",path:"/srv/remote-repo",environmentId:"build-box",effectiveSettings:{}}],json=body=>({status:200,contentType:"application/json",body:JSON.stringify(body)});
+    let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeEnvironmentId:null};
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill(json({mock:false,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"history-environment-return-fixture",runtimeCapabilities:{},activeEnvironmentId:settings.activeEnvironmentId,activeEnvironment:null})));
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")settings={...settings,...route.request().postDataJSON()};return route.fulfill(json(settings))});
+    await page.route(/\/api\/projects$/,route=>route.fulfill(json(route.request().method()==="POST"?{project:projects.find(project=>project.path===route.request().postDataJSON()?.path)}:{projects})));
+    await page.route(/\/api\/environments$/,route=>route.fulfill(json({profiles:[{id:"build-box",name:"Build box",type:"ssh",enabled:true}],activeEnvironmentId:settings.activeEnvironmentId})));
+    await page.route(/\/api\/environment\/activate$/,route=>{const id=route.request().postDataJSON()?.id||null;environment=id?"remote":"local";settings={...settings,activeEnvironmentId:id};return route.fulfill(json({ok:true,activeEnvironmentId:id,agentRuntime:"claude",agentRuntimeReady:true}))});
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>route.fulfill(json({isGit:false,root:null,branch:null,status:[],remotes:[],worktrees:[]})));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    const historyButton=page.getByRole("button",{name:"History",exact:true}),projectsButton=page.getByRole("button",{name:"Projects",exact:true}),openCard=name=>page.locator(".project-card").filter({hasText:name}).locator(".project-open");
+    const history=page.locator(".history-page"),rows=history.locator(".history-thread-row"),load=history.getByRole("button",{name:"Load older threads"}),failure=history.getByRole("alert");
+    // On this machine: History, and Load older threads once, which leaves a page.
+    await historyButton.click();await expect(rows).toHaveCount(6);
+    await load.click();await expect(history.getByRole("button",{name:/Local older thread 4/})).toBeVisible();await expect(rows).toHaveCount(10);await expect(load).toBeVisible();
+    // From History, the remote project opened from the palette with the keys, so History is shown while the transport reconnects.
+    await page.keyboard.press("Control+K");const palette=page.getByTestId("command-palette");await expect(palette).toBeVisible();
+    await page.keyboard.type("Remote repo");await expect(palette.locator(".command-palette-item").filter({hasText:"Remote repo"})).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>environment).toBe("remote");await expect(palette).toHaveCount(0);
+    // History there: the remote runtime's newest threads, and Load older threads reads its next page, its last.
+    await historyButton.click();await expect(history.getByRole("button",{name:/Remote thread 5/})).toBeVisible();
+    await load.click();await expect(history.getByRole("button",{name:/Remote older thread 3/})).toBeVisible();await expect(rows).toHaveCount(18);await expect(load).toHaveCount(0);
+    // Back on this machine, from its card in Projects; History reads its newest threads again, and one press reads the page after
+    // the two of its pages shown.
+    await projectsButton.click();await openCard("Local repo").click();
+    await expect.poll(()=>environment).toBe("local");await expect(page.getByTestId("composer")).toBeVisible();
+    let lists=harness.control.lists;
+    await historyButton.click();await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
+    await expect(rows).toHaveCount(18);
+    const read=harness.control.cursors.length;
+    await load.click();
+    await expect.soft(rows,"the press adds the page after the ones shown").toHaveCount(21);
+    expect(harness.control.cursors.slice(read).filter(Boolean),"the next pages the press read").toEqual(["local-3"]);
+    await expect(history.getByRole("button",{name:/Local oldest thread 3/})).toBeVisible();await expect(failure).toHaveCount(0);await expect(load).toHaveCount(0);
+    await shootHistoryModes(page,history.getByRole("button",{name:/Local oldest thread 3/}),"older-threads-after-environment-return");
+    // Back in the remote environment, whose pages are read to their end: once History has its newest threads again (with one started
+    // since, which only that read lists), it offers no Load older threads.
+    lists=harness.control.lists;
+    await projectsButton.click();await openCard("Remote repo").click();
+    await expect.poll(()=>environment).toBe("remote");await expect.poll(()=>harness.control.lists,{message:"the new transport lists the threads"}).toBeGreaterThan(lists);
+    pages.remote.first={...pages.remote.first,data:[runtimeThreadAt(now,"remote-newest","Newest remote thread",-60),...pages.remote.first.data]};
+    await historyButton.click();await expect(history.getByRole("button",{name:/Newest remote thread/})).toBeVisible();
+    await expect(rows).toHaveCount(22);await expect(load).toHaveCount(0);await expect(failure).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
 // A next page the runtime refuses (the thread it starts from was archived since) gives way to the first page's own next page once
 // History is shown again, so Load older threads reads the older threads again from there. The page refused stayed kept, and every
 // press said again that it could not load older threads, until a reload.
