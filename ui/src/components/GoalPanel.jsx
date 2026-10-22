@@ -1,4 +1,4 @@
-import React,{useEffect,useReducer,useRef,useState} from "react";
+import React,{useEffect,useLayoutEffect,useReducer,useRef,useState} from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, Pause, Play, RefreshCw, Target, Trash2 } from "lucide-react";
 import { startSameThreadVerificationRepair } from "../verification-repair.js";
 import { verificationEvidenceMeta, verificationEvidenceSummary, verificationEvidenceView } from "../verification-evidence-view.js";
@@ -73,8 +73,16 @@ function moneyLabel(value){
 }
 // A press runs one of the goal's or the notes' buttons once, as a thread's menu item runs: the rest of it (the second click of a
 // double click, Enter held) does nothing, so it never lands on what took the button's place once its save answered (Resume where
-// Pause was, or Complete moved under it).
-function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
+// Pause was, or Complete moved under it). While a write is on its way the buttons only say they are off (aria-disabled), so the
+// keyboard stays on the one pressed, and a press on them does nothing. One pressed from the keyboard is kept (pressed), until the
+// next press, with the bar's controls after it and before it, nearest first: when it goes once its press is done (Complete once the
+// goal is complete, Clear once it is cleared, Discard changes once nothing is left to discard), the keyboard goes on to the first of
+// them still there, as from a removed chip, instead of falling to the page.
+function pressOnce(event,pressed){
+  const button=event.target.closest("button"),all=[...event.currentTarget.querySelectorAll("button")],at=all.indexOf(button);if(at<0)return;
+  if(button.getAttribute("aria-disabled")){event.stopPropagation();return}
+  ignorePressRest(!event.detail);pressed.current=event.detail?null:{button,near:[...all.slice(at+1),...all.slice(0,at).reverse()]};
+}
 
 // covered: another thread's opening state is up. The panel belongs to the thread being left, so it hides without unmounting: a
 // failed open brings it back with the drafts in it.
@@ -104,6 +112,10 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [repairStatus,setRepairStatus]=useState("");
   const [repairStartedFor,setRepairStartedFor]=useState(null);
   const [busy,setBusy]=useState("");
+  // The bar button last pressed from the keyboard (pressOnce): drawn without it, the keyboard goes on to its nearest control still
+  // there, unless the person has put it somewhere meanwhile.
+  const pressed=useRef(null);
+  useLayoutEffect(()=>{const kept=pressed.current;if(kept&&!kept.button.isConnected){pressed.current=null;if(document.activeElement===document.body)kept.near.find(node=>node.isConnected)?.focus()}});
   // The last refusal, said where it was asked for (at): the goal's bar, the notes' buttons or the repair card. It is brought into
   // view as it shows, clear of the goal's bar pinned below.
   const [error,setError]=useState(null),errorRef=useRef(null);
@@ -129,10 +141,13 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   if(rpcStatus!=="connected")return <div className="empty-state"><Target size={28}/><strong>Agent harness is reconnecting</strong><span>This thread's durable goal will be available again when the active harness reconnects.</span></div>;
   const failAt=(at,e)=>setError({at,text:e?.message||String(e)});
   const alertAt=at=>error?.at===at&&<div ref={errorRef} className="inline-error" role="alert">{error.text}</div>;
+  // While a write is on its way the bars' buttons only say they are off (pressOnce takes no press of them), and the one pressed,
+  // which busy names ("save", the status Pause, Resume or Complete sets, "clear", "continuity" ...), says what it does, marked busy.
+  const writing=what=>({"aria-disabled":!!busy||undefined,"aria-busy":busy===what||undefined});
   // sent: the fields as a save sent them, which are what the goal it answers was filled from; one typed into since stays as typed.
   // The goal it saved is this panel's own, which a change made elsewhere is told from.
   async function setGoal(patch,sent){
-    if(!rpc)return;const saved=goalSaved.saved;setBusy("save");setError(null);if(sent)saved.sending=(saved.sending||0)+1;
+    if(!rpc)return;const saved=goalSaved.saved;setBusy(sent?"save":patch.status);setError(null);if(sent)saved.sending=(saved.sending||0)+1;
     try{const result=await rpc.request("thread/goal/set",{threadId:thread.id,...patch});if(sent)Object.assign(saved,{filled:sent,own:goalValues(result?.goal),changed:{}});onGoal?.(result?.goal||null)}
     // A Codex without goals refuses the goal as a method it does not have: said as such, not as Codex's error.
     catch(e){failAt("goal",codexGoalsMissing(e)?"Could not set the goal: this Codex does not support goals.":e)}finally{if(sent)saved.sending--;setBusy("")}
@@ -263,17 +278,18 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
         <label>Important decisions <span>(one per line)</span><textarea aria-label="Important decisions" value={importantDecisions} onChange={e=>setImportantDecisions(e.target.value)} placeholder={"Keep the public API backward compatible"}/></label>
         <label>Artifacts created <span>(one per line)</span><textarea aria-label="Artifacts created" value={artifactsCreated} onChange={e=>setArtifactsCreated(e.target.value)} placeholder={"Migration script\nRelease notes"}/></label>
         <label>Pending next actions <span>(one per line)</span><textarea aria-label="Pending next actions" value={pendingNextActions} onChange={e=>setPendingNextActions(e.target.value)} placeholder={"Run the final browser smoke test"}/></label>
-        <div className="goal-actions continuity-actions" onClick={pressOnce}>{alertAt("notes")}{changedNotes(notesSaved,NOTE_LABELS)}<button type="button" className="primary" onClick={saveContinuity} disabled={!!busy}><RefreshCw size={12}/> Save continuity</button>{notesSaved.unsaved&&<button type="button" onClick={()=>discard(notesSaved,"the continuity notes")} disabled={!!busy}>Discard changes</button>}{continuityNoteCount>0&&<button type="button" className="danger" onClick={clearContinuity} disabled={!!busy}><Trash2 size={12}/> Clear notes</button>}</div>
+        <div className="goal-actions continuity-actions" onClickCapture={event=>pressOnce(event,pressed)}>{alertAt("notes")}{changedNotes(notesSaved,NOTE_LABELS)}<button type="button" className="primary" onClick={saveContinuity} {...writing("continuity")}><RefreshCw size={12}/> {busy==="continuity"?"Saving…":"Save continuity"}</button>{notesSaved.unsaved&&<button type="button" onClick={()=>discard(notesSaved,"the continuity notes")} {...writing()}>Discard changes</button>}{continuityNoteCount>0&&<button type="button" className="danger" onClick={clearContinuity} {...writing("continuity-clear")}><Trash2 size={12}/> {busy==="continuity-clear"?"Clearing…":"Clear notes"}</button>}</div>
       </div>
     </details>
-    <div className="goal-actions" onClick={pressOnce}>
+    <div className="goal-actions" onClickCapture={event=>pressOnce(event,pressed)}>
       {alertAt("goal")}{changedNotes(goalSaved,GOAL_LABELS)}
-      <button className="primary" onClick={save} disabled={!!busy}><RefreshCw size={12}/> {goal?"Update goal":"Set goal"}</button>
-      {goalSaved.unsaved&&<button onClick={()=>discard(goalSaved,"this goal")} disabled={!!busy}>Discard changes</button>}
-      {goal?.status==="active"&&<button onClick={()=>setGoal({status:"paused"})} disabled={!!busy}><Pause size={12}/> Pause</button>}
-      {goal&&goal.status!=="active"&&goal.status!=="complete"&&<button onClick={()=>setGoal({status:"active"})} disabled={!!busy}><Play size={12}/> Resume</button>}
-      {goal&&goal.status!=="complete"&&<button onClick={()=>setGoal({status:"complete"})} disabled={!!busy}><CheckCircle2 size={12}/> Complete</button>}
-      {goal&&<button className="danger" onClick={clear} disabled={!!busy}><Trash2 size={12}/> Clear</button>}
+      <button className="primary" onClick={save} {...writing("save")}><RefreshCw size={12}/> {busy==="save"?"Saving…":goal?"Update goal":"Set goal"}</button>
+      {goalSaved.unsaved&&<button onClick={()=>discard(goalSaved,"this goal")} {...writing()}>Discard changes</button>}
+      {/* Pause and Resume are one button, so the keyboard stays on it as one takes the other's place. */}
+      {goal&&goal.status!=="complete"&&(goal.status==="active"?<button onClick={()=>setGoal({status:"paused"})} {...writing("paused")}><Pause size={12}/> {busy==="paused"?"Pausing…":"Pause"}</button>
+        :<button onClick={()=>setGoal({status:"active"})} {...writing("active")}><Play size={12}/> {busy==="active"?"Resuming…":"Resume"}</button>)}
+      {goal&&goal.status!=="complete"&&<button onClick={()=>setGoal({status:"complete"})} {...writing("complete")}><CheckCircle2 size={12}/> {busy==="complete"?"Completing…":"Complete"}</button>}
+      {goal&&<button className="danger" onClick={clear} {...writing("clear")}><Trash2 size={12}/> {busy==="clear"?"Clearing…":"Clear"}</button>}
     </div>
   </div>;
 }

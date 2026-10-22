@@ -111,23 +111,25 @@
   .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
   .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
   .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button
-):hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
+):hover:not(:disabled,[aria-disabled="true"]){background:var(--bg4)!important;color:var(--tx0)!important}
+/* Off. The Goal panel's buttons only say they are off while its write is on its way (aria-disabled), so the keyboard stays on
+   them. */
 :root:root .context-panel :where(
   .workspace-window-footer button,.file-head>div>button,.file-empty button,.workspace-file-conflict button,.empty-state button,
   .sc-toolbar button,.sc-card button,.pr-head button,.pr-actions button,.pr-comment-edit,.branch-pr-badge button,.linked-pr-panel-head button,
   .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
   .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
   .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button
-):disabled{opacity:.5;cursor:default}
+):is(:disabled,[aria-disabled="true"]){opacity:.5;cursor:default}
 /* Primary actions. */
 :root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button){
   border-color:transparent!important;background:var(--acfill)!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow);
 }
-:root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button):hover:not(:disabled){filter:brightness(1.1);background:var(--acfill)!important;color:#fff!important}
-:root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button):disabled{box-shadow:none}
+:root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button):hover:not(:disabled,[aria-disabled="true"]){filter:brightness(1.1);background:var(--acfill)!important;color:#fff!important}
+:root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button):is(:disabled,[aria-disabled="true"]){box-shadow:none}
 /* Destructive actions. */
 :root:root .context-panel :is(.goal-actions .danger,.linked-pr-unlink){border-color:var(--errb)!important;background:var(--errt)!important;color:var(--err)!important}
-:root:root .context-panel :is(.goal-actions .danger,.linked-pr-unlink):hover:not(:disabled){background:color-mix(in srgb,var(--err) 16%,transparent)!important;color:var(--err)!important}
+:root:root .context-panel :is(.goal-actions .danger,.linked-pr-unlink):hover:not(:disabled,[aria-disabled="true"]){background:color-mix(in srgb,var(--err) 16%,transparent)!important;color:var(--err)!important}
 /* Accent outline actions. */
 :root:root .context-panel :is(.pr-composer-trigger,.context-explorer-search button[type="submit"]){border-color:color-mix(in srgb,var(--ac) 40%,var(--line))!important;background:transparent!important;color:var(--ac)!important}
 :root:root .context-panel :is(.pr-composer-trigger,.context-explorer-search button[type="submit"]):hover:not(:disabled){background:var(--acsoft)!important;color:var(--ac)!important}

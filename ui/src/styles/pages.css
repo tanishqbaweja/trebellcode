@@ -69,7 +69,7 @@
 :root:root .secondary-page .history-page .history-load-error>button{height:30px!important;min-height:30px!important;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 11px!important;border:1px solid var(--line2)!important;border-radius:var(--r-s)!important;background:var(--bg3)!important;color:var(--tx1)!important;font-size:11.5px!important;font-weight:550;line-height:1;white-space:nowrap;cursor:pointer;box-shadow:none!important;transition:background-color .15s,color .15s,border-color .15s,filter .15s}
 :root:root .projects-page :is(.project-identity-toggle button,.project-icon-actions button,.project-image-button,.project-icon-draft button,.project-actions-head button,.project-config-hint button,.project-import-list button,.project-clone-status button,.project-action-editor button,.project-hook-editor button):hover:not(:disabled),
 :root:root :is(.usage-page,.capabilities-page,.environments-page) :is(.capability-actions button,.capability-list button,.capability-inline-actions button,.plugin-search-controls button,.plugin-detail-head button,.plugin-detail-skills button,.app-detail-head button,.app-detail .setting-action,.connector-runtime-summary button,.mcp-resource button,.mcp-tool button,.environment-list button,.reset-credit-row button):hover:not(:disabled,[aria-disabled="true"]),
-:root:root .preview-page :is(.preview-discovery-head button,.agent-browser-toolbar button,.browser-device-toolbar button,.annotation-actions button):hover:not(:disabled),
+:root:root .preview-page :is(.preview-discovery-head button,.agent-browser-toolbar button,.browser-device-toolbar button,.annotation-actions button):hover:not(:disabled,[aria-disabled="true"]),
 :root:root .secondary-page .history-page .history-load-error>button:hover:not([aria-disabled="true"]){background:var(--bg4)!important;color:var(--tx0)!important}
 
 /* Primary button (tb-btn--primary). */
@@ -86,11 +86,13 @@
 :root:root .agents-page .delegate-submit:hover:not(:disabled),
 :root:root .preview-page .annotation-actions button.primary:hover:not(:disabled){filter:brightness(1.1);background:var(--acfill)!important;color:#fff!important}
 
-/* Disabled buttons, every page. Load older threads, Save action or Save hook while they save, and a Tools action while Codex answers
-   it, only say they are busy (aria-disabled), so the keyboard stays on them. */
+/* Disabled buttons, every page. Load older threads, Save action or Save hook while they save, a Tools action while Codex answers it,
+   and the Browser panel's buttons while the agent browser takes its time, only say they are busy (aria-disabled), so the keyboard
+   stays on them. */
 :root:root :is(.projects-page,.history-page,.usage-page,.capabilities-page,.environments-page,.licenses-page,.agents-page,.preview-page) button:disabled,
 :root:root .history-page .history-load-more button[aria-disabled="true"],
 :root:root .capabilities-page button[aria-disabled="true"],
+:root:root .preview-page button[aria-disabled="true"],
 :root:root .projects-page :is(.project-action-editor,.project-hook-editor) button.primary[aria-disabled="true"]{opacity:.5;cursor:default;box-shadow:none!important;filter:none}
 
 /* Fields (tb-input / tb-select). */
@@ -791,10 +793,10 @@
    http:// as http: /. */
 :root:root .preview-page .preview-bar input{flex:1;min-width:0;height:30px!important;padding:0 4px!important;border:0!important;outline:0;background:transparent!important;box-shadow:none!important;color:var(--tx0)!important;font-family:var(--mono);font-size:11.5px!important;font-variant-ligatures:none}
 :root:root .preview-page .preview-bar button{flex:none;height:30px!important;min-width:30px;margin:0!important;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 9px!important;border:1px solid transparent!important;border-radius:99px!important;background:transparent!important;color:var(--tx2)!important;font-size:11.5px!important;font-weight:550;cursor:pointer;transition:background-color .15s,color .15s}
-:root:root .preview-page .preview-bar button:hover:not(:disabled){background:var(--bg3)!important;color:var(--tx0)!important}
+:root:root .preview-page .preview-bar button:hover:not(:disabled,[aria-disabled="true"]){background:var(--bg3)!important;color:var(--tx0)!important}
 :root:root .preview-page .preview-bar input+button{padding:0 13px!important;border-color:color-mix(in srgb,var(--ac) 40%,var(--line))!important;color:var(--ac)!important}
 :root:root .preview-page .preview-bar input+button:hover:not(:disabled){background:var(--acsoft)!important;color:var(--ac)!important}
-:root:root .preview-page .preview-bar button:disabled{opacity:.35}
+:root:root .preview-page .preview-bar button:is(:disabled,[aria-disabled="true"]){opacity:.35}
 
 :root:root .preview-page .preview-discovery{display:grid;gap:10px;padding:12px 14px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important}
 :root:root .preview-page .preview-discovery-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
@@ -847,7 +849,7 @@
 :root:root .preview-page .browser-history time{font-family:var(--mono);font-size:10.5px!important;color:var(--tx2)!important;white-space:nowrap}
 :root:root .preview-page .agent-browser-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0!important}
 :root:root .preview-page .agent-browser-toolbar>button:first-child{border-color:color-mix(in srgb,var(--ac) 40%,var(--line))!important;background:transparent!important;color:var(--ac)!important}
-:root:root .preview-page .agent-browser-toolbar>button:first-child:hover:not(:disabled){background:var(--acsoft)!important;color:var(--ac)!important}
+:root:root .preview-page .agent-browser-toolbar>button:first-child:hover:not(:disabled,[aria-disabled="true"]){background:var(--acsoft)!important;color:var(--ac)!important}
 :root:root .preview-page .browser-cookie-status{flex:1 1 100%;max-width:100%;font-family:var(--mono);font-size:10.5px!important;color:var(--tx2)!important;white-space:normal;overflow:visible;overflow-wrap:anywhere}
 :root:root .preview-page .browser-profile-import{display:grid;gap:10px;padding:12px 14px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--bg2)!important}
 :root:root .preview-page .browser-profile-import-head{display:flex;align-items:center;justify-content:space-between;gap:12px}

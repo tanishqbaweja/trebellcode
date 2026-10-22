@@ -706,6 +706,75 @@ test("an element attached while another's attach is on its way is attached too, 
   }finally{await site.close()}
 });
 
+// The keyboard taken on to target with Tab, as a person reaches a button from the field they were in.
+async function tabTo(page,target,most=30){
+  for(let presses=0;presses<most&&!await target.evaluate(node=>node===document.activeElement);presses++)await page.keyboard.press("Tab");
+  await expect(target).toBeFocused();
+}
+// Two frames on: the page has drawn what it was last given, and the browser has moved the focus off whatever it can no longer hold.
+const frames=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+
+// Enter on Open agent browser while the agent browser takes its time over the page keeps the keyboard on the button: it says it is
+// off meanwhile (aria-disabled), a press then (Enter, or a click on Inspect elements) does nothing, and once the page is open Tab
+// goes on to Show browser. So does Inspect elements while the page's elements are read, and Open agent browser when the agent
+// browser cannot open the page. The toolbar's buttons were disabled for the wait, which took the keyboard to the page: no control had
+// it once the page was open.
+test("Enter on Open agent browser or Inspect elements keeps the keyboard on the button while the agent browser takes its time, also when it cannot open the page, and a press meanwhile does nothing",async({page,request})=>{
+  test.setTimeout(90_000);
+  const site=await startSite();
+  try{
+    await page.addInitScript(scriptedAgentBrowser);
+    const {panel,address,frame}=await openBrowserPanel(page,request);
+    const open=panel.getByRole("button",{name:"Open agent browser"}),inspect=panel.getByRole("button",{name:"Inspect elements"}),heading=frame.locator("h1"),error=panel.locator(".browser-action-error");
+    // The shell takes its time over what hold names: each such call waits for window.answerShell(), or fails with window.failShell().
+    await page.evaluate(()=>{
+      const browser=window.trebellDesktop.browser;window.holding="";window.shellAsked=[];
+      for(const name of ["navigate","snapshot"]){const real=browser[name];browser[name]=async(...args)=>{window.shellAsked.push(name);if(window.holding===name)await new Promise((resolve,reject)=>{window.answerShell=resolve;window.failShell=reason=>reject(new Error(reason))});return real(...args)}}
+    });
+    const hold=name=>page.evaluate(name=>{window.holding=name},name),asked=name=>page.evaluate(name=>window.shellAsked.filter(call=>call===name).length,name);
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});
+      if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+      await hold("navigate");const before=await asked("navigate");
+      await typeAddress(page,address,site.url+"/keys-"+mode);await tabTo(page,open);
+      await page.keyboard.press("Enter");
+      await expect(open,"Open agent browser says it is off while the page opens").toBeDisabled();await expect(inspect).toBeDisabled();await frames(page);
+      await expect(open,"the keyboard stays on Open agent browser while the agent browser opens the page").toBeFocused();
+      // A second Enter while the page opens opens nothing more.
+      await page.keyboard.press("Enter");
+      for(const width of [1280,700]){await page.setViewportSize({width,height:800});await expect(open).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"preview-open-held-keyboard-"+mode+"-"+width+".png"})}
+      await page.setViewportSize({width:1280,height:800});
+      await page.evaluate(()=>window.answerShell());
+      await expect(heading).toHaveText("Page /keys-"+mode);await expect(open).toBeEnabled();
+      await expect(open,"the keyboard is on Open agent browser once the page is open").toBeFocused();
+      expect(await asked("navigate"),"one page opened for the two presses").toBe(before+1);
+    }
+    // Tab goes on from there, to Show browser and to Inspect elements, which keeps the keyboard while the page's elements are read.
+    await page.keyboard.press("Tab");await expect(panel.getByRole("button",{name:"Show browser"})).toBeFocused();
+    await hold("snapshot");await page.keyboard.press("Tab");await expect(inspect).toBeFocused();
+    const snapshots=await page.evaluate(()=>window.agentSnapshots);
+    await page.keyboard.press("Enter");await expect(inspect).toBeDisabled();await frames(page);
+    await expect(inspect,"the keyboard stays on Inspect elements while the page's elements are read").toBeFocused();
+    await page.evaluate(()=>window.answerShell());
+    await expect.poll(()=>page.evaluate(()=>window.agentSnapshots)).toBe(snapshots+1);await expect(inspect).toBeEnabled();
+    await expect(inspect,"the keyboard is on Inspect elements once the elements are read").toBeFocused();
+    // With the mouse: a click on Inspect elements while the page opens reads nothing, and the page opens once.
+    await hold("navigate");await typeAddress(page,address,site.url+"/mouse");const navigates=await asked("navigate"),reads=await asked("snapshot");
+    await open.click();await expect(inspect).toBeDisabled();
+    const box=await inspect.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);
+    await page.evaluate(()=>window.answerShell());await expect(heading).toHaveText("Page /mouse");await expect(open).toBeEnabled();
+    expect(await asked("navigate")).toBe(navigates+1);expect(await asked("snapshot"),"only the page opened read its elements").toBe(reads+1);
+    // A page the agent browser cannot open: said in the error line, and the keyboard is still on Open agent browser.
+    await hold("navigate");await typeAddress(page,address,site.url+"/closed");await tabTo(page,open);
+    await page.keyboard.press("Enter");await expect(open).toBeDisabled();await frames(page);await expect(open).toBeFocused();
+    await page.evaluate(()=>window.failShell("The agent browser window was closed."));
+    await expect(error).toHaveText("The agent browser window was closed.");await expect(open).toBeEnabled();
+    await expect(open,"the keyboard stays on Open agent browser when the page cannot be opened").toBeFocused();
+    await shots(page,"preview-open-failed-keyboard",error);
+  }finally{await site.close()}
+});
+
 // A width or height typed in the device toolbar applies when Enter is pressed, as the address bar's Enter opens the address and as
 // leaving the field does: Enter did nothing, and the size waited for the field to be left.
 test("Enter in the viewport width or height field sizes the agent browser, as leaving the field does",async({page,request})=>{

@@ -537,9 +537,9 @@ test("words typed on into the Objective while a slow save is on its way are stil
     const {panel,objective}=await setGoalInPanel(page);
     const update=panel.getByRole("button",{name:"Update goal",exact:true}),objectives=()=>socket.sent("thread/goal/set").map(params=>params.objective);
     await typeOver(page,objective,"Make the signup tests pass");
-    // The harness takes its time over the save, and the person goes on typing meanwhile.
+    // The harness takes its time over the save, which Update goal says, and the person goes on typing meanwhile.
     socket.hold("thread/goal/set");
-    await update.click();await expect(update).toBeDisabled();
+    await update.click();await expect(panel.getByRole("button",{name:"Saving…",exact:true})).toHaveAttribute("aria-busy","true");
     await objective.click();await page.keyboard.press("End");await page.keyboard.type(" on Firefox",{delay:15});
     socket.release();
     await expect(update).toBeEnabled();await painted(page);
@@ -750,6 +750,191 @@ test("a continuity save the harness refuses says why right above Save continuity
     await expect(refusal).toHaveCount(0);
     await expect(panel.locator(".goal-continuity-details>summary")).toContainText("2 explicit notes");
   }finally{await harness.close()}
+});
+
+// The keyboard taken on to target with Tab, as a person reaches a button from the field they were in.
+async function tabTo(page,target,most=25){
+  for(let presses=0;presses<most&&!await target.evaluate(node=>node===document.activeElement);presses++)await page.keyboard.press("Tab");
+  await expect(target).toBeFocused();
+}
+// The Goal panel's writes (the goal's, or the notes' with notes), each held from when hold() is called until the function it gives
+// back is, as a harness slow to answer them; refuse(true) has the harness refuse them, at once. sent lists those sent.
+async function openGoalWrites(page,{notes=false}={}){
+  const writes=notes?/^thread\/continuity\/(set|clear)$/:/^thread\/goal\/(set|clear)$/,sent=[];let gate=null,refusing=false;
+  const harness=await openComposerApp(page,{
+    refuse:request=>{if(writes.test(request.method))sent.push(request);return refusing&&writes.test(request.method)?(notes?"Continuity store is read-only":"Goal store is read-only"):null},
+    hold:request=>writes.test(request.method)?gate?.wait:null,
+  });
+  return {harness,sent,refuse(value){refusing=value},hold(){let open=()=>{};const wait=new Promise(resolve=>{open=resolve});gate={wait};return()=>{if(gate?.wait===wait)gate=null;open()}}};
+}
+// What a button pressed says while its write is on its way: what it does, marked busy, and the keyboard still on it. The words are
+// soft, so a build that loses the keyboard says that too.
+async function pressedWhileHeld(button,doing){
+  await expect.soft(button,"the button pressed says what it does while its write is on its way").toHaveText(doing);
+  await expect.soft(button,"and is marked busy").toHaveAttribute("aria-busy","true");
+  await frames(button.page());await expect(button,"the keyboard stays on the button pressed while its write is on its way").toBeFocused();
+}
+// The window at 1280 and at 700 wide, the keyboard still on focused, each shot in the mode shown.
+async function shootWidths(page,name,focused){
+  const mode=await page.locator("html").getAttribute("data-mode");
+  for(const width of [1280,700]){await page.setViewportSize({width,height:800});await expect(focused).toBeFocused();await focused.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+"x800.png"})}
+  await page.setViewportSize({width:1280,height:800});
+}
+
+// Enter on the Goal panel's Pause, Resume or Complete, reached with Tab, leaves the keyboard in the bar once the goal has changed: on
+// Resume, which takes Pause's place, on Pause, which takes Resume's, on Clear, the bar's next control, once Complete goes, and on Set
+// goal once Clear goes, with its ring, so the next Tab goes on from there. Each button pressed was disabled while its write was on
+// its way, or taken away, and the keyboard fell to the page: no control had it, and none showed a ring.
+test("Enter on the Goal panel's Pause, Resume or Complete leaves the keyboard on the button that took its place or on the bar's next control, and the next Tab goes on from there",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page);
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const bar=panel.locator(":scope>.goal-actions"),button=name=>bar.getByRole("button",{name,exact:true}),status=panel.locator(".goal-status");
+    const question=page.locator("dialog.inspector-text-prompt"),ring=locator=>locator.evaluate(node=>node===document.activeElement&&node.matches(":focus-visible"));
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      // The goal is set again from the keyboard once it has been cleared.
+      await objective.click();
+      if(mode!=="dark"){await page.keyboard.type("Make the login tests pass in "+mode,{delay:15});await tabTo(page,button("Set goal"));await page.keyboard.press("Enter");await expect(status).toHaveText("active")}
+      // Tab from Update goal to Pause, and Enter: Resume takes its place, and the keyboard with it; the next Tab goes on to Complete.
+      await tabTo(page,button("Update goal"));await page.keyboard.press("Tab");await expect(button("Pause")).toBeFocused();
+      await page.keyboard.press("Enter");await expect(status).toHaveText("paused");await frames(page);
+      await expect(button("Resume"),"Resume took Pause's place, and the keyboard is on it").toBeFocused();expect(await ring(button("Resume")),"with its ring").toBe(true);
+      await page.keyboard.press("Tab");await expect(button("Complete")).toBeFocused();await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Enter");await expect(status).toHaveText("active");await frames(page);
+      await expect(button("Pause"),"Pause took Resume's place, and the keyboard is on it").toBeFocused();
+      // Complete takes Pause and itself away: the keyboard goes on to Clear.
+      await page.keyboard.press("Tab");await expect(button("Complete")).toBeFocused();
+      await page.keyboard.press("Enter");await expect(status).toHaveText("complete");await frames(page);
+      await expect(button("Clear"),"once Complete goes the keyboard is on Clear, the bar's next control").toBeFocused();expect(await ring(button("Clear")),"with its ring").toBe(true);
+      await shootWidths(page,"goal-complete-by-enter-keyboard-on-clear",button("Clear"));
+      // Clear, confirmed from the keyboard, takes itself away: the keyboard goes back to Set goal.
+      await page.keyboard.press("Enter");await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+      await page.keyboard.press("Tab");await page.keyboard.press("Enter");await expect(question).toHaveCount(0);
+      await expect(status).toHaveText("not set");await frames(page);
+      await expect(button("Set goal"),"once Clear goes the keyboard is on Set goal, the control before it").toBeFocused();expect(await ring(button("Set goal")),"with its ring").toBe(true);
+    }
+  }finally{await harness.close()}
+});
+
+// A goal write the harness takes its time over says what it does on the button pressed (Update goal reads Saving…, Pause Pausing…),
+// marked busy, and the keyboard stays in the Goal bar meanwhile and once it lands: on the button pressed, on the one that took its
+// place (Resume where Pause was, Pause where Resume was), or on the bar's next control (Clear once Complete goes, Set goal once Clear
+// goes), also when the harness refuses it. Every button there was disabled for the wait, only greyed, with nothing saying what ran,
+// which took the keyboard to the page: after Pause, Resume, Complete or Update goal no control had it.
+test("a goal write the harness is slow to answer says so on the button pressed, and the keyboard stays in the Goal bar: on Update goal, on Resume where Pause was and Pause where Resume was, on Clear once Complete goes, on Set goal once the goal is cleared, and on Set goal when the save is refused",async({page})=>{
+  test.setTimeout(150_000);
+  const writes=await openGoalWrites(page);
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const bar=panel.locator(":scope>.goal-actions"),button=name=>bar.getByRole("button",{name,exact:true}),status=panel.locator(".goal-status"),save=bar.locator("button.primary");
+    const question=page.locator("dialog.inspector-text-prompt"),statuses=()=>writes.sent.filter(request=>request.method==="thread/goal/set").map(request=>request.params.status),sets=()=>statuses().length;
+    // An edit saved from the keyboard, in each mode: Tab from the Objective to Update goal and Enter, the harness slow to answer.
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      await typeOver(page,objective,"Make the login and signup tests pass in "+mode);
+      await tabTo(page,save);
+      const release=writes.hold(),before=sets();await page.keyboard.press("Enter");
+      await pressedWhileHeld(save,"Saving…");
+      await expect(button("Discard changes"),"the bar's other buttons wait meanwhile").toBeDisabled();await expect(button("Clear")).toBeDisabled();
+      // A second Enter while the save is on its way sends nothing more.
+      await page.keyboard.press("Enter");
+      await shootWidths(page,"goal-save-held-keyboard",save);
+      release();
+      await expect(save).toHaveText("Update goal");await expect(save).not.toHaveAttribute("aria-busy");
+      await expect(save,"the keyboard is on Update goal once the save lands").toBeFocused();
+      await expect(objective).toHaveValue("Make the login and signup tests pass in "+mode);
+      expect(sets(),"one save for the two presses").toBe(before+1);
+    }
+    // With the mouse: Pause reads Pausing… while it is on its way, a click on Complete meanwhile does nothing, and Resume comes.
+    let release=writes.hold();await button("Pause").click();
+    await expect(button("Pausing…")).toHaveAttribute("aria-busy","true");await expect(button("Complete")).toBeDisabled();
+    const complete=await button("Complete").boundingBox();await page.mouse.click(complete.x+complete.width/2,complete.y+complete.height/2);
+    release();await expect(status).toHaveText("paused");
+    await button("Resume").click();await expect(status).toHaveText("active");
+    expect(statuses().slice(-2),"the click on Complete while Pause was on its way sent nothing").toEqual(["paused","active"]);
+    // Pause from the keyboard: Resume takes its place and the keyboard with it, and Pause takes Resume's.
+    await page.keyboard.press("Shift+Tab");await expect(save).toBeFocused();await page.keyboard.press("Tab");await expect(button("Pause")).toBeFocused();
+    release=writes.hold();await page.keyboard.press("Enter");
+    await pressedWhileHeld(button("Pausing…"),"Pausing…");
+    release();await expect(status).toHaveText("paused");
+    await expect(button("Resume"),"Resume took Pause's place, and the keyboard is on it").toBeFocused();
+    release=writes.hold();await page.keyboard.press("Enter");
+    await pressedWhileHeld(button("Resuming…"),"Resuming…");
+    release();await expect(status).toHaveText("active");
+    await expect(button("Pause"),"Pause took Resume's place, and the keyboard is on it").toBeFocused();
+    // Complete takes Pause and itself away: the keyboard goes on to Clear, the bar's next control, with its ring.
+    await page.keyboard.press("Tab");await expect(button("Complete")).toBeFocused();
+    release=writes.hold();await page.keyboard.press("Enter");
+    await pressedWhileHeld(button("Completing…"),"Completing…");
+    release();await expect(status).toHaveText("complete");await expect(bar.getByRole("button")).toHaveText(["Update goal","Clear"]);
+    await expect(button("Clear"),"once Complete goes the keyboard is on Clear, the bar's next control").toBeFocused();
+    expect(await button("Clear").evaluate(node=>node.matches(":focus-visible")),"with its ring").toBe(true);
+    await shootWidths(page,"goal-complete-keyboard-on-clear",button("Clear"));
+    // Clear, confirmed from the keyboard: Set goal is what is left, and the keyboard is on it.
+    await page.keyboard.press("Enter");await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+    await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Clear goal",exact:true})).toBeFocused();
+    release=writes.hold();await page.keyboard.press("Enter");await expect(question).toHaveCount(0);
+    await pressedWhileHeld(button("Clearing…"),"Clearing…");
+    release();await expect(status).toHaveText("not set");
+    await expect(button("Set goal"),"once Clear goes the keyboard is on Set goal, the control before it").toBeFocused();
+    // A save the harness refuses says why above the bar, and the keyboard stays on Set goal.
+    await objective.click();await page.keyboard.type("Make the checkout tests pass",{delay:15});
+    await tabTo(page,save);
+    writes.refuse(true);await page.keyboard.press("Enter");
+    await expect(bar.getByRole("alert")).toContainText("Goal store is read-only");
+    await expect(save).toHaveText("Set goal");await expect(save,"the keyboard stays on Set goal when the save is refused").toBeFocused();
+    await expect(objective).toHaveValue("Make the checkout tests pass");
+    await shootWidths(page,"goal-save-refused-keyboard",save);
+  }finally{await writes.harness.close()}
+});
+
+// The same for the notes: Save continuity reads Saving… while the harness takes its time, and the keyboard stays on it; Discard
+// changes, once the edit is discarded and it goes, hands the keyboard to Clear notes, and Clear notes, once the notes are cleared
+// and it goes, to Save continuity; a refused save leaves it on Save continuity too. Save continuity was disabled for the wait, which
+// took the keyboard to the page.
+test("a continuity save the harness is slow to answer says Saving… on Save continuity and the keyboard stays on it, Clear notes hands the keyboard to Save continuity once the notes are cleared, and a refused save keeps it there",async({page})=>{
+  test.setTimeout(120_000);
+  const writes=await openGoalWrites(page,{notes:true});
+  try{
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    const panel=page.getByTestId("goal-panel"),row=panel.locator(".continuity-actions"),save=row.locator("button.primary"),done=panel.getByLabel("Completed work",{exact:true});
+    const summary=panel.locator(".goal-continuity-details>summary"),question=page.locator("dialog.inspector-text-prompt"),clearNotes=row.locator("button.danger");
+    await panel.getByText("Continuity state",{exact:true}).click();
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      await typeOver(page,done,"Fixed the session refresh in "+mode);
+      await tabTo(page,save);
+      const release=writes.hold(),before=writes.sent.length;await page.keyboard.press("Enter");
+      await pressedWhileHeld(save,"Saving…");
+      await page.keyboard.press("Enter");
+      await shootWidths(page,"goal-notes-save-held-keyboard",save);
+      release();
+      await expect(summary).toContainText("1 explicit note");await expect(done).toHaveValue("Fixed the session refresh in "+mode);
+      await expect(save).toHaveText("Save continuity");await expect(save,"the keyboard is on Save continuity once the notes are saved").toBeFocused();
+      expect(writes.sent.length,"one save for the two presses").toBe(before+1);
+    }
+    // An edit discarded from the keyboard: Discard changes goes, and the keyboard goes on to Clear notes, the bar's next control.
+    await done.click();await page.keyboard.press("End");await page.keyboard.type(" and its rollback",{delay:15});
+    const discard=row.getByRole("button",{name:"Discard changes",exact:true});await tabTo(page,discard);
+    await page.keyboard.press("Enter");await expect(question.getByRole("button",{name:"Keep editing",exact:true})).toBeFocused();
+    await page.keyboard.press("Tab");await page.keyboard.press("Enter");await expect(question).toHaveCount(0);
+    await expect(done).toHaveValue("Fixed the session refresh in light");await expect(discard).toHaveCount(0);
+    await expect(clearNotes,"once Discard changes goes the keyboard is on Clear notes, the bar's next control").toBeFocused();
+    // Clear notes from the keyboard, confirmed: it goes with the notes, and the keyboard goes back to Save continuity.
+    await page.keyboard.press("Enter");await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+    await page.keyboard.press("Tab");const release=writes.hold();await page.keyboard.press("Enter");await expect(question).toHaveCount(0);
+    await pressedWhileHeld(clearNotes,"Clearing…");
+    release();await expect(clearNotes).toHaveCount(0);await expect(done).toHaveValue("");
+    await expect(save,"once Clear notes goes the keyboard is on Save continuity").toBeFocused();
+    // A save the harness refuses says why above Save continuity, and the keyboard stays on it.
+    await done.click();await page.keyboard.type("Moved the form to the new API",{delay:15});
+    await tabTo(page,save);
+    writes.refuse(true);await page.keyboard.press("Enter");
+    await expect(row.getByRole("alert")).toContainText("Continuity store is read-only");
+    await expect(save,"the keyboard stays on Save continuity when the save is refused").toBeFocused();await expect(done).toHaveValue("Moved the form to the new API");
+  }finally{await writes.harness.close()}
 });
 
 test("removing an attachment chip from the keyboard moves focus to the next chip's remove button, then the one before, then the composer",async({page},testInfo)=>{
