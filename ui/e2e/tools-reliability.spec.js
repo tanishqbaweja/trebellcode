@@ -182,9 +182,10 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // handshake waits too, so the app stays connecting until `releaseInit()`. The skills list (which the app reads for the composer
 // and the Tools page) answers `control.skills` as it stands when it answers: "empty", "listed" (one skill) or "fail", or what
 // `control.skillsByCwd` names for the workspace read, and waits while `holdSkills` is set, until `releaseSkills()`. It lists
-// `threads` and resumes them, and the account's shared plugins as `control.shared` holds them.
+// `threads` and resumes them, and the account's shared plugins as `control.shared` holds them: a checkout gives its plugin a local
+// copy and a delete takes the share off the list, once answered; while `holdShare` is set they wait, until `releaseShare()`.
 async function startHeldMcpFixture({threads=[]}={}){
-  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[]};
+  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[],holdShare:false,heldShare:[]};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
   const skill={name:"release-notes",description:"Draft release notes from merged pull requests",path:"/home/test/.codex/skills/release-notes/SKILL.md",scope:"user",enabled:true,interface:{displayName:"Release notes"}};
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
@@ -203,6 +204,15 @@ async function startHeldMcpFixture({threads=[]}={}){
         const cwd=message.params?.cwds?.[0]||process.cwd();control.skillReads++;control.skillCwds.push(cwd);
         const answer=()=>{const mode=control.skillsByCwd[cwd]||control.skills;return mode==="fail"?send({error:{code:-32000,message:"Deliberate skills list failure"}}):send({result:{data:[{cwd,skills:mode==="listed"?[skill]:[],errors:[]}]}})};
         if(control.holdSkills)control.heldSkills.push(answer);else answer();
+        return;
+      }
+      if(message.method==="plugin/share/checkout"||message.method==="plugin/share/delete"){
+        const id=message.params?.remotePluginId,checkout=message.method==="plugin/share/checkout",copy="/home/test/plugins/"+id;
+        const answer=()=>{
+          control.shared=checkout?control.shared.map(item=>item.plugin.remotePluginId===id?{...item,localPluginPath:copy}:item):control.shared.filter(item=>item.plugin.remotePluginId!==id);
+          if(ws.readyState===ws.OPEN)send({result:checkout?{localPluginPath:copy}:{}});
+        };
+        if(control.holdShare)control.heldShare.push(answer);else answer();
         return;
       }
       if(message.method==="thread/resume"&&threads.length){send({result:{thread:{...(threads.find(thread=>thread.id===message.params?.threadId)||threads[0]),turns:[]}}});return}
@@ -237,6 +247,7 @@ async function startHeldMcpFixture({threads=[]}={}){
     release(){control.hold=false;for(const answer of control.held.splice(0))answer()},
     releaseInit(){control.holdInit=false;for(const answer of control.heldInit.splice(0))answer()},
     releaseSkills(){control.holdSkills=false;for(const answer of control.heldSkills.splice(0))answer()},
+    releaseShare(){for(const answer of control.heldShare.splice(0))answer()},
     async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
 // projects are the saved projects (activeProjectId the open one); opening one answers with it, as the server does.
@@ -580,12 +591,26 @@ test("Tools Skills card drops the previous workspace's skills while the next wor
   }finally{fixture.releaseSkills();await fixture.close()}
 });
 
+// A plugin shared with the account, as Codex lists it, with no local copy yet.
+const share=(id,name,version)=>({plugin:{id,name,...(version?{version}:{}),remotePluginId:"remote-"+id,shareContext:{remotePluginId:"remote-"+id,discoverability:"PRIVATE",shareUrl:"https://plugins.example.invalid/share/"+id,creatorName:"Lane G"}},localPluginPath:null});
+// The mouse wheel over the page, notch by notch, as a person scrolls a card up to read it, until its head is near the window's top.
+async function wheelTo(page,card){
+  const scroller=page.locator(".secondary-page");
+  await page.mouse.move(760,420);
+  for(let notch=0;notch<40;notch++){
+    const {y}=await card.boundingBox();if(y>=60&&y<=200)return;
+    const before=await scroller.evaluate(node=>node.scrollTop);
+    await page.mouse.wheel(0,Math.max(-400,Math.min(400,y-120)));
+    await expect.poll(()=>scroller.evaluate(node=>node.scrollTop)).not.toBe(before);
+  }
+  throw new Error("The card did not come up to the window's top");
+}
+
 // A shared plugin's name reads in full in its row. Beside the share's four actions it ended in an ellipsis with nothing to hover:
 // "lane-g-shared-plugin-wi…", and even a short name sharing its row with a version, "lane-g-sh…".
 test("Tools Shared plugins shows each plugin's whole name beside its actions, in dark and light, wide and narrow",async({page})=>{
   test.setTimeout(45_000);
   const fixture=await startHeldMcpFixture();fixture.release();
-  const share=(id,name,version)=>({plugin:{id,name,...(version?{version}:{}),remotePluginId:"remote-"+id,shareContext:{remotePluginId:"remote-"+id,discoverability:"PRIVATE",shareUrl:"https://plugins.example.invalid/share/"+id,creatorName:"Lane G"}},localPluginPath:null});
   fixture.control.shared=[share("long","lane-g-shared-plugin-with-a-longer-name"),share("short","lane-g-shared","2.0.0")];
   try{
     await page.setViewportSize({width:1280,height:800});
@@ -605,4 +630,58 @@ test("Tools Shared plugins shows each plugin's whole name beside its actions, in
       await page.screenshot({animations:"disabled",path:auditDir+`tools-shared-plugin-names-${mode}-${width}x800.png`,fullPage:false});
     }
   }finally{await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// A share action Codex is slow to answer says what it is doing on the row it was pressed on, and is marked busy, while the page's
+// other actions wait. On 01143dbe a checkout held 30 s greyed 25 of the page's 29 buttons, with nothing naming what ran.
+test("Tools Shared plugins says Checking out… or Deleting… on the row whose action Codex has not answered yet, pressed with the mouse or the keys",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.shared=[share("short","lane-g-shared","2.0.0"),share("long","lane-g-shared-plugin-with-a-longer-name"),share("third","lane-g-shared-three","2.0.2")];
+  fixture.control.holdShare=true;
+  const shoot=async name=>{for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-1280x800.png`,fullPage:false})}};
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const card=page.locator(".capabilities-page .capability-card").filter({has:page.getByText("Shared plugins",{exact:true})}).first();
+    const rows=card.locator(".shared-plugin-list>div"),busy=page.locator(".capabilities-page [aria-busy=true]");
+    await wheelTo(page,card);
+    // Checkout double-clicked: one checkout, and its own row says it runs, the only thing marked busy. The other rows' actions wait;
+    // Open stays.
+    await rows.nth(0).getByRole("button",{name:"Checkout",exact:true}).dblclick();
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    const checking=rows.nth(0).getByRole("button",{name:"Checking out…",exact:true});
+    await expect(checking).toBeDisabled();await expect(checking).toHaveAttribute("aria-busy","true");await expect(busy).toHaveCount(1);
+    expect(fixture.control.heldShare.length,"one checkout for the double click").toBe(1);
+    await expect(rows.nth(1).getByRole("button",{name:"Checkout",exact:true})).toBeDisabled();
+    await expect(rows.nth(1).getByRole("button",{name:"Open",exact:true})).toBeEnabled();
+    await shoot("tools-shared-plugin-checking-out");
+    // Answered: the row has its local copy, so no Checkout, and nothing is busy.
+    fixture.releaseShare();
+    await expect(rows.nth(0).getByRole("button")).toHaveText(["Open","Delete share"]);
+    await expect(busy).toHaveCount(0);
+    // With the keys, in a narrower window: Tab from Open to the long name's Checkout and Enter. Its label shows whole in the row.
+    await page.setViewportSize({width:900,height:800});await wheelTo(page,card);
+    await rows.nth(1).getByRole("button",{name:"Open",exact:true}).focus();await page.keyboard.press("Tab");
+    await expect(rows.nth(1).getByRole("button",{name:"Checkout",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    const checkingLong=rows.nth(1).getByRole("button",{name:"Checking out…",exact:true});
+    await expect(checkingLong).toHaveAttribute("aria-busy","true");await expect(busy).toHaveCount(1);
+    expect(await checkingLong.evaluate(node=>node.scrollWidth<=node.clientWidth),"the label shows whole").toBe(true);
+    expect(await rows.evaluateAll(nodes=>nodes.every(node=>node.scrollWidth<=node.clientWidth)),"the rows stay in the card").toBe(true);
+    fixture.releaseShare();
+    await expect(rows.nth(1).getByRole("button")).toHaveText(["Open","Delete share"]);
+    // Delete share, once the question is answered, says it is deleting on its row until Codex answers; then the row leaves.
+    await page.setViewportSize({width:1280,height:800});await wheelTo(page,card);
+    await rows.nth(2).getByRole("button",{name:"Delete share",exact:true}).click();
+    await page.locator("dialog.inspector-text-prompt").getByRole("button",{name:"Delete share",exact:true}).click();
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    const deleting=rows.nth(2).getByRole("button",{name:"Deleting…",exact:true});
+    await expect(deleting).toBeDisabled();await expect(deleting).toHaveAttribute("aria-busy","true");await expect(busy).toHaveCount(1);
+    await shoot("tools-shared-plugin-deleting");
+    fixture.releaseShare();
+    await expect(rows).toHaveCount(2);await expect(busy).toHaveCount(0);
+  }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
