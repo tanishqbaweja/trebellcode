@@ -2556,3 +2556,38 @@ test("a rebuilt request the API refuses for its reasoning is sent once more as t
     }finally{rmSync(root,{recursive:true,force:true})}
   }
 });
+
+test("the whole transcript sent after HTTPS refused a failed continuation's compacted resend carries the reasoning that followed the compaction",async()=>{
+  // The resend's compaction item is what was refused (input[0]), so it goes on as before, whole, and the reasoning goes with it.
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-reasoning-compacted-whole-")),httpBodies=[];let wsCalls=0;
+  const reasoningItem=(id,encrypted)=>({type:"reasoning",id,summary:[],encrypted_content:encrypted}),runCall=(id,callId)=>({type:"function_call",id,call_id:callId,name:"trebell_terminal__run",arguments:'{"command":"ls"}'});
+  const socketReply=(body,id,output,inputTokens)=>({requestBytes:50,response:{id,model:body.model,status:"completed",output,usage:{input_tokens:inputTokens,output_tokens:5,total_tokens:inputTokens+5}},telemetry:{responseBytes:40,totalLatencyMs:1,timeToFirstTokenMs:1}});
+  try{
+    const manager=compactedChainManager({root,
+      webSocket:options=>({close:()=>{},request:async body=>{
+        wsCalls++;
+        if(wsCalls===1)return socketReply(body,"resp-1",[reasoningItem("rs_1","enc-before-compaction"),runCall("fc-0","call-0")],200000);
+        if(wsCalls===2)return socketReply(body,"resp-compacted",[COMPACTION_ITEM,reasoningItem("rs_2","enc-after-compaction"),runCall("fc-1","call-1")],250000);
+        throw socketClosedAfterSend(options);
+      }}),
+      fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");httpBodies.push(body);
+        if(httpBodies.length===1)return httpError(404,"Previous response with id 'resp-compacted' not found.");
+        if(httpBodies.length===2)return httpError(400,"Invalid value for 'input[0]'.");
+        return httpReply(body,"whole");},
+    });
+    const token={},user={role:"user",content:"Recover the key from the capture"},contextManagement=[{type:"compaction",compactThreshold:245_000}];
+    const request=(messages,parent=null)=>({model:"gpt-6-luna",messages,tools:[],metadata:{sessionId:"native_reasoning_compacted_whole"},contextManagement,...(parent?{promptCacheComparisonResponseId:parent}:{}),[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+    const first=await manager.turn("openai",request([user]),{streamResponses:true});
+    const secondMessages=[user,keptReply(first),{role:"tool",toolCallId:"call-0",content:"capture.pcap"}],second=await manager.turn("openai",request(secondMessages,first.id),{streamResponses:true});
+    const thirdRequest=request([...secondMessages,keptReply(second),{role:"tool",toolCallId:"call-1",content:"exit 0"}],second.id);
+    await assert.rejects(manager.turn("openai",thirdRequest,{streamResponses:true}),error=>error?.retryable===true,"the socket closed after the send");
+    const third=await manager.turn("openai",thirdRequest,{streamResponses:true});
+    assert.equal(third.text,"whole");assert.equal(httpBodies.length,3);assert.equal(httpBodies[0].previous_response_id,"resp-compacted");
+    assert.deepEqual(replayedTypes(httpBodies[1]),["compaction",{type:"reasoning",summary:[],encrypted_content:"enc-after-compaction"},"function_call","function_call_output"]);
+    const whole=httpBodies[2];assert.equal(Object.hasOwn(whole,"previous_response_id"),false);assert.equal(whole.input[0].role,"user");
+    assert.deepEqual(replayedTypes(whole),["message","function_call","function_call_output",{type:"reasoning",summary:[],encrypted_content:"enc-after-compaction"},"function_call","function_call_output"]);
+    const continuation=third.telemetry.responseContinuation;
+    assert.equal(continuation.compactedResend.rejected,true);assert.equal(continuation.fallbackReason,"previous_response_unavailable");
+    assert.equal(continuation.replayedReasoningItems,1);assert.equal(Object.hasOwn(continuation,"replayRefused"),false);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
