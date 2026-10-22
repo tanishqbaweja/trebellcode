@@ -105,10 +105,19 @@ async function startNativeThreads(page,names){
     async close(){holding=null;for(const entry of held.splice(0))entry.send();await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true})},
   };
 }
-// The page in dark and light at 1280 and 900 wide, with show in view; it is left dark at 1280. The theme button is pressed at
-// 1280, as at 900 the open panel lies over the header.
+// The page in dark and light at 1280 and 900 wide, with show in view; it is left dark at 1280. The theme is switched at 1280, as at
+// 900 the open panel lies over the header: with the header's theme button, or from More actions where the header has set that
+// button aside (header-fit.js level 4), as it does beside the Runtime tab to give "Background command thread" its room with the
+// project crumb's shortened name. The header is read once it has fitted itself to the 1280 window.
 async function shootModes(page,show,name){
-  const mode=async value=>{await page.setViewportSize({width:1280,height:800});if(await page.locator("html").getAttribute("data-mode")!==value){await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode",value)}};
+  const header=page.locator(".chat-workspace .workspace-header"),toggle=header.getByTestId("appearance-toggle");
+  const mode=async value=>{
+    await page.setViewportSize({width:1280,height:800});await painted(page);
+    if(await page.locator("html").getAttribute("data-mode")===value)return;
+    if(await toggle.isVisible())await toggle.click();
+    else{await header.getByRole("button",{name:"More actions",exact:true}).click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:/^Switch to (light|dark) mode$/}).click()}
+    await expect(page.locator("html")).toHaveAttribute("data-mode",value);
+  };
   for(const value of ["dark","light"]){await mode(value);for(const width of [1280,900]){await page.setViewportSize({width,height:800});await show.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+name+"-"+value+"-"+width+"x800.png"})}}
   await mode("dark");
 }
