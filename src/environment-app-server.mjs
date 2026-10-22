@@ -32,9 +32,14 @@ export function remoteCodexHomeSetup(runtimeInstance=null){
     lines.push(...homeAssignment("shared",shared||"~/.codex"));
     lines.push(...homeAssignment("effective",shadow));
     lines.push('mkdir -p "$trebell_codex_shared" "$trebell_codex_effective"');
+    // A link that already points at its shared entry is left as it is, as a local shadow home's is (codex-home-layout ensureLink):
+    // the account check runs these lines each time it asks the host, and the sign-in each time it opens, while the profile's
+    // app-server may be writing through the links. Only a missing link or one that points elsewhere is made.
     lines.push("for trebell_codex_entry in "+REMOTE_CODEX_SHARED_DIRECTORIES.map(quotePosix).join(" ")+"; do");
     lines.push('  mkdir -p "$trebell_codex_shared/$trebell_codex_entry"');
-    lines.push('  if [ -L "$trebell_codex_effective/$trebell_codex_entry" ]; then rm -f "$trebell_codex_effective/$trebell_codex_entry";');
+    lines.push('  if [ -L "$trebell_codex_effective/$trebell_codex_entry" ]; then');
+    lines.push('    [ "$(readlink "$trebell_codex_effective/$trebell_codex_entry" 2>/dev/null)" = "$trebell_codex_shared/$trebell_codex_entry" ] && continue');
+    lines.push('    rm -f "$trebell_codex_effective/$trebell_codex_entry"');
     lines.push('  elif [ -e "$trebell_codex_effective/$trebell_codex_entry" ]; then echo "Trebell cannot prepare remote Codex shadow entry $trebell_codex_entry because a non-link entry already exists." >&2; exit 74; fi');
     lines.push('  ln -s "$trebell_codex_shared/$trebell_codex_entry" "$trebell_codex_effective/$trebell_codex_entry"');
     lines.push("done");

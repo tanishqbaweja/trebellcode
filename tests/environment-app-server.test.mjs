@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, lutimes, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
-import { remoteCodexArgs, remoteCodexProfileSetup, sshRemotePorts, startRemoteAppServer } from "../src/environment-app-server.mjs";
+import { remoteCodexArgs, remoteCodexHomeSetup, remoteCodexProfileSetup, sshRemotePorts, startRemoteAppServer } from "../src/environment-app-server.mjs";
 import { EnvironmentManager, remoteToolPathPrelude } from "../src/environment-manager.mjs";
 
 // A POSIX shell, as a WSL or SSH host has, where this machine has one (Git for Windows' sh, or the system's).
@@ -263,4 +263,41 @@ test("a WSL or SSH Codex profile with its own or a shadow Codex home signs in, c
     }
   }finally{await rm(work,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
   assert.deepEqual(seen,wanted);
+});
+
+// The account check runs a shadow home's setup each time it asks the host (about once a minute while Settings is open), and the
+// sign-in runs it too, while the profile's app-server may be writing through its links: a link that already points at its shared
+// entry is left as it is, and only one that is missing or points elsewhere is made again, as a local shadow home's are
+// (codex-home-layout ensureLink). Making every link again each time left a gap in which a folder the running app-server made (a new
+// session's) became a real folder in the shadow home, which stopped every later setup (exit 74) and kept that session out of the
+// shared home. An entry that is not a link still stops the setup before Codex runs.
+test("a remote Codex shadow home's setup leaves the links that point at its shared home alone and makes only a missing or wrong one again",{skip:!posixShell&&"no POSIX shell on this machine"},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-remote-codex-links-"));
+  const instance={id:"codex-shadow",kind:"codex",displayName:"Shadow home",homePath:"~/.codex-shared",shadowHomePath:"~/.codex-work"},setup=remoteCodexHomeSetup(instance);
+  // The app-server's start sets the home up with these same lines; a profile with no home of its own gets none.
+  assert.ok(remoteCodexProfileSetup({runtimeInstance:instance}).prelude.endsWith(setup));
+  assert.equal(remoteCodexHomeSetup({id:"codex-plain",kind:"codex"}),"");assert.equal(remoteCodexProfileSetup({runtimeInstance:{id:"codex-plain",kind:"codex"}}).prelude,"");
+  // As the host runs it: the tool PATH first, then the setup.
+  const host=codexHost(home),run=script=>finished(host("ssh",[remoteToolPathPrelude()+"\n"+script],{stdio:["ignore","pipe","pipe"]}));
+  const shared=join(home,".codex-shared"),work=join(home,".codex-work"),long=new Date("2001-01-01T00:00:00Z");
+  try{
+    const first=await run(setup);assert.equal(first.code,0,first.stderr);
+    const entries=(await readdir(work)).sort();assert.equal(entries.length,10);
+    // Each link is dated long ago, so one made again shows by its date. Then sessions points elsewhere and logs is gone, as a home
+    // changed in Settings or a link removed by hand leaves them.
+    for(const entry of entries)await lutimes(join(work,entry),long,long);
+    const changed=await run('rm -f "$HOME/.codex-work/sessions" "$HOME/.codex-work/logs" && mkdir -p "$HOME/elsewhere" && ln -s "$HOME/elsewhere" "$HOME/.codex-work/sessions"');
+    assert.equal(changed.code,0,changed.stderr);await lutimes(join(work,"sessions"),long,long);
+    const again=await run(setup);assert.equal(again.code,0,again.stderr);
+    const links={},wanted={};
+    for(const entry of entries){
+      const stat=await lstat(join(work,entry));
+      links[entry]={link:stat.isSymbolicLink(),shared:await realpath(join(work,entry))===await realpath(join(shared,entry)),madeAgain:stat.mtimeMs!==long.getTime()};
+      wanted[entry]={link:true,shared:true,madeAgain:entry==="sessions"||entry==="logs"};
+    }
+    assert.deepEqual(links,wanted);
+    const folder=await run('rm -f "$HOME/.codex-work/skills" && mkdir "$HOME/.codex-work/skills"');assert.equal(folder.code,0,folder.stderr);
+    const stopped=await run(setup);
+    assert.equal(stopped.code,74);assert.match(stopped.stderr,/^Trebell cannot prepare remote Codex shadow entry skills because a non-link entry already exists\.\r?\n?$/);
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
