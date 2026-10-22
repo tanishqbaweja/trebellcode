@@ -671,6 +671,83 @@ for(const [name,sibling,crumbNamed] of [["Repo task one","Repo task two",true],[
   }finally{await harness.close()}
 });
 
+// "Repo task one" shows whole beside "Repo task two", the Git inspector and two linked pull requests at every width the window is
+// dragged through, 4px at a time from 1100 to 1300 and back (UI lane D, 2026-10-21: at 1140, and at 1108 beside the 224px sidebar,
+// the fit stopped at the first level that left the title its readable 80px, "Repo task …" as "Repo task two" reads, while 1136
+// folded one action more into More actions and showed it whole: a wider window showed less of the title than a narrower one).
+// Actions fold no further than the whole title needs (the level before cuts it), and a wider main column never folds more of
+// them than a narrower one. 1140 is reached from 1280, 1120 and 1160 too.
+for(const mode of ["dark","light"])test(`"Repo task one" shows whole beside the Git inspector and two linked pull requests at every width from 1100 to 1300, the window widened and narrowed 4px at a time, folding actions only as far as that needs, in ${mode} mode`,async({page})=>{
+  test.setTimeout(180_000);
+  const project={id:"header-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
+  const threads=["Repo task one","Repo task two"].map((title,index)=>({id:"header-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const prs=[102,103].map(number=>({url:"https://github.com/lane-d/scratch/pull/"+number,number,title:"Scratch PR "+number,state:"open"}));
+  let links=prs.slice(0,1);
+  const harness=await startHarness(threads);
+  try{
+    // The server keeps the thread's links: the Git tab syncs them, and Link pull request resolves the URL, then links it.
+    await page.route(/\/api\/source-control\/thread-link$/,route=>{
+      if(route.request().method()!=="POST")return route.fallback();
+      const body=route.request().postDataJSON()||{};
+      if(body.action==="link")links=[...links,body.pr];
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body.action==="resolve"?{pr:prs.find(pr=>pr.url===body.url)}:{links})});
+    });
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads,meta:{[threads[0].id]:{projectless:false,environmentId:null,linkedPullRequests:links},[threads[1].id]:{projectless:false,environmentId:null}},project,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),header=page.locator(".chat-workspace .workspace-header");
+    if(!(await right.isVisible())){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible()}
+    await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 1");
+    await page.getByTestId("composer").click();await page.keyboard.press("Control+K");
+    await page.keyboard.type("Link pull request",{delay:20});await page.keyboard.press("Enter");
+    await expect(page.locator("dialog.inspector-text-prompt").getByRole("textbox",{name:"Pull request URL"})).toBeFocused();
+    await page.keyboard.type(prs[1].url,{delay:5});await page.keyboard.press("Enter");
+    await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 2");
+    // The header's level, crumb and folded actions (in the order they fold), the title's box, and the title's box at the level
+    // before: one action fewer folded, else the level below (level 2 for level 4 with the crumb's shortened name, which level 3
+    // with it would be), with the crumb's icon as the fit measures each level. The header is put back as it was.
+    const read=()=>header.evaluate((node,order)=>{
+      const strong=node.querySelector(".thread-title-button strong"),row=node.querySelector(".workspace-header-actions"),fit=node.dataset.fit,crumb=node.dataset.crumb;
+      const folded=order.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`)?.hasAttribute("data-folded"));
+      const state={fit,crumb:crumb||"",folded,column:Math.round(node.getBoundingClientRect().width),title:strong.clientWidth,whole:strong.scrollWidth,overflow:node.scrollWidth-node.clientWidth,chips:[...node.querySelectorAll(".header-pr")].filter(chip=>chip.offsetParent).map(chip=>chip.innerText.replace(/\s+/g,""))};
+      if(fit!=="0"){
+        const back=folded.length?[...node.querySelectorAll(`[data-fold="${folded.at(-1)}"]`)]:[];
+        for(const control of back)control.removeAttribute("data-folded");
+        node.dataset.fit=folded.length===1?"5":folded.length?fit:fit==="4"&&crumb==="short"?"2":String(Number(fit)-1);delete node.dataset.crumb;
+        state.before={shown:strong.clientWidth,whole:strong.scrollWidth};
+        for(const control of back)control.setAttribute("data-folded","");
+        node.dataset.fit=fit;if(crumb)node.dataset.crumb=crumb;
+      }
+      return state;
+    },HEADER_FOLD_ORDER);
+    // The main column beside the sidebar (224px up to 1120, 258px from 1121) and the 460px inspector.
+    const seen=[];
+    const at=async width=>{
+      await page.setViewportSize({width,height:800});
+      await expect.poll(()=>header.evaluate(node=>Math.round(node.getBoundingClientRect().width)),{message:`the main column at ${width}px`}).toBe(width-(width<=1120?224:258)-460);await settle(page);
+      const state=await read(),where=`at ${width}px (data-fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""}, title ${state.title} of ${state.whole}px, chips ${state.chips.join(" ")})`;
+      seen.push({width,...state});
+      expect.soft(state.overflow,`the header holds its row ${where}`).toBeLessThanOrEqual(1);
+      expect.soft(state.title+1,`"Repo task one" shows whole ${where}`).toBeGreaterThanOrEqual(state.whole);
+      if(state.before)expect.soft(state.before.shown,`the level before cuts the title (${state.before.shown} of ${state.before.whole}px), so the header goes no further than it needs, ${where}`).toBeLessThan(state.before.whole);
+      return state;
+    };
+    const wide=await at(1280);
+    expect(wide.chips,"the pull requests fold into the first one's chip").toEqual(["#102+1"]);
+    // 1140 from 1280, from 1120 and from 1160.
+    for(const from of [null,1120,1160]){if(from)await at(from);await at(1140)}
+    await page.screenshot({path:join(shotsDir,`header-title-repo-task-one-git-inspector-${mode}-1140x800.png`),animations:"disabled"});
+    for(let width=1100;width<=1300;width+=4)await at(width);
+    for(let width=1300;width>=1100;width-=4){await at(width);if(width===1108)await page.screenshot({path:join(shotsDir,`header-title-repo-task-one-git-inspector-${mode}-1108x800.png`),animations:"disabled"})}
+    const line=seen.map(state=>`${state.width}:${state.fit}${state.folded.length?"+"+state.folded.length:""}:${state.title}/${state.whole}`).join(" ");
+    console.log(`header for "Repo task one" beside the Git inspector in ${mode} (width:fit+folds:title/whole): ${line}`);
+    // A wider main column never folds more actions than a narrower one (the column narrows where the sidebar widens at 1121).
+    const more=new Set();for(const state of seen)for(const other of seen)if(other.column>state.column&&other.folded.length>state.folded.length)more.add(`${other.width}px (${other.column}px of column) folds ${other.folded.length}, ${state.width}px (${state.column}px) ${state.folded.length}`);
+    expect.soft([...more],"a wider main column never folds more actions than a narrower one").toEqual([]);
+  }finally{await harness.close()}
+});
+
 // A linked pull request's chip opens its page in a new tab that cannot reach back into the app; a link that is not a web address
 // (saved metadata carrying a javascript: URL) opens nothing. Pressed like a person, shot before and after in both modes.
 for(const mode of ["dark","light"])test(`a linked pull request opens its web page and a link that is not a web address opens nothing, in ${mode} mode`,async({page})=>{
@@ -745,7 +822,7 @@ const focusVisible=locator=>locator.evaluate(node=>node.matches(":focus-visible"
 const HEADER_FOLD_ORDER=["goal","terminal","review","script","open-in","source"];
 // The header's foldable actions and the folded ones, in the order they fold, and the title's width (shown and whole) now and
 // with the last folded action given back to the row. The fit folds no more than the title needs, so that width is short of
-// the readable 80px, or of the whole title where the one fold shows it whole.
+// the readable 80px, or of the whole title where the last fold shows it whole.
 const headerFold=header=>header.evaluate((node,order)=>{
   const row=node.querySelector(".workspace-header-actions"),title=node.querySelector(".thread-title-button strong");
   const present=order.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`)),folded=present.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`).hasAttribute("data-folded"));
@@ -766,8 +843,8 @@ const firstShownToggle=header=>header.locator(".workspace-header-actions>.header
 async function expectFoldedOnlyAsNeeded(header,state){
   expect(state.folded,"folded actions").toEqual(state.present.slice(0,state.folded.length));
   expect(state.title+1,"title width").toBeGreaterThanOrEqual(Math.min(state.whole,80));
-  // Actions fold as far as a readable title needs, or once where that fold shows the title whole and the levels before cut it.
-  if(state.folded.length)expect(state.titleWithOneLess+1,"title width with one action fewer folded").toBeLessThan(state.folded.length===1&&state.title+1>=state.whole?state.whole:Math.min(state.whole,80));
+  // Actions fold as far as a readable title needs, or one further where that fold shows the title whole.
+  if(state.folded.length)expect(state.titleWithOneLess+1,"title width with one action fewer folded").toBeLessThan(state.title+1>=state.whole?state.whole:Math.min(state.whole,80));
   for(const id of state.present)await expect(header.locator(`.workspace-header-actions>[data-fold="${id}"]`),id).toBeVisible({visible:!state.folded.includes(id)});
   // More actions shows from the level that sets the theme and palette buttons aside, which comes before any fold.
   await expect(header.getByRole("button",{name:"More actions",exact:true})).toBeVisible({visible:Number(state.fit)>=4});

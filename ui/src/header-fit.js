@@ -17,7 +17,10 @@
 // two"). That first fold adds no button, More actions showing from level 4, so it gives the title the room level 5 gave it before
 // More actions showed there (without it "Repo task one" read 82 of its 85px at level 5 beside the 460px inspector at 1176, while
 // 1100 folded an action and showed it whole). Where none of those levels shows it whole, the header takes the first level that
-// leaves it the readable width, folding actions only as far as that needs.
+// leaves it the readable width, folding actions only as far as that needs, and one action further where that shows it whole: a
+// fold leaves the title the readable width and less than an action's room more, so a title a few pixels past the readable width
+// was cut where a narrower window, folding one action more for that width, showed it whole ("Repo task one" read 80 of its 85px
+// at 1140 beside the 460px inspector with one action folded, while 1136 folded two and showed it whole).
 // From level 3 on the crumb gets its shortened name back (data-crumb "short", as level 2 shows it) wherever the title keeps what
 // the level gave it beside it, all of itself or its readable width, so the crumb's name never cuts a title its icon leaves whole: a
 // later level often frees more than the title needs, and the crumb kept only its icon beside a whole title. At level 3 its name
@@ -43,15 +46,21 @@ export function titleReadable({clientWidth=0,scrollWidth=0}={},readable=TITLE_RE
 }
 
 // The level the header takes: the first at which the title shows whole among the levels up to the first that folds an action,
-// when one does, else the first at which it is readable, folding actions as far as that needs, else the last level. Each level
-// leaves the title at least the room of the one before, so the first that folds an action (the last that folds nothing, where no
-// action can fold) tells whether any of them shows it whole. apply(level) sets a level, and whole() and readable() measure the
-// header after it.
+// when one does, else the first at which it is readable, folding actions as far as that needs (one fold further where that level,
+// the first fold or a later one, cuts the title and the next shows it whole), else the last level. Each level leaves the title at
+// least the room of the one before, so the first that folds an action (the last that folds nothing, where no action can fold)
+// tells whether any of them shows it whole. apply(level) sets a level, and whole() and readable() measure the header after it;
+// the header is left at the level returned.
 export function fitLevel(apply,whole,levels=HEADER_FIT_LEVELS,readable=whole){
   apply(0);if(whole())return 0;
-  apply(Math.min(levels,HEADER_FIT_LEVELS+1)-1);
+  const firstFold=Math.min(levels,HEADER_FIT_LEVELS+1)-1;
+  apply(firstFold);
   const fits=whole()?whole:readable;
-  for(let level=0;level<levels;level++){apply(level);if(fits())return level}
+  for(let level=0;level<levels;level++){apply(level);if(!fits())continue;
+    // Readable but cut from the first fold on: one more fold, when it shows the title whole.
+    if(fits!==whole&&level>=firstFold&&level+1<levels&&!whole()){apply(level+1);if(whole())return level+1;apply(level)}
+    return level;
+  }
   return levels-1;
 }
 
