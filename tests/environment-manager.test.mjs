@@ -349,22 +349,22 @@ test("a remote command forwards guarded names only when the host sets them and t
   const profile={id:"ssh",name:"Build box",type:"ssh",cwd:"/srv/app",host:"build.example",user:"dev",port:22};
   const manager=new EnvironmentManager({state:stateFor([profile]),platform:"linux"});
   let launch=null;manager.spawnSession=(_id,options)=>{launch=options;return {pid:123}};
-  const shown=["GEM_HOME","BUNDLE_APP_CONFIG","CARGO_TARGET_DIR","RUSTUP_DIST_SERVER","MAVEN_OPTS","GRADLE_OPTS","LOG_LEVEL","OPENAI_API_KEY"];
+  const shown=["GEM_HOME","BUNDLE_APP_CONFIG","CARGO_TARGET_DIR","RUSTUP_DIST_SERVER","CFLAGS","RUSTFLAGS","LOG_LEVEL","OPENAI_API_KEY"];
   const script=`process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(shown)}.map(name=>[name,process.env[name]??null]))))`;
   // SYSTEMROOT, as Git for Windows' sh spells it, lets this machine's Node start when the test runs on Windows.
   manager.spawnArgv("ssh",{command:process.execPath,args:["-e",script],environmentNames:["PATH","HOME","SYSTEMROOT"],environment:{LOG_LEVEL:"debug"},
-    guardedEnvironmentNames:["GEM_HOME","BUNDLE_APP_CONFIG","CARGO_TARGET_DIR","RUSTUP_DIST_SERVER","MAVEN_OPTS","GRADLE_OPTS","LOG_LEVEL","not-a-name?"]});
+    guardedEnvironmentNames:["GEM_HOME","BUNDLE_APP_CONFIG","CARGO_TARGET_DIR","RUSTUP_DIST_SERVER","CFLAGS","RUSTFLAGS","LOG_LEVEL","not-a-name?"]});
   assert.doesNotMatch(launch.command,/not-a-name/);
   const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
   const host=Object.entries({
     GEM_HOME:"fixture gems; $(exit 9) 'quoted'",BUNDLE_APP_CONFIG:"",RUSTUP_DIST_SERVER:"https://fixture-user:fixture-pass@mirror.example/rustup",
-    MAVEN_OPTS:"-Xmx1g -Dhttps.proxyPassword=fixture-pass",GRADLE_OPTS:"-Xmx2g -Dfile.encoding=UTF-8",LOG_LEVEL:"host-value",OPENAI_API_KEY:"sk-fixture-host",
+    CFLAGS:"-O2 -DSENTRY_AUTH_TOKEN=fixture",RUSTFLAGS:"--cfg tokio_unstable",LOG_LEVEL:"host-value",OPENAI_API_KEY:"sk-fixture-host",
   }).map(([name,value])=>"export "+name+"="+quote(value)).join("; ");
   const run=await sh("unset CARGO_TARGET_DIR; "+host+"; "+launch.command);
   assert.equal(run.code,0,run.stderr);
   assert.deepEqual(JSON.parse(run.stdout),{
-    GEM_HOME:"fixture gems; $(exit 9) 'quoted'",BUNDLE_APP_CONFIG:null,CARGO_TARGET_DIR:null,RUSTUP_DIST_SERVER:null,MAVEN_OPTS:null,
-    GRADLE_OPTS:"-Xmx2g -Dfile.encoding=UTF-8",LOG_LEVEL:"debug",OPENAI_API_KEY:null,
+    GEM_HOME:"fixture gems; $(exit 9) 'quoted'",BUNDLE_APP_CONFIG:null,CARGO_TARGET_DIR:null,RUSTUP_DIST_SERVER:null,CFLAGS:null,
+    RUSTFLAGS:"--cfg tokio_unstable",LOG_LEVEL:"debug",OPENAI_API_KEY:null,
   });
 });
 
@@ -403,17 +403,17 @@ test("a remote host drops the toolchain values that carry credentials as this ma
 test("a WSL host runs Native's commands with their guarded toolchain names as bash parses them once",{skip:!bashShell&&"no POSIX sh and bash on this machine"},async()=>{
   const profile={id:"wsl",name:"Ubuntu dev",type:"wsl",cwd:"",distro:"Ubuntu"},launched=[];
   // The distro's own values: a toolchain variable it sets, and one whose value carries a credential.
-  const distro={GEM_HOME:"fixture-gems",MAVEN_OPTS:"-Dhttps.proxyPassword=fixture-pass"};
+  const distro={GEM_HOME:"fixture-gems",CFLAGS:"-O2 -DSENTRY_AUTH_TOKEN=fixture"};
   const manager=new EnvironmentManager({state:stateFor([profile]),platform:"win32",spawnProcess:(file,args,options)=>{
     launched.push([file,...args]);const [command,words]=asWsl(args);return spawn(command,words,{...options,env:{...options.env,...distro}});
   }});
-  const shown=["GEM_HOME","MAVEN_OPTS","CARGO_TARGET_DIR"];
+  const shown=["GEM_HOME","CFLAGS","CARGO_TARGET_DIR"];
   const script=`process.stdout.write(JSON.stringify({...Object.fromEntries(${JSON.stringify(shown)}.map(name=>[name,process.env[name]??null])),argument:process.argv[1]}))`;
   const child=manager.spawnArgv("wsl",{command:process.execPath,args:["-e",script,"$HOME and `backquotes` stay as they are"],stdio:["ignore","pipe","pipe"],
     environmentNames:["PATH","HOME","SYSTEMROOT"],guardedEnvironmentNames:shown});
   const run=await finished(child);
   assert.equal(run.code,0,run.stderr);
-  assert.deepEqual(JSON.parse(run.stdout),{GEM_HOME:"fixture-gems",MAVEN_OPTS:null,CARGO_TARGET_DIR:null,argument:"$HOME and `backquotes` stay as they are"});
+  assert.deepEqual(JSON.parse(run.stdout),{GEM_HOME:"fixture-gems",CFLAGS:null,CARGO_TARGET_DIR:null,argument:"$HOME and `backquotes` stay as they are"});
   assert.deepEqual(launched[0].slice(0,5),["wsl.exe","-d","Ubuntu","--exec","bash"]);
 });
 

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys } from "../src/runtime-environment.mjs";
+import { buildRuntimeEnvironment, carriesCredentials, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys, TOOLCHAIN_ENVIRONMENT_KEYS } from "../src/runtime-environment.mjs";
 
 test("runtime environments keep OS essentials and only the selected runtime credentials",()=>{
   const parent={
@@ -75,11 +75,12 @@ test("a toolchain variable whose value carries credentials is dropped while its 
   assert.equal(build({RUSTUP_DIST_SERVER:"https://fixture-user:fixture-pass@mirror.example/rustup"}).RUSTUP_DIST_SERVER,undefined);
   assert.equal(build({RUSTUP_DIST_SERVER:"https://ghp_fixture@mirror.example/rustup"}).RUSTUP_DIST_SERVER,undefined,"a token as the URL's user is userinfo too");
   assert.equal(build({RUSTUP_DIST_SERVER:"https://mirror.example/rustup"}).RUSTUP_DIST_SERVER,"https://mirror.example/rustup");
-  assert.equal(build({MAVEN_OPTS:"-Xmx2g -Dmaven.repo.remote=https://fixture-user:fixture-pass@repo.example/maven2"}).MAVEN_OPTS,undefined);
-  assert.equal(build({MAVEN_OPTS:"-Xmx2g -Dhttps.proxyPassword=fixture-pass"}).MAVEN_OPTS,undefined);
-  assert.equal(build({GRADLE_OPTS:"-Dorg.gradle.project.repoToken=fixture"}).GRADLE_OPTS,undefined);
-  assert.equal(build({JAVA_TOOL_OPTIONS:"-Djavax.net.ssl.trustStorePassword=fixture"}).JAVA_TOOL_OPTIONS,undefined);
-  assert.equal(build({MAVEN_OPTS:"-Xmx2g -Dmaven.repo.local=/opt/m2"}).MAVEN_OPTS,"-Xmx2g -Dmaven.repo.local=/opt/m2");
+  assert.equal(build({RUSTUP_UPDATE_ROOT:"https://fixture-user:fixture-pass@mirror.example/rustup/rustup"}).RUSTUP_UPDATE_ROOT,undefined);
+  assert.equal(build({GOFLAGS:"-ldflags=-X=main.apiToken=fixture"}).GOFLAGS,undefined);
+  assert.equal(build({CFLAGS:"-O2 -DSENTRY_AUTH_TOKEN=fixture"}).CFLAGS,undefined);
+  assert.equal(build({CGO_CFLAGS:"-DDB_PASSWORD=fixture-pass"}).CGO_CFLAGS,undefined);
+  assert.equal(build({GOFLAGS:"-mod=mod -modcacherw"}).GOFLAGS,"-mod=mod -modcacherw");
+  assert.equal(build({CFLAGS:"-O2 -DNDEBUG=1"}).CFLAGS,"-O2 -DNDEBUG=1");
   assert.equal(build({NODE_OPTIONS:"--max-old-space-size=4096"}).NODE_OPTIONS,"--max-old-space-size=4096");
   assert.equal(build({RUSTFLAGS:"--cfg tokio_unstable"}).RUSTFLAGS,"--cfg tokio_unstable");
   // An @ that is not a URL's userinfo, as in a scoped package folder, is no credential.
@@ -89,24 +90,26 @@ test("a toolchain variable whose value carries credentials is dropped while its 
   assert.equal(approved.MAVEN_OPTS,"-Dhttps.proxyPassword=fixture-pass");
 });
 
-// JAVA_TOOL_OPTIONS, which every JVM prints as it starts ("Picked up JAVA_TOOL_OPTIONS: ..."), and the build tools' option strings
-// can hold a credential in a documented form that no password= shows: the AWS SDK's -Daws.secretKey, New Relic's license_key,
-// SonarQube's -Dsonar.login, an OpenTelemetry Authorization header, and an Oracle connect string's user/password@.
-test("a JVM or build option string holding a credential in a documented form is dropped, and its plain settings pass",()=>{
+// A credential can be held in a documented form that no password= shows: the AWS SDK's -Daws.secretKey, New Relic's license_key,
+// SonarQube's -Dsonar.login, an OpenTelemetry Authorization header, and an Oracle connect string's user/password@. The check tells
+// these from plain settings, paths and package specs, for a toolchain value here and a remote host's (environment-manager.mjs).
+test("a value holding a credential in a documented form is told from plain settings, and plain toolchain values pass",()=>{
   const build=values=>buildRuntimeEnvironment("native",{parent:{PATH:"/bin",...values},platform:"linux",toolchain:true});
+  for(const value of [
+    "-Daws.accessKeyId=AKIAFIXTURE -Daws.secretKey=fixture-secret",
+    "-Daws.secretAccessKey=fixture-secret",
+    "-Xmx2g -Dnewrelic.config.license_key=fixture-license",
+    "-Dsonar.login=fixture-token",
+    "-Ddb.url=jdbc:oracle:thin:scott/tiger@//db.example:1521/svc",
+    "-Ddb=scott/tiger@orcl",
+    "-Dotel.exporter.otlp.headers=Authorization=Bearer fixture",
+  ])assert.equal(carriesCredentials(value),true,value);
+  for(const value of [
+    "-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8",
+    "-Ddb.url=jdbc:oracle:thin:@//db.example:1521/svc",
+    "-Dmaven.repo.local=/root/.m2/repository -Djavax.net.ssl.trustStore=/etc/keys/cacerts",
+  ])assert.equal(carriesCredentials(value),false,value);
   for(const [name,value] of [
-    ["JAVA_TOOL_OPTIONS","-Daws.accessKeyId=AKIAFIXTURE -Daws.secretKey=fixture-secret"],
-    ["JAVA_TOOL_OPTIONS","-Daws.secretAccessKey=fixture-secret"],
-    ["MAVEN_OPTS","-Xmx2g -Dnewrelic.config.license_key=fixture-license"],
-    ["GRADLE_OPTS","-Dsonar.login=fixture-token"],
-    ["JAVA_OPTS","-Ddb.url=jdbc:oracle:thin:scott/tiger@//db.example:1521/svc"],
-    ["MAVEN_ARGS","-Ddb=scott/tiger@orcl"],
-    ["SBT_OPTS","-Dotel.exporter.otlp.headers=Authorization=Bearer fixture"],
-  ])assert.equal(build({[name]:value})[name],undefined,value);
-  for(const [name,value] of [
-    ["JAVA_TOOL_OPTIONS","-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8"],
-    ["JAVA_OPTS","-Ddb.url=jdbc:oracle:thin:@//db.example:1521/svc"],
-    ["MAVEN_OPTS","-Dmaven.repo.local=/root/.m2/repository -Djavax.net.ssl.trustStore=/etc/keys/cacerts"],
     // A path's folder before an @ is no user/password@: Homebrew's versioned formulae, Go's module cache.
     ["LDFLAGS","-L/opt/homebrew/opt/openssl@3/lib -Wl,-rpath,/opt/homebrew/opt/openssl@3/lib"],
     ["PKG_CONFIG_PATH","/opt/homebrew/opt/libffi/lib/pkgconfig:/opt/homebrew/opt/openssl@3/lib/pkgconfig"],
@@ -114,6 +117,33 @@ test("a JVM or build option string holding a credential in a documented form is 
     ["NODE_OPTIONS","--max-old-space-size=4096 --require /srv/node_modules/@babel/register"],
     ["UV_PYTHON","cpython@3.12"],
   ])assert.equal(build({[name]:value})[name],value,value);
+});
+
+// JAVA_TOOL_OPTIONS (which every JVM prints as it starts), JAVA_OPTS, MAVEN_OPTS, MAVEN_ARGS, GRADLE_OPTS and SBT_OPTS can hold a
+// credential in a form its vendor documents that no check of names and shapes tells from a plain option: Honeycomb's
+// -Dotel.exporter.otlp.headers=x-honeycomb-team=<key>, an Azure SAS's sig=, a user:password@host with no scheme. Native's commands
+// never get them, holding one or not; the JDK's, Maven's and Gradle's homes and the other toolchain variables still pass.
+const JVM_OPTION_STRINGS=["JAVA_TOOL_OPTIONS","JAVA_OPTS","MAVEN_OPTS","MAVEN_ARGS","GRADLE_OPTS","SBT_OPTS"];
+test("Native's commands never get the JVM's or the build tools' option strings, and the other toolchain variables pass",()=>{
+  for(const name of JVM_OPTION_STRINGS)assert.equal(TOOLCHAIN_ENVIRONMENT_KEYS.includes(name),false,name);
+  const toolchain={JAVA_HOME:"/opt/java/openjdk",MAVEN_HOME:"/usr/share/maven",GRADLE_USER_HOME:"/root/.gradle",GEM_HOME:"/usr/local/bundle",RUSTFLAGS:"--cfg tokio_unstable"};
+  const credentials={
+    JAVA_TOOL_OPTIONS:"-javaagent:/otel/opentelemetry-javaagent.jar -Dotel.exporter.otlp.headers=x-honeycomb-team=hcaik_fixture",
+    JAVA_OPTS:"-Dspring.cloud.azure.storage.blob.connection-string=BlobEndpoint=https://acct.blob.core.windows.net/;SharedAccessSignature=sv=2022-11-02&ss=b&sp=rl&sig=fixture",
+    MAVEN_OPTS:"-Dapp.blob.url=https://acct.blob.core.windows.net/c?sv=2022-11-02&sp=r&sig=fixture",
+    MAVEN_ARGS:"-Ddsn=app:fixture-pass@tcp(db:3306)/app",
+    GRADLE_OPTS:"-Dproxy=bob:fixture-pass@proxy.example:8080",
+    SBT_OPTS:"-Daws.secretKey=fixture-secret",
+  };
+  const harmless={
+    JAVA_TOOL_OPTIONS:"-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8",JAVA_OPTS:"-Xmx2g",MAVEN_OPTS:"-Dmaven.repo.local=/root/.m2/repository",
+    MAVEN_ARGS:"-o -B",GRADLE_OPTS:"-Dorg.gradle.daemon=false",SBT_OPTS:"-Xss4m",
+  };
+  for(const options of [credentials,harmless]){
+    const env=buildRuntimeEnvironment("native",{parent:{PATH:"/bin",...toolchain,...options},platform:"linux",toolchain:true});
+    for(const name of JVM_OPTION_STRINGS)assert.equal(env[name],undefined,name+"="+options[name]);
+    for(const [name,value] of Object.entries(toolchain))assert.equal(env[name],value,name);
+  }
 });
 
 test("on Windows Native's commands find the toolchain variables whatever their case, and the places Windows toolchains look",()=>{

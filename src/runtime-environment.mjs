@@ -36,10 +36,10 @@ const RUNTIME_KEYS=Object.freeze({
 // the person's own shell has them, so a command finds what is installed (gems under GEM_HOME and BUNDLE_*, /usr/local/bundle in
 // the Ruby images; rustup's default toolchain under RUSTUP_HOME; a JDK at JAVA_HOME; an activated virtualenv). Every name is a
 // location, a version, a switch or build flags. None holds a credential, and no family that does is listed or matched by prefix:
-// BUNDLE_<host> credentials, NPM_CONFIG_* (_auth), *_TOKEN, *_PASSWORD, *_SECRET, CARGO_REGISTRIES_*_TOKEN, COMPOSER_AUTH, and
-// the package-index and proxy URLs (GOPROXY, PIP_INDEX_URL, UV_INDEX_URL, HTTPS_PROXY), which can embed user:password. A value
-// that carries a credential all the same is dropped (carriesCredentials). Trebell's own git, diagnostics and transports keep the
-// baseline: they run fixed commands that need none of this.
+// BUNDLE_<host> credentials, NPM_CONFIG_* (_auth), *_TOKEN, *_PASSWORD, *_SECRET, CARGO_REGISTRIES_*_TOKEN, COMPOSER_AUTH, the
+// package-index and proxy URLs (GOPROXY, PIP_INDEX_URL, UV_INDEX_URL, HTTPS_PROXY), which can embed user:password, and the JVM's
+// and the build tools' option strings (below). A value that carries a credential all the same is dropped (carriesCredentials).
+// Trebell's own git, diagnostics and transports keep the baseline: they run fixed commands that need none of this.
 export const TOOLCHAIN_ENVIRONMENT_KEYS=Object.freeze([
   // Rust: rustup's toolchains, the one selected and the mirror it installs a pinned one from; cargo's home (registry cache,
   // installed tools), build directory, offline and git switches, and flags.
@@ -52,10 +52,13 @@ export const TOOLCHAIN_ENVIRONMENT_KEYS=Object.freeze([
   // build switches and cgo flags, and which modules are private (GOPROXY stays out).
   "GOPATH","GOROOT","GOBIN","GOMODCACHE","GOCACHE","GOENV","GOFLAGS","GO111MODULE","GOTOOLCHAIN","GOWORK","GOPRIVATE","GONOPROXY",
   "GONOSUMDB","CGO_ENABLED","CGO_CFLAGS","CGO_CPPFLAGS","CGO_CXXFLAGS","CGO_LDFLAGS",
-  // JVM: the JDK, Maven, Gradle, Ant, SDKMAN and the Android SDK, and the options the JVM and the build tools read (a local
-  // repository given as -Dmaven.repo.local, -o for offline, -Dfile.encoding); an option string holding a credential is dropped.
-  "JAVA_HOME","JDK_HOME","JRE_HOME","JAVA_TOOL_OPTIONS","JAVA_OPTS","MAVEN_HOME","M2_HOME","MAVEN_OPTS","MAVEN_ARGS","GRADLE_HOME",
-  "GRADLE_USER_HOME","GRADLE_OPTS","ANT_HOME","SBT_OPTS","SDKMAN_DIR","ANDROID_HOME","ANDROID_SDK_ROOT","ANDROID_NDK_HOME","ANDROID_NDK_ROOT",
+  // JVM: the JDK, Maven, Gradle, Ant, SDKMAN and the Android SDK. The options the JVM and the build tools read stay out
+  // (JAVA_TOOL_OPTIONS, which every JVM prints as it starts, JAVA_OPTS, MAVEN_OPTS, MAVEN_ARGS, GRADLE_OPTS, SBT_OPTS): their vendors
+  // document credentials in them in forms no check of names and shapes tells from a plain option (Honeycomb's
+  // -Dotel.exporter.otlp.headers=x-honeycomb-team=<key>, an Azure SAS's sig=, a user:password@host with no scheme), and the
+  // benchmark images set none of them.
+  "JAVA_HOME","JDK_HOME","JRE_HOME","MAVEN_HOME","M2_HOME","GRADLE_HOME","GRADLE_USER_HOME","ANT_HOME","SDKMAN_DIR",
+  "ANDROID_HOME","ANDROID_SDK_ROOT","ANDROID_NDK_HOME","ANDROID_NDK_ROOT",
   // Python: the active virtualenv or conda env, the import path and interpreter switches, pyenv, and pip's and uv's settings by
   // their names (PIP_BREAK_SYSTEM_PACKAGES for an image's system Python; never an index URL).
   "VIRTUAL_ENV","CONDA_PREFIX","CONDA_DEFAULT_ENV","CONDA_EXE","CONDA_PYTHON_EXE","CONDA_SHLVL","MAMBA_ROOT_PREFIX","MAMBA_EXE",
@@ -90,15 +93,16 @@ export const TOOLCHAIN_ENVIRONMENT_KEYS=Object.freeze([
 
 // A toolchain value that carries a credential although its name does not: a URL with userinfo (https://user:pass@host, or a token
 // as the user); a connect string's user/password@ (jdbc:oracle:thin:scott/tiger@//db:1521/svc); or a setting whose name holds one
-// of these words anywhere, whatever its case, as the documented credential settings of JAVA_TOOL_OPTIONS (which every JVM prints as
-// it starts), MAVEN_OPTS and the like do: -Dhttps.proxyPassword, -Daws.secretKey, -Dsonar.login, -Dnewrelic.config.license_key,
-// an OpenTelemetry Authorization header. A setting's name is the run of letters, digits, _, . and - before its =, so a path's words
-// (-Djavax.net.ssl.trustStore=/etc/keys/cacerts) are not one. environment-manager.mjs checks a remote host's values the same way.
+// of these words anywhere, whatever its case, as documented credential settings do (-Dhttps.proxyPassword, -Daws.secretKey,
+// -Dsonar.login, -Dnewrelic.config.license_key, an OpenTelemetry Authorization header) and a C define or a Go -X flag can
+// (-DSENTRY_AUTH_TOKEN=, -X=main.apiToken=). A setting's name is the run of letters, digits, _, . and - before its =, so a path's
+// words (--sysroot=/opt/keys/sdk) are not one. environment-manager.mjs checks a remote host's values the same way.
 export const CREDENTIAL_SETTING_WORDS=Object.freeze(["pass","pwd","secret","token","credential","key","login","auth"]);
 const URL_USERINFO=/[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]+@/i;
 const CREDENTIAL_SETTING=new RegExp("(?:"+CREDENTIAL_SETTING_WORDS.join("|")+")[A-Za-z0-9_.-]*=","i");
-// The user starts the value or follows a space, :, =, a comma or ;, and neither part holds a / or \: a path's folder before an @
-// (/opt/homebrew/opt/openssl@3) follows a /.
+// The user starts the value or follows a space, :, =, a comma or ;, and neither part holds a / or \. An absolute path's folder
+// before an @ (/opt/homebrew/opt/openssl@3) follows a /, so it passes; a relative path's (-Ivendor/openssl@3/include,
+// src:lib/vendor@1) and one past a space in its path (/home/me/My Projects/openssl@3) read as user/password@, and the value is dropped.
 const CONNECT_USERINFO=/(?:^|[ \t\n\r\v\f:=,;])[^ \t\n\r\v\f/\\:=,;@]+\/[^ \t\n\r\v\f/\\@]+@/;
 export function carriesCredentials(value){const text=String(value??"");return URL_USERINFO.test(text)||CREDENTIAL_SETTING.test(text)||CONNECT_USERINFO.test(text)}
 

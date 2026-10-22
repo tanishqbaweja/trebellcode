@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { access,mkdtemp,mkdir,readFile,rm,symlink,writeFile } from "node:fs/promises";
+import { execFile,spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename,join } from "node:path";
 import { Readable } from "node:stream";
 import { EventEmitter } from "node:events";
 import { deflateSync } from "node:zlib";
 import { createNativeBuiltins } from "../src/native-builtins.mjs";
+import { EnvironmentManager } from "../src/environment-manager.mjs";
 
 async function workspace(){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-builtins-"));await mkdir(join(root,"src"),{recursive:true});await writeFile(join(root,"src","app.js"),"const value = 1;\n","utf8");return root;
@@ -330,6 +332,54 @@ test("Native terminal commands on a remote host forward the toolchain names thro
   for(const name of Object.keys(NATIVE_TOOLCHAIN_FIXTURE))assert.equal(plain.includes(name),false,name+" is checked on the host, not forwarded as it is");
   for(const name of [...Object.keys(NATIVE_SECRET_FIXTURE).filter(name=>name!=="RUSTUP_DIST_SERVER"),"GOPROXY","PIP_INDEX_URL","UV_INDEX_URL","HTTPS_PROXY"])assert.equal(guarded.includes(name)||plain.includes(name),false,name);
   assert.equal(Object.prototype.hasOwnProperty.call(launch.options,"environment")&&launch.options.environment!=null,false,"the parent's values never travel to the host");
+});
+
+// JAVA_TOOL_OPTIONS (which every JVM prints as it starts), JAVA_OPTS, MAVEN_OPTS, MAVEN_ARGS, GRADLE_OPTS and SBT_OPTS can hold a
+// credential in a form its vendor documents that no check of names and shapes tells from a plain option (Honeycomb's
+// -Dotel.exporter.otlp.headers=x-honeycomb-team=<key>, an Azure SAS's sig=, a user:password@host with no scheme), so a Native
+// command never gets them, holding one or not, here or from a remote host's own environment; the other toolchain variables it does.
+const JVM_OPTION_FIXTURES=Object.freeze({
+  credentials:Object.freeze({
+    JAVA_TOOL_OPTIONS:"-Dotel.exporter.otlp.headers=x-honeycomb-team=hcaik_fixture",JAVA_OPTS:"-Dapp.blob.url=https://acct.blob.core.windows.net/c?sv=2022-11-02&sp=r&sig=fixture",
+    MAVEN_OPTS:"-Ddsn=app:fixture-pass@tcp(db:3306)/app",MAVEN_ARGS:"-Dproxy=bob:fixture-pass@proxy.example:8080",
+    GRADLE_OPTS:"-Dspring.cloud.azure.storage.blob.connection-string=BlobEndpoint=https://acct.blob.core.windows.net/;SharedAccessSignature=sv=2022-11-02&sig=fixture",
+    SBT_OPTS:"-Daws.secretKey=fixture-secret",
+  }),
+  harmless:Object.freeze({JAVA_TOOL_OPTIONS:"-Dfile.encoding=UTF-8",JAVA_OPTS:"-Xmx2g",MAVEN_OPTS:"-XX:MaxRAMPercentage=75",MAVEN_ARGS:"-o",GRADLE_OPTS:"-Dorg.gradle.daemon=false",SBT_OPTS:"-Xss4m"}),
+});
+// What `env` printed: its names and values.
+function printedEnvironment(stdout){return Object.fromEntries(String(stdout||"").split(/\r?\n/).filter(line=>line.includes("=")).map(line=>[line.slice(0,line.indexOf("=")),line.slice(line.indexOf("=")+1)]))}
+// A POSIX shell, as a WSL or SSH host has, where this machine has one (Git for Windows' sh, or the system's).
+const posixShell=await new Promise(resolve=>execFile("sh",["-c","printf ok"],{windowsHide:true,timeout:20_000},(error,stdout)=>resolve(!error&&String(stdout)==="ok")));
+
+test("Native terminal commands never get the JVM's or the build tools' option strings, holding a credential or not, and get the other toolchain variables",async()=>{
+  const root=await workspace();
+  try{
+    for(const [kind,options] of Object.entries(JVM_OPTION_FIXTURES)){
+      const execute=createNativeBuiltins({root,environment:{...hostBaseline(),...NATIVE_TOOLCHAIN_FIXTURE,...options}});
+      const names=[...Object.keys(NATIVE_TOOLCHAIN_FIXTURE),...Object.keys(options)];
+      const result=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e",environmentEcho(names)],timeout_ms:15000,max_output_bytes:65536}});
+      assert.equal(result.exitCode,0,result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout),{...NATIVE_TOOLCHAIN_FIXTURE,...Object.fromEntries(Object.keys(options).map(name=>[name,null]))},kind);
+    }
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// On a remote host the values are the host's own: environment-manager builds the command Native asks for there (the guarded names
+// checked by the host's sh, env -i clearing the rest), and this machine's sh runs it as the host would, with those values.
+test("Native terminal commands on a remote host never get its JVM or build tools' option strings, and get its other toolchain variables",{skip:!posixShell&&"no POSIX shell on this machine"},async()=>{
+  const profile={id:"ssh-1",name:"Build",type:"ssh",cwd:"/workspace",host:"build.example",port:22,enabled:true};
+  for(const [kind,options] of Object.entries(JVM_OPTION_FIXTURES)){
+    const manager=new EnvironmentManager({state:{environments:()=>[profile]},platform:"linux"}),host={...hostBaseline(),...NATIVE_TOOLCHAIN_FIXTURE,...options};
+    manager.spawnSession=(_id,{command,stdio})=>spawn("sh",["-c",command],{env:host,stdio,windowsHide:true});
+    const environments={get:()=>profile,executeArgv:async(_id,request)=>({exitCode:0,stdout:String(request.args[0])+"\n"}),spawnArgv:(id,request)=>manager.spawnArgv(id,request)};
+    const execute=createNativeBuiltins({root:"/workspace",environments,environmentId:profile.id,environment:{}});
+    const result=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:"env",args:[],timeout_ms:15000,max_output_bytes:262144}});
+    assert.equal(result.exitCode,0,result.stderr);
+    const printed=printedEnvironment(result.stdout);
+    for(const name of Object.keys(options))assert.equal(printed[name],undefined,kind+": "+name+"="+options[name]);
+    for(const [name,value] of Object.entries(NATIVE_TOOLCHAIN_FIXTURE))assert.equal(printed[name],value,kind+": "+name);
+  }
 });
 
 test("Native terminal rejects cwd escapes and cancellation kills the running process",async()=>{

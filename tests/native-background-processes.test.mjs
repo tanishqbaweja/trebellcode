@@ -5,11 +5,12 @@ import { PassThrough } from "node:stream";
 import { mkdtemp,mkdir,readFile,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFile } from "node:child_process";
+import { execFile,spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { createNativeBuiltins } from "../src/native-builtins.mjs";
 import { NativeBackgroundProcessManager } from "../src/native-background-processes.mjs";
+import { EnvironmentManager } from "../src/environment-manager.mjs";
 
 async function waitFor(check,{timeout=3000}={}){
   const started=Date.now();for(;;){const value=await check();if(value)return value;if(Date.now()-started>timeout)throw new Error("Timed out waiting for Native background process");await new Promise(resolve=>setTimeout(resolve,20))}
@@ -72,6 +73,56 @@ test("Native background processes keep the project's toolchain variables, and a 
     for(const name of Object.keys(secrets))assert.equal(guarded.includes(name),false,name);
     await remote.terminate("thread-r",started.processId);
   }finally{await remote.closeAll()}
+});
+
+// JAVA_TOOL_OPTIONS (which every JVM prints as it starts), JAVA_OPTS, MAVEN_OPTS, MAVEN_ARGS, GRADLE_OPTS and SBT_OPTS can hold a
+// credential in a form its vendor documents that no check of names and shapes tells from a plain option (Honeycomb's
+// -Dotel.exporter.otlp.headers=x-honeycomb-team=<key>, an Azure SAS's sig=, a user:password@host with no scheme), so a background
+// process never gets them, holding one or not, here or from a remote host's own environment; the other toolchain variables it does.
+const JVM_OPTION_FIXTURES=Object.freeze({
+  credentials:Object.freeze({
+    JAVA_TOOL_OPTIONS:"-Dotel.exporter.otlp.headers=x-honeycomb-team=hcaik_fixture",JAVA_OPTS:"-Dapp.blob.url=https://acct.blob.core.windows.net/c?sv=2022-11-02&sp=r&sig=fixture",
+    MAVEN_OPTS:"-Ddsn=app:fixture-pass@tcp(db:3306)/app",MAVEN_ARGS:"-Dproxy=bob:fixture-pass@proxy.example:8080",
+    GRADLE_OPTS:"-Dspring.cloud.azure.storage.blob.connection-string=BlobEndpoint=https://acct.blob.core.windows.net/;SharedAccessSignature=sv=2022-11-02&sig=fixture",
+    SBT_OPTS:"-Daws.secretKey=fixture-secret",
+  }),
+  harmless:Object.freeze({JAVA_TOOL_OPTIONS:"-Dfile.encoding=UTF-8",JAVA_OPTS:"-Xmx2g",MAVEN_OPTS:"-XX:MaxRAMPercentage=75",MAVEN_ARGS:"-o",GRADLE_OPTS:"-Dorg.gradle.daemon=false",SBT_OPTS:"-Xss4m"}),
+});
+const JVM_TOOLCHAIN_FIXTURE=Object.freeze({GEM_HOME:"/fixture/bundle",JAVA_HOME:"/fixture/jdk",GRADLE_USER_HOME:"/fixture/gradle",RUSTUP_HOME:"/fixture/rustup"});
+// A POSIX shell, as a WSL or SSH host has, where this machine has one (Git for Windows' sh, or the system's).
+const posixShell=await new Promise(resolve=>execFile("sh",["-c","printf ok"],{windowsHide:true,timeout:20_000},(error,stdout)=>resolve(!error&&String(stdout)==="ok")));
+
+test("Native background processes never get the JVM's or the build tools' option strings, holding a credential or not, and get the other toolchain variables",async()=>{
+  for(const [kind,options] of Object.entries(JVM_OPTION_FIXTURES)){
+    const root=await mkdtemp(join(tmpdir(),"trebell-native-bg-jvm-")),manager=new NativeBackgroundProcessManager({environment:{...hostBaseline(),...JVM_TOOLCHAIN_FIXTURE,...options}});
+    try{
+      const names=[...Object.keys(JVM_TOOLCHAIN_FIXTURE),...Object.keys(options)];
+      const script=`process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(names)}.map(name=>[name,process.env[name]??null]))))`;
+      const started=manager.start({threadId:"thread-j",command:process.execPath,args:["-e",script],cwd:root});
+      await manager.waitForExit("thread-j",started.processId,{waitMs:15_000});
+      const status=manager.status("thread-j",started.processId);assert.equal(status.exitCode,0,status.stderr);
+      assert.deepEqual(JSON.parse(status.stdout),{...JVM_TOOLCHAIN_FIXTURE,...Object.fromEntries(Object.keys(options).map(name=>[name,null]))},kind);
+    }finally{await manager.closeAll();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+  }
+});
+
+// On a remote host the values are the host's own: environment-manager builds the command the process starts with there (the
+// guarded names checked by the host's sh, env -i clearing the rest), and this machine's sh runs it as the host would, with those values.
+test("Native background processes on a remote host never get its JVM or build tools' option strings, and get its other toolchain variables",{skip:!posixShell&&"no POSIX shell on this machine"},async()=>{
+  const profile={id:"ssh-1",name:"Build",type:"ssh",cwd:"/srv/app",host:"build.example",port:22,enabled:true};
+  for(const [kind,options] of Object.entries(JVM_OPTION_FIXTURES)){
+    const environments=new EnvironmentManager({state:{environments:()=>[profile]},platform:"linux"}),host={...hostBaseline(),...JVM_TOOLCHAIN_FIXTURE,...options};
+    environments.spawnSession=(_id,{command,stdio})=>spawn("sh",["-c",command],{env:host,stdio,windowsHide:true});
+    const manager=new NativeBackgroundProcessManager({environments,environment:{}});
+    try{
+      const started=manager.start({threadId:"thread-jr",command:"env",args:[],cwd:"/srv/app",environmentId:profile.id});
+      await manager.waitForExit("thread-jr",started.processId,{waitMs:15_000});
+      const status=manager.status("thread-jr",started.processId);assert.equal(status.exitCode,0,status.stderr);
+      const printed=Object.fromEntries(String(status.stdout||"").split(/\r?\n/).filter(line=>line.includes("=")).map(line=>[line.slice(0,line.indexOf("=")),line.slice(line.indexOf("=")+1)]));
+      for(const name of Object.keys(options))assert.equal(printed[name],undefined,kind+": "+name+"="+options[name]);
+      for(const [name,value] of Object.entries(JVM_TOOLCHAIN_FIXTURE))assert.equal(printed[name],value,kind+": "+name);
+    }finally{await manager.closeAll()}
+  }
 });
 
 test("Native background process stop terminates local descendants",async()=>{
