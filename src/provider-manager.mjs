@@ -248,6 +248,16 @@ function officialOpenAiReasoningModel(model=""){
   const gpt=id.match(/^gpt-(\d+)/);
   return gpt?Number(gpt[1])>=5:/^(?:o\d|codex-)/.test(id);
 }
+// The API refusing the reasoning a rebuilt body carried again: HTTP 400, or a WebSocket error event with that status, whose error
+// names reasoning, encrypted content or an input item. One that points at a single item (input[N]) counts only when that item is
+// replayed reasoning, so a refused compaction item goes on as before.
+function openAiReasoningReplayRefused(status,providerError,input=[]){
+  if(Number(status)!==400)return false;
+  const detail=[providerError?.message,providerError?.code,providerError?.param].filter(value=>typeof value==="string").join(" ");
+  if(/reasoning/i.test(detail))return true;
+  const item=/\binput\[(\d+)\]/i.exec(detail);
+  return item?input?.[Number(item[1])]?.type==="reasoning":/encrypted[\s_-]?content|input[\s_-]?item/i.test(detail);
+}
 function normalizedOpenAiPromptCacheDiagnostics(body={}){
   const value=body?.prompt_cache_diagnostics;
   if(!value||typeof value!=="object")return null;
@@ -333,10 +343,11 @@ function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKey
     const comparisonResponseId=String(effectiveRequest.promptCacheComparisonResponseId||"").trim();
     body.prompt_cache_options={mode:"implicit",...(comparisonResponseId?{comparison_response_id:comparisonResponseId}:{})};
   }
-  // A model that reasons returns each reasoning item with its encrypted_content, so a request rebuilt in full can carry its turn's
-  // reasoning again (reasoningReplay): WebSocket requests go with store:false, and nothing but the socket that made a response can
-  // continue from it. The API has refused include on a model that does not reason (HTTP 400, "Encrypted content is not supported
-  // with this model"), and Codex sends it only with the reasoning parameter it builds for the families that reason.
+  // A model that reasons returns each reasoning item with its encrypted_content, so a request rebuilt in full after its continuation
+  // failed can carry its turn's reasoning again (reasoningReplay): WebSocket requests go with store:false, and nothing but the socket
+  // that made a response can continue from it. The API has refused include on a model that does not reason (HTTP 400, "Encrypted
+  // content is not supported with this model"), and Codex sends it only with the reasoning parameter it builds for the families that
+  // reason.
   if(officialOpenAiReasoningModel(effectiveRequest.model))body.include=["reasoning.encrypted_content"];
   body.prompt_cache_key=typeof promptCacheKeyForBody==="function"?promptCacheKeyForBody(body,toolManifest?.toolsJson):officialOpenAiPromptCacheKey(body,toolManifest?.toolsJson);
   if(toolManifest?.toolsJson&&body.tools===toolManifest.tools)attachPreSerializedTopLevel(body,"tools",body.tools,toolManifest.toolsJson);
@@ -897,14 +908,17 @@ export class ProviderManager {
     const requestedServiceTierRaw=String(request.serviceTier||request.service_tier||"").trim().toLowerCase(),requestedServiceTier=requestedServiceTierRaw==="priority"?"fast":requestedServiceTierRaw||null;
     const started=performance.now(),requestDeadlineAt=started+this.requestTimeoutMs;let wire={endpoint:null,wireApi:null,requestBytes:0},wireRequestBytes=0,wireAttempts=0;
     const onWire=value=>{wire=value||wire;wireRequestBytes+=Number(value?.requestBytes||0);wireAttempts++};
-    let fullResponsesBody=null,openAiContinuation=null,responsesBody=null,openAiParentId="",compactedResend=null,openAiWebSocketLane=false,replayInput;
-    // A body sent without previous_response_id carries again the reasoning the current turn's replies kept (providerTurnToResponses'
-    // reasoningReplay), which the server no longer holds for it; a continuation never does. The continuation tracker keeps proving
-    // prefixes on the input built without it, which every full body of a turn shares. Only a model that reasons is sent any, and a
-    // completion gate none: a judge rebuilt in full is sent the transcript without the coder's reasoning, as before (a batch-evidence
-    // precommit gate starts mid-turn, right after a tool output, and is rebuilt in full whenever its compacted view drops one of the
-    // turn's developer messages).
+    let fullResponsesBody=null,openAiContinuation=null,responsesBody=null,openAiParentId="",compactedResend=null,openAiWebSocketLane=false,replayInput,replayRefused=null;
+    // A body rebuilt because the continuation it was sent as failed (the socket that held its parent was replaced, or the API refused
+    // the parent or found no output for one of its calls) carries again the reasoning the current turn's replies kept
+    // (providerTurnToResponses' reasoningReplay), which the server held for that continuation and lost with its parent. Every other
+    // body is sent as before: a continuation, and a full body with no usable parent (none, one older than 240 s, another prefix or model).
+    // The continuation tracker keeps proving prefixes on the input built without it, which every full body of a turn shares. Only a
+    // model that reasons is sent any, and a completion gate none: a judge rebuilt in full is sent the transcript without the coder's
+    // reasoning, as before (a batch-evidence precommit gate starts mid-turn, right after a tool output). Once the API refused a body
+    // for its reasoning (replayRefused), no later attempt of this request carries any.
     const replayedInput=()=>{
+      if(!openAiContinuation?.used||replayRefused)return null;
       if(replayInput===undefined){
         const input=provider.id==="openai"&&request?.metadata?.completionGate!==true&&officialOpenAiReasoningModel(model)&&responsesReasoningToReplay(request.messages)?this.#officialOpenAiResponsesBody({...request,model},{reasoningReplay:true}).input:null;
         replayInput=input?.some(item=>item?.type==="reasoning")?input:null;
@@ -918,12 +932,34 @@ export class ProviderManager {
       let index=0;for(let covered=0;index<input.length&&covered<resend.omittedInputCount;index++)if(input[index]?.type!=="reasoning")covered++;
       return {...resend.body,input:[resend.body.input[0],...input.slice(index)]};
     };
-    const reasoningReplayTelemetry=()=>{const replayed=Array.isArray(responsesBody?.input)?responsesBody.input.reduce((count,item)=>count+(item?.type==="reasoning"?1:0),0):0;return replayed?{replayedReasoningItems:replayed}:{}};
+    const replayedReasoningCount=body=>Array.isArray(body?.input)?body.input.reduce((count,item)=>count+(item?.type==="reasoning"?1:0),0):0;
+    const reasoningReplayTelemetry=()=>{const replayed=replayedReasoningCount(responsesBody);return {...(replayed?{replayedReasoningItems:replayed}:{}),...(replayRefused?{replayRefused}:{})}};
+    // The API refused a body for the reasoning it carried again: the same body goes once more without those items.
+    const refuseReplay=(body,{status,wireApi,providerError=null})=>{
+      const code=typeof providerError?.code==="string"&&providerError.code?providerError.code:null;
+      replayRefused={reasoningItems:replayedReasoningCount(body),status:Number(status),wireApi,...(code?{code}:{})};
+      const stripped={...body,input:body.input.filter(item=>item?.type!=="reasoning")};
+      if(compactedResend?.body===body){compactedResend.body=stripped;compactedResend.inputCount=stripped.input.length}
+      responsesBody=stripped;return stripped;
+    };
+    // Every HTTPS send of a Responses body. A 400 for a body that carries replayed reasoning is read for its error: a refusal of that
+    // reasoning is answered by the one resend without it, and any other goes on as before, with its status, headers and text.
+    const forwardResponsesBody=async body=>{
+      const send=sent=>this.forwardResponses(provider.id,sent,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});
+      const upstream=await send(body);
+      if(upstream.ok||Number(upstream.status)!==400||replayRefused||!replayedReasoningCount(body))return upstream;
+      const raw=await upstream.text();let providerError=null;try{providerError=JSON.parse(raw)?.error}catch{}
+      if(!providerError||typeof providerError!=="object")providerError={message:raw};
+      if(!openAiReasoningReplayRefused(upstream.status,providerError,body.input))return new Response(raw,{status:upstream.status,statusText:upstream.statusText,headers:upstream.headers});
+      sink?.restart();
+      return send(refuseReplay(body,{status:upstream.status,wireApi:"openai-responses",providerError}));
+    };
     // When a WebSocket session falls back (a replaced connection, a refused continuation, an HTTPS retry, or a completion judge
     // without a usable socket) and the server had compacted this chain, the request is resent as the compaction item and what
     // followed it (the server's own context) instead of the whole local transcript; a resend the API refuses is sent whole.
     // Anything else that cannot continue its parent (an expired parent, another model or prefix, a session without the
-    // WebSocket lane) is sent whole, as before, with the reasoning kept since the turn's last compaction (recordResponse).
+    // WebSocket lane) is sent whole, as before. A resend or whole body rebuilt after a failed continuation carries the reasoning
+    // kept since the turn's last compaction (recordResponse).
     const compactedOrFull=(full,parentId)=>{
       if(!openAiWebSocketLane)return sentFull(full);
       if(!compactedResend){const resend=this.openAiResponseContinuations.compactedResend(full,parentId);if(resend){const body=sentCompactedResend(resend);compactedResend={...resend,body,inputCount:body.input.length,rejected:false}}}
@@ -934,9 +970,9 @@ export class ProviderManager {
     // (undefined lets the tracker inherit it), and none for the whole transcript.
     const sentCompaction=()=>sentCompacted()?compactedResend.compaction:openAiContinuation?.used&&!continuationFallback?undefined:null;
     // A compaction in a response's own output stands for everything its request held, the reasoning its replies kept too, so that
-    // reasoning leaves the messages: no body sent later in the turn carries it again, whether it is sent whole (an expired parent,
-    // another prefix) or after a whole one the tracker records without the compaction. A judge's compaction forks off the coding
-    // lane and drops nothing.
+    // reasoning leaves the messages: no body rebuilt later in the turn carries it again, whether that body is whole (a refused
+    // compacted resend) or follows a whole send the tracker records without the compaction (an expired parent, another prefix).
+    // A judge's compaction forks off the coding lane and drops nothing.
     const recordResponse=result=>{
       this.openAiResponseContinuations.record(result.id,openAiContinuation,result,{baseCompaction:sentCompaction()});
       if(result.serverCompaction&&request?.metadata?.completionGate!==true)dropResponsesReasoning(request.messages);
@@ -956,7 +992,7 @@ export class ProviderManager {
         if(!responsesBody){
           fullResponsesBody=this.#officialOpenAiResponsesBody({...request,model});
           openAiContinuation=this.openAiResponseContinuations.prepare(fullResponsesBody,parentId,{messageRefs,identityToken});
-          responsesBody=openAiContinuation?.used?openAiContinuation.body:sentFull(fullResponsesBody);
+          responsesBody=openAiContinuation?.body||fullResponsesBody;
         }
       }else{
         fullResponsesBody=providerTurnToResponses({...request,model});
@@ -1010,7 +1046,7 @@ export class ProviderManager {
         }catch(error){
           if(signal?.aborted||error?.name==="AbortError")throw error;
           const failedWire=Number(error?.webSocketTelemetry?.requestBytes||0);if(failedWire>0)wireRequestBytes+=failedWire;wireAttempts++;
-          const responseStatus=Number(error?.webSocketEvent?.status||error?.status||error?.statusCode||0),responseMessage=String(error?.webSocketEvent?.error?.message||error?.message||""),failureKind=String(error?.webSocketFailureKind||((error?.name==="TimeoutError")?"timeout":error?.protocolFailure?"protocol":error?.transportFailure?"transport":"unknown")),continuationRejected=(Boolean(openAiContinuation?.used)||sentCompacted())&&[400,404,409].includes(responseStatus),invalidToolOutputRequest=responseStatus===400&&/no tool output found for function call/i.test(responseMessage),replaySafe=error?.replaySafe===true||continuationRejected||invalidToolOutputRequest;
+          const responseStatus=Number(error?.webSocketEvent?.status||error?.status||error?.statusCode||0),responseMessage=String(error?.webSocketEvent?.error?.message||error?.message||""),failureKind=String(error?.webSocketFailureKind||((error?.name==="TimeoutError")?"timeout":error?.protocolFailure?"protocol":error?.transportFailure?"transport":"unknown")),continuationRejected=(Boolean(openAiContinuation?.used)||sentCompacted())&&[400,404,409].includes(responseStatus),invalidToolOutputRequest=responseStatus===400&&/no tool output found for function call/i.test(responseMessage),providerError=error?.webSocketEvent?.response?.error||error?.webSocketEvent?.error||null,refusalDetail={message:responseMessage,code:providerError?.code,param:providerError?.param},reasoningRefused=!replayRefused&&replayedReasoningCount(responsesBody)>0&&openAiReasoningReplayRefused(responseStatus,refusalDetail,responsesBody.input),replaySafe=error?.replaySafe===true||continuationRejected||invalidToolOutputRequest||reasoningRefused;
           openAiWebSocketFallback={transportFailure:Boolean(error?.transportFailure),protocolFailure:Boolean(error?.protocolFailure),failureKind,name:error?.name||null,code:error?.code??null,replaySafe,retried:false,requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null};
           if(this.openAiResponsesWebSocket===transport){
             if(error?.transportFailure)this.#resetOpenAiWebSocket("transport_failure");
@@ -1030,7 +1066,9 @@ export class ProviderManager {
           }
           try{remainingProviderRequestMs(requestDeadlineAt)}catch{error.retryable=false;error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error}
           openAiWebSocketFallback.retried=true;
-          if(continuationRejected||invalidToolOutputRequest){
+          // The socket refused the reasoning a rebuilt body carried: the HTTPS retry sends that body without it.
+          if(reasoningRefused)refuseReplay(responsesBody,{status:responseStatus,wireApi:"openai-responses-websocket",providerError:refusalDetail});
+          else if(continuationRejected||invalidToolOutputRequest){
             const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
             // The socket refused the compacted resend itself: the HTTPS retry sends the whole transcript.
             const refusedCompacted=sentCompacted();if(refusedCompacted)compactedResend.rejected=true;
@@ -1040,7 +1078,7 @@ export class ProviderManager {
     }
     sink?.restart();
     let upstream=provider.wireApi==="responses"
-      ?await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)})
+      ?await forwardResponsesBody(responsesBody)
       :await this.forwardChat(provider.id,chatBody,{signal,onWire,promptCaching,anthropicBody:directAnthropicBody});
     const refusedResend=sentCompacted();
     if(provider.id==="openai"&&(openAiContinuation?.used||refusedResend)&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
@@ -1049,11 +1087,11 @@ export class ProviderManager {
       if(refusedResend)compactedResend.rejected=true;
       responsesBody=compactedOrFull(fullResponsesBody,openAiParentId);
       sink?.restart();
-      upstream=await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;if(!continuationFallbackReason)continuationFallbackReason=refusedResend?"compacted_resend_rejected":"previous_response_unavailable";
+      upstream=await forwardResponsesBody(responsesBody);continuationFallback=true;if(!continuationFallbackReason)continuationFallbackReason=refusedResend?"compacted_resend_rejected":"previous_response_unavailable";
       if(sentCompacted()&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
         try{await upstream.body?.cancel?.()}catch{}
         compactedResend.rejected=true;responsesBody=sentFull(fullResponsesBody);sink?.restart();
-        upstream=await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});
+        upstream=await forwardResponsesBody(responsesBody);
       }
     }
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
