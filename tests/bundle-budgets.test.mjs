@@ -33,7 +33,11 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // Then by what lane R4A's fixes to the terminal drawer's tab row (its fades at an edge with tabs past it, a tab brought in clear of
 // them and a press on a close button under one) add to the lazy chunks, 1.5 / 0.7 KB, which took them 0.4 KB gzip over it: its
 // headroom stays 1.8 / 0.3 KB, as on main before lane R4A.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:746.3,gzipKB:244.6}};
+// Then by what lane R5A's fixes add to the lazy chunks, 0.1 / 0.2 KB (Snooze's Until field setting its min when it shows and when it
+// loses focus, and the new name of the first bundle's script in the import line of the 40 lazy chunks that load it, which their
+// header and toast fixes change),
+// which took them 0.1 KB gzip over it: its headroom stays 1.0 / 0.1 KB, as on main before lane R5A.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:746.4,gzipKB:244.8}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
