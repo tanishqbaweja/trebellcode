@@ -675,6 +675,25 @@ test("native agent reuses one hidden OpenAI continuation identity across model t
   assert.equal(result.text,"done");assert.equal(tokens.length,2);assert.ok(tokens[0]&&typeof tokens[0]==="object");assert.equal(tokens[0],tokens[1]);assert.equal(Object.getOwnPropertySymbols(requests[0]).includes(NATIVE_OPENAI_CONTINUATION_IDENTITY),true);assert.equal(JSON.stringify(requests[0]).includes("continuation-identity"),false);
 });
 
+test("native agent keeps the reasoning a Responses turn returned on the reply it puts on the transcript",async()=>{
+  const REASONING=Symbol.for("trebell.native.responses-reasoning"),requests=[];
+  const kept=[{before:"message",item:{type:"reasoning",id:"rs_1",summary:[],encrypted_content:"enc-1"}},{before:"function_call",callId:"call-1",item:{type:"reasoning",id:"rs_2",summary:[],encrypted_content:"enc-2"}}];
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",messages:[{role:"user",content:"inspect then answer"}],tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_symbols"}]}],
+    providerTurn:async request=>{
+      requests.push(request);
+      if(requests.length===1)return {model:"gpt-6-luna",provider:"openai",text:"Searching.",toolCalls:[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:{query:"Session"}}],reasoningItems:kept,finishReason:"tool_calls",usage:{}};
+      return {model:"gpt-6-luna",provider:"openai",text:"done",toolCalls:[],finishReason:"stop",usage:{}};
+    },
+    executeTool:async()=>({success:true,content:"src/session.js"}),
+  });
+  assert.equal(result.text,"done");assert.equal(requests.length,2);
+  const reply=requests[1].messages.find(message=>message.role==="assistant"&&message.toolCalls?.[0]?.id==="call-1");
+  assert.ok(reply,"the reply with the tool call is on the transcript");assert.deepEqual(reply[REASONING],kept);
+  assert.equal(JSON.stringify(result.messages).includes("enc-1"),false,"kept reasoning is never part of the transcript's JSON");
+  assert.equal(result.messages.filter(message=>message?.[REASONING]).length,1,"only a reply whose turn returned reasoning keeps any");
+});
+
 test("native defaults to base-prompt progress guidance without mid-task checkpoints",async()=>{
   const requests=[],events=[];let turn=0;
   const result=await runNativeAgentTurnImpl({

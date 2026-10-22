@@ -27,6 +27,19 @@ test("the golden record covers every scripted branch of the runner's provider pa
   const dropped=BENCHMARK_PATH_SCENARIOS.websocket_drop_after_text_then_https.replies[0];assert.equal(dropped.drop,true);assert.ok(dropped.events.filter(event=>event.type==="response.output_text.delta").length>=2);
 });
 
+// The API answers include:["reasoning.encrypted_content"] with reasoning items that carry it, and the runner keeps them for a
+// request rebuilt in full. None of these paths rebuilds a turn after its reasoning came back, so each sends what the record holds.
+test("reasoning that comes back with its encrypted_content changes nothing the runner sends on its scripted paths",async()=>{
+  for(const name of Object.keys(BENCHMARK_PATH_SCENARIOS)){
+    const record=await runBenchmarkPathScenario(name,{encryptedReasoning:true});
+    assert.equal(record.error,null,name);
+    assert.deepEqual(record.wsPayloads,fixture[name].wsPayloads,name);
+    assert.deepEqual(record.fetches,fixture[name].fetches,name);
+  }
+  const kept=(await runBenchmarkPathScenario("websocket_tool_then_answer",{encryptedReasoning:true})).responses[0].reasoningItems;
+  assert.deepEqual(kept,[{before:"message",item:{type:"reasoning",id:"rs_a1",summary:[],encrypted_content:"enc-rs_a1"}}],"the runner's turns return the reasoning to keep");
+});
+
 for(const name of Object.keys(BENCHMARK_PATH_SCENARIOS)){
   test("Harbor Native runner provider path matches its golden record: "+name,async()=>{
     const record=await runBenchmarkPathScenario(name);

@@ -2142,3 +2142,131 @@ test("a compacted resend the socket refuses is sent once more over HTTPS as the 
     assert.equal(second.telemetry.responseContinuation.compactedResend.rejected,true);assert.equal(second.telemetry.responseContinuation.fallbackReason,"compacted_resend_rejected");
   }finally{rmSync(root,{recursive:true,force:true})}
 });
+
+// A turn's reasoning, kept on the reply the agent loop puts on the transcript, goes back into a request rebuilt in full. The
+// real Responses WebSocket runs over a scripted socket that can close as the API's did on readout SWE-ML 6's rubocop-13627
+// (1006, mid-response, after a continuation went out with store:false).
+const REASONING=Symbol.for("trebell.native.responses-reasoning");
+function closingResponsesSocket(script){
+  const sockets=[];
+  class Socket extends EventEmitter{
+    static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;
+    constructor(){super();this.readyState=Socket.CONNECTING;this.sent=[];sockets.push(this);queueMicrotask(()=>{this.readyState=Socket.OPEN;this.emit("open")})}
+    send(value){
+      if(this.readyState!==Socket.OPEN)throw new Error("closed");this.sent.push(String(value));
+      const lane=JSON.parse(value).stream_id,{events=[],close=null}=script.shift()||{};
+      void (async()=>{
+        for(const event of events){await new Promise(resolve=>setImmediate(resolve));if(this.readyState!==Socket.OPEN)return;this.emit("message",JSON.stringify({...event,stream_id:lane}))}
+        if(close){await new Promise(resolve=>setImmediate(resolve));this.readyState=Socket.CLOSED;this.emit("close",close,"")}
+      })();
+    }
+    terminate(){if(this.readyState===Socket.CLOSED)return;this.readyState=Socket.CLOSED;this.emit("close",1006,"terminated")}
+  }
+  return {Socket,sockets};
+}
+const reasoningDone=(index,id,encrypted,summary=[])=>({type:"response.output_item.done",output_index:index,item:{type:"reasoning",id,summary,...(encrypted?{encrypted_content:encrypted}:{})}});
+const commentaryDone=(index,id,text)=>({type:"response.output_item.done",output_index:index,item:outputMessage(id,"commentary",text)});
+const searchCallDone=(index,id,callId,query)=>({type:"response.output_item.done",output_index:index,item:{type:"function_call",id,status:"completed",call_id:callId,name:"trebell_repo__search_files",arguments:JSON.stringify({query})}});
+const completedTurn=id=>({type:"response.completed",response:{id,model:"gpt-6-luna",status:"completed",usage:{input_tokens:120,output_tokens:30,total_tokens:150,output_tokens_details:{reasoning_tokens:20}}}});
+// The reply the agent loop puts on the transcript for a turn, with the reasoning the turn returned.
+const keptReply=turn=>({role:"assistant",content:turn.text,toolCalls:turn.toolCalls,...(turn.reasoningItems?{[REASONING]:turn.reasoningItems}:{})});
+// Requests as NativeAgentSession sends them: each continues from the previous response.
+function reasoningChain({sessionId,token}){
+  const request=(messages,parent=null)=>({model:"gpt-6-luna",messages,tools:hookTools,metadata:{sessionId},...(parent?{openAiContinuationResponseId:parent,promptCacheComparisonResponseId:parent}:{}),[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+  return {
+    first:request([{role:"system",content:"You are Trebell Native."},{role:"user",content:"Find where Session is defined"}]),
+    next:(previous,turn,output)=>request([...previous.messages,keptReply(turn),{role:"tool",toolCallId:turn.toolCalls[0].id,content:output}],turn.id),
+  };
+}
+const responsesManager=({root,Socket,fetchFn})=>{const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket({...options,WebSocketClass:Socket}),fetchFn});manager.setKey("openai","oa-reasoning-key");return manager};
+
+test("a request rebuilt in full after its WebSocket closed (1006) and HTTPS refused its parent carries the turn's earlier reasoning, in order, with its encrypted_content",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-reasoning-replay-")),httpBodies=[];
+  const {Socket,sockets}=closingResponsesSocket([
+    {events:[reasoningDone(0,"rs_1","enc-rs-1"),commentaryDone(1,"msg_1","Searching first."),searchCallDone(2,"fc_1","call_1","Session"),completedTurn("resp_1")]},
+    {events:[reasoningDone(0,"rs_2a","enc-rs-2a"),reasoningDone(1,"rs_2b","enc-rs-2b",[{type:"summary_text",text:"Narrowing the search."}]),searchCallDone(2,"fc_2","call_2","class Session"),completedTurn("resp_2")]},
+    {events:[reasoningDone(0,"rs_3","enc-rs-3")],close:1006},
+  ]);
+  try{
+    const manager=responsesManager({root,Socket,fetchFn:async(_url,init={})=>{
+      const body=JSON.parse(init.body||"{}");httpBodies.push(body);
+      if(httpBodies.length===1)return httpError(400,"Previous response with id 'resp_2' not found.");
+      return Response.json({id:"resp_3",model:body.model,status:"completed",output:[outputMessage("msg_3","final_answer","Session is defined in src/session.js.")],usage:{input_tokens:200,output_tokens:10,total_tokens:210}});
+    }});
+    const chain=reasoningChain({sessionId:"native-reasoning-replay",token:{}});
+    const first=await manager.turn("openai",chain.first,{streamResponses:true});
+    const secondRequest=chain.next(chain.first,first,"src/a.js"),second=await manager.turn("openai",secondRequest,{streamResponses:true});
+    const thirdRequest=chain.next(secondRequest,second,"src/session.js");
+    await assert.rejects(manager.turn("openai",thirdRequest,{streamResponses:true}),error=>error?.retryable===true&&/1006/.test(error.message),"the socket closed after the request went out");
+    // The agent loop's next attempt: the socket is cooling down, so the turn goes over HTTPS.
+    const third=await manager.turn("openai",thirdRequest,{streamResponses:true});
+    assert.equal(third.text,"Session is defined in src/session.js.");assert.equal(httpBodies.length,2);
+    assert.equal(httpBodies[0].previous_response_id,"resp_2");assert.deepEqual(httpBodies[0].input.map(item=>item.type),["function_call_output"],"the continuation sends only what followed its parent");
+    const rebuilt=httpBodies[1];assert.equal(Object.hasOwn(rebuilt,"previous_response_id"),false);
+    assert.deepEqual(rebuilt.input.map(item=>item.type==="reasoning"?item:item.type),[
+      "message",{type:"reasoning",summary:[],encrypted_content:"enc-rs-1"},"message","function_call","function_call_output",
+      {type:"reasoning",summary:[],encrypted_content:"enc-rs-2a"},{type:"reasoning",summary:[{type:"summary_text",text:"Narrowing the search."}],encrypted_content:"enc-rs-2b"},"function_call","function_call_output",
+    ],"each reasoning item goes back right before the reply text or function call it came before");
+    assert.equal(JSON.stringify(rebuilt).includes("enc-rs-3"),false,"the closed attempt's reasoning never came back as a response");
+    for(const body of [...sockets.flatMap(socket=>socket.sent).map(frame=>JSON.parse(frame)),...httpBodies])assert.deepEqual(body.include,["reasoning.encrypted_content"]);
+    const continuation=third.telemetry.responseContinuation;
+    assert.equal(continuation.fallback,true);assert.equal(continuation.fallbackReason,"previous_response_unavailable");assert.equal(continuation.replayedReasoningItems,3);
+    manager.close();
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a normal WebSocket continuation is unchanged apart from include: the reasoning its parent kept stays with the server",async()=>{
+  const run=async encrypted=>{
+    const root=mkdtempSync(join(tmpdir(),"trebell-provider-reasoning-continuation-"));
+    const {Socket,sockets}=closingResponsesSocket([
+      {events:[reasoningDone(0,"rs_1",encrypted&&"enc-rs-1"),commentaryDone(1,"msg_1","Searching first."),searchCallDone(2,"fc_1","call_1","Session"),completedTurn("resp_1")]},
+      {events:[reasoningDone(0,"rs_2",encrypted&&"enc-rs-2"),commentaryDone(1,"msg_2","Session is in src/session.js."),completedTurn("resp_2")]},
+    ]);
+    try{
+      const manager=responsesManager({root,Socket,fetchFn:async()=>{throw new Error("a healthy WebSocket continuation never goes over HTTPS")}});
+      const chain=reasoningChain({sessionId:"native-reasoning-continuation",token:{}});
+      const first=await manager.turn("openai",chain.first,{streamResponses:true}),secondRequest=chain.next(chain.first,first,"src/session.js"),second=await manager.turn("openai",secondRequest,{streamResponses:true});
+      manager.close();
+      return {second,secondRequest,frames:sockets.flatMap(socket=>socket.sent).map(frame=>JSON.parse(frame))};
+    }finally{rmSync(root,{recursive:true,force:true})}
+  };
+  const kept=await run(true),none=await run(false),[full,continuation]=kept.frames;
+  assert.equal(kept.frames.length,2);
+  assert.equal(continuation.previous_response_id,"resp_1");assert.equal(continuation.store,false);assert.deepEqual(continuation.reasoning,{context:"current_turn"});
+  assert.deepEqual(continuation.input.map(item=>item.type),["function_call_output"],"no reasoning goes into a continuation");
+  assert.deepEqual(Object.keys(continuation).filter(key=>key!=="include"),["model","input","tools","parallel_tool_calls","instructions","tool_choice","reasoning","text","prompt_cache_options","prompt_cache_key","previous_response_id","type","stream_id","store"],"every other field is the one sent before");
+  assert.deepEqual(full.include,["reasoning.encrypted_content"]);assert.deepEqual(continuation.include,["reasoning.encrypted_content"]);
+  assert.deepEqual(kept.frames,none.frames,"keeping the parent's reasoning changes nothing a continuation sends");
+  assert.equal(kept.secondRequest.messages[2][REASONING]?.length,1,"the first turn's reasoning was kept on its reply");
+  assert.equal(kept.second.telemetry.responseContinuation.used,true);assert.equal(Object.hasOwn(kept.second.telemetry.responseContinuation,"replayedReasoningItems"),false);
+});
+
+test("a compacted resend carries the reasoning that came after the compaction and none from before it",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-reasoning-compacted-")),httpBodies=[];let wsCalls=0;
+  const reasoningItem=(id,encrypted)=>({type:"reasoning",id,summary:[],encrypted_content:encrypted}),runCall=(id,callId)=>({type:"function_call",id,call_id:callId,name:"trebell_terminal__run",arguments:'{"command":"ls"}'});
+  const socketReply=(body,id,output,inputTokens)=>({requestBytes:50,response:{id,model:body.model,status:"completed",output,usage:{input_tokens:inputTokens,output_tokens:5,total_tokens:inputTokens+5}},telemetry:{responseBytes:40,totalLatencyMs:1,timeToFirstTokenMs:1}});
+  try{
+    const manager=compactedChainManager({root,
+      webSocket:options=>({close:()=>{},request:async body=>{
+        wsCalls++;
+        if(wsCalls===1)return socketReply(body,"resp-1",[reasoningItem("rs_1","enc-before-compaction"),runCall("fc-0","call-0")],200000);
+        if(wsCalls===2)return socketReply(body,"resp-compacted",[COMPACTION_ITEM,reasoningItem("rs_2","enc-after-compaction"),runCall("fc-1","call-1")],250000);
+        throw socketClosedAfterSend(options);
+      }}),
+      fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");httpBodies.push(body);return httpBodies.length===1?httpError(404,"Previous response with id 'resp-compacted' not found."):httpReply(body)},
+    });
+    const token={},user={role:"user",content:"Recover the key from the capture"},contextManagement=[{type:"compaction",compactThreshold:245_000}];
+    const request=(messages,parent=null)=>({model:"gpt-6-luna",messages,tools:[],metadata:{sessionId:"native_reasoning_compacted"},contextManagement,...(parent?{promptCacheComparisonResponseId:parent}:{}),[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+    const first=await manager.turn("openai",request([user]),{streamResponses:true});
+    const secondMessages=[user,keptReply(first),{role:"tool",toolCallId:"call-0",content:"capture.pcap"}],second=await manager.turn("openai",request(secondMessages,first.id),{streamResponses:true});
+    assert.deepEqual(second.serverCompaction,{items:1});
+    const thirdRequest=request([...secondMessages,keptReply(second),{role:"tool",toolCallId:"call-1",content:"exit 0"}],second.id);
+    await assert.rejects(manager.turn("openai",thirdRequest,{streamResponses:true}),error=>error?.retryable===true);
+    const third=await manager.turn("openai",thirdRequest,{streamResponses:true});
+    assert.equal(third.text,"continued");assert.equal(httpBodies.length,2);assert.equal(httpBodies[0].previous_response_id,"resp-compacted");
+    assert.deepEqual(httpBodies[1].input.map(item=>item.type==="reasoning"?item:item.type),["compaction",{type:"reasoning",summary:[],encrypted_content:"enc-after-compaction"},"function_call","function_call_output"],"the compaction stands for everything before it, its reasoning too");
+    assert.equal(JSON.stringify(httpBodies[1]).includes("enc-before-compaction"),false);
+    assert.deepEqual(third.telemetry.responseContinuation.compactedResend,{compactionResponseId:"resp-compacted",omittedInputCount:3,inputCount:4,rejected:false});
+    assert.equal(third.telemetry.responseContinuation.replayedReasoningItems,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});

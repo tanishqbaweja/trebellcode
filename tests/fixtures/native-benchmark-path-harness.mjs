@@ -133,6 +133,18 @@ export const BENCHMARK_PATH_SCENARIOS={
   },
 };
 
+// The same replies with each reasoning item carrying its encrypted_content, as the API returns it to a request that asks for it.
+function withEncryptedReasoning(scenario){
+  const encrypt=value=>{
+    if(Array.isArray(value))return value.map(encrypt);
+    if(!value||typeof value!=="object")return value;
+    const out={};for(const [key,child] of Object.entries(value))out[key]=encrypt(child);
+    if(out.type==="reasoning"&&typeof out.id==="string")out.encrypted_content="enc-"+out.id;
+    return out;
+  };
+  return {...scenario,replies:encrypt(scenario.replies)};
+}
+
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
 function scriptedTransport(scenario,record){
@@ -171,9 +183,11 @@ function scriptedTransport(scenario,record){
   return {RecordingSocket,fetchFn,remaining:()=>queue.length};
 }
 
-// sessionOptions and turnOptions let a later case run the same path with extra wiring; the golden cases pass neither.
-export async function runBenchmarkPathScenario(name,{sessionOptions=null,prepareRequest=null,turnOptions=null}={}){
-  const scenario=BENCHMARK_PATH_SCENARIOS[name];if(!scenario)throw new Error("Unknown benchmark path scenario: "+name);
+// sessionOptions and turnOptions let a later case run the same path with extra wiring, and encryptedReasoning with replies whose
+// reasoning items carry encrypted_content; the golden cases pass none of them.
+export async function runBenchmarkPathScenario(name,{sessionOptions=null,prepareRequest=null,turnOptions=null,encryptedReasoning=false}={}){
+  const listed=BENCHMARK_PATH_SCENARIOS[name];if(!listed)throw new Error("Unknown benchmark path scenario: "+name);
+  const scenario=encryptedReasoning?withEncryptedReasoning(listed):listed;
   const home=await mkdtemp(join(tmpdir(),"trebell-benchmark-path-"));
   const record={requestOrder:[],wsConnections:[],wsPayloads:[],fetches:[],updates:[],events:[],toolCalls:[],responses:[],result:null,error:null};
   const env={OPENAI_API_KEY:"golden-fixture-key",TREBELL_HOME:home,...(scenario.env||{})};

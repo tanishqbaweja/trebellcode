@@ -563,6 +563,25 @@ test("Native session reports namespaced tool lifecycle and keeps observations in
   const persisted=agentToolLifecycle(lifecycle[1].update).item;assert.equal(persisted.type,"dynamicToolCall");assert.equal(persisted.namespace,"trebell_repo");assert.equal(persisted.tool,"search_symbols");assert.doesNotMatch(JSON.stringify(persisted.rawOutput),/untrusted tool data/i);
 });
 
+test("Native session keeps a turn's reasoning on its history for the turn and drops it when the turn ends",async()=>{
+  const REASONING=Symbol.for("trebell.native.responses-reasoning"),keptPerRequest=[];let turn=0;
+  const kept=[{before:"function_call",callId:"call-1",item:{type:"reasoning",id:"rs_1",summary:[],encrypted_content:"enc-1"}}];
+  const session=new NativeAgentSession({
+    provider:"openai",model:"gpt-6-luna",tools:[{type:"namespace",name:"trebell_repo",tools:[]}],
+    providerTurn:async request=>{
+      keptPerRequest.push(request.messages.filter(message=>message?.[REASONING]).length);turn++;
+      return turn===1
+        ?{id:"r1",provider:"openai",model:"gpt-6-luna",text:"",toolCalls:[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}],reasoningItems:kept,usage:{}}
+        :{id:"r2",provider:"openai",model:"gpt-6-luna",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({data:[{path:"src/session.js"}]}),
+  });
+  await session.start({model:"gpt-6-luna"});await session.prompt([{type:"text",text:"find Session"}]);
+  assert.deepEqual(keptPerRequest,[0,1],"the turn's second request has the first reply's reasoning");
+  assert.equal(session.messages.some(message=>message&&Object.hasOwn(message,REASONING)),false,"a later turn never sends it (current_turn), so the history does not hold it");
+  assert.equal(session.messages.filter(message=>message.role==="assistant").length,2);
+});
+
 test("Native session falls back from unindexed repository source reads to the exposed workspace reader",async()=>{
   const requests=[],updates=[],events=[],executions=[];let turn=0;
   const session=new NativeAgentSession({

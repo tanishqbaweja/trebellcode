@@ -229,3 +229,77 @@ test("Responses normalization reports a server-side compaction only when the out
   const plain=normalizeResponsesTurnResponse({id:"resp-p",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{}},"openai");
   assert.equal(Object.hasOwn(plain,"serverCompaction"),false);
 });
+
+// A Responses turn's reasoning, kept on the reply the agent loop puts on the transcript, as the API returned it, and as it
+// goes back in an input rebuilt in full: without its id, as the function calls and reply text beside it go.
+const REASONING=Symbol.for("trebell.native.responses-reasoning");
+const reasoningOutput=(id,encrypted,summary=[])=>({type:"reasoning",id,summary,...(encrypted?{encrypted_content:encrypted}:{}),status:"completed"});
+const keptReasoning=(id,encrypted,summary=[])=>({type:"reasoning",id,summary,encrypted_content:encrypted});
+const replayedReasoning=(encrypted,summary=[])=>({type:"reasoning",summary,encrypted_content:encrypted});
+const searchCall=(id,query)=>({id,namespace:"trebell_repo",name:"search_symbols",arguments:JSON.stringify({query})});
+const keptReply=(content,calls,kept)=>({role:"assistant",content,toolCalls:calls,...(kept?{[REASONING]:kept}:{})});
+const toolResult=id=>({role:"tool",toolCallId:id,content:"result of "+id});
+const inputShape=input=>input.map(item=>item.type==="reasoning"?item:item.type+":"+(item.call_id||item.role));
+
+test("Responses normalization keeps each reasoning item that carries its encrypted_content, as returned, with the item it came before",()=>{
+  const result=normalizeResponsesTurnResponse({id:"resp-r",model:"gpt-6-luna",status:"completed",output:[
+    reasoningOutput("rs_1","enc-1"),
+    {type:"message",id:"msg_1",role:"assistant",phase:"commentary",content:[{type:"output_text",text:"Checking."}]},
+    reasoningOutput("rs_2",null),
+    reasoningOutput("rs_3","enc-3",[{type:"summary_text",text:"Narrowing."}]),
+    {type:"function_call",id:"fc_1",call_id:"call-1",name:"trebell_repo__search_symbols",arguments:"{}"},
+    reasoningOutput("rs_4","enc-4"),
+    {type:"function_call",id:"fc_2",call_id:"call-2",name:"trebell_repo__search_symbols",arguments:"{}"},
+    reasoningOutput("rs_5","enc-5"),
+  ],usage:{}},"openai");
+  assert.deepEqual(result.reasoningItems,[
+    {before:"message",item:keptReasoning("rs_1","enc-1")},
+    {before:"function_call",callId:"call-1",item:keptReasoning("rs_3","enc-3",[{type:"summary_text",text:"Narrowing."}])},
+    {before:"function_call",callId:"call-2",item:keptReasoning("rs_4","enc-4")},
+  ],"one without encrypted_content cannot be sent back to a store:false response, and the last came before nothing");
+  assert.equal(result.text,"Checking.");assert.deepEqual(result.toolCalls.map(call=>call.id),["call-1","call-2"]);
+  const none=normalizeResponsesTurnResponse({id:"resp-p",status:"completed",output:[reasoningOutput("rs_9",null),{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{}},"openai");
+  assert.equal(Object.hasOwn(none,"reasoningItems"),false);
+});
+
+test("an input rebuilt with reasoningReplay puts the current turn's kept reasoning back right before the item it came before",()=>{
+  const messages=[
+    {role:"system",content:"Be precise."},{role:"user",content:"Find the parser"},
+    keptReply("",[searchCall("call-0","parser")],[{before:"function_call",callId:"call-0",item:keptReasoning("rs_0","enc-0")}]),toolResult("call-0"),
+    {role:"user",content:"Look at Session instead"},
+    keptReply("Looking at Session.",[searchCall("call-1","Session")],[{before:"message",item:keptReasoning("rs_1a","enc-1a")},{before:"function_call",callId:"call-1",item:keptReasoning("rs_1b","enc-1b")}]),toolResult("call-1"),
+    keptReply("",[searchCall("call-2","a"),searchCall("call-3","b")],[
+      {before:"function_call",callId:"call-2",item:keptReasoning("rs_2a","enc-2a")},
+      {before:"function_call",callId:"call-2",item:keptReasoning("rs_2b","enc-2b",[{type:"summary_text",text:"Two reads."}])},
+      {before:"function_call",callId:"call-3",item:keptReasoning("rs_3","enc-3")},
+    ]),toolResult("call-2"),toolResult("call-3"),
+  ];
+  const options={preserveInstructionOrder:true,flattenToolCallNames:true};
+  const plain=providerTurnToResponses({model:"gpt-6-luna",messages,tools},options),replayed=providerTurnToResponses({model:"gpt-6-luna",messages,tools},{...options,reasoningReplay:true});
+  assert.deepEqual(inputShape(replayed.input),[
+    "message:user","function_call:call-0","function_call_output:call-0","message:user",
+    replayedReasoning("enc-1a"),"message:assistant",replayedReasoning("enc-1b"),"function_call:call-1","function_call_output:call-1",
+    replayedReasoning("enc-2a"),replayedReasoning("enc-2b",[{type:"summary_text",text:"Two reads."}]),"function_call:call-2",replayedReasoning("enc-3"),"function_call:call-3","function_call_output:call-2","function_call_output:call-3",
+  ],"reasoning from before the last user message is not sent again (reasoning.context=current_turn)");
+  assert.deepEqual(replayed.input.filter(item=>item.type!=="reasoning"),plain.input,"apart from the reasoning, the input is the one built without it");
+  assert.equal(plain.input.some(item=>item.type==="reasoning"),false,"without reasoningReplay nothing changes");
+  assert.equal(JSON.stringify(replayed.input).includes("rs_"),false,"the items go back without their ids");
+});
+
+test("reasoningReplay starts the turn after the last reply without tool calls and leaves out reasoning whose item is not in the reply",()=>{
+  const messages=[
+    {role:"user",content:"Fix the bug"},
+    keptReply("",[searchCall("call-1","bug")],[{before:"function_call",callId:"call-1",item:keptReasoning("rs_1","enc-1")}]),toolResult("call-1"),
+    keptReply("Fixed it.",[],[{before:"message",item:keptReasoning("rs_f","enc-f")}]),
+    {role:"developer",content:"The completion check found a gap; continue."},
+    keptReply("",[searchCall("call-2","gap")],[
+      {before:"message",item:keptReasoning("rs_m","enc-m")},
+      {before:"function_call",callId:"call-9",item:keptReasoning("rs_x","enc-x")},
+      {before:"function_call",callId:"call-2",item:keptReasoning("rs_2","enc-2")},
+    ]),toolResult("call-2"),
+  ];
+  const replayed=providerTurnToResponses({model:"gpt-6-luna",messages,tools},{preserveInstructionOrder:true,flattenToolCallNames:true,reasoningReplay:true});
+  assert.deepEqual(inputShape(replayed.input),[
+    "message:user","function_call:call-1","function_call_output:call-1","message:assistant","message:developer",replayedReasoning("enc-2"),"function_call:call-2","function_call_output:call-2",
+  ],"a reply without tool calls ends the turn on the server too, and an item the reply does not hold has nothing to stand before");
+});
