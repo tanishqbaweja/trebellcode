@@ -6,6 +6,7 @@ import { normalizePolicyProfile } from "./policy-engine.mjs";
 import { attachNativePromptProvenance, NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { compactDirectTerminalStatusProviderHistory, createDirectTerminalStatusProviderHistoryProjector, coolHistoricalReadToolResults, coolNativeProviderHistory, coolNativeProviderHistorySince } from "./native-tool-history.mjs";
 import { providerFeatureEnabled } from "./provider-capabilities.mjs";
+import { dropResponsesReasoning } from "./provider-turn.mjs";
 import { replaceTextHunks } from "./native-replace-text.mjs";
 import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
@@ -817,6 +818,7 @@ export class NativeAgentSession{
         const cooled=coolProviderHistory(result.messages);this.messages=cooled.messages;
         if(cooled.count)this.onEvent?.({name:"native.tool.history_cooled",status:"completed",model:String(result.model||this.model||""),provider:result.provider||this.provider||null,data:{count:cooled.count,savedChars:cooled.savedChars,toolResultCount:Number(cooled.toolResultCount||0),toolCallArgumentCount:Number(cooled.toolCallArgumentCount||0),toolResultSavedChars:Number(cooled.toolResultSavedChars||0),toolCallArgumentSavedChars:Number(cooled.toolCallArgumentSavedChars||0)}});
       }
+      dropResponsesReasoning(this.messages);
       // A kept draft is the reply only when it is the reply's exact text; a synthesized or replaced reply withdraws it first.
       if(draftsOn&&this.draft){if(!result.text||this.draft.text!==String(result.text))this.#withdrawDraft("replaced");else this.draft=null}
       if(result.text)this.onUpdate({update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:result.text}}});

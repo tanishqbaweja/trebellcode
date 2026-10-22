@@ -6,7 +6,7 @@ import { nativeCommandSemanticError, normalizeNativeCommandArguments } from "./n
 import { redactSecretText } from "./secret-redactor.mjs";
 import { coolHistoricalReadToolResults, coolVirtualizedToolContent } from "./native-tool-history.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "./openai-response-continuation.mjs";
-import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "./provider-turn.mjs";
+import { keepResponsesReasoning, NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "./provider-turn.mjs";
 import { replaceTextHunks } from "./native-replace-text.mjs";
 import { exposedToolNamed } from "./platform-tool-catalog.mjs";
 
@@ -2317,7 +2317,8 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{reason:error.code,modelTurns,toolCalls}});
       throw error;
     }
-    conversation.push({role:"assistant",content:responseText,toolCalls:calls});
+    // The reasoning the turn returned stays with its reply, for a request the provider has to rebuild in full.
+    conversation.push(keepResponsesReasoning({role:"assistant",content:responseText,toolCalls:calls},lastResponse));
     if(!calls.length){
       if(abstractionRepairVerificationGateCandidate){
         const candidate=abstractionRepairVerificationGateCandidate,verdict=parseAbstractionRepairVerificationVerdict(responseText);

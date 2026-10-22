@@ -80,6 +80,44 @@ function openAiContent(content){
 }
 
 export const NATIVE_CHAT_MESSAGE_CACHE_IDENTITY=Symbol.for("trebell.native.chat-message-cache-identity");
+// The reasoning a Responses turn returned (its reasoningItems), kept on the reply the agent loop puts on the transcript so that
+// an input rebuilt in full can carry it again (providerTurnToResponses' reasoningReplay). A symbol, so no transcript JSON holds it.
+export const NATIVE_RESPONSES_REASONING=Symbol.for("trebell.native.responses-reasoning");
+
+export function keepResponsesReasoning(message,response){
+  const items=response?.reasoningItems;
+  if(message&&typeof message==="object"&&Array.isArray(items)&&items.length)message[NATIVE_RESPONSES_REASONING]=items;
+  return message;
+}
+
+// A later turn never carries a turn's reasoning again (reasoning.context=current_turn), so a history that outlives the turn drops it.
+export function dropResponsesReasoning(messages=[]){
+  for(const message of Array.isArray(messages)?messages:[])if(message&&typeof message==="object"&&Object.hasOwn(message,NATIVE_RESPONSES_REASONING))delete message[NATIVE_RESPONSES_REASONING];
+  return messages;
+}
+
+// The turn a request continues: the messages after the last user message or the last reply without tool calls. Under
+// reasoning.context=current_turn the server keeps reasoning back to the last user message only, and a reply without tool calls
+// ends a turn there too (a gate's developer message after one saw none of the reasoning before it).
+function currentTurnStart(messages){
+  for(let index=messages.length-1;index>=0;index--){
+    const message=messages[index];
+    if(message?.role==="user"||(message?.role==="assistant"&&!(message.toolCalls||message.tool_calls||[]).length))return index+1;
+  }
+  return 0;
+}
+
+// Whether an input rebuilt with reasoningReplay would carry any kept reasoning.
+export function responsesReasoningToReplay(messages=[]){
+  const source=Array.isArray(messages)?messages:[];
+  for(let index=currentTurnStart(source);index<source.length;index++){const kept=source[index]?.[NATIVE_RESPONSES_REASONING];if(Array.isArray(kept)&&kept.length)return true}
+  return false;
+}
+
+// A kept reasoning item goes back without its id, as the reply text and function calls beside it go without theirs.
+function replayReasoning(input,kept,matches){
+  for(const entry of kept)if(matches(entry)&&typeof entry?.item?.encrypted_content==="string")input.push({type:"reasoning",summary:Array.isArray(entry.item.summary)?entry.item.summary:[],encrypted_content:entry.item.encrypted_content});
+}
 
 function chatMessage(message={}){
   if(!message||typeof message!=="object")return null;
@@ -190,9 +228,12 @@ function responseToolOutput(content,{cacheBreakpoint=false}={}){
   return output;
 }
 
-export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,reasoningContext=null,serviceTier=null,parallelToolCalls=true,responseJsonSchema=null,textVerbosity=null}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
+// reasoningReplay: the input is sent without previous_response_id, so the server no longer holds the current turn's reasoning
+// for it. Each reasoning item a reply of that turn kept (NATIVE_RESPONSES_REASONING) goes back right before the reply text or
+// function call it came before, in the order it came; one whose item the reply does not hold is left out.
+export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,reasoningContext=null,serviceTier=null,parallelToolCalls=true,responseJsonSchema=null,textVerbosity=null}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0,reasoningReplay=false}={}){
   const instructions=[],input=[];let instructionPrefixOpen=true;
-  const sourceMessages=Array.isArray(messages)?messages:[],inputStart=Math.max(0,Math.trunc(Number(inputStartMessageIndex)||0));
+  const sourceMessages=Array.isArray(messages)?messages:[],inputStart=Math.max(0,Math.trunc(Number(inputStartMessageIndex)||0)),replayFrom=reasoningReplay?currentTurnStart(sourceMessages):sourceMessages.length;
   for(let messageIndex=0;messageIndex<sourceMessages.length;messageIndex++){
     const message=sourceMessages[messageIndex];
     if(!message||typeof message!=="object")continue;
@@ -212,9 +253,12 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
       input.push({type:"function_call_output",call_id:String(message.toolCallId||message.tool_call_id||""),output});continue;
     }
     if(message.role==="assistant"){
-      const content=responsesContent(message.content,{assistant:true});if(content.length)input.push({type:"message",role:"assistant",content});
+      const kept=messageIndex>=replayFrom&&Array.isArray(message[NATIVE_RESPONSES_REASONING])?message[NATIVE_RESPONSES_REASONING]:null;
+      const content=responsesContent(message.content,{assistant:true});
+      if(content.length){if(kept)replayReasoning(input,kept,entry=>entry?.before==="message");input.push({type:"message",role:"assistant",content})}
       for(const call of message.toolCalls||message.tool_calls||[]){
         const normalized=normalizeToolCall(call);
+        if(kept&&normalized.id)replayReasoning(input,kept,entry=>entry?.before==="function_call"&&entry.callId===normalized.id);
         input.push({type:"function_call",call_id:normalized.id||undefined,...(!flattenToolCallNames&&normalized.namespace?{namespace:normalized.namespace}:{}),name:flattenToolCallNames?flatToolName(normalized.namespace,normalized.name):normalized.name,arguments:normalized.arguments});
       }
       continue;
@@ -259,6 +303,24 @@ export function responsesCompactionItem(item){
   return (item?.type==="compaction"||item?.type==="compaction_summary")&&typeof item.encrypted_content==="string"&&item.encrypted_content.length>0;
 }
 
+// A response's reasoning output items that carry their encrypted_content (asked for with include), as the API returns them, each
+// with the output item it came right before: the reply text ("message") or a function call (its call_id). Requests over the
+// WebSocket go with store:false, so only these can be sent back once the server no longer holds the response, and one that came
+// before nothing has no place in a rebuilt input.
+function responsesReasoningItems(output){
+  const kept=[];let pending=[];
+  for(const item of Array.isArray(output)?output:[]){
+    if(item?.type==="reasoning"){
+      if(typeof item.encrypted_content==="string"&&item.encrypted_content)pending.push({type:"reasoning",...(item.id?{id:String(item.id)}:{}),summary:Array.isArray(item.summary)?item.summary:[],encrypted_content:item.encrypted_content});
+      continue;
+    }
+    const before=item?.type==="message"?{before:"message"}:item?.type==="function_call"?{before:"function_call",callId:String(item.call_id||item.id||"")}:null;
+    if(before)for(const reasoning of pending)kept.push({...before,item:reasoning});
+    pending=[];
+  }
+  return kept;
+}
+
 export function normalizeResponsesTurnResponse(body={},provider=null,fallbackModel=""){
   const text=[],toolCalls=[];let compactions=0;
   for(const item of Array.isArray(body.output)?body.output:[]){
@@ -267,11 +329,14 @@ export function normalizeResponsesTurnResponse(body={},provider=null,fallbackMod
     }else if(item?.type==="function_call")toolCalls.push(normalizeToolCall(item));
     else if(responsesCompactionItem(item))compactions++;
   }
+  const reasoningItems=responsesReasoningItems(body.output);
   return {
     id:String(body.id||""),provider:provider?String(provider):null,model:String(body.model||fallbackModel||""),text:text.join(""),toolCalls,
     serviceTier:normalizedServiceTier(body.service_tier??body.serviceTier),finishReason:toolCalls.length?"tool_calls":String(body.status||"completed"),status:String(body.status||"completed"),usage:normalizeUsage(body.usage||{}),
     // Only present when the server compacted the context during this response.
     ...(compactions?{serverCompaction:{items:compactions}}:{}),
+    // Only present when the response returned reasoning that can be sent back.
+    ...(reasoningItems.length?{reasoningItems}:{}),
     raw:body,
   };
 }

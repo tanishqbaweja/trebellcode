@@ -1,6 +1,6 @@
 import { TREBELL_USER_AGENT } from "./version.mjs";
 import { adaptAnthropicResponse, ANTHROPIC_PRE_SERIALIZED_MESSAGES, chatToAnthropic, createAnthropicMessageProjector, providerTurnAnthropicScaffold, providerTurnToAnthropic } from "./anthropic-chat-adapter.mjs";
-import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY, normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses, providerToolsToChat } from "./provider-turn.mjs";
+import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY, normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses, providerToolsToChat, responsesReasoningToReplay } from "./provider-turn.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -324,6 +324,9 @@ function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKey
     const comparisonResponseId=String(effectiveRequest.promptCacheComparisonResponseId||"").trim();
     body.prompt_cache_options={mode:"implicit",...(comparisonResponseId?{comparison_response_id:comparisonResponseId}:{})};
   }
+  // Each reasoning item comes back with its encrypted_content, so a request rebuilt in full can carry its turn's reasoning again
+  // (reasoningReplay): WebSocket requests go with store:false, and nothing but the socket that made a response can continue from it.
+  body.include=["reasoning.encrypted_content"];
   body.prompt_cache_key=typeof promptCacheKeyForBody==="function"?promptCacheKeyForBody(body,toolManifest?.toolsJson):officialOpenAiPromptCacheKey(body,toolManifest?.toolsJson);
   if(toolManifest?.toolsJson&&body.tools===toolManifest.tools)attachPreSerializedTopLevel(body,"tools",body.tools,toolManifest.toolsJson);
   return body;
@@ -883,16 +886,34 @@ export class ProviderManager {
     const requestedServiceTierRaw=String(request.serviceTier||request.service_tier||"").trim().toLowerCase(),requestedServiceTier=requestedServiceTierRaw==="priority"?"fast":requestedServiceTierRaw||null;
     const started=performance.now(),requestDeadlineAt=started+this.requestTimeoutMs;let wire={endpoint:null,wireApi:null,requestBytes:0},wireRequestBytes=0,wireAttempts=0;
     const onWire=value=>{wire=value||wire;wireRequestBytes+=Number(value?.requestBytes||0);wireAttempts++};
-    let fullResponsesBody=null,openAiContinuation=null,responsesBody=null,openAiParentId="",compactedResend=null,openAiWebSocketLane=false;
+    let fullResponsesBody=null,openAiContinuation=null,responsesBody=null,openAiParentId="",compactedResend=null,openAiWebSocketLane=false,replayInput;
+    // A body sent without previous_response_id carries again the reasoning the current turn's replies kept (providerTurnToResponses'
+    // reasoningReplay), which the server no longer holds for it; a continuation never does. The continuation tracker keeps proving
+    // prefixes on the input built without it, which every full body of a turn shares.
+    const replayedInput=()=>{
+      if(replayInput===undefined){
+        const input=provider.id==="openai"&&responsesReasoningToReplay(request.messages)?this.#officialOpenAiResponsesBody({...request,model},{reasoningReplay:true}).input:null;
+        replayInput=input?.some(item=>item?.type==="reasoning")?input:null;
+      }
+      return replayInput;
+    };
+    const sentFull=full=>{const input=full?replayedInput():null;return input?{...full,input}:full};
+    // A compacted resend carries the reasoning that came after the compaction: the replayed input past the items it covers.
+    const sentCompactedResend=resend=>{
+      const input=replayedInput();if(!input)return resend.body;
+      let index=0;for(let covered=0;index<input.length&&covered<resend.omittedInputCount;index++)if(input[index]?.type!=="reasoning")covered++;
+      return {...resend.body,input:[resend.body.input[0],...input.slice(index)]};
+    };
+    const reasoningReplayTelemetry=()=>{const replayed=Array.isArray(responsesBody?.input)?responsesBody.input.reduce((count,item)=>count+(item?.type==="reasoning"?1:0),0):0;return replayed?{replayedReasoningItems:replayed}:{}};
     // When a WebSocket session falls back (a replaced connection, a refused continuation, an HTTPS retry, or a completion judge
     // without a usable socket) and the server had compacted this chain, the request is resent as the compaction item and what
     // followed it (the server's own context) instead of the whole local transcript; a resend the API refuses is sent whole.
     // Anything else that cannot continue its parent (an expired parent, another model or prefix, a session without the
     // WebSocket lane) is sent whole, as before.
     const compactedOrFull=(full,parentId)=>{
-      if(!openAiWebSocketLane)return full;
-      if(!compactedResend){const resend=this.openAiResponseContinuations.compactedResend(full,parentId);if(resend)compactedResend={...resend,rejected:false}}
-      return compactedResend&&!compactedResend.rejected?compactedResend.body:full;
+      if(!openAiWebSocketLane)return sentFull(full);
+      if(!compactedResend){const resend=this.openAiResponseContinuations.compactedResend(full,parentId);if(resend){const body=sentCompactedResend(resend);compactedResend={...resend,body,inputCount:body.input.length,rejected:false}}}
+      return compactedResend&&!compactedResend.rejected?compactedResend.body:sentFull(full);
     };
     const sentCompacted=()=>Boolean(compactedResend&&!compactedResend.rejected&&responsesBody===compactedResend.body);
     // The server compaction a response was produced on top of: the one a compacted resend carried, the parent's for a continuation
@@ -913,7 +934,7 @@ export class ProviderManager {
         if(!responsesBody){
           fullResponsesBody=this.#officialOpenAiResponsesBody({...request,model});
           openAiContinuation=this.openAiResponseContinuations.prepare(fullResponsesBody,parentId,{messageRefs,identityToken});
-          responsesBody=openAiContinuation?.body||fullResponsesBody;
+          responsesBody=openAiContinuation?.used?openAiContinuation.body:sentFull(fullResponsesBody);
         }
       }else{
         fullResponsesBody=providerTurnToResponses({...request,model});
@@ -961,7 +982,7 @@ export class ProviderManager {
           result.telemetry={
             endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:Number(socketResult.requestBytes||0),responseBytes:Number(socketResult.telemetry?.responseBytes||0),
             responseHeadersLatencyMs:null,responseBodyLatencyMs:Number(socketResult.telemetry?.totalLatencyMs||0),timeToFirstTokenMs:socketResult.telemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number(socketResult.telemetry?.totalLatencyMs??(performance.now()-socketStarted)),streaming:true,providerRequestId:null,providerResponseId:result.id||null,
-            requestedServiceTier,serviceTier:result.serviceTier||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(socketResult.response),reasoningContext:normalizedOpenAiReasoningContext(socketResult.response),persistentConnection:true,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...compactedResendTelemetry(),...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts:1}:null,
+            requestedServiceTier,serviceTier:result.serviceTier||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(socketResult.response),reasoningContext:normalizedOpenAiReasoningContext(socketResult.response),persistentConnection:true,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...compactedResendTelemetry(),...reasoningReplayTelemetry(),...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts:1}:null,
           };
           return result;
         }catch(error){
@@ -1009,8 +1030,8 @@ export class ProviderManager {
       upstream=await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;if(!continuationFallbackReason)continuationFallbackReason=refusedResend?"compacted_resend_rejected":"previous_response_unavailable";
       if(sentCompacted()&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
         try{await upstream.body?.cancel?.()}catch{}
-        compactedResend.rejected=true;responsesBody=fullResponsesBody;sink?.restart();
-        upstream=await this.forwardResponses(provider.id,fullResponsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});
+        compactedResend.rejected=true;responsesBody=sentFull(fullResponsesBody);sink?.restart();
+        upstream=await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});
       }
     }
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
@@ -1022,7 +1043,7 @@ export class ProviderManager {
         const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs:this.requestTimeoutMs,...(sink?{onEvent:sink.responsesEvent}:{})}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
         this.openAiResponseContinuations.record(result.id,openAiContinuation,result,{baseCompaction:sentCompaction()});
-        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,requestedServiceTier,serviceTier:result.serviceTier||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),reasoningContext:normalizedOpenAiReasoningContext(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...compactedResendTelemetry(),...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null};
+        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,requestedServiceTier,serviceTier:result.serviceTier||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),reasoningContext:normalizedOpenAiReasoningContext(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...compactedResendTelemetry(),...reasoningReplayTelemetry(),...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null};
         return result;
       }catch(error){
         const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
@@ -1081,7 +1102,7 @@ export class ProviderManager {
       ...baseTelemetry,
       providerResponseId:result.id||null,
       serviceTier:result.serviceTier||null,
-      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed),reasoningContext:normalizedOpenAiReasoningContext(parsed),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...compactedResendTelemetry(),...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null}:{}),
+      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed),reasoningContext:normalizedOpenAiReasoningContext(parsed),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...compactedResendTelemetry(),...reasoningReplayTelemetry(),...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null}:{}),
     };
     return result;
   }
