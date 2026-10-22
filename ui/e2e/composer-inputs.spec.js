@@ -1706,6 +1706,8 @@ test("with the model picker open, a mouse click on the undo toast's Undo brings 
       await picker.click();await expect(menu).toBeVisible();
       await page.keyboard.press("Control+s");await expect(alert).toHaveText(stashFailed);
       await expect.poll(()=>readErrorToast(page),{message:`the failed action's toast with the model picker open at ${width}x800 in ${mode}`}).toMatchObject({place:"under the header"});
+      // The toast slides 8 px up into its place over 0.24 s (tb-toast-in), which the poll above can catch mid-slide: read it at rest.
+      await alert.evaluate(async node=>{await Promise.all(node.getAnimations().map(animation=>animation.finished))});
       const before=await place(alert),box=await alert.boundingBox();
       await page.mouse.move(box.x+36,box.y+box.height/2);await page.mouse.down();
       await page.mouse.move(box.x+box.width-12,box.y+box.height/2,{steps:8});await page.mouse.up();
