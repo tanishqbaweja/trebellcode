@@ -875,8 +875,12 @@ test("in a narrow drawer beside the docked right panel a long setup terminal's t
       }
       await switchMode();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
     };
-    // Terminal 1 shown, the row at its start: the setup tab is cut at the row's end, and picked from there.
+    // Terminal 1 shown, the row at its start: the setup tab is cut at the row's end, and picked from there. The wheel reaches the page
+    // a frame or so after mouse.wheel returns, so each wheel is waited for until the row fades as it does at the end wheeled to: read
+    // at once, the row was still at its other end, with Terminal 1 out of sight past its start, or it scrolled under the click meant
+    // for Terminal 3, which landed on Terminal 3's close button and closed it.
     await row.hover();await page.mouse.wheel(0,-2000);
+    await expect.poll(edges,{message:"wheeled to its start the row fades at its end only"}).toBe("end");
     await pick("Terminal 1");
     await expect.poll(edges).toBe("end");
     await pick(setupName);
@@ -885,6 +889,7 @@ test("in a narrow drawer beside the docked right panel a long setup terminal's t
     await modeShots("terminal-tab-row-narrow-from-end");
     // Terminal 3 shown, the row at its end: the setup tab is cut at the row's start, and picked from there.
     await row.hover();await page.mouse.wheel(0,2000);
+    await expect.poll(edges,{message:"wheeled to its end the row fades at its start only"}).toBe("start");
     await pick("Terminal 3");
     await expect.poll(edges).toBe("start");
     await pick(setupName);
