@@ -1,13 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { remoteCodexArgs, remoteCodexProfileSetup, sshRemotePorts, startRemoteAppServer } from "../src/environment-app-server.mjs";
 import { EnvironmentManager, remoteToolPathPrelude } from "../src/environment-manager.mjs";
+
+// A POSIX shell, as a WSL or SSH host has, where this machine has one (Git for Windows' sh, or the system's).
+const posixShell=await new Promise(resolve=>execFile("sh",["-c","printf ok"],{windowsHide:true,timeout:20_000},(error,stdout)=>resolve(!error&&String(stdout)==="ok")));
+function finished(child){
+  return new Promise(resolve=>{
+    let stdout="",stderr="";child.stdout?.on("data",chunk=>{stdout+=chunk});child.stderr?.on("data",chunk=>{stderr+=chunk});
+    child.once("error",error=>resolve({code:-1,stdout,stderr:stderr+error.message}));child.once("close",code=>resolve({code,stdout,stderr}));
+  });
+}
 
 test("remote harness PATH bootstrap covers Linuxbrew and common Node version managers",()=>{
   const script=remoteToolPathPrelude();
@@ -167,4 +178,89 @@ test("an environment's Codex executable is saved and starts its Codex app-server
   assert.match(String(launch.args.at(-1)),/exec .*"\$HOME"\/'\.local\/bin\/codex' 'app-server' '--listen'/);
   const blank=environments.upsert({id:"ssh-codex",type:"ssh",name:"Build box",host:"build.example.test",codexPath:""});
   assert.equal(remoteCodexProfileSetup({profile:blank}).command,"codex");
+});
+
+// Codex as a test host has it in ~/bin: each run notes its arguments and the CODEX_HOME it has, and the host's home; `codex login`
+// writes auth.json into its home (CODEX_HOME, else ~/.codex); `codex app-server` on stdio answers initialize and account/read,
+// signed in when auth.json is in its home; `codex app-server --listen` says whether it is.
+const HOST_CODEX=`#!/bin/sh
+home=\${CODEX_HOME:-$HOME/.codex}
+printf '%s|%s|%s\\n' "$*" "\${CODEX_HOME-}" "$HOME" >> "$HOME/codex-runs"
+case $1 in
+  --version) echo codex-cli 0.0.0-fixture;;
+  login) mkdir -p "$home" && printf '{}' > "$home/auth.json";;
+  app-server)
+    if [ "$2" = --listen ]; then if [ -f "$home/auth.json" ]; then echo signed-in; else echo signed-out; fi; exit 0; fi
+    while IFS= read -r line; do
+      id=\${line#'{"id":'}; id=\${id%%,*}
+      case $line in
+        *'"method":"initialize"'*) printf '{"id":%s,"result":{"userAgent":"codex_cli_rs/0.0.0"}}\\n' "$id";;
+        *'"method":"account/read"'*)
+          if [ -f "$home/auth.json" ]; then printf '{"id":%s,"result":{"account":{"type":"chatgpt","planType":"plus"},"requiresOpenaiAuth":true}}\\n' "$id"
+          else printf '{"id":%s,"result":{"account":null,"requiresOpenaiAuth":true}}\\n' "$id"; fi;;
+      esac
+    done;;
+esac
+`;
+// A WSL or SSH host as this machine's sh: the command ssh is given last, as the host's shell runs it, or the one wsl.exe --exec
+// bash -lc is given (sh stands in for bash: bash looked up by name on Windows can be System32's, which starts WSL). It has a home
+// of its own and only what a process needs from this machine to start; MSYS makes Git for Windows' ln -s a link, as a host's is.
+function codexHost(home){
+  const env={...Object.fromEntries(Object.keys(process.env).filter(name=>["PATH","SYSTEMROOT","WINDIR","COMSPEC","TEMP","TMP","TMPDIR"].includes(name.toUpperCase())).map(name=>[name,process.env[name]])),HOME:home,MSYS:"winsymlinks:nativestrict"};
+  return (_file,args,options={})=>{
+    const at=args.indexOf("--exec");
+    if(at>=0)assert.deepEqual(args.slice(at+1,at+3),["bash","-lc"],"wsl.exe runs bash -lc");
+    return spawn("sh",["-c",at>=0?args[at+3]:args.at(-1)],{...options,env,windowsHide:true});
+  };
+}
+
+// A WSL or SSH Codex profile with its own Codex home (CODEX_HOME in Settings) or a shadow home signs in, checks its account and runs
+// its app-server in that one home, as its sessions run there: a sign-in or an account check in the host's default home read as signed
+// in while the sessions ran in a home with no auth.json, and Sign in did not fix it. A profile with no home of its own keeps the host's
+// default home (~/.codex) for all three, as before.
+test("a WSL or SSH Codex profile with its own or a shadow Codex home signs in, checks its account and runs its app-server in that home",{skip:!posixShell&&"no POSIX shell on this machine"},async()=>{
+  const work=await mkdtemp(join(tmpdir(),"trebell-remote-codex-home-"));
+  const profiles={
+    ssh:{id:"ssh-codex",name:"Build box",type:"ssh",host:"build.example.test",user:"dev",port:22,cwd:"",enabled:true},
+    wsl:{id:"wsl-codex",name:"Ubuntu",type:"wsl",distro:"Ubuntu",cwd:"",enabled:true},
+  };
+  const instances=[
+    [{id:"codex-own",kind:"codex",displayName:"Own home",homePath:"~/.codex-own"},".codex-own"],
+    [{id:"codex-shadow",kind:"codex",displayName:"Shadow home",homePath:"~/.codex-shared",shadowHomePath:"~/.codex-work"},".codex-work"],
+    [{id:"codex-plain",kind:"codex",displayName:"Default home"},null],
+  ];
+  const seen={},wanted={};
+  try{
+    for(const profile of Object.values(profiles))for(const [instance,folder] of instances){
+      const label=profile.type+" "+instance.id,home=join(work,profile.type+"-"+instance.id);
+      await mkdir(join(home,"bin"),{recursive:true});await writeFile(join(home,"bin","codex"),HOST_CODEX,{mode:0o755});
+      const host=codexHost(home),environments=new EnvironmentManager({state:{environments:()=>[profile]},env:{},platform:"win32",spawnProcess:host});
+      const settings={activeEnvironmentId:profile.id,agentRuntime:"codex",agentRuntimeInstanceId:instance.id,agentRuntimeInstances:[instance]};
+      const runtimes=new AgentRuntimeManager({state:{settings:()=>settings},environments,env:{},platform:process.platform});
+      // Sign in, as Settings' Sign in opens its terminal (gui-server /api/agent-runtime-auth).
+      const auth=runtimes.authCommand(instance,{action:"login",environmentId:profile.id});
+      const spec=environments.terminalArgvSpec(profile.id,{command:auth.command,args:auth.args,cwd:"",prelude:auth.prelude});
+      const signIn=await finished(host(spec.shell,spec.args,{stdio:["ignore","pipe","pipe"]}));
+      assert.equal(signIn.code,0,label+": "+signIn.stderr);
+      // The account check Settings and a chat start make.
+      const status=await runtimes.probe(instance,{environmentId:profile.id,fresh:true});
+      // The app-server the profile's sessions run on; a WSL host's addresses as wslNetwork reads them.
+      const remote=await startRemoteAppServer({
+        environments:profile.type==="wsl"?{get:id=>environments.get(id),execute:async()=>({exitCode:0,stdout:"HOST=127.0.0.1\nGUEST=127.0.0.1\n",stderr:""}),spawnSession:(id,options)=>environments.spawnSession(id,options)}:environments,
+        environmentId:profile.id,appPort:33461,runtimeInstance:instance,hostEnvironment:{},spawnProcess:host,
+      });
+      await new Promise(resolve=>remote.child.once("close",resolve));
+      const runs=(await readFile(join(home,"codex-runs"),"utf8")).split("\n").filter(Boolean).map(line=>{const [args,codexHome,hostHome]=line.split("|");return {args,codexHome,hostHome}});
+      // The sign-in, the account check's app-server and the sessions' app-server, each with the CODEX_HOME it ran with ("" for none);
+      // whether auth.json is in the profile's home; what the account check said; and whether the sessions' app-server is signed in.
+      const expected=folder?runs[0].hostHome+"/"+folder:"";
+      seen[label]={
+        runs:runs.filter(run=>run.args!=="--version").map(run=>[run.args.replace(/ ws:\/\/\S+$/,""),run.codexHome]),
+        authJson:existsSync(join(home,folder||".codex","auth.json")),check:[status.available,status.authenticated],
+        appServer:remote.logs.map(entry=>entry.text).join("").match(/signed-(?:in|out)/)?.[0]||null,
+      };
+      wanted[label]={runs:[["login",expected],["app-server",expected],["app-server --listen",expected]],authJson:true,check:[true,true],appServer:"signed-in"};
+    }
+  }finally{await rm(work,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+  assert.deepEqual(seen,wanted);
 });

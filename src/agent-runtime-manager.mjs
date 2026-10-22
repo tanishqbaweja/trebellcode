@@ -14,6 +14,7 @@ import { installAntigravityRuntime, readAntigravityAuthState, readAntigravityIns
 import { discoverOpenCode2ModelCatalog, discoverOpenCodeModelCatalog } from "./opencode-agent-session.mjs";
 import { resolveWindowsCommandShim, windowsCommandShimTarget } from "./windows-command-shim.mjs";
 import { codexAccountStatus, readCodexAccount } from "./codex-account-probe.mjs";
+import { remoteCodexHomeSetup } from "./environment-app-server.mjs";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
 import { defaultAcpClientCapabilities } from "./acp-client.mjs";
 import { acpProbeSession, acpSessionModelCatalog, antigravityModelCatalog, antigravitySeedCatalog, cursorModelCatalog, GROK_INITIALIZE_META, grokModelCatalog, withAcpProbe } from "./acp-model-catalog.mjs";
@@ -35,6 +36,10 @@ export function runtimeCapabilities(kind){
 }
 
 const CODEX_ACCOUNT_REUSE_MS=60_000;
+// What a WSL or SSH host runs before a harness's own process or sign-in there: a Codex profile's own home (CODEX_HOME in Settings)
+// or shadow home, made and exported as its app-server's is (environment-app-server.mjs), so its sign-in and its account check use
+// the home its sessions run in. Nothing for another harness or for a profile with no home of its own.
+function remoteRuntimeSetup(instance){return instance?.kind==="codex"?remoteCodexHomeSetup(instance):""}
 // A probe's ready answer is reused this long: Settings polls the active harness every 5 s and every thread start probes again, and
 // each probe launches the CLI one to three times. Settings' own listing (its open, Refresh and the follow-up of a sign-in), a switch
 // and an install ask with fresh. An answer that the harness cannot run is asked again each time, as Codex's account read is, so a
@@ -389,9 +394,9 @@ export class AgentRuntimeManager{
   }
   processSpawner(instance,environmentId=undefined){
     const profile=this.activeEnvironment(environmentId);if(!profile||profile.type==="local"||!this.environments)return null;
-    const environmentNames=this.childEnvironmentKeys(instance);
+    const environmentNames=this.childEnvironmentKeys(instance),prelude=remoteRuntimeSetup(instance);
     // options.environment sets explicit variables for this one process (e.g. a restricted harness config); environmentNames only forwards the remote shell's own values.
-    return options=>this.environments.spawnArgv(profile.id,{command:this.executable(instance,{environmentId:profile.id}),args:options.args||[],cwd:options.cwd||profile.cwd||null,stdio:options.stdio||["pipe","pipe","pipe"],environmentNames,...(options.environment&&typeof options.environment==="object"?{environment:options.environment}:{})});
+    return options=>this.environments.spawnArgv(profile.id,{command:this.executable(instance,{environmentId:profile.id}),args:options.args||[],cwd:options.cwd||profile.cwd||null,stdio:options.stdio||["pipe","pipe","pipe"],environmentNames,...(prelude?{prelude}:{}),...(options.environment&&typeof options.environment==="object"?{environment:options.environment}:{})});
   }
   // Runs the instance's own CLI (arguments after the executable) where the instance runs, local or remote, with its approved variables.
   runCli(instance,args=[],{timeoutMs=15_000,cwd=null,environmentId=undefined}={}){return this.#run(instance,args,{timeoutMs,cwd,environmentId})}
@@ -435,7 +440,8 @@ export class AgentRuntimeManager{
   async #codexAccount(instance,environmentId=undefined){
     const profile=this.activeEnvironment(environmentId),spawner=this.processSpawner(instance,environmentId);
     const command=this.executable(instance,{environmentId}),env=spawner?null:this.childEnv(instance);
-    const key=[profile?.id||"local",instance.id,command,env?.CODEX_HOME||""].join("|"),cached=this.#codexAccounts.get(key);
+    // The answer is about the home it was read in: the profile's CODEX_HOME here, its home setup on a remote host.
+    const key=[profile?.id||"local",instance.id,command,spawner?remoteRuntimeSetup(instance):env?.CODEX_HOME||""].join("|"),cached=this.#codexAccounts.get(key);
     if(cached?.pending)return await cached.pending;
     if(cached&&Date.now()-cached.at<CODEX_ACCOUNT_REUSE_MS)return cached.value;
     const spawnAppServer=spawner?args=>spawner({args}):args=>spawn(command,args,{env,cwd:process.cwd(),windowsHide:true,stdio:["pipe","pipe","pipe"]});
@@ -476,13 +482,14 @@ export class AgentRuntimeManager{
       :null;
     if(!args)throw new Error((RUNTIMES[instance.kind]?.name||instance.kind)+" does not expose an interactive Trebell sign-in command.");
     // Codex signs in into its profile's home: one under a user this machine does not have is refused before the sign-in writes
-    // anywhere (on an SSH or WSL host the home is the host's to expand).
-    const profile=this.activeEnvironment(environmentId);
-    if(instance.kind==="codex"&&!(profile&&profile.type!=="local")){
+    // anywhere (on an SSH or WSL host the home is the host's to expand, and the sign-in terminal runs prelude first to set it up).
+    const profile=this.activeEnvironment(environmentId),remote=Boolean(profile&&profile.type!=="local");
+    if(instance.kind==="codex"&&!remote){
       const layout=resolveCodexHomeLayout({homePath:instance.homePath,shadowHomePath:instance.shadowHomePath,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
       if(layout.error)throw new Error(layout.error);
     }
-    return {runtime:instance.kind,instanceId:instance.id,name:RUNTIMES[instance.kind]?.name||instance.kind,command:this.executable(instance,{environmentId}),args};
+    const prelude=remote?remoteRuntimeSetup(instance):"";
+    return {runtime:instance.kind,instanceId:instance.id,name:RUNTIMES[instance.kind]?.name||instance.kind,command:this.executable(instance,{environmentId}),args,...(prelude?{prelude}:{})};
   }
   // One install or update of a harness runs at a time: a second one asked for meanwhile (from Settings opened again, or another
   // window) is refused, as two npm installs of one package at once can leave it half replaced. The refusal names the install that

@@ -1983,13 +1983,14 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
             await client.stop().catch(()=>{});
           }
         }
-        const auth=agentRuntimes.authCommand(instance,{action:"login",environmentId});
+        // prelude: what a WSL or SSH host runs before the sign-in there (a Codex profile's home), kept out of the answer.
+        const {prelude,...auth}=agentRuntimes.authCommand(instance,{action:"login",environmentId});
         if(mock){
           return json(res,200,{ok:true,auth,session:{id:"mock-runtime-auth",name:auth.name+" sign in",cwd,environmentId:environmentId||null,environmentName:"Mock environment",environmentType:environmentId?"remote":"local",running:true}});
         }
         const authProfile=environmentId?environments.get(environmentId):null,remoteAuth=Boolean(authProfile&&authProfile.type!=="local");
         const spec=remoteAuth
-          ?environments.terminalArgvSpec(environmentId,{command:auth.command,args:auth.args,cwd})
+          ?environments.terminalArgvSpec(environmentId,{command:auth.command,args:auth.args,cwd,prelude})
           :environments.terminalSpec(environmentId,{cwd});
         const session=await terminals.create({
           cwd:spec.cwd,

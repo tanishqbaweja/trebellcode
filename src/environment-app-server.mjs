@@ -20,14 +20,12 @@ function homeAssignment(variable,path){
 
 const REMOTE_CODEX_SHARED_DIRECTORIES=["sessions","archived_sessions","sqlite","shell_snapshots","worktrees","skills","plugins","cache","logs","mcp-oauth-locks"];
 
-export function remoteCodexProfileSetup({profile={},runtimeInstance=null}={}){
+// The lines that make a Codex profile's own home (CODEX_HOME in Settings) or shadow home on a WSL or SSH host and export it as
+// CODEX_HOME, run there before its app-server, its sign-in and its account check (agent-runtime-manager.mjs), so the three use
+// one home. Nothing for a profile with no home of its own, which keeps the host's default.
+export function remoteCodexHomeSetup(runtimeInstance=null){
   const instance=runtimeInstance||{};
-  const command=String(instance.binaryPath||profile.codexPath||"codex").trim()||"codex";
   const lines=[];
-  for(const [name,value] of Object.entries(instance.environment||{})){
-    if(!/^[A-Z_][A-Z0-9_]*$/i.test(name)||value==null)continue;
-    lines.push("export "+name+"="+quotePosix(String(value)));
-  }
   const shared=String(instance.homePath||"").trim();
   const shadow=String(instance.shadowHomePath||"").trim();
   if(shadow){
@@ -46,6 +44,20 @@ export function remoteCodexProfileSetup({profile={},runtimeInstance=null}={}){
     lines.push('mkdir -p "$trebell_codex_effective"');
     lines.push('export CODEX_HOME="$trebell_codex_effective"');
   }
+  return lines.join("\n");
+}
+
+export function remoteCodexProfileSetup({profile={},runtimeInstance=null}={}){
+  const instance=runtimeInstance||{};
+  const command=String(instance.binaryPath||profile.codexPath||"codex").trim()||"codex";
+  const lines=[];
+  for(const [name,value] of Object.entries(instance.environment||{})){
+    if(!/^[A-Z_][A-Z0-9_]*$/i.test(name)||value==null)continue;
+    lines.push("export "+name+"="+quotePosix(String(value)));
+  }
+  const home=remoteCodexHomeSetup(instance);if(home)lines.push(home);
+  const shared=String(instance.homePath||"").trim();
+  const shadow=String(instance.shadowHomePath||"").trim();
   return {command,prelude:lines.join("\n"),sharedHomePath:shared||null,effectiveHomePath:shadow||shared||null};
 }
 

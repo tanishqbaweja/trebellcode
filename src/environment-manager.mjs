@@ -136,9 +136,10 @@ export PATH`;
 
 export function remoteToolPathPrelude(){return REMOTE_TOOL_PATH_SCRIPT}
 
-function remoteShellCommand(command,working=""){
+// prelude: lines the host runs before the cd and the command (a Codex profile's home, agent-runtime-manager.mjs).
+function remoteShellCommand(command,working="",prelude=""){
   const run=working?("cd "+quotePosix(working)+" && "+command):command;
-  return REMOTE_TOOL_PATH_SCRIPT+"\n"+run;
+  return REMOTE_TOOL_PATH_SCRIPT+"\n"+(prelude?prelude+"\n":"")+run;
 }
 
 // Ends a host process with the processes it started: taskkill /t on Windows; elsewhere the process group of a child spawned
@@ -410,7 +411,7 @@ export class EnvironmentManager {
     };
   }
 
-  spawnSession(id,{command,cwd=null,stdio=["ignore","pipe","pipe"],detached=false}={}){
+  spawnSession(id,{command,cwd=null,stdio=["ignore","pipe","pipe"],detached=false,prelude=""}={}){
     const profile=this.get(id);
     if(!profile) throw new Error("Environment profile was not found");
     const text=String(command||"").trim();
@@ -426,7 +427,7 @@ export class EnvironmentManager {
     if(profile.type==="wsl"){
       if(this.platform!=="win32") throw new Error("WSL environments are available only on Windows");
       executable="wsl.exe";
-      args=wslArgs(profile,remoteShellCommand(text,working));
+      args=wslArgs(profile,remoteShellCommand(text,working,prelude));
       return this.spawnProcess(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio,detached});
     }
     if(profile.type==="ssh"){
@@ -434,7 +435,7 @@ export class EnvironmentManager {
       args=["-o","BatchMode=yes","-o","ConnectTimeout=8","-o","ServerAliveInterval=15","-p",String(normalizedPort(profile.port))];
       if(profile.identityFile) args.push("-i",profile.identityFile);
       const target=profile.user?(profile.user+"@"+profile.host):profile.host;
-      args.push(target,remoteShellCommand(text,working));
+      args.push(target,remoteShellCommand(text,working,prelude));
       return this.spawnProcess(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio,detached});
     }
     throw new Error("Unsupported environment type");
@@ -487,7 +488,8 @@ export class EnvironmentManager {
     throw new Error("Unsupported environment type");
   }
 
-  terminalArgvSpec(id,{command,args=[],cwd=null}={}){
+  // prelude: lines the host runs before the command (a Codex profile's home, for its sign-in).
+  terminalArgvSpec(id,{command,args=[],cwd=null,prelude=""}={}){
     const profile=id?this.get(id):null;
     const executable=String(command||"").trim();
     if(!executable)throw new Error("command is required");
@@ -502,7 +504,7 @@ export class EnvironmentManager {
       };
     }
     const working=String(cwd??profile.cwd??"").trim();
-    const remoteCommand=REMOTE_TOOL_PATH_SCRIPT+"\n"+(working?("cd "+quotePosix(working)+" && "):"")+"exec "+shellCommand(hostCommand(profile,executable),args);
+    const remoteCommand=REMOTE_TOOL_PATH_SCRIPT+"\n"+(prelude?prelude+"\n":"")+(working?("cd "+quotePosix(working)+" && "):"")+"exec "+shellCommand(hostCommand(profile,executable),args);
     if(profile.type==="wsl"){
       if(this.platform!=="win32")throw new Error("WSL environments are available only on Windows");
       return {environmentId:profile.id,environmentName:profile.name,environmentType:"wsl",cwd:undefined,shell:"wsl.exe",args:wslArgs(profile,remoteCommand)};
@@ -518,7 +520,8 @@ export class EnvironmentManager {
     throw new Error("Unsupported environment type");
   }
 
-  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"],environmentNames=null,guardedEnvironmentNames=null,environment=null,detached=false}={}){
+  // prelude: lines a remote host runs before the command, outside its env -i (a Codex profile's home, agent-runtime-manager.mjs).
+  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"],environmentNames=null,guardedEnvironmentNames=null,environment=null,detached=false,prelude=""}={}){
     const profile=this.get(id);
     if(!profile) throw new Error("Environment profile was not found");
     const executable=String(command||"").trim();
@@ -526,7 +529,7 @@ export class EnvironmentManager {
     const working=String(cwd??profile.cwd??"").trim();
     // A local argv command goes through cross-spawn, so Windows .cmd/.bat launchers run (through cmd.exe, arguments escaped).
     if(profile.type==="local")return crossSpawn(executable,args,{cwd:working||undefined,env:environment&&typeof environment==="object"?environment:this.env,windowsHide:true,stdio,detached});
-    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(hostCommand(profile,executable),args),environmentNames,environment||{},guardedEnvironmentNames),cwd:working||null,stdio,detached});
+    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(hostCommand(profile,executable),args),environmentNames,environment||{},guardedEnvironmentNames),cwd:working||null,stdio,detached,prelude});
   }
 
   async execute(id,{command,cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){
