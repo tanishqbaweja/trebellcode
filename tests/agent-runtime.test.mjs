@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { PassThrough } from "node:stream";
+import { remoteCodexHomeSetup } from "../src/environment-app-server.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 import { AgentRuntimeManager, commandOnPath, openCodeCommandHolder, openCodeInstallOwner, openCodeStatusMessage, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCapabilities, runtimeCompatibility, runtimeExecutableCandidates } from "../src/agent-runtime-manager.mjs";
 import { runtimeCapabilityKinds, sharedRuntimeCapabilities } from "../src/runtime-capabilities.mjs";
@@ -849,6 +852,49 @@ test("remote runtime probes use provider-native auth status without treating unk
     assert.deepEqual([claudeSignedOut.available,claudeSignedOut.authenticated,claudeSignedOut.message],[false,false,"Claude Code is not authenticated. Run `claude auth login` and try again."]);
     claudeAuth={loggedIn:true};assert.equal((await manager.probe("claude")).authenticated,true);
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// A `codex app-server` on stdio as a signed-in host runs it: it answers initialize and account/read, and exits once its input ends
+// or it is killed.
+function signedInCodexAppServer(){
+  const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();
+  let buffer="",exited=false;
+  child.stdin.on("data",chunk=>{
+    buffer+=chunk;
+    for(let at=buffer.indexOf("\n");at>=0;at=buffer.indexOf("\n")){
+      const message=JSON.parse(buffer.slice(0,at));buffer=buffer.slice(at+1);
+      if(message.id===undefined)continue;
+      const result=message.method==="initialize"?{userAgent:"codex_cli_rs/0.0.0"}:message.method==="account/read"?{account:{type:"chatgpt",planType:"plus"},requiresOpenaiAuth:true}:{};
+      child.stdout.write(JSON.stringify({id:message.id,result})+"\n");
+    }
+  });
+  child.kill=()=>{if(exited)return;exited=true;setImmediate(()=>child.emit("exit",0,null))};
+  child.stdin.on("finish",()=>child.kill());
+  return child;
+}
+
+// A remote Codex profile's account check runs in the profile's home (its own CODEX_HOME or its shadow home, set up there first by
+// remoteCodexHomeSetup), so the ready answer it keeps for a minute is that home's: the same profile with another home asks the host
+// again, and the same home answers from the kept one. Kept under the profile alone, the old home's sign-in showed for up to a minute
+// after the home changed in Settings.
+test("a remote Codex account check's kept answer is its home's: another home asks the host again, the same home answers from it",async()=>{
+  const profile={id:"ssh-codex",name:"Build box",type:"ssh",cwd:"/srv/app"},checks=[];
+  const environments={
+    get:id=>id===profile.id?profile:null,
+    executeArgv:async(_id,{args})=>args[0]==="--version"?{exitCode:0,stdout:"codex-cli 0.0.0\n",stderr:""}:{exitCode:1,stdout:"",stderr:"unexpected command"},
+    // Each account check, with the home lines the host runs before it.
+    spawnArgv:(_id,options)=>{checks.push(options.prelude||"");return signedInCodexAppServer()},
+  };
+  const manager=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test"}});
+  const own={id:"codex-remote",kind:"codex",displayName:"Codex",homePath:"~/.codex-own"},moved={...own,homePath:"~/.codex-moved"};
+  // Each probe is fresh, as Settings' listing asks, so each one reads the account: from the host, or from a ready answer kept for
+  // the same home.
+  for(const instance of [own,own,moved,moved,own]){
+    const status=await manager.probe(instance,{environmentId:profile.id,fresh:true});
+    assert.deepEqual([status.available,status.authenticated,status.message],[true,true,"Signed in with ChatGPT Plus"]);
+  }
+  assert.deepEqual(checks,[remoteCodexHomeSetup(own),remoteCodexHomeSetup(moved)]);
+  assert.match(checks[1],/\.codex-moved/);
 });
 
 // Antigravity is the one harness offered the client's files (T3 AntigravityAcpSupport); no harness is offered its terminal.

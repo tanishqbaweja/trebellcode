@@ -11,9 +11,11 @@ import { createRequire, syncBuiltinESMExports } from "node:module";
 import { WebSocket } from "ws";
 import { codexHistoryImportStatus, createGuiServer, offlineE2eFetch, requestAbortController } from "../src/gui-server.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
+import { remoteCodexHomeSetup } from "../src/environment-app-server.mjs";
 import { EnvironmentManager } from "../src/environment-manager.mjs";
 import { ProviderManager } from "../src/provider-manager.mjs";
 import { git } from "../src/git-service.mjs";
+import { TerminalManager } from "../src/terminal-manager.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
@@ -522,6 +524,60 @@ test("leaving a host that stopped answering for Local machine is kept, with Loca
     assert.equal(new TrebellStateStore(env).settings().activeEnvironmentId??null,null,"the next start uses Local machine too");
   }finally{
     AgentRuntimeManager.prototype.probe=originalProbe;EnvironmentManager.prototype.probe=originalEnvironmentProbe;
+    if(gui)await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+// Settings' Sign in for a WSL or SSH Codex profile with a home of its own (CODEX_HOME in Settings) opens a terminal that sets that
+// home up on the host and exports it before `codex login` runs (environment-app-server remoteCodexHomeSetup), so the sign-in writes
+// auth.json where the profile's sessions run. The setup goes to the terminal only: the answer is the sign-in command as before. A
+// profile with no home of its own signs in in the host's default home. The terminal's creation is recorded instead of run, and
+// nothing else runs on the host.
+test("a WSL or SSH Codex profile's Sign in opens its terminal in the profile's own home, and the answer does not carry the home setup",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-remote-codex-sign-in-"));
+  const own={id:"codex-own",kind:"codex",displayName:"Own home",homePath:"~/.codex-own"},plain={id:"codex-plain",kind:"codex",displayName:"Default home"};
+  // WSL profiles run on Windows only (terminalArgvSpec refuses them elsewhere).
+  const profiles=[
+    {id:"ssh-codex",type:"ssh",name:"Build box",host:"build.example.test",user:"dev",port:22,cwd:"/srv/app",enabled:true},
+    ...(process.platform==="win32"?[{id:"wsl-codex",type:"wsl",name:"Ubuntu",distro:"Ubuntu",cwd:"/srv/app",enabled:true}]:[]),
+  ];
+  await writeFile(join(home,"ui-state.json"),JSON.stringify({settings:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",onboardingComplete:true,agentRuntimeInstances:[own,plain]},environments:profiles}));
+  const env={...process.env,TREBELL_HOME:home,CODEX_HOME:join(home,"codex"),CLAUDE_CONFIG_DIR:join(home,"claude"),TREBELL_HISTORY_DISABLE_CLAUDE:"1",OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const created=[],hostRuns=[];
+  const originalCreate=TerminalManager.prototype.create,hostMethods=["spawnSession","execute","executeArgv"],originalHost=Object.fromEntries(hostMethods.map(name=>[name,EnvironmentManager.prototype[name]]));
+  TerminalManager.prototype.create=async function(options){
+    created.push(options);
+    return {id:"sign-in-"+created.length,name:options.name,cwd:options.displayCwd||options.cwd,environmentId:options.environmentId,environmentName:options.environmentName,environmentType:options.environmentType,running:true};
+  };
+  for(const name of hostMethods)EnvironmentManager.prototype[name]=function(...args){hostRuns.push(name);throw new Error("nothing runs on the host in this test")};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:false,env});
+    for(const profile of profiles)for(const instance of [own,plain]){
+      const label=profile.type+" "+instance.id;
+      const answer=await fetch(gui.url+"/api/agent-runtime-auth",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"login",instanceId:instance.id,environmentId:profile.id})}).then(r=>r.json());
+      assert.equal(answer.ok,true,label+": "+answer.error);
+      assert.deepEqual(answer.auth,{runtime:"codex",instanceId:instance.id,name:"Codex",command:"codex",args:["login"]},label+": the answer is the sign-in command, without the home setup");
+      const launch=created.at(-1);
+      assert.equal(launch.shell,profile.type==="wsl"?"wsl.exe":process.platform==="win32"?"ssh.exe":"ssh",label);
+      assert.equal(launch.environmentId,profile.id,label);assert.equal(answer.session.environmentId,profile.id,label);
+      // The command the host runs: its tool PATH, then the profile's home setup, then the sign-in in the profile's folder.
+      const command=String(launch.args.at(-1)),signIn="cd '/srv/app' && exec 'codex' 'login'";
+      if(instance===own){
+        assert.match(command,/^export CODEX_HOME="\$trebell_codex_effective"$/m,label);
+        assert.ok(command.endsWith("\n"+remoteCodexHomeSetup(own)+"\n"+signIn),label+": the home is set up before the sign-in\n"+command);
+      }else{
+        assert.doesNotMatch(command,/CODEX_HOME|trebell_codex/,label);
+        assert.ok(command.endsWith("\nexport PATH\n"+signIn),label+": the sign-in runs in the host's default home\n"+command);
+      }
+    }
+    assert.equal(created.length,profiles.length*2);
+    assert.deepEqual(hostRuns,[]);
+  }finally{
+    TerminalManager.prototype.create=originalCreate;
+    for(const name of hostMethods)EnvironmentManager.prototype[name]=originalHost[name];
     if(gui)await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
