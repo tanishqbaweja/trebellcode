@@ -1,15 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
+import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
+import { isolatedEnv } from "../scripts/perf/lib/server.mjs";
 import { descendants, processTable } from "../scripts/perf/lib/system.mjs";
 
 const require=createRequire(import.meta.url);
@@ -148,5 +151,72 @@ test("B18: a server with Native active runs no child process before a thread ope
     else server.kill("SIGTERM");
     await Promise.race([exited,sleep(10000)]);
     await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100});
+  }
+});
+
+// B25: the server process's own RSS at start was still about 15 MB over the 2026-10-12 baseline (DoD 4's target 3): it imported every
+// harness SDK as it started, though only a thread, probe or import of that harness uses one. On top of what the Native benchmark
+// bundle needs too (zod, ws, cross-spawn, @babel/parser), the Claude Agent SDK, the MCP client (with the zod schemas of every MCP
+// message), OpenCode's SDKs and extract-zip cost a fresh process 29-30 MB of RSS, 17 MB of heap and 620-660 ms (perf/import-cost.mjs;
+// the Claude Agent SDK alone 27 MB and 318 ms). Each now loads the first time something needs it. The server runs as shipped (not
+// mock) on a fresh home with Native active and onboarding still open, with a resolve hook preloaded that lists every module it loads
+// (fixtures/module-load-recorder.mjs): none of these packages once it listens, nor after the requests the app makes as it opens
+// (onboarding's history scan among them), while opening a Claude Code thread, whose CLI is a stand-in (fixtures/fake-claude-cli.mjs),
+// loads the Claude Agent SDK and none of the others.
+const HARNESS_PACKAGES=["@anthropic-ai/claude-agent-sdk","@modelcontextprotocol/sdk","@opencode-ai/sdk","@opencode/client","extract-zip"];
+function loadedPackages(log){
+  let text="";try{text=readFileSync(log,"utf8")}catch{}
+  const names=new Set();
+  for(const url of text.split(/\r?\n/)){
+    const at=url.lastIndexOf("/node_modules/");if(at<0)continue;
+    const [first,second]=url.slice(at+"/node_modules/".length).split("/");names.add(first.startsWith("@")?first+"/"+second:first);
+  }
+  return names;
+}
+test("B25: a fresh server loads no harness SDK as it starts or as the app opens, and a Claude Code thread loads only Claude's",{timeout:120000},async()=>{
+  const run=await mkdtemp(join(tmpdir(),"trebell-budget-b25-")),[port,appPort]=await Promise.all([freePort(),freePort()]),log=join(run,"modules.log");
+  const env=isolatedEnv({home:join(run,"home"),runDir:run,extra:{TREBELL_GUI_MOCK:"",TREBELL_MODULE_LOAD_LOG:log}});delete env.OPENAI_API_KEY;
+  // The harness check runs the CLI with arguments: a .mjs file takes them through its shebang on Windows, a shell script elsewhere.
+  const fakeClaude=fileURLToPath(new URL("./fixtures/fake-claude-cli.mjs",import.meta.url));let claude=fakeClaude;
+  if(process.platform!=="win32"){claude=join(run,"claude");await writeFile(claude,`#!/bin/sh\nexec "${process.execPath}" "${fakeClaude}" "$@"\n`);await chmod(claude,0o755)}
+  const state=new TrebellStateStore(env);
+  state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeInstances:[{id:"claude-default",kind:"claude",displayName:"Claude Code",enabled:true,binaryPath:claude}]});state.close();
+  const threads=new AgentThreadStore(env),claudeThread=threads.create({runtime:"claude",cwd:run,providerSessionId:"",providerMeta:{runtimeInstanceId:"claude-default"}});
+  threads.update(claudeThread.id,{runtimeInstanceId:"claude-default"});threads.close();
+  const recorder=new URL("./fixtures/module-load-recorder.mjs",import.meta.url).href;
+  const server=spawn(process.execPath,["--import",recorder,fileURLToPath(new URL("../src/gui-server.mjs",import.meta.url)),"--port",String(port),"--app-port",String(appPort)],{env,windowsHide:true,stdio:"ignore"});
+  const exited=new Promise(resolve=>server.once("exit",resolve)),url="http://127.0.0.1:"+port;
+  const harnessPackages=()=>{const loaded=loadedPackages(log);return HARNESS_PACKAGES.filter(name=>loaded.has(name))};
+  let socket=null;
+  try{
+    let listening=false;
+    for(let i=0;i<600&&!listening&&server.exitCode===null;i++){listening=await fetch(url+"/api/health").then(response=>response.ok,()=>false);if(!listening)await sleep(50)}
+    assert.ok(listening,"the server listens");
+    assert.ok(loadedPackages(log).has("ws"),"the recorder lists the packages the server imports");
+    assert.deepEqual(harnessPackages(),[],"harness packages loaded once the server listens");
+    // The app's first load (App.jsx): the catalog, themes, projects, bootstrap and state at once; onboarding's history scan; the
+    // Native transport's initialize and thread list; and Settings' runtime and stats poll. Work they start has a second to load more.
+    const get=path=>fetch(url+path).then(response=>response.text());
+    await Promise.all(["/api/models","/api/environment/themes","/api/projects","/api/bootstrap","/api/state"].map(get));
+    await get("/api/history-import");
+    socket=new WebSocket(url.replace(/^http/,"ws")+"/api/agent/ws");await new Promise((resolve,reject)=>{socket.once("open",resolve);socket.once("error",reject)});
+    let nextId=1;const pending=new Map();
+    socket.on("message",raw=>{const message=JSON.parse(String(raw)),reply=pending.get(message.id);if(!reply)return;pending.delete(message.id);if(message.error)reply.reject(new Error(message.error.message));else reply.resolve(message.result)});
+    const rpc=(method,params={})=>new Promise((resolve,reject)=>{const id=nextId++;pending.set(id,{resolve,reject});socket.send(JSON.stringify({id,method,params}))});
+    await rpc("initialize",{clientInfo:{name:"trebell-code",title:"Trebell Code",version:"0.0.0"},capabilities:{experimentalApi:true}});socket.send(JSON.stringify({method:"initialized",params:{}}));
+    await rpc("thread/list",{limit:100,sortKey:"updated_at",sortDirection:"desc"});
+    await Promise.all(["/api/runtime","/api/stats","/api/settings"].map(get));
+    await sleep(1000);
+    assert.deepEqual(harnessPackages(),[],"harness packages loaded after the app's opening requests");
+    // Opening the Claude Code thread starts its session, which drives Claude Code through the Claude Agent SDK.
+    const opened=await rpc("thread/resume",{threadId:claudeThread.id,cwd:run});
+    assert.equal(opened.thread.id,claudeThread.id);
+    assert.deepEqual(harnessPackages(),["@anthropic-ai/claude-agent-sdk"],"harness packages loaded once a Claude Code thread opened");
+  }finally{
+    socket?.terminate();
+    if(process.platform==="win32")await new Promise(resolve=>{const killer=spawn("taskkill",["/PID",String(server.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});killer.once("exit",resolve);killer.once("error",resolve)});
+    else server.kill("SIGTERM");
+    await Promise.race([exited,sleep(10000)]);
+    await rm(run,{recursive:true,force:true,maxRetries:20,retryDelay:100});
   }
 });
