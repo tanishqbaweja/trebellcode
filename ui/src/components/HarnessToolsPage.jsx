@@ -19,6 +19,7 @@ const LOAD_FAILURES={
 };
 const loadFailure=(name,error)=>failureText(LOAD_FAILURES[name]||"Could not load "+name,error);
 const pluginLabel=plugin=>plugin?.interface?.displayName||plugin?.name||plugin?.id||"the plugin";
+const shareId=item=>item?.plugin?.remotePluginId||item?.plugin?.shareContext?.remotePluginId;
 
 // A header badge is a bare count, or a label that says what it counts when the card lists more than one kind of row.
 function Section({title,icon:Icon,count,badge,children}){
@@ -68,8 +69,10 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [loading,setLoading]=useState(true);
   const refreshRun=useRef(0);
   // Whether the page has shown its not-connected state since its last refresh. The refresh run as Codex is back reads the lists again
-  // but keeps what the actions said, so an action the dropped connection cut off is told once the page is back.
-  const away=useRef(false);
+  // but keeps what the actions said, so an action the dropped connection cut off is told once the page is back. A dropped connection
+  // loses only Codex's answer, so that refresh drops the line of a share action the list read again shows done (shareDone holds, for
+  // each share action's line, how the list shows that action done): the line said it failed beside a list that showed it done.
+  const away=useRef(false),shareDone=useRef({});
   const [busy,setBusy]=useState("");
   const [marketplaceSource,setMarketplaceSource]=useState("");
   const [migrations,setMigrations]=useState(null);
@@ -153,6 +156,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       platform==="win32"?load("windowsSandbox/readiness",undefined):Promise.resolve(null),
     ]);
     if(!latest())return;
+    if(back&&sharedPlugins)setErrors(prev=>Object.fromEntries(Object.entries(prev).filter(([name])=>!shareDone.current[name]?.(sharedPlugins.data||[]))));
     setData(current=>({
       ...current,
       ...(permissions!==null?{permissions:permissions?.data||[]}:{}),
@@ -280,11 +284,13 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     window.addEventListener("trebell:windows-sandbox-setup",completed);window.addEventListener("trebell:windows-sandbox-warning",warning);
     return()=>{window.removeEventListener("trebell:windows-sandbox-setup",completed);window.removeEventListener("trebell:windows-sandbox-warning",warning)};
   },[rpc,rpcStatus,projectPath,activeThread?.id,platform]);
-  // The not-connected state is short, so a dropped connection takes the page to its top: the place the person scrolled to is noted
-  // as they scroll and given back as the cards come back.
+  // While Codex is away the page says it is not connected and keeps its cards hidden as the person left them: drawn again as Codex came
+  // back, they came back with what the person had opened closed, shorter above the card they were at, which so stood higher. The short
+  // not-connected state takes the page to its top, so the place the person scrolled to is noted as they scroll the cards and given
+  // back as the cards show again.
   const pageRef=useRef(null),place=useRef(0),connected=rpcStatus==="connected";
   useLayoutEffect(()=>{
-    const scroller=pageRef.current?.parentElement;if(!scroller)return;
+    const scroller=pageRef.current?.parentElement;if(!scroller||!connected)return;
     scroller.scrollTop=place.current;const note=()=>{place.current=scroller.scrollTop};
     scroller.addEventListener("scroll",note);return()=>scroller.removeEventListener("scroll",note);
   },[connected]);
@@ -373,25 +379,29 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     try{await request("plugin/share/save",{pluginPath,...(plugin.remotePluginId?{remotePluginId:plugin.remotePluginId}:{}),discoverability:plugin.shareContext?.discoverability||"PRIVATE",shareTargets:(plugin.shareContext?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}))});await refresh()}
     catch(error){setErrors(prev=>({...prev,"plugin/share/save":failureText("Could not share "+pluginLabel(plugin),error)}))}finally{setBusy("")}
   }
+  // A Shared plugins action clears its line as it starts, as the page's other actions do (the line saying the last try failed stayed
+  // beside Checking out…), and a failure notes how the list shows the action done (done).
+  async function shareAction(name,busyKey,params,failure,done){
+    setBusy(busyKey);setErrors(prev=>({...prev,[name]:null}));
+    try{await request(name,params);await refresh()}
+    catch(error){shareDone.current[name]=done;setErrors(prev=>({...prev,[name]:failureText(failure,error)}))}finally{setBusy("")}
+  }
   async function checkoutSharedPlugin(item){
-    const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("checkout:"+remotePluginId);
-    try{await request("plugin/share/checkout",{remotePluginId});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"plugin/share/checkout":failureText("Could not check out "+pluginLabel(item.plugin),error)}))}finally{setBusy("")}
+    const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;
+    await shareAction("plugin/share/checkout","checkout:"+remotePluginId,{remotePluginId},"Could not check out "+pluginLabel(item.plugin),list=>list.some(entry=>shareId(entry)===remotePluginId&&entry.localPluginPath));
   }
   // A deleted share is gone from the account for everyone it was shared with, so Delete share asks first, in the app's dialog.
   async function deleteSharedPlugin(item){
     const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;
     const named=pluginLabel(item.plugin)!=="the plugin"?`“${pluginLabel(item.plugin)}”`:"this plugin";
     if(!await askConfirm(`Delete the share of ${named}? Everyone it was shared with loses it, and this cannot be undone.`,{confirm:"Delete share"}))return;
-    setBusy("delete-share:"+remotePluginId);
-    try{await request("plugin/share/delete",{remotePluginId});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"plugin/share/delete":failureText("Could not delete the share of "+pluginLabel(item.plugin),error)}))}finally{setBusy("")}
+    await shareAction("plugin/share/delete","delete-share:"+remotePluginId,{remotePluginId},"Could not delete the share of "+pluginLabel(item.plugin),list=>!list.some(entry=>shareId(entry)===remotePluginId));
   }
+  // The visibility chosen is in busy, so the row shows it while Codex answers.
   async function updateShareDiscoverability(item,discoverability){
-    const context=item?.plugin?.shareContext;const remotePluginId=item?.plugin?.remotePluginId||context?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("share-visibility:"+remotePluginId);
+    const context=item?.plugin?.shareContext;const remotePluginId=item?.plugin?.remotePluginId||context?.remotePluginId;if(!rpc||!remotePluginId)return;
     const shareTargets=(context?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}));
-    try{await request("plugin/share/updateTargets",{remotePluginId,discoverability,shareTargets});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"plugin/share/updateTargets":failureText("Could not change who can find "+pluginLabel(item.plugin),error)}))}finally{setBusy("")}
+    await shareAction("plugin/share/updateTargets","share-visibility:"+remotePluginId+"="+discoverability,{remotePluginId,discoverability,shareTargets},"Could not change who can find "+pluginLabel(item.plugin),list=>list.some(entry=>shareId(entry)===remotePluginId&&entry.plugin?.shareContext?.discoverability===discoverability));
   }
   async function toggleFeature(feature){
     if(!rpc)return;setBusy("feature:"+feature.name);setErrors(prev=>({...prev,"experimentalFeature/enablement/set":null}));
@@ -538,9 +548,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     finally{setBusy("")}
   }
 
-  if(rpcStatus!=="connected")return <div className="empty-state capabilities-empty-state"><Wrench size={24}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>;
-
-  return <div className="capabilities-page" ref={pageRef}>
+  return <>
+    {!connected&&<div className="empty-state capabilities-empty-state"><Wrench size={24}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>}
+    <div className="capabilities-page" ref={pageRef} hidden={!connected}>
     <div className="capabilities-toolbar"><div><h2>Harness capabilities</h2><p>Live inventory from the bundled Codex app-server. These are real runtime capabilities, not a hard-coded parity list.</p></div><button onClick={()=>{refresh();onSkillsReload?.()}} disabled={loading}><RefreshCw size={13}/>{loading?"Refreshing…":"Refresh"}</button></div>
 
     <div className="capability-grid">
@@ -661,8 +671,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
 
       <Section title="Shared plugins" icon={Blocks} count={counted(data.sharedPlugins,"plugin/share/list")}>
         <p>Codex plugin sharing is account-backed. Local plugins are first shared privately; visibility can then be changed without inventing recipients.</p>
-        {/* The checkout or delete Codex is still answering says so on its row, marked busy; the page's other actions wait. */}
-        <div className="capability-list shared-plugin-list">{(data.sharedPlugins||[]).map(item=>{const plugin=item.plugin||{};const context=plugin.shareContext||{};const remotePluginId=plugin.remotePluginId||context.remotePluginId,checking=busy==="checkout:"+remotePluginId,deleting=busy==="delete-share:"+remotePluginId;return <div key={remotePluginId||plugin.id}><div><strong>{plugin.name||plugin.id}</strong><span>{plugin.version||plugin.localVersion||"shared plugin"}{context.creatorName?` · ${context.creatorName}`:""}</span></div><div className="capability-inline-actions">{context.shareUrl&&<button onClick={()=>openWebLink(context.shareUrl)}>Open</button>}{!item.localPluginPath&&remotePluginId&&<button onClick={()=>checkoutSharedPlugin(item)} disabled={!!busy} aria-busy={checking||undefined}>{checking?"Checking out…":"Checkout"}</button>}{context.discoverability&&<select value={context.discoverability} onChange={e=>updateShareDiscoverability(item,e.target.value)} disabled={!!busy}><option value="PRIVATE">Private</option><option value="UNLISTED">Unlisted</option><option value="LISTED">Listed</option></select>}{remotePluginId&&<button onClick={()=>deleteSharedPlugin(item)} disabled={!!busy} aria-busy={deleting||undefined}>{deleting?"Deleting…":"Delete share"}</button>}</div></div>})}</div>
+        {/* The checkout, delete or visibility change Codex is still answering says so on its row, marked busy, and a visibility change
+            shows the visibility chosen (it showed the old one, as if refused); the page's other actions wait. */}
+        <div className="capability-list shared-plugin-list">{(data.sharedPlugins||[]).map(item=>{const plugin=item.plugin||{};const context=plugin.shareContext||{};const remotePluginId=plugin.remotePluginId||context.remotePluginId,checking=busy==="checkout:"+remotePluginId,deleting=busy==="delete-share:"+remotePluginId,visibilityKey="share-visibility:"+remotePluginId+"=",changing=busy.startsWith(visibilityKey)&&busy.slice(visibilityKey.length);return <div key={remotePluginId||plugin.id}><div><strong>{plugin.name||plugin.id}</strong><span>{plugin.version||plugin.localVersion||"shared plugin"}{context.creatorName?` · ${context.creatorName}`:""}</span></div><div className="capability-inline-actions">{context.shareUrl&&<button onClick={()=>openWebLink(context.shareUrl)}>Open</button>}{!item.localPluginPath&&remotePluginId&&<button onClick={()=>checkoutSharedPlugin(item)} disabled={!!busy} aria-busy={checking||undefined}>{checking?"Checking out…":"Checkout"}</button>}{context.discoverability&&<select value={changing||context.discoverability} onChange={e=>updateShareDiscoverability(item,e.target.value)} disabled={!!busy} aria-busy={!!changing||undefined}><option value="PRIVATE">Private</option><option value="UNLISTED">Unlisted</option><option value="LISTED">Listed</option></select>}{changing&&<em>saving…</em>}{remotePluginId&&<button onClick={()=>deleteSharedPlugin(item)} disabled={!!busy} aria-busy={deleting||undefined}>{deleting?"Deleting…":"Delete share"}</button>}</div></div>})}</div>
         {!data.sharedPlugins?.length&&<EmptyState loaded={!!data.sharedPlugins} loading={loading} error={errors["plugin/share/list"]} pending="Loading shared plugins…">No shared plugins were returned for this account.</EmptyState>}
         <ErrorLine value={errors["plugin/share/list"]}/><ErrorLine value={errors["plugin/share/checkout"]}/><ErrorLine value={errors["plugin/share/delete"]}/><ErrorLine value={errors["plugin/share/updateTargets"]}/>
       </Section>
@@ -719,5 +730,6 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <ErrorLine value={errors["externalAgentConfig/detect"]}/><ErrorLine value={errors["externalAgentConfig/import"]}/><ErrorLine value={errors["externalAgentConfig/import/readHistories"]}/>
       </Section>
     </div>
-  </div>;
+    </div>
+  </>;
 }
