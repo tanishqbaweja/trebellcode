@@ -389,12 +389,13 @@ test("a double click or Enter held on Capture now takes one SnapShot, and a pres
   await page.addInitScript(()=>{
     // As desktop/main.mjs takes snapshot:capture: the foreground window is read and written as a PNG (250 ms, and for as long as
     // window.__captureHeld holds), then snapshot:captured goes to the window and the call answers. window.__captures counts the calls.
+    // A save fails with window.__configureFails, as one whose shortcut another application holds does.
     const png="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",taken=new Map(),told=new Set();
-    window.__captures=0;window.__captureHeld=null;window.__captureFails=null;
+    window.__captures=0;window.__captureHeld=null;window.__captureFails=null;window.__configureFails=null;
     Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
       snapshots:{
         get:async()=>({enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false,playSound:true,sound:"soft-pop",flash:true,animations:true,registered:false,platform:"win32",pending:taken.size}),
-        configure:async value=>value,pending:async()=>[],
+        configure:async value=>{if(window.__configureFails)throw new Error(window.__configureFails);return value},pending:async()=>[],
         read:async id=>({...taken.get(id),dataBase64:png}),ack:async id=>{taken.delete(id);return {ok:true,id}},
         capture:async()=>{
           const id="snapshot-"+(++window.__captures)+"-e2e";
@@ -442,12 +443,32 @@ test("a double click or Enter held on Capture now takes one SnapShot, and a pres
   // A capture that fails says why on the card and lets go of Capture now, with the keyboard still on it for the next press.
   shownBefore=await snapshots.count();
   await openSnapShots();
-  await page.evaluate(()=>{window.__captureFails="Could not match the active window (Notes - Notepad) to a capturable source."});
+  const failure="Could not match the active window (Notes - Notepad) to a capturable source.",failed=card.locator(".provider-status-error");
+  const hold=()=>page.evaluate(()=>{window.__captureHeld=new Promise(resolve=>{window.__captureFree=resolve})}),free=()=>page.evaluate(()=>{window.__captureHeld=null;window.__captureFree()});
+  await page.evaluate(reason=>{window.__captureFails=reason},failure);
   await capture.focus();await page.keyboard.press("Enter");
-  await expect(card.locator(".provider-status-error")).toHaveText("Could not match the active window (Notes - Notepad) to a capturable source.");
+  await expect(failed).toHaveText(failure);
   await expect(capture).toHaveText("Capture now");await expect(capture).not.toHaveAttribute("aria-disabled","true");await expect(capture).toBeFocused();
-  capturesBefore=await captures();
+  // The next press clears that line as its capture starts. The line stayed above Capturing…, so the card said it was capturing and
+  // that it could not, and a capture that failed again the same way left the card as it was; one that fails again says why anew.
+  await hold();await page.evaluate(reason=>{window.__captureFails=reason},failure);
   await page.keyboard.press("Enter");
+  await expect(capture).toHaveText("Capturing…");
+  await expect(failed,"a capture being taken clears the line saying why the last one failed").toHaveCount(0);
+  await shootModes(page,"snapshots-capturing-after-failure",{show:card});
+  await free();
+  await expect(failed,"a capture that fails again says why anew").toHaveText(failure);
+  // The line of the card's other actions stays through a capture: a save that failed is still not saved.
+  const reserved="Shortcut CommandOrControl+Shift+S is already reserved by another application.";
+  await page.evaluate(reason=>{window.__configureFails=reason},reserved);
+  await card.getByLabel("Flash captured window").click();
+  await expect(failed).toHaveText(reserved);
+  await page.evaluate(()=>{window.__configureFails=null});
+  capturesBefore=await captures();
+  await hold();await capture.focus();await page.keyboard.press("Enter");
+  await expect(capture).toHaveText("Capturing…");
+  await expect(failed,"a capture leaves the line of a save that failed").toHaveText(reserved);
+  await free();
   expect(await took(capturesBefore,shownBefore),"the next press takes a SnapShot").toEqual({captures:1,shown:1});
 });
 

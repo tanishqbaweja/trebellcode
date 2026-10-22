@@ -252,11 +252,14 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [snapshotMessage,setSnapshotMessage]=useState("");
   // Capture now takes one SnapShot a press: the rest of the press (the second click of a double click, Enter held) does nothing, as a
   // thread's menu item runs, and a press while its SnapShot is being taken takes none. It says it is capturing then (aria-disabled, so
-  // the keyboard stays on it when the capture fails).
-  const [snapshotCapturing,setSnapshotCapturing]=useState(false);
+  // the keyboard stays on it when the capture fails). As it starts it clears the line saying why the last capture failed, and only
+  // that line (a save's Saving…, notes and failures stay): the line stayed above Capturing…, and a retry that failed the same way left
+  // the card as it was.
+  const [snapshotCapturing,setSnapshotCapturing]=useState(false),snapshotFailure=useRef("");
   function captureSnapshot(event){
     ignorePressRest(!event.detail);if(snapshotCapturing)return;
-    setSnapshotCapturing(true);window.trebellDesktop.snapshots.capture().catch(error=>setSnapshotMessage(error.message)).finally(()=>setSnapshotCapturing(false));
+    setSnapshotCapturing(true);setSnapshotMessage(current=>current===snapshotFailure.current?"":current);
+    window.trebellDesktop.snapshots.capture().catch(error=>setSnapshotMessage(snapshotFailure.current=error.message)).finally(()=>setSnapshotCapturing(false));
   }
   const [browserImport,setBrowserImport]=useState({sources:[],platform:null});
   const [browserImportProfile,setBrowserImportProfile]=useState("");
