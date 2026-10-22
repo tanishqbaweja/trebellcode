@@ -9,7 +9,7 @@ import {
   environmentWorkspaceWriteFile,
   environmentWorkspacePath,
 } from "./workspace.mjs";
-import { buildRuntimeEnvironment, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
+import { buildRuntimeEnvironment, runtimeEnvironmentKeys, TOOLCHAIN_ENVIRONMENT_KEYS } from "./runtime-environment.mjs";
 import { normalizeNativeCommandArguments } from "./native-command-argv.mjs";
 import { conventionalWorkspaceAlias, conventionalWorkspaceFallback, rootRelativeFallback } from "./native-workspace-path.mjs";
 import { applyReplaceTextHunks, compactReplaceDiff, replaceTextHunks } from "./native-replace-text.mjs";
@@ -268,9 +268,10 @@ async function runArgv({root,environments,environmentId,environment,platform,com
   let child;
   const processGroup=platform!=="win32";
   // cross-spawn runs Windows .cmd/.bat launchers (npm, npx, yarn, pnpm) through cmd.exe with escaped arguments, as the
-  // harness launchers do; on other platforms it is child_process.spawn.
-  if(profile&&profile.type!=="local")child=environments.spawnArgv(profile.id,{command,args,cwd:located.path,stdio:["ignore","pipe","pipe"],environmentNames:runtimeEnvironmentKeys("native"),detached:processGroup});
-  else child=crossSpawn(command,args,{cwd:located.path,env:buildRuntimeEnvironment("native",{parent:environment,platform}),windowsHide:true,stdio:["ignore","pipe","pipe"],detached:processGroup});
+  // harness launchers do; on other platforms it is child_process.spawn. The command gets the project's toolchain variables
+  // besides the baseline (TOOLCHAIN_ENVIRONMENT_KEYS); a remote host checks its own values of them.
+  if(profile&&profile.type!=="local")child=environments.spawnArgv(profile.id,{command,args,cwd:located.path,stdio:["ignore","pipe","pipe"],environmentNames:runtimeEnvironmentKeys("native"),guardedEnvironmentNames:TOOLCHAIN_ENVIRONMENT_KEYS,detached:processGroup});
+  else child=crossSpawn(command,args,{cwd:located.path,env:buildRuntimeEnvironment("native",{parent:environment,platform,toolchain:true}),windowsHide:true,stdio:["ignore","pipe","pipe"],detached:processGroup});
   const result=await captureProcess(child,{signal,timeoutMs,maxOutput,platform,processGroup});
   return {...result,durationMs:Date.now()-started,cwd:located.path,command,args};
 }

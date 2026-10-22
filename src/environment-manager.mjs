@@ -5,7 +5,7 @@ import { createReadStream } from "node:fs";
 import { lstat, readFile, readdir, stat } from "node:fs/promises";
 import { basename, join, resolve, posix } from "node:path";
 import { trebellHome } from "./paths.mjs";
-import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
+import { buildRuntimeEnvironment, CREDENTIAL_SETTING_WORDS } from "./runtime-environment.mjs";
 
 const MAX_OUTPUT=2*1024*1024;
 const MAX_THEME_FILES=32;
@@ -54,18 +54,30 @@ export function remoteCommandWords(command,args=[]){
 }
 function shellCommand(command,args=[]){return remoteCommandWords(command,args)}
 
-function isolatedRemoteEnvironment(command,names=[],environment={}){
-  const approved=[...new Set((Array.isArray(names)?names:[]).map(value=>String(value||"").trim()).filter(name=>/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))];
-  const explicit=Object.entries(environment&&typeof environment==="object"?environment:{})
-    .filter(([name,value])=>/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(name))&&value!=null)
-    .slice(0,200)
-    .map(([name,value])=>String(name)+"="+quotePosix(String(value)));
-  if(!approved.length&&!explicit.length)return command;
+// The case patterns of a value that carries credentials, as carriesCredentials sees them (in a pattern any @ after a :// counts).
+const REMOTE_CREDENTIAL_PATTERNS=["*://*@*",...CREDENTIAL_SETTING_WORDS.map(word=>"*"+[...word].map(letter=>/[a-z]/i.test(letter)?"["+letter.toUpperCase()+letter.toLowerCase()+"]":letter).join("")+"=*")].join("|");
+
+// names are forwarded from the host's shell as they are there. guarded names (Native's toolchain variables) are forwarded only
+// when the host sets them to something, so an unset one stays unset (cargo refuses an empty CARGO_TARGET_DIR, make runs an empty
+// CC), and not when the value carries credentials: a sh on the host checks each before env -i clears the rest.
+function isolatedRemoteEnvironment(command,names=[],environment={},guarded=[]){
+  const valid=name=>/^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+  const approved=[...new Set((Array.isArray(names)?names:[]).map(value=>String(value||"").trim()).filter(valid))];
+  const entries=Object.entries(environment&&typeof environment==="object"?environment:{})
+    .filter(([name,value])=>valid(String(name))&&value!=null)
+    .slice(0,200);
+  const explicit=entries.map(([name,value])=>String(name)+"="+quotePosix(String(value)));
+  const taken=new Set([...approved,...entries.map(([name])=>String(name))]);
+  const optional=[...new Set((Array.isArray(guarded)?guarded:[]).map(value=>String(value||"").trim()).filter(name=>valid(name)&&!taken.has(name)))];
+  if(!approved.length&&!explicit.length&&!optional.length)return command;
   const assignments=[...approved.map(name=>name+'="$'+'{'+name+'-}"'),...explicit].join(" ");
-  return "env -i "+assignments+" "+command;
+  if(!optional.length)return "env -i "+assignments+" "+command;
+  const script="for trebell_name in "+optional.join(" ")+'; do eval "trebell_value=\\${$trebell_name-}"; [ -n "$trebell_value" ] || continue; '+
+    "case $trebell_value in "+REMOTE_CREDENTIAL_PATTERNS+') continue;; esac; set -- "$trebell_name=$trebell_value" "$@"; done; exec env -i '+assignments+' "$@"';
+  return "sh -c "+quotePosix(script)+" trebell "+command;
 }
 
-export function remoteEnvironmentCommand(command,names=[],environment={}){return isolatedRemoteEnvironment(String(command||""),names,environment)}
+export function remoteEnvironmentCommand(command,names=[],environment={},guarded=[]){return isolatedRemoteEnvironment(String(command||""),names,environment,guarded)}
 export function remoteTransportEnvironment(parent=process.env,{platform=process.platform}={}){
   return buildRuntimeEnvironment("native",{parent,approved:REMOTE_TRANSPORT_ENV_KEYS,platform});
 }
@@ -480,7 +492,7 @@ export class EnvironmentManager {
     throw new Error("Unsupported environment type");
   }
 
-  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"],environmentNames=null,environment=null,detached=false}={}){
+  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"],environmentNames=null,guardedEnvironmentNames=null,environment=null,detached=false}={}){
     const profile=this.get(id);
     if(!profile) throw new Error("Environment profile was not found");
     const executable=String(command||"").trim();
@@ -488,7 +500,7 @@ export class EnvironmentManager {
     const working=String(cwd??profile.cwd??"").trim();
     // A local argv command goes through cross-spawn, so Windows .cmd/.bat launchers run (through cmd.exe, arguments escaped).
     if(profile.type==="local")return crossSpawn(executable,args,{cwd:working||undefined,env:environment&&typeof environment==="object"?environment:this.env,windowsHide:true,stdio,detached});
-    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(hostCommand(profile,executable),args),environmentNames,environment||{}),cwd:working||null,stdio,detached});
+    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(hostCommand(profile,executable),args),environmentNames,environment||{},guardedEnvironmentNames),cwd:working||null,stdio,detached});
   }
 
   async execute(id,{command,cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){

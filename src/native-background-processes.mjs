@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import crossSpawn from "cross-spawn";
 import { randomUUID } from "node:crypto";
-import { buildRuntimeEnvironment, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
+import { buildRuntimeEnvironment, runtimeEnvironmentKeys, TOOLCHAIN_ENVIRONMENT_KEYS } from "./runtime-environment.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 
 const DEFAULT_OUTPUT_BYTES=512*1024;
@@ -126,13 +126,15 @@ export class NativeBackgroundProcessManager{
     const executable=String(command||"").trim();if(!threadId)throw new Error("Native background process requires a thread");if(!executable)throw new Error("command is required");
     const commandArgs=Array.isArray(args)?args.map(String).slice(0,256):[],profile=environmentId&&this.environments?this.environments.get(environmentId):null,remote=Boolean(profile&&profile.type!=="local");
     const safeNames=Array.isArray(environmentNames)&&environmentNames.length?environmentNames:runtimeEnvironmentKeys("native");
+    // As a terminal command does, the process gets the project's toolchain variables besides the baseline; a remote host checks
+    // its own values of them.
     let child;
     if(profile&&this.environments){
-      child=this.environments.spawnArgv(profile.id,{command:executable,args:commandArgs,cwd,stdio:["ignore","pipe","pipe"],environmentNames:safeNames,environment:profile.type==="local"?buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}):null,detached:profile.type==="local"&&this.platform!=="win32"});
+      child=this.environments.spawnArgv(profile.id,{command:executable,args:commandArgs,cwd,stdio:["ignore","pipe","pipe"],environmentNames:safeNames,guardedEnvironmentNames:TOOLCHAIN_ENVIRONMENT_KEYS,environment:profile.type==="local"?buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform,toolchain:true}):null,detached:profile.type==="local"&&this.platform!=="win32"});
     }else{
       // cross-spawn runs Windows .cmd/.bat launchers (npm, npx, yarn, pnpm) through cmd.exe with escaped arguments, as the
       // harness launchers do; on other platforms it is child_process.spawn.
-      child=crossSpawn(executable,commandArgs,{cwd,env:buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}),windowsHide:true,stdio:["ignore","pipe","pipe"],detached:this.platform!=="win32"});
+      child=crossSpawn(executable,commandArgs,{cwd,env:buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform,toolchain:true}),windowsHide:true,stdio:["ignore","pipe","pipe"],detached:this.platform!=="win32"});
     }
     const id=randomUUID(),handle=this.#nextHandle(String(threadId)),record={id,handle,threadId:String(threadId),command:executable,args:commandArgs,label:processLabel(executable,commandArgs),cwd:String(cwd||""),environmentId:profile?.id||null,environmentType:profile?.type||"local",remote,child,osPid:child.pid??null,running:true,exitCode:null,signal:null,stdout:"",stderr:"",written:{stdout:0,stderr:0},truncated:false,maxOutputBytes:boundedBytes(maxOutputBytes,this.maxOutputBytes),createdAt:Date.now(),updatedAt:Date.now(),waiters:new Set()};
     this.processes.set(id,record);this.handles.set(record.threadId+"\u0000"+handle,id);child.stdout?.on("data",chunk=>this.#append(record,"stdout",chunk));child.stderr?.on("data",chunk=>this.#append(record,"stderr",chunk));
