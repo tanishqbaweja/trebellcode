@@ -89,6 +89,33 @@ test("a toolchain variable whose value carries credentials is dropped while its 
   assert.equal(approved.MAVEN_OPTS,"-Dhttps.proxyPassword=fixture-pass");
 });
 
+// JAVA_TOOL_OPTIONS, which every JVM prints as it starts ("Picked up JAVA_TOOL_OPTIONS: ..."), and the build tools' option strings
+// can hold a credential in a documented form that no password= shows: the AWS SDK's -Daws.secretKey, New Relic's license_key,
+// SonarQube's -Dsonar.login, an OpenTelemetry Authorization header, and an Oracle connect string's user/password@.
+test("a JVM or build option string holding a credential in a documented form is dropped, and its plain settings pass",()=>{
+  const build=values=>buildRuntimeEnvironment("native",{parent:{PATH:"/bin",...values},platform:"linux",toolchain:true});
+  for(const [name,value] of [
+    ["JAVA_TOOL_OPTIONS","-Daws.accessKeyId=AKIAFIXTURE -Daws.secretKey=fixture-secret"],
+    ["JAVA_TOOL_OPTIONS","-Daws.secretAccessKey=fixture-secret"],
+    ["MAVEN_OPTS","-Xmx2g -Dnewrelic.config.license_key=fixture-license"],
+    ["GRADLE_OPTS","-Dsonar.login=fixture-token"],
+    ["JAVA_OPTS","-Ddb.url=jdbc:oracle:thin:scott/tiger@//db.example:1521/svc"],
+    ["MAVEN_ARGS","-Ddb=scott/tiger@orcl"],
+    ["SBT_OPTS","-Dotel.exporter.otlp.headers=Authorization=Bearer fixture"],
+  ])assert.equal(build({[name]:value})[name],undefined,value);
+  for(const [name,value] of [
+    ["JAVA_TOOL_OPTIONS","-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8"],
+    ["JAVA_OPTS","-Ddb.url=jdbc:oracle:thin:@//db.example:1521/svc"],
+    ["MAVEN_OPTS","-Dmaven.repo.local=/root/.m2/repository -Djavax.net.ssl.trustStore=/etc/keys/cacerts"],
+    // A path's folder before an @ is no user/password@: Homebrew's versioned formulae, Go's module cache.
+    ["LDFLAGS","-L/opt/homebrew/opt/openssl@3/lib -Wl,-rpath,/opt/homebrew/opt/openssl@3/lib"],
+    ["PKG_CONFIG_PATH","/opt/homebrew/opt/libffi/lib/pkgconfig:/opt/homebrew/opt/openssl@3/lib/pkgconfig"],
+    ["CGO_CFLAGS","-I/go/pkg/mod/github.com/fixture/mod@v1.2.3/include"],
+    ["NODE_OPTIONS","--max-old-space-size=4096 --require /srv/node_modules/@babel/register"],
+    ["UV_PYTHON","cpython@3.12"],
+  ])assert.equal(build({[name]:value})[name],value,value);
+});
+
 test("on Windows Native's commands find the toolchain variables whatever their case, and the places Windows toolchains look",()=>{
   const env=buildRuntimeEnvironment("native",{parent:{
     Path:"C:\\Tools",Java_Home:"C:\\jdk-21",GoPath:"C:\\Users\\me\\go",PROGRAMFILES:"C:\\Program Files","ProgramFiles(x86)":"C:\\Program Files (x86)",

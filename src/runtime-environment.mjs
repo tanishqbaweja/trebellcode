@@ -53,7 +53,7 @@ export const TOOLCHAIN_ENVIRONMENT_KEYS=Object.freeze([
   "GOPATH","GOROOT","GOBIN","GOMODCACHE","GOCACHE","GOENV","GOFLAGS","GO111MODULE","GOTOOLCHAIN","GOWORK","GOPRIVATE","GONOPROXY",
   "GONOSUMDB","CGO_ENABLED","CGO_CFLAGS","CGO_CPPFLAGS","CGO_CXXFLAGS","CGO_LDFLAGS",
   // JVM: the JDK, Maven, Gradle, Ant, SDKMAN and the Android SDK, and the options the JVM and the build tools read (a local
-  // repository given as -Dmaven.repo.local).
+  // repository given as -Dmaven.repo.local, -o for offline, -Dfile.encoding); an option string holding a credential is dropped.
   "JAVA_HOME","JDK_HOME","JRE_HOME","JAVA_TOOL_OPTIONS","JAVA_OPTS","MAVEN_HOME","M2_HOME","MAVEN_OPTS","MAVEN_ARGS","GRADLE_HOME",
   "GRADLE_USER_HOME","GRADLE_OPTS","ANT_HOME","SBT_OPTS","SDKMAN_DIR","ANDROID_HOME","ANDROID_SDK_ROOT","ANDROID_NDK_HOME","ANDROID_NDK_ROOT",
   // Python: the active virtualenv or conda env, the import path and interpreter switches, pyenv, and pip's and uv's settings by
@@ -89,11 +89,18 @@ export const TOOLCHAIN_ENVIRONMENT_KEYS=Object.freeze([
 ]);
 
 // A toolchain value that carries a credential although its name does not: a URL with userinfo (https://user:pass@host, or a token
-// as the user), or a setting named as a secret (-Dhttps.proxyPassword=... in MAVEN_OPTS, -Dsonar.token=... in GRADLE_OPTS).
-export const CREDENTIAL_SETTING_WORDS=Object.freeze(["password","passwd","passphrase","secret","token","credential","credentials","apikey","api_key","api-key"]);
+// as the user); a connect string's user/password@ (jdbc:oracle:thin:scott/tiger@//db:1521/svc); or a setting whose name holds one
+// of these words anywhere, whatever its case, as the documented credential settings of JAVA_TOOL_OPTIONS (which every JVM prints as
+// it starts), MAVEN_OPTS and the like do: -Dhttps.proxyPassword, -Daws.secretKey, -Dsonar.login, -Dnewrelic.config.license_key,
+// an OpenTelemetry Authorization header. A setting's name is the run of letters, digits, _, . and - before its =, so a path's words
+// (-Djavax.net.ssl.trustStore=/etc/keys/cacerts) are not one. environment-manager.mjs checks a remote host's values the same way.
+export const CREDENTIAL_SETTING_WORDS=Object.freeze(["pass","pwd","secret","token","credential","key","login","auth"]);
 const URL_USERINFO=/[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]+@/i;
-const CREDENTIAL_SETTING=new RegExp("(?:"+CREDENTIAL_SETTING_WORDS.join("|")+")=","i");
-export function carriesCredentials(value){const text=String(value??"");return URL_USERINFO.test(text)||CREDENTIAL_SETTING.test(text)}
+const CREDENTIAL_SETTING=new RegExp("(?:"+CREDENTIAL_SETTING_WORDS.join("|")+")[A-Za-z0-9_.-]*=","i");
+// The user starts the value or follows a space, :, =, a comma or ;, and neither part holds a / or \: a path's folder before an @
+// (/opt/homebrew/opt/openssl@3) follows a /.
+const CONNECT_USERINFO=/(?:^|[ \t\n\r\v\f:=,;])[^ \t\n\r\v\f/\\:=,;@]+\/[^ \t\n\r\v\f/\\@]+@/;
+export function carriesCredentials(value){const text=String(value??"");return URL_USERINFO.test(text)||CREDENTIAL_SETTING.test(text)||CONNECT_USERINFO.test(text)}
 
 function keyName(value){return String(value||"").trim()}
 function validName(value){return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)}

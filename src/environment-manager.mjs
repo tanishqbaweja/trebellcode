@@ -54,8 +54,30 @@ export function remoteCommandWords(command,args=[]){
 }
 function shellCommand(command,args=[]){return remoteCommandWords(command,args)}
 
-// The case patterns of a value that carries credentials, as carriesCredentials sees them (in a pattern any @ after a :// counts).
-const REMOTE_CREDENTIAL_PATTERNS=["*://*@*",...CREDENTIAL_SETTING_WORDS.map(word=>"*"+[...word].map(letter=>/[a-z]/i.test(letter)?"["+letter.toUpperCase()+letter.toLowerCase()+"]":letter).join("")+"=*")].join("|");
+// carriesCredentials as a function of the host's sh, which checks the host's own values there and decides as carriesCredentials
+// does, in sh patterns, only slightly wider: any @ after a :// counts as a URL's userinfo, and a \ is a character like any other.
+// A setting's name is the text before an = after the last character a name cannot have. A connect string's password is what
+// follows the last / before an @, and its user what comes before that / back to a space, :, =, a comma or ; or the value's start,
+// neither holding a / or a space.
+const caseless=word=>[...word].map(letter=>/[a-z]/i.test(letter)?"["+letter.toUpperCase()+letter.toLowerCase()+"]":letter).join("");
+const REMOTE_CREDENTIAL_CHECK=[
+  "trebell_carries(){ case $1 in *://*@*) return 0;; esac",
+  "trebell_rest=$1",
+  "while :; do case $trebell_rest in *=*) ;; *) break;; esac",
+  "trebell_key=${trebell_rest%%=*}; trebell_rest=${trebell_rest#*=}",
+  "case ${trebell_key##*[!A-Za-z0-9_.-]} in "+CREDENTIAL_SETTING_WORDS.map(word=>"*"+caseless(word)+"*").join("|")+") return 0;; esac",
+  "done",
+  "trebell_seen= trebell_rest=$1",
+  "while :; do case $trebell_rest in *@*) ;; *) return 1;; esac",
+  "trebell_head=$trebell_seen${trebell_rest%%@*}; trebell_seen=$trebell_head@; trebell_rest=${trebell_rest#*@}",
+  "case $trebell_head in */*) ;; *) continue;; esac",
+  "trebell_pass=${trebell_head##*/} trebell_lead=${trebell_head%/*}",
+  'case $trebell_pass in ""|*[[:space:]@]*) continue;; esac',
+  "trebell_user=${trebell_lead##*[[:space:]/:=,;@]}",
+  'case $trebell_user in "") continue;; esac',
+  'case $trebell_lead in "$trebell_user"|*[[:space:]:=,\\;]"$trebell_user") return 0;; esac',
+  "done; }",
+].join("; ");
 
 // names are forwarded from the host's shell as they are there. guarded names (Native's toolchain variables) are forwarded only
 // when the host sets them to something, so an unset one stays unset (cargo refuses an empty CARGO_TARGET_DIR, make runs an empty
@@ -72,8 +94,8 @@ function isolatedRemoteEnvironment(command,names=[],environment={},guarded=[]){
   if(!approved.length&&!explicit.length&&!optional.length)return command;
   const assignments=[...approved.map(name=>name+'="$'+'{'+name+'-}"'),...explicit].join(" ");
   if(!optional.length)return "env -i "+assignments+" "+command;
-  const script="for trebell_name in "+optional.join(" ")+'; do eval "trebell_value=\\${$trebell_name-}"; [ -n "$trebell_value" ] || continue; '+
-    "case $trebell_value in "+REMOTE_CREDENTIAL_PATTERNS+') continue;; esac; set -- "$trebell_name=$trebell_value" "$@"; done; exec env -i '+assignments+' "$@"';
+  const script=REMOTE_CREDENTIAL_CHECK+"; for trebell_name in "+optional.join(" ")+'; do eval "trebell_value=\\${$trebell_name-}"; [ -n "$trebell_value" ] || continue; '+
+    'trebell_carries "$trebell_value" && continue; set -- "$trebell_name=$trebell_value" "$@"; done; exec env -i '+assignments+' "$@"';
   return "sh -c "+quotePosix(script)+" trebell "+command;
 }
 

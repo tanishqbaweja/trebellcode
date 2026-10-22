@@ -8,6 +8,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { EnvironmentManager, listedWslDistros, remoteEnvironmentCommand, remoteTransportEnvironment } from "../src/environment-manager.mjs";
 import * as remotePaths from "../src/environment-manager.mjs";
+import { carriesCredentials } from "../src/runtime-environment.mjs";
 
 // A POSIX shell, as a WSL or SSH host has, where this machine has one (Git for Windows' sh, or the system's).
 function sh(script){return new Promise(resolve=>execFile("sh",["-c",script],{windowsHide:true,timeout:20_000},(error,stdout,stderr)=>resolve({code:error?(typeof error.code==="number"?error.code:-1):0,stdout:String(stdout),stderr:String(stderr)})))}
@@ -365,6 +366,36 @@ test("a remote command forwards guarded names only when the host sets them and t
     GEM_HOME:"fixture gems; $(exit 9) 'quoted'",BUNDLE_APP_CONFIG:null,CARGO_TARGET_DIR:null,RUSTUP_DIST_SERVER:null,MAVEN_OPTS:null,
     GRADLE_OPTS:"-Xmx2g -Dfile.encoding=UTF-8",LOG_LEVEL:"debug",OPENAI_API_KEY:null,
   });
+});
+
+// A remote host checks its own toolchain values with a function of its sh that decides as carriesCredentials does here: the
+// documented credential settings of JVM and build option strings, a connect string's user/password@ and a URL's userinfo are
+// dropped there, and the plain settings, paths and package specs beside them reach the command.
+test("a remote host drops the toolchain values that carry credentials as this machine does, and keeps the rest",{skip:!posixShell&&"no POSIX shell on this machine"},async()=>{
+  const credentials=[
+    "-Daws.accessKeyId=AKIAFIXTURE -Daws.secretKey=fixture-secret","-Daws.secretAccessKey=fixture-secret","-Xmx2g -Dnewrelic.config.license_key=fixture-license",
+    "-Dsonar.login=fixture-token","-Ddb.url=jdbc:oracle:thin:scott/tiger@//db.example:1521/svc","-Ddb=scott/tiger@orcl","scott/tiger@orcl",
+    "-Dotel.exporter.otlp.headers=Authorization=Bearer fixture","-Xmx1g -Dhttps.proxyPassword=fixture-pass","--token=fixture","-DAPI_KEY=fixture",
+    "-Durl=jdbc:postgresql://db.example/app?user=app&password=fixture","https://fixture-user:fixture-pass@mirror.example/rustup",
+    "-Dx='$(exit 9)' -Dsecret.value=fixture","-Xmx1g\tscott/tiger@db","-Xmx1g\nscott/tiger@db","-Dlist=a,scott/tiger@db",
+  ];
+  const plain=[
+    "-Xmx2g -Dmaven.repo.local=/root/.m2/repository","-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8","-Ddb.url=jdbc:oracle:thin:@//db.example:1521/svc",
+    "-Djavax.net.ssl.trustStore=/etc/keys/cacerts -Dhttp.keepAlive=false","-L/opt/homebrew/opt/openssl@3/lib -Wl,-rpath,/opt/homebrew/opt/openssl@3/lib",
+    "/opt/homebrew/opt/libffi/lib/pkgconfig:/opt/homebrew/opt/openssl@3/lib/pkgconfig","--max-old-space-size=4096 --require /srv/node_modules/@babel/register",
+    "-I/go/pkg/mod/github.com/fixture/mod@v1.2.3/include","cpython@3.12","@scope/pkg@1.0.0","git@github.com:fixture/repo.git","github.com/fixture/*",
+    "fixture gems; $(exit 9) 'quoted'","INSTALL_BASE=/home/fixture/perl5","-Dsurefire.reportsDirectory=target/reports -Demail=dev@example.com",
+  ];
+  const values=[...credentials,...plain],names=values.map((_,index)=>"TREBELL_FIXTURE_"+index);
+  // Which names reach the command (Git for Windows' sh rewrites a path-like value for a Windows program, never the choice).
+  const script=`process.stdout.write(JSON.stringify(${JSON.stringify(names)}.map(name=>name in process.env)))`;
+  const command=remoteEnvironmentCommand(remotePaths.remoteCommandWords(process.execPath,["-e",script]),["PATH","HOME","SYSTEMROOT"],{},names);
+  const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
+  const run=await sh(names.map((name,index)=>"export "+name+"="+quote(values[index])).join("; ")+"; "+command);
+  assert.equal(run.code,0,run.stderr);
+  const reached=JSON.parse(run.stdout);
+  assert.deepEqual(values.filter((_,index)=>reached[index]),plain,"the host forwards the plain values alone");
+  assert.deepEqual(values.filter(value=>!carriesCredentials(value)),plain,"this machine keeps the same ones");
 });
 
 // Native's commands reach a WSL host as bash -lc parses them, once, as an SSH host's shell does: the toolchain names guarded there,
