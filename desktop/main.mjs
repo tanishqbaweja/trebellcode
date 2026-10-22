@@ -622,7 +622,14 @@ function showSnapshotFeedback(meta){
   }catch{try{if(overlay&&!overlay.isDestroyed())overlay.destroy()}catch{}}
 }
 
-async function captureActiveSnapshot(){
+// One SnapShot at a time: a capture asked for while one is being taken (Capture now pressed again, or the shortcut) is refused instead
+// of reading and taking the window again.
+let snapshotCapture=null;
+function captureActiveSnapshot(){
+  if(snapshotCapture)return Promise.reject(new Error("A SnapShot is already being taken."));
+  return snapshotCapture=takeActiveSnapshot().finally(()=>{snapshotCapture=null});
+}
+async function takeActiveSnapshot(){
   const info=await activeWindowInfo({includeText:Boolean(snapshotConfig.includeText)});
   if(!info)throw new Error("Active-window capture is unavailable on this platform.");
   const display=screen.getDisplayMatching(info.bounds||{x:0,y:0,width:1,height:1});
@@ -654,9 +661,10 @@ function applySnapshotConfig(input={}, {persist=true}={}){
   const previous={...snapshotConfig};
   if(registeredSnapshotShortcut){globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}
   if(next.enabled){
-    const ok=globalShortcut.register(next.shortcut,()=>captureActiveSnapshot().catch(error=>{
+    // The shortcut pressed while its SnapShot is being taken (again, or held as its key repeats) takes nothing more and says nothing.
+    const ok=globalShortcut.register(next.shortcut,()=>{if(!snapshotCapture)captureActiveSnapshot().catch(error=>{
       if(Notification.isSupported())new Notification({title:"Trebell SnapShot",body:error.message||String(error),silent:true,icon:appIcon()}).show();
-    }));
+    })});
     if(!ok){
       if(previous.enabled&&previous.shortcut){const restored=globalShortcut.register(previous.shortcut,()=>captureActiveSnapshot().catch(()=>{}));if(restored)registeredSnapshotShortcut=previous.shortcut}
       throw new Error(`Shortcut ${next.shortcut} is already reserved by another application.`);

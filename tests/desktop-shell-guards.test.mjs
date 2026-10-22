@@ -416,6 +416,63 @@ test("a desktop action that fails says why in the app's own words, without Elect
   }
 });
 
+// Loaded after KEEP_OFF_SCREEN: the foreground window a SnapShot reads (the shell's PowerShell read of it) and the window sources it is
+// matched to are scripted, so nothing on the screen is read or captured. A read waits while globalThis.__snapshotPlan.held holds, as a
+// slow one does. The shortcut's handler is kept to be pressed, and the notifications shown are counted.
+const SNAPSHOT_PLAN=`
+const childProcess=require("node:child_process"),{desktopCapturer,nativeImage}=require("electron");
+const snapshotPlan=globalThis.__snapshotPlan={reads:0,held:null,shortcut:null,notified:0};
+const execFile=childProcess.execFile;
+childProcess.execFile=function(file,args,options,done){
+  if(!Array.isArray(args)||!Buffer.from(String(args.at(-1)),"base64").toString("utf16le").includes("TrebellActiveWindow"))return execFile.apply(this,arguments);
+  snapshotPlan.reads++;
+  const info={handle:1,title:"Notes - Notepad",processId:4242,process:"notepad",bounds:{x:40,y:40,width:640,height:480},accessibility:null};
+  Promise.resolve(snapshotPlan.held).then(()=>done(null,Buffer.from(JSON.stringify(info)).toString("base64"),""));
+};
+require("node:module").syncBuiltinESMExports();
+desktopCapturer.getSources=async()=>[{name:"Notes - Notepad",thumbnail:nativeImage.createFromDataURL("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")}];
+globalShortcut.register=(_accelerator,handler)=>{snapshotPlan.shortcut=handler;return true};globalShortcut.unregister=()=>{};
+Notification.isSupported=()=>true;Notification.prototype.show=function(){snapshotPlan.notified++};
+`;
+
+// One SnapShot at a time. The shell took every capture it was asked for as a new one, so Capture now pressed again, or the shortcut,
+// while a SnapShot was being taken read and took the window again (lane G, GR5-1). The page is the app's origin without the app, so
+// the captures stay on disk to be counted.
+test("the shell takes one SnapShot at a time: a capture asked for while one is being taken is refused, and the shortcut then takes nothing and says nothing",{timeout:120_000},async t=>{
+  if(process.platform!=="win32")return t.skip("The desktop shell checks target the Windows desktop build.");
+  const home=await mkdtemp(join(tmpdir(),"trebell-desktop-snapshot-once-"));
+  const guiPort=await freePort(),appPort=await freePort(),dist=join(home,"ui-dist"),stub=join(home,"snapshot-plan.cjs");let app=null;
+  await mkdir(dist,{recursive:true});await writeFile(join(dist,"index.html"),"<!doctype html><title>Trebell Code</title><main>SnapShots</main>");
+  await writeFile(stub,KEEP_OFF_SCREEN+SNAPSHOT_PLAN);
+  const env={...process.env,TREBELL_HOME:home,TREBELL_TEST_HIDDEN:"1",TREBELL_GUI_MOCK:"1",TREBELL_UI_DIST:dist,TREBELL_GUI_PORT:String(guiPort),TREBELL_APP_SERVER_PORT:String(appPort),TREBELL_E2E_OFFLINE:"1",TREBELL_E2E_ALLOW_NETWORK:"0",CODEX_HOME:join(home,"codex"),CLAUDE_CONFIG_DIR:join(home,"claude"),OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const origin=`http://127.0.0.1:${guiPort}`;
+  try{
+    app=await electron.launch({args:["-r",stub,packageRoot],env});
+    const window=await app.firstWindow();for(let i=0;i<240&&!window.url().startsWith(origin);i++)await sleep(250);await window.waitForLoadState("load");
+    const plan=()=>app.evaluate(()=>({reads:globalThis.__snapshotPlan.reads,notified:globalThis.__snapshotPlan.notified}));
+    // Each capture the page asks for, kept with what it answered; the SnapShots on disk; the shortcut, pressed.
+    const capture=()=>window.evaluate(()=>{(window.__captures||=[]).push(window.trebellDesktop.snapshots.capture().then(meta=>"took "+meta.title,error=>"refused: "+error.message))});
+    const answered=()=>window.evaluate(()=>Promise.all(window.__captures));
+    const pending=async()=>(await window.evaluate(()=>window.trebellDesktop.snapshots.pending())).length;
+    const press=()=>app.evaluate(()=>{globalThis.__snapshotPlan.shortcut()});
+    await window.evaluate(()=>window.trebellDesktop.snapshots.configure({enabled:true}));
+    // Capture now pressed twice, and the shortcut once, while the first SnapShot's window read is held.
+    await app.evaluate(()=>{const plan=globalThis.__snapshotPlan;plan.held=new Promise(resolve=>{plan.free=resolve})});
+    await capture();
+    for(let i=0;i<50&&!(await plan()).reads;i++)await sleep(100);
+    await capture();await press();await sleep(800);
+    const during=await plan();
+    await app.evaluate(()=>{const plan=globalThis.__snapshotPlan;plan.held=null;plan.free()});
+    assert.deepEqual({answers:await answered(),...during,pending:await pending()},{answers:["took Notes - Notepad","refused: A SnapShot is already being taken."],reads:1,notified:0,pending:1},"one SnapShot is taken; the second press is refused, and the shortcut reads nothing and shows no notification");
+    // Once it is taken, a press of Capture now and of the shortcut each take one again.
+    await capture();assert.equal((await answered()).at(-1),"took Notes - Notepad");
+    await press();for(let i=0;i<50&&await pending()<3;i++)await sleep(100);
+    assert.deepEqual({...await plan(),pending:await pending()},{reads:3,notified:0,pending:3},"a press of its own takes a SnapShot");
+  }finally{
+    await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
+});
+
 // The toast of a chat action that failed shows just above the composer, centred on the composer where it shows, all of it in the window.
 // It is placed from the composer's box, which the desktop app's Chromium takes before transforms: a composer centred by translateX(-50%)
 // had the toast centred on its right edge, so at 1280 wide the toast ran off the window with its text cut (lane H, p109).

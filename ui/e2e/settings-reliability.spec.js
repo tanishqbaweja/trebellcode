@@ -382,6 +382,75 @@ test("SnapShots switches flipped while a save is on its way all stick, with the 
   expect(await main()).toEqual({enabled:true,flash:false,animations:false,registered:true});
 });
 
+// Capture now takes one SnapShot a press. The second click of a double click and the repeats of Enter held on it came as presses of
+// their own, and so did a press while its SnapShot was being taken: each took the window again (lane G, GR5-1).
+test("a double click or Enter held on Capture now takes one SnapShot, and a press while it is being taken takes none",async({page,request})=>{
+  test.setTimeout(60_000);
+  await page.addInitScript(()=>{
+    // As desktop/main.mjs takes snapshot:capture: the foreground window is read and written as a PNG (250 ms, and for as long as
+    // window.__captureHeld holds), then snapshot:captured goes to the window and the call answers. window.__captures counts the calls.
+    const png="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",taken=new Map(),told=new Set();
+    window.__captures=0;window.__captureHeld=null;window.__captureFails=null;
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      snapshots:{
+        get:async()=>({enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false,playSound:true,sound:"soft-pop",flash:true,animations:true,registered:false,platform:"win32",pending:taken.size}),
+        configure:async value=>value,pending:async()=>[],
+        read:async id=>({...taken.get(id),dataBase64:png}),ack:async id=>{taken.delete(id);return {ok:true,id}},
+        capture:async()=>{
+          const id="snapshot-"+(++window.__captures)+"-e2e";
+          await new Promise(resolve=>setTimeout(resolve,250));await window.__captureHeld;
+          if(window.__captureFails){const reason=window.__captureFails;window.__captureFails=null;throw new Error(reason)}
+          const meta={id,createdAt:Date.now(),title:"Notes - Notepad",process:"notepad",width:1,height:1,hasAccessibility:false};
+          taken.set(id,meta);for(const handler of told)handler({id});return meta;
+        },
+        onCaptured:handler=>{told.add(handler);return()=>told.delete(handler)},
+      },
+      background:{set:async()=>({ok:true})},
+    }});
+  });
+  await openSettings(page,request,"SnapShot Presses Workspace");
+  const card=page.locator(".snapshot-settings"),capture=card.getByRole("button",{name:/^Captur/});
+  // The SnapShots on the composer, where the app goes with each one (Settings shows no composer), and the captures asked for.
+  const snapshots=page.getByTestId("context-chip").filter({hasText:"SnapShot: notepad"}),captures=()=>page.evaluate(()=>window.__captures);
+  const openSnapShots=async()=>{
+    if(!await card.isVisible())await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await page.locator(".settings-nav").getByRole("button",{name:/Desktop/}).click();await expect(capture).toHaveText("Capture now");
+  };
+  // What a press took once the app has gone to the composer with it and any SnapShot after it would have come.
+  const took=async(capturesBefore,shownBefore)=>{await expect(snapshots).not.toHaveCount(shownBefore);await page.waitForTimeout(600);return {captures:await captures()-capturesBefore,shown:await snapshots.count()-shownBefore}};
+  await openSnapShots();
+  await capture.dblclick();
+  expect.soft(await took(0,0),"a double click on Capture now takes one SnapShot").toEqual({captures:1,shown:1});
+  // Enter held on it (a press, and five repeats 33 ms apart).
+  let capturesBefore=await captures(),shownBefore=await snapshots.count();
+  await openSnapShots();await capture.focus();
+  await page.keyboard.down("Enter");for(let repeat=0;repeat<5;repeat++){await page.waitForTimeout(33);await page.keyboard.down("Enter")}await page.keyboard.up("Enter");
+  expect.soft(await took(capturesBefore,shownBefore),"Enter held on Capture now takes one SnapShot").toEqual({captures:1,shown:1});
+  // A click, then a click and Enter of their own while its SnapShot is being taken: Capture now says it is capturing, the presses take
+  // nothing more, and the keyboard stays on it.
+  capturesBefore=await captures();shownBefore=await snapshots.count();
+  await openSnapShots();
+  await page.evaluate(()=>{window.__captureHeld=new Promise(resolve=>{window.__captureFree=resolve})});
+  const box=await capture.boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+  await page.mouse.click(x,y);
+  await expect(capture).toHaveText("Capturing…");await expect(capture).toHaveAttribute("aria-disabled","true");
+  await page.waitForTimeout(600);await page.mouse.click(x,y);await page.keyboard.press("Enter");
+  await expect(capture,"the keyboard stays on Capture now").toBeFocused();
+  await shootModes(page,"snapshots-capturing",{show:card});
+  await page.evaluate(()=>{window.__captureHeld=null;window.__captureFree()});
+  expect(await took(capturesBefore,shownBefore),"presses while the SnapShot is being taken take none").toEqual({captures:1,shown:1});
+  // A capture that fails says why on the card and lets go of Capture now, with the keyboard still on it for the next press.
+  shownBefore=await snapshots.count();
+  await openSnapShots();
+  await page.evaluate(()=>{window.__captureFails="Could not match the active window (Notes - Notepad) to a capturable source."});
+  await capture.focus();await page.keyboard.press("Enter");
+  await expect(card.locator(".provider-status-error")).toHaveText("Could not match the active window (Notes - Notepad) to a capturable source.");
+  await expect(capture).toHaveText("Capture now");await expect(capture).not.toHaveAttribute("aria-disabled","true");await expect(capture).toBeFocused();
+  capturesBefore=await captures();
+  await page.keyboard.press("Enter");
+  expect(await took(capturesBefore,shownBefore),"the next press takes a SnapShot").toEqual({captures:1,shown:1});
+});
+
 // The scoped "After inactive days" field is typed in like any number: it saves once it is left, the whole number, as the Projects
 // card's own days field does. Saves are slowed as a busy disk or a remote environment slows them; a save on every keystroke came
 // back mid-typing and put an earlier keystroke's value in the field, so 365 was saved as 35.

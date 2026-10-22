@@ -107,9 +107,10 @@
 
 /* Buttons (tb-btn look) */
 :root:root .settings-page.redesigned-settings :is(.settings-card,.diagnostics-log) button{width:auto;display:inline-flex;align-items:center;justify-content:center;gap:7px;height:auto!important;min-height:32px!important;margin:0;padding:6px 13px!important;border:1px solid var(--line2)!important;border-radius:9px!important;background:var(--bg3)!important;color:var(--tx1)!important;font-family:var(--font)!important;font-size:12.5px!important;font-weight:550!important;line-height:1.2!important;letter-spacing:normal;text-transform:none;white-space:nowrap;cursor:pointer;box-shadow:none;transition:background .15s,color .15s,border-color .15s,filter .15s,transform .1s}
-:root:root .settings-page.redesigned-settings :is(.settings-card,.diagnostics-log) button:hover:not(:disabled){background:var(--bg4)!important;color:var(--tx0)!important}
-:root:root .settings-page.redesigned-settings :is(.settings-card,.diagnostics-log) button:active:not(:disabled){transform:scale(.98)}
-:root:root .settings-page.redesigned-settings :is(.settings-card,.diagnostics-log) button:disabled{opacity:.5;cursor:default}
+:root:root .settings-page.redesigned-settings :is(.settings-card,.diagnostics-log) button:hover:not(:disabled,[aria-disabled="true"]){background:var(--bg4)!important;color:var(--tx0)!important}
+:root:root .settings-page.redesigned-settings :is(.settings-card,.diagnostics-log) button:active:not(:disabled,[aria-disabled="true"]){transform:scale(.98)}
+/* Busy, Capture now only says it is off (aria-disabled), so the keyboard stays on it. */
+:root:root .settings-page.redesigned-settings :is(.settings-card,.diagnostics-log) button:is(:disabled,[aria-disabled="true"]){opacity:.5;cursor:default}
 :root:root .settings-page.redesigned-settings :is(.settings-card,.diagnostics-log) button svg{flex:none;width:13px;height:13px}
 /* Primary actions (save, import, install) and outline openers ("Add …" directly in a card) */
 :root:root .settings-page.redesigned-settings .settings-card .setting-action{border-color:transparent!important;background:var(--acfill)!important;color:#fff!important;box-shadow:0 3px 14px var(--acglow)}
