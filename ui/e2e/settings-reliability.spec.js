@@ -676,6 +676,55 @@ test("a double click on a Settings search result opens that setting and keeps it
   }finally{release()}
 });
 
+// A search result's title sits beside its section's name. It was held to one line and cut with an ellipsis, with nothing showing the
+// rest: in the 250 px rail of a wide window "Runtime diagnostics", "Project & environment defaults" and "About & open source licenses"
+// lost their ends, and so did a project action's own long name. Where the results are taller than the list (280 px in a narrow
+// window), each was squeezed to fit, its description run into the result under it.
+test("every Settings search result shows its whole title, in a wide window and a narrow one, dark and light",async({page,request})=>{
+  test.setTimeout(120_000);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  // A project action named with one long word, as a person's own scripts can be.
+  const script={id:"regenerate-shots",name:"regenerate_visual_audit_screenshots",command:"node regenerate.mjs",previewUrl:null,autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
+  await request.post("/api/projects",{data:{path:boot.cwd,scripts:[script]}});
+  try{
+    await openSettings(page,request,"Search Titles Workspace");
+    const search=page.getByRole("textbox",{name:"Search settings"}),results=page.getByTestId("settings-search-results"),last=results.getByRole("button").last();
+    // The results not drawn whole: a title cut short or running out of its own box (over the section's name), or a result whose lines
+    // run out of its own box (into the result under it).
+    const notWhole=()=>results.getByRole("button").evaluateAll(buttons=>buttons.flatMap(button=>{
+      const title=button.querySelector("strong"),box=title.getBoundingClientRect(),range=document.createRange();range.selectNodeContents(title);const text=range.getBoundingClientRect();
+      const cut=title.scrollWidth>title.clientWidth+1||title.scrollHeight>title.clientHeight+1||text.left<box.left-1||text.right>box.right+1;
+      return cut||button.scrollHeight>button.clientHeight+1?[title.textContent+(cut?" (cut)":" (squeezed)")]:[];
+    }));
+    const queries=[["runtime","Runtime diagnostics"],["licenses","About & open source licenses"],["regenerate","Run regenerate_visual_audit_screenshots"],["project","Project & environment defaults"]];
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const width of [1600,1280,1100,900,700]){
+        await page.setViewportSize({width,height:800});
+        const shown=new Set();
+        // Typed as a person types, each query replacing the last.
+        for(const [query,title] of queries){
+          await search.click();await page.keyboard.press("Control+A");await page.keyboard.type(query,{delay:20});
+          await expect(results.getByRole("button",{name:title})).toBeVisible();
+          for(const result of await notWhole())shown.add(result);
+          if(width===1280&&query==="regenerate")await page.screenshot({animations:"disabled",path:shots+`search-result-titles-action-${mode}-${width}.png`});
+        }
+        expect.soft([...shown],`every result reads whole at ${width} in ${mode}`).toEqual([]);
+        expect.soft(await page.locator(".secondary-page").evaluate(node=>node.scrollWidth-node.clientWidth),`no sideways scroll at ${width} in ${mode}`).toBeLessThanOrEqual(1);
+        await page.screenshot({animations:"disabled",path:shots+`search-result-titles-${mode}-${width}.png`});
+        // The wheel over the list brings its last result into view, whole.
+        const inList=()=>last.evaluate(node=>{const box=node.getBoundingClientRect(),list=node.parentElement.getBoundingClientRect();return box.top>=list.top-1&&box.bottom<=list.bottom+1});
+        const list=await results.boundingBox();await page.mouse.move(list.x+list.width/2,list.y+list.height/2);
+        for(let notch=0;notch<12&&!await inList();notch++){await page.mouse.wheel(0,80);await page.waitForTimeout(60)}
+        expect.soft(await inList(),`the last result scrolls into view at ${width} in ${mode}`).toBe(true);
+        if(width===700)await page.screenshot({animations:"disabled",path:shots+`search-result-titles-scrolled-${mode}-${width}.png`});
+      }
+    }
+    await search.press("Escape");await expect(results).toHaveCount(0);
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+  }finally{await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}})}
+});
+
 test("failed saves from inline settings controls stay in the alert without unhandled rejections",async({page,request})=>{
   const pageErrors=[];
   page.on("pageerror",error=>pageErrors.push(String(error?.message||error)));
