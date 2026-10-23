@@ -656,17 +656,20 @@ async function takeActiveSnapshot(){
 }
 
 let registeredSnapshotShortcut=null;
+// A press of the SnapShot shortcut, the one saved and the one kept when a change to another is refused alike: a SnapShot it could
+// not take says why in a notification, and a press while its SnapShot is being taken (again, or held as its key repeats) takes
+// nothing more and says nothing.
+function captureFromShortcut(){if(!snapshotCapture)captureActiveSnapshot().catch(error=>{
+  if(Notification.isSupported())new Notification({title:"Trebell SnapShot",body:error.message||String(error),silent:true,icon:appIcon()}).show();
+})}
 function applySnapshotConfig(input={}, {persist=true}={}){
   const next=normalizeSnapshotConfig(input,snapshotConfig);
   const previous={...snapshotConfig};
   if(registeredSnapshotShortcut){globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}
   if(next.enabled){
-    // The shortcut pressed while its SnapShot is being taken (again, or held as its key repeats) takes nothing more and says nothing.
-    const ok=globalShortcut.register(next.shortcut,()=>{if(!snapshotCapture)captureActiveSnapshot().catch(error=>{
-      if(Notification.isSupported())new Notification({title:"Trebell SnapShot",body:error.message||String(error),silent:true,icon:appIcon()}).show();
-    })});
+    const ok=globalShortcut.register(next.shortcut,captureFromShortcut);
     if(!ok){
-      if(previous.enabled&&previous.shortcut){const restored=globalShortcut.register(previous.shortcut,()=>captureActiveSnapshot().catch(()=>{}));if(restored)registeredSnapshotShortcut=previous.shortcut}
+      if(previous.enabled&&previous.shortcut){const restored=globalShortcut.register(previous.shortcut,captureFromShortcut);if(restored)registeredSnapshotShortcut=previous.shortcut}
       throw new Error(`Shortcut ${next.shortcut} is already reserved by another application.`);
     }
     registeredSnapshotShortcut=next.shortcut;

@@ -418,10 +418,11 @@ test("a desktop action that fails says why in the app's own words, without Elect
 
 // Loaded after KEEP_OFF_SCREEN: the foreground window a SnapShot reads (the shell's PowerShell read of it) and the window sources it is
 // matched to are scripted, so nothing on the screen is read or captured. A read waits while globalThis.__snapshotPlan.held holds, as a
-// slow one does. The shortcut's handler is kept to be pressed, and the notifications shown are counted.
+// slow one does, and with noSource set no window source is found for it. The shortcut handlers are kept by their keys to be pressed
+// (shortcut is the last one), keys in taken are refused as another app's, and the notifications shown are counted and kept.
 const SNAPSHOT_PLAN=`
 const childProcess=require("node:child_process"),{desktopCapturer,nativeImage}=require("electron");
-const snapshotPlan=globalThis.__snapshotPlan={reads:0,held:null,shortcut:null,notified:0};
+const snapshotPlan=globalThis.__snapshotPlan={reads:0,held:null,noSource:false,shortcut:null,shortcuts:new Map(),taken:new Set(),notified:0,said:[]};
 const execFile=childProcess.execFile;
 childProcess.execFile=function(file,args,options,done){
   if(!Array.isArray(args)||!Buffer.from(String(args.at(-1)),"base64").toString("utf16le").includes("TrebellActiveWindow"))return execFile.apply(this,arguments);
@@ -430,9 +431,10 @@ childProcess.execFile=function(file,args,options,done){
   Promise.resolve(snapshotPlan.held).then(()=>done(null,Buffer.from(JSON.stringify(info)).toString("base64"),""));
 };
 require("node:module").syncBuiltinESMExports();
-desktopCapturer.getSources=async()=>[{name:"Notes - Notepad",thumbnail:nativeImage.createFromDataURL("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")}];
-globalShortcut.register=(_accelerator,handler)=>{snapshotPlan.shortcut=handler;return true};globalShortcut.unregister=()=>{};
-Notification.isSupported=()=>true;Notification.prototype.show=function(){snapshotPlan.notified++};
+desktopCapturer.getSources=async()=>snapshotPlan.noSource?[]:[{name:"Notes - Notepad",thumbnail:nativeImage.createFromDataURL("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")}];
+globalShortcut.register=(accelerator,handler)=>{if(snapshotPlan.taken.has(accelerator))return false;snapshotPlan.shortcuts.set(accelerator,handler);snapshotPlan.shortcut=handler;return true};
+globalShortcut.unregister=accelerator=>{snapshotPlan.shortcuts.delete(accelerator)};
+Notification.isSupported=()=>true;Notification.prototype.show=function(){snapshotPlan.notified++;snapshotPlan.said.push(this.title+": "+this.body)};
 `;
 
 // One SnapShot at a time. The shell took every capture it was asked for as a new one, so Capture now pressed again, or the shortcut,
@@ -468,6 +470,81 @@ test("the shell takes one SnapShot at a time: a capture asked for while one is b
     await capture();assert.equal((await answered()).at(-1),"took Notes - Notepad");
     await press();for(let i=0;i<50&&await pending()<3;i++)await sleep(100);
     assert.deepEqual({...await plan(),pending:await pending()},{reads:3,notified:0,pending:3},"a press of its own takes a SnapShot");
+  }finally{
+    await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  }
+});
+
+// A change to a shortcut another app holds is refused and the shortcut before it kept, registered again. The kept one dropped what its
+// SnapShot could not do, so a press whose capture failed said nothing at all, while the shortcut Enable registered says why in a
+// notification (lane H, p114). Settings > Desktop > SnapShots is used as a person does, on the built UI; a press of the shortcut in
+// another app is the handler the shell registered for its keys, called as the system calls it.
+test("a SnapShot that fails from the shortcut kept after a change to one another app holds says why in a notification, as from the shortcut Enable registered",{timeout:180_000},async t=>{
+  if(process.platform!=="win32")return t.skip("The desktop shell checks target the Windows desktop build.");
+  const dist=resolve(process.env.TREBELL_UI_DIST||join(packageRoot,"ui","dist"));
+  if(!existsSync(join(dist,"index.html")))return t.skip("The built UI is needed: npm run ui:build, or TREBELL_UI_DIST.");
+  const home=await mkdtemp(join(tmpdir(),"trebell-desktop-snapshot-kept-"));
+  const guiPort=await freePort(),appPort=await freePort(),stub=join(home,"snapshot-plan.cjs");let app=null;
+  await writeFile(stub,KEEP_OFF_SCREEN+SNAPSHOT_PLAN);
+  // Settings > Desktop lists the browser profiles to import: APPDATA and LOCALAPPDATA are the test's, so none of this machine's are read.
+  const env={...process.env,TREBELL_HOME:home,TREBELL_TEST_HIDDEN:"1",TREBELL_GUI_MOCK:"1",TREBELL_UI_DIST:dist,TREBELL_GUI_PORT:String(guiPort),TREBELL_APP_SERVER_PORT:String(appPort),TREBELL_E2E_OFFLINE:"1",TREBELL_E2E_ALLOW_NETWORK:"0",CODEX_HOME:join(home,"codex"),CLAUDE_CONFIG_DIR:join(home,"claude"),APPDATA:join(home,"appdata"),LOCALAPPDATA:join(home,"localappdata"),OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const origin=`http://127.0.0.1:${guiPort}`;
+  try{
+    app=await electron.launch({args:["-r",stub,packageRoot],env});
+    const window=await app.firstWindow();for(let i=0;i<240&&!window.url().startsWith(origin);i++)await sleep(250);await window.waitForLoadState("load");
+    await fetch(origin+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({onboardingComplete:true,panelAnimationMs:0})});
+    await window.reload();
+    const plan=()=>app.evaluate(()=>{const plan=globalThis.__snapshotPlan;return {reads:plan.reads,said:plan.said.slice(),registered:[...plan.shortcuts.keys()]}});
+    const press=keys=>app.evaluate((_electron,keys)=>{const handler=globalThis.__snapshotPlan.shortcuts.get(keys);if(handler)handler();return Boolean(handler)},keys);
+    // The plan read until done holds, for up to tries tenths of a second. Each read waits its tenth first: an evaluate that lands while
+    // the shell is still taking a SnapShot can lose its answer to a garbage collection ("Resulting promise was garbage collected").
+    const planWhen=async(done,tries)=>{let now;for(let i=0;i<tries;i++){await sleep(100);now=await plan();if(done(now))break}return now};
+    // A press of the shortcut: the windows it read, and the notifications shown up to 3 s after its read.
+    const pressed=async keys=>{
+      const before=await plan();
+      if(!await press(keys))return "not registered, the shortcuts are "+before.registered.join(", ");
+      await planWhen(now=>now.reads>before.reads,100);
+      const after=await planWhen(now=>now.said.length>before.said.length,30);
+      return {reads:after.reads-before.reads,said:after.said.slice(before.said.length)};
+    };
+    await window.getByRole("button",{name:/^Settings/}).first().click();
+    await window.getByRole("button",{name:/^Desktop/}).first().click();
+    const card=window.locator(".snapshot-settings");await card.scrollIntoViewIfNeeded();
+    const field=card.getByRole("textbox",{name:"Shortcut"});
+    // What the card says once its save has answered, the shortcut in its field, and the shortcuts the shell holds.
+    const shows=async()=>({card:await settledText(card.locator(".provider-note, .provider-status-error").last()),field:await field.inputValue(),registered:(await plan()).registered});
+    // The shortcut typed in, as a person does: the field's text selected and typed over.
+    const type=async keys=>{await field.click();await window.keyboard.press("Control+A");await window.keyboard.type(keys)};
+    const shown={},said={};
+    await card.getByRole("checkbox",{name:"Enable global SnapShot shortcut"}).click();
+    shown.enabled=await shows();
+    await app.evaluate(()=>{const plan=globalThis.__snapshotPlan;plan.noSource=true;plan.taken.add("CommandOrControl+Shift+8")});
+    said.enabled=await pressed("CommandOrControl+Shift+S");
+    // CommandOrControl+Shift+8, another app's, saved as the field is left, with the mouse (a click on the card's heading) and with the
+    // keyboard (Tab).
+    await type("CommandOrControl+Shift+8");await card.getByRole("heading",{name:"SnapShots"}).click();
+    shown.keptAfterClick=await shows();said.keptAfterClick=await pressed("CommandOrControl+Shift+S");
+    await type("CommandOrControl+Shift+8");await window.keyboard.press("Tab");
+    shown.keptAfterTab=await shows();said.keptAfterTab=await pressed("CommandOrControl+Shift+S");
+    // The kept shortcut pressed again while its SnapShot is being taken (its key repeating) takes nothing more and says nothing more.
+    await app.evaluate(()=>{const plan=globalThis.__snapshotPlan;plan.held=new Promise(resolve=>{plan.free=resolve})});
+    const before=await plan();
+    await press("CommandOrControl+Shift+S");await planWhen(now=>now.reads>before.reads,50);
+    await press("CommandOrControl+Shift+S");await sleep(800);
+    const during=await plan();
+    await app.evaluate(()=>{const plan=globalThis.__snapshotPlan;plan.held=null;plan.free()});
+    const after=await planWhen(now=>now.said.length>during.said.length,30);
+    said.keptPressedTwice={reads:after.reads-before.reads,whileTaken:during.said.slice(before.said.length),said:after.said.slice(before.said.length)};
+    // A change that is taken registers the new shortcut, which says why as well.
+    await type("CommandOrControl+Shift+9");await window.keyboard.press("Tab");
+    shown.accepted=await shows();said.accepted=await pressed("CommandOrControl+Shift+9");
+    const refused={card:"Shortcut CommandOrControl+Shift+8 is already reserved by another application.",field:"CommandOrControl+Shift+S",registered:["CommandOrControl+Shift+S"]};
+    assert.deepEqual(shown,{
+      enabled:{card:"SnapShots ready.",field:"CommandOrControl+Shift+S",registered:["CommandOrControl+Shift+S"]},keptAfterClick:refused,keptAfterTab:refused,
+      accepted:{card:"SnapShots ready.",field:"CommandOrControl+Shift+9",registered:["CommandOrControl+Shift+9"]},
+    },"what the card showed after each change: "+JSON.stringify(shown));
+    const failed={reads:1,said:["Trebell SnapShot: Could not match the active window (Notes - Notepad) to a capturable source."]};
+    assert.deepEqual(said,{enabled:failed,keptAfterClick:failed,keptAfterTab:failed,keptPressedTwice:{...failed,whileTaken:[]},accepted:failed},"what each press of the shortcut did: "+JSON.stringify(said));
   }finally{
     await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }
