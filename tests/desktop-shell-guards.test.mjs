@@ -419,10 +419,16 @@ test("a desktop action that fails says why in the app's own words, without Elect
 // Loaded after KEEP_OFF_SCREEN: the foreground window a SnapShot reads (the shell's PowerShell read of it) and the window sources it is
 // matched to are scripted, so nothing on the screen is read or captured. A read waits while globalThis.__snapshotPlan.held holds, as a
 // slow one does, and with noSource set no window source is found for it. The shortcut handlers are kept by their keys to be pressed
-// (shortcut is the last one), keys in taken are refused as another app's, and the notifications shown are counted and kept.
+// (shortcut is the last one), keys in taken are refused as another app's, and the notifications shown are counted and kept. A
+// shortcut Electron cannot read (no key after its modifiers, or a key it does not know) throws as Electron 38's register does:
+// "TypeError: Error processing argument at index 0, conversion failure from CommandOrControl+Shift+" (checked in the shell's
+// Electron, UI fix lane r6x).
 const SNAPSHOT_PLAN=`
 const childProcess=require("node:child_process"),{desktopCapturer,nativeImage}=require("electron");
 const snapshotPlan=globalThis.__snapshotPlan={reads:0,held:null,noSource:false,shortcut:null,shortcuts:new Map(),taken:new Set(),notified:0,said:[]};
+const modifiers=new Set(["command","cmd","control","ctrl","commandorcontrol","cmdorctrl","alt","option","altgr","shift","super","meta"]);
+const keyNames=/^(?:[!-~]|f(?:[1-9]|1[0-9]|2[0-4])|plus|space|tab|capslock|numlock|scrolllock|backspace|delete|insert|return|enter|up|down|left|right|home|end|pageup|pagedown|escape|esc|volumeup|volumedown|volumemute|medianexttrack|mediaprevioustrack|mediastop|mediaplaypause|printscreen|num[0-9]|numdec|numadd|numsub|nummult|numdiv)$/i;
+const readable=accelerator=>{const parts=String(accelerator).split("+"),key=parts.pop();return parts.every(part=>modifiers.has(part.toLowerCase()))&&keyNames.test(key)&&!modifiers.has(key.toLowerCase())};
 const execFile=childProcess.execFile;
 childProcess.execFile=function(file,args,options,done){
   if(!Array.isArray(args)||!Buffer.from(String(args.at(-1)),"base64").toString("utf16le").includes("TrebellActiveWindow"))return execFile.apply(this,arguments);
@@ -432,7 +438,7 @@ childProcess.execFile=function(file,args,options,done){
 };
 require("node:module").syncBuiltinESMExports();
 desktopCapturer.getSources=async()=>snapshotPlan.noSource?[]:[{name:"Notes - Notepad",thumbnail:nativeImage.createFromDataURL("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")}];
-globalShortcut.register=(accelerator,handler)=>{if(snapshotPlan.taken.has(accelerator))return false;snapshotPlan.shortcuts.set(accelerator,handler);snapshotPlan.shortcut=handler;return true};
+globalShortcut.register=(accelerator,handler)=>{if(!readable(accelerator))throw new TypeError("Error processing argument at index 0, conversion failure from "+accelerator);if(snapshotPlan.taken.has(accelerator))return false;snapshotPlan.shortcuts.set(accelerator,handler);snapshotPlan.shortcut=handler;return true};
 globalShortcut.unregister=accelerator=>{snapshotPlan.shortcuts.delete(accelerator)};
 Notification.isSupported=()=>true;Notification.prototype.show=function(){snapshotPlan.notified++;snapshotPlan.said.push(this.title+": "+this.body)};
 `;
@@ -477,9 +483,12 @@ test("the shell takes one SnapShot at a time: a capture asked for while one is b
 
 // A change to a shortcut another app holds is refused and the shortcut before it kept, registered again. The kept one dropped what its
 // SnapShot could not do, so a press whose capture failed said nothing at all, while the shortcut Enable registered says why in a
-// notification (lane H, p114). Settings > Desktop > SnapShots is used as a person does, on the built UI; a press of the shortcut in
+// notification (lane H, p114). A change to a shortcut Electron cannot read (the field left as CommandOrControl+Shift+ while its key is
+// retyped, or a key name it does not know) is refused the same way: Electron's register threw instead of answering false, which
+// skipped the shortcut's restore, so the shortcut Settings showed as kept was registered no more and its presses did nothing at all
+// (UI fix review, round 6). Settings > Desktop > SnapShots is used as a person does, on the built UI; a press of the shortcut in
 // another app is the handler the shell registered for its keys, called as the system calls it.
-test("a SnapShot that fails from the shortcut kept after a change to one another app holds says why in a notification, as from the shortcut Enable registered",{timeout:180_000},async t=>{
+test("a SnapShot that fails from the shortcut kept after a change to one another app holds, or to one that is not a shortcut, says why in a notification, as from the shortcut Enable registered",{timeout:180_000},async t=>{
   if(process.platform!=="win32")return t.skip("The desktop shell checks target the Windows desktop build.");
   const dist=resolve(process.env.TREBELL_UI_DIST||join(packageRoot,"ui","dist"));
   if(!existsSync(join(dist,"index.html")))return t.skip("The built UI is needed: npm run ui:build, or TREBELL_UI_DIST.");
@@ -535,16 +544,29 @@ test("a SnapShot that fails from the shortcut kept after a change to one another
     await app.evaluate(()=>{const plan=globalThis.__snapshotPlan;plan.held=null;plan.free()});
     const after=await planWhen(now=>now.said.length>during.said.length,30);
     said.keptPressedTwice={reads:after.reads-before.reads,whileTaken:during.said.slice(before.said.length),said:after.said.slice(before.said.length)};
+    // The field left reading CommandOrControl+Shift+, its key erased to type another, with the keyboard (Tab), and reading PrintScr, a
+    // key name Electron does not know (PrintScreen), with the mouse.
+    await field.click();await window.keyboard.press("End");await window.keyboard.press("Backspace");
+    assert.equal(await field.inputValue(),"CommandOrControl+Shift+","the field reads its modifiers alone");
+    await window.keyboard.press("Tab");
+    shown.notShortcutAfterTab=await shows();said.notShortcutAfterTab=await pressed("CommandOrControl+Shift+S");
+    await type("PrintScr");await card.getByRole("heading",{name:"SnapShots"}).click();
+    shown.notShortcutAfterClick=await shows();said.notShortcutAfterClick=await pressed("CommandOrControl+Shift+S");
     // A change that is taken registers the new shortcut, which says why as well.
     await type("CommandOrControl+Shift+9");await window.keyboard.press("Tab");
     shown.accepted=await shows();said.accepted=await pressed("CommandOrControl+Shift+9");
     const refused={card:"Shortcut CommandOrControl+Shift+8 is already reserved by another application.",field:"CommandOrControl+Shift+S",registered:["CommandOrControl+Shift+S"]};
-    assert.deepEqual(shown,{
-      enabled:{card:"SnapShots ready.",field:"CommandOrControl+Shift+S",registered:["CommandOrControl+Shift+S"]},keptAfterClick:refused,keptAfterTab:refused,
-      accepted:{card:"SnapShots ready.",field:"CommandOrControl+Shift+9",registered:["CommandOrControl+Shift+9"]},
-    },"what the card showed after each change: "+JSON.stringify(shown));
+    const notShortcut=keys=>({card:`Shortcut ${keys} is not a valid shortcut. A shortcut is modifiers and one key, such as CommandOrControl+Shift+S.`,field:"CommandOrControl+Shift+S",registered:["CommandOrControl+Shift+S"]});
     const failed={reads:1,said:["Trebell SnapShot: Could not match the active window (Notes - Notepad) to a capturable source."]};
-    assert.deepEqual(said,{enabled:failed,keptAfterClick:failed,keptAfterTab:failed,keptPressedTwice:{...failed,whileTaken:[]},accepted:failed},"what each press of the shortcut did: "+JSON.stringify(said));
+    // What the card showed after each change, and what each press of the shortcut did then.
+    assert.deepEqual({shown,said},{
+      shown:{
+        enabled:{card:"SnapShots ready.",field:"CommandOrControl+Shift+S",registered:["CommandOrControl+Shift+S"]},keptAfterClick:refused,keptAfterTab:refused,
+        notShortcutAfterTab:notShortcut("CommandOrControl+Shift+"),notShortcutAfterClick:notShortcut("PrintScr"),
+        accepted:{card:"SnapShots ready.",field:"CommandOrControl+Shift+9",registered:["CommandOrControl+Shift+9"]},
+      },
+      said:{enabled:failed,keptAfterClick:failed,keptAfterTab:failed,keptPressedTwice:{...failed,whileTaken:[]},notShortcutAfterTab:failed,notShortcutAfterClick:failed,accepted:failed},
+    },"what the card showed after each change, and what each press of the shortcut did: "+JSON.stringify({shown,said}));
   }finally{
     await closeElectronApp(app);await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }

@@ -667,9 +667,15 @@ function applySnapshotConfig(input={}, {persist=true}={}){
   const previous={...snapshotConfig};
   if(registeredSnapshotShortcut){globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}
   if(next.enabled){
-    const ok=globalShortcut.register(next.shortcut,captureFromShortcut);
+    // Electron answers false for a shortcut another app holds, and throws a TypeError for one it cannot read: no key after its
+    // modifiers (the field left as CommandOrControl+Shift+ while its key is retyped) or a key it does not know (PrintScr). Either way
+    // the shortcut before it is registered again, so the one Settings shows as kept still takes SnapShots.
+    let ok=false,unreadable=null;
+    try{ok=globalShortcut.register(next.shortcut,captureFromShortcut)}catch(error){unreadable=error}
     if(!ok){
-      if(previous.enabled&&previous.shortcut){const restored=globalShortcut.register(previous.shortcut,captureFromShortcut);if(restored)registeredSnapshotShortcut=previous.shortcut}
+      if(previous.enabled&&previous.shortcut)try{if(globalShortcut.register(previous.shortcut,captureFromShortcut))registeredSnapshotShortcut=previous.shortcut}catch{}
+      if(unreadable instanceof TypeError)throw new Error(`Shortcut ${next.shortcut} is not a valid shortcut. A shortcut is modifiers and one key, such as CommandOrControl+Shift+S.`);
+      if(unreadable)throw new Error(`Shortcut ${next.shortcut} could not be registered: ${unreadable.message||unreadable}`);
       throw new Error(`Shortcut ${next.shortcut} is already reserved by another application.`);
     }
     registeredSnapshotShortcut=next.shortcut;
