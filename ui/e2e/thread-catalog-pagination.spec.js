@@ -716,3 +716,49 @@ test("Enter held on Load older threads, or a double click on it, reads one older
     expect(asked()).toEqual(["page-2","page-3","page-4"]);
   }finally{await harness.close()}
 });
+
+// The person tabs to History's Retry and holds Enter a moment while the runtime still fails at once. Retry refused a press only while
+// its read ran, so each repeat of the key after a failure asked again, and each failure said it still could not as a new message, read
+// out again. The press asks once and says so once; a double click's second click, which comes once the first click's read has failed,
+// asks nothing either; a press of its own asks again, and lists the thread once the runtime answers.
+test("Enter held on History's Retry, or a double click on it, asks the runtime again once",async({page})=>{
+  test.setTimeout(60_000);
+  const now=Date.now()/1000,runtimeThread=runtimeThreadAt(now,"runtime-held-retry","Runtime held retry",2);
+  const harness=await startRuntimeHarness(runtimeThread);harness.control.listed=[];
+  try{
+    await routeRuntimeHistory(page,harness,"history-held-retry-fixture");
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    harness.control.listError="Deliberate thread list failure";
+    await page.getByRole("button",{name:"History",exact:true}).click();
+    const history=page.locator(".history-page"),alert=history.getByRole("alert"),retry=alert.getByRole("button",{name:"Retry",exact:true}),retrying=alert.getByRole("button",{name:"Retrying…",exact:true});
+    await expect(alert).toHaveText(/^Could not load thread history: Deliberate thread list failure/);
+    // Enter goes down on Retry and stays down: the runtime fails again, and the key goes on repeating on Retry.
+    let lists=harness.control.lists;
+    await retry.focus();await page.keyboard.down("Enter");
+    await expect(alert).toHaveText(/^Still could not load thread history: Deliberate thread list failure/);await expect(retry).toBeFocused();
+    const said=await alert.locator("span").first().elementHandle();
+    for(let repeat=0;repeat<6;repeat++){await page.keyboard.down("Enter");await frames(page)}
+    await page.keyboard.up("Enter");
+    await expect(retrying,"no read is running").toHaveCount(0);
+    expect(harness.control.lists-lists,"one held press asks the runtime once").toBe(1);
+    expect(await said.evaluate(node=>node.isConnected),"its failure is said once").toBe(true);
+    await expect(retry).toBeFocused();
+    await shootHistoryModes(page,alert,"history-retry-held-enter");
+    // A double click: its second click comes once the first click's read has failed.
+    lists=harness.control.lists;
+    const box=await retry.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+    await page.mouse.down();await page.mouse.up();
+    await expect.poll(()=>said.evaluate(node=>node.isConnected),{message:"the first click's failure is said"}).toBe(false);
+    await expect(retry).toBeFocused();
+    await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+    await frames(page);await expect(retrying).toHaveCount(0);
+    expect(harness.control.lists-lists,"a double click asks the runtime once").toBe(1);
+    // A press of its own, the runtime answering now, lists the thread.
+    harness.control.listError=null;harness.control.listed=[runtimeThread];
+    await page.keyboard.press("Enter");
+    await expect(history.getByRole("button",{name:/Runtime held retry/})).toBeVisible();
+    await expect(history.getByRole("alert")).toHaveCount(0);
+  }finally{await harness.close()}
+});
