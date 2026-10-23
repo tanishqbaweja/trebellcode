@@ -1626,6 +1626,65 @@ test("after Escape closes the / menu, a / typed once the draft has changed opens
   }finally{await harness.close()}
 });
 
+// The composer's search for the word at its caret, which fills the @ menu, as the GUI server answers it; and a click dx px right of
+// where the character at index starts on the draft's first line, as a person clicks the caret there.
+const mentionSearched=(page,q)=>page.waitForResponse(response=>{const url=new URL(response.url());return url.pathname==="/api/workspace/search"&&url.searchParams.get("q")===q});
+async function clickInDraft(page,index,dx){
+  const composer=page.getByTestId("composer");
+  await composer.click({position:await composer.evaluate((node,[index,dx])=>{
+    const style=getComputedStyle(node),ruler=document.createElement("canvas").getContext("2d");ruler.font=`${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    return {x:parseFloat(style.paddingLeft)+ruler.measureText(node.value.slice(0,index)).width+dx,y:parseFloat(style.paddingTop)+(parseFloat(style.lineHeight)||parseFloat(style.fontSize)*1.2)/2};
+  },[index,dx])});
+}
+
+// Escape's dismissal of the / or @ menu goes with the draft, which App keeps while a page (Settings, History) takes the chat's place
+// and the composer with it. The composer drawn again on the way back opened the / menu by itself over the unchanged /, the keyboard
+// still on the sidebar, and Enter in the composer then completed /compact instead of sending the / (round 7). An edit still opens it.
+test("after Escape closes the / or @ menu, Settings or History and back to the chat leave it shut over the unchanged draft, an edit opens it again, and Enter sends the draft as typed",async({page})=>{
+  test.setTimeout(150_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Sent the slash as typed."}]});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),slash=page.locator(".composer-wrap .slash-menu"),mention=page.getByTestId("file-mention-menu"),destinations=page.getByRole("navigation",{name:"Destinations"});
+    // The draft typed into the emptied composer, its menu open, and Escape closing the menu with the draft kept.
+    const escaped=async(text,menu)=>{
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type(text,{delay:20});await expect(menu).toBeVisible();await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await expect(composer).toHaveValue(text);
+    };
+    // A page opened from the sidebar (or Settings with its key), the composer gone with the chat, and the chat again through Threads
+    // (the sidebar's brand) or the thread's row.
+    const awayAndBack=async(name,heading,back)=>{
+      if(name==="Ctrl+,")await page.keyboard.press("Control+Comma");else await destinations.getByRole("button",{name,exact:true}).click();
+      await expect(page.getByRole("heading",{name:heading,exact:true,level:1})).toBeVisible();await expect(composer).toHaveCount(0);
+      await (back==="Threads"?page.getByRole("button",{name:"Threads",exact:true}):threadRow(page,"Composer thread").locator(".thread-main")).click();
+      await expect(composer).toBeEnabled();await painted(page);
+    };
+    for(const [mode,width] of [["dark",1280],["light",900]]){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      for(const [name,heading,back] of [["Settings","Settings","Threads"],["Settings","Settings","the thread's row"],["Ctrl+,","Settings","the thread's row"],["History","Thread history","the thread's row"]]){
+        await escaped("/",slash);await awayAndBack(name,heading,back);
+        await expect.soft(slash,`the / menu back from ${name} through ${back} in ${mode} at ${width}`).toHaveCount(0);await expect(composer).toHaveValue("/");
+      }
+      await page.screenshot({animations:"disabled",path:auditDir+`slash-menu-shut-after-history-and-back-${mode}-${width}x800.png`});
+      // The @ menu as well: back in the composer, a click past the draft's end searches for the word at the caret again, and the
+      // menu stays shut.
+      await escaped("Check @log",mention);await awayAndBack("Settings","Settings","Threads");
+      const answered=mentionSearched(page,"log");await clickInDraft(page,10,40);await (await answered).finished();await painted(page);
+      await expect.soft(mention,`the @ menu back from Settings in ${mode} at ${width}`).toHaveCount(0);await expect(composer).toHaveValue("Check @log");
+    }
+    await page.setViewportSize({width:1280,height:800});
+    // An edit back in the composer opens the menu again: /p, and the p erased back to /.
+    await escaped("/",slash);await awayAndBack("Settings","Settings","Threads");
+    await composer.click();await page.keyboard.type("p",{delay:20});await expect(slash.getByText("/plan",{exact:true})).toBeVisible();
+    await page.keyboard.press("Backspace");await expect(composer).toHaveValue("/");await expect(slash.getByText("/new",{exact:true})).toBeVisible();
+    // Enter sends the / as Escape left it, back from History.
+    await page.keyboard.press("Escape");await expect(slash).toHaveCount(0);await awayAndBack("History","Thread history","the thread's row");
+    await composer.click();await page.keyboard.press("End");await page.keyboard.press("Enter");
+    await expect(page.getByText("Sent the slash as typed.",{exact:true})).toBeVisible({timeout:15_000});
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page","/"]);await expect(composer).toHaveValue("");
+  }finally{await harness.close()}
+});
+
 test("Enter held on the @ file menu attaches the file once, and its repeats send nothing; a press of its own sends the message with it",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page,{replies:[{text:"The login redirect is fixed."}]});
@@ -1646,6 +1705,49 @@ test("Enter held on the @ file menu attaches the file once, and its repeats send
     await expect(page.getByText("The login redirect is fixed.")).toBeVisible({timeout:15_000});
     await expect(users).toHaveCount(2);await expect(users.last()).toContainText("Check @src/login.js for the redirect");
     await expect(context).toHaveCount(0);expect(harness.turns(harness.threads[0])).toHaveLength(2);
+  }finally{await harness.close()}
+});
+
+// Escape closes the @ menu for the draft as it stands, as it closes the / menu: the menu stays shut while the caret moves with no
+// edit (an arrow key, Home and End, a click in the word or past the draft's end), and Enter then sends the message as typed. Each
+// move searched again for the word at the caret and opened the menu over the draft, and Enter attached the file it highlighted
+// instead of sending (round 7). An edit opens it again, also one that leaves the draft's text as it was (a letter typed over itself).
+test("after Escape closes the @ file menu, the arrow keys, Home and End or a click leave it shut and Enter sends the message as typed, and an edit opens it again",async({page})=>{
+  test.setTimeout(150_000);
+  const replies=["Sent as typed, with no file.","Sent as typed again, with no file."];
+  const harness=await openComposerApp(page,{replies:replies.map(text=>({text}))});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip");
+    // A move of the caret into another word of the mention, the composer's search for that word answered and drawn: the menu stays shut.
+    const stays=async(how,q,move)=>{const answered=mentionSearched(page,q);await move();await (await answered).finished();await painted(page);await expect.soft(menu,`the @ menu after Escape and ${how}`).toHaveCount(0)};
+    for(const [mode,width,reply] of [["dark",1280,replies[0]],["light",900,replies[1]]]){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      const where=` in ${mode} at ${width}`;
+      await composer.click();await expect(composer).toHaveValue("");
+      await page.keyboard.type("Check @log",{delay:20});await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await expect(composer).toHaveValue("Check @log");
+      await stays("ArrowLeft"+where,"lo",()=>page.keyboard.press("ArrowLeft"));
+      await page.screenshot({animations:"disabled",path:auditDir+`mention-menu-shut-after-escape-and-arrowleft-${mode}-${width}x800.png`});
+      await stays("ArrowRight"+where,"log",()=>page.keyboard.press("ArrowRight"));
+      await page.keyboard.press("Home");await stays("Home and End"+where,"log",()=>page.keyboard.press("End"));
+      await stays("a click inside @log"+where,"lo",()=>clickInDraft(page,9,2));
+      await stays("a click past the draft's end"+where,"log",()=>clickInDraft(page,10,40));
+      // Enter sends the draft as typed, with no file.
+      await page.keyboard.press("Enter");
+      await expect(page.getByText(reply,{exact:true})).toBeVisible({timeout:15_000});
+      await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);
+      await page.screenshot({animations:"disabled",path:auditDir+`mention-menu-enter-sends-after-escape-${mode}-${width}x800.png`});
+    }
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page","Check @log","Check @log"]);
+    await page.setViewportSize({width:1280,height:800});
+    // An edit opens the menu again: a letter typed, a letter erased, a letter typed over itself.
+    await composer.click();await page.keyboard.type("Check @log",{delay:20});await expect(menu).toBeVisible();await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    await page.keyboard.type("i",{delay:20});await expect(menu.locator("button.active strong")).toHaveText("login.js");
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await page.keyboard.press("Backspace");await expect(composer).toHaveValue("Check @log");await expect(menu).toBeVisible();
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    await stays("Shift+ArrowLeft","lo",()=>page.keyboard.press("Shift+ArrowLeft"));
+    await page.keyboard.type("g",{delay:20});await expect(composer).toHaveValue("Check @log");await expect(menu.locator("button.active strong")).toHaveText("login.js");
   }finally{await harness.close()}
 });
 
