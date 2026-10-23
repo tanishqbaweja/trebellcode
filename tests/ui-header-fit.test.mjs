@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fitLevel, fitState, foldableActions, HEADER_FIT_LEVELS, HEADER_FOLD_ORDER, observeHeaderFit, TITLE_READABLE_WIDTH, titleReadable, titleWhole, titleWidths } from "../ui/src/header-fit.js";
+import { fitLevel, fitState, foldableActions, HEADER_FIT_LEVELS, HEADER_FOLD_ORDER, layoutZoom, observeHeaderFit, TITLE_READABLE_WIDTH, titleReadable, titleWhole, titleWidths } from "../ui/src/header-fit.js";
 
 // The headers below are models: the title's box shows shown px of its text's whole px, which widths hands the fit as the title's
 // measure would.
@@ -77,6 +77,65 @@ test("at a zoom other than 100% or 200% (125%, 150% or 175% display scaling, or 
   assert.ok(exactCut>cases/10,`the exact compare counted ${exactCut} of ${cases} whole titles cut`);
   // At 100% and 200% the two paths agree to the bit, which the exact compare relied on.
   for(const zoom of [1,2])for(let left=12800;left<44800;left+=37)assert.equal(boxWidth(5465,zoom)>=textWidth(left,5465,zoom),true);
+});
+
+// A page as Chromium lays it out at a layout zoom (layout pixels to a CSS pixel: devicePixelRatio where the display's scaling or the
+// window's zoom sets the device pixels, 1 where the scale is only emulated, as DevTools' device mode and Playwright's
+// deviceScaleFactor do): an element's CSS width counts down to whole layout units, which reach the page as boxWidth gives them
+// (probes in Chromium at a forced and an emulated 125%, 150% and 200% laid out so). created counts the elements made.
+function chromePage(zoom){
+  const node=()=>{const children=[];return {style:{},children,appendChild(child){children.push(child);return child},append(...nodes){children.push(...nodes)},remove(){this.removed=true},getBoundingClientRect(){return {width:boxWidth(Math.floor(parseFloat(this.style.width)*64*page.zoom),page.zoom)}}}};
+  const page={zoom,created:0,body:node(),createElement(){page.created++;return node()}};
+  return page;
+}
+test("the zoom the page is laid out at is measured: devicePixelRatio where the display's scaling or the window's zoom lays it out in device pixels, and where the scale is only emulated the zoom it is laid out at, in CSS pixels",()=>{
+  for(const ratio of [0.25,0.33,0.5,0.67,0.75,0.8,0.9,1,1.1,1.15,1.25,1.375,1.5,1.54,1.65,1.75,2,2.25,2.5,3,4,5])assert.equal(layoutZoom(ratio,chromePage(ratio)),ratio,`laid out in device pixels at ${ratio}`);
+  for(const ratio of [1.25,1.5,1.75,2,2.625,3])assert.equal(layoutZoom(ratio,chromePage(1)),1,`emulated at ${ratio}`);
+  // Emulated with the window zoomed, the window's zoom.
+  for(const [ratio,zoom] of [[1.65,1.1],[2.5,1.25],[1,0.5],[3,1.5]])assert.ok(Math.abs(layoutZoom(ratio,chromePage(zoom))-zoom)<1e-6,`emulated at ${ratio} with the window at ${zoom}`);
+  // Measured once for each devicePixelRatio, the probes taken out of the page again; a new ratio (the window zoomed, or moved to
+  // another display) is measured again.
+  const page=chromePage(1.5);
+  assert.equal(layoutZoom(1.5,page),1.5);
+  const made=page.created;assert.ok(made>0);
+  assert.equal(layoutZoom(1.5,page),1.5);assert.equal(page.created,made);
+  assert.ok(page.body.children.length&&page.body.children.every(node=>node.removed));
+  page.zoom=1.875;assert.equal(layoutZoom(1.875,page),1.875);assert.ok(page.created>made);
+  // Without a page (or before it has a body) it is devicePixelRatio.
+  assert.equal(layoutZoom(1.5,{}),1.5);
+  assert.equal(layoutZoom(1.25,undefined),1.25);
+});
+
+test("where the scale is only emulated, a box a layout unit short of its text is whole at the zoom measured, as Chrome draws it, which 64ths of a device pixel read two units short",()=>{
+  // 1285 beside the Git inspector at an emulated 150%: level 2 leaves "Repo task one" (85.390625px, 5465 64ths of a CSS pixel) an
+  // 85.375px box (5464), which Chrome draws whole. Counted in 64ths of a device pixel, 8196 against round(8197.5), it read two
+  // units short, cut, and the header took level 4.
+  const zoom=layoutZoom(1.5,chromePage(1));
+  assert.equal(titleWhole({shown:85.375,whole:85.390625,zoom}),true);
+  assert.equal(titleWhole({shown:85.375,whole:85.390625,zoom:1.5}),false);
+  // The title's measure gives that zoom, not devicePixelRatio.
+  const saved={getComputedStyle:globalThis.getComputedStyle,document:globalThis.document,devicePixelRatio:globalThis.devicePixelRatio},range={selectNodeContents(){},getBoundingClientRect:()=>({width:85.390625})};
+  try{
+    globalThis.getComputedStyle=()=>({paddingLeft:"0px",paddingRight:"0px",borderLeftWidth:"0px",borderRightWidth:"0px"});
+    globalThis.document={...chromePage(1),createRange:()=>range};globalThis.devicePixelRatio=1.5;
+    const widths=titleWidths({getBoundingClientRect:()=>({width:85.375})});
+    assert.deepEqual(widths,{shown:85.375,whole:85.390625,zoom:1});
+    assert.equal(titleWhole(widths),true);
+  }finally{for(const [key,value] of Object.entries(saved))if(value===undefined)delete globalThis[key];else globalThis[key]=value}
+  // At any emulated scale the page is laid out as at 100%: a box a unit short of its text is whole, and two units short cut, at
+  // the zoom measured, where devicePixelRatio read many a whole one cut.
+  let misread=0;
+  for(const ratio of [1.25,1.5,1.75,2,3]){
+    const zoom=layoutZoom(ratio,chromePage(1));
+    for(let left=12800;left<44800;left+=37)for(const units of [2577,5465,8656,19232]){
+      const text=textWidth(left,units,1),at=`a ${units}-unit title at an emulated ${ratio*100}% from ${left} units`;
+      assert.equal(titleWhole({shown:boxWidth(units,1),whole:text,zoom}),true,`${at}, its box as wide as its text`);
+      assert.equal(titleWhole({shown:boxWidth(units-1,1),whole:text,zoom}),true,`${at}, its box a layout unit short`);
+      assert.equal(titleWhole({shown:boxWidth(units-2,1),whole:text,zoom}),false,`${at}, its box two layout units short`);
+      if(!titleWhole({shown:boxWidth(units-1,1),whole:text,zoom:ratio}))misread++;
+    }
+  }
+  assert.ok(misread>0,"devicePixelRatio misread a box a unit short as cut");
 });
 
 test("the header takes the first level that shows the title whole, however many actions it folds, else the first that leaves it readable, else the last",()=>{

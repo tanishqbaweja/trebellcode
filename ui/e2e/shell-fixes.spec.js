@@ -71,8 +71,9 @@ async function openApp(page,{harness,threads,meta,project=null,runtime="codex",s
   // text drawn whole (probes of boxes from 3px short of "Repo task one" to 1px over it, and from 0 to 4 layout units short at 100%,
   // 125% and 150% display scaling, found the two rects wherever its pixels showed the ellipsis against the title clipped, and only
   // there: UI fix lane r6x). So cut is what a person sees, a layout unit or two over the box, at any zoom, whatever the widths round
-  // to. A box too narrow to draw even part of the text hides all of it, with one rect: a box a whole pixel or more short is cut.
-  await page.addInitScript(()=>{window.__titleBox=strong=>{const text=document.createRange();text.selectNodeContents(strong);const shown=strong.getBoundingClientRect().width,whole=text.getBoundingClientRect().width;return {shown,whole,zoom:devicePixelRatio,cut:text.getClientRects().length>1||whole-shown>=1}}});
+  // to. A box too narrow to draw even part of the text hides all of it, with one rect: a box a whole pixel or more short is cut. A test
+  // whose device scale factor is only emulated, which lays the page out in CSS pixels, says so in window.__layoutZoom (1).
+  await page.addInitScript(()=>{window.__titleBox=strong=>{const text=document.createRange();text.selectNodeContents(strong);const shown=strong.getBoundingClientRect().width,whole=text.getBoundingClientRect().width;return {shown,whole,zoom:window.__layoutZoom||devicePixelRatio,cut:text.getClientRects().length>1||whole-shown>=1}}});
   await page.goto("/");
 }
 // Whether the title's pixels show the ellipsis: the title drawn as it is against the same title clipped instead (text-overflow:
@@ -82,7 +83,7 @@ async function ellipsisDrawn(title){
   const shot=async overflow=>{await title.evaluate((node,overflow)=>{node.style.textOverflow=overflow},overflow);return (await title.screenshot({animations:"disabled"})).toString("base64")};
   try{return (await shot(""))!==(await shot("clip"))}finally{await title.evaluate(node=>{node.style.textOverflow=""})}
 }
-// How far a title's box falls short of its text, in layout units (64ths of a device pixel): Chrome draws its ellipsis from two.
+// How far a title's box falls short of its text, in layout units (64ths of a pixel of its layout): Chrome draws its ellipsis from two.
 const unitsShort=box=>Math.round(box.whole*64*box.zoom)-Math.round(box.shown*64*box.zoom);
 // The agent relay with its own thread store, as Trebell serves Trebell Native and the relay harnesses (Claude Code, OpenCode, Cursor,
 // Grok, Antigravity): what a move leaves is what the relay keeps. A second start on the same home is a server restart.
@@ -707,7 +708,7 @@ for(const [name,sibling,crumbNamed] of [["Repo task one","Repo task two",true],[
 // folded while 1140 folded two, at 1110, 1178, 1212, 1216 and 1284 too, "Repo task number one" at 1126, 1160, 1194, 1228, 1262 and
 // 1266, and with the sidebar closed at 1125 and 1216, or the inspector at 719, 873 and 938), so the window is also dragged 1px at a
 // time across each place the header changes its level, and those widths. Whole is what Chrome draws, no ellipsis, which its line
-// leaves off a text up to a layout unit (a 64th of a device pixel) wider than its box: counted to the exact fraction of a pixel, a
+// leaves off a text up to a layout unit (a 64th of a pixel of its layout) wider than its box: counted to the exact fraction of a pixel, a
 // title a unit short read as cut, so the header folded a step further than the title needs (at 1285 from level 2 to level 4, the
 // theme and palette buttons stepping aside, and at 1251 the crumb took its icon back), and at 125% or 150% display scaling, where
 // the box's width and its text's reach the page rounded two ways, a box that held its text could read a hundred-thousandth of a
@@ -717,22 +718,30 @@ for(const [name,sibling,crumbNamed] of [["Repo task one","Repo task two",true],[
 // Playwright's deviceScaleFactor alone draws the page at the scale but lays it out in CSS pixels, where both widths read alike; a
 // display's scaling (and the window's zoom) lays it out in device pixels, so at 125% and 150% the test runs in a browser of its own
 // whose device scale factor is set as a display's scaling sets it (a probe found the exact compare misread 845 of 1352 positions of
-// "Repo task one" at a forced 125%, none with the emulation alone).
-for(const scale of [1,1.25,1.5])test.describe(`at ${scale*100}% display scaling`,()=>{
-// Whether the window is a whole number of device pixels at this width, as a window is.
-const devicePixels=width=>Number.isInteger(width*scale),fine=scale===1?1:scale===1.25?4:2;
-for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task number one","Repo task number two"]])for(const mode of ["dark","light"])test(`"${name}" shows whole beside the Git inspector and two linked pull requests at every width from 1100 to 1300, the window widened and narrowed 4px at a time and ${fine}px at a time where the header changes its level, folding actions only as far as that needs, and with the sidebar or the inspector closed, in ${mode} mode`,async({page:testPage,playwright,baseURL,proxy,channel,headless})=>{
+// "Repo task one" at a forced 125%, none with the emulation alone). Under the emulation alone (Playwright's deviceScaleFactor, as
+// DevTools' device mode) a layout unit is a 64th of a CSS pixel, which the fit counted as 64ths of a device pixel: at 150% the
+// 85.375px box of the 85.390625px "Repo task one", one unit short and drawn whole, read two short, so beside the Git inspector the
+// header folded a level more than the title needs, at 1285 to level 4, the theme and palette buttons stepping aside, and at 1251
+// the crumb kept only its icon (UI lane D, round 7), and at 200% two device units are one CSS unit. So the sweep runs under the
+// emulation at 150% and 200% too, its window stepping 1px at a time as at 100%, which it is laid out as.
+for(const [scale,emulated] of [[1,false],[1.25,false],[1.5,false],[1.5,true],[2,true]])test.describe(`at ${scale*100}% ${emulated?"emulated device scale factor":"display scaling"}`,()=>{
+// Whether the window is a whole number of device pixels at this width, as a window is (an emulated scale takes any width).
+const devicePixels=width=>emulated||Number.isInteger(width*scale),fine=scale===1||emulated?1:scale===1.25?4:2;
+for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task number one","Repo task number two"]])for(const mode of ["dark","light"])test(`"${name}" shows whole beside the Git inspector and two linked pull requests at every width from 1100 to 1300, the window widened and narrowed 4px at a time and ${fine}px at a time where the header changes its level, folding actions only as far as that needs, and with the sidebar or the inspector closed, in ${mode} mode`,async({page:testPage,browser,playwright,baseURL,proxy,channel,headless})=>{
   test.setTimeout(300_000);
   const project={id:"header-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
   const threads=[name,sibling].map((title,index)=>({id:"header-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
   const slug=name.toLowerCase().replace(/\s+/g,"-");
   const prs=[102,103].map(number=>({url:"https://github.com/lane-d/scratch/pull/"+number,number,title:"Scratch PR "+number,state:"open"}));
   let links=prs.slice(0,1);
-  const harness=await startHarness(threads);let scaled=null;
+  const harness=await startHarness(threads);let scaled=null,context=null;
   try{
-    // At 125% and 150% a browser of the test's own, its device scale factor set as a display's scaling sets it.
-    if(scale!==1)scaled=await playwright.chromium.launch({headless,channel,args:["--force-device-scale-factor="+scale]});
-    const page=scaled?await (await scaled.newContext({baseURL,proxy,viewport:{width:1280,height:800},deviceScaleFactor:scale})).newPage():testPage;
+    // At 125% and 150% a browser of the test's own, its device scale factor set as a display's scaling sets it; emulated, a context
+    // of the test's browser with the device scale factor alone.
+    if(scale!==1&&!emulated)scaled=await playwright.chromium.launch({headless,channel,args:["--force-device-scale-factor="+scale]});
+    if(scale!==1)context=await (scaled||browser).newContext({baseURL,proxy,viewport:{width:1280,height:800},deviceScaleFactor:scale});
+    const page=context?await context.newPage():testPage;
+    if(emulated)await page.addInitScript(()=>{window.__layoutZoom=1});
     expect(await page.evaluate(()=>devicePixelRatio),"the page's device pixels to a CSS pixel").toBe(scale);
     // The server keeps the thread's links: the Git tab syncs them, and Link pull request resolves the URL, then links it.
     await page.route(/\/api\/source-control\/thread-link$/,route=>{
@@ -780,7 +789,7 @@ for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task numbe
     },HEADER_FOLD_ORDER);
     // The main column beside the sidebar (224px up to 1120, 258px from 1121) and the 460px inspector, or as wide as column says.
     const seen=[],px=value=>value.toFixed(2),level=state=>state.fit+(state.folded.length?"+"+state.folded.length:"")+(state.crumb?" crumb "+state.crumb:"");
-    const shot=width=>join(shotsDir,`header-title-${slug}-git-inspector-${mode}-${width}x800${scale===1?"":"-at-"+scale*100+"pct"}.png`);
+    const shot=width=>join(shotsDir,`header-title-${slug}-git-inspector-${mode}-${width}x800${scale===1?"":"-at-"+scale*100+"pct"}${emulated?"-emulated":""}.png`);
     const at=async(width,column=width-(width<=1120?224:258)-460)=>{
       await page.setViewportSize({width,height:800});
       await expect.poll(async()=>Math.abs(await header.evaluate(node=>node.getBoundingClientRect().width)-column),{message:`the main column at ${width}px`}).toBeLessThan(scale===1?0.5:1);await settle(page);
@@ -805,16 +814,16 @@ for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task numbe
     await page.screenshot({path:shot(1140),animations:"disabled"});
     for(let width=1100;width<=1300;width+=4)await at(width);
     for(let width=1300;width>=1100;width-=4){await at(width);if(width===1108||width===1152)await page.screenshot({path:shot(width),animations:"disabled"})}
-    // 1px at a time (at 125% and 150% by the least step that keeps whole device pixels), widening and then narrowing, from 2px below
-    // to 2px above each pair of 4px steps the header changed its level between, and at the widths lane D and the fix review found
-    // the title cut or folded past its need at.
-    const band=new Set(scale===1?[1110,1111,1144,1145,1178,1179,1212,1216,1217,1251,1284,1285,1126,1160,1194,1228,1262,1266]:[]);
+    // 1px at a time (at 125% and 150% display scaling by the least step that keeps whole device pixels), widening and then
+    // narrowing, from 2px below to 2px above each pair of 4px steps the header changed its level between, and at the widths lane D
+    // and the fix review found the title cut or folded past its need at.
+    const band=new Set(scale===1||emulated?[1110,1111,1144,1145,1178,1179,1212,1216,1217,1251,1284,1285,1126,1160,1194,1228,1262,1266]:[]);
     for(const [index,state] of seen.entries()){const next=seen[index+1];if(next&&Math.abs(next.width-state.width)===4&&level(next)!==level(state))for(let width=Math.min(state.width,next.width)-2;width<=Math.max(state.width,next.width)+2;width++)band.add(width)}
     const widths=[...band].filter(width=>width>=1100&&width<=1300&&devicePixels(width)).sort((a,b)=>a-b);
     for(const width of widths){await at(width);if(width===1110||width===1144||width===1285)await page.screenshot({path:shot(width),animations:"disabled"})}
     for(const width of widths.reverse())await at(width);
     const line=seen.map(state=>`${state.width}:${level(state)}:${px(state.title)}/${px(state.whole)}${state.box.cut?" cut":""}`).join(" ");
-    console.log(`header for "${name}" beside the Git inspector in ${mode} at ${scale*100}% (width:fit+folds:title/whole): ${line}`);
+    console.log(`header for "${name}" beside the Git inspector in ${mode} at ${scale*100}%${emulated?" emulated":""} (width:fit+folds:title/whole): ${line}`);
     // A wider main column never folds more actions than a narrower one (the column narrows where the sidebar widens at 1121).
     const more=new Set();for(const state of seen)for(const other of seen)if(other.column>state.column&&other.folded.length>state.folded.length)more.add(`${other.width}px (${other.column}px of column) folds ${other.folded.length}, ${state.width}px (${state.column}px) ${state.folded.length}`);
     expect.soft([...more],"a wider main column never folds more actions than a narrower one").toEqual([]);
@@ -829,8 +838,8 @@ for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task numbe
     await header.getByRole("button",{name:"Open sidebar"}).click();await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
     await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden();
     await sweep([[715,723],[869,877],[934,943]],width=>width-(width<820?0:width<=900?196:224));
-    console.log(`header for "${name}" with the sidebar closed, then without the inspector, in ${mode} at ${scale*100}%: ${seen.slice(main).map(state=>`${state.width}:${level(state)}:${px(state.title)}/${px(state.whole)}${state.box.cut?" cut":""}`).join(" ")}`);
-  }finally{await harness.close();await scaled?.close()}
+    console.log(`header for "${name}" with the sidebar closed, then without the inspector, in ${mode} at ${scale*100}%${emulated?" emulated":""}: ${seen.slice(main).map(state=>`${state.width}:${level(state)}:${px(state.title)}/${px(state.whole)}${state.box.cut?" cut":""}`).join(" ")}`);
+  }finally{await harness.close();await context?.close();await scaled?.close()}
 });
 });
 

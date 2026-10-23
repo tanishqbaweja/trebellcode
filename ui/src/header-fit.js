@@ -30,7 +30,7 @@
 // would be level 2 again, so the header takes level 4 for it, the theme and palette buttons stepping aside into More actions for
 // the crumb's name: a header whose title fits at level 3 shows level 4 with the crumb's shortened name, for a title of any length,
 // and level 3 shows only where the room level 4 frees does not hold that name.
-// Whole is measured as Chrome lays the title out, in layout units, a 64th of a device pixel: its line fits the text up to one unit
+// Whole is measured as Chrome lays the title out, in layout units, a 64th of a layout pixel: its line fits the text up to one unit
 // over its box without the ellipsis (a box a unit short of "Repo task one" drew all of it, two units short drew "Repo task o…"), so a
 // box at most a unit narrower than its text shows it whole. clientWidth and scrollWidth are whole pixels: the fit read a box of
 // 84.36px for 85.39px of text as 84 of 85 and counted that whole, so the pixel or two below where a level first shows the title whole
@@ -38,7 +38,12 @@
 // 1140 folded two and showed it whole; a box 0.03px short reads 85 of 85). The box's and the text's fractional widths reach the page
 // rounded two ways, which agree only at 100% and 200%: at 125% or 150% display scaling, or with the window zoomed, a box that holds
 // its text could read a hundred-thousandth of a pixel short of it, and counted cut, the title took the readable width ("Repo task
-// …") or the header folded where nothing needed it. Both are rounded back to whole layout units before they are compared.
+// …") or the header folded where nothing needed it. Both are rounded back to whole layout units before they are compared. A layout
+// pixel is a device pixel where the display's scaling or the window's zoom sets the device pixels to a CSS pixel, but a CSS pixel
+// where the scale is only emulated (DevTools' device mode, Playwright's deviceScaleFactor), which draws the page at its scale and
+// lays it out as at 100%, with the same devicePixelRatio. Counted in 64ths of a device pixel there, a box a unit short of its text
+// read two short at 150% and was counted cut, so beside the Git inspector the header folded a level more than "Repo task one" needs
+// (level 4 at 1285, the crumb's icon alone at 1251), and at 200% two device units are one CSS unit. So the zoom is measured.
 export const HEADER_FIT_LEVELS=6;
 export const TITLE_READABLE_WIDTH=80;
 // The level from which the project crumb keeps only its icon.
@@ -48,7 +53,7 @@ export const CRUMB_ICON_LEVEL=3;
 export const HEADER_FOLD_ORDER=["goal","terminal","review","script","open-in","source"];
 
 // Whether the title shows all of itself: its text (whole) no more than a layout unit wider than its box (shown), both CSS pixels
-// counted in the layout units of the zoom they are laid out at (device pixels to a CSS pixel).
+// counted in the layout units of the zoom they are laid out at (layout pixels to a CSS pixel: layoutZoom).
 export function titleWhole({shown=0,whole=0,zoom=1}={}){
   const units=px=>Math.round(px*64*zoom);
   return units(shown)+1>=units(whole);
@@ -57,13 +62,28 @@ export function titleWhole({shown=0,whole=0,zoom=1}={}){
 export function titleReadable({shown=0,whole=0}={},readable=TITLE_READABLE_WIDTH){
   return shown+1>=Math.min(whole,readable);
 }
+// The zoom the page is laid out at (layout pixels to a CSS pixel), measured once for each devicePixelRatio: probes 1.3 layout units
+// wide at zooms from 16 down, each half the one before, lay out no unit wide until the first at most 1.3 times the page's own, which
+// lays out one unit wide, as Chrome counts a width down to whole units. Where that unit is a device pixel's, the zoom is
+// devicePixelRatio itself (the display's scaling times the window's zoom).
+let layout=null;
+export function layoutZoom(ratio=globalThis.devicePixelRatio||1,doc=globalThis.document){
+  if(!doc?.body)return ratio;
+  if(layout?.doc!==doc||layout.ratio!==ratio){
+    const box=doc.createElement("div");box.style.cssText="position:absolute;visibility:hidden";
+    for(let zoom=16;zoom>=1/8;zoom/=2)box.appendChild(doc.createElement("div")).style.width=1.3/64/zoom+"px";
+    doc.body.append(box);
+    const unit=[...box.children].map(probe=>probe.getBoundingClientRect().width).find(Boolean);box.remove();
+    layout={doc,ratio,zoom:!unit||Math.abs(unit*64*ratio-1)<1e-4?ratio:1/64/unit};
+  }
+  return layout.zoom;
+}
 // The width of the title's content box (shown) and of its text (whole), to the fraction of a pixel, and the zoom they are laid
-// out at: the page's device pixels to a CSS pixel, the display's scaling times the window's zoom. A Range keeps the text's whole
-// width while the ellipsis cuts it.
+// out at (layoutZoom). A Range keeps the text's whole width while the ellipsis cuts it.
 export function titleWidths(title){
   const style=getComputedStyle(title),text=document.createRange();text.selectNodeContents(title);
   const edges=["paddingLeft","paddingRight","borderLeftWidth","borderRightWidth"].reduce((sum,key)=>sum+parseFloat(style[key]),0);
-  return {shown:title.getBoundingClientRect().width-edges,whole:text.getBoundingClientRect().width,zoom:globalThis.devicePixelRatio||1};
+  return {shown:title.getBoundingClientRect().width-edges,whole:text.getBoundingClientRect().width,zoom:layoutZoom()};
 }
 
 // The level the header takes: the first at which the title shows whole, when one does, else the first at which it is readable,
