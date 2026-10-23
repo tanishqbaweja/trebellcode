@@ -446,8 +446,9 @@ test("a double click on the Goal panel's Pause pauses the goal once and one on R
 });
 
 // The page's socket to the relay, passed through here; set it up before the app opens. hold(method) keeps that method's requests
-// until release() sends them on (a slow harness); drop() closes the socket and keeps the window from connecting again until back()
-// (a harness that goes away and comes back); answer(method,change) changes what the relay answers to that method from then on.
+// until release() sends them on (a slow harness), or release(reason) refuses them with reason (a slow harness that refuses them);
+// drop() closes the socket and keeps the window from connecting again until back() (a harness that goes away and comes back);
+// answer(method,change) changes what the relay answers to that method from then on.
 async function relaySocket(page){
   const sent=[],sockets=[],held=[],answers=new Map();let holding=null,away=false;
   await page.routeWebSocket(/\/api\/agent\/ws$/,ws=>{
@@ -456,7 +457,7 @@ async function relaySocket(page){
     ws.onMessage(message=>{
       let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
       if(parsed?.method){sent.push(parsed);if(parsed.id!=null)asked.set(parsed.id,parsed.method)}
-      if(parsed?.method&&parsed.method===holding)held.push(()=>server.send(message));else server.send(message);
+      if(parsed?.method&&parsed.method===holding)held.push(reason=>reason?ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:reason}})):server.send(message));else server.send(message);
     });
     server.onMessage(message=>{
       let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
@@ -466,7 +467,7 @@ async function relaySocket(page){
   });
   return {
     sent:method=>sent.filter(message=>message.method===method).map(message=>message.params||{}),
-    hold(method){holding=method},release(){holding=null;for(const send of held.splice(0))send()},
+    hold(method){holding=method},release(reason){holding=null;for(const send of held.splice(0))send(reason)},
     answer(method,change){answers.set(method,change)},
     drop(){away=true;for(const {ws,server} of sockets.splice(0)){ws.close({code:1011,reason:"harness down"}).catch(()=>{});server.close().catch(()=>{})}},
     back(){away=false},
@@ -943,6 +944,87 @@ test("a continuity save the harness is slow to answer says Saving… on Save con
     await expect(row.getByRole("alert")).toContainText("Continuity store is read-only");
     await expect(save,"the keyboard stays on Save continuity when the save is refused").toBeFocused();await expect(done).toHaveValue("Moved the form to the new API");
   }finally{await writes.harness.close()}
+});
+
+// A Goal panel drawn again while its save is on its way (back from Files, with the right panel closed and opened again, or back from
+// another thread) says so as the panel that sent it did: Update goal or Save continuity reads Saving… (Pause Pausing…), marked busy,
+// with the bars' other buttons off, a second press sends nothing until the save lands, and a refusal is said above the bar as it
+// lands. The save went with the panel that sent it, so the one drawn again offered Update goal or Save continuity, Discard changes,
+// Pause, Complete and Clear, a second press saved again, and a refusal was said nowhere.
+test("a Goal panel drawn again while its save is on its way, back from Files, with the right panel closed and opened again or back from another thread, says Saving… with the other buttons off, takes no second press until the save lands, and says a refusal",async({page})=>{
+  test.setTimeout(180_000);
+  const socket=await relaySocket(page);
+  const harness=await openComposerApp(page,{others:["Second thread"]});
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const bar=panel.locator(":scope>.goal-actions"),save=bar.locator("button.primary"),button=name=>bar.getByRole("button",{name,exact:true});
+    const tabs=page.getByTestId("right-panel").locator(".context-panel-tab-scroll"),composer=page.getByTestId("composer");
+    const openThread=async name=>{const row=threadRow(page,name);await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");await painted(page)};
+    // The ways a person takes the panel away and draws it again.
+    const ways={
+      "back from Files":async()=>{await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(panel).toHaveCount(0);await tabs.getByRole("button",{name:"Goal",exact:true}).click()},
+      "with the right panel closed and opened again":async()=>{await page.getByRole("button",{name:"Close right panel"}).click();await expect(panel).toHaveCount(0);await page.getByRole("button",{name:"Thread goal",exact:true}).click()},
+      "back from another thread":async()=>{await openThread("Second thread");await expect(save).toHaveText("Set goal");await openThread("Composer thread")},
+    };
+    // A second press as a person makes it on a button that says it is off: a click on it, then Enter.
+    const pressAgain=async target=>{await target.evaluate(node=>node.scrollIntoView({block:"center"}));const box=await target.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);await page.keyboard.press("Enter");await painted(page)};
+    const shoot=async(name,shown)=>{
+      const mode=await page.locator("html").getAttribute("data-mode");
+      for(const width of [1280,700]){await page.setViewportSize({width,height:800});await shown.evaluate(node=>node.scrollIntoView({block:"center"}));await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+    };
+    const sets=()=>socket.sent("thread/goal/set").length;
+    for(const [index,[way,away]] of Object.entries(ways).entries()){
+      await switchMode(page,index===1?"light":"dark");
+      const text="Make the login tests pass, "+way;await typeOver(page,objective,text);
+      socket.hold("thread/goal/set");const before=sets();await save.click();await expect(save).toHaveText("Saving…");
+      await away();await expect(objective,"the edit is kept "+way).toHaveValue(text);await painted(page);
+      // Soft, so a build that loses the save says so for each way.
+      await expect.soft(save,"the panel drawn again "+way+" says the save is on its way").toHaveText("Saving…");
+      await expect.soft(save,"marked busy "+way).toHaveAttribute("aria-busy","true");
+      for(const name of ["Discard changes","Pause","Complete","Clear"])await expect.soft(button(name),name+" is off "+way).toHaveAttribute("aria-disabled","true");
+      if(index<2)await shoot("goal-drawn-again-save-held",save);
+      await pressAgain(save);
+      expect.soft(sets(),"a second press "+way+" sends nothing while the save is on its way").toBe(before+1);
+      socket.release();
+      await expect(save).toHaveText("Update goal");await expect(save).not.toHaveAttribute("aria-busy");
+      await expect(button("Discard changes"),"nothing is left unsaved once the save lands").toHaveCount(0);await expect(objective).toHaveValue(text);
+    }
+    // So does Pause: back from Files it reads Pausing…, marked busy, and once it lands Resume takes its place.
+    const status=panel.locator(".goal-status");
+    socket.hold("thread/goal/set");await button("Pause").click();await expect(button("Pausing…")).toHaveAttribute("aria-busy","true");
+    await ways["back from Files"]();await expect(status).toHaveText("active");
+    await expect.soft(button("Pausing…"),"Pause drawn again says the goal is being paused").toHaveAttribute("aria-busy","true");
+    await expect.soft(save,"with the bar's other buttons off").toHaveAttribute("aria-disabled","true");
+    socket.release();await expect(status).toHaveText("paused");await expect(button("Resume")).not.toHaveAttribute("aria-disabled");
+    await button("Resume").click();await expect(status).toHaveText("active");
+    // The notes the same way: Save continuity reads Saving… back from Files, with the bars' other buttons off, a second press sends
+    // nothing, and once the save lands the note is saved.
+    const notes=panel.locator(".continuity-actions"),saveNotes=notes.locator("button.primary"),done=panel.getByLabel("Completed work",{exact:true});
+    const summary=panel.locator(".goal-continuity-details>summary"),showNotes=()=>panel.getByText("Continuity state",{exact:true}).click();
+    await showNotes();await typeOver(page,done,"Fixed the session refresh");
+    socket.hold("thread/continuity/set");const notesBefore=socket.sent("thread/continuity/set").length;
+    await saveNotes.click();await expect(saveNotes).toHaveText("Saving…");
+    await ways["back from Files"]();await showNotes();await expect(done).toHaveValue("Fixed the session refresh");
+    await expect.soft(saveNotes,"the notes drawn again say their save is on its way").toHaveText("Saving…");
+    await expect.soft(saveNotes,"marked busy").toHaveAttribute("aria-busy","true");
+    await expect.soft(notes.getByRole("button",{name:"Discard changes",exact:true}),"the notes' Discard changes is off").toHaveAttribute("aria-disabled","true");
+    await expect.soft(save,"and so is the goal's bar").toHaveAttribute("aria-disabled","true");
+    await shoot("goal-notes-drawn-again-save-held",saveNotes);
+    await pressAgain(saveNotes);
+    expect.soft(socket.sent("thread/continuity/set").length,"a second Save continuity sends nothing while the save is on its way").toBe(notesBefore+1);
+    socket.release();
+    await expect(summary).toContainText("1 explicit note");await expect(saveNotes).toHaveText("Save continuity");
+    await expect(notes.getByRole("button",{name:"Discard changes",exact:true})).toHaveCount(0);await expect(done).toHaveValue("Fixed the session refresh");
+    // A save refused once the panel is drawn again is said above its bar, as to a panel that stays, and the edit stays to save again.
+    await switchMode(page,"light");
+    await typeOver(page,objective,"Make the checkout tests pass");socket.hold("thread/goal/set");await save.click();await expect(save).toHaveText("Saving…");
+    await ways["back from Files"]();await expect.soft(save,"the panel drawn again says the save is on its way").toHaveText("Saving…");
+    socket.release("Goal store is read-only");
+    await expect(bar.getByRole("alert"),"the refusal is said above the bar of the panel drawn again").toContainText("Goal store is read-only");
+    await expect(save).toHaveText("Update goal");await expect(objective).toHaveValue("Make the checkout tests pass");await expect(button("Discard changes")).toBeVisible();
+    await shoot("goal-drawn-again-save-refused",bar.getByRole("alert"));
+  }finally{await harness.close()}
 });
 
 // The Goal panel's clears (the goal's and the notes'), each held from when hold() is called until the function it gives back is, as

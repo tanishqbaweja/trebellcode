@@ -87,6 +87,12 @@ function pressOnce(event,pressed){
   if(button.getAttribute("aria-disabled")){event.stopPropagation();return}
   ignorePressRest(!event.detail);pressed.current=event.detail?null:{bar:event.currentTarget,button,near:[...all.slice(at+1),...all.slice(0,at).reverse()]};
 }
+// The write each thread's panel has on its way (what busy names), kept outside the panel as its drafts are, and the panel shown for
+// each thread: one drawn again while a write is on its way (back from another tab, with the right panel closed and opened, or from
+// another thread) says so on the button pressed, with the rest off, takes no second press until it lands, and says why if it is
+// refused, as the panel that sent it would. The write went with the panel that sent it, so the one drawn again offered every
+// button, a second Update goal saved again, and a refusal was said nowhere.
+const writes=new Map(),panels=new Map();
 
 // covered: another thread's opening state is up. The panel belongs to the thread being left, so it hides without unmounting: a
 // failed open brings it back with the drafts in it.
@@ -115,7 +121,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [pendingNextActions,setPendingNextActions]=useState("");
   const [repairStatus,setRepairStatus]=useState("");
   const [repairStartedFor,setRepairStartedFor]=useState(null);
-  const [busy,setBusy]=useState("");
+  const [busy,showBusy]=useState(()=>writes.get(thread?.id)||"");
   // The bar button last pressed from the keyboard (pressOnce). Drawn without it once no write is on its way, the keyboard goes on to
   // its nearest control still there: Complete and Clear go as the goal's change comes in, ahead of their answer, and the Discard
   // changes of an edit cleared with the goal only with that answer. The press is over once the person has put the keyboard elsewhere:
@@ -132,6 +138,8 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   // view as it shows, clear of the goal's bar pinned below.
   const [error,setError]=useState(null),errorRef=useRef(null);
   useEffect(()=>{errorRef.current?.scrollIntoView({block:"nearest"})},[error]);
+  // The panel shown for the thread (panels) says what a write on its way from the one before does, and why it was refused.
+  useEffect(()=>{const id=thread?.id,shown={showBusy,setError};panels.set(id,shown);showBusy(writes.get(id)||"");return()=>{if(panels.get(id)===shown)panels.delete(id)}},[]);
   const goalFields=[objective,tokenBudget,timeBudget,turnBudget,toolCallBudget,childAgentBudget,costBudgetUsd,completionConditions,constraints,validationExpectations];
   const goalSaved=useSavedFields("goal",thread?.id,goalValues(goal),goalFields,[setObjective,setTokenBudget,setTimeBudget,setTurnBudget,setToolCallBudget,setChildAgentBudget,setCostBudgetUsd,setCompletionConditions,setConstraints,setValidationExpectations]);
   const notes=[completedWork,unresolvedFailures,importantDecisions,artifactsCreated,pendingNextActions];
@@ -151,7 +159,10 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   },[rpc,rpcStatus,thread?.id,continuity?.verification?.updatedAt]);
   if(!thread?.id)return <div className="empty-state"><Target size={28}/><strong>No active thread</strong><span>Start or open a thread before setting a durable goal.</span></div>;
   if(rpcStatus!=="connected")return <div className="empty-state"><Target size={28}/><strong>Agent harness is reconnecting</strong><span>This thread's durable goal will be available again when the active harness reconnects.</span></div>;
-  const failAt=(at,e)=>setError({at,text:e?.message||String(e)});
+  // A write is the thread's (writes), and what it does and why it was refused are said by the panel shown for the thread, which may
+  // be one drawn after the panel that sent it went.
+  function setBusy(what){if(what)writes.set(thread.id,what);else writes.delete(thread.id);panels.get(thread.id)?.showBusy(what)}
+  const failAt=(at,e)=>panels.get(thread.id)?.setError({at,text:e?.message||String(e)});
   const alertAt=at=>error?.at===at&&<div ref={errorRef} className="inline-error" role="alert">{error.text}</div>;
   // While a write is on its way the bars' buttons only say they are off (pressOnce takes no press of them), and the one pressed,
   // which busy names ("save", the status Pause, Resume or Complete sets, "clear", "continuity" ...), says what it does, marked busy.
