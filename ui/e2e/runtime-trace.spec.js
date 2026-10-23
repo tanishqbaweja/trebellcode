@@ -59,15 +59,17 @@ const fixtureThread=(id,name,age)=>({id,name,preview:name,cwd:process.cwd(),stat
 const traceEvent=(id,thread,turnId,name,ago)=>({id,at:Date.now()-ago,runtime:"codex",provider:"openai",threadId:thread.id,turnId,category:"turn",name,status:"completed",data:{}});
 // The trace, filtered from events as the server filters it. A request that hold(params) matches waits until release(which) sends
 // it on (a slow journal); release resolves once the page has those answers and has drawn what they leave. Each held request keeps
-// its place among the requests (index).
+// its place among the requests (index). lastError, when set, is the journal's last failure each answer carries, and fail has each
+// request refused.
 async function routeTraces(page,events){
-  const traces={requests:[],held:[],hold:()=>false};
+  const traces={requests:[],held:[],hold:()=>false,lastError:null,fail:false};
   await page.route("**/api/traces?*",async route=>{
     const params=Object.fromEntries(new URL(route.request().url()).searchParams.entries()),index=traces.requests.push(params)-1;
     if(traces.hold(params))await new Promise(resolve=>traces.held.push({index,params,request:route.request(),send:resolve}));
+    if(traces.fail){await route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate trace refresh failure"})}).catch(()=>{});return}
     let items=[...events];
     for(const key of ["threadId","turnId","runtime","category"])if(params[key])items=items.filter(item=>String(item[key])===params[key]);
-    await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items,journal:{backend:"sqlite",lastError:null}})}).catch(()=>{});
+    await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items,journal:{backend:"sqlite",lastError:traces.lastError}})}).catch(()=>{});
   });
   traces.release=async(which=()=>true)=>{
     const going=traces.held.filter(entry=>which(entry.params));traces.held=traces.held.filter(entry=>!going.includes(entry));
@@ -268,4 +270,60 @@ test("filters that hide every trace event of the thread say so and offer Clear f
     await clear.click();
     await expect(names).toHaveText(["e.turn.started"]);await expect(category).toHaveValue("");await expect(turn).toBeFocused();
   }finally{traces.hold=()=>false;await traces.release().catch(()=>{});await harness.close()}
+});
+
+// Clear filters goes when an answer takes the empty list away while the keyboard is on it: an event the filters match comes with
+// the next poll, the journal says it failed, a refresh fails, or a refresh starts (here Refresh pressed by script). Each time the
+// keyboard goes on to the Turn filter, with its ring, as a press of Clear filters hands it: it fell to the page, and no control had it.
+test("Clear filters that an answer takes away while the keyboard is on it hands the keyboard to the Turn filter: an event the filters match coming with a poll, a journal failure, a failed refresh and a refresh",async({page})=>{
+  test.setTimeout(90_000);
+  const thread=fixtureThread("thread-f-trace-keyboard","Trace keyboard thread",30);
+  const harness=await startHarness(thread);
+  const events=[traceEvent("f-1",thread,"turn-f-0001","f.turn.started",50_000),traceEvent("f-2",thread,"turn-f-0001","f.turn.completed",40_000)];
+  const traces=await routeTraces(page,events);
+  try{
+    await routeApp(page,harness,thread);
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:500,terminalHeight:330})));
+    await page.goto("/");
+    const {trace,names}=await openRuntime(page,"Trace keyboard thread");
+    const [turn,category,time]=["Trace turn","Trace category","Trace time window"].map(label=>trace.getByLabel(label));
+    const clear=trace.getByRole("button",{name:"Clear filters",exact:true}),empty=trace.locator(".runtime-trace-empty"),failure=trace.getByRole("alert");
+    const ring=locator=>locator.evaluate(node=>node===document.activeElement&&node.matches(":focus-visible"));
+    await expect(names).toHaveText(["f.turn.started","f.turn.completed"]);
+    // The verification category, picked from the keyboard, hides both turn events; Tab from the time window reaches Clear filters.
+    await category.focus();await page.keyboard.press("End");await expect(category).toHaveValue("verification");
+    const onClear=async()=>{await expect(empty).toContainText("No trace events match these filters.",{timeout:10_000});await time.focus();await page.keyboard.press("Tab");await expect(clear).toBeFocused()};
+    // Soft, so a build that drops the keyboard says so for each way the button goes.
+    const handedOn=async why=>{await expect(clear).toHaveCount(0);await expect.soft(turn,why).toBeFocused();expect.soft(await ring(turn),why+", with its ring").toBe(true)};
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});
+      if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+      // A verification step comes with the next poll: it is listed in the message's place, and the keyboard is on the Turn filter.
+      await onClear();
+      events.push({...traceEvent("f-3",thread,"turn-f-0002","f.verification.step",5_000),category:"verification",status:"failed"});
+      await expect(names,"the poll lists the event the filters match").toHaveText(["f.verification.step"],{timeout:10_000});
+      await handedOn("an event the filters match, come with a poll, hands the keyboard on Clear filters to the Turn filter");
+      for(const width of [1280,700]){await page.setViewportSize({width,height:800});await expect.soft(turn).toBeFocused();await trace.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"runtime-trace-clear-filters-polled-away-"+mode+"-"+width+"x800.png"})}
+      await page.setViewportSize({width:1280,height:800});
+      events.pop();await expect(names).toHaveCount(0,{timeout:10_000});
+    }
+    // The journal says it failed: the failure is said in the message's place.
+    await onClear();traces.lastError={message:"Trace journal write failed"};
+    await expect(failure).toContainText("Trace journal write failed",{timeout:10_000});
+    await handedOn("a journal failure said in the message's place hands the keyboard on Clear filters to the Turn filter");
+    await page.screenshot({animations:"disabled",path:auditDir+"runtime-trace-clear-filters-failed-away-light-1280x800.png"});
+    traces.lastError=null;
+    // A refresh that fails.
+    await onClear();traces.fail=true;
+    await expect(failure).toContainText("Deliberate trace refresh failure",{timeout:10_000});
+    await handedOn("a failed refresh hands the keyboard on Clear filters to the Turn filter");
+    traces.fail=false;
+    // A refresh that starts (Refresh's click by script, its answer held): the list says it is loading in the message's place.
+    await onClear();traces.hold=()=>true;
+    await trace.getByRole("button",{name:"Refresh execution trace"}).evaluate(node=>node.click());
+    await expect(empty).toHaveText("Loading trace…");
+    await handedOn("a refresh that starts hands the keyboard on Clear filters to the Turn filter");
+    traces.hold=()=>false;await traces.release();
+    await expect(empty).toContainText("No trace events match these filters.",{timeout:10_000});await expect.soft(turn).toBeFocused();
+  }finally{traces.hold=()=>false;traces.lastError=null;traces.fail=false;await traces.release().catch(()=>{});await harness.close()}
 });

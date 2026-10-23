@@ -21,13 +21,16 @@ export default function RuntimeTrace({threadId=null}){
   // When the filters leave nothing listed but the thread has events (seen: one was listed, or one comes back asked for without the
   // filters), the list says the filters hide them (hidden). A thread with none keeps its own text.
   const [hidden,setHidden]=useState(false);
-  const seen=useRef(false),turnSelect=useRef(null);
+  const seen=useRef(false),turnSelect=useRef(null),clearButton=useRef(null);
+  // What takes Clear filters away while the keyboard is on it (an event the filters match, come with a poll, a failure said in the
+  // list's place, a refresh) hands the keyboard to the Turn filter, as a press of it does: the keyboard fell to the page.
+  const keepKeyboard=()=>{if(document.activeElement===clearButton.current)turnSelect.current?.focus()};
   // Each thread has a trace of its own (App keys it by thread). Only an answer for the filters still chosen lands: one asked
   // before they changed neither lists its events nor ends the loading of the one asked after.
   const view=useRef(0);
   const load=useCallback(async({silent=false}={})=>{
     const asked=view.current;
-    if(!silent)setLoading(true);
+    if(!silent){keepKeyboard();setLoading(true)}
     try{
       const params=traceQuery({threadId,turnId:turnFilter,runtime:runtimeFilter,category:categoryFilter,timeWindow,limit:40});
       const result=await api("/api/traces?"+params.toString());
@@ -35,12 +38,13 @@ export default function RuntimeTrace({threadId=null}){
       const next=Array.isArray(result.items)?result.items:[],filtered=Boolean(turnFilter||runtimeFilter||categoryFilter)||timeWindow!=="all";
       if(next.length||filtered&&!seen.current&&await api("/api/traces?"+traceQuery({threadId,limit:1}).toString()).then(answer=>answer.items?.length>0,()=>false))seen.current=true;
       if(asked!==view.current)return false;
+      const failed=result.journal?.lastError?.message||"";if(next.length||failed)keepKeyboard();
       setItems(next);setHidden(filtered&&!next.length&&seen.current);
       setFilterOptions(previous=>mergeTraceFilterOptions(previous,next));
-      setError(result.journal?.lastError?.message||"");
+      setError(failed);
       return true;
     }catch(loadError){
-      if(asked===view.current)setError(loadError?.message||String(loadError)||"Could not refresh runtime trace.");
+      if(asked===view.current){keepKeyboard();setError(loadError?.message||String(loadError)||"Could not refresh runtime trace.")}
       return false;
     }finally{if(!silent&&asked===view.current)setLoading(false)}
   },[threadId,turnFilter,runtimeFilter,categoryFilter,timeWindow]);
@@ -90,7 +94,7 @@ export default function RuntimeTrace({threadId=null}){
           {item.data&&Object.keys(item.data).length>0&&<pre>{JSON.stringify(item.data,null,2)}</pre>}
         </div>
       </details>)}
-      {!items.length&&!error&&<div className="runtime-trace-empty">{loading?"Loading trace…":hidden?<>No trace events match these filters.<button type="button" onClick={clearFilters}>Clear filters</button></>:"No trace events for this thread yet."}</div>}
+      {!items.length&&!error&&<div className="runtime-trace-empty">{loading?"Loading trace…":hidden?<>No trace events match these filters.<button ref={clearButton} type="button" onClick={clearFilters}>Clear filters</button></>:"No trace events for this thread yet."}</div>}
     </div>
   </section>;
 }

@@ -16,21 +16,29 @@ const json=(route,value)=>route.fulfill({status:200,contentType:"application/jso
 
 // One thread, "Composer thread", open, unless newTask leaves the window on New task. replies answers the provider's calls in order.
 // refuse(message), when given, names an error to answer a request with instead of the relay (a harness refusing it), and hold(message)
-// a promise the request waits on before it goes to the relay (a harness slow to answer it). turns are the thread's turns from before
-// the window opened, in place of its one short reply. others names more threads, each with a short reply.
-async function openComposerApp(page,{newTask=false,replies=[],refuse=null,hold=null,turns=[{user:"Look at the login page",items:[replyItem("seed-reply-1","The login page renders.")]}],others=[]}={}){
+// a promise the request waits on before it goes to the relay (a harness slow to answer it); answer(message) one its answer waits on
+// before it reaches the page, while what the relay says meanwhile (the notification of what it did) goes on. turns are the thread's
+// turns from before the window opened, in place of its one short reply. others names more threads, each with a short reply.
+async function openComposerApp(page,{newTask=false,replies=[],refuse=null,hold=null,answer=null,turns=[{user:"Look at the login page",items:[replyItem("seed-reply-1","The login page renders.")]}],others=[]}={}){
   const harness=await startRelayHarness({replies});
   harness.seedThread("Composer thread",turns);
   others.forEach((name,index)=>harness.seedThread(name,[{user:"Look at "+name,items:[replyItem("other-reply-"+index,name+" is ready.")]}]));
   await routeRelayApp(page,harness);
-  if(refuse||hold)await page.routeWebSocket(harness.wsUrl,ws=>{
-    const server=ws.connectToServer();
+  if(refuse||hold||answer)await page.routeWebSocket(harness.wsUrl,ws=>{
+    const server=ws.connectToServer(),asked=new Map();
     ws.onMessage(async message=>{
       let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
       const request=parsed?.id!=null&&parsed.method?parsed:null,refusal=request&&refuse?refuse(request):null;
       if(refusal){ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:refusal}}));return}
+      if(request)asked.set(request.id,request);
       const wait=request&&hold?hold(request):null;if(wait)await wait;
       server.send(message);
+    });
+    if(answer)server.onMessage(async message=>{
+      let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
+      const request=parsed?.id!=null&&!parsed.method?asked.get(parsed.id):null,wait=request?answer(request):null;
+      if(wait)await wait;
+      ws.send(message);
     });
   });
   // The theme button's setting stays in the page, so later specs on the shared server keep theirs.
@@ -934,6 +942,244 @@ test("a continuity save the harness is slow to answer says Saving… on Save con
     writes.refuse(true);await page.keyboard.press("Enter");
     await expect(row.getByRole("alert")).toContainText("Continuity store is read-only");
     await expect(save,"the keyboard stays on Save continuity when the save is refused").toBeFocused();await expect(done).toHaveValue("Moved the form to the new API");
+  }finally{await writes.harness.close()}
+});
+
+// The Goal panel's clears (the goal's and the notes'), each held from when hold() is called until the function it gives back is, as
+// a harness slow to answer them; with hold("answer") only the answer waits, once the harness has said the clear is done.
+async function openSlowClears(page){
+  const gates={request:null,answer:null},clears=request=>/^thread\/(goal|continuity)\/clear$/.test(request.method);
+  const harness=await openComposerApp(page,{hold:request=>clears(request)?gates.request:null,answer:request=>clears(request)?gates.answer:null});
+  return {harness,hold(what="request"){let open=()=>{};gates[what]=new Promise(resolve=>{open=resolve});return()=>{gates[what]=null;open()}}};
+}
+// Enter on row's button name, reached with Tab, then Tab from Cancel to the question's confirm button and Enter; meanwhile() runs once
+// the question has gone, while a clear held is on its way.
+async function clearFromKeyboard(page,row,name,meanwhile=async()=>{}){
+  const question=page.locator("dialog.inspector-text-prompt");
+  await tabTo(page,row.getByRole("button",{name,exact:true}));
+  await page.keyboard.press("Enter");await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+  await page.keyboard.press("Tab");await page.keyboard.press("Enter");await expect(question).toHaveCount(0);
+  await meanwhile();
+}
+const ringed=locator=>locator.evaluate(node=>node===document.activeElement&&node.matches(":focus-visible"));
+// Each clear below is answered at once, slowly (the button pressed says Clearing… meanwhile), or said done before its answer comes,
+// when what was cleared already shows and its answer is still on its way.
+const CLEAR_ANSWERS=[{mode:"dark"},{mode:"light",slow:"request"},{mode:"dark",slow:"answer"}];
+async function whileClearHeld(page,row,slow,release,cleared){
+  if(slow==="request")await pressedWhileHeld(row.getByRole("button",{name:"Clearing…",exact:true}),"Clearing…");
+  if(slow==="answer"){await cleared();await painted(page);await painted(page)}
+  release?.();
+}
+// Counts each note of a change made elsewhere the page draws from now on, however briefly; the function it gives back stops
+// counting and reads the count.
+async function countChangedNotes(page){
+  await page.evaluate(()=>{
+    const seen={count:0};window.changedNotesSeen=seen;
+    seen.observer=new MutationObserver(records=>{for(const record of records)for(const node of record.addedNodes)if(node.nodeType===1&&(node.matches(".goal-field-changed")||node.querySelector(".goal-field-changed")))seen.count++});
+    seen.observer.observe(document.body,{childList:true,subtree:true});
+  });
+  return ()=>page.evaluate(()=>{const seen=window.changedNotesSeen;seen.observer.disconnect();return seen.count});
+}
+
+// Clear pressed from the keyboard with an edit to the Objective left unsaved: the edit goes with the goal cleared, and Discard
+// changes with it, so once the clear lands the keyboard is on Set goal. It was handed on to Discard changes, which went a moment
+// later and took the keyboard to the page; and an Objective cleared while its answer came was said to have been cleared elsewhere.
+test("Clear pressed from the keyboard with an Objective edit unsaved leaves the keyboard on Set goal once the goal is cleared, with no Discard changes or change said made elsewhere left",async({page})=>{
+  test.setTimeout(150_000);
+  const clears=await openSlowClears(page);
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const bar=panel.locator(":scope>.goal-actions"),status=panel.locator(".goal-status"),save=bar.locator("button.primary");
+    for(const [index,{mode,slow}] of CLEAR_ANSWERS.entries()){
+      await switchMode(page,mode);
+      if(index){await objective.click();await page.keyboard.type("Make the login tests pass",{delay:15});await save.click();await expect(status).toHaveText("active")}
+      // An edit to the Objective, left unsaved, so Discard changes is offered beside Update goal.
+      await typeOver(page,objective,"Make the login and signup tests pass in "+mode);await expect(bar.getByRole("button",{name:"Discard changes",exact:true})).toBeVisible();
+      const release=slow?clears.hold(slow):null,changedNotesSeen=await countChangedNotes(page);
+      await clearFromKeyboard(page,bar,"Clear",()=>whileClearHeld(page,bar,slow,release,()=>expect(status).toHaveText("not set")));
+      await expect(status).toHaveText("not set");await expect(objective).toHaveValue("");
+      await expect.soft(bar.getByRole("button"),"the edit went with the goal: no Discard changes, and no change said made elsewhere").toHaveText(["Set goal"]);
+      expect.soft(await changedNotesSeen(),"the goal this panel cleared is never said to have changed elsewhere ("+(slow||"at once")+")").toBe(0);
+      // Soft, so a build that loses the keyboard says so for each way the clear is answered.
+      await frames(page);await expect.soft(save,"once Clear goes the keyboard is on Set goal, not on the Discard changes that goes with the edit ("+(slow||"at once")+")").toBeFocused();
+      expect.soft(await ringed(save),"with its ring").toBe(true);
+      if(slow!=="answer"&&await ringed(save))await shootWidths(page,"goal-clear-unsaved-keyboard-on-set-goal",save);
+    }
+  }finally{await clears.harness.close()}
+});
+
+// The same for Clear notes with a note saved, then edited and left unsaved: once the notes are cleared the keyboard is on Save
+// continuity.
+test("Clear notes pressed from the keyboard with a note edit unsaved leaves the keyboard on Save continuity once the notes are cleared, with no Discard changes or change said made elsewhere left",async({page})=>{
+  test.setTimeout(150_000);
+  const clears=await openSlowClears(page);
+  try{
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    const panel=page.getByTestId("goal-panel"),row=panel.locator(".continuity-actions"),save=row.locator("button.primary"),done=panel.getByLabel("Completed work",{exact:true});
+    const summary=panel.locator(".goal-continuity-details>summary");
+    await panel.getByText("Continuity state",{exact:true}).click();
+    for(const {mode,slow} of CLEAR_ANSWERS){
+      await switchMode(page,mode);
+      // A note saved, then edited and left unsaved, so Discard changes is offered beside Save continuity.
+      await typeOver(page,done,"Fixed the session refresh in "+mode);await save.click();await expect(summary).toContainText("1 explicit note");
+      await done.click();await page.keyboard.press("End");await page.keyboard.type(" and its rollback",{delay:15});
+      await expect(row.getByRole("button",{name:"Discard changes",exact:true})).toBeVisible();
+      const release=slow?clears.hold(slow):null,changedNotesSeen=await countChangedNotes(page);
+      await clearFromKeyboard(page,row,"Clear notes",()=>whileClearHeld(page,row,slow,release,()=>expect(summary).toContainText("Derived facts only")));
+      await expect(summary).toContainText("Derived facts only");await expect(done).toHaveValue("");
+      await expect.soft(row.getByRole("button"),"the edit went with the notes: no Discard changes, and no change said made elsewhere").toHaveText(["Save continuity"]);
+      expect.soft(await changedNotesSeen(),"the notes this panel cleared are never said to have changed elsewhere ("+(slow||"at once")+")").toBe(0);
+      await frames(page);await expect.soft(save,"once Clear notes goes the keyboard is on Save continuity, not on the Discard changes that goes with the edit ("+(slow||"at once")+")").toBeFocused();
+      expect.soft(await ringed(save),"with its ring").toBe(true);
+      if(slow!=="answer"&&await ringed(save))await shootWidths(page,"goal-notes-clear-unsaved-keyboard-on-save",save);
+    }
+  }finally{await clears.harness.close()}
+});
+
+// The page's side of the harness's socket, for a clear whose answer comes in the moment the page has drawn what the harness said
+// ahead of it. Once until(selector) is called, the next clear sent (the goal's or the notes') has what comes after it held until its
+// answer comes, and then given to the page at once, while the answer waits until the page has drawn that (nothing matches selector
+// any more) and comes in that moment, before React runs what follows the drawing (its effects). given() counts the answers so given.
+async function lateClearAnswers(page){
+  await page.addInitScript(()=>{
+    const Native=window.WebSocket,late=window.lateClearAnswer={selector:null,awaited:null,held:[],answer:null,given:0};
+    new MutationObserver(()=>{if(late.answer&&!document.querySelector(late.selector)){const give=late.answer;Object.assign(late,{answer:null,selector:null,given:late.given+1});give()}}).observe(document,{subtree:true,childList:true,characterData:true});
+    window.WebSocket=class extends Native{
+      constructor(...args){
+        super(...args);
+        this.addEventListener("message",event=>{
+          if(!event.isTrusted||late.awaited?.socket!==this)return;
+          event.stopImmediatePropagation();
+          let message=null;try{message=JSON.parse(event.data)}catch{}
+          const give=()=>this.dispatchEvent(new MessageEvent("message",{data:event.data}));
+          if(message?.method||message?.id!==late.awaited.id){late.held.push(give);return}
+          late.awaited=null;for(const before of late.held.splice(0))before();late.answer=give;
+        });
+      }
+      send(data){
+        let message=null;try{message=JSON.parse(data)}catch{}
+        if(late.selector&&!late.awaited&&!late.answer&&/^thread\/(goal|continuity)\/clear$/.test(message?.method||""))late.awaited={socket:this,id:message.id};
+        return super.send(data);
+      }
+    };
+  });
+  return {until:selector=>page.evaluate(selector=>{window.lateClearAnswer.selector=selector},selector),given:()=>page.evaluate(()=>window.lateClearAnswer.given)};
+}
+
+// Clear, then Clear notes, pressed from the keyboard with an edit left unsaved, whose answer comes in the moment the panel has drawn
+// the clear the harness said ahead of it (the goal cleared, the notes cleared), before React has run what follows that drawing: the
+// fields are left empty, with no Discard changes or change said made elsewhere, and the keyboard goes on to Set goal, then to Save
+// continuity. The fields as drawn before the answer were taken for edits and put back, the goal's saved Objective too, so a clear
+// left them filled with Discard changes on, and the keyboard there or on the page.
+test("a clear whose answer comes in the moment the panel has drawn the clear the harness said ahead of it leaves the fields empty, with no Discard changes or change said made elsewhere, and the keyboard on Set goal or Save continuity",async({page})=>{
+  test.setTimeout(150_000);
+  const late=await lateClearAnswers(page);
+  const harness=await openComposerApp(page);
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const bar=panel.locator(":scope>.goal-actions"),status=panel.locator(".goal-status"),setGoal=bar.locator("button.primary");
+    const row=panel.locator(".continuity-actions"),saveNotes=row.locator("button.primary"),done=panel.getByLabel("Completed work",{exact:true});
+    const summary=panel.locator(".goal-continuity-details>summary"),continuity=panel.getByText("Continuity state",{exact:true});
+    for(const [index,mode] of ["dark","light"].entries()){
+      await switchMode(page,mode);
+      if(index){await objective.click();await page.keyboard.type("Make the login tests pass",{delay:15});await setGoal.click();await expect(status).toHaveText("active")}
+      // The goal's Clear, with an edit to the Objective left unsaved.
+      await typeOver(page,objective,"Make the login and signup tests pass in "+mode);await expect(bar.getByRole("button",{name:"Discard changes",exact:true})).toBeVisible();
+      let changedNotesSeen=await countChangedNotes(page);await late.until('[data-testid="goal-panel"]>.goal-actions button.danger');
+      await clearFromKeyboard(page,bar,"Clear");
+      await expect(status).toHaveText("not set");await expect.poll(late.given,"the clear's answer came once the goal cleared was drawn").toBe(2*index+1);
+      await frames(page);
+      // Soft, so a build that puts the fields back says what else it does.
+      await expect.soft(objective,"the Objective's edit went with the goal").toHaveValue("");
+      await expect.soft(bar.getByRole("button"),"no Discard changes, and no change said made elsewhere").toHaveText(["Set goal"]);
+      expect.soft(await changedNotesSeen(),"the goal this panel cleared is never said to have changed elsewhere").toBe(0);
+      await expect.soft(setGoal,"once Clear goes the keyboard is on Set goal").toBeFocused();expect.soft(await ringed(setGoal),"with its ring").toBe(true);
+      if(await ringed(setGoal))await shootWidths(page,"goal-clear-answer-after-drawn-keyboard-on-set-goal",setGoal);
+      // The notes' Clear notes, with a note saved, then edited and left unsaved.
+      await continuity.click();
+      await typeOver(page,done,"Fixed the session refresh in "+mode);await saveNotes.click();await expect(summary).toContainText("1 explicit note");
+      await done.click();await page.keyboard.press("End");await page.keyboard.type(" and its rollback",{delay:15});
+      await expect(row.getByRole("button",{name:"Discard changes",exact:true})).toBeVisible();
+      changedNotesSeen=await countChangedNotes(page);await late.until('[data-testid="goal-panel"] .continuity-actions button.danger');
+      await clearFromKeyboard(page,row,"Clear notes");
+      await expect(summary).toContainText("Derived facts only");await expect.poll(late.given,"the clear's answer came once the notes cleared were drawn").toBe(2*index+2);
+      await frames(page);
+      await expect.soft(done,"the note's edit went with the notes").toHaveValue("");
+      await expect.soft(row.getByRole("button"),"no Discard changes, and no change said made elsewhere").toHaveText(["Save continuity"]);
+      expect.soft(await changedNotesSeen(),"the notes this panel cleared are never said to have changed elsewhere").toBe(0);
+      await expect.soft(saveNotes,"once Clear notes goes the keyboard is on Save continuity").toBeFocused();expect.soft(await ringed(saveNotes),"with its ring").toBe(true);
+      if(await ringed(saveNotes))await shootWidths(page,"goal-notes-clear-answer-after-drawn-keyboard-on-save",saveNotes);
+      await continuity.click();
+    }
+  }finally{await harness.close()}
+});
+
+// The Goal panel opened with its goal set (setGoalInPanel) over openGoalWrites' harness, for a keyboard press in its bar and then
+// a click on the transcript's text, which leaves the keyboard on the page. keyboardOn names what has the keyboard (the page, or a
+// control by its words); statusElsewhere sets the goal's status from another window, as Codex ends a goal itself; leftOnPage
+// expects the keyboard still on the page, and Space then to ask nothing (softly, closing a question asked, so a build that moves
+// the keyboard says so for each mode).
+async function goalBar(page,writes){
+  const {panel,objective}=await setGoalInPanel(page);
+  const bar=panel.locator(":scope>.goal-actions"),status=panel.locator(".goal-status"),question=page.locator("dialog.inspector-text-prompt");
+  const keyboardOn=()=>page.evaluate(()=>document.activeElement===document.body?"the page":String(document.activeElement?.textContent||document.activeElement?.tagName).trim());
+  return {objective,bar,status,button:name=>bar.getByRole("button",{name,exact:true}),
+    async statusElsewhere(value){await relayRequest(writes.harness,"thread/goal/set",{threadId:writes.harness.threads[0].id,status:value});await expect(status).toHaveText(value);await painted(page)},
+    async clickTranscript(){await page.getByText("The login page renders.",{exact:true}).click();expect(await keyboardOn(),"a click on the transcript's text leaves the keyboard on the page").toBe("the page")},
+    async leftOnPage(why){
+      expect.soft(await keyboardOn(),why).toBe("the page");await page.keyboard.press("Space");await painted(page);
+      const asked=await question.count();if(asked){await page.keyboard.press("Escape");await expect(question).toHaveCount(0)}
+      expect.soft(asked,"Space asks nothing").toBe(0);
+    },
+  };
+}
+
+// Enter on Pause, then a click on the transcript's text: when Codex ends the goal later (here from another window), Resume and
+// Complete go and the keyboard stays on the page, so Space asks nothing. The press was kept until the next one, and the keyboard was
+// put on Clear with nothing pressed, where Space asked to clear the goal.
+test("Enter on the Goal panel's Pause and then a click on the transcript: when the goal ends later the keyboard stays where the person put it, and Space then asks nothing",async({page})=>{
+  test.setTimeout(120_000);
+  const writes=await openGoalWrites(page);
+  try{
+    const goal=await goalBar(page,writes);
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      if(mode!=="dark")await goal.statusElsewhere("active");
+      // Enter on Pause, reached with Tab: Resume takes its place with the keyboard.
+      await goal.objective.click();await tabTo(page,goal.button("Pause"));
+      await page.keyboard.press("Enter");await expect(goal.status).toHaveText("paused");await expect(goal.button("Resume")).toBeFocused();
+      await goal.clickTranscript();
+      await goal.statusElsewhere("complete");await expect(goal.bar.getByRole("button")).toHaveText(["Update goal","Clear"]);
+      await goal.leftOnPage("once Resume and Complete go, the keyboard stays where the person put it, never on Clear");
+      await page.screenshot({animations:"disabled",path:auditDir+"goal-ended-after-click-keyboard-left-"+mode+"-1280x800.png"});
+    }
+  }finally{await writes.harness.close()}
+});
+
+// Enter on Complete, its write slow, and a click on the transcript's text while it is on its way: once it lands Complete goes and
+// the keyboard stays on the page, where the old press put it on Clear. Without the click it goes on to Clear, as before.
+test("Enter on the Goal panel's Complete, slow to land, and a click on the transcript meanwhile: once it lands the keyboard stays where the person put it, and without the click it goes on to Clear",async({page})=>{
+  test.setTimeout(120_000);
+  const writes=await openGoalWrites(page);
+  try{
+    const goal=await goalBar(page,writes);
+    const completeFromKeyboard=async()=>{
+      await goal.objective.click();await tabTo(page,goal.button("Complete"));
+      const release=writes.hold();await page.keyboard.press("Enter");await pressedWhileHeld(goal.button("Completing…"),"Completing…");
+      return release;
+    };
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);
+      if(mode!=="dark")await goal.statusElsewhere("active");
+      const release=await completeFromKeyboard();
+      await goal.clickTranscript();
+      release();await expect(goal.status).toHaveText("complete");await expect(goal.bar.getByRole("button")).toHaveText(["Update goal","Clear"]);await painted(page);
+      await goal.leftOnPage("once a slow Complete lands after the click, the keyboard stays where the person put it, never on Clear");
+      await page.screenshot({animations:"disabled",path:auditDir+"goal-complete-landed-after-click-keyboard-left-"+mode+"-1280x800.png"});
+    }
+    await goal.statusElsewhere("active");
+    const release=await completeFromKeyboard();release();await expect(goal.status).toHaveText("complete");
+    await expect(goal.button("Clear"),"once Complete goes with the keyboard still on it, the keyboard is on Clear, the bar's next control").toBeFocused();
   }finally{await writes.harness.close()}
 });
 

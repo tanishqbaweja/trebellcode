@@ -18,10 +18,12 @@ function noteValues(continuity){return NOTE_KEYS.map(key=>lines(continuity?.note
 // the fields still as they were filled, so what the person typed stays until it is saved or discarded. A change made elsewhere to
 // a field they edited (the /goal command, another window) is said in the bar that saves it (saved.changed), with Use saved and Keep
 // mine: it used to stay out of sight, and the next save wrote the edit over it. What this panel saved (saved.own), or what comes
-// while its save is on its way (saved.sending), is not such a change. It all stays while the panel is away (another tab, the panel
-// closed, another thread opened), also what a save still on its way brings, and comes back with it: each thread's panel with that
-// thread's own (awayDrafts keeps one per thread and group), and one with none from its saved goal and notes. Another thread's panel
-// used to drop what the one before had put away. A second run for what it has just filled (StrictMode's) leaves the fields alone.
+// while its save or clear is on its way (saved.sending), is not such a change. It all stays while the panel is away (another tab,
+// the panel closed, another thread opened), also what a save still on its way brings, and comes back with it: each thread's panel
+// with that thread's own (awayDrafts keeps one per thread and group), and one with none from its saved goal and notes. Another
+// thread's panel used to drop what the one before had put away. A run for what the fields were filled with already leaves them
+// alone: StrictMode's second, and the run for the clear the harness says ahead of its answer when React runs it only once that
+// answer has emptied the fields (fill), which took the fields as drawn before the answer for edits and put them back.
 const awayDrafts=new Map();
 function useSavedFields(group,threadId,values,fields,setters){
   const key=group+":"+threadId;
@@ -30,7 +32,7 @@ function useSavedFields(group,threadId,values,fields,setters){
   useEffect(()=>{
     let last=saved.filled,current=fields;
     if(first.current){first.current=false;const away=awayDrafts.get(key);awayDrafts.delete(key);if(away?.saved===saved)current=away.fields}
-    if(last===values)return;
+    else if(JSON.stringify(last)===JSON.stringify(values))return;
     const was=saved.changed;saved.filled=values;saved.changed={};
     values.forEach((value,index)=>{
       const edited=last&&current[index]!==last[index];setters[index](edited?current[index]:value);
@@ -40,8 +42,10 @@ function useSavedFields(group,threadId,values,fields,setters){
   },[JSON.stringify(values)]);
   useEffect(()=>()=>{const fields=latest.current,last=saved.filled;if(threadId&&last&&fields.some((value,index)=>value!==last[index]))awayDrafts.set(key,{saved,fields});else awayDrafts.delete(key)},[]);
   const settle=(index,value)=>{if(value!=null)setters[index](value);delete saved.changed[index];render()};
+  // fill: the fields filled anew as the thread has them saved, from values once a clear has emptied them (with any edit in them),
+  // or with what they were last filled with (Discard changes), so nothing is left unsaved or said to have changed elsewhere.
   return {saved,unsaved:!!saved.filled&&fields.some((value,index)=>value!==saved.filled[index]),use:index=>settle(index,saved.changed[index]),keep:index=>settle(index),
-    discard(){saved.filled.forEach((value,index)=>setters[index](value));saved.changed={};render()}};
+    fill(values=saved.filled){saved.filled=values;saved.changed={};values.forEach((value,index)=>setters[index](value));render()}};
 }
 // Each field edited here whose saved value changed elsewhere, across the bar above the button that saves it.
 function changedNotes(group,labels){
@@ -74,14 +78,14 @@ function moneyLabel(value){
 // A press runs one of the goal's or the notes' buttons once, as a thread's menu item runs: the rest of it (the second click of a
 // double click, Enter held) does nothing, so it never lands on what took the button's place once its save answered (Resume where
 // Pause was, or Complete moved under it). While a write is on its way the buttons only say they are off (aria-disabled), so the
-// keyboard stays on the one pressed, and a press on them does nothing. One pressed from the keyboard is kept (pressed), until the
-// next press, with the bar's controls after it and before it, nearest first: when it goes once its press is done (Complete once the
-// goal is complete, Clear once it is cleared, Discard changes once nothing is left to discard), the keyboard goes on to the first of
-// them still there, as from a removed chip, instead of falling to the page.
+// keyboard stays on the one pressed, and a press on them does nothing. One pressed from the keyboard is kept (pressed) with its bar
+// and the bar's controls after it and before it, nearest first: when it goes once its write is over (Complete once the goal is
+// complete, Clear once it is cleared, Discard changes once nothing is left to discard), the keyboard goes on to the first of them
+// still there, as from a removed chip, instead of falling to the page.
 function pressOnce(event,pressed){
   const button=event.target.closest("button"),all=[...event.currentTarget.querySelectorAll("button")],at=all.indexOf(button);if(at<0)return;
   if(button.getAttribute("aria-disabled")){event.stopPropagation();return}
-  ignorePressRest(!event.detail);pressed.current=event.detail?null:{button,near:[...all.slice(at+1),...all.slice(0,at).reverse()]};
+  ignorePressRest(!event.detail);pressed.current=event.detail?null:{bar:event.currentTarget,button,near:[...all.slice(at+1),...all.slice(0,at).reverse()]};
 }
 
 // covered: another thread's opening state is up. The panel belongs to the thread being left, so it hides without unmounting: a
@@ -112,10 +116,18 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [repairStatus,setRepairStatus]=useState("");
   const [repairStartedFor,setRepairStartedFor]=useState(null);
   const [busy,setBusy]=useState("");
-  // The bar button last pressed from the keyboard (pressOnce): drawn without it, the keyboard goes on to its nearest control still
-  // there, unless the person has put it somewhere meanwhile.
+  // The bar button last pressed from the keyboard (pressOnce). Drawn without it once no write is on its way, the keyboard goes on to
+  // its nearest control still there: Complete and Clear go as the goal's change comes in, ahead of their answer, and the Discard
+  // changes of an edit cleared with the goal only with that answer. The press is over once the person has put the keyboard elsewhere:
+  // a pointer press anywhere but in the question it asked, or the keyboard taken out of its bar. It was kept until the next press, so
+  // a button that went later (Pause and Complete as Codex ends the goal itself) took the keyboard from where the person had put it.
   const pressed=useRef(null);
-  useLayoutEffect(()=>{const kept=pressed.current;if(kept&&!kept.button.isConnected){pressed.current=null;if(document.activeElement===document.body)kept.near.find(node=>node.isConnected)?.focus()}});
+  useLayoutEffect(()=>{const kept=pressed.current;if(kept&&!busy&&!kept.button.isConnected){pressed.current=null;if(document.activeElement===document.body)kept.near.find(node=>node.isConnected)?.focus()}});
+  useEffect(()=>{
+    const over=event=>{const kept=pressed.current,target=event.target;if(kept&&!target.closest?.(".inspector-text-prompt")&&(event.type==="pointerdown"||!kept.bar.contains(target)))pressed.current=null};
+    const types=["pointerdown","focusin"];for(const type of types)document.addEventListener(type,over,true);
+    return()=>{for(const type of types)document.removeEventListener(type,over,true)};
+  },[]);
   // The last refusal, said where it was asked for (at): the goal's bar, the notes' buttons or the repair card. It is brought into
   // view as it shows, clear of the goal's bar pinned below.
   const [error,setError]=useState(null),errorRef=useRef(null);
@@ -152,7 +164,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     // A Codex without goals refuses the goal as a method it does not have: said as such, not as Codex's error.
     catch(e){failAt("goal",codexGoalsMissing(e)?"Could not set the goal: this Codex does not support goals.":e)}finally{if(sent)saved.sending--;setBusy("")}
   }
-  async function discard(group,what){if(await askConfirm("Discard your changes to "+what+"?",{confirm:"Discard changes",cancel:"Keep editing"}))group.discard()}
+  async function discard(group,what){if(await askConfirm("Discard your changes to "+what+"?",{confirm:"Discard changes",cancel:"Keep editing"}))group.fill()}
   async function save(){
     const text=objective.trim();if(!text){failAt("goal","Enter an objective first.");return}
     let nextTokenBudget,nextTimeBudget,nextTurnBudget,nextToolCallBudget,nextChildAgentBudget,nextCostBudgetUsd;
@@ -167,12 +179,13 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     },goalFields);
   }
   async function clear(){
-    if(!rpc||!await askConfirm("Clear this thread goal?",{confirm:"Clear goal"}))return;setBusy("clear");setError(null);
+    if(!rpc||!await askConfirm("Clear this thread goal?",{confirm:"Clear goal"}))return;const saved=goalSaved.saved;setBusy("clear");setError(null);saved.sending=(saved.sending||0)+1;
+    // The goal cleared, which the harness can say before it answers, is this panel's own, and an edit in the fields goes with it.
     try{
       await rpc.request("thread/goal/clear",{threadId:thread.id});onGoal?.(null);
-      setObjective("");setTokenBudget("");setTimeBudget("");setTurnBudget("");setToolCallBudget("");setChildAgentBudget("");setCostBudgetUsd("");setCompletionConditions("");setConstraints("");setValidationExpectations("");setDetailsOpen(false);setAdvancedBudgetOpen(false);
+      goalSaved.fill(goalValues());setDetailsOpen(false);setAdvancedBudgetOpen(false);
     }
-    catch(e){failAt("goal",e)}finally{setBusy("")}
+    catch(e){failAt("goal",e)}finally{saved.sending--;setBusy("")}
   }
   async function saveContinuity(){
     if(!rpc)return;const saved=notesSaved.saved;setBusy("continuity");setError(null);saved.sending=(saved.sending||0)+1;
@@ -187,11 +200,11 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   }
   async function clearContinuity(){
     if(!rpc||!await askConfirm("Clear explicit continuity notes? Trebell-derived verification, checkpoints, queue and failure evidence will remain.",{confirm:"Clear notes"}))return;
-    setBusy("continuity-clear");setError(null);
+    const saved=notesSaved.saved;setBusy("continuity-clear");setError(null);saved.sending=(saved.sending||0)+1;
     try{
       const result=await rpc.request("thread/continuity/clear",{threadId:thread.id});onContinuity?.(result?.continuity||null);
-      setCompletedWork("");setUnresolvedFailures("");setImportantDecisions("");setArtifactsCreated("");setPendingNextActions("");
-    }catch(e){failAt("notes",e)}finally{setBusy("")}
+      notesSaved.fill(noteValues());
+    }catch(e){failAt("notes",e)}finally{saved.sending--;setBusy("")}
   }
   async function repairVerification(){
     if(!rpc)return;setBusy("verification-repair");setError(null);setRepairStatus("");
