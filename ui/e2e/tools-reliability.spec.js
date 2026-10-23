@@ -785,6 +785,69 @@ test("Tools Plugins and Marketplaces say Sharing…, Installing… or Upgrading�
   }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
+// A person on the keyboard: the Shared plugins control they pressed keeps the keyboard while Codex answers, and once the action takes
+// the control away (Checkout once checked out, the row of a deleted share) the keyboard is on the control in its place, in its row or
+// in the row after it. On cd97bb9f each control was disabled under the keyboard as its action started, which dropped the focus on the
+// page: a second ArrowDown on the visibility select scrolled the page instead, and the focus was still on the page once the change
+// was saved, as it was during a checkout and after a delete.
+test("Tools Shared plugins keeps the keyboard on the control pressed while Codex answers it, and in the list once the action takes the control away",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.shared=[share("short","lane-g-shared","2.0.0"),share("long","lane-g-shared-plugin-with-a-longer-name"),share("third","lane-g-shared-three","2.0.2")];
+  fixture.control.holdShare=true;
+  const shoot=async name=>{for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${page.viewportSize().width}x800.png`,fullPage:false})}};
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const card=toolsCard(page,"Shared plugins"),rows=card.locator(".shared-plugin-list>div"),scroller=page.locator(".secondary-page");
+    await wheelTo(page,card);
+    // The second row's visibility, reached with Tab from its Open and changed with ArrowDown: the keyboard stays on the select while
+    // Codex saves Unlisted, so a second ArrowDown meanwhile neither changes it nor scrolls the page, and it is still there once saved.
+    const visibility=rows.nth(1).getByRole("combobox");
+    await rows.nth(1).getByRole("button",{name:"Open",exact:true}).focus();
+    await page.keyboard.press("Tab");await page.keyboard.press("Tab");
+    await expect(visibility).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await expect(visibility).toHaveAttribute("aria-busy","true");
+    await expect(visibility,"the keyboard stays on the select while Codex saves the change").toBeFocused();
+    const top=await scroller.evaluate(node=>node.scrollTop);
+    await page.keyboard.press("ArrowDown");
+    await expect(visibility).toHaveValue("UNLISTED");await expect(visibility).toBeFocused();
+    expect(await scroller.evaluate(node=>node.scrollTop),"the second ArrowDown does not scroll the page").toBe(top);
+    expect(fixture.control.heldShare.length,"the second ArrowDown sends no change").toBe(1);
+    await shoot("tools-shared-plugin-keyboard-saving");
+    fixture.releaseShare();
+    await expect(visibility).not.toHaveAttribute("aria-busy","true");await expect(visibility).toHaveValue("UNLISTED");
+    await expect(visibility,"the keyboard is on the select once the change is saved").toBeFocused();
+    // The first row's Checkout, from its Open with Tab, pressed with Enter: the keyboard stays on Checking out…; once checked out the
+    // row has no Checkout, and the keyboard is on the control in its place, the visibility select.
+    await rows.nth(0).getByRole("button",{name:"Open",exact:true}).focus();await page.keyboard.press("Tab");
+    await expect(rows.nth(0).getByRole("button",{name:"Checkout",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await expect(rows.nth(0).getByRole("button",{name:"Checking out…",exact:true}),"the keyboard stays on Checking out…").toBeFocused();
+    fixture.releaseShare();
+    await expect(rows.nth(0).getByRole("button")).toHaveText(["Open","Delete share"]);
+    await expect(rows.nth(0).getByRole("combobox"),"the keyboard goes on to the control in Checkout's place").toBeFocused();
+    // In a narrower window, the second row's Delete share pressed with Enter, and the question's Delete share reached with Tab and
+    // pressed with Enter: the keyboard is on Deleting… while Codex answers, and once the share is gone, on the row after it.
+    await page.setViewportSize({width:900,height:800});await wheelTo(page,card);
+    await rows.nth(1).getByRole("button",{name:"Delete share",exact:true}).focus();await page.keyboard.press("Enter");
+    const question=page.locator("dialog.inspector-text-prompt");
+    await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+    await page.keyboard.press("Tab");await expect(question.getByRole("button",{name:"Delete share",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await expect(rows.nth(1).getByRole("button",{name:"Deleting…",exact:true}),"the keyboard is on Deleting… while Codex answers").toBeFocused();
+    fixture.releaseShare();
+    await expect(rows).toHaveCount(2);await expect(rows.nth(1).locator("strong")).toHaveText("lane-g-shared-three");
+    await expect(rows.nth(1).getByRole("button",{name:"Delete share",exact:true}),"the keyboard goes on to the row after the deleted share").toBeFocused();
+    await shoot("tools-shared-plugin-keyboard-after-delete");
+  }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
 // Presses a share action Codex holds, then drops the Codex connection with the next handshake held, so the page says it is not
 // connected until Codex is let back (with Codex answering at once it said so for about half a second, which a look could fall
 // between); meanwhile Codex finishes the action, its answer lost with the connection, or never does. Resolves once the page has

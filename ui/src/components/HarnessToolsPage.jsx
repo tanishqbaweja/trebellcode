@@ -81,7 +81,21 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // loses only Codex's answer, so that refresh drops the line of a share action the list read again shows done (shareDone holds, for
   // each share action's line, how the list shows that action done): the line said it failed beside a list that showed it done.
   const away=useRef(false),shareDone=useRef({});
-  const [busy,setBusy]=useState("");
+  // The control an action was pressed on keeps the keyboard while Codex answers it (ActionButton). One the action took away (a
+  // Checkout once checked out, the row of a deleted share or of a removed marketplace) hands it on to the control now in its place
+  // in its row, or in the row after it or the one before, as a thread's row does, instead of dropping it on the page.
+  const [busy,setBusyState]=useState(""),pressed=useRef(null);
+  const setBusy=value=>{
+    const node=document.activeElement,row=node?.closest?.(".capability-list>div");
+    if(value&&row&&!pressed.current)pressed.current={node,row,list:row.parentElement,at:[...row.parentElement.children].indexOf(row),index:[...row.querySelectorAll("button,select")].indexOf(node)};
+    setBusyState(value);
+  };
+  useLayoutEffect(()=>{
+    const from=pressed.current;if(busy||!from)return;pressed.current=null;
+    if(from.node.isConnected||document.activeElement!==document.body)return;
+    const row=from.row.isConnected?from.row:from.list.children[from.at]||from.list.children[from.at-1],controls=row?[...row.querySelectorAll("button,select")]:[];
+    (controls[from.index]||controls.at(-1))?.focus();
+  },[busy]);
   const [marketplaceSource,setMarketplaceSource]=useState("");
   const [migrations,setMigrations]=useState(null);
   const [migrationHistory,setMigrationHistory]=useState({data:[],connectors:[]});
@@ -684,8 +698,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       <Section title="Shared plugins" icon={Blocks} count={counted(data.sharedPlugins,"plugin/share/list")}>
         <p>Codex plugin sharing is account-backed. Local plugins are first shared privately; visibility can then be changed without inventing recipients.</p>
         {/* The checkout, delete or visibility change Codex is still answering says so on its row, marked busy, and a visibility change
-            shows the visibility chosen (it showed the old one, as if refused); the page's other actions wait. */}
-        <div className="capability-list shared-plugin-list">{(data.sharedPlugins||[]).map(item=>{const plugin=item.plugin||{};const context=plugin.shareContext||{};const remotePluginId=plugin.remotePluginId||context.remotePluginId,checking=busy==="checkout:"+remotePluginId,deleting=busy==="delete-share:"+remotePluginId,visibilityKey="share-visibility:"+remotePluginId+"=",changing=busy.startsWith(visibilityKey)&&busy.slice(visibilityKey.length);return <div key={remotePluginId||plugin.id}><div><strong>{plugin.name||plugin.id}</strong><span>{plugin.version||plugin.localVersion||"shared plugin"}{context.creatorName?` · ${context.creatorName}`:""}</span></div><div className="capability-inline-actions">{context.shareUrl&&<button onClick={()=>openWebLink(context.shareUrl)}>Open</button>}{!item.localPluginPath&&remotePluginId&&<button onClick={()=>checkoutSharedPlugin(item)} disabled={!!busy} aria-busy={checking||undefined}>{checking?"Checking out…":"Checkout"}</button>}{context.discoverability&&<select value={changing||context.discoverability} onChange={e=>updateShareDiscoverability(item,e.target.value)} disabled={!!busy} aria-busy={!!changing||undefined}><option value="PRIVATE">Private</option><option value="UNLISTED">Unlisted</option><option value="LISTED">Listed</option></select>}{changing&&<em>saving…</em>}{remotePluginId&&<button onClick={()=>deleteSharedPlugin(item)} disabled={!!busy} aria-busy={deleting||undefined}>{deleting?"Deleting…":"Delete share"}</button>}</div></div>})}</div>
+            shows the visibility chosen (it showed the old one, as if refused); the page's other actions wait. Its control keeps the
+            keyboard (it only says it is off): disabled under it, it dropped the focus on the page, where a second arrow key scrolled. */}
+        <div className="capability-list shared-plugin-list">{(data.sharedPlugins||[]).map(item=>{const plugin=item.plugin||{};const context=plugin.shareContext||{};const remotePluginId=plugin.remotePluginId||context.remotePluginId,checking=busy==="checkout:"+remotePluginId,deleting=busy==="delete-share:"+remotePluginId,visibilityKey="share-visibility:"+remotePluginId+"=",changing=busy.startsWith(visibilityKey)&&busy.slice(visibilityKey.length);return <div key={remotePluginId||plugin.id}><div><strong>{plugin.name||plugin.id}</strong><span>{plugin.version||plugin.localVersion||"shared plugin"}{context.creatorName?` · ${context.creatorName}`:""}</span></div><div className="capability-inline-actions">{context.shareUrl&&<button onClick={()=>openWebLink(context.shareUrl)}>Open</button>}{!item.localPluginPath&&remotePluginId&&<ActionButton busy={busy} doing={checking&&"Checking out…"} onPress={()=>checkoutSharedPlugin(item)}>Checkout</ActionButton>}{context.discoverability&&<select value={changing||context.discoverability} onChange={e=>{if(!busy)updateShareDiscoverability(item,e.target.value)}} disabled={!!busy&&!changing} aria-disabled={!!changing||undefined} aria-busy={!!changing||undefined}><option value="PRIVATE">Private</option><option value="UNLISTED">Unlisted</option><option value="LISTED">Listed</option></select>}{changing&&<em>saving…</em>}{remotePluginId&&<ActionButton busy={busy} doing={deleting&&"Deleting…"} onPress={()=>deleteSharedPlugin(item)}>Delete share</ActionButton>}</div></div>})}</div>
         {!data.sharedPlugins?.length&&<EmptyState loaded={!!data.sharedPlugins} loading={loading} error={errors["plugin/share/list"]} pending="Loading shared plugins…">No shared plugins were returned for this account.</EmptyState>}
         <ErrorLine value={errors["plugin/share/list"]}/><ErrorLine value={errors["plugin/share/checkout"]}/><ErrorLine value={errors["plugin/share/delete"]}/><ErrorLine value={errors["plugin/share/updateTargets"]}/>
       </Section>

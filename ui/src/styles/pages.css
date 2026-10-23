@@ -511,6 +511,9 @@
 :root:root .capabilities-page .capability-actions{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:8px;margin:10px 0!important}
 :root:root .capabilities-page .capability-inline-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px}
 :root:root .capabilities-page .capability-inline-actions select{width:auto;height:30px!important;font-size:11.5px!important}
+/* A shared plugin's visibility select only says it is off while Codex saves its change (aria-disabled), so the keyboard stays on it;
+   it looks as the other rows' selects do while they wait (disabled). */
+:root:root .capabilities-page .capability-inline-actions select[aria-disabled="true"]{opacity:.7;cursor:default}
 :root:root .capabilities-page .capability-badges{display:flex;flex-wrap:wrap;gap:6px}
 :root:root .capabilities-page .capability-badges span{padding:3.5px 10px!important;border:1px solid var(--line2)!important;border-radius:99px!important;background:var(--bg3)!important;color:var(--tx2)!important;font-family:var(--mono);font-size:10.5px!important;font-weight:600}
 :root:root .capabilities-page .capability-badges span.ok{border-color:var(--okb)!important;background:var(--okt)!important;color:var(--ok)!important}
