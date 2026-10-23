@@ -919,10 +919,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     return true;
   };
   const slashItems=slashOpen?allSlash.filter(([cmd])=>cmd.startsWith(slashQuery.split(/\s/)[0])&&slashAvailable(cmd)):[];
-  // The menu picks the command word: it closes once a space follows it, on Escape, and after a command is chosen.
+  // The menu picks the command word: it closes once a space follows it, on Escape, and after a command is chosen. Escape closes it for
+  // the draft as it stands: once the draft changes (the / erased and typed again, other text typed), a / opens it again.
   const slashMenuOpen=slashOpen&&!/\s/.test(prompt)&&slashItems.length>0&&slashDismissed!==prompt;
   const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0;
   useEffect(()=>{setSlashIndex(0)},[slashQuery]);
+  useEffect(()=>{setSlashDismissed(null)},[prompt]);
   // Keyboard choices stay in view in short windows, where the menus scroll.
   useEffect(()=>{keepActiveOptionVisible(slashMenuRef.current)},[slashActive,slashMenuOpen]);
   useEffect(()=>{keepActiveOptionVisible(mentionMenuRef.current)},[mentionIndex,mentionItems]);

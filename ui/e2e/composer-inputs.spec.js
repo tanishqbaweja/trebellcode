@@ -1573,6 +1573,38 @@ test("Enter held on a partial slash command completes it once, and its repeats n
   }finally{await harness.close()}
 });
 
+// Escape closes the / menu for the draft as it stands, the / kept. It kept the menu closed for a bare / as long as the composer
+// stayed, which it does from thread to thread: a / typed again once the draft had changed (the / erased, /p erased back to /,
+// other text typed and cleared, another thread opened) showed no menu until the window reloaded.
+test("after Escape closes the / menu, a / typed once the draft has changed opens it again, also back from /p, after other text and in another thread",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await openComposerApp(page,{others:["Release notes"]});
+  try{
+    const composer=page.getByTestId("composer"),menu=page.locator(".composer-wrap .slash-menu");
+    const openThread=async name=>{const row=threadRow(page,name);await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");await painted(page)};
+    // The whole menu, as a bare / opens it, and Escape closing it with the / kept, for as long as the draft stays.
+    const shows=how=>expect.soft(menu.getByText("/new",{exact:true}),how).toBeVisible();
+    const escape=async()=>{await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await expect(composer).toHaveValue("/");await frames(page);await expect(menu).toHaveCount(0)};
+    for(const [mode,other] of [["dark","Release notes"],["light","Composer thread"]]){
+      await switchMode(page,mode);
+      await composer.click();await expect(composer).toHaveValue("");
+      await page.keyboard.type("/",{delay:20});await shows(`the first / in ${mode}`);await escape();
+      await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type("/",{delay:20});await shows(`a / typed again after Escape in ${mode}`);
+      await page.screenshot({animations:"disabled",path:auditDir+`slash-menu-typed-again-after-escape-${mode}-1280x800.png`});
+      await escape();await page.keyboard.type("p",{delay:20});await expect(menu.getByText("/plan",{exact:true})).toBeVisible();
+      await page.keyboard.press("Backspace");await expect(composer).toHaveValue("/");await shows(`/p erased back to / after Escape in ${mode}`);
+      await escape();await page.keyboard.press("Backspace");await page.keyboard.type("Fix the login",{delay:20});
+      await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type("/",{delay:20});await shows(`a / after other text after Escape in ${mode}`);
+      await escape();await page.keyboard.press("Backspace");await openThread(other);
+      await composer.click();await page.keyboard.type("/",{delay:20});await shows(`a / in ${other} after Escape in the thread before, in ${mode}`);
+      await page.screenshot({animations:"disabled",path:auditDir+`slash-menu-another-thread-after-escape-${mode}-1280x800.png`});
+      await page.keyboard.press("Backspace");await expect(menu).toHaveCount(0);
+    }
+  }finally{await harness.close()}
+});
+
 test("Enter held on the @ file menu attaches the file once, and its repeats send nothing; a press of its own sends the message with it",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page,{replies:[{text:"The login redirect is fixed."}]});
