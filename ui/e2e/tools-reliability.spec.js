@@ -785,6 +785,55 @@ test("Tools Plugins and Marketplaces say Sharing…, Installing… or Upgrading�
   }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
+// A person points at the Tools action Codex is answering, pressed with the mouse or the keys, and at the actions that wait meanwhile:
+// each shows the default arrow, as a disabled button does on every page and Settings' Capturing… does, while the actions that work
+// show the hand. On 86c4fdb8 Sharing…, Install and Checkout kept the hand at half opacity: the rule for the Tools buttons outweighed
+// the one for busy and disabled buttons.
+test("Tools shows the default arrow, not the hand, over the action Codex is answering and the actions that wait meanwhile",async({page})=>{
+  test.setTimeout(45_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=catalog();fixture.control.shared=[share("short","lane-g-shared","2.0.0")];fixture.control.holdShare=true;
+  // The mouse on a button, as a person points at it: the pointer shown there and how faded the button is.
+  const pointed=async button=>{const box=await button.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);return button.evaluate(node=>getComputedStyle(node).cursor+" "+getComputedStyle(node).opacity)};
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const plugins=toolsCard(page,"Plugins"),shared=toolsCard(page,"Shared plugins");
+    const row=plugins.locator(".capability-list>div").filter({hasText:"Lane G Local"}),sharedRow=shared.locator(".shared-plugin-list>div").first();
+    const install=row.getByRole("button",{name:"Install",exact:true}),checkout=sharedRow.getByRole("button",{name:"Checkout",exact:true});
+    await wheelTo(page,plugins);
+    expect(await pointed(install),"Install, which works").toBe("pointer 1");
+    // Share privately clicked: it says Sharing… while Codex answers, and Install waits; down in Shared plugins Checkout waits too, and
+    // Open works.
+    await row.getByRole("button",{name:"Share privately",exact:true}).click();
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    const sharing=row.getByRole("button",{name:"Sharing…",exact:true});
+    await expect(sharing).toHaveAttribute("aria-busy","true");await expect(install).toBeDisabled();
+    expect([await pointed(sharing),await pointed(install)],"Sharing… and Install while Codex shares").toEqual(["default 0.5","default 0.5"]);
+    await wheelTo(page,shared);
+    await expect(checkout).toBeDisabled();
+    expect([await pointed(checkout),await pointed(sharedRow.getByRole("button",{name:"Open",exact:true}))],"Checkout and Open while Codex shares").toEqual(["default 0.5","pointer 1"]);
+    fixture.releaseShare();
+    await expect(checkout).toBeEnabled();expect(await pointed(checkout),"Checkout once Codex has shared").toBe("pointer 1");
+    // With the keys: Tab from Update share to Install and Enter. Installing… under the mouse shows the arrow too, in dark and light.
+    await wheelTo(page,plugins);
+    await row.getByRole("button",{name:"Update share",exact:true}).focus();await page.keyboard.press("Tab");
+    await expect(install).toBeFocused();await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    const installing=row.getByRole("button",{name:"Installing…",exact:true});
+    await expect(installing).toHaveAttribute("aria-busy","true");await expect(installing).toBeFocused();
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      expect(await pointed(installing),`Installing…, pressed with the keys (${mode})`).toBe("default 0.5");
+      await page.screenshot({animations:"disabled",path:auditDir+`tools-plugin-installing-arrow-${mode}-1280x800.png`,fullPage:false});
+    }
+    fixture.releaseShare();
+    const uninstall=row.getByRole("button",{name:"Uninstall",exact:true});
+    await expect(uninstall).toBeFocused();expect(await pointed(uninstall),"Uninstall, which works").toBe("pointer 1");
+  }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
 // The wheel over the page's right edge, clear of the lists that scroll by themselves, a notch at a time, as a person scrolls the page
 // on down while Codex answers, until control is out of sight above.
 async function wheelPast(page,control){

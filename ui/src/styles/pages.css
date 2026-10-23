@@ -86,14 +86,15 @@
 :root:root .agents-page .delegate-submit:hover:not(:disabled),
 :root:root .preview-page .annotation-actions button.primary:hover:not(:disabled){filter:brightness(1.1);background:var(--acfill)!important;color:#fff!important}
 
-/* Disabled buttons, every page. Load older threads, Save action or Save hook while they save, a Tools action while Codex answers it,
-   and the Browser panel's buttons while the agent browser takes its time, only say they are busy (aria-disabled), so the keyboard
-   stays on them. */
+/* Disabled buttons, every page. Load older threads and History's Retry while they read, Save action or Save hook while they save, a
+   Tools action while Codex answers it, and the Browser panel's buttons while the agent browser takes its time, only say they are busy
+   (aria-disabled), so the keyboard stays on them. The arrow is !important: the pages' own button rules weigh more than this one, and
+   kept the pointing hand on buttons that do nothing. */
 :root:root :is(.projects-page,.history-page,.usage-page,.capabilities-page,.environments-page,.licenses-page,.agents-page,.preview-page) button:disabled,
-:root:root .history-page .history-load-more button[aria-disabled="true"],
+:root:root .history-page button[aria-disabled="true"],
 :root:root .capabilities-page button[aria-disabled="true"],
 :root:root .preview-page button[aria-disabled="true"],
-:root:root .projects-page :is(.project-action-editor,.project-hook-editor) button.primary[aria-disabled="true"]{opacity:.5;cursor:default;box-shadow:none!important;filter:none}
+:root:root .projects-page :is(.project-action-editor,.project-hook-editor) button.primary[aria-disabled="true"]{opacity:.5;cursor:default!important;box-shadow:none!important;filter:none}
 
 /* Fields (tb-input / tb-select). */
 :root:root .projects-page :is(.clone-card input,.clone-card select,.project-overrides select,.project-identity-editor input:not([type="color"]):not([type="file"]),.project-cleanup select,.project-cleanup input[type="number"],.project-action-editor>input,.project-hook-editor>input,.project-hook-editor>select,.project-hook-options input,.project-hook-options select),
@@ -142,7 +143,7 @@
 :root:root .projects-page .general-chat-card{min-height:0;display:grid!important;grid-template-columns:40px minmax(0,1fr) auto!important;gap:14px!important;align-items:center!important;text-align:left!important;cursor:pointer}
 :root:root .projects-page .general-chat-card:hover:not(:disabled),
 :root:root .projects-page .clone-card:hover{border-color:var(--line2)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important}
-:root:root .projects-page .general-chat-card:disabled{opacity:.65;cursor:progress}
+:root:root .projects-page .general-chat-card:disabled{opacity:.65;cursor:progress!important}
 :root:root .projects-page :is(.general-chat-card,.clone-card)>svg{box-sizing:content-box;width:18px;height:18px;padding:10px;border-radius:11px;border:1px solid color-mix(in srgb,var(--ac) 28%,transparent);background:var(--acsoft);color:var(--ac)}
 :root:root .projects-page .clone-card>svg{border-color:var(--line);background:var(--bg3);color:var(--tx1)}
 :root:root .projects-page .general-chat-card>span{display:grid;gap:3px;min-width:0}

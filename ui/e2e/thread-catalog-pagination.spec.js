@@ -197,13 +197,16 @@ test("a History the runtime could not list says so with Retry, not that there is
       for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+`polish/history/history-load-failed-${mode}-${width}.png`})}
     }
     await page.setViewportSize({width:1280,height:800});await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
-    // The person tabs to Retry and presses Enter. While the list is read the failure stays, Retry says it is retrying and keeps the
-    // keyboard; it fails again: a new message says it still could not, and the keyboard is still on Retry.
+    // The person tabs to Retry and presses Enter, the mouse resting on it. While the list is read the failure stays, Retry says it is
+    // retrying, with the default arrow under the mouse rather than the hand it kept on 86c4fdb8, and keeps the keyboard; it fails
+    // again: a new message says it still could not, and the keyboard is still on Retry.
     const message=await alert.locator("span").first().elementHandle(),lists=harness.control.lists;
     let release;harness.control.hold=new Promise(resolve=>{release=resolve});
+    await retry.hover();expect(await retry.evaluate(node=>getComputedStyle(node).cursor),"Retry, which works").toBe("pointer");
     await retry.focus();await page.keyboard.press("Enter");
     const retrying=alert.getByRole("button",{name:"Retrying…",exact:true});
     await expect(retrying).toBeFocused();await expect(retrying).toHaveAttribute("aria-disabled","true");
+    expect(await retrying.evaluate(node=>getComputedStyle(node).cursor),"Retrying… under the mouse").toBe("default");
     await expect.poll(()=>harness.control.lists).toBeGreaterThan(lists);
     await expect(alert).toHaveText(/^Could not load thread history: Deliberate thread list failure/);
     await expect(history.getByText("No thread history yet")).toHaveCount(0);

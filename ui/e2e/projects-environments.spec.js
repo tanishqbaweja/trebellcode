@@ -915,6 +915,51 @@ test.describe("Switching an environment off and on",()=>{
     expect(await saved()).toBe(false);
     await shootModes(page,"environment-switched-off-once",{show:row});
   });
+
+  // The person switches First box off and points at the page's buttons while its save runs: every one waits, half faded, with the
+  // default arrow, as Refresh does. Switched off, First box's Use for agent and Test show the arrow too, in dark and light, wide and
+  // narrow, as Add environment does with nothing typed, while the buttons that work keep the hand. On 86c4fdb8 every disabled button
+  // but Refresh kept the hand: the rule for the page's buttons outweighed the one for disabled buttons, which kept only its fading.
+  test("a button that waits shows the default arrow, not the hand, while a switch saves and once the environment is off",async({page,request})=>{
+    await open(page,request);
+    for(const data of [{...SSH_PROFILE,id:"polish-first-box",name:"First box",host:"first.example.com"},{...SSH_PROFILE,id:"polish-other-box",name:"Other box",host:"other.example.com"}])expect((await request.post("/api/environments",{data})).ok()).toBe(true);
+    const held=gate();
+    await page.route(/\/api\/environment\/enabled$/,async route=>{await held.promise;return route.fallback()});
+    await nav(page,"Environments").click();
+    const environments=page.locator(".environments-page"),row=environments.locator(".environment-list>div").filter({hasText:"First box"});
+    const off=row.getByRole("button",{name:"Switch off",exact:true}),add=environments.getByRole("button",{name:"Add environment",exact:true});
+    // The mouse on a button, as a person points at it: the pointer shown there and how faded the button is.
+    const pointed=async button=>{await button.scrollIntoViewIfNeeded();const box=await button.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);return button.evaluate(node=>getComputedStyle(node).cursor+" "+getComputedStyle(node).opacity)};
+    await expect(off).toBeEnabled();
+    for(const label of ["Use for agent","Test","Switch off","Remove First box"])expect(await pointed(row.getByRole("button",{name:label,exact:true})),label+" at rest").toBe("pointer 1");
+    // Switch off clicked, its save held: every button on the page waits, with the arrow.
+    await off.click();
+    await expect(environments.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true})).toBeDisabled();
+    const waiting=[];
+    for(const button of await environments.getByRole("button").all()){await expect(button).toBeDisabled();waiting.push(await button.evaluate(node=>node.getAttribute("aria-label")||node.textContent.trim())+" "+await pointed(button))}
+    expect(waiting,"each button while the switch saves").toEqual(["Refresh","Use for agent","Test","Switch off","Remove First box","Use for agent","Test","Switch off","Remove Other box","Add environment"].map(label=>label+" default 0.5"));
+    held.open();
+    await expect(row).toContainText("switched off");
+    await expect(row.getByRole("button",{name:"Switch on",exact:true})).toBeEnabled();
+    // Switched off, First box's Use for agent and Test wait for Switch on, with the arrow; Switch on and Remove keep the hand.
+    for(const mode of MODES){
+      await page.setViewportSize({width:1280,height:800});await switchMode(page,mode);
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        for(const label of ["Use for agent","Test"]){const button=row.getByRole("button",{name:label,exact:true});await expect(button).toBeDisabled();expect(await pointed(button),`${label} switched off (${mode} ${width})`).toBe("default 0.5")}
+        for(const label of ["Switch on","Remove First box"])expect(await pointed(row.getByRole("button",{name:label,exact:true})),`${label} (${mode} ${width})`).toBe("pointer 1");
+      }
+    }
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+    // Add environment waits for the form, with the arrow, and takes the hand once a name is typed.
+    const name=environments.locator(".environment-create").getByRole("textbox",{name:"Name",exact:true});
+    await expect(add).toBeDisabled();expect(await pointed(add),"Add environment with nothing typed").toBe("default 0.5");
+    await name.click();await page.keyboard.type("Typed box",{delay:15});
+    await expect(add).toBeEnabled();expect(await pointed(add),"Add environment with a name typed").toBe("pointer 1");
+    await name.click();await page.keyboard.press("ControlOrMeta+A");await page.keyboard.press("Backspace");
+    await expect(add).toBeDisabled();
+    await shootModes(page,"environment-switched-off-arrow",{show:row});
+  });
 });
 
 test.describe("An environment list that is still loading or failed",()=>{
@@ -2118,6 +2163,7 @@ test.describe("The General chat card",()=>{
     await page.route(/\/api\/general-workspace$/,async route=>{await start;return route.fallback()});
     await general.click();
     await expect(label).toHaveText("Starting…");
+    expect(await general.evaluate(node=>getComputedStyle(node).cursor),"the starting card keeps its progress pointer, not a disabled button's arrow").toBe("progress");
     await expect(clone,"Clone while the General chat starts").toHaveText("Clone");
     await page.screenshot({animations:"disabled",path:shots+`general-chat-starting-${mode}-1280.png`});
     releaseStart();
