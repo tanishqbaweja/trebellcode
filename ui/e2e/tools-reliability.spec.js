@@ -184,11 +184,12 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // `control.skillsByCwd` names for the workspace read, and waits while `holdSkills` is set, until `releaseSkills()`. It lists
 // `threads` and resumes them, and the account's shared plugins as `control.shared` holds them: a checkout gives its plugin a local
 // copy, a delete takes the share off the list and a visibility change sets who can find it, once answered; while `holdShare` is set
-// they wait, until `releaseShare()`. One answered after its connection closed is done all the same, as Codex finishes what it was
-// asked, but its answer is lost. The plugin catalog is `control.marketplaces`: a plugin shared, installed or uninstalled and a
-// marketplace upgraded or removed change it once answered, and wait while `holdShare` is set as well; a plugin search lists the
-// catalog's plugins whose name has the term in it. The effective configuration is `control.config`. `drop()` closes the app's
-// connections while the fixture keeps listening, so the app connects again.
+// they wait, until `releaseShare()`, or until `refuseShare(reason)` refuses them with reason. One answered after its connection
+// closed is done all the same, as Codex finishes what it was asked, but its answer is lost. The plugin catalog is
+// `control.marketplaces`: a plugin shared, installed or uninstalled and a marketplace upgraded or removed change it once answered,
+// and wait while `holdShare` is set as well; a plugin search lists the catalog's plugins whose name has the term in it. The
+// effective configuration is `control.config`. `drop()` closes the app's connections while the fixture keeps listening, so the app
+// connects again.
 async function startHeldMcpFixture({threads=[]}={}){
   const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[],holdShare:false,heldShare:[],marketplaces:[],config:{}};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
@@ -213,7 +214,8 @@ async function startHeldMcpFixture({threads=[]}={}){
       }
       if(["plugin/share/checkout","plugin/share/delete","plugin/share/updateTargets"].includes(message.method)){
         const {remotePluginId:id,discoverability}=message.params||{},checkout=message.method==="plugin/share/checkout",copy="/home/test/plugins/"+id,mine=item=>item.plugin.remotePluginId===id;
-        const answer=()=>{
+        const answer=reason=>{
+          if(reason){if(ws.readyState===ws.OPEN)send({error:{code:-32000,message:reason}});return}
           if(message.method==="plugin/share/delete")control.shared=control.shared.filter(item=>!mine(item));
           else control.shared=control.shared.map(item=>!mine(item)?item:checkout?{...item,localPluginPath:copy}:{...item,plugin:{...item.plugin,shareContext:{...item.plugin.shareContext,discoverability}}});
           if(ws.readyState===ws.OPEN)send({result:checkout?{localPluginPath:copy}:{}});
@@ -225,7 +227,8 @@ async function startHeldMcpFixture({threads=[]}={}){
         const {method,params={}}=message;
         const changed=plugin=>method==="plugin/share/save"&&plugin.source?.path===params.pluginPath?{...plugin,remotePluginId:"remote-"+plugin.id,shareContext:{remotePluginId:"remote-"+plugin.id,discoverability:params.discoverability,sharePrincipals:[]}}
           :method==="plugin/install"&&plugin.name===params.pluginName?{...plugin,installed:true}:method==="plugin/uninstall"&&plugin.id===params.pluginId?{...plugin,installed:false}:plugin;
-        const answer=()=>{
+        const answer=reason=>{
+          if(reason){if(ws.readyState===ws.OPEN)send({error:{code:-32000,message:reason}});return}
           control.marketplaces=method==="marketplace/remove"?control.marketplaces.filter(item=>item.name!==params.marketplaceName):control.marketplaces.map(item=>({...item,plugins:(item.plugins||[]).map(changed)}));
           if(ws.readyState===ws.OPEN)send({result:{}});
         };
@@ -266,6 +269,7 @@ async function startHeldMcpFixture({threads=[]}={}){
     releaseInit(){control.holdInit=false;for(const answer of control.heldInit.splice(0))answer()},
     releaseSkills(){control.holdSkills=false;for(const answer of control.heldSkills.splice(0))answer()},
     releaseShare(){for(const answer of control.heldShare.splice(0))answer()},
+    refuseShare(reason){for(const answer of control.heldShare.splice(0))answer(reason)},
     drop(){for(const socket of sockets)try{socket.terminate()}catch{}},
     async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
@@ -1165,5 +1169,76 @@ test("Tools drops the line of a Plugins or Marketplaces action a dropped Codex c
     await cutOffShareAction(page,fixture,()=>gamma.getByRole("button",{name:"Remove",exact:true}).click(),{finished:true});
     await expect(gamma).toHaveCount(0);
     await expect.soft(line(marketplaces,"Could not remove"),"no line says the remove Codex did failed").toHaveCount(0);
+  }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// A Tools page drawn again while a Plugins action is on its way (back from Settings with the mouse or the keys, or back from Usage)
+// says so as the page that sent it did: the action's button reads Sharing…, Updating… or Installing…, marked busy, with the page's
+// other actions waiting, and a second press, a click or Enter, sends nothing. Once Codex answers, the row shows what the action did,
+// or a line says why it failed. The action went with the page that sent it: on adb7db5f the page drawn again offered Details, Share
+// privately and Install live, a second Share privately sent a second share while the first was on its way, the row still offered
+// Install once Codex had installed the plugin, and a refusal was said nowhere.
+test("Tools drawn again while a Plugins action is on its way says so on its button with the other actions waiting, sends nothing for a second press, and shows what Codex did or why it refused once it answers",async({page})=>{
+  test.setTimeout(120_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=catalog();fixture.control.holdShare=true;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    const refresh=page.locator(".capabilities-toolbar button");await expect(refresh).toHaveText("Refresh");
+    const plugins=toolsCard(page,"Plugins"),row=plugins.locator(".capability-list>div").filter({hasText:"Lane G Local"}),buttons=row.getByRole("button"),button=name=>row.getByRole("button",{name,exact:true});
+    const settings=page.getByRole("heading",{name:"Settings",level:1}),tools=page.getByRole("heading",{name:"Harness capabilities",level:2});
+    // The ways a person leaves Tools and comes back to it.
+    const ways={
+      "back from Settings":async()=>{await page.getByRole("button",{name:"Settings",exact:true}).click();await expect(settings).toBeVisible();await page.getByRole("button",{name:"Tools",exact:true}).click()},
+      "back from Settings with the keys":async()=>{await page.keyboard.press("Control+,");await expect(settings).toBeVisible();await page.keyboard.press("Control+[")},
+      "back from Usage":async()=>{await page.getByRole("button",{name:"Usage",exact:true}).click();await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();await page.getByRole("button",{name:"Tools",exact:true}).click()},
+    };
+    const away=async way=>{await ways[way]();await expect(tools).toBeVisible();await expect(refresh).toHaveText("Refresh");await wheelTo(page,plugins)};
+    // A second press as a person makes it on the action's button: a click on it, then Enter.
+    const pressAgain=async target=>{await target.scrollIntoViewIfNeeded();const box=await target.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);await target.focus();await page.keyboard.press("Enter")};
+    const shoot=async(name,shown)=>{
+      for(const width of [1280,700]){await page.setViewportSize({width,height:800});await shown.evaluate(node=>node.scrollIntoView({block:"center"}));for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${width}x800.png`,fullPage:false})}}
+      await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    };
+    await wheelTo(page,plugins);
+    // Share privately clicked, back from Settings: Sharing…, marked busy, with Details and Install waiting; a second press sends no
+    // second share, and once Codex answers the row offers Update share.
+    await button("Share privately").click();await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await away("back from Settings");
+    await expect.soft(buttons,"the page drawn again says the share is on its way").toHaveText(["Details","Sharing…","Install"]);
+    await expect.soft(buttons.nth(1),"marked busy").toHaveAttribute("aria-busy","true");
+    for(const name of ["Details","Install"])await expect.soft(button(name),name+" waits").toBeDisabled();
+    await shoot("tools-drawn-again-while-sharing",buttons.nth(1));
+    await pressAgain(buttons.nth(1));
+    expect.soft(fixture.control.heldShare.length,"a second press sends no second share while the first is on its way").toBe(1);
+    fixture.releaseShare();
+    await expect(buttons).toHaveText(["Details","Update share","Install"]);await expect(button("Update share")).toBeEnabled();
+    // Update share pressed with the keys, back from Settings with the keys: Updating…, marked busy, and no second save.
+    await button("Details").focus();await page.keyboard.press("Tab");await expect(button("Update share")).toBeFocused();await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await away("back from Settings with the keys");
+    await expect.soft(buttons,"the page drawn again says the update is on its way").toHaveText(["Details","Updating…","Install"]);
+    await expect.soft(buttons.nth(1),"marked busy").toHaveAttribute("aria-busy","true");
+    await pressAgain(buttons.nth(1));
+    expect.soft(fixture.control.heldShare.length,"a second press sends no second save while the first is on its way").toBe(1);
+    fixture.releaseShare();
+    await expect(button("Update share")).toBeEnabled();
+    // Install clicked, back from Usage: Installing…, marked busy, and once Codex answers the row offers Uninstall.
+    await button("Install").click();await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await away("back from Usage");
+    await expect.soft(buttons,"the page drawn again says the install is on its way").toHaveText(["Details","Update share","Installing…"]);
+    await expect.soft(buttons.nth(2),"marked busy").toHaveAttribute("aria-busy","true");
+    fixture.releaseShare();
+    await expect.soft(buttons,"once Codex answers, the page drawn again shows the plugin installed").toHaveText(["Details","Update share","Uninstall"]);
+    await refresh.click();await expect(refresh).toHaveText("Refresh");await expect(button("Uninstall")).toBeEnabled();
+    // Uninstall refused once the page is drawn again: the page drawn again says why, and offers Uninstall again.
+    await button("Uninstall").click();await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await away("back from Settings");
+    await expect.soft(button("Uninstalling…"),"the page drawn again says the uninstall is on its way").toHaveAttribute("aria-busy","true");
+    fixture.refuseShare("the plugin is in use by a running task");
+    await expect.soft(plugins.locator(".capability-error"),"the refusal is said on the page drawn again").toHaveText(["Could not uninstall Lane G Local: the plugin is in use by a running task"]);
+    await expect(button("Uninstall")).toBeEnabled();
+    await shoot("tools-drawn-again-uninstall-refused",row);
   }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });

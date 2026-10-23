@@ -22,6 +22,14 @@ const loadFailure=(name,error)=>failureText(LOAD_FAILURES[name]||"Could not load
 const pluginLabel=plugin=>plugin?.interface?.displayName||plugin?.name||plugin?.id||"the plugin";
 const shareId=item=>item?.plugin?.remotePluginId||item?.plugin?.shareContext?.remotePluginId;
 const listedPlugin=(marketplaces,id)=>marketplaces.flatMap(m=>m.plugins||[]).find(item=>item.id===id);
+// The action running on the page (what busy names) and the page drawn now, kept outside the page as the server keeps a harness
+// install: a page drawn again while an action runs (back from Settings or another page) says so on the action's button, with its
+// other actions waiting, so a second press sends nothing until the action lands; it then reads Codex again and says why the action
+// failed, as the page that sent it would. The action went with the page that sent it, so the page drawn again offered every action,
+// a second Share privately shared again, and once the action was done the page drawn again still offered it.
+let running="",shown=null;
+// How the lists show each action done (shareDone, read by refresh), kept with the action outside the page too.
+const shareDone={};
 
 // A header badge is a bare count, or a label that says what it counts when the card lists more than one kind of row.
 function Section({title,icon:Icon,count,badge,children}){
@@ -73,7 +81,7 @@ function configLayerPresentation(layer,index){
 export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],skillsLoad={status:"loaded",error:null},onHistoryImported,onSkillsRefresh,onSkillsReload,platform=""}){
   // Each runtime list stays null until its first answer, so a card tells a list that loaded empty from one not loaded yet.
   const [data,setData]=useState({permissions:null,mcp:null,marketplaces:null,apps:null,installedApps:null,hooks:null,features:null,sharedPlugins:null,loadedThreads:null,loadedThreadsMore:false,capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,diagnostics:null,windowsSandbox:null});
-  const [errors,setErrors]=useState({});
+  const [errors,showErrors]=useState({});
   // The page loads as it opens, so it starts out loading: the first paint already waits for the runtime's answers.
   const [loading,setLoading]=useState(true);
   const refreshRun=useRef(0);
@@ -83,7 +91,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // such action's line, the read that lists it and how that list shows the action done: a plugin shared, installed or uninstalled, a
   // marketplace removed, or a shared plugin checked out, its visibility set or its share deleted): the line said it failed beside a
   // row that showed it done, as Lane G Local offered Update share under "Could not share Lane G Local: Codex disconnected".
-  const away=useRef(false),shareDone=useRef({});
+  const away=useRef(false);
   // The control an action was pressed on keeps the keyboard while Codex answers it (ActionButton). One the action took away with the
   // keyboard still on it hands the keyboard on, as a thread's row does, instead of dropping it on the page, and leaves the page where
   // the person has scrolled it meanwhile: a Checkout once checked out to the control now in its place in its row, and the row of a
@@ -91,17 +99,22 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // there stood the next marketplace's Remove, which removes at once). A control pressed with the mouse (its focus not shown), or one
   // the person moved the focus from meanwhile, to blank page space too, leaves the focus where it falls: the select in the place of a
   // Checkout clicked with the mouse took it, with its focus ring.
-  const [busy,setBusyState]=useState(""),pressed=useRef(null);
+  const [busy,showBusy]=useState(()=>running),pressed=useRef(null);
+  // This page as an action reaches it (running, shown): one pressed on a page since gone says what it does, and reads Codex again, on
+  // the page drawn now (page), and a refresh the page gone had under way lands on nothing.
+  const self=useRef({}).current;Object.assign(self,{showBusy,showErrors,refresh});
+  const page=()=>self.gone?shown:self,setErrors=update=>page()?.showErrors(update);
+  useEffect(()=>{self.gone=false;shown=self;showBusy(running);return()=>{self.gone=true;if(shown===self)shown=null}},[]);
   const setBusy=value=>{
     const node=document.activeElement,row=node?.closest?.(".capability-list>div");
-    if(value&&row&&!pressed.current&&node.matches(":focus-visible")){
+    if(value&&!self.gone&&row&&!pressed.current&&node.matches(":focus-visible")){
       const from=pressed.current={node,row,list:row.parentElement,at:[...row.parentElement.children].indexOf(row),index:[...row.querySelectorAll("button,select")].indexOf(node)};
       // The focus moved off the control while it is still on the page is the person's; moved back, it is the keyboard's again. Read
       // once the event is over: Chromium fires focusout on the control as it is taken away, still on the page then.
       from.note=()=>queueMicrotask(()=>{from.left=node.isConnected&&document.activeElement!==node});
       for(const type of ["focusin","focusout"])node.addEventListener(type,from.note);
     }
-    setBusyState(value);
+    running=value;page()?.showBusy(value);
   };
   useLayoutEffect(()=>{
     const from=pressed.current;if(busy||!from)return;pressed.current=null;
@@ -159,17 +172,18 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function request(name,params){return rpc.request(name,routedParams(params))}
   async function call(name,params){
     try{return await request(name,params)}
-    catch(error){setErrors(prev=>({...prev,[name]:loadFailure(name,error)}));return null}
+    catch(error){showErrors(prev=>({...prev,[name]:loadFailure(name,error)}));return null}
   }
   async function refresh(){
+    if(page()!==self)return page()?.refresh();
     // Not connected, the page shows no cards. It waits as loading, so as Codex connects the cards say what is loading rather than
     // that the runtime reported nothing, and a refresh begun on a connection that has since closed does not land.
     if(!rpc||rpcStatus!=="connected"){refreshRun.current++;away.current=true;setLoading(true);return}
     // Only the latest refresh lands: one started for an earlier thread or project neither writes its answers nor ends loading.
     const run=++refreshRun.current,latest=()=>run===refreshRun.current,back=away.current;away.current=false;
-    setLoading(true);setErrors(prev=>back?Object.fromEntries(Object.entries(prev).filter(([name])=>!LOAD_FAILURES[name])):{});
+    setLoading(true);showErrors(prev=>back?Object.fromEntries(Object.entries(prev).filter(([name])=>!LOAD_FAILURES[name])):{});
     const threadId=activeThread?.id||null;
-    const load=(name,params)=>request(name,params).catch(error=>{if(latest())setErrors(prev=>({...prev,[name]:loadFailure(name,error)}));return null});
+    const load=(name,params)=>request(name,params).catch(error=>{if(latest())showErrors(prev=>({...prev,[name]:loadFailure(name,error)}));return null});
     const [permissions,mcp,plugins,apps,installedApps,hooks,features,sharedPlugins,loadedThreads,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,importHistories,windowsSandbox]=await Promise.all([
       load("permissionProfile/list",{limit:100,cwd:projectPath||null}),
       load("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
@@ -194,7 +208,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!latest())return;
     if(back){
       const catalog=plugins&&(plugins.marketplaces||[]),listed={"plugin/list":catalog,"plugin/share/list":sharedPlugins&&(sharedPlugins.data||[])};
-      setErrors(prev=>Object.fromEntries(Object.entries(prev).filter(([name])=>{const [read,done]=shareDone.current[name]||[];return !(listed[read]&&done(listed[read]))})));
+      showErrors(prev=>Object.fromEntries(Object.entries(prev).filter(([name])=>{const [read,done]=shareDone[name]||[];return !(listed[read]&&done(listed[read]))})));
       // A search result shows its plugin installed or not as the catalog read again does, so an Install cut off shows done there too.
       if(catalog)setPluginSearchResults(current=>current.map(result=>{const item=listedPlugin(catalog,result.plugin?.id);return item?{...result,plugin:{...result.plugin,installed:item.installed}}:result}));
     }
@@ -375,7 +389,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       setPluginSearchResults(current=>current.map(result=>result.plugin?.id===plugin.id?{...result,plugin:{...result.plugin,installed:nextInstalled}}:result));
       setPluginDetail(current=>current?.summary?.id===plugin.id?{...current,summary:{...current.summary,installed:nextInstalled}}:current);
       await refresh();
-    }catch(error){shareDone.current[action]=["plugin/list",list=>{const item=listedPlugin(list,plugin.id);return !!item&&!!item.installed===nextInstalled}];setErrors(prev=>({...prev,[action]:failureText((plugin.installed?"Could not uninstall ":"Could not install ")+pluginLabel(plugin),error)}))}
+    }catch(error){shareDone[action]=["plugin/list",list=>{const item=listedPlugin(list,plugin.id);return !!item&&!!item.installed===nextInstalled}];setErrors(prev=>({...prev,[action]:failureText((plugin.installed?"Could not uninstall ":"Could not install ")+pluginLabel(plugin),error)}))}
     finally{setBusy("")}
   }
   async function searchPlugins({append=false}={}){
@@ -421,14 +435,14 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     const pluginPath=plugin?.source?.type==="local"?plugin.source.path:null;if(!rpc||!pluginPath)return;
     setBusy("share:"+plugin.id);setErrors(prev=>({...prev,"plugin/share/save":null}));
     try{await request("plugin/share/save",{pluginPath,...(plugin.remotePluginId?{remotePluginId:plugin.remotePluginId}:{}),discoverability:plugin.shareContext?.discoverability||"PRIVATE",shareTargets:(plugin.shareContext?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}))});await refresh()}
-    catch(error){shareDone.current["plugin/share/save"]=!plugin.shareContext?.remotePluginId&&["plugin/list",list=>!!listedPlugin(list,plugin.id)?.shareContext?.remotePluginId];setErrors(prev=>({...prev,"plugin/share/save":failureText("Could not share "+pluginLabel(plugin),error)}))}finally{setBusy("")}
+    catch(error){shareDone["plugin/share/save"]=!plugin.shareContext?.remotePluginId&&["plugin/list",list=>!!listedPlugin(list,plugin.id)?.shareContext?.remotePluginId];setErrors(prev=>({...prev,"plugin/share/save":failureText("Could not share "+pluginLabel(plugin),error)}))}finally{setBusy("")}
   }
   // A Shared plugins action clears its line as it starts, as the page's other actions do (the line saying the last try failed stayed
   // beside Checking out…), and a failure notes how the list shows the action done (done).
   async function shareAction(name,busyKey,params,failure,done){
     setBusy(busyKey);setErrors(prev=>({...prev,[name]:null}));
     try{await request(name,params);await refresh()}
-    catch(error){shareDone.current[name]=["plugin/share/list",done];setErrors(prev=>({...prev,[name]:failureText(failure,error)}))}finally{setBusy("")}
+    catch(error){shareDone[name]=["plugin/share/list",done];setErrors(prev=>({...prev,[name]:failureText(failure,error)}))}finally{setBusy("")}
   }
   async function checkoutSharedPlugin(item){
     const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;
@@ -468,7 +482,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function removeMarketplace(name){
     if(!rpc||!name)return;setBusy("remove:"+name);setErrors(prev=>({...prev,"marketplace/remove":null}));
     try{await request("marketplace/remove",{marketplaceName:name});await refresh()}
-    catch(error){shareDone.current["marketplace/remove"]=["plugin/list",list=>!list.some(marketplace=>marketplace.name===name)];setErrors(prev=>({...prev,"marketplace/remove":failureText("Could not remove "+name,error)}))}
+    catch(error){shareDone["marketplace/remove"]=["plugin/list",list=>!list.some(marketplace=>marketplace.name===name)];setErrors(prev=>({...prev,"marketplace/remove":failureText("Could not remove "+name,error)}))}
     finally{setBusy("")}
   }
   async function upgradeMarketplace(name=null){
