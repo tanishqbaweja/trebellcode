@@ -1575,8 +1575,10 @@ test("Enter held on a partial slash command completes it once, and its repeats n
 
 // Escape closes the / menu for the draft as it stands, the / kept. It kept the menu closed for a bare / as long as the composer
 // stayed, which it does from thread to thread: a / typed again once the draft had changed (the / erased, /p erased back to /,
-// other text typed and cleared, another thread opened) showed no menu until the window reloaded.
-test("after Escape closes the / menu, a / typed once the draft has changed opens it again, also back from /p, after other text and in another thread",async({page})=>{
+// other text typed and cleared, another thread opened) showed no menu until the window reloaded. A / typed or pasted over the /
+// selected (Ctrl+A, Shift+Home, a double click, a drag) leaves the draft's text as it was, so React calls no onChange for it, and
+// the menu stayed closed over the / just typed until the next edit that changed the text (UI fix review, round 6).
+test("after Escape closes the / menu, a / typed once the draft has changed opens it again, also back from /p, after other text, typed or pasted over the / selected, and in another thread",async({page})=>{
   test.setTimeout(120_000);
   const harness=await openComposerApp(page,{others:["Release notes"]});
   try{
@@ -1585,6 +1587,16 @@ test("after Escape closes the / menu, a / typed once the draft has changed opens
     // The whole menu, as a bare / opens it, and Escape closing it with the / kept, for as long as the draft stays.
     const shows=how=>expect.soft(menu.getByText("/new",{exact:true}),how).toBeVisible();
     const escape=async()=>{await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await expect(composer).toHaveValue("/");await frames(page);await expect(menu).toHaveCount(0)};
+    // Where the / is drawn in the composer (its first character, at the top left of its text), and just right of it.
+    const slashAt=dx=>composer.evaluate((node,dx)=>{const style=getComputedStyle(node),line=parseFloat(style.lineHeight)||parseFloat(style.fontSize)*1.2;return {x:parseFloat(style.borderLeftWidth)+parseFloat(style.paddingLeft)+dx,y:parseFloat(style.borderTopWidth)+parseFloat(style.paddingTop)+line/2}},dx);
+    const selected=how=>expect.poll(()=>composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),{message:`the / ${how}`}).toEqual([0,1]);
+    // The / selected as a person selects it, each way after Escape has closed the menu over it.
+    const selections=[
+      ["selected with Ctrl+A",()=>page.keyboard.press("Control+A")],
+      ["selected with Shift+Home",()=>page.keyboard.press("Shift+Home")],
+      ["selected with a double click",async()=>composer.dblclick({position:await slashAt(2)})],
+      ["selected with a drag",async()=>{const box=await composer.boundingBox(),from=await slashAt(14),to=await slashAt(0);await page.mouse.move(box.x+from.x,box.y+from.y);await page.mouse.down();await page.mouse.move(box.x+(from.x+to.x)/2,box.y+to.y,{steps:4});await page.mouse.move(box.x+to.x,box.y+to.y,{steps:4});await page.mouse.up()}],
+    ];
     for(const [mode,other] of [["dark","Release notes"],["light","Composer thread"]]){
       await switchMode(page,mode);
       await composer.click();await expect(composer).toHaveValue("");
@@ -1592,6 +1604,15 @@ test("after Escape closes the / menu, a / typed once the draft has changed opens
       await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
       await page.keyboard.type("/",{delay:20});await shows(`a / typed again after Escape in ${mode}`);
       await page.screenshot({animations:"disabled",path:auditDir+`slash-menu-typed-again-after-escape-${mode}-1280x800.png`});
+      // The / selected and typed over with a /, or a / pasted over it: the draft reads / again, and the menu opens for the new /.
+      for(const [how,select] of selections){
+        await escape();await select();await selected(how);
+        await page.keyboard.type("/",{delay:20});await expect(composer).toHaveValue("/");await shows(`a / typed over the / ${how} after Escape in ${mode}`);
+      }
+      await page.screenshot({animations:"disabled",path:auditDir+`slash-menu-typed-over-selected-slash-after-escape-${mode}-1280x800.png`});
+      await escape();await page.keyboard.press("Control+A");await selected("selected with Ctrl+A for the paste");
+      await pasteText(page,"/");await expect(composer).toHaveValue("/");await shows(`a / pasted over the / after Escape in ${mode}`);
+      await page.screenshot({animations:"disabled",path:auditDir+`slash-menu-pasted-over-slash-after-escape-${mode}-1280x800.png`});
       await escape();await page.keyboard.type("p",{delay:20});await expect(menu.getByText("/plan",{exact:true})).toBeVisible();
       await page.keyboard.press("Backspace");await expect(composer).toHaveValue("/");await shows(`/p erased back to / after Escape in ${mode}`);
       await escape();await page.keyboard.press("Backspace");await page.keyboard.type("Fix the login",{delay:20});
