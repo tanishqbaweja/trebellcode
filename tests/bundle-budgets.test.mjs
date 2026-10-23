@@ -40,7 +40,13 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // Then by what lane R5C's fixes add to the lazy chunks, 1.1 / 0.4 KB (the Tools page naming a slow or cut-off action on its own row,
 // Settings' Capture now taking one SnapShot a press, and Record clearing the last recording's error line), which took them 0.1 /
 // 0.3 KB over it: its headroom stays 1.0 / 0.1 KB, as on main before lane R5C.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:747.5,gzipKB:245.2}};
+// Then by what round 6's fix lanes R6E and R6Y add to the lazy chunks, 3.4 / 1.4 KB (the Goal and Browser panels naming a slow write
+// on the button pressed and keeping the keyboard there, the execution trace's "match these filters" state with Clear filters, one
+// action a press on the Environments page and History's Retry and Load older threads, the Tools page's busy labels and kept focus,
+// and Settings search titles that wrap), which took them 2.4 / 1.4 KB over it: its headroom stays 1.0 / 0.0 KB, as on main before
+// round 6. The three lanes add 0.4 / 0.2 KB to the first bundle (now 199.2 of its 200 KB gzip), and lane R6X nothing to the lazy
+// chunks.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:750.9,gzipKB:246.6}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
