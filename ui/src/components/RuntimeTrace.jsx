@@ -2,6 +2,7 @@ import React,{useCallback,useEffect,useRef,useState} from "react";
 import { RefreshCw } from "lucide-react";
 import { api } from "../api.js";
 import { mergeTraceFilterOptions, traceQuery } from "../runtime-trace-filters.js";
+import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 function timeLabel(value){
   const date=new Date(Number(value)||Date.now());
@@ -17,6 +18,10 @@ export default function RuntimeTrace({threadId=null}){
   const [categoryFilter,setCategoryFilter]=useState("");
   const [timeWindow,setTimeWindow]=useState("all");
   const [filterOptions,setFilterOptions]=useState({runtimes:[],categories:[],turns:[]});
+  // When the filters leave nothing listed but the thread has events (seen: one was listed, or one comes back asked for without the
+  // filters), the list says the filters hide them (hidden). A thread with none keeps its own text.
+  const [hidden,setHidden]=useState(false);
+  const seen=useRef(false),turnSelect=useRef(null);
   // Each thread has a trace of its own (App keys it by thread). Only an answer for the filters still chosen lands: one asked
   // before they changed neither lists its events nor ends the loading of the one asked after.
   const view=useRef(0);
@@ -27,7 +32,10 @@ export default function RuntimeTrace({threadId=null}){
       const params=traceQuery({threadId,turnId:turnFilter,runtime:runtimeFilter,category:categoryFilter,timeWindow,limit:40});
       const result=await api("/api/traces?"+params.toString());
       if(asked!==view.current)return false;
-      const next=Array.isArray(result.items)?result.items:[];setItems(next);
+      const next=Array.isArray(result.items)?result.items:[],filtered=Boolean(turnFilter||runtimeFilter||categoryFilter)||timeWindow!=="all";
+      if(next.length||filtered&&!seen.current&&await api("/api/traces?"+traceQuery({threadId,limit:1}).toString()).then(answer=>answer.items?.length>0,()=>false))seen.current=true;
+      if(asked!==view.current)return false;
+      setItems(next);setHidden(filtered&&!next.length&&seen.current);
       setFilterOptions(previous=>mergeTraceFilterOptions(previous,next));
       setError(result.journal?.lastError?.message||"");
       return true;
@@ -45,6 +53,9 @@ export default function RuntimeTrace({threadId=null}){
     const visible=()=>{if(!document.hidden)tick()};document.addEventListener("visibilitychange",visible);
     return()=>{disposed=true;view.current++;clearInterval(timer);document.removeEventListener("visibilitychange",visible)};
   },[load]);
+  // Clear filters leaves the list once it has cleared them, so the keyboard goes on from the Turn filter, and the rest of its press
+  // (a double click's second click, Enter held) does nothing to the trace row that takes its place.
+  const clearFilters=event=>{ignorePressRest(!event.detail);setTurnFilter("");setRuntimeFilter("");setCategoryFilter("");setTimeWindow("all");turnSelect.current?.focus()};
 
   return <section className="runtime-trace" data-testid="runtime-trace">
     <div className="runtime-trace-head">
@@ -52,7 +63,7 @@ export default function RuntimeTrace({threadId=null}){
       <button type="button" onClick={()=>load()} disabled={loading} aria-label="Refresh execution trace" title="Refresh execution trace"><RefreshCw size={11}/></button>
     </div>
     <div className="runtime-trace-filters">
-      <select aria-label="Trace turn" value={turnFilter} onChange={event=>setTurnFilter(event.target.value)}>
+      <select ref={turnSelect} aria-label="Trace turn" value={turnFilter} onChange={event=>setTurnFilter(event.target.value)}>
         <option value="">All turns</option>{filterOptions.turns.map(turn=><option key={turn.id} value={turn.id}>{turn.label}</option>)}
       </select>
       <select aria-label="Trace runtime" value={runtimeFilter} onChange={event=>setRuntimeFilter(event.target.value)}>
@@ -79,7 +90,7 @@ export default function RuntimeTrace({threadId=null}){
           {item.data&&Object.keys(item.data).length>0&&<pre>{JSON.stringify(item.data,null,2)}</pre>}
         </div>
       </details>)}
-      {!items.length&&!error&&<div className="runtime-trace-empty">{loading?"Loading trace…":"No trace events for this thread yet."}</div>}
+      {!items.length&&!error&&<div className="runtime-trace-empty">{loading?"Loading trace…":hidden?<>No trace events match these filters.<button type="button" onClick={clearFilters}>Clear filters</button></>:"No trace events for this thread yet."}</div>}
     </div>
   </section>;
 }

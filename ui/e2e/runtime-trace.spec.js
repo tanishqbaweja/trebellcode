@@ -86,11 +86,11 @@ async function openRuntime(page,name){
   const trace=page.getByTestId("runtime-trace");await expect(trace).toBeVisible();
   return {trace,names:trace.locator(".runtime-trace-row summary strong"),turns:trace.getByLabel("Trace turn").locator("option")};
 }
-// The page in dark and light at 1280 wide, with the trace in view; it is left dark.
-async function shootModes(page,trace,name){
-  const mode=async value=>{if(await page.locator("html").getAttribute("data-mode")!==value){await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode",value)}};
-  await page.setViewportSize({width:1280,height:800});
-  for(const value of ["dark","light"]){await mode(value);await trace.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+name+"-"+value+"-1280x800.png"})}
+// The page in dark and light at each of widths (1280 wide unless given), with the trace in view; it is left dark at 1280. The theme
+// is switched at 1280, as in a narrower window the open panel lies over the header.
+async function shootModes(page,trace,name,widths=[1280]){
+  const mode=async value=>{await page.setViewportSize({width:1280,height:800});if(await page.locator("html").getAttribute("data-mode")!==value){await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode",value)}};
+  for(const value of ["dark","light"]){await mode(value);for(const width of widths){await page.setViewportSize({width,height:800});await trace.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+name+"-"+value+"-"+width+"x800.png"})}}
   await mode("dark");
 }
 
@@ -193,5 +193,79 @@ test("a slow trace answer for a turn no longer picked in the Turn filter is drop
     await expect(names,"the late answer for the turn no longer picked replaced the list of all turns").toHaveText(["c.turn.started","c.turn.completed"]);
     await expect(trace.getByRole("button",{name:"Refresh execution trace"})).toBeEnabled();
     await shootModes(page,trace,"runtime-trace-turn-filter-switch");
+  }finally{traces.hold=()=>false;await traces.release().catch(()=>{});await harness.close()}
+});
+
+test("filters that hide every trace event of the thread say so and offer Clear filters, which a double click or a held Enter presses once to list them all again, and a thread with no events keeps its own text",async({page})=>{
+  test.setTimeout(90_000);
+  const thread=fixtureThread("thread-d-trace-hidden","Trace hidden events thread",30),none=fixtureThread("thread-e-trace-none","Trace no events thread",20);
+  const harness=await startHarness(thread,none);
+  const events=[
+    traceEvent("d-1",thread,"turn-d-0001","d.turn.started",50_000),
+    {...traceEvent("d-2",thread,"turn-d-0001","d.verification.step",40_000),runtime:"native",provider:"agentrouter",category:"verification",status:"failed"},
+    traceEvent("d-3",thread,"turn-d-0002","d.turn.completed",30_000),
+  ];
+  const traces=await routeTraces(page,events);
+  try{
+    await routeApp(page,harness,thread,none);
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:500,terminalHeight:330})));
+    await page.goto("/");
+    const {trace,names}=await openRuntime(page,"Trace hidden events thread"),all=["d.turn.started","d.verification.step","d.turn.completed"];
+    const [turn,runtime,category,time]=["Trace turn","Trace runtime","Trace category","Trace time window"].map(label=>trace.getByLabel(label));
+    const filters=()=>Promise.all([turn,runtime,category,time].map(select=>select.inputValue()));
+    const empty=trace.locator(".runtime-trace-empty"),clear=trace.getByRole("button",{name:"Clear filters",exact:true}),opened=trace.locator(".runtime-trace-row[open]");
+    const refresh=trace.getByRole("button",{name:"Refresh execution trace"});
+    await expect(names).toHaveText(all);
+    // Codex picked in the runtimes, then from the keyboard the last category (verification) and the last 15 minutes: none of the
+    // thread's Codex events is a verification step.
+    const hideAll=async()=>{
+      await runtime.selectOption("codex");
+      await category.focus();await page.keyboard.press("End");await time.focus();await page.keyboard.press("ArrowDown");
+      await expect.poll(filters).toEqual(["","codex","verification","15m"]);
+      await expect(names).toHaveCount(0);await expect(refresh).toBeEnabled();
+      await expect(empty,"filters that hide the thread's events read as if it had none").toContainText("No trace events match these filters.");
+      await expect(clear).toBeVisible();
+    };
+    // Clear filters puts all four back and lists the thread's events again, none opened, with the keyboard on the Turn filter.
+    const cleared=async how=>{
+      await expect(names,how).toHaveText(all);await expect.poll(filters,how).toEqual(["","","","all"]);
+      expect(traces.requests.at(-1),how).toEqual({limit:"40",threadId:thread.id});
+      await expect(opened,how+": its rest opened the trace row that took Clear filters' place").toHaveCount(0);await expect(turn,how).toBeFocused();
+    };
+    await hideAll();
+    await shootModes(page,trace,"runtime-trace-filters-match-nothing",[1280,900,700]);
+    // A double click as a person's: the second click comes once the list has taken the button's place under the pointer.
+    const box=await clear.boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+    await page.mouse.move(x,y);await page.mouse.down();await page.mouse.up();
+    await expect(names).toHaveText(all);
+    expect(await page.evaluate(([x,y])=>Boolean(document.elementFromPoint(x,y)?.closest(".runtime-trace-row>summary")),[x,y]),"a trace row is under the pointer for the second click").toBe(true);
+    await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});await painted(page);
+    await cleared("a double click on Clear filters");
+    await page.screenshot({animations:"disabled",path:auditDir+"runtime-trace-filters-cleared-dark-1280x800.png"});
+    // In light mode in a 700 px window the message and the button fit the panel, and Tab then a held Enter press it once.
+    await page.getByTestId("appearance-toggle").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
+    await page.setViewportSize({width:700,height:800});
+    await hideAll();
+    const metrics=await trace.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await time.focus();await page.keyboard.press("Tab");await expect(clear).toBeFocused();
+    await page.screenshot({animations:"disabled",path:auditDir+"runtime-trace-clear-filters-focused-light-700x800.png"});
+    await page.keyboard.down("Enter");await page.keyboard.down("Enter");await page.keyboard.down("Enter");await page.keyboard.up("Enter");await painted(page);
+    await cleared("Enter held on Clear filters");
+    await page.screenshot({animations:"disabled",path:auditDir+"runtime-trace-filters-cleared-light-700x800.png"});
+    await page.setViewportSize({width:1280,height:800});
+    // A thread with no events keeps its own text, filtered or not (its filtered answer is held until the list says it is loading),
+    // until an event comes that the filters hide.
+    await openRuntime(page,"Trace no events thread");
+    await expect(refresh).toBeEnabled();await expect(empty).toHaveText("No trace events for this thread yet.");
+    traces.hold=params=>params.threadId===none.id&&params.category==="verification";
+    await category.focus();await page.keyboard.press("End");await expect(category).toHaveValue("verification");
+    await expect.poll(()=>traces.held.length).toBeGreaterThan(0);await expect(empty).toHaveText("Loading trace…");
+    traces.hold=()=>false;await traces.release();
+    await expect(empty,"a thread with no events, filtered").toHaveText("No trace events for this thread yet.");await expect(refresh).toBeEnabled();await expect(clear).toHaveCount(0);
+    events.push(traceEvent("e-1",none,"turn-e-0001","e.turn.started",5_000));
+    await refresh.click();
+    await expect(empty,"filters that hide the event the thread now has").toContainText("No trace events match these filters.");
+    await clear.click();
+    await expect(names).toHaveText(["e.turn.started"]);await expect(category).toHaveValue("");await expect(turn).toBeFocused();
   }finally{traces.hold=()=>false;await traces.release().catch(()=>{});await harness.close()}
 });

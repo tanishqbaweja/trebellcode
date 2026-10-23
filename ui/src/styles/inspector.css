@@ -99,7 +99,7 @@
   .sc-toolbar button,.sc-card button,.pr-head button,.pr-actions button,.pr-comment-edit,.branch-pr-badge button,.linked-pr-panel-head button,
   .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
   .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
-  .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button
+  .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button,.runtime-trace-empty button
 ){
   height:28px;min-height:28px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 10px;
   border:1px solid var(--line2)!important;border-radius:var(--r-s);background:var(--bg3)!important;color:var(--tx1)!important;
@@ -110,7 +110,7 @@
   .sc-toolbar button,.sc-card button,.pr-head button,.pr-actions button,.pr-comment-edit,.branch-pr-badge button,.linked-pr-panel-head button,
   .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
   .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
-  .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button
+  .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button,.runtime-trace-empty button
 ):hover:not(:disabled,[aria-disabled="true"]){background:var(--bg4)!important;color:var(--tx0)!important}
 /* Off. The Goal panel's buttons only say they are off while its write is on its way (aria-disabled), so the keyboard stays on
    them. */
@@ -119,7 +119,7 @@
   .sc-toolbar button,.sc-card button,.pr-head button,.pr-actions button,.pr-comment-edit,.branch-pr-badge button,.linked-pr-panel-head button,
   .linked-pr-unlink,.pr-stack-actions button,.source-window-footer button,.pr-composer-trigger,.pr-composer-submit button,
   .goal-actions button,.verification-repair-card button,.agent-background-head button,.agent-background-list button,
-  .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button
+  .context-explorer-search button,.context-explorer-relation-actions button,.context-diagnostics article button,.runtime-trace-empty button
 ):is(:disabled,[aria-disabled="true"]){opacity:.5;cursor:default}
 /* Primary actions. */
 :root:root .context-panel :is(.commit-box .primary,.goal-actions .primary,.pr-composer-submit button){
@@ -904,7 +904,7 @@
 :root:root .context-panel .runtime-trace-row>div{padding:0 14px 12px}
 :root:root .context-panel .runtime-trace-row p{margin:0 0 6px;font:400 10.5px/1.45 var(--mono);color:var(--tx3)!important;overflow-wrap:anywhere}
 :root:root .context-panel .runtime-trace-row pre{max-height:200px;margin:0;padding:9px 11px;overflow:auto;border:1px solid var(--line)!important;border-radius:8px;background:var(--bg0)!important;color:var(--tx1)!important;font:400 11px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
-:root:root .context-panel .runtime-trace-empty{padding:20px 14px;font-size:12px;color:var(--tx3)!important;text-align:center}
+:root:root .context-panel .runtime-trace-empty{display:grid;justify-items:center;gap:10px;padding:20px 14px;font-size:12px;color:var(--tx3)!important;text-align:center}
 @container inspector (max-width:520px){
   :root:root .context-panel .runtime-trace-filters{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
