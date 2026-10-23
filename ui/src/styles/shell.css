@@ -774,8 +774,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    only as far as that needs. From 3 on the project name comes back as at 2 (data-crumb="short") wherever
    the title keeps what the level gave it beside it, all of itself or its readable width; at 3 that name would be 2 again, so a
    header whose title fits at 3 takes 4 with the name, the theme and palette buttons stepping aside into More actions for it, and 3
-   shows only where 4 has no room for the name and no more of the title to show (a title 3 cuts by the pixel its measure allows
-   keeps 4, with the crumb's icon). Each control keeps its tooltip and accessible name. */
+   shows only where 4 has no room for the name. Whole is the title's text no wider than its box, to the fraction of a pixel, as its
+   ellipsis shows. Each control keeps its tooltip and accessible name. */
 .workspace-header .workspace-breadcrumb{flex:1 1 auto}
 .workspace-header .project-crumb:not(.sidebar-reopen){flex:0 1000000 auto;min-width:calc(39px + 4ch)}
 .workspace-header .thread-title-button{flex:0 1 auto;min-width:0}

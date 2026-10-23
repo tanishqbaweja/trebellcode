@@ -29,8 +29,11 @@
 // later level often frees more than the title needs, and the crumb kept only its icon beside a whole title. At level 3 its name
 // would be level 2 again, so the header takes level 4 for it, the theme and palette buttons stepping aside into More actions for
 // the crumb's name: a header whose title fits at level 3 shows level 4 with the crumb's shortened name, for a title of any length,
-// and level 3 shows only where the room level 4 frees does not hold that name (level 4 with the crumb's icon where level 3 cuts the
-// title by the pixel whole allows and level 4 shows all of it).
+// and level 3 shows only where the room level 4 frees does not hold that name.
+// Whole is measured to the fraction of a pixel, as the ellipsis shows as soon as the text overflows its box at all. clientWidth and
+// scrollWidth are whole pixels: the fit read a box of 84.36px for 85.39px of text as 84 of 85 and counted that whole, so the pixel
+// or two below where a level first shows the title whole read "Repo task o…" ("Repo task one" at 1144 beside the Git inspector and
+// two linked pull requests with one action folded, while 1140 folded two and showed it whole; a box 0.03px short reads 85 of 85).
 export const HEADER_FIT_LEVELS=6;
 export const TITLE_READABLE_WIDTH=80;
 // The level from which the project crumb keeps only its icon.
@@ -39,13 +42,20 @@ export const CRUMB_ICON_LEVEL=3;
 // carry the same data-fold; a folded one is marked data-folded, which hides it from the row and shows it in the menu.
 export const HEADER_FOLD_ORDER=["goal","terminal","review","script","open-in","source"];
 
-// Whether the title shows all of itself.
-export function titleWhole({clientWidth=0,scrollWidth=0}={}){
-  return clientWidth+1>=scrollWidth;
+// Whether the title shows all of itself: its text (whole) no wider than its box (shown).
+export function titleWhole({shown=0,whole=0}={}){
+  return shown>=whole;
 }
 // Whether the title shows at least the readable width (or all of itself): what a title keeps where no level shows it whole.
-export function titleReadable({clientWidth=0,scrollWidth=0}={},readable=TITLE_READABLE_WIDTH){
-  return clientWidth+1>=Math.min(scrollWidth,readable);
+export function titleReadable({shown=0,whole=0}={},readable=TITLE_READABLE_WIDTH){
+  return shown+1>=Math.min(whole,readable);
+}
+// The width of the title's content box (shown) and of its text (whole), to the fraction of a pixel. A Range keeps the text's
+// whole width while the ellipsis cuts it.
+export function titleWidths(title){
+  const style=getComputedStyle(title),text=document.createRange();text.selectNodeContents(title);
+  const edges=["paddingLeft","paddingRight","borderLeftWidth","borderRightWidth"].reduce((sum,key)=>sum+parseFloat(style[key]),0);
+  return {shown:title.getBoundingClientRect().width-edges,whole:text.getBoundingClientRect().width};
 }
 
 // The level the header takes: the first at which the title shows whole, when one does, else the first at which it is readable,
@@ -76,8 +86,8 @@ export function fitState(level,foldable=[]){
 // Keeps a header element fitted as it resizes (window, sidebar or inspector) and as its contents change (a thread opens, a turn
 // starts and Stop appears, the branch changes, the Open-in picker finds its editors, the More actions menu opens), and once web
 // fonts finish loading. The level is written to data-fit, the folded actions are marked data-folded and a crumb given its
-// shortened name back is marked data-crumb; the returned function stops watching.
-export function observeHeaderFit(header,{titleSelector=".thread-title-button strong",foldOrder=HEADER_FOLD_ORDER}={}){
+// shortened name back is marked data-crumb; widths(title) measures the title. The returned function stops watching.
+export function observeHeaderFit(header,{titleSelector=".thread-title-button strong",foldOrder=HEADER_FOLD_ORDER,widths=titleWidths}={}){
   if(!header)return ()=>{};
   const fit=()=>{
     const title=header.querySelector(titleSelector),marked=[...(header.querySelectorAll?.("[data-fold]")||[])];
@@ -89,15 +99,15 @@ export function observeHeaderFit(header,{titleSelector=".thread-title-button str
     };
     // Each level is measured with the crumb it draws; the crumb's shortened name is tried once the level is found, at level 3 with
     // the theme and palette buttons set aside into More actions as at level 4 (level 3 with it would be level 2 again), and kept
-    // where the title keeps what it had there with the crumb's icon: all of it, to the pixel, for a title the found level shows
-    // whole, or its readable width. Whole allows a pixel the title's ellipsis still shows, so a title the found level cuts by that
-    // pixel, which level 4 shows all of, keeps level 4 with the crumb's icon.
+    // where the title keeps what it had there with the crumb's icon: all of it for a title the found level shows whole, or its
+    // readable width.
     if(header.dataset.crumb)delete header.dataset.crumb;
-    const level=fitLevel(apply,()=>!title||titleWhole(title),HEADER_FIT_LEVELS+foldable.length,()=>!title||titleReadable(title));
+    const whole=()=>!title||titleWhole(widths(title)),readable=()=>!title||titleReadable(widths(title));
+    const level=fitLevel(apply,whole,HEADER_FIT_LEVELS+foldable.length,readable);
     if(title&&level>=CRUMB_ICON_LEVEL){
-      const whole=titleWhole(title),shown=title.clientWidth;
-      apply(Math.max(level,CRUMB_ICON_LEVEL+1));const room=title.clientWidth;header.dataset.crumb="short";
-      if(whole?title.clientWidth<room:!titleReadable(title)){delete header.dataset.crumb;if(!whole||room<=shown)apply(level)}
+      const keeps=whole()?whole:readable;
+      apply(Math.max(level,CRUMB_ICON_LEVEL+1));header.dataset.crumb="short";
+      if(!keeps()){delete header.dataset.crumb;apply(level)}
     }
   };
   fit();

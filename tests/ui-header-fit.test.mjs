@@ -1,20 +1,40 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fitLevel, fitState, foldableActions, HEADER_FIT_LEVELS, HEADER_FOLD_ORDER, observeHeaderFit, TITLE_READABLE_WIDTH, titleReadable, titleWhole } from "../ui/src/header-fit.js";
+import { fitLevel, fitState, foldableActions, HEADER_FIT_LEVELS, HEADER_FOLD_ORDER, observeHeaderFit, TITLE_READABLE_WIDTH, titleReadable, titleWhole, titleWidths } from "../ui/src/header-fit.js";
+
+// The headers below are models: the title's box shows shown px of its text's whole px, which widths hands the fit as the title's
+// measure would.
+const widths=title=>({shown:title.shown,whole:title.whole});
 
 test("a title is whole when it shows all of itself, and readable when it shows at least the readable width, however long it is",()=>{
-  assert.equal(titleWhole({clientWidth:40,scrollWidth:40}),true);
-  assert.equal(titleWhole({clientWidth:84,scrollWidth:85}),true);
-  assert.equal(titleWhole({clientWidth:0,scrollWidth:120}),false);
+  assert.equal(titleWhole({shown:40,whole:40}),true);
+  assert.equal(titleWhole({shown:0,whole:120}),false);
+  // A box any part of a pixel narrower than its text cuts it: the ellipsis shows. clientWidth and scrollWidth, whole pixels, read
+  // the 84.36px box of the 85.39px "Repo task one" as 84 of 85, which was counted whole ("Repo task o…" beside the Git inspector at
+  // 1144), and a box 0.03px short as 85 of 85.
+  assert.equal(titleWhole({shown:84.359375,whole:85.390625}),false);
+  assert.equal(titleWhole({shown:85.359375,whole:85.390625}),false);
+  assert.equal(titleWhole({shown:85.390625,whole:85.390625}),true);
   // "Repo task one" at 80 of its 85px reads "Repo task …", as "Repo task two" would: readable, not whole. So does "Repo task
   // number one" at 80 of its 131px beside "Repo task number two".
-  assert.equal(titleWhole({clientWidth:80,scrollWidth:85}),false);
-  assert.equal(titleReadable({clientWidth:80,scrollWidth:85}),true);
-  assert.equal(titleWhole({clientWidth:80,scrollWidth:131}),false);
-  assert.equal(titleReadable({clientWidth:80,scrollWidth:131}),true);
-  assert.equal(titleReadable({clientWidth:TITLE_READABLE_WIDTH,scrollWidth:600}),true);
-  assert.equal(titleReadable({clientWidth:TITLE_READABLE_WIDTH-2,scrollWidth:600}),false);
-  assert.equal(titleReadable({clientWidth:40,scrollWidth:40}),true);
+  assert.equal(titleWhole({shown:80,whole:85}),false);
+  assert.equal(titleReadable({shown:80,whole:85}),true);
+  assert.equal(titleWhole({shown:80,whole:131}),false);
+  assert.equal(titleReadable({shown:80,whole:131}),true);
+  assert.equal(titleReadable({shown:TITLE_READABLE_WIDTH,whole:600}),true);
+  assert.equal(titleReadable({shown:TITLE_READABLE_WIDTH-2,whole:600}),false);
+  assert.equal(titleReadable({shown:40,whole:40}),true);
+});
+
+test("the title is measured to the fraction of a pixel: its content box against its text's whole width, which a Range keeps while the ellipsis cuts it",()=>{
+  const saved={getComputedStyle:globalThis.getComputedStyle,document:globalThis.document},range={selectNodeContents(node){range.node=node},getBoundingClientRect:()=>({width:85.390625})};
+  try{
+    globalThis.getComputedStyle=()=>({paddingLeft:"2px",paddingRight:"1.5px",borderLeftWidth:"0px",borderRightWidth:"0.5px"});
+    globalThis.document={createRange:()=>range};
+    const title={getBoundingClientRect:()=>({width:88.359375})};
+    assert.deepEqual(titleWidths(title),{shown:84.359375,whole:85.390625});
+    assert.equal(range.node,title);
+  }finally{for(const [key,value] of Object.entries(saved))if(value===undefined)delete globalThis[key];else globalThis[key]=value}
 });
 
 test("the header takes the first level that shows the title whole, however many actions it folds, else the first that leaves it readable, else the last",()=>{
@@ -73,15 +93,15 @@ test("the header takes the first level that shows the title whole, however many 
 test("a header is fitted again from the first level, so a wider window gets its labels back",()=>{
   // Each level gives the title 60px more; the header starts 190px too narrow, then widens.
   let shortfall=190,whole=200;
-  const header={dataset:{},querySelector:()=>({get clientWidth(){return Math.max(0,Math.min(whole,200-shortfall+60*Number(header.dataset.fit)))},get scrollWidth(){return whole}})};
-  const stop=observeHeaderFit(header);
+  const header={dataset:{},querySelector:()=>({get shown(){return Math.max(0,Math.min(whole,200-shortfall+60*Number(header.dataset.fit)))},get whole(){return whole}})};
+  const stop=observeHeaderFit(header,{widths});
   // Level 2 leaves the 200px title 130px, past the readable width, and level 4 shows it whole: the header takes level 4.
   assert.equal(header.dataset.fit,"4");
   stop();
   // A 600px title no level that folds nothing shows whole: the header takes level 2, the first that leaves it the readable width.
-  whole=600;observeHeaderFit(header)();
+  whole=600;observeHeaderFit(header,{widths})();
   assert.equal(header.dataset.fit,"2");
-  whole=200;shortfall=0;observeHeaderFit(header)();
+  whole=200;shortfall=0;observeHeaderFit(header,{widths})();
   assert.equal(header.dataset.fit,"0");
   // A header without a title (no thread open yet) stays at the first level.
   const empty={dataset:{},querySelector:()=>null};observeHeaderFit(empty)();
@@ -117,14 +137,14 @@ function crumbHeader(){
   const controls=["goal","terminal","review"].map(control);
   const folded=()=>controls.filter(node=>node.hasAttribute("data-folded")).map(node=>node.dataset.fold);
   let gains=[0,20,40,73,107,141],base=0,whole=85;
-  const header={dataset:{},querySelectorAll:()=>controls,querySelector:()=>({get clientWidth(){
+  const header={dataset:{},querySelectorAll:()=>controls,querySelector:()=>({get shown(){
     const fit=Number(header.dataset.fit),count=folded().length;
     const room=base+gains[Math.min(fit,gains.length-1)]+34*count-(header.dataset.crumb==="short"?33:0);
     return Math.max(0,Math.min(whole,room));
-  },get scrollWidth(){return whole}})};
+  },get whole(){return whole}})};
   return {
-    fitted:(width,title=85)=>{base=width;whole=title;observeHeaderFit(header)();return {fit:header.dataset.fit,crumb:header.dataset.crumb,folded:folded()}},
-    shown:()=>header.querySelector().clientWidth,
+    fitted:(width,title=85)=>{base=width;whole=title;observeHeaderFit(header,{widths})();return {fit:header.dataset.fit,crumb:header.dataset.crumb,folded:folded()}},
+    shown:()=>header.querySelector().shown,
     setGains:next=>{gains=next},
   };
 }
@@ -138,8 +158,8 @@ test("from the level where the project crumb keeps only its icon, the crumb gets
   // So does a title of any length: a 300px one no level shows whole, which level 3 first leaves the readable width, takes level 4
   // the same way, the crumb's name leaving it readable.
   assert.deepEqual(fitted(10,300),{fit:"4",crumb:"short",folded:[]});
-  // Level 3 leaves the title 83px and level 4 shows it whole, which the crumb's name would cut to 84px: the one pixel a whole
-  // title's measure allows, where the title's ellipsis would show. The crumb keeps its icon.
+  // Level 3 leaves the title 83px and level 4 shows it whole, which the crumb's name would cut to 84px, where the title's ellipsis
+  // would show. The crumb keeps its icon.
   assert.deepEqual(fitted(10),{fit:"4",crumb:undefined,folded:[]});
   // Level 3 leaves the title 73px, and level 4 shows it whole; the crumb's name would cut it to 74px (1240 wide): the crumb keeps
   // its icon. (With the theme and palette buttons gone and no More actions button in their place, it had room for its name there.)
@@ -170,10 +190,25 @@ test("from the level where the project crumb keeps only its icon, the crumb gets
   // the header goes back to level 3, the crumb keeping its icon.
   setGains([0,20,40,73,73,107]);
   assert.deepEqual(fitted(12),{fit:"3",crumb:undefined,folded:[]});
-  // Level 3 leaves the title 84px of its 85, whole to within the pixel its measure allows, which its ellipsis still shows, and level
-  // 4 all of it, which the crumb's name would cut to 78px: the header keeps level 4 with the crumb's icon instead of going back.
+  // Level 3 leaves the title 84px of its 85, which its ellipsis cuts, and level 4 all of it, which the crumb's name would cut to
+  // 78px: level 4, the crumb keeping its icon.
   setGains([0,20,40,73,100,134]);
   assert.deepEqual(fitted(11),{fit:"4",crumb:undefined,folded:[]});
+});
+
+test("a box any part of a pixel narrower than its text cuts the title, so the header folds one action more where that shows it whole, and the crumb's name takes no part of a pixel from a whole title",()=>{
+  const {fitted,shown}=crumbHeader();
+  // "Repo task one" (85.39px) beside the Git inspector and two linked pull requests: one fold leaves it 84.36px at 1144, which
+  // clientWidth and scrollWidth read as 84 of 85, and 85.36px at 1145, 85 of 85. Both read "Repo task o…", and two folds show it
+  // whole, as at 1140. (The header counted a title a pixel short as whole and folded one.) Beside the whole title the crumb's name
+  // would leave it 85.36px at 1144, where the crumb keeps its icon, and 86.36px at 1145, where it gets its name back.
+  assert.deepEqual(fitted(-90.640625,85.390625),{fit:String(HEADER_FIT_LEVELS),crumb:undefined,folded:["goal","terminal"]});
+  assert.equal(shown(),85.390625);
+  assert.deepEqual(fitted(-89.640625,85.390625),{fit:String(HEADER_FIT_LEVELS),crumb:"short",folded:["goal","terminal"]});
+  assert.equal(shown(),85.390625);
+  // Where one fold leaves the box as wide as its text, that fold shows it whole.
+  assert.deepEqual(fitted(-89.609375,85.390625),{fit:String(HEADER_FIT_LEVELS),crumb:undefined,folded:["goal"]});
+  assert.equal(shown(),85.390625);
 });
 
 test("the crumb's shortened name never cuts a title its icon leaves whole, and a title past 120px shows whole where a level that folds nothing gives it that",()=>{
@@ -210,7 +245,7 @@ test("a title any level shows whole shows whole, however many actions that folds
   for(const title of [85,131,300]){
     let before=null;
     for(let base=-150;base<=100;base++){
-      const state=fitted(base,title),now={whole:shown()+1>=title,folds:state.folded.length};
+      const state=fitted(base,title),now={whole:shown()>=title,folds:state.folded.length};
       if(before?.whole)assert.ok(now.whole,`the ${title}px title shows whole ${base}px from level 0's room, as it does a pixel narrower`);
       if(before?.whole)assert.ok(now.folds<=before.folds,`the ${title}px title folds ${now.folds} actions ${base}px from level 0's room, ${before.folds} a pixel narrower`);
       if(!now.whole)assert.ok(shown()+1>=Math.min(title,80)||state.folded.length===3,`the ${title}px title is readable ${base}px from level 0's room, or every action is folded`);
@@ -219,9 +254,9 @@ test("a title any level shows whole shows whole, however many actions that folds
   }
   // Where a title first shows whole, with every action folded, a pixel narrower no level shows it whole, and the header keeps
   // the readable width with fewer actions folded: the one place a wider column folds more.
-  assert.deepEqual(fitted(56,300),{fit:String(HEADER_FIT_LEVELS),crumb:undefined,folded:["goal","terminal","review"]});
-  assert.equal(shown(),299);
-  assert.deepEqual(fitted(55,300),{fit:"2",crumb:undefined,folded:[]});
+  assert.deepEqual(fitted(57,300),{fit:String(HEADER_FIT_LEVELS),crumb:undefined,folded:["goal","terminal","review"]});
+  assert.equal(shown(),300);
+  assert.deepEqual(fitted(56,300),{fit:"2",crumb:undefined,folded:[]});
 });
 
 test("a header folds only as many actions as its title needs, and gives them back as it widens",()=>{
@@ -232,22 +267,22 @@ test("a header folds only as many actions as its title needs, and gives them bac
   // Each level up to the last that folds nothing gives the title 20px (level 4 sets the theme and palette buttons aside for the More
   // actions button); each folded action gives 34px.
   let base=-80;
-  const header={dataset:{},querySelectorAll:()=>controls,querySelector:()=>({get clientWidth(){
+  const header={dataset:{},querySelectorAll:()=>controls,querySelector:()=>({get shown(){
     const state=Math.min(Number(header.dataset.fit),HEADER_FIT_LEVELS-1),count=folded().length;
     return Math.max(0,base+20*state+34*count);
-  },scrollWidth:600})};
-  observeHeaderFit(header)();
+  },whole:600})};
+  observeHeaderFit(header,{widths})();
   // Level 5 leaves 20px, one fold 54px, two 88px: past the readable width.
   assert.equal(header.dataset.fit,String(HEADER_FIT_LEVELS));
   assert.deepEqual(new Set(folded()),new Set(["goal","terminal"]));
   // The menu items of the folded actions are marked too.
   assert.equal(controls.filter(node=>node.hasAttribute("data-folded")).length,4);
   // Wider, level 4 is enough: nothing stays folded.
-  base=0;observeHeaderFit(header)();
+  base=0;observeHeaderFit(header,{widths})();
   assert.equal(header.dataset.fit,"4");
   assert.deepEqual(folded(),[]);
   // Too narrow for any number of folds: every action folds.
-  base=-400;observeHeaderFit(header)();
+  base=-400;observeHeaderFit(header,{widths})();
   assert.equal(header.dataset.fit,String(HEADER_FIT_LEVELS));
   assert.deepEqual(new Set(folded()),new Set(HEADER_FOLD_ORDER));
 });

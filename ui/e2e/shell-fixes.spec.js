@@ -499,7 +499,7 @@ for(const mode of ["dark","light"])test(`the project crumb keeps a shortened nam
     if(!(await right.isVisible())){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible()}
     await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
     await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 2");
-    const header=page.locator(".chat-workspace .workspace-header"),crumb=header.locator(".project-crumb:not(.sidebar-reopen)"),title=header.locator(".thread-title-button strong");
+    const header=page.locator(".chat-workspace .workspace-header"),crumb=header.locator(".project-crumb:not(.sidebar-reopen)");
     // The name's box, and the width its first letter and the ellipsis take in its font: the least a shortened name shows.
     const name=()=>crumb.locator("span").evaluate(node=>{
       const style=getComputedStyle(node),least=document.createElement("span");
@@ -520,12 +520,12 @@ for(const mode of ["dark","light"])test(`the project crumb keeps a shortened nam
         await expect(header.getByRole("button",{name:"Command palette",exact:true}),"the palette button has stepped aside").toBeHidden();
         await expect(header.getByRole("button",{name:"More actions",exact:true}),"More actions holds the theme and palette buttons").toBeVisible();
       }
-      const shown=await name(),titleBox=await title.evaluate(node=>({shown:node.clientWidth,whole:node.scrollWidth}));
+      const shown=await name();
       // The crumb's box and its least width, and the title's box and the width its text takes, to the fraction of a pixel.
       const squeeze=await header.evaluate(node=>{
         const box=node.querySelector(".project-crumb:not(.sidebar-reopen)"),strong=node.querySelector(".thread-title-button strong"),text=document.createRange();text.selectNodeContents(strong);
         return {crumb:box.getBoundingClientRect().width,least:parseFloat(getComputedStyle(box).minWidth),title:strong.getBoundingClientRect().width,text:text.getBoundingClientRect().width};
-      });
+      }),titleBox={shown:squeeze.title,whole:squeeze.text};
       console.log(`header at ${width}: fit ${await header.getAttribute("data-fit")}, crumb ${squeeze.crumb.toFixed(3)}px (least ${squeeze.least.toFixed(3)}), its name ${shown.display==="none"?"hidden":shown.shown+" of "+shown.whole+"px"}, title ${squeeze.title.toFixed(3)}px for its text's ${squeeze.text.toFixed(3)}px, chips ${chips.join(" ")}`);
       // The crumb gives way before the title: beside a crumb wider than its least width the title is not cut at all (it took a
       // few hundredths of a pixel of the crumb's squeeze, and its ellipsis showed in place of its last letters).
@@ -538,14 +538,14 @@ for(const mode of ["dark","light"])test(`the project crumb keeps a shortened nam
         // Its icon alone, only because its shortened name (the header's data-crumb) would cut the title: narrower than it shows, where
         // the level shows the title whole, or under its readable width where the level leaves it cut (this was held to the readable
         // width either way, so at 1176, where the name would leave the title 83px of its 85, the header was right and the check failed).
-        const withName=await header.evaluate(node=>{node.dataset.crumb="short";const strong=node.querySelector(".thread-title-button strong"),box={shown:strong.clientWidth,whole:strong.scrollWidth};delete node.dataset.crumb;return box});
-        expect(withName.shown,`the title beside the crumb's shortened name at ${width}px`).toBeLessThan(titleBox.shown+1>=titleBox.whole?titleBox.shown:Math.min(withName.whole,80)-1);
+        const withName=await header.evaluate(node=>{node.dataset.crumb="short";const strong=node.querySelector(".thread-title-button strong"),text=document.createRange();text.selectNodeContents(strong);const box={shown:strong.getBoundingClientRect().width,whole:text.getBoundingClientRect().width};delete node.dataset.crumb;return box});
+        expect(withName.shown,`the title beside the crumb's shortened name at ${width}px`).toBeLessThan(titleBox.shown>=titleBox.whole?titleBox.shown:Math.min(withName.whole,80)-1);
       }
       // The 85px title shows whole at each width: a level that folds no action gives it that (it read 80px of itself at 1280 and 82px
       // at 1180, the levels after them not tried), or at 1176 the first fold, which adds no button. There the More actions button
       // that holds the theme and palette buttons leaves it 82px at level 5, the last that folds nothing, and the header stopped there,
       // "Repo task o…", while at 1100 it folded an action and showed it whole.
-      expect(titleBox.shown+1,`the title's width at ${width}px`).toBeGreaterThanOrEqual(titleBox.whole);
+      expect(titleBox.shown,`the title's width at ${width}px`).toBeGreaterThanOrEqual(titleBox.whole);
       const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
       await expect(crumb).toHaveAttribute("title",project.name+" · Projects and workspaces");
       // Beside the docked inspector the pointer reaches the crumb; below 900px the inspector's scrim lies over the header.
@@ -597,51 +597,50 @@ for(const [name,sibling,crumbNamed] of [["Repo task one","Repo task two",true],[
     await expect(page.locator("dialog.inspector-text-prompt").getByRole("textbox",{name:"Pull request URL"})).toBeFocused();
     await page.keyboard.type(prs[1].url,{delay:5});await page.keyboard.press("Enter");
     await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 2");
-    // The title's box and its text's width, and the crumb's name and the least a shortened one shows (its first letter and the
-    // ellipsis, in its font), with the main column beside the 258px sidebar and the 460px inspector.
+    // The title's box and its text's width, to the fraction of a pixel, and the crumb's name and the least a shortened one shows
+    // (its first letter and the ellipsis, in its font), with the main column beside the 258px sidebar and the 460px inspector.
     const read=()=>header.evaluate(node=>{
-      const strong=node.querySelector(".thread-title-button strong"),name=node.querySelector(".project-crumb:not(.sidebar-reopen)>span"),style=getComputedStyle(name),least=document.createElement("span");
+      const strong=node.querySelector(".thread-title-button strong"),name=node.querySelector(".project-crumb:not(.sidebar-reopen)>span"),style=getComputedStyle(name),least=document.createElement("span"),text=document.createRange();text.selectNodeContents(strong);
       least.style.cssText="position:absolute;visibility:hidden;white-space:nowrap";least.textContent=name.textContent.trim().charAt(0)+"…";
       for(const key of ["fontFamily","fontSize","fontWeight","fontStyle","fontStretch","fontFeatureSettings","fontVariationSettings","letterSpacing"])least.style[key]=style[key];
       document.body.append(least);const leastWidth=least.getBoundingClientRect().width;least.remove();
-      return {fit:node.dataset.fit,crumb:node.dataset.crumb||"",title:strong.clientWidth,whole:strong.scrollWidth,name:style.display==="none"?0:name.clientWidth,least:leastWidth,overflow:node.scrollWidth-node.clientWidth,chips:[...node.querySelectorAll(".header-pr")].filter(chip=>chip.offsetParent).map(chip=>chip.innerText.replace(/\s+/g,""))};
+      return {fit:node.dataset.fit,crumb:node.dataset.crumb||"",title:strong.getBoundingClientRect().width,whole:text.getBoundingClientRect().width,name:style.display==="none"?0:name.clientWidth,least:leastWidth,overflow:node.scrollWidth-node.clientWidth,chips:[...node.querySelectorAll(".header-pr")].filter(chip=>chip.offsetParent).map(chip=>chip.innerText.replace(/\s+/g,""))};
     });
     // What the title shows at another level, with the crumb as that level draws it (as the fit measures each level), and beside the
     // crumb's shortened name at this level; the header is put back as it was.
     const titleAt=level=>header.evaluate((node,level)=>{
-      const fit=node.dataset.fit,crumb=node.dataset.crumb,strong=node.querySelector(".thread-title-button strong");
+      const fit=node.dataset.fit,crumb=node.dataset.crumb,strong=node.querySelector(".thread-title-button strong"),text=document.createRange();text.selectNodeContents(strong);
       node.dataset.fit=String(level);delete node.dataset.crumb;
-      const box={shown:strong.clientWidth,whole:strong.scrollWidth};
+      const box={shown:strong.getBoundingClientRect().width,whole:text.getBoundingClientRect().width};
       node.dataset.fit=fit;if(crumb)node.dataset.crumb=crumb;
       return box;
     },level);
     const withName=()=>header.evaluate(node=>{
-      const crumb=node.dataset.crumb,strong=node.querySelector(".thread-title-button strong");
-      node.dataset.crumb="short";const box={shown:strong.clientWidth,whole:strong.scrollWidth};
+      const crumb=node.dataset.crumb,strong=node.querySelector(".thread-title-button strong"),text=document.createRange();text.selectNodeContents(strong);
+      node.dataset.crumb="short";const box={shown:strong.getBoundingClientRect().width,whole:text.getBoundingClientRect().width};
       if(crumb)node.dataset.crumb=crumb;else delete node.dataset.crumb;
       return box;
     });
-    const themeLabel=mode==="dark"?"Switch to light mode":"Switch to dark mode";
+    const themeLabel=mode==="dark"?"Switch to light mode":"Switch to dark mode",px=value=>value.toFixed(2);
     // The title shows whole, and the header goes no further than that and the crumb's name need: the level before its own cuts the
-    // title, if only by the pixel a whole title's measure allows (its ellipsis shows: at 1300 level 3 left "Repo task number one"
-    // 134 of its 135px), or the header is at level 4 with the crumb's shortened name, which level 3 cannot hold beside the title
-    // (its name there would be level 2 again, which cuts it). A header at level 3 or below keeps its theme and palette buttons,
-    // past it More actions holds them, and past level 3 a crumb kept to its icon is so only because its shortened name would cut
-    // the title.
+    // title, if only by a part of a pixel (its ellipsis shows: at 1300 level 3 left "Repo task number one" 134 of its 135px), or
+    // the header is at level 4 with the crumb's shortened name, which level 3 cannot hold beside the title (its name there would
+    // be level 2 again, which cuts it). A header at level 3 or below keeps its theme and palette buttons, past it More actions
+    // holds them, and past level 3 a crumb kept to its icon is so only because its shortened name would cut the title.
     const at=async(width,column=width-258-460)=>{
       await page.setViewportSize({width,height:800});
       await expect.poll(()=>header.evaluate(node=>Math.round(node.getBoundingClientRect().width))).toBe(column);await settle(page);
       const state=await read(),fit=Number(state.fit);
-      console.log(`header for "${name}" at ${width}: fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}, title ${state.title} of ${state.whole}px, crumb name ${state.name}px (least ${state.least.toFixed(1)}), chips ${state.chips.join(" ")}`);
+      console.log(`header for "${name}" at ${width}: fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}, title ${px(state.title)} of ${px(state.whole)}px, crumb name ${state.name}px (least ${state.least.toFixed(1)}), chips ${state.chips.join(" ")}`);
       expect(state.overflow,`the header holds its row at ${width}px`).toBeLessThanOrEqual(1);
-      expect(state.title+1,`the title shows whole at ${width}px (${state.title} of ${state.whole}px at data-fit ${state.fit})`).toBeGreaterThanOrEqual(state.whole);
+      expect(state.title,`the title shows whole at ${width}px (${px(state.title)} of ${px(state.whole)}px at data-fit ${state.fit})`).toBeGreaterThanOrEqual(state.whole);
       if(fit>0&&fit<6){
         const named=fit===4&&state.crumb==="short",level=named?2:fit-1,before=await titleAt(level);
-        expect(before.shown,named?`level 2, which level 3 with the crumb's name would be, cuts the title at ${width}px (${before.shown} of ${before.whole}px)`:`level ${level} cuts the title at ${width}px (${before.shown} of ${before.whole}px), which needs level ${fit}`).toBeLessThan(before.whole);
+        expect(before.shown,named?`level 2, which level 3 with the crumb's name would be, cuts the title at ${width}px (${px(before.shown)} of ${px(before.whole)}px)`:`level ${level} cuts the title at ${width}px (${px(before.shown)} of ${px(before.whole)}px), which needs level ${fit}`).toBeLessThan(before.whole);
       }
       if(fit<=3)for(const label of ["Command palette",themeLabel])await expect(header.getByRole("button",{name:label,exact:true}),`${label} at ${width}px`).toBeVisible();
       else await expect(header.getByRole("button",{name:"More actions",exact:true}),`More actions, which holds the theme and palette buttons, at ${width}px`).toBeVisible();
-      if(fit>3&&!state.crumb){const named=await withName();expect(named.shown,`the crumb keeps its icon at ${width}px only where its shortened name would cut the title (${named.shown} of ${named.whole}px, ${state.title}px with the icon)`).toBeLessThan(state.title)}
+      if(fit>3&&!state.crumb){const named=await withName();expect(named.shown,`the crumb keeps its icon at ${width}px only where its shortened name would cut the title (${px(named.shown)} of ${px(named.whole)}px, ${px(state.title)}px with the icon)`).toBeLessThan(state.title)}
       return state;
     };
     // At 1280 the pull requests fold into one chip and the title reads whole, the crumb keeping a shortened name beside "Repo task
@@ -678,10 +677,15 @@ for(const [name,sibling,crumbNamed] of [["Repo task one","Repo task two",true],[
 // and showed it whole: a wider window showed less of the title than a narrower one. Folding one action past the readable width
 // moved that to longer titles: "Repo task number one" read "Repo task …" at 1140 with one action folded while 1136 folded three
 // and showed it whole, and 1152 folded one while 1164 folded two. Actions fold no further than the whole title needs (the level
-// before cuts it, by the measure the fit uses), and a wider main column never folds more of them than a narrower one. 1140 is
-// reached from 1280, 1120 and 1160 too.
-for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task number one","Repo task number two"]])for(const mode of ["dark","light"])test(`"${name}" shows whole beside the Git inspector and two linked pull requests at every width from 1100 to 1300, the window widened and narrowed 4px at a time, folding actions only as far as that needs, in ${mode} mode`,async({page})=>{
-  test.setTimeout(180_000);
+// before cuts it), and a wider main column never folds more of them than a narrower one. 1140 is reached from 1280, 1120 and 1160
+// too. Whole is the title's text no wider than its box, to the fraction of a pixel, as the ellipsis shows (UI lane D, round 6: the
+// fit read clientWidth and scrollWidth, whole pixels, and counted a title a pixel short as whole, so where a level first shows it
+// whole the pixel or two below read "Repo task o…", a box of 84.36px for 85.39px of text read 84 of 85, at 1144 with one action
+// folded while 1140 folded two, at 1110, 1178, 1212, 1216 and 1284 too, "Repo task number one" at 1126, 1160, 1194, 1228, 1262 and
+// 1266, and with the sidebar closed at 1125 and 1216, or the inspector at 719, 873 and 938), so the window is also dragged 1px at a
+// time across each place the header changes its level, and those widths.
+for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task number one","Repo task number two"]])for(const mode of ["dark","light"])test(`"${name}" shows whole beside the Git inspector and two linked pull requests at every width from 1100 to 1300, the window widened and narrowed 4px at a time and 1px at a time where the header changes its level, folding actions only as far as that needs, and with the sidebar or the inspector closed, in ${mode} mode`,async({page})=>{
+  test.setTimeout(300_000);
   const project={id:"header-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
   const threads=[name,sibling].map((title,index)=>({id:"header-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
   const slug=name.toLowerCase().replace(/\s+/g,"-");
@@ -708,51 +712,69 @@ for(const [name,sibling] of [["Repo task one","Repo task two"],["Repo task numbe
     await expect(page.locator("dialog.inspector-text-prompt").getByRole("textbox",{name:"Pull request URL"})).toBeFocused();
     await page.keyboard.type(prs[1].url,{delay:5});await page.keyboard.press("Enter");
     await expect(right.locator(".linked-pr-panel h3")).toHaveText("Linked pull requests 2");
-    // The header's level, crumb and folded actions (in the order they fold), the title's box, and the title's box at the level
-    // before: one action fewer folded, else the level below (level 2 for level 4 with the crumb's shortened name, which level 3
-    // with it would be), with the crumb's icon as the fit measures each level. The header is put back as it was.
+    // The header's level, crumb and folded actions (in the order they fold), the title's box and the width of its text (a Range
+    // keeps the text's whole width while the ellipsis cuts it), to the fraction of a pixel, and the same at the level before: one
+    // action fewer folded, else the level below (level 2 for level 4 with the crumb's shortened name, which level 3 with it would
+    // be), with the crumb's icon as the fit measures each level. The header is put back as it was.
     const read=()=>header.evaluate((node,order)=>{
-      const strong=node.querySelector(".thread-title-button strong"),row=node.querySelector(".workspace-header-actions"),fit=node.dataset.fit,crumb=node.dataset.crumb;
-      const folded=order.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`)?.hasAttribute("data-folded"));
-      const state={fit,crumb:crumb||"",folded,column:Math.round(node.getBoundingClientRect().width),title:strong.clientWidth,whole:strong.scrollWidth,overflow:node.scrollWidth-node.clientWidth,chips:[...node.querySelectorAll(".header-pr")].filter(chip=>chip.offsetParent).map(chip=>chip.innerText.replace(/\s+/g,""))};
+      const strong=node.querySelector(".thread-title-button strong"),row=node.querySelector(".workspace-header-actions"),fit=node.dataset.fit,crumb=node.dataset.crumb,text=document.createRange();text.selectNodeContents(strong);
+      const box=()=>({shown:strong.getBoundingClientRect().width,whole:text.getBoundingClientRect().width});
+      const folded=order.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`)?.hasAttribute("data-folded")),{shown,whole}=box();
+      const state={fit,crumb:crumb||"",folded,column:Math.round(node.getBoundingClientRect().width),title:shown,whole,pixels:strong.clientWidth+" of "+strong.scrollWidth,overflow:node.scrollWidth-node.clientWidth,chips:[...node.querySelectorAll(".header-pr")].filter(chip=>chip.offsetParent).map(chip=>chip.innerText.replace(/\s+/g,""))};
       if(fit!=="0"){
         const back=folded.length?[...node.querySelectorAll(`[data-fold="${folded.at(-1)}"]`)]:[];
         for(const control of back)control.removeAttribute("data-folded");
         node.dataset.fit=folded.length===1?"5":folded.length?fit:fit==="4"&&crumb==="short"?"2":String(Number(fit)-1);delete node.dataset.crumb;
-        state.before={shown:strong.clientWidth,whole:strong.scrollWidth};
+        state.before=box();
         for(const control of back)control.setAttribute("data-folded","");
         node.dataset.fit=fit;if(crumb)node.dataset.crumb=crumb;
       }
       return state;
     },HEADER_FOLD_ORDER);
-    // The main column beside the sidebar (224px up to 1120, 258px from 1121) and the 460px inspector.
-    const seen=[];
-    const at=async width=>{
+    // The main column beside the sidebar (224px up to 1120, 258px from 1121) and the 460px inspector, or as wide as column says.
+    const seen=[],px=value=>value.toFixed(2),level=state=>state.fit+(state.folded.length?"+"+state.folded.length:"")+(state.crumb?" crumb "+state.crumb:"");
+    const at=async(width,column=width-(width<=1120?224:258)-460)=>{
       await page.setViewportSize({width,height:800});
-      await expect.poll(()=>header.evaluate(node=>Math.round(node.getBoundingClientRect().width)),{message:`the main column at ${width}px`}).toBe(width-(width<=1120?224:258)-460);await settle(page);
-      const state=await read(),where=`at ${width}px (data-fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""}, title ${state.title} of ${state.whole}px, chips ${state.chips.join(" ")})`;
+      await expect.poll(()=>header.evaluate(node=>Math.round(node.getBoundingClientRect().width)),{message:`the main column at ${width}px`}).toBe(column);await settle(page);
+      const state=await read(),where=`at ${width}px (data-fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""}, title ${px(state.title)}px for its text's ${px(state.whole)}px, ${state.pixels} in whole pixels, chips ${state.chips.join(" ")})`;
       seen.push({width,...state});
       expect.soft(state.overflow,`the header holds its row ${where}`).toBeLessThanOrEqual(1);
-      expect.soft(state.title+1,`"${name}" shows whole ${where}`).toBeGreaterThanOrEqual(state.whole);
-      // The level before cuts the title by the fit's own measure, which counts a title a pixel short of whole as whole (the pixel its
-      // ellipsis shows), but for level 3 before level 4 with the crumb's icon: the header takes level 4 where level 3 cuts the title
-      // by that pixel and level 4 shows all of it.
-      const pixel=state.fit==="4"&&!state.crumb?0:1;
-      if(state.before)expect.soft(state.before.shown+pixel,`the level before cuts the title (${state.before.shown} of ${state.before.whole}px), so the header goes no further than it needs, ${where}`).toBeLessThan(state.before.whole);
+      expect.soft(state.title,`"${name}" shows whole, with no ellipsis, ${where}`).toBeGreaterThanOrEqual(state.whole);
+      if(state.before)expect.soft(state.before.shown,`the level before cuts the title (${px(state.before.shown)}px for ${px(state.before.whole)}px), so the header goes no further than it needs, ${where}`).toBeLessThan(state.before.whole);
       return state;
     };
     const wide=await at(1280);
     expect(wide.chips,"the pull requests fold into the first one's chip").toEqual(["#102+1"]);
+    expect.soft(Math.abs(wide.title-wide.whole),"at 1280 the title's box is its text's own width, as the Range reads it").toBeLessThan(0.02);
     // 1140 from 1280, from 1120 and from 1160.
     for(const from of [null,1120,1160]){if(from)await at(from);await at(1140)}
     await page.screenshot({path:join(shotsDir,`header-title-${slug}-git-inspector-${mode}-1140x800.png`),animations:"disabled"});
     for(let width=1100;width<=1300;width+=4)await at(width);
     for(let width=1300;width>=1100;width-=4){await at(width);if(width===1108||width===1152)await page.screenshot({path:join(shotsDir,`header-title-${slug}-git-inspector-${mode}-${width}x800.png`),animations:"disabled"})}
-    const line=seen.map(state=>`${state.width}:${state.fit}${state.folded.length?"+"+state.folded.length:""}:${state.title}/${state.whole}`).join(" ");
+    // 1px at a time, widening and then narrowing, from 2px below to 2px above each pair of 4px steps the header changed its level
+    // between, and at the widths lane D found the title cut at.
+    const band=new Set([1110,1111,1144,1145,1178,1179,1212,1216,1217,1284,1126,1160,1194,1228,1262,1266]);
+    for(const [index,state] of seen.entries()){const next=seen[index+1];if(next&&Math.abs(next.width-state.width)===4&&level(next)!==level(state))for(let width=Math.min(state.width,next.width)-2;width<=Math.max(state.width,next.width)+2;width++)band.add(width)}
+    const widths=[...band].filter(width=>width>=1100&&width<=1300).sort((a,b)=>a-b);
+    for(const width of widths){await at(width);if(width===1110||width===1144)await page.screenshot({path:join(shotsDir,`header-title-${slug}-git-inspector-${mode}-${width}x800.png`),animations:"disabled"})}
+    for(const width of widths.reverse())await at(width);
+    const line=seen.map(state=>`${state.width}:${level(state)}:${px(state.title)}/${px(state.whole)}`).join(" ");
     console.log(`header for "${name}" beside the Git inspector in ${mode} (width:fit+folds:title/whole): ${line}`);
     // A wider main column never folds more actions than a narrower one (the column narrows where the sidebar widens at 1121).
     const more=new Set();for(const state of seen)for(const other of seen)if(other.column>state.column&&other.folded.length>state.folded.length)more.add(`${other.width}px (${other.column}px of column) folds ${other.folded.length}, ${state.width}px (${state.column}px) ${state.folded.length}`);
     expect.soft([...more],"a wider main column never folds more actions than a narrower one").toEqual([]);
+    // The same 1px at a time, widening and narrowing, with the sidebar closed by Ctrl+B beside the inspector, then beside the sidebar
+    // alone once the inspector's toggle has closed it, where lane D found the title cut too (1125-1126 and 1216-1217, and 719, 873
+    // and 938-939). Below 820px the sidebar closes by itself, and up to 900px it is 196px wide.
+    const main=seen.length,range=(from,to)=>Array.from({length:to-from+1},(_,index)=>from+index);
+    const sweep=async(spans,column)=>{for(const [from,to] of spans)for(const width of [...range(from,to),...range(from,to).reverse()])await at(width,column(width))};
+    await at(1280);await page.getByTestId("composer").click();
+    await page.keyboard.press("Control+b");await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
+    await sweep([[1121,1130],[1212,1221]],width=>width-460);
+    await header.getByRole("button",{name:"Open sidebar"}).click();await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
+    await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden();
+    await sweep([[715,723],[869,877],[934,943]],width=>width-(width<820?0:width<=900?196:224));
+    console.log(`header for "${name}" with the sidebar closed, then without the inspector, in ${mode}: ${seen.slice(main).map(state=>`${state.width}:${level(state)}:${px(state.title)}/${px(state.whole)}`).join(" ")}`);
   }finally{await harness.close()}
 });
 
@@ -828,24 +850,24 @@ async function tabToMenuItem(page,menu,name){
 const focusVisible=locator=>locator.evaluate(node=>node.matches(":focus-visible"));
 // The order the header's actions fold in (their data-fold), from the end of the row; Stop and the inspector toggle never fold.
 const HEADER_FOLD_ORDER=["goal","terminal","review","script","open-in","source"];
-// The header's foldable actions and the folded ones, in the order they fold, and the title's width (shown and whole) now, with
-// the last folded action given back to the row, and with every action folded, the last two with the crumb's icon as the fit
-// measures each level; the header is put back as it was. The fit takes the first level that shows the title whole, however many
-// actions that folds, so one action fewer folded cuts a whole title; where every action folded cuts it too, it folds no more than
-// a readable title needs, so one action fewer folded leaves it short of the readable 80px.
+// The header's foldable actions and the folded ones, in the order they fold, and the title's width (shown, and whole: its text's,
+// to the fraction of a pixel) now, with the last folded action given back to the row, and with every action folded, the last two
+// with the crumb's icon as the fit measures each level; the header is put back as it was. The fit takes the first level that shows
+// the title whole, however many actions that folds, so one action fewer folded cuts a whole title; where every action folded cuts
+// it too, it folds no more than a readable title needs, so one action fewer folded leaves it short of the readable 80px.
 const headerFold=header=>header.evaluate((node,order)=>{
-  const row=node.querySelector(".workspace-header-actions"),title=node.querySelector(".thread-title-button strong");
+  const row=node.querySelector(".workspace-header-actions"),title=node.querySelector(".thread-title-button strong"),text=document.createRange();text.selectNodeContents(title);
   const present=order.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`)),folded=present.filter(id=>row.querySelector(`:scope>[data-fold="${id}"]`).hasAttribute("data-folded"));
   const fit=node.dataset.fit,crumb=node.dataset.crumb,marked=[...node.querySelectorAll("[data-fold]")],markedFolded=marked.filter(control=>control.hasAttribute("data-folded"));
-  const state={fit,present,folded,title:title.clientWidth,whole:title.scrollWidth,titleWithOneLess:null,titleAllFolded:null};
+  const state={fit,present,folded,title:title.getBoundingClientRect().width,whole:text.getBoundingClientRect().width,titleWithOneLess:null,titleAllFolded:null};
   delete node.dataset.crumb;
   if(folded.length){
     for(const control of marked)if(control.dataset.fold===folded.at(-1))control.removeAttribute("data-folded");
     if(folded.length===1)node.dataset.fit="5";
-    state.titleWithOneLess=title.clientWidth;
+    state.titleWithOneLess=title.getBoundingClientRect().width;
   }
   node.dataset.fit=present.length?"6":"5";for(const control of marked)control.toggleAttribute("data-folded",present.includes(control.dataset.fold));
-  state.titleAllFolded=title.clientWidth;
+  state.titleAllFolded=title.getBoundingClientRect().width;
   node.dataset.fit=fit;if(crumb)node.dataset.crumb=crumb;for(const control of marked)control.toggleAttribute("data-folded",markedFolded.includes(control));
   return state;
 },HEADER_FOLD_ORDER);
@@ -857,9 +879,9 @@ async function expectFoldedOnlyAsNeeded(header,state){
   expect(state.title+1,"title width").toBeGreaterThanOrEqual(Math.min(state.whole,80));
   // The title shows whole wherever a level shows it so: a cut title is cut with every action folded too. Actions fold as far as the
   // whole title needs, or where no level shows it whole as far as a readable one needs.
-  const whole=state.title+1>=state.whole;
-  if(!whole)expect(state.titleAllFolded+1,"title width with every action folded, beside a cut title").toBeLessThan(state.whole);
-  if(state.folded.length)expect(state.titleWithOneLess+1,"title width with one action fewer folded").toBeLessThan(whole?state.whole:Math.min(state.whole,80));
+  const whole=state.title>=state.whole;
+  if(!whole)expect(state.titleAllFolded,"title width with every action folded, beside a cut title").toBeLessThan(state.whole);
+  if(state.folded.length)expect(state.titleWithOneLess+(whole?0:1),"title width with one action fewer folded").toBeLessThan(whole?state.whole:Math.min(state.whole,80));
   for(const id of state.present)await expect(header.locator(`.workspace-header-actions>[data-fold="${id}"]`),id).toBeVisible({visible:!state.folded.includes(id)});
   // More actions shows from the level that sets the theme and palette buttons aside, which comes before any fold.
   await expect(header.getByRole("button",{name:"More actions",exact:true})).toBeVisible({visible:Number(state.fit)>=4});
@@ -1240,10 +1262,11 @@ for(const mode of ["dark","light"])test(`the header keeps a way to switch the th
   const html=page.locator("html"),shell=page.locator(".app-shell"),right=page.getByTestId("right-panel"),palette=page.getByTestId("command-palette");
   const rowTheme=header.locator(".workspace-header-actions>.theme-toggle"),rowPalette=header.locator(".workspace-header-actions>.palette-control");
   const other=mode==="dark"?"light":"dark",levels=new Set();
-  // The header's level, and whether its theme and palette buttons or More actions show.
+  // The header's level, whether its theme and palette buttons or More actions show, and the title's box and its text's width, to
+  // the fraction of a pixel.
   const read=()=>header.evaluate(node=>{
-    const shown=selector=>Boolean(node.querySelector(selector)?.offsetParent),strong=node.querySelector(".thread-title-button strong");
-    return {fit:node.dataset.fit,crumb:node.dataset.crumb||"",folded:[...node.querySelectorAll(".workspace-header-actions>[data-folded]")].map(control=>control.dataset.fold),theme:shown(".workspace-header-actions>.theme-toggle"),palette:shown(".workspace-header-actions>.palette-control"),more:shown(".header-overflow"),title:strong.clientWidth,whole:strong.scrollWidth};
+    const shown=selector=>Boolean(node.querySelector(selector)?.offsetParent),strong=node.querySelector(".thread-title-button strong"),text=document.createRange();text.selectNodeContents(strong);
+    return {fit:node.dataset.fit,crumb:node.dataset.crumb||"",folded:[...node.querySelectorAll(".workspace-header-actions>[data-folded]")].map(control=>control.dataset.fold),theme:shown(".workspace-header-actions>.theme-toggle"),palette:shown(".workspace-header-actions>.palette-control"),more:shown(".header-overflow"),title:strong.getBoundingClientRect().width,whole:text.getBoundingClientRect().width};
   });
   const setSidebar=async open=>{
     if(open!==(await shell.getAttribute("class")).includes("sidebar-collapsed"))return;
@@ -1266,16 +1289,16 @@ for(const mode of ["dark","light"])test(`the header keeps a way to switch the th
   // The title's width at the last level, which leaves it the most room (data-fit 6 with every action folded, the crumb keeping its
   // icon), read with the header set there for the moment and put back as it was.
   const titleAllFolded=()=>header.evaluate(node=>{
-    const strong=node.querySelector(".thread-title-button strong"),fit=node.dataset.fit,crumb=node.dataset.crumb,marked=[...node.querySelectorAll("[data-fold]")];
+    const strong=node.querySelector(".thread-title-button strong"),fit=node.dataset.fit,crumb=node.dataset.crumb,marked=[...node.querySelectorAll("[data-fold]")],text=document.createRange();text.selectNodeContents(strong);
     const folded=marked.filter(control=>control.hasAttribute("data-folded"));
     node.dataset.fit=marked.length?"6":"5";delete node.dataset.crumb;for(const control of marked)control.setAttribute("data-folded","");
-    const box={shown:strong.clientWidth,whole:strong.scrollWidth};
+    const box={shown:strong.getBoundingClientRect().width,whole:text.getBoundingClientRect().width};
     node.dataset.fit=fit;if(crumb)node.dataset.crumb=crumb;for(const control of marked)control.toggleAttribute("data-folded",folded.includes(control));
     return box;
   });
   const offers=(state,where,quiet)=>{
     const offered=Boolean(state.theme&&state.palette||state.more);
-    if(!quiet)console.log(`header for ${where} in ${mode}: fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""}, title ${state.title} of ${state.whole}px, ${state.theme&&state.palette?"theme and palette buttons":state.more?"More actions":"no theme or palette control"}`);
+    if(!quiet)console.log(`header for ${where} in ${mode}: fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""}, title ${state.title.toFixed(2)} of ${state.whole.toFixed(2)}px, ${state.theme&&state.palette?"theme and palette buttons":state.more?"More actions":"no theme or palette control"}`);
     expect.soft(offered,`the header for ${where} offers the theme and palette buttons or More actions (data-fit ${state.fit})`).toBe(true);
     return offered;
   };
@@ -1310,7 +1333,7 @@ for(const mode of ["dark","light"])test(`the header keeps a way to switch the th
         const state=await at(width,true,true),first=!tried.has(state.fit);tried.add(state.fit);
         if(offers(state,`"${name}" at ${width}x800 with the sidebar and the inspector`,!first)&&first)await use();
         const folded=await titleAllFolded();
-        if(folded.shown+1>=folded.whole)expect.soft(state.title+1,`"${name}" at ${width}x800 with the sidebar and the inspector shows whole, as it does with every action folded (${state.title} of ${state.whole}px at data-fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""})`).toBeGreaterThanOrEqual(state.whole);
+        if(folded.shown>=folded.whole)expect.soft(state.title,`"${name}" at ${width}x800 with the sidebar and the inspector shows whole, as it does with every action folded (${state.title.toFixed(2)} of ${state.whole.toFixed(2)}px at data-fit ${state.fit}${state.crumb?" crumb "+state.crumb:""}${state.folded.length?" folded "+state.folded.join(" "):""})`).toBeGreaterThanOrEqual(state.whole);
       }
     }
     // The levels that set the two buttons aside were all checked: 4, 5 (the chip's count too) and 6 (actions folded too).
