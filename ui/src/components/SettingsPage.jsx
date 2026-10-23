@@ -976,7 +976,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   return <div className="settings-page redesigned-settings">
     <aside className="settings-rail">
       <label className="settings-search-box"><Search size={13}/><input aria-label="Search settings" value={settingsSearch} onChange={event=>setSettingsSearch(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"){event.preventDefault();setSettingsSearch("")}else if(event.key==="Enter"&&settingsSearch.trim()&&searchResults[0]){event.preventDefault();openSearchResult(searchResults[0])}}} placeholder="Search settings…"/></label>
-      {settingsSearch.trim()?<div className="settings-search-results" data-testid="settings-search-results">
+      {/* Keyed by the query, the results list starts at its top for each query, so its first result, the one Enter opens, shows: it
+          kept the scroll of the query before, which could leave that result out of sight above. */}
+      {settingsSearch.trim()?<div key={settingsSearch.trim()} className="settings-search-results" data-testid="settings-search-results">
         {searchResults.length?searchResults.map(item=><button key={item.id} type="button" onClick={event=>{openSearchResult(item);if(event.detail===1)swallowSecondClick()}}><strong>{item.title}</strong><span>{settingsSectionLabels[item.section]||item.section}</span>{item.description&&<small>{item.description}</small>}</button>):<p>No settings match “{settingsSearch.trim()}”.</p>}
       </div>:<nav className="settings-nav" aria-label="Settings categories">
         {settingsSections.map(([id,Icon,label,description])=><button key={id} type="button" className={settingsSection===id?"active":""} onClick={()=>setSettingsSection(id)} aria-current={settingsSection===id?"page":undefined}>

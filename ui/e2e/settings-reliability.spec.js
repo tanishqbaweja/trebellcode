@@ -679,7 +679,8 @@ test("a double click on a Settings search result opens that setting and keeps it
 // A search result's title sits beside its section's name. It was held to one line and cut with an ellipsis, with nothing showing the
 // rest: in the 250 px rail of a wide window "Runtime diagnostics", "Project & environment defaults" and "About & open source licenses"
 // lost their ends, and so did a project action's own long name. Where the results are taller than the list (280 px in a narrow
-// window), each was squeezed to fit, its description run into the result under it.
+// window), each was squeezed to fit, its description run into the result under it. Once they scrolled instead (09aaf4d0), the list
+// kept its scroll as the query changed, so its first result, the one Enter opens, could stand out of sight above.
 test("every Settings search result shows its whole title, in a wide window and a narrow one, dark and light",async({page,request})=>{
   test.setTimeout(120_000);
   const boot=await (await request.get("/api/bootstrap")).json();
@@ -718,6 +719,22 @@ test("every Settings search result shows its whole title, in a wide window and a
         for(let notch=0;notch<12&&!await inList();notch++){await page.mouse.wheel(0,80);await page.waitForTimeout(60)}
         expect.soft(await inList(),`the last result scrolls into view at ${width} in ${mode}`).toBe(true);
         if(width===700)await page.screenshot({animations:"disabled",path:shots+`search-result-titles-scrolled-${mode}-${width}.png`});
+        // A query refined after the wheel took the list down, to its end or just past its first result, "pr" to "pro", both longer than
+        // the list holds, in the rail and in the narrow layout: the list starts again at its top, so its first result, marked as the
+        // one Enter opens, shows whole. It kept the scroll of the query before, which left that result out of sight above.
+        if(width===1280||width===700)for(const far of ["end","first"]){
+          const first=results.getByRole("button").first(),whole=node=>{const box=node.getBoundingClientRect(),list=node.parentElement.getBoundingClientRect();return box.top>=list.top-1&&box.bottom<=list.bottom+1};
+          await search.click();await page.keyboard.press("Control+A");await page.keyboard.type("pr",{delay:20});
+          await expect(first).toContainText("Project & environment defaults");
+          const box=await results.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+          for(let notch=0;notch<30&&(far==="end"?!await last.evaluate(whole):await first.evaluate(whole));notch++){await page.mouse.wheel(0,80);await page.waitForTimeout(60)}
+          expect(await first.evaluate(whole),`the wheel took the list past its first result at ${width} in ${mode}`).toBe(false);
+          await page.keyboard.type("o",{delay:20});await expect(search).toHaveValue("pro");
+          await expect(first).toContainText("Project & environment defaults");
+          expect(await results.evaluate(node=>node.scrollHeight>node.clientHeight+1),`the results for "pro" are longer than the list at ${width} in ${mode}`).toBe(true);
+          expect.soft(await first.evaluate(whole),`the first result shows whole once the query changes, the list wheeled ${far==="end"?"to its end":"past its first result"}, at ${width} in ${mode}`).toBe(true);
+          if(far==="end")await page.screenshot({animations:"disabled",path:shots+`search-refined-after-wheel-${mode}-${width}.png`});
+        }
       }
     }
     await search.press("Escape");await expect(results).toHaveCount(0);
