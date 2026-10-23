@@ -30,10 +30,15 @@
 // would be level 2 again, so the header takes level 4 for it, the theme and palette buttons stepping aside into More actions for
 // the crumb's name: a header whose title fits at level 3 shows level 4 with the crumb's shortened name, for a title of any length,
 // and level 3 shows only where the room level 4 frees does not hold that name.
-// Whole is measured to the fraction of a pixel, as the ellipsis shows as soon as the text overflows its box at all. clientWidth and
-// scrollWidth are whole pixels: the fit read a box of 84.36px for 85.39px of text as 84 of 85 and counted that whole, so the pixel
-// or two below where a level first shows the title whole read "Repo task o…" ("Repo task one" at 1144 beside the Git inspector and
-// two linked pull requests with one action folded, while 1140 folded two and showed it whole; a box 0.03px short reads 85 of 85).
+// Whole is measured as Chrome lays the title out, in layout units, a 64th of a device pixel: its line fits the text up to one unit
+// over its box without the ellipsis (a box a unit short of "Repo task one" drew all of it, two units short drew "Repo task o…"), so a
+// box at most a unit narrower than its text shows it whole. clientWidth and scrollWidth are whole pixels: the fit read a box of
+// 84.36px for 85.39px of text as 84 of 85 and counted that whole, so the pixel or two below where a level first shows the title whole
+// read "Repo task o…" ("Repo task one" at 1144 beside the Git inspector and two linked pull requests with one action folded, while
+// 1140 folded two and showed it whole; a box 0.03px short reads 85 of 85). The box's and the text's fractional widths reach the page
+// rounded two ways, which agree only at 100% and 200%: at 125% or 150% display scaling, or with the window zoomed, a box that holds
+// its text could read a hundred-thousandth of a pixel short of it, and counted cut, the title took the readable width ("Repo task
+// …") or the header folded where nothing needed it. Both are rounded back to whole layout units before they are compared.
 export const HEADER_FIT_LEVELS=6;
 export const TITLE_READABLE_WIDTH=80;
 // The level from which the project crumb keeps only its icon.
@@ -42,20 +47,23 @@ export const CRUMB_ICON_LEVEL=3;
 // carry the same data-fold; a folded one is marked data-folded, which hides it from the row and shows it in the menu.
 export const HEADER_FOLD_ORDER=["goal","terminal","review","script","open-in","source"];
 
-// Whether the title shows all of itself: its text (whole) no wider than its box (shown).
-export function titleWhole({shown=0,whole=0}={}){
-  return shown>=whole;
+// Whether the title shows all of itself: its text (whole) no more than a layout unit wider than its box (shown), both CSS pixels
+// counted in the layout units of the zoom they are laid out at (device pixels to a CSS pixel).
+export function titleWhole({shown=0,whole=0,zoom=1}={}){
+  const units=px=>Math.round(px*64*zoom);
+  return units(shown)+1>=units(whole);
 }
 // Whether the title shows at least the readable width (or all of itself): what a title keeps where no level shows it whole.
 export function titleReadable({shown=0,whole=0}={},readable=TITLE_READABLE_WIDTH){
   return shown+1>=Math.min(whole,readable);
 }
-// The width of the title's content box (shown) and of its text (whole), to the fraction of a pixel. A Range keeps the text's
-// whole width while the ellipsis cuts it.
+// The width of the title's content box (shown) and of its text (whole), to the fraction of a pixel, and the zoom they are laid
+// out at: the page's device pixels to a CSS pixel, the display's scaling times the window's zoom. A Range keeps the text's whole
+// width while the ellipsis cuts it.
 export function titleWidths(title){
   const style=getComputedStyle(title),text=document.createRange();text.selectNodeContents(title);
   const edges=["paddingLeft","paddingRight","borderLeftWidth","borderRightWidth"].reduce((sum,key)=>sum+parseFloat(style[key]),0);
-  return {shown:title.getBoundingClientRect().width-edges,whole:text.getBoundingClientRect().width};
+  return {shown:title.getBoundingClientRect().width-edges,whole:text.getBoundingClientRect().width,zoom:globalThis.devicePixelRatio||1};
 }
 
 // The level the header takes: the first at which the title shows whole, when one does, else the first at which it is readable,
