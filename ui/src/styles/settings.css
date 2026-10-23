@@ -354,6 +354,8 @@
 :root:root .settings-page.redesigned-settings .settings-search-hit{outline:2px solid color-mix(in srgb,var(--ac) 60%,transparent)!important;outline-offset:3px;box-shadow:0 0 0 7px var(--acsoft)!important}
 /* A shortcut row has no padding of its own, so its highlight sits further out to clear the action name. */
 :root:root .settings-page.redesigned-settings .keybinding-row.settings-search-hit{outline-offset:8px;box-shadow:0 0 0 12px var(--acsoft)!important}
+/* A setting taller than the window opens at its top (settingBlock), its highlight and a strip of the page above it in view. */
+:root:root .settings-page.redesigned-settings :is(.settings-card,.settings-section-slot,.diagnostics-log){scroll-margin:12px 0}
 
 /* ============ Narrow content (inline-size of the settings scroller) ============ */
 @container tbsettings (max-width:820px){

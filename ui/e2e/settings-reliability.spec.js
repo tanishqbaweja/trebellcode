@@ -742,6 +742,70 @@ test("every Settings search result shows its whole title, in a wide window and a
   }finally{await request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}})}
 });
 
+// The harness list with every harness installed and signed in, `selected` the one in use. Trebell Native and Antigravity take no
+// profiles of their own (multipleInstances), as the server says.
+function everyRuntime(selected){
+  const kinds=[["native","Trebell Native",false],["codex","Codex",true],["claude","Claude Code",true],["cursor","Cursor",true],["grok","Grok Build",true],["opencode","OpenCode",true],["antigravity","Antigravity",false]];
+  return {selectedRuntime:selected,selectedInstanceId:selected+"-default",definitions:kinds.map(([id,name,multipleInstances])=>({id,name,protocol:id,multipleInstances})),
+    instances:kinds.map(([id,name])=>({id:id+"-default",kind:id,displayName:name,enabled:true})),
+    statuses:kinds.map(([id,name])=>({id:id+"-default",kind:id,name,available:true,installed:true,authenticated:true,version:"fixture"}))};
+}
+
+// A search result whose card is taller than the window was scrolled to its middle: Keyboard shortcuts (a row for every command)
+// showed rows from the middle of its list, its heading far above the window, and Agent harness (every harness, in a short window)
+// its heading just above it. Such a card opens at its top, with its heading and first rows in view as from the categories, with the
+// keyboard and the mouse, wide and narrow, and stays there as the harness list loads in under its heading.
+test("a Settings search result taller than the window opens with its heading and first rows in view",async({page,request})=>{
+  test.setTimeout(90_000);
+  // The harness list waits while `hold` is set, until release().
+  let hold=true;const held=[],release=()=>{hold=false;for(const resolve of held.splice(0))resolve()};
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openSettings(page,request,"Search Tall Card Workspace");
+    await page.route(/\/api\/agent-runtimes$/,async route=>{if(hold)await new Promise(resolve=>held.push(resolve));await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(everyRuntime("codex"))}).catch(()=>{})});
+    const search=page.getByRole("textbox",{name:"Search settings"}),results=page.getByTestId("settings-search-results");
+    // The card against the part of the page the window shows, under the header: whether it is taller than that, and whether its
+    // heading and its first row show whole.
+    const place=card=>card.evaluate(node=>{
+      const area=node.closest(".secondary-page").getBoundingClientRect(),whole=element=>{const box=element.getBoundingClientRect();return box.top>=area.top&&box.bottom<=area.bottom};
+      return {taller:node.offsetHeight>area.height,heading:whole(node.querySelector("h3")),firstRow:whole(node.querySelector(".keybinding-row,.agent-runtime-option"))};
+    });
+    const top=card=>async()=>Math.round((await card.boundingBox()).y);
+    const open=async(query,title,how)=>{
+      await page.locator(".settings-nav").getByRole("button",{name:/General/}).click();
+      await search.click();await page.keyboard.type(query,{delay:20});
+      const first=results.getByRole("button").first();await expect(first).toContainText(title);
+      if(how==="Enter")await page.keyboard.press("Enter");else await first.click();
+    };
+    const shortcuts=page.locator(".keybindings-settings");
+    for(const [query,how,mode,width] of [["Keyboard shortcuts","Enter","dark",1280],["shortcut","click","light",1280],["Keyboard shortcuts","Enter","light",700],["shortcut","click","dark",700]]){
+      await page.setViewportSize({width,height:800});await switchMode(page,mode);
+      await open(query,"Keyboard shortcuts",how);
+      await expect(shortcuts).toHaveClass(/settings-search-hit/);await settles(top(shortcuts));
+      expect(await place(shortcuts),`Keyboard shortcuts opened with ${how} at ${width} in ${mode}`).toEqual({taller:true,heading:true,firstRow:true});
+      await page.screenshot({animations:"disabled",path:shots+`search-result-tall-shortcuts-${how.toLowerCase()}-${mode}-${width}.png`});
+    }
+    // Agent harness with every harness in a short window, opened while its list still loads (its rows say Checking…): the rows that
+    // come in under its heading leave the heading in view.
+    await page.setViewportSize({width:1280,height:600});await switchMode(page,"dark");
+    const harness=page.locator(".agent-runtime-settings");
+    await open("Agent harness","Agent harness","Enter");
+    await expect(harness).toHaveClass(/settings-search-hit/);await expect(harness.getByTestId("agent-runtime-skeleton").first()).toBeVisible();
+    await settles(top(harness));
+    expect(await place(harness),"Agent harness opened with Enter while its list loads").toEqual({taller:true,heading:true,firstRow:true});
+    release();
+    await expect(harness.locator(".agent-runtime-option:not(.agent-runtime-skeleton)")).toHaveCount(7);await settles(top(harness));
+    expect(await place(harness),"Agent harness once its list has loaded").toEqual({taller:true,heading:true,firstRow:true});
+    await page.screenshot({animations:"disabled",path:shots+"search-result-tall-agent-harness-enter-dark-1280x600.png"});
+    await switchMode(page,"light");
+    await open("Agent harness","Agent harness","click");
+    await expect(harness).toHaveClass(/settings-search-hit/);await settles(top(harness));
+    expect(await place(harness),"Agent harness opened with a click").toEqual({taller:true,heading:true,firstRow:true});
+    await page.screenshot({animations:"disabled",path:shots+"search-result-tall-agent-harness-click-light-1280x600.png"});
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+  }finally{release()}
+});
+
 test("failed saves from inline settings controls stay in the alert without unhandled rejections",async({page,request})=>{
   const pageErrors=[];
   page.on("pageerror",error=>pageErrors.push(String(error?.message||error)));

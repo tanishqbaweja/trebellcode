@@ -133,6 +133,10 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
   </div>;
 }
 const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity"];
+// A setting opened from the search that is taller than the part of the page the window shows opens at its top, its heading and first
+// rows in view, and a shorter one in the middle: centred, the Keyboard shortcuts card showed rows from the middle of its list, its
+// heading far above the window.
+function settingBlock(target){return target.offsetHeight>(target.closest(".secondary-page")?.clientHeight??window.innerHeight)?"start":"center"}
 // A setting opened from the search stays in view while the page around it settles: a card above it that loads later (Project
 // defaults shows its fields once the scoped settings answer) grew after its one scroll and pushed it out of view. Each change of the
 // page's height scrolls to it again at once, before the change is painted (ending its first scroll if that is still on its way), so
@@ -144,7 +148,7 @@ function followSettingTarget(target){
   stopSettingFollow?.();
   const stage=target.closest(".settings-stage");if(!stage||typeof ResizeObserver==="undefined")return;
   let height=stage.offsetHeight;
-  const observer=new ResizeObserver(()=>{if(!target.isConnected)stop();else if(stage.offsetHeight!==height){height=stage.offsetHeight;target.scrollIntoView({block:"center"})}});
+  const observer=new ResizeObserver(()=>{if(!target.isConnected)stop();else if(stage.offsetHeight!==height){height=stage.offsetHeight;target.scrollIntoView({block:settingBlock(target)})}});
   const press=event=>{if(event.detail<2&&!event.repeat)stop()},inputs=["wheel","touchstart","mousedown","keydown"],timer=setTimeout(stop,10000);
   function stop(){observer.disconnect();clearTimeout(timer);for(const name of inputs)window.removeEventListener(name,press,true);if(stopSettingFollow===stop)stopSettingFollow=null}
   for(const name of inputs)window.addEventListener(name,press,true);
@@ -963,7 +967,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         return String(heading?.textContent||"").trim().toLowerCase()===wanted;
       });
       const target=exact||fallback||document.querySelector(".settings-section-head");
-      target?.scrollIntoView({block:"center",behavior:"smooth"});
+      target?.scrollIntoView({block:settingBlock(target),behavior:"smooth"});
       if(focus)exact?.querySelector(`[data-testid="${focus}"]`)?.focus({preventScroll:true});
       // A repeat search for the same setting restarts its highlight instead of losing it to the earlier timer.
       if(target){clearTimeout(target.__settingsHitTimer);target.classList.add("settings-search-hit");target.__settingsHitTimer=setTimeout(()=>target.classList.remove("settings-search-hit"),1600);followSettingTarget(target)}
