@@ -671,3 +671,48 @@ test("Load older threads works again after History is shown again once the runti
     await shootHistoryModes(page,history.getByRole("button",{name:/Oldest thread 3/}),"older-threads-after-refused-page");
   }finally{await harness.close()}
 });
+
+// Two frames painted, about the time a held key takes to repeat.
+const frames=page=>page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+
+// The person tabs to Load older threads and holds Enter a moment. The button keeps the keyboard and says Load older threads again once
+// its page is in, so each repeat of the key after that read the next page: one held press read every page there was. It reads one,
+// and the keyboard stays on the button for the next. A double click's second click, which comes once the first click's page is in,
+// on a row that page put under the pointer, opens nothing and reads nothing; a press of its own reads the page after.
+test("Enter held on Load older threads, or a double click on it, reads one older page",async({page})=>{
+  test.setTimeout(60_000);
+  const now=Date.now()/1000,threads=(id,name,count,from)=>Array.from({length:count},(_,index)=>runtimeThreadAt(now,id+"-"+index,name+" "+(index+1),from+index*600));
+  const pages={first:{data:threads("recent","Recent thread",6,0),nextCursor:"page-2"},"page-2":{data:threads("older","Older thread",4,86400*3),nextCursor:"page-3"},"page-3":{data:threads("oldest","Oldest thread",3,86400*9),nextCursor:"page-4"},"page-4":{data:threads("eldest","Eldest thread",2,86400*20),nextCursor:null}};
+  const harness=await startRuntimeHarness(pages.first.data[0]);harness.control.pages=cursor=>pages[cursor||"first"]||{error:"No thread list page at "+cursor};
+  try{
+    await routeRuntimeHistory(page,harness,"history-held-older-fixture");
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    const history=page.locator(".history-page"),rows=history.locator(".history-thread-row"),load=history.getByRole("button",{name:"Load older threads"}),loading=history.getByRole("button",{name:"Loading older threads…"});
+    const asked=()=>harness.control.cursors.filter(Boolean);
+    await page.getByRole("button",{name:"History",exact:true}).click();await expect(rows).toHaveCount(6);
+    // Enter goes down on the button and stays down: its page comes in, and the key goes on repeating on the button.
+    await load.focus();await page.keyboard.down("Enter");
+    await expect(rows).toHaveCount(10);await expect(load).toBeFocused();
+    for(let repeat=0;repeat<6;repeat++){await page.keyboard.down("Enter");await frames(page)}
+    await page.keyboard.up("Enter");
+    await expect(loading,"no older page is being read").toHaveCount(0);
+    expect(asked(),"one held press reads one older page").toEqual(["page-2"]);
+    await expect(rows).toHaveCount(10);await expect(load,"the keyboard stays on Load older threads").toBeFocused();
+    await shootHistoryModes(page,load,"older-threads-held-enter");
+    // A double click: its second click comes once the first click's page is in.
+    await load.scrollIntoViewIfNeeded();
+    const box=await load.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+    await page.mouse.down();await page.mouse.up();
+    await expect(rows).toHaveCount(13);await expect(load).toBeFocused();
+    await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+    await frames(page);await expect(loading).toHaveCount(0);
+    expect(asked(),"a double click reads one older page").toEqual(["page-2","page-3"]);
+    await expect(history,"the second click opens no thread").toBeVisible();await expect(rows).toHaveCount(13);await expect(load).toBeFocused();
+    // A press of its own reads the page after, the last one.
+    await page.keyboard.press("Enter");
+    await expect(history.getByRole("button",{name:/Eldest thread 2/})).toBeVisible();await expect(rows).toHaveCount(15);await expect(load).toHaveCount(0);
+    expect(asked()).toEqual(["page-2","page-3","page-4"]);
+  }finally{await harness.close()}
+});

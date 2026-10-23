@@ -31,7 +31,8 @@ function closeRowMenu(menu){if(!menu)return;menu.open=false;showRowMenu(menu,fal
 // A queued follow-up's buttons take only a press of their own the same way (App.jsx), as do the composer footer's and its chips'
 // remove buttons (App.jsx), the Goal panel's (GoalPanel.jsx), the Browser panel's Record and Attach buttons (PreviewPage.jsx), the
 // buttons of an app request and of an agent question (McpElicitationModal.jsx, QuestionModal.jsx), the terminal drawer's tabs
-// (TerminalPanel.jsx), Settings' Capture now (SettingsPage.jsx) and the Environments page's buttons (EnvironmentsPage.jsx).
+// (TerminalPanel.jsx), Settings' Capture now (SettingsPage.jsx), History's Load older threads (App.jsx) and the Environments
+// page's buttons (EnvironmentsPage.jsx).
 export function ignorePressRest(keyboard){
   const types=keyboard?["keydown","keyup"]:["mousedown","mouseup","click","dblclick"],off=()=>{for(const type of types)window.removeEventListener(type,stop,true)};
   const stop=event=>{if(keyboard?event.repeat&&event.key==="Enter":event.detail>1){event.preventDefault();event.stopPropagation()}else if(event.type===(keyboard?"keyup":"mousedown"))off()};
