@@ -1,6 +1,7 @@
 import React,{useEffect,useLayoutEffect,useRef,useState} from "react";
 import { Laptop2, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { api } from "../api.js";
+import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 // The Environments page on screen, if any. An Undo outlives the page that offered it (its toast stays while the person moves
 // on, or leaves and comes back), so a restore reports to the page that shows now, or throws for the app's error toast.
@@ -11,6 +12,10 @@ let environmentsOnScreen=null;
 let adding=null,failureLeft=null;
 const BLANK_DRAFT={type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"",themeDirectory:""};
 const addingMessage=name=>({text:`Adding “${name}”…`,tone:"notice",adding:true});
+// A press runs one of the page's buttons once, as a thread's menu item runs: the rest of it (the repeats of Enter held, the second
+// click of a double click) does nothing. The keyboard goes back to the button pressed once its action is done, so the repeats landed
+// on it again: Switch off held saved again and again, switching the environment off and on with each save.
+function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
 
 export default function EnvironmentsPage({onOfferUndo}={}){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
@@ -127,7 +132,7 @@ export default function EnvironmentsPage({onOfferUndo}={}){
     try{const r=await api("/api/environment/probe",{method:"POST",body:{id}});setMessage((r.ok?"Connected":"Probe failed")+" · "+(r.stdout||r.stderr||"").trim(),r.ok?"notice":"error")}
     catch(e){setError(e.message)}finally{setBusy("")}
   }
-  return <div className="environments-page">
+  return <div className="environments-page" onClick={pressOnce}>
     <div className="capabilities-toolbar"><div><h2>Environments</h2><p>Run the active coding-agent runtime on this {localPlatformLabel?localPlatformLabel+" ":""}host, inside WSL when available, or on an SSH machine.</p></div><button onClick={()=>refresh({reportErrors:true})} disabled={!!busy}><RefreshCw size={13}/> Refresh</button></div>
     {message.text&&(message.tone==="error"?<div className="inline-error" role="alert">{message.text}</div>:<div className="inline-status" role="status" aria-live="polite">{message.text}</div>)}
     <div className="environment-grid">

@@ -873,6 +873,50 @@ test.describe("Using an environment for agents",()=>{
   });
 });
 
+test.describe("Switching an environment off and on",()=>{
+  // The person tabs to an environment's Switch off and holds Enter a moment. Every button waits while the save runs, and the keyboard
+  // goes back to the button once it is in, where it says Switch on, so each repeat of the key after a save saved the other way: one
+  // held press saved again and again and left the environment wherever its last save landed. The press switches it off once and the
+  // keyboard stays on the button; a press of its own switches it on again, and a double click's second click, which comes once the
+  // first click's save is in, switches nothing.
+  test("Enter held on Switch off switches the environment off once, and a double click switches it once",async({page,request})=>{
+    await open(page,request);
+    for(const data of [{...SSH_PROFILE,id:"polish-first-box",name:"First box",host:"first.example.com"},{...SSH_PROFILE,id:"polish-held-box",name:"Held box",host:"held.example.com"}])expect((await request.post("/api/environments",{data})).ok()).toBe(true);
+    const saves=[];page.on("request",sent=>{if(sent.method()==="POST"&&/\/api\/environment\/enabled$/.test(sent.url()))saves.push(sent.postDataJSON()?.enabled)});
+    await nav(page,"Environments").click();
+    const row=page.locator(".environment-list>div").filter({hasText:"Held box"}),off=row.getByRole("button",{name:"Switch off",exact:true}),on=row.getByRole("button",{name:"Switch on",exact:true});
+    const status=page.locator(".environments-page").getByRole("status"),refresh=page.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true});
+    const saved=async()=>(await listedEnvironments(request)).find(profile=>profile.id==="polish-held-box")?.enabled;
+    await expect(off).toBeEnabled();
+    // Enter goes down on Switch off and stays down: the save goes in, the keyboard is back on the button, and the key goes on repeating.
+    await off.focus();await page.keyboard.down("Enter");
+    await expect(on).toBeFocused();
+    for(let repeat=0;repeat<6;repeat++){await page.keyboard.down("Enter");await frames(page)}
+    await page.keyboard.up("Enter");
+    await expect(refresh,"no save is running").toBeEnabled();
+    expect(saves,"one held press saves once").toEqual([false]);
+    await expect(on,"the keyboard stays on the button, which says Switch on").toBeFocused();
+    await expect(row).toContainText("switched off");
+    await expect(status).toHaveText("Environment switched off. Its configuration is still saved.");
+    expect(await saved()).toBe(false);
+    // A press of its own switches it on again.
+    await page.keyboard.press("Enter");
+    await expect(off).toBeFocused();await expect(status).toHaveText("Environment switched on.");
+    expect(saves).toEqual([false,true]);
+    // A double click on Switch off: its second click comes once the first click's save is in, on the button that says Switch on.
+    const box=await off.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+    await page.mouse.down();await page.mouse.up();
+    await expect(on).toBeEnabled();await expect(on).toBeFocused();
+    await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+    await frames(page);await expect(refresh).toBeEnabled();
+    expect(saves,"a double click saves once").toEqual([false,true,false]);
+    await expect(row).toContainText("switched off");await expect(on).toBeFocused();
+    await expect(status).toHaveText("Environment switched off. Its configuration is still saved.");
+    expect(await saved()).toBe(false);
+    await shootModes(page,"environment-switched-off-once",{show:row});
+  });
+});
+
 test.describe("An environment list that is still loading or failed",()=>{
   const card=page=>page.locator(".capability-card").filter({has:page.getByText("Configured environments",{exact:true})});
   // What the card would claim from its starting values, before the list is read: a count, Local machine active, none saved.
