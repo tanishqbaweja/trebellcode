@@ -862,7 +862,7 @@
 :root:root .preview-page .browser-profile-import section>div span,
 :root:root .preview-page .browser-profile-import>p{display:block;margin:2px 0 0;font-size:11.5px!important;line-height:1.5;color:var(--tx2)!important}
 :root:root .preview-page .browser-profile-import section>button{height:32px!important;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 10px!important;border:1px solid var(--line)!important;border-radius:var(--r-s)!important;background:var(--pg-row)!important;color:var(--tx1)!important;text-align:left;cursor:pointer}
-:root:root .preview-page .browser-profile-import section>button:hover:not(:disabled){border-color:color-mix(in srgb,var(--ac) 45%,var(--line))!important}
+:root:root .preview-page .browser-profile-import section>button:hover:not(:disabled,[aria-disabled="true"]){border-color:color-mix(in srgb,var(--ac) 45%,var(--line))!important}
 :root:root .preview-page .browser-profile-import section>button span{font-size:12px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :root:root .preview-page .browser-profile-import section>button small{color:var(--ac)!important;font-size:10.5px!important}
 :root:root .preview-page .browser-inspector{min-height:0!important;display:flex;flex-direction:column;gap:10px;overflow:auto;padding:12px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-card) linear-gradient(180deg,var(--surf),var(--surf2))!important;color:var(--tx1)!important}

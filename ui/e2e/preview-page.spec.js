@@ -953,3 +953,114 @@ test("an import that brought in none of its cookies says why in the error line, 
   await expect(notice).toHaveCount(0);
   await shots(page,"browser-profile-import-none-set");
 });
+
+// The profile import as desktop/preload.cjs gives it, scripted and slow, as a shell copying a profile's cookies takes its time: Firefox
+// has two profiles, and each import waits for window.answerShell(), or fails with window.failShell(reason). window.profileImports
+// counts the imports asked for.
+function scriptedSlowProfileImports(){
+  window.profileImports=0;
+  Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{
+    state:async()=>({open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:1280,height:800}),
+    onState:()=>()=>{},
+    snapshot:async()=>({url:"",title:"",elements:[]}),
+    importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",installed:true,running:false,profiles:[{id:"C:/Profiles/Work",name:"Work profile"},{id:"C:/Profiles/Home",name:"Home profile"}]}]}),
+    importProfile:async(sourceId,profileId)=>{window.profileImports++;await new Promise((resolve,reject)=>{window.answerShell=resolve;window.failShell=reason=>reject(new Error(reason))});return {ok:true,sourceId,profileId,imported:7,failed:0,skipped:0}},
+  }}});
+}
+// The Browser panel over scriptedSlowProfileImports. byEnter() opens the profile list from the keyboard, as a person does: Tab from
+// the address bar to Import profile and Enter, which leaves the keyboard on Import profile. mode() switches to a mode at 1280 wide.
+async function openProfileList(page,request){
+  await page.addInitScript(scriptedSlowProfileImports);
+  const {panel,address}=await openBrowserPanel(page,request);
+  const open=panel.getByRole("button",{name:"Import profile",exact:true}),list=panel.getByTestId("browser-profile-import");
+  return {panel,open,list,
+    imports:()=>page.evaluate(()=>window.profileImports),
+    async mode(mode){
+      await page.setViewportSize({width:1280,height:800});
+      if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+    },
+    async byEnter(){await address.click();await tabTo(page,open);await page.keyboard.press("Enter");await expect(list).toBeVisible();await expect(open).toBeFocused()},
+  };
+}
+const ringed=locator=>locator.evaluate(node=>node===document.activeElement&&node.matches(":focus-visible"));
+
+// Enter on a profile's Import, reached with Tab, keeps the keyboard on it while the profile imports (the list's Imports say they are
+// off meanwhile, and a press then imports nothing more) and once the import is refused, so Tab goes on from there; an import that
+// works closes the list and gives the keyboard back to Import profile, which opened it. So does a click. Each Import was disabled
+// for the import, which took the keyboard to the page, during it, after a refusal and once the list closed.
+test("Enter on a profile's Import keeps the keyboard on it while the profile imports and once the import is refused, and an import that works gives it back to Import profile as the list closes",async({page,request})=>{
+  test.setTimeout(90_000);
+  const profiles=await openProfileList(page,request);
+  const {panel,open,list}=profiles,work=list.getByRole("button",{name:/Work profile/}),home=list.getByRole("button",{name:/Home profile/});
+  const error=panel.locator(".browser-action-error"),notice=panel.getByTestId("browser-cookie-status");
+  for(const mode of ["dark","light"]){
+    await profiles.mode(mode);
+    await profiles.byEnter();await tabTo(page,work);
+    // Enter: the profile imports, slowly, and the shell refuses it.
+    let before=await profiles.imports();await page.keyboard.press("Enter");await expect.poll(profiles.imports).toBe(before+1);await frames(page);
+    await expect(work,"the keyboard stays on the Work profile's Import while it imports").toBeFocused();
+    await expect(work,"the Work profile's Import says it is off while it imports").toBeDisabled();await expect(home).toBeDisabled();
+    // A second Enter while it imports imports nothing more.
+    await page.keyboard.press("Enter");await frames(page);
+    for(const width of [1280,700]){await page.setViewportSize({width,height:800});await work.scrollIntoViewIfNeeded();await expect(work).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"browser-profile-import-held-keyboard-"+mode+"-"+width+".png"})}
+    await page.setViewportSize({width:1280,height:800});
+    await page.evaluate(()=>window.failShell("Firefox profile is locked"));
+    await expect(error).toHaveText("Profile import failed: Firefox profile is locked");await expect(work).toBeEnabled();
+    await expect(work,"the keyboard stays on the Work profile's Import when the import is refused").toBeFocused();
+    expect(await ringed(work),"with its ring").toBe(true);
+    expect(await profiles.imports(),"one import for the two presses").toBe(before+1);
+    // Tab goes on from there, to the Home profile's Import, and Shift+Tab back.
+    await page.keyboard.press("Tab");await expect(home).toBeFocused();await page.keyboard.press("Shift+Tab");await expect(work).toBeFocused();
+    // Enter again, and the import works: the list closes, and the keyboard is back on Import profile, with its ring.
+    before=await profiles.imports();await page.keyboard.press("Enter");await expect.poll(profiles.imports).toBe(before+1);await frames(page);
+    await expect(work,"the keyboard stays on the Work profile's Import while it imports again").toBeFocused();
+    await page.evaluate(()=>window.answerShell());
+    await expect(notice).toHaveText("Imported 7 cookies from Work profile");await expect(list).toHaveCount(0);await frames(page);
+    await expect(open,"once the list closes the keyboard is back on Import profile, which opened it").toBeFocused();
+    expect(await ringed(open),"with its ring").toBe(true);
+    for(const width of [1280,700]){await page.setViewportSize({width,height:800});await open.scrollIntoViewIfNeeded();await expect(open).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"browser-profile-imported-keyboard-"+mode+"-"+width+".png"})}
+    await page.setViewportSize({width:1280,height:800});
+    // The next Tab goes on from Import profile.
+    await page.keyboard.press("Tab");await expect(panel.getByRole("button",{name:"Import cookie JSON",exact:true})).toBeFocused();
+  }
+  // With the mouse: a click on the Home profile's Import while the Work profile imports imports nothing, and once the import works
+  // the keyboard is on Import profile.
+  await open.click();await expect(list).toBeVisible();
+  const before=await profiles.imports();await work.click();await expect.poll(profiles.imports).toBe(before+1);await expect(home).toBeDisabled();
+  const box=await home.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);await frames(page);
+  await page.evaluate(()=>window.answerShell());await expect(list).toHaveCount(0);
+  expect(await profiles.imports(),"only the Work profile imported").toBe(before+1);
+  await expect(open,"once the list closes after a click on Import the keyboard is on Import profile").toBeFocused();
+});
+
+// The profile list's X closes it and gives the keyboard back to Import profile, which opened it: pressed with Enter, held (its
+// repeats open nothing again), clicked, and double clicked (the second click lands on what came up under it, and takes nothing).
+// It took the keyboard to the page.
+test("the profile list's X gives the keyboard back to Import profile, pressed with Enter, held, clicked or double clicked",async({page,request})=>{
+  test.setTimeout(90_000);
+  const profiles=await openProfileList(page,request);
+  const {open,list}=profiles,close=list.getByRole("button",{name:"Close profile import"});
+  for(const mode of ["dark","light"]){
+    await profiles.mode(mode);
+    await profiles.byEnter();await tabTo(page,close);
+    await page.keyboard.press("Enter");await expect(list).toHaveCount(0);await frames(page);
+    await expect(open,"the list's X pressed with Enter gives the keyboard back to Import profile").toBeFocused();
+    expect(await ringed(open),"with its ring").toBe(true);
+    for(const width of [1280,700]){await page.setViewportSize({width,height:800});await expect(open).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"browser-profile-list-closed-keyboard-"+mode+"-"+width+".png"})}
+    await page.setViewportSize({width:1280,height:800});
+  }
+  // Enter held on the X: the list closes once, and its repeats on Import profile open nothing again.
+  await profiles.byEnter();await tabTo(page,close);
+  await page.keyboard.down("Enter");await expect(list).toHaveCount(0);
+  for(let repeat=0;repeat<5;repeat++){await page.waitForTimeout(33);await page.keyboard.down("Enter")}
+  await page.keyboard.up("Enter");await frames(page);
+  await expect(list,"Enter held on the X opens nothing again").toHaveCount(0);await expect(open).toBeFocused();
+  // Clicked, and double clicked: the list closes, and the keyboard is on Import profile.
+  await open.click();await expect(list).toBeVisible();
+  await close.click();await expect(list).toHaveCount(0);await frames(page);
+  await expect(open,"the list's X clicked gives the keyboard back to Import profile").toBeFocused();
+  await open.click();await expect(list).toBeVisible();
+  await close.dblclick();await expect(list).toHaveCount(0);await frames(page);
+  await expect(open,"the list's X double clicked gives the keyboard back to Import profile, and the second click takes nothing").toBeFocused();
+});
