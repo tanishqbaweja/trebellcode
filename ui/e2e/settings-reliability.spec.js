@@ -806,6 +806,46 @@ test("a Settings search result taller than the window opens with its heading and
   }finally{release()}
 });
 
+// Some cards show only for some harnesses: Model provider for Trebell Native, MCP servers for Trebell Native, Claude Code, Cursor, Grok
+// and Antigravity, and Custom models for every harness but Trebell Native; Desktop notifications only in the desktop app. The search
+// offered each whatever the harness, and Enter on it opened Agents & models (or General) at its head, with no such card on the page.
+test("the Settings search offers only the cards the harness in use shows, and Enter or a click on one opens it",async({page,request})=>{
+  test.setTimeout(90_000);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    for(const [runtime,name,missing,shown] of [
+      ["codex","Codex",["MCP servers","Model provider","Desktop notifications"],[["Custom models","agents-models"]]],
+      ["native","Trebell Native",["Custom models","Desktop notifications"],[["MCP servers","agents-mcp"],["Model provider","agents-provider"]]],
+    ]){
+      await openSettings(page,request,"Search Harness Cards Workspace",{agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default"});
+      await page.route(/\/api\/agent-runtimes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(everyRuntime(runtime))}));
+      const search=page.getByRole("textbox",{name:"Search settings"}),results=page.getByTestId("settings-search-results");
+      const type=async query=>{await search.click();await page.keyboard.press("Control+A");await page.keyboard.type(query,{delay:20})};
+      // Not offered, and Enter opens nothing: the query stays, and so does General.
+      for(const title of missing){
+        await type(title);
+        await expect(results.getByRole("button",{name:title}),`${title} is not offered with ${name}`).toHaveCount(0);
+        await expect(results).toHaveText(`No settings match “${title}”.`);
+        await page.keyboard.press("Enter");
+        await expect(search).toHaveValue(title);await expect(page.locator(".settings-section-head h2")).toHaveText("General");
+        if(title===missing[0])for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:shots+`search-not-offered-${runtime}-${mode}-1280.png`})}
+      }
+      await switchMode(page,"dark");
+      // Offered, and Enter (the first) or a click (the next) opens its card, marked and in view.
+      for(const [index,[title,id]] of shown.entries()){
+        await type(title);
+        const first=results.getByRole("button").first();await expect(first).toContainText(title);
+        if(index===0)await page.keyboard.press("Enter");else await first.click();
+        const card=page.locator(`[data-setting-target="${id}"]`);
+        await expect(card,`${title} opens its card with ${name}`).toHaveClass(/settings-search-hit/);
+        await expect(page.locator(".settings-section-head h2")).toHaveText("Agents & models");
+        await expect(card.getByRole("heading",{name:title})).toBeInViewport();
+        await page.screenshot({animations:"disabled",path:shots+`search-opens-${id}-${runtime}-dark-1280.png`});
+      }
+    }
+  }finally{await request.post("/api/settings",{data:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-default"}})}
+});
+
 test("failed saves from inline settings controls stay in the alert without unhandled rejections",async({page,request})=>{
   const pageErrors=[];
   page.on("pageerror",error=>pageErrors.push(String(error?.message||error)));
