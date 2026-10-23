@@ -1170,8 +1170,10 @@ export default function App(){
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSectionState]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [uploadingFiles,setUploadingFiles]=useState([]); const [contextChips,setContextChips]=useState([]);
   // The draft Escape closed the composer's / or @ menu on, kept with the draft: the composer drawn again (back from Settings or
-  // History) keeps the menu shut over it, and the next change to the draft ends it.
-  const [composerMenuDismissed,setComposerMenuDismissed]=useState(null);useEffect(()=>{setComposerMenuDismissed(null)},[prompt]);
+  // History) keeps the menu shut over it, and the next change to the draft ends it. Only a dismissal is cleared: a set state of null
+  // over null, made right after a render of App as each typed key is, still calls the whole of App again before React finds that
+  // nothing changed.
+  const [composerMenuDismissed,setComposerMenuDismissed]=useState(null);useEffect(()=>{if(composerMenuDismissed!==null)setComposerMenuDismissed(null)},[prompt]);
   // What the composer says about where its draft went, next to the draft: a send, or a queued follow-up the queue started, that
   // failed before any turn existed ("send", kept until the next send, Send now included, or an edit of the draft), or a thread
   // that did not open ("open", kept until the next send), so the draft never goes to a thread the person did not see coming.

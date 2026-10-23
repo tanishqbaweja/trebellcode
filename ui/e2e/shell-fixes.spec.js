@@ -390,15 +390,22 @@ for(const theme of ["dark","light","custom"])test(`a disabled thread-menu item l
   }finally{await harness.close()}
 });
 
-test("typing in the composer does not re-render the thread sidebar",async({page})=>{
+test("typing in the composer renders App once a key and does not re-render the thread sidebar",async({page})=>{
   test.setTimeout(30_000);
   // A DevTools-style hook sees each React commit: the sidebar's props object changes only when the sidebar re-renders (memo
-  // keeps the previous one when it skips).
+  // keeps the previous one when it skips). App ran in a commit when its list of hooks is a new one (React builds it again on each
+  // call of App), and it ran for nothing when React then threw away what it returned (no PerformedWork flag, 1): a set state to
+  // the value the state holds, made once React has rendered App, still calls the whole of App again before React finds nothing
+  // changed.
   await page.addInitScript(()=>{
-    const stats={commits:0,sidebarRenders:0,changedKeys:[]};window.__sidebarStats=stats;let last=null;
+    const stats={commits:0,sidebarRenders:0,changedKeys:[],appRenders:0,appWasted:0};window.__sidebarStats=stats;let last=null,appHooks=null;
     const findSidebar=root=>{const stack=[root];while(stack.length){const fiber=stack.pop();if(fiber.stateNode?.nodeType===1&&fiber.stateNode.matches("aside.sidebar"))return fiber;if(fiber.sibling)stack.push(fiber.sibling);if(fiber.child)stack.push(fiber.child)}return null};
     window.__REACT_DEVTOOLS_GLOBAL_HOOK__={supportsFiber:true,renderers:new Map(),inject(renderer){const id=this.renderers.size+1;this.renderers.set(id,renderer);return id},onScheduleFiberRoot(){},onCommitFiberUnmount(){},onPostCommitFiberRoot(){},checkDCE(){},
-      onCommitFiberRoot(_id,root){stats.commits++;const props=findSidebar(root.current)?.return?.memoizedProps;if(!props)return;if(last&&props!==last){stats.sidebarRenders++;stats.changedKeys.push(Object.keys(props).filter(key=>!Object.is(props[key],last[key])))}last=props}};
+      onCommitFiberRoot(_id,root){stats.commits++;
+        // App is the first function component under the root (in StrictMode, main.jsx).
+        let app=root.current.child;while(app&&app.tag!==0)app=app.child;
+        if(app){if(appHooks&&app.memoizedState!==appHooks){stats.appRenders++;if(!(app.flags&1))stats.appWasted++}appHooks=app.memoizedState}
+        const props=findSidebar(root.current)?.return?.memoizedProps;if(!props)return;if(last&&props!==last){stats.sidebarRenders++;stats.changedKeys.push(Object.keys(props).filter(key=>!Object.is(props[key],last[key])))}last=props}};
   });
   const thread={id:"render-thread",name:"Render count fixture",preview:"Render",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60,updatedAt:now(),turns:[]};
   const harness=await startHarness([thread]);
@@ -406,12 +413,22 @@ test("typing in the composer does not re-render the thread sidebar",async({page}
     await openApp(page,{harness,threads:[thread],meta:{[thread.id]:{projectless:true,environmentId:null}}});
     await openThread(page,thread.name);
     const composer=page.getByTestId("composer");await composer.click();await settle(page);
+    // The first key goes before the count: it also takes what a git poll before it left queued (below).
+    const typedAt=Date.now();await composer.press("h");await expect(composer).toHaveValue("h");await settle(page);
     const before=await page.evaluate(()=>({...window.__sidebarStats}));
     expect(before.commits).toBeGreaterThan(0);
-    await composer.pressSequentially("hello sidebar",{delay:15});await settle(page);
-    const after=await page.evaluate(()=>({...window.__sidebarStats,changedKeys:window.__sidebarStats.changedKeys.slice(-5)}));
-    // Thirteen keystrokes re-render App each time; the sidebar sits them out.
-    expect(after.commits-before.commits).toBeGreaterThanOrEqual(13);
+    await composer.pressSequentially("ello sidebar",{delay:15});await expect(composer).toHaveValue("hello sidebar");await settle(page);
+    const typingMs=Date.now()-typedAt,after=await page.evaluate(()=>({...window.__sidebarStats,changedKeys:window.__sidebarStats.changedKeys.slice(-5)}));
+    const app={renders:after.appRenders-before.appRenders,wasted:after.appWasted-before.appWasted};
+    console.log("App renders for the 12 keys after the first:",JSON.stringify({...app,typingMs}));
+    // Twelve keystrokes re-render App once each, none thrown away: the menu dismissal App keeps for the composer is cleared only
+    // where there is one, as a reset of null over null after each key called the whole of App a second time. The git poll
+    // (focus-poll.js, every 3.5 s while the window has focus) sets this projectless thread's null gitInfo to null, and React renders
+    // App for that too, drawing nothing, at once or after the next key's render, which leaves it queued for its own lane: one for
+    // each poll in the typing. The sidebar sits them out.
+    expect(after.commits-before.commits).toBeGreaterThanOrEqual(12);
+    expect(app.renders-app.wasted,`App's renders that drew the 12 keys (${JSON.stringify(app)})`).toBe(12);
+    expect(app.wasted,`App's renders thrown away while the 12 keys were typed, ${typingMs} ms from the first key: at most one a git poll (${JSON.stringify(app)})`).toBeLessThanOrEqual(1+Math.floor(typingMs/3500));
     expect({renders:after.sidebarRenders-before.sidebarRenders,keys:after.changedKeys}).toEqual({renders:0,keys:before.changedKeys.slice(-5)});
   }finally{await harness.close()}
 });
