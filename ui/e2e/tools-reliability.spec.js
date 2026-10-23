@@ -186,8 +186,9 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // copy, a delete takes the share off the list and a visibility change sets who can find it, once answered; while `holdShare` is set
 // they wait, until `releaseShare()`. One answered after its connection closed is done all the same, as Codex finishes what it was
 // asked, but its answer is lost. The plugin catalog is `control.marketplaces`: a plugin shared, installed or uninstalled and a
-// marketplace upgraded or removed change it once answered, and wait while `holdShare` is set as well. The effective configuration
-// is `control.config`. `drop()` closes the app's connections while the fixture keeps listening, so the app connects again.
+// marketplace upgraded or removed change it once answered, and wait while `holdShare` is set as well; a plugin search lists the
+// catalog's plugins whose name has the term in it. The effective configuration is `control.config`. `drop()` closes the app's
+// connections while the fixture keeps listening, so the app connects again.
 async function startHeldMcpFixture({threads=[]}={}){
   const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[],holdShare:false,heldShare:[],marketplaces:[],config:{}};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
@@ -244,6 +245,7 @@ async function startHeldMcpFixture({threads=[]}={}){
       else if(message.method==="thread/continuity/get")result={continuity:null};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
       else if(message.method==="plugin/list")result={marketplaces:control.marketplaces};
+      else if(message.method==="plugin/search")result={data:control.marketplaces.flatMap(market=>(market.plugins||[]).filter(plugin=>plugin.name.includes(message.params?.searchTerm)).map(plugin=>({marketplaceName:market.name,marketplacePath:market.path,plugin}))),nextCursor:null};
       else if(message.method==="app/installed")result={apps:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
       else if(message.method==="account/read")result={account:{type:"chatgpt",email:"fixture@example.com",planType:"plus"},requiresOpenaiAuth:false};
@@ -1106,4 +1108,62 @@ test("Tools drops the line of a share action a dropped Codex connection cut off 
     for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`tools-shared-plugin-finished-while-dropped-${mode}-1280x800.png`,fullPage:false})}
     await expect(reason).toHaveCount(0);
   }finally{await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// A Plugins or Marketplaces action the dropped connection cut off that Codex finished all the same: the list read as Codex is back
+// shows it done (the plugin shared, installed or uninstalled, from its row or from a search result, the marketplace gone), and the
+// card says nothing failed, as the Shared plugins' actions do. On adb7db5f the line stayed beside the row that showed it done: Lane G
+// Local offered Update share under "Could not share Lane G Local: Codex disconnected", and Uninstall under "Could not install Lane G
+// Local: Codex disconnected". One Codex did not finish keeps its line, with the action offered again, until it is tried again.
+test("Tools drops the line of a Plugins or Marketplaces action a dropped Codex connection cut off once the list read again shows it done, and keeps it with the action offered again when it is not",async({page})=>{
+  test.setTimeout(150_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=[...catalog(),...markets()];fixture.control.holdShare=true;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const plugins=toolsCard(page,"Plugins"),marketplaces=toolsCard(page,"Marketplaces");
+    const row=plugins.locator(".capability-list>div").filter({hasText:"Lane G Local"}),button=name=>row.getByRole("button",{name,exact:true});
+    const line=(card,head)=>card.locator(".capability-error").filter({hasText:new RegExp("^"+head+" ")});
+    await wheelTo(page,plugins);
+    // Share privately Codex did not finish: the line says so, and Share privately is offered again.
+    await cutOffShareAction(page,fixture,()=>button("Share privately").click(),{finished:false});
+    await expect(line(plugins,"Could not share")).toHaveText("Could not share Lane G Local: Codex disconnected");
+    await expect(row.getByRole("button")).toHaveText(["Details","Share privately","Install"]);
+    // Tried again with the keys and finished as Codex went: the row offers Update share, and no line says the share failed.
+    await cutOffShareAction(page,fixture,async()=>{await button("Details").focus();await page.keyboard.press("Tab");await expect(button("Share privately")).toBeFocused();await page.keyboard.press("Enter")},{finished:true});
+    await expect(row.getByRole("button")).toHaveText(["Details","Update share","Install"]);
+    await expect.soft(line(plugins,"Could not share"),"no line says the share Codex did failed").toHaveCount(0);
+    for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`tools-plugin-share-finished-while-dropped-${mode}-1280x800.png`,fullPage:false})}
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // Install clicked and finished as Codex went: the row offers Uninstall, with no line.
+    await cutOffShareAction(page,fixture,()=>button("Install").click(),{finished:true});
+    await expect(row.getByRole("button")).toHaveText(["Details","Update share","Uninstall"]);
+    await expect.soft(line(plugins,"Could not install"),"no line says the install Codex did failed").toHaveCount(0);
+    // Uninstall Codex did not finish keeps its line, with Uninstall offered again; double-clicked again and finished, the row offers
+    // Install, with no line.
+    await cutOffShareAction(page,fixture,()=>button("Uninstall").click(),{finished:false});
+    await expect(line(plugins,"Could not uninstall")).toHaveText("Could not uninstall Lane G Local: Codex disconnected");
+    await expect(button("Uninstall")).toBeEnabled();
+    await cutOffShareAction(page,fixture,()=>button("Uninstall").dblclick(),{finished:true});
+    await expect(row.getByRole("button")).toHaveText(["Details","Update share","Install"]);
+    await expect.soft(line(plugins,"Could not uninstall"),"no line says the uninstall Codex did failed").toHaveCount(0);
+    // From a search result: an Install finished as Codex went shows the result installed, offering Uninstall, with no line.
+    await plugins.getByPlaceholder("Search plugins").fill("lane");await page.keyboard.press("Enter");
+    const result=plugins.locator(".plugin-search-results>div").filter({hasText:"Lane G Local"});
+    await expect(result.getByRole("button")).toHaveText(["Details","Install"]);
+    await cutOffShareAction(page,fixture,()=>result.getByRole("button",{name:"Install",exact:true}).click(),{finished:true});
+    await expect.soft(result.getByRole("button"),"the search result shows the install Codex did").toHaveText(["Details","Uninstall"]);
+    await expect.soft(line(plugins,"Could not install"),"no line says the install from the search Codex did failed").toHaveCount(0);
+    // A marketplace's Remove Codex did not finish keeps its line and its row; tried again and finished, the row goes, with no line.
+    await wheelTo(page,marketplaces);
+    const gamma=marketplaces.locator(".capability-list>div").filter({hasText:"Lane G Gamma"});
+    await cutOffShareAction(page,fixture,()=>gamma.getByRole("button",{name:"Remove",exact:true}).click(),{finished:false});
+    await expect(line(marketplaces,"Could not remove")).toHaveText("Could not remove lane-g-gamma: Codex disconnected");
+    await expect(gamma.getByRole("button",{name:"Remove",exact:true})).toBeEnabled();
+    await cutOffShareAction(page,fixture,()=>gamma.getByRole("button",{name:"Remove",exact:true}).click(),{finished:true});
+    await expect(gamma).toHaveCount(0);
+    await expect.soft(line(marketplaces,"Could not remove"),"no line says the remove Codex did failed").toHaveCount(0);
+  }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });

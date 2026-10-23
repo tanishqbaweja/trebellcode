@@ -21,6 +21,7 @@ const LOAD_FAILURES={
 const loadFailure=(name,error)=>failureText(LOAD_FAILURES[name]||"Could not load "+name,error);
 const pluginLabel=plugin=>plugin?.interface?.displayName||plugin?.name||plugin?.id||"the plugin";
 const shareId=item=>item?.plugin?.remotePluginId||item?.plugin?.shareContext?.remotePluginId;
+const listedPlugin=(marketplaces,id)=>marketplaces.flatMap(m=>m.plugins||[]).find(item=>item.id===id);
 
 // A header badge is a bare count, or a label that says what it counts when the card lists more than one kind of row.
 function Section({title,icon:Icon,count,badge,children}){
@@ -78,8 +79,10 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const refreshRun=useRef(0);
   // Whether the page has shown its not-connected state since its last refresh. The refresh run as Codex is back reads the lists again
   // but keeps what the actions said, so an action the dropped connection cut off is told once the page is back. A dropped connection
-  // loses only Codex's answer, so that refresh drops the line of a share action the list read again shows done (shareDone holds, for
-  // each share action's line, how the list shows that action done): the line said it failed beside a list that showed it done.
+  // loses only Codex's answer, so that refresh drops the line of an action the list read again shows done (shareDone holds, for each
+  // such action's line, the read that lists it and how that list shows the action done: a plugin shared, installed or uninstalled, a
+  // marketplace removed, or a shared plugin checked out, its visibility set or its share deleted): the line said it failed beside a
+  // row that showed it done, as Lane G Local offered Update share under "Could not share Lane G Local: Codex disconnected".
   const away=useRef(false),shareDone=useRef({});
   // The control an action was pressed on keeps the keyboard while Codex answers it (ActionButton). One the action took away with the
   // keyboard still on it hands the keyboard on, as a thread's row does, instead of dropping it on the page, and leaves the page where
@@ -189,7 +192,12 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       platform==="win32"?load("windowsSandbox/readiness",undefined):Promise.resolve(null),
     ]);
     if(!latest())return;
-    if(back&&sharedPlugins)setErrors(prev=>Object.fromEntries(Object.entries(prev).filter(([name])=>!shareDone.current[name]?.(sharedPlugins.data||[]))));
+    if(back){
+      const catalog=plugins&&(plugins.marketplaces||[]),listed={"plugin/list":catalog,"plugin/share/list":sharedPlugins&&(sharedPlugins.data||[])};
+      setErrors(prev=>Object.fromEntries(Object.entries(prev).filter(([name])=>{const [read,done]=shareDone.current[name]||[];return !(listed[read]&&done(listed[read]))})));
+      // A search result shows its plugin installed or not as the catalog read again does, so an Install cut off shows done there too.
+      if(catalog)setPluginSearchResults(current=>current.map(result=>{const item=listedPlugin(catalog,result.plugin?.id);return item?{...result,plugin:{...result.plugin,installed:item.installed}}:result}));
+    }
     setData(current=>({
       ...current,
       ...(permissions!==null?{permissions:permissions?.data||[]}:{}),
@@ -355,9 +363,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     finally{setBusy("")}
   }
   async function togglePlugin(plugin){
-    if(!rpc)return;const action=plugin.installed?"plugin/uninstall":"plugin/install";setBusy((plugin.installed?"uninstall:":"install:")+plugin.id);setErrors(prev=>({...prev,[action]:null}));
+    if(!rpc)return;const action=plugin.installed?"plugin/uninstall":"plugin/install",nextInstalled=!plugin.installed;setBusy((plugin.installed?"uninstall:":"install:")+plugin.id);setErrors(prev=>({...prev,[action]:null}));
     try{
-      const nextInstalled=!plugin.installed;
       if(plugin.installed)await request(action,{pluginId:plugin.id});
       else await request("plugin/install",{
         pluginName:plugin.name,
@@ -368,7 +375,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       setPluginSearchResults(current=>current.map(result=>result.plugin?.id===plugin.id?{...result,plugin:{...result.plugin,installed:nextInstalled}}:result));
       setPluginDetail(current=>current?.summary?.id===plugin.id?{...current,summary:{...current.summary,installed:nextInstalled}}:current);
       await refresh();
-    }catch(error){setErrors(prev=>({...prev,[action]:failureText((plugin.installed?"Could not uninstall ":"Could not install ")+pluginLabel(plugin),error)}))}
+    }catch(error){shareDone.current[action]=["plugin/list",list=>{const item=listedPlugin(list,plugin.id);return !!item&&!!item.installed===nextInstalled}];setErrors(prev=>({...prev,[action]:failureText((plugin.installed?"Could not uninstall ":"Could not install ")+pluginLabel(plugin),error)}))}
     finally{setBusy("")}
   }
   async function searchPlugins({append=false}={}){
@@ -409,18 +416,19 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     try{const result=await request("plugin/reconcile",{reason:"trebell-tools-refresh"});const changed=result?.changedPlugins?.length||0,failed=result?.failedRemotePluginIds?.length||0;setPluginMessage(`${changed} plugin change${changed===1?"":"s"} reconciled${failed?` · ${failed} failed`:""}.`);await refresh()}
     catch(error){setErrors(prev=>({...prev,"plugin/reconcile":failureText("Could not reconcile plugins",error)}))}finally{setBusy("")}
   }
+  // A first share done lists the plugin shared; an Update share looks the same done or not, so its line stays (shareDone).
   async function shareLocalPlugin(plugin){
     const pluginPath=plugin?.source?.type==="local"?plugin.source.path:null;if(!rpc||!pluginPath)return;
     setBusy("share:"+plugin.id);setErrors(prev=>({...prev,"plugin/share/save":null}));
     try{await request("plugin/share/save",{pluginPath,...(plugin.remotePluginId?{remotePluginId:plugin.remotePluginId}:{}),discoverability:plugin.shareContext?.discoverability||"PRIVATE",shareTargets:(plugin.shareContext?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}))});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"plugin/share/save":failureText("Could not share "+pluginLabel(plugin),error)}))}finally{setBusy("")}
+    catch(error){shareDone.current["plugin/share/save"]=!plugin.shareContext?.remotePluginId&&["plugin/list",list=>!!listedPlugin(list,plugin.id)?.shareContext?.remotePluginId];setErrors(prev=>({...prev,"plugin/share/save":failureText("Could not share "+pluginLabel(plugin),error)}))}finally{setBusy("")}
   }
   // A Shared plugins action clears its line as it starts, as the page's other actions do (the line saying the last try failed stayed
   // beside Checking out…), and a failure notes how the list shows the action done (done).
   async function shareAction(name,busyKey,params,failure,done){
     setBusy(busyKey);setErrors(prev=>({...prev,[name]:null}));
     try{await request(name,params);await refresh()}
-    catch(error){shareDone.current[name]=done;setErrors(prev=>({...prev,[name]:failureText(failure,error)}))}finally{setBusy("")}
+    catch(error){shareDone.current[name]=["plugin/share/list",done];setErrors(prev=>({...prev,[name]:failureText(failure,error)}))}finally{setBusy("")}
   }
   async function checkoutSharedPlugin(item){
     const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;
@@ -460,7 +468,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function removeMarketplace(name){
     if(!rpc||!name)return;setBusy("remove:"+name);setErrors(prev=>({...prev,"marketplace/remove":null}));
     try{await request("marketplace/remove",{marketplaceName:name});await refresh()}
-    catch(error){setErrors(prev=>({...prev,"marketplace/remove":failureText("Could not remove "+name,error)}))}
+    catch(error){shareDone.current["marketplace/remove"]=["plugin/list",list=>!list.some(marketplace=>marketplace.name===name)];setErrors(prev=>({...prev,"marketplace/remove":failureText("Could not remove "+name,error)}))}
     finally{setBusy("")}
   }
   async function upgradeMarketplace(name=null){
