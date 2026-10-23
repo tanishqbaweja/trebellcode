@@ -81,20 +81,31 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // loses only Codex's answer, so that refresh drops the line of a share action the list read again shows done (shareDone holds, for
   // each share action's line, how the list shows that action done): the line said it failed beside a list that showed it done.
   const away=useRef(false),shareDone=useRef({});
-  // The control an action was pressed on keeps the keyboard while Codex answers it (ActionButton). One the action took away (a
-  // Checkout once checked out, the row of a deleted share or of a removed marketplace) hands it on to the control now in its place
-  // in its row, or in the row after it or the one before, as a thread's row does, instead of dropping it on the page.
+  // The control an action was pressed on keeps the keyboard while Codex answers it (ActionButton). One the action took away with the
+  // keyboard still on it hands the keyboard on, as a thread's row does, instead of dropping it on the page, and leaves the page where
+  // the person has scrolled it meanwhile: a Checkout once checked out to the control now in its place in its row, and the row of a
+  // deleted share or of a removed marketplace to the first control of the row after it, or of the one before (in Remove's place
+  // there stood the next marketplace's Remove, which removes at once). A control pressed with the mouse (its focus not shown), or one
+  // the person moved the focus from meanwhile, to blank page space too, leaves the focus where it falls: the select in the place of a
+  // Checkout clicked with the mouse took it, with its focus ring.
   const [busy,setBusyState]=useState(""),pressed=useRef(null);
   const setBusy=value=>{
     const node=document.activeElement,row=node?.closest?.(".capability-list>div");
-    if(value&&row&&!pressed.current)pressed.current={node,row,list:row.parentElement,at:[...row.parentElement.children].indexOf(row),index:[...row.querySelectorAll("button,select")].indexOf(node)};
+    if(value&&row&&!pressed.current&&node.matches(":focus-visible")){
+      const from=pressed.current={node,row,list:row.parentElement,at:[...row.parentElement.children].indexOf(row),index:[...row.querySelectorAll("button,select")].indexOf(node)};
+      // The focus moved off the control while it is still on the page is the person's; moved back, it is the keyboard's again. Read
+      // once the event is over: Chromium fires focusout on the control as it is taken away, still on the page then.
+      from.note=()=>queueMicrotask(()=>{from.left=node.isConnected&&document.activeElement!==node});
+      for(const type of ["focusin","focusout"])node.addEventListener(type,from.note);
+    }
     setBusyState(value);
   };
   useLayoutEffect(()=>{
     const from=pressed.current;if(busy||!from)return;pressed.current=null;
-    if(from.node.isConnected||document.activeElement!==document.body)return;
-    const row=from.row.isConnected?from.row:from.list.children[from.at]||from.list.children[from.at-1],controls=row?[...row.querySelectorAll("button,select")]:[];
-    (controls[from.index]||controls.at(-1))?.focus();
+    for(const type of ["focusin","focusout"])from.node.removeEventListener(type,from.note);
+    if(from.left||from.node.isConnected||document.activeElement!==document.body)return;
+    const stays=from.row.isConnected,row=stays?from.row:from.list.children[from.at]||from.list.children[from.at-1],controls=row?[...row.querySelectorAll("button,select")]:[];
+    (stays?controls[from.index]||controls.at(-1):controls[0])?.focus({preventScroll:true});
   },[busy]);
   const [marketplaceSource,setMarketplaceSource]=useState("");
   const [migrations,setMigrations]=useState(null);

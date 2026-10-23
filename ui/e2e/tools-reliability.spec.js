@@ -785,15 +785,32 @@ test("Tools Plugins and Marketplaces say Sharing…, Installing… or Upgrading�
   }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
+// The wheel over the page's right edge, clear of the lists that scroll by themselves, a notch at a time, as a person scrolls the page
+// on down while Codex answers, until control is out of sight above.
+async function wheelPast(page,control){
+  const scroller=page.locator(".secondary-page");
+  await page.mouse.move(page.viewportSize().width-6,420);
+  for(let notch=0;notch<30;notch++){
+    const box=await control.boundingBox(),view=await scroller.boundingBox();if(box.y+box.height<view.y)return;
+    const before=await scroller.evaluate(node=>node.scrollTop);
+    await page.mouse.wheel(0,120);
+    await expect.poll(()=>scroller.evaluate(node=>node.scrollTop)).not.toBe(before);
+  }
+  throw new Error("The page did not scroll the control out of sight");
+}
+
 // A person on the keyboard: the Shared plugins control they pressed keeps the keyboard while Codex answers, and once the action takes
-// the control away (Checkout once checked out, the row of a deleted share) the keyboard is on the control in its place, in its row or
-// in the row after it. On cd97bb9f each control was disabled under the keyboard as its action started, which dropped the focus on the
-// page: a second ArrowDown on the visibility select scrolled the page instead, and the focus was still on the page once the change
-// was saved, as it was during a checkout and after a delete.
+// the control away (Checkout once checked out, the row of a deleted share) the keyboard is on the control in its place in its row, or
+// on the first control of the row after it, with the page left where the person scrolled it. On cd97bb9f each control was disabled
+// under the keyboard as its action started, which dropped the focus on the page: a second ArrowDown on the visibility select scrolled
+// the page instead, and the focus was still on the page once the change was saved, as it was during a checkout and after a delete.
+// On fbdd1659 the keyboard handed on scrolled the page back up to the list from where the person had scrolled it meanwhile, and the
+// focus was handed on after a Checkout clicked with the mouse too, or one the person had clicked away from: the select took it, with
+// its focus ring.
 test("Tools Shared plugins keeps the keyboard on the control pressed while Codex answers it, and in the list once the action takes the control away",async({page})=>{
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   const fixture=await startHeldMcpFixture();fixture.release();
-  fixture.control.shared=[share("short","lane-g-shared","2.0.0"),share("long","lane-g-shared-plugin-with-a-longer-name"),share("third","lane-g-shared-three","2.0.2")];
+  fixture.control.shared=[share("short","lane-g-shared","2.0.0"),share("long","lane-g-shared-plugin-with-a-longer-name"),share("third","lane-g-shared-three","2.0.2"),share("fourth","lane-g-shared-four","2.0.4")];
   fixture.control.holdShare=true;
   const shoot=async name=>{for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${page.viewportSize().width}x800.png`,fullPage:false})}};
   try{
@@ -831,9 +848,52 @@ test("Tools Shared plugins keeps the keyboard on the control pressed while Codex
     fixture.releaseShare();
     await expect(rows.nth(0).getByRole("button")).toHaveText(["Open","Delete share"]);
     await expect(rows.nth(0).getByRole("combobox"),"the keyboard goes on to the control in Checkout's place").toBeFocused();
-    // In a narrower window, the second row's Delete share pressed with Enter, and the question's Delete share reached with Tab and
-    // pressed with Enter: the keyboard is on Deleting… while Codex answers, and once the share is gone, on the row after it.
-    await page.setViewportSize({width:900,height:800});await wheelTo(page,card);
+    // In a narrower window, where the cards stand in one column, the person scrolls the page on down while Codex answers: a card
+    // further down stays where they scrolled it as the action ends. onPage: the focus is on the page, on no control.
+    await page.setViewportSize({width:900,height:800});
+    const later=toolsCard(page,"Conversation history"),stands=async()=>(await later.boundingBox()).y,onPage=()=>page.evaluate(()=>document.activeElement===document.body);
+    // The second row's Checkout pressed with Enter, then the page scrolled on until the select beside it is out of sight: once
+    // checked out the keyboard is on the select, in Checkout's place, and the page has not moved.
+    await wheelTo(page,card);
+    await rows.nth(1).getByRole("button",{name:"Open",exact:true}).focus();await page.keyboard.press("Tab");
+    await expect(rows.nth(1).getByRole("button",{name:"Checkout",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await wheelPast(page,rows.nth(1).getByRole("combobox"));
+    let place=await stands();
+    fixture.releaseShare();
+    await expect(rows.nth(1).getByRole("button")).toHaveText(["Open","Delete share"]);
+    await expect(rows.nth(1).getByRole("combobox"),"the keyboard goes on to the select, out of sight").toBeFocused();
+    expect.soft(Math.abs(await stands()-place),"the page stays where the person scrolled it as the keyboard goes on").toBeLessThanOrEqual(4);
+    await shoot("tools-shared-plugin-keyboard-scrolled-on");
+    // The third row's Checkout clicked with the mouse, then the page scrolled on: once checked out the focus is left on the page,
+    // where it fell, and not given to the select (with its focus ring), and the page has not moved.
+    await wheelTo(page,card);
+    await rows.nth(2).getByRole("button",{name:"Checkout",exact:true}).click();
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await wheelPast(page,rows.nth(2).getByRole("combobox"));
+    place=await stands();
+    fixture.releaseShare();
+    await expect(rows.nth(2).getByRole("button")).toHaveText(["Open","Delete share"]);
+    await expect(rows.nth(0).getByRole("button",{name:"Delete share",exact:true}),"the page's other actions are back").toBeEnabled();
+    expect.soft(await onPage(),"a Checkout clicked with the mouse hands the focus to no control").toBe(true);
+    expect.soft(Math.abs(await stands()-place),"the page stays where the person scrolled it after a click").toBeLessThanOrEqual(4);
+    // The fourth row's Checkout pressed with Enter, then a click on the card's text, away from it: once checked out the focus is still
+    // on the page, where the person put it.
+    await wheelTo(page,card);
+    await rows.nth(3).getByRole("button",{name:"Open",exact:true}).focus();await page.keyboard.press("Tab");
+    await expect(rows.nth(3).getByRole("button",{name:"Checkout",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await card.locator(":scope>p").click();
+    await expect.poll(onPage,{message:"the click on the card's text takes the focus off Checking out…"}).toBe(true);
+    fixture.releaseShare();
+    await expect(rows.nth(3).getByRole("button")).toHaveText(["Open","Delete share"]);
+    await expect(rows.nth(0).getByRole("button",{name:"Delete share",exact:true}),"the page's other actions are back").toBeEnabled();
+    expect.soft(await onPage(),"the focus stays on the page, where the person put it").toBe(true);
+    // The second row's Delete share pressed with Enter, and the question's Delete share reached with Tab and pressed with Enter: the
+    // keyboard is on Deleting… while Codex answers, and once the share is gone, on the first control of the row after it, its Open.
+    await wheelTo(page,card);
     await rows.nth(1).getByRole("button",{name:"Delete share",exact:true}).focus();await page.keyboard.press("Enter");
     const question=page.locator("dialog.inspector-text-prompt");
     await expect(question.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
@@ -842,9 +902,56 @@ test("Tools Shared plugins keeps the keyboard on the control pressed while Codex
     await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
     await expect(rows.nth(1).getByRole("button",{name:"Deleting…",exact:true}),"the keyboard is on Deleting… while Codex answers").toBeFocused();
     fixture.releaseShare();
-    await expect(rows).toHaveCount(2);await expect(rows.nth(1).locator("strong")).toHaveText("lane-g-shared-three");
-    await expect(rows.nth(1).getByRole("button",{name:"Delete share",exact:true}),"the keyboard goes on to the row after the deleted share").toBeFocused();
+    await expect(rows).toHaveCount(3);await expect(rows.nth(1).locator("strong")).toHaveText("lane-g-shared-three");
+    await expect(rows.nth(1).getByRole("button",{name:"Open",exact:true}),"the keyboard goes on to the first control of the row after the deleted share").toBeFocused();
     await shoot("tools-shared-plugin-keyboard-after-delete");
+  }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// Three marketplaces on disk, as Codex lists them: each row has Upgrade and then Remove.
+const markets=()=>["Alpha","Beta","Gamma"].map(name=>({name:"lane-g-"+name.toLowerCase(),path:"/home/test/lane-g/"+name.toLowerCase(),interface:{displayName:"Lane G "+name},plugins:[]}));
+
+// A person on the keyboard removes a marketplace: once Remove takes its row away, the keyboard is on the first control of the row
+// after it, that marketplace's Upgrade, or of the row before it when the last one goes. On fbdd1659 it went to the control in Remove's
+// place there, the next marketplace's Remove, which removes at once, asking nothing: the next Enter removed that marketplace too.
+test("Tools Marketplaces hands the keyboard on to the next marketplace's Upgrade once Remove takes a marketplace away, not to its Remove",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=markets();fixture.control.holdShare=true;
+  const shoot=async name=>{for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${page.viewportSize().width}x800.png`,fullPage:false})}};
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const card=toolsCard(page,"Marketplaces"),rows=card.locator(".capability-list>div"),names=rows.locator("strong");
+    await expect(names).toHaveText(["Lane G Alpha","Lane G Beta","Lane G Gamma"]);
+    await wheelTo(page,card);
+    // The first marketplace's Remove, from its Upgrade with Tab, pressed with Enter: the keyboard stays on Removing… while Codex
+    // answers, and once the row has gone it is on the next marketplace's Upgrade.
+    await rows.nth(0).getByRole("button",{name:"Upgrade",exact:true}).focus();await page.keyboard.press("Tab");
+    await expect(rows.nth(0).getByRole("button",{name:"Remove",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await expect(rows.nth(0).getByRole("button",{name:"Removing…",exact:true}),"the keyboard stays on Removing…").toBeFocused();
+    fixture.releaseShare();
+    await expect(names).toHaveText(["Lane G Beta","Lane G Gamma"]);
+    await expect.soft(rows.nth(0).getByRole("button",{name:"Upgrade",exact:true}),"the keyboard goes on to the next marketplace's Upgrade, not to its Remove").toBeFocused();
+    await shoot("tools-marketplace-removed-keyboard");
+    // Enter again, a press of its own, does what the control it is on does: here it upgrades that marketplace, which stays.
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await expect.soft(rows.nth(0).getByRole("button",{name:"Upgrading…",exact:true}),"the next Enter upgrades the next marketplace").toBeFocused();
+    fixture.releaseShare();
+    await expect(card.getByRole("button",{name:"Upgrade all",exact:true}),"the action has ended").toBeEnabled();
+    await expect.soft(names,"the next Enter removes nothing").toHaveText(["Lane G Beta","Lane G Gamma"]);
+    // The last marketplace's Remove: once it has gone, the keyboard is on the Upgrade of the marketplace before it.
+    await rows.last().getByRole("button",{name:"Upgrade",exact:true}).focus();await page.keyboard.press("Tab");
+    await expect(rows.last().getByRole("button",{name:"Remove",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    fixture.releaseShare();
+    await expect(names).toHaveText(["Lane G Beta"]);
+    await expect(rows.nth(0).getByRole("button",{name:"Upgrade",exact:true}),"the keyboard goes on to the Upgrade of the marketplace before it").toBeFocused();
   }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
