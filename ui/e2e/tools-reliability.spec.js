@@ -185,10 +185,11 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // `threads` and resumes them, and the account's shared plugins as `control.shared` holds them: a checkout gives its plugin a local
 // copy, a delete takes the share off the list and a visibility change sets who can find it, once answered; while `holdShare` is set
 // they wait, until `releaseShare()`. One answered after its connection closed is done all the same, as Codex finishes what it was
-// asked, but its answer is lost. The effective configuration is `control.config`. `drop()` closes the app's connections while the
-// fixture keeps listening, so the app connects again.
+// asked, but its answer is lost. The plugin catalog is `control.marketplaces`: a plugin shared, installed or uninstalled and a
+// marketplace upgraded or removed change it once answered, and wait while `holdShare` is set as well. The effective configuration
+// is `control.config`. `drop()` closes the app's connections while the fixture keeps listening, so the app connects again.
 async function startHeldMcpFixture({threads=[]}={}){
-  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[],holdShare:false,heldShare:[],config:{}};
+  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[],holdShare:false,heldShare:[],marketplaces:[],config:{}};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
   const skill={name:"release-notes",description:"Draft release notes from merged pull requests",path:"/home/test/.codex/skills/release-notes/SKILL.md",scope:"user",enabled:true,interface:{displayName:"Release notes"}};
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
@@ -219,6 +220,17 @@ async function startHeldMcpFixture({threads=[]}={}){
         if(control.holdShare)control.heldShare.push(answer);else answer();
         return;
       }
+      if(["plugin/share/save","plugin/install","plugin/uninstall","marketplace/upgrade","marketplace/remove"].includes(message.method)){
+        const {method,params={}}=message;
+        const changed=plugin=>method==="plugin/share/save"&&plugin.source?.path===params.pluginPath?{...plugin,remotePluginId:"remote-"+plugin.id,shareContext:{remotePluginId:"remote-"+plugin.id,discoverability:params.discoverability,sharePrincipals:[]}}
+          :method==="plugin/install"&&plugin.name===params.pluginName?{...plugin,installed:true}:method==="plugin/uninstall"&&plugin.id===params.pluginId?{...plugin,installed:false}:plugin;
+        const answer=()=>{
+          control.marketplaces=method==="marketplace/remove"?control.marketplaces.filter(item=>item.name!==params.marketplaceName):control.marketplaces.map(item=>({...item,plugins:(item.plugins||[]).map(changed)}));
+          if(ws.readyState===ws.OPEN)send({result:{}});
+        };
+        if(control.holdShare)control.heldShare.push(answer);else answer();
+        return;
+      }
       if(message.method==="thread/resume"&&threads.length){send({result:{thread:{...(threads.find(thread=>thread.id===message.params?.threadId)||threads[0]),turns:[]}}});return}
       if(message.method==="initialize"&&control.holdInit){control.heldInit.push(()=>send({result:{userAgent:"tools-held-list-fixture"}}));return}
       const full=control.lists==="full";let result={};
@@ -231,7 +243,7 @@ async function startHeldMcpFixture({threads=[]}={}){
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="thread/continuity/get")result={continuity:null};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
-      else if(message.method==="plugin/list")result={marketplaces:[]};
+      else if(message.method==="plugin/list")result={marketplaces:control.marketplaces};
       else if(message.method==="app/installed")result={apps:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
       else if(message.method==="account/read")result={account:{type:"chatgpt",email:"fixture@example.com",planType:"plus"},requiresOpenaiAuth:false};
@@ -702,6 +714,74 @@ test("Tools Shared plugins says Checking out…, Deleting… or saving… on the
     await shoot("tools-shared-plugin-deleting");
     fixture.releaseShare();
     await expect(rows).toHaveCount(2);await expect(busy).toHaveCount(0);
+  }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// A marketplace on disk with one local plugin, as Codex lists it, neither installed nor shared yet.
+const catalog=()=>[{name:"lane-g-market",path:"/home/test/lane-g/market",interface:{displayName:"Lane G Market"},plugins:[{id:"lane-g-local@lane-g-market",name:"lane-g-local",version:"1.2.0",installed:false,availability:"available",interface:{displayName:"Lane G Local"},source:{type:"local",path:"/home/test/lane-g/plugins/local"}}]}];
+const toolsCard=(page,title)=>page.locator(".capabilities-page .capability-card").filter({has:page.locator(".capability-card-head strong",{hasText:new RegExp("^"+title+"$")})}).first();
+
+// A Plugins or Marketplaces action Codex is slow to answer says what it is doing on the button it was pressed on, marked busy, while
+// the page's other actions wait, as the Shared plugins rows do. On cd97bb9f Share privately, Update share, Install and a
+// marketplace's Upgrade each kept their label while Codex held the answer, with nothing marked busy, as 19 of the page's 20 buttons
+// greyed out.
+test("Tools Plugins and Marketplaces say Sharing…, Installing… or Upgrading… on the button whose action Codex has not answered yet, pressed with the mouse or the keys",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=catalog();fixture.control.holdShare=true;
+  const shoot=async name=>{for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${page.viewportSize().width}x800.png`,fullPage:false})}};
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const plugins=toolsCard(page,"Plugins"),marketplaces=toolsCard(page,"Marketplaces"),busy=page.locator(".capabilities-page [aria-busy=true]");
+    const row=plugins.locator(".capability-list>div").filter({hasText:"Lane G Local"}),market=marketplaces.locator(".capability-list>div").filter({hasText:"Lane G Market"});
+    await wheelTo(page,plugins);
+    // Share privately clicked: its button says Sharing…, marked busy, the only thing busy; the row's other actions wait.
+    await row.getByRole("button",{name:"Share privately",exact:true}).click();
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    const sharing=row.getByRole("button",{name:"Sharing…",exact:true});
+    await expect(sharing,"Share privately says it is sharing while Codex answers").toHaveAttribute("aria-busy","true");
+    await expect(sharing).toBeDisabled();await expect(busy).toHaveCount(1);
+    await expect(row.getByRole("button",{name:"Install",exact:true})).toBeDisabled();
+    await shoot("tools-plugin-sharing");
+    // Answered: the plugin is shared, so the row offers Update share, and nothing is busy.
+    fixture.releaseShare();
+    await expect(row.getByRole("button")).toHaveText(["Details","Update share","Install"]);await expect(busy).toHaveCount(0);
+    // Update share double-clicked: one save, and the button says Updating… until Codex answers.
+    await row.getByRole("button",{name:"Update share",exact:true}).dblclick();
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await expect(row.getByRole("button",{name:"Updating…",exact:true})).toHaveAttribute("aria-busy","true");await expect(busy).toHaveCount(1);
+    expect(fixture.control.heldShare.length,"one save for the double click").toBe(1);
+    fixture.releaseShare();
+    await expect(row.getByRole("button",{name:"Update share",exact:true})).toBeEnabled();await expect(busy).toHaveCount(0);
+    // With the keys: Tab from Update share to Install and Enter. Install says Installing… with the keyboard on it, and the keyboard
+    // is still there once Codex answers, on Uninstall.
+    await row.getByRole("button",{name:"Update share",exact:true}).focus();await page.keyboard.press("Tab");
+    await expect(row.getByRole("button",{name:"Install",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    const installing=row.getByRole("button",{name:"Installing…",exact:true});
+    await expect(installing).toHaveAttribute("aria-busy","true");await expect(installing).toBeFocused();
+    fixture.releaseShare();
+    await expect(row.getByRole("button",{name:"Uninstall",exact:true})).toBeFocused();await expect(busy).toHaveCount(0);
+    // A marketplace's Upgrade, in a narrower window: Upgrading… on its own row, which stays in the card, while Upgrade all waits.
+    await page.setViewportSize({width:900,height:800});await wheelTo(page,marketplaces);
+    await market.getByRole("button",{name:"Upgrade",exact:true}).click();
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    const upgrading=market.getByRole("button",{name:"Upgrading…",exact:true});
+    await expect(upgrading).toHaveAttribute("aria-busy","true");await expect(busy).toHaveCount(1);
+    await expect(marketplaces.getByRole("button",{name:"Upgrade all",exact:true})).toBeDisabled();
+    expect(await market.evaluate(node=>node.scrollWidth<=node.clientWidth),"the row stays in the card").toBe(true);
+    await shoot("tools-marketplace-upgrading");
+    fixture.releaseShare();
+    await expect(market.getByRole("button",{name:"Upgrade",exact:true})).toBeEnabled();await expect(busy).toHaveCount(0);
+    // Remove says Removing… on its row until Codex answers; then the row leaves.
+    await market.getByRole("button",{name:"Remove",exact:true}).click();
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await expect(market.getByRole("button",{name:"Removing…",exact:true})).toHaveAttribute("aria-busy","true");await expect(busy).toHaveCount(1);
+    fixture.releaseShare();
+    await expect(market).toHaveCount(0);await expect(busy).toHaveCount(0);
   }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 

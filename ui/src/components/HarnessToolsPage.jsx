@@ -6,6 +6,7 @@ import { agentName, countLabel, failureText, humanizeIdentifier, importFailures,
 import { formatBytes } from "../format-bytes.js";
 import { allowedWindowsSetupModes, windowsSandboxStatus, worldWritableWarningText } from "../windows-sandbox.js";
 import { askConfirm } from "../ask-dialog.js";
+import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 // What each runtime read on this page loads, so its error line names what could not be loaded before the reason Codex gave.
 const LOAD_FAILURES={
@@ -26,6 +27,13 @@ function Section({title,icon:Icon,count,badge,children}){
   return <section className="capability-card"><div className="capability-card-head"><span><Icon size={15}/><strong>{title}</strong></span>{badge?<em>{badge}</em>:Number.isFinite(count)&&<em>{count}</em>}</div>{children}</section>;
 }
 function ErrorLine({value}){return value?<p className="capability-error">{value}</p>:null}
+// The button of an action Codex answers. While Codex answers it, it says what it is doing (doing), marked busy, and only says it is
+// off (aria-disabled), so the keyboard stays on it: disabled, it dropped the focus on the page. A press meanwhile does nothing, nor
+// does the rest of the press that started it (Enter held, a double click's second click), as a thread's menu item runs. While any
+// action runs (busy) the page's other actions wait.
+function ActionButton({busy,doing,off=false,onPress,children}){
+  return <button onClick={event=>{ignorePressRest(!event.detail);if(!busy)onPress()}} disabled={!doing&&(off||!!busy)} aria-disabled={doing?true:undefined} aria-busy={doing?true:undefined}>{doing||children}</button>;
+}
 // A card's empty state. It claims the runtime reported nothing only for an answer that has loaded empty; while a read is in flight
 // the card says it is loading, and beside an error line, which says why the answer is missing, it says nothing.
 function EmptyState({loaded,loading,error,pending,children}){
@@ -296,6 +304,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   },[connected]);
 
   const plugins=useMemo(()=>(data.marketplaces||[]).flatMap(m=>(m.plugins||[]).map(p=>({...p,marketplace:m}))),[data.marketplaces]);
+  // What a plugin's Install or Uninstall says while Codex answers it. busy names which one runs: a search result shows the plugin
+  // installed as soon as Codex answers, before the refresh after it ends.
+  const toggling=plugin=>busy==="install:"+plugin.id?"Installing…":busy==="uninstall:"+plugin.id&&"Uninstalling…";
   const installedAppsById=useMemo(()=>Object.fromEntries((data.installedApps||[]).map(app=>[app.id,app])),[data.installedApps]);
   const hookCount=(data.hooks||[]).reduce((n,x)=>n+(x.hooks?.length||0),0);
   // A runtime list's head count waits for its list on every refresh, not only the first: while an empty list is read again its
@@ -319,7 +330,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     finally{setBusy("")}
   }
   async function togglePlugin(plugin){
-    if(!rpc)return;const action=plugin.installed?"plugin/uninstall":"plugin/install";setBusy("plugin:"+plugin.id);setErrors(prev=>({...prev,[action]:null}));
+    if(!rpc)return;const action=plugin.installed?"plugin/uninstall":"plugin/install";setBusy((plugin.installed?"uninstall:":"install:")+plugin.id);setErrors(prev=>({...prev,[action]:null}));
     try{
       const nextInstalled=!plugin.installed;
       if(plugin.installed)await request(action,{pluginId:plugin.id});
@@ -337,7 +348,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   }
   async function searchPlugins({append=false}={}){
     const searchTerm=pluginSearchTerm.trim();if(!rpc||searchTerm.length<2)return;
-    setBusy("plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
+    setBusy(append?"plugin:more":"plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
     try{
       const result=await request("plugin/search",{searchTerm,scope:pluginSearchScope,cwds:projectPath?[projectPath]:null,cursor:append?pluginSearchCursor:null,limit:20});
       setPluginSearchResults(current=>append?[...current,...(result?.data||[])]:result?.data||[]);
@@ -422,13 +433,13 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     finally{setBusy("")}
   }
   async function removeMarketplace(name){
-    if(!rpc||!name)return;setBusy("marketplace:"+name);setErrors(prev=>({...prev,"marketplace/remove":null}));
+    if(!rpc||!name)return;setBusy("remove:"+name);setErrors(prev=>({...prev,"marketplace/remove":null}));
     try{await request("marketplace/remove",{marketplaceName:name});await refresh()}
     catch(error){setErrors(prev=>({...prev,"marketplace/remove":failureText("Could not remove "+name,error)}))}
     finally{setBusy("")}
   }
   async function upgradeMarketplace(name=null){
-    if(!rpc)return;setBusy("marketplace:"+(name||"all"));setErrors(prev=>({...prev,"marketplace/upgrade":null}));
+    if(!rpc)return;setBusy(name?"upgrade:"+name:"upgrade-all");setErrors(prev=>({...prev,"marketplace/upgrade":null}));
     try{await request("marketplace/upgrade",{marketplaceName:name});await refresh()}
     catch(error){setErrors(prev=>({...prev,"marketplace/upgrade":failureText(name?"Could not upgrade "+name:"Could not upgrade the marketplaces",error)}))}
     finally{setBusy("")}
@@ -658,13 +669,14 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Plugins" icon={Blocks} count={counted(data.marketplaces,"plugin/list",plugins.length)}>
-        <div className="plugin-search-controls"><input value={pluginSearchTerm} onChange={e=>{setPluginSearchTerm(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}} onKeyDown={e=>{if(e.key==="Enter")searchPlugins()}} placeholder="Search plugins" title="Search the plugin catalog"/><select value={pluginSearchScope} onChange={e=>{setPluginSearchScope(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}}><option value="global">Global</option><option value="workspace">Workspace</option><option value="personal">Personal</option></select><button onClick={()=>searchPlugins()} disabled={!!busy||pluginSearchTerm.trim().length<2}>{busy==="plugin:search"?"Searching…":"Search"}</button><button onClick={reconcilePlugins} disabled={!!busy}>Reconcile</button></div>
-        {pluginSearchResults.length>0&&<div className="capability-list plugin-search-results">{pluginSearchResults.map(result=>{const plugin=result.plugin||{};const marketplace={name:result.marketplaceName,path:result.marketplacePath};return <div key={(result.marketplaceName||"")+":"+(plugin.id||plugin.name)}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.interface?.shortDescription||plugin.interface?.longDescription||result.marketplaceName}{plugin.version?" · "+plugin.version:""}</span></div><div className="capability-inline-actions"><button onClick={()=>readPlugin(plugin,marketplace)} disabled={!!busy}>Details</button><button onClick={()=>togglePlugin({...plugin,marketplace})} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>})}</div>}
-        {pluginSearchCursor&&<div className="capability-actions"><button onClick={()=>searchPlugins({append:true})} disabled={!!busy}>Load more</button></div>}
+        <div className="plugin-search-controls"><input value={pluginSearchTerm} onChange={e=>{setPluginSearchTerm(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}} onKeyDown={e=>{if(e.key==="Enter"&&!busy)searchPlugins()}} placeholder="Search plugins" title="Search the plugin catalog"/><select value={pluginSearchScope} onChange={e=>{setPluginSearchScope(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}}><option value="global">Global</option><option value="workspace">Workspace</option><option value="personal">Personal</option></select><ActionButton busy={busy} doing={busy==="plugin:search"&&"Searching…"} off={pluginSearchTerm.trim().length<2} onPress={()=>searchPlugins()}>Search</ActionButton><ActionButton busy={busy} doing={busy==="plugin:reconcile"&&"Reconciling…"} onPress={reconcilePlugins}>Reconcile</ActionButton></div>
+        {/* A plugin action Codex is still answering says what it is doing on its button, marked busy; the page's other actions wait. */}
+        {pluginSearchResults.length>0&&<div className="capability-list plugin-search-results">{pluginSearchResults.map(result=>{const plugin=result.plugin||{};const marketplace={name:result.marketplaceName,path:result.marketplacePath};return <div key={(result.marketplaceName||"")+":"+(plugin.id||plugin.name)}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.interface?.shortDescription||plugin.interface?.longDescription||result.marketplaceName}{plugin.version?" · "+plugin.version:""}</span></div><div className="capability-inline-actions"><ActionButton busy={busy} doing={busy==="plugin:read:"+plugin.id&&"Loading…"} onPress={()=>readPlugin(plugin,marketplace)}>Details</ActionButton><ActionButton busy={busy} doing={toggling(plugin)} off={plugin.availability==="unavailable"} onPress={()=>togglePlugin({...plugin,marketplace})}>{plugin.installed?"Uninstall":"Install"}</ActionButton></div></div>})}</div>}
+        {pluginSearchCursor&&<div className="capability-actions"><ActionButton busy={busy} doing={busy==="plugin:more"&&"Loading…"} onPress={()=>searchPlugins({append:true})}>Load more</ActionButton></div>}
         {pluginSearchRan&&!pluginSearchResults.length&&!busy&&!errors["plugin/search"]&&<p>No plugins matched this search.</p>}
-        {!pluginSearchRan&&<div className="capability-list">{plugins.map(plugin=><div key={plugin.marketplace.name+":"+plugin.id}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.marketplace.name}{plugin.version?" · "+plugin.version:""}{plugin.shareContext?.shareUrl?" · shared":""}</span></div><div className="capability-inline-actions"><button onClick={()=>readPlugin(plugin,plugin.marketplace)} disabled={!!busy}>Details</button>{plugin.source?.type==="local"&&<button onClick={()=>shareLocalPlugin(plugin)} disabled={!!busy}>{plugin.shareContext?.remotePluginId?"Update share":"Share privately"}</button>}<button onClick={()=>togglePlugin(plugin)} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>)}</div>}
+        {!pluginSearchRan&&<div className="capability-list">{plugins.map(plugin=><div key={plugin.marketplace.name+":"+plugin.id}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.marketplace.name}{plugin.version?" · "+plugin.version:""}{plugin.shareContext?.shareUrl?" · shared":""}</span></div><div className="capability-inline-actions"><ActionButton busy={busy} doing={busy==="plugin:read:"+plugin.id&&"Loading…"} onPress={()=>readPlugin(plugin,plugin.marketplace)}>Details</ActionButton>{plugin.source?.type==="local"&&<ActionButton busy={busy} doing={busy==="share:"+plugin.id&&(plugin.shareContext?.remotePluginId?"Updating…":"Sharing…")} onPress={()=>shareLocalPlugin(plugin)}>{plugin.shareContext?.remotePluginId?"Update share":"Share privately"}</ActionButton>}<ActionButton busy={busy} doing={toggling(plugin)} off={plugin.availability==="unavailable"} onPress={()=>togglePlugin(plugin)}>{plugin.installed?"Uninstall":"Install"}</ActionButton></div></div>)}</div>}
         {!pluginSearchRan&&!plugins.length&&<EmptyState loaded={!!data.marketplaces} loading={loading} error={errors["plugin/list"]} pending="Loading the plugin catalog…">No plugin catalog is available in this runtime.</EmptyState>}
-        {pluginDetail&&<div className="plugin-detail"><div className="plugin-detail-head"><div><strong>{pluginDetail.summary?.interface?.displayName||pluginDetail.summary?.name}</strong><span>{pluginDetail.marketplaceName}{pluginDetail.summary?.version?` · ${pluginDetail.summary.version}`:""}{pluginDetail.summary?.interface?.developerName?` · ${pluginDetail.summary.interface.developerName}`:""}</span></div><button onClick={()=>{setPluginDetail(null);setPluginSkillDetail(null)}}>Close</button></div>{(pluginDetail.description||pluginDetail.summary?.interface?.longDescription)&&<p>{pluginDetail.description||pluginDetail.summary.interface.longDescription}</p>}{pluginDetail.summary?.interface?.capabilities?.length>0&&<div className="capability-badges">{pluginDetail.summary.interface.capabilities.map(capability=><span className="ok" key={capability}>{capability}</span>)}</div>}<div className="plugin-detail-counts"><span>{countLabel(pluginDetail.skills?.length,"skill")}</span><span>{countLabel(pluginDetail.hooks?.length,"hook")}</span><span>{countLabel(pluginDetail.apps?.length,"app")}</span><span>{countLabel(pluginDetail.mcpServers?.length,"MCP server")}</span><span>{countLabel(pluginDetail.scheduledTasks?.length,"scheduled task")}</span></div>{pluginDetail.skills?.length>0&&<div className="plugin-detail-skills">{pluginDetail.skills.map(skill=><div key={skill.name}><div><strong>{skill.interface?.displayName||skill.name}</strong><span>{skill.interface?.shortDescription||skill.shortDescription||skill.description}</span></div>{pluginDetail.summary?.remotePluginId&&pluginDetail.marketplaceName&&<button onClick={()=>readPluginSkill(skill)} disabled={!!busy}>{busy==="plugin:skill:"+skill.name?"Reading…":"Read skill"}</button>}</div>)}</div>}{pluginSkillDetail&&<details className="capability-details" open><summary>{pluginSkillDetail.name} · SKILL.md</summary><pre>{pluginSkillDetail.contents||"No skill contents were returned."}</pre></details>}</div>}
+        {pluginDetail&&<div className="plugin-detail"><div className="plugin-detail-head"><div><strong>{pluginDetail.summary?.interface?.displayName||pluginDetail.summary?.name}</strong><span>{pluginDetail.marketplaceName}{pluginDetail.summary?.version?` · ${pluginDetail.summary.version}`:""}{pluginDetail.summary?.interface?.developerName?` · ${pluginDetail.summary.interface.developerName}`:""}</span></div><button onClick={()=>{setPluginDetail(null);setPluginSkillDetail(null)}}>Close</button></div>{(pluginDetail.description||pluginDetail.summary?.interface?.longDescription)&&<p>{pluginDetail.description||pluginDetail.summary.interface.longDescription}</p>}{pluginDetail.summary?.interface?.capabilities?.length>0&&<div className="capability-badges">{pluginDetail.summary.interface.capabilities.map(capability=><span className="ok" key={capability}>{capability}</span>)}</div>}<div className="plugin-detail-counts"><span>{countLabel(pluginDetail.skills?.length,"skill")}</span><span>{countLabel(pluginDetail.hooks?.length,"hook")}</span><span>{countLabel(pluginDetail.apps?.length,"app")}</span><span>{countLabel(pluginDetail.mcpServers?.length,"MCP server")}</span><span>{countLabel(pluginDetail.scheduledTasks?.length,"scheduled task")}</span></div>{pluginDetail.skills?.length>0&&<div className="plugin-detail-skills">{pluginDetail.skills.map(skill=><div key={skill.name}><div><strong>{skill.interface?.displayName||skill.name}</strong><span>{skill.interface?.shortDescription||skill.shortDescription||skill.description}</span></div>{pluginDetail.summary?.remotePluginId&&pluginDetail.marketplaceName&&<ActionButton busy={busy} doing={busy==="plugin:skill:"+skill.name&&"Reading…"} onPress={()=>readPluginSkill(skill)}>Read skill</ActionButton>}</div>)}</div>}{pluginSkillDetail&&<details className="capability-details" open><summary>{pluginSkillDetail.name} · SKILL.md</summary><pre>{pluginSkillDetail.contents||"No skill contents were returned."}</pre></details>}</div>}
         {pluginMessage&&<p className="capability-status">{pluginMessage}</p>}
         <ErrorLine value={errors["plugin/list"]}/><ErrorLine value={errors["plugin/install"]}/><ErrorLine value={errors["plugin/uninstall"]}/><ErrorLine value={errors["plugin/search"]}/><ErrorLine value={errors["plugin/read"]}/><ErrorLine value={errors["plugin/skill/read"]}/><ErrorLine value={errors["plugin/reconcile"]}/><ErrorLine value={errors["plugin/share/save"]}/>
       </Section>
@@ -679,8 +691,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Marketplaces" icon={Blocks} count={counted(data.marketplaces,"plugin/list")}>
-        <div className="capability-actions marketplace-add"><input value={marketplaceSource} onChange={e=>setMarketplaceSource(e.target.value)} placeholder="Git URL or local path" title="Marketplace source: a Git URL or a local path"/><button onClick={addMarketplace} disabled={!!busy||!marketplaceSource.trim()}>Add</button><button onClick={()=>upgradeMarketplace(null)} disabled={!!busy||!data.marketplaces?.length}>Upgrade all</button></div>
-        <div className="capability-list">{(data.marketplaces||[]).map(marketplace=><div key={marketplace.name}><div><strong>{marketplace.interface?.displayName||marketplace.name}</strong><span>{marketplace.path||countLabel((marketplace.plugins||[]).length,"catalog plugin")}</span></div><div className="capability-inline-actions"><button onClick={()=>upgradeMarketplace(marketplace.name)} disabled={!!busy}>Upgrade</button>{marketplace.path&&<button onClick={()=>removeMarketplace(marketplace.name)} disabled={!!busy}>Remove</button>}</div></div>)}</div>
+        <div className="capability-actions marketplace-add"><input value={marketplaceSource} onChange={e=>setMarketplaceSource(e.target.value)} placeholder="Git URL or local path" title="Marketplace source: a Git URL or a local path"/><ActionButton busy={busy} doing={busy==="marketplace:add"&&"Adding…"} off={!marketplaceSource.trim()} onPress={addMarketplace}>Add</ActionButton><ActionButton busy={busy} doing={busy==="upgrade-all"&&"Upgrading…"} off={!data.marketplaces?.length} onPress={()=>upgradeMarketplace(null)}>Upgrade all</ActionButton></div>
+        <div className="capability-list">{(data.marketplaces||[]).map(marketplace=><div key={marketplace.name}><div><strong>{marketplace.interface?.displayName||marketplace.name}</strong><span>{marketplace.path||countLabel((marketplace.plugins||[]).length,"catalog plugin")}</span></div><div className="capability-inline-actions"><ActionButton busy={busy} doing={busy==="upgrade:"+marketplace.name&&"Upgrading…"} onPress={()=>upgradeMarketplace(marketplace.name)}>Upgrade</ActionButton>{marketplace.path&&<ActionButton busy={busy} doing={busy==="remove:"+marketplace.name&&"Removing…"} onPress={()=>removeMarketplace(marketplace.name)}>Remove</ActionButton>}</div></div>)}</div>
         <ErrorLine value={errors["marketplace/add"]}/><ErrorLine value={errors["marketplace/remove"]}/><ErrorLine value={errors["marketplace/upgrade"]}/>
       </Section>
 
