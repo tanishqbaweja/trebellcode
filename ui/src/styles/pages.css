@@ -920,8 +920,11 @@
 :root:root .secondary-page .history-page>.history-thread-row:focus-visible{outline-offset:-2px}
 :root:root .secondary-page .history-page>.history-thread-row>em.history-runtime-chip{justify-self:start;height:20px;display:inline-flex;align-items:center;padding:0 8px;border:1px solid var(--line2);border-radius:99px;background:var(--bg3);color:var(--tx2)!important;font:600 10.5px/1 var(--mono);font-style:normal;white-space:nowrap}
 :root:root .secondary-page .history-page>.history-thread-row time{min-width:9ch;text-align:right}
+/* Load older threads and a failure stand 12 px below what comes before them, and so do the rows History keeps below its first
+   page's failure. */
 :root:root .secondary-page .history-page>.history-load-more,
-:root:root .secondary-page .history-page>.history-load-error{margin-top:12px!important}
+:root:root .secondary-page .history-page>.history-load-error,
+:root:root .secondary-page .history-page>.history-load-error+.history-thread-row{margin-top:12px!important}
 @media (max-width:640px){
   :root:root .secondary-page .history-page{grid-template-columns:minmax(0,1fr) auto}
   :root:root .secondary-page .history-page>.history-thread-row{grid-template-columns:minmax(0,1fr) auto;grid-template-columns:subgrid}

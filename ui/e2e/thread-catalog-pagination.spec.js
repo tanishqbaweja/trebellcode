@@ -765,3 +765,50 @@ test("Enter held on History's Retry, or a double click on it, asks the runtime a
     await expect(history.getByRole("alert")).toHaveCount(0);
   }finally{await harness.close()}
 });
+
+// History has listed six threads, with older ones to load, and a later read of its first page fails: the failure is said in a band
+// above the threads it keeps, which stands 12 px clear of them, as Load older threads stands below them, in dark and light, wide and
+// narrow, and still after a Retry from the keyboard that fails again. On 86c4fdb8 the band sat flush on the list, its rounded corners
+// on the list's.
+test("History's first-page failure stands 12 px clear of the threads it keeps below it, as Load older threads does",async({page})=>{
+  test.setTimeout(60_000);
+  const now=Date.now()/1000,threads=(id,name,count,from)=>Array.from({length:count},(_,index)=>runtimeThreadAt(now,id+"-"+index,name+" "+(index+1),from+index*600));
+  const listed=threads("recent","Recent thread",6,0),harness=await startRuntimeHarness(listed[0]);
+  harness.control.listed=listed;harness.control.older=threads("older","Older thread",4,86400*3);
+  try{
+    await routeRuntimeHistory(page,harness,"history-kept-threads-failure-fixture");
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();
+    await expect.poll(()=>harness.control.lists).toBeGreaterThan(0);
+    const history=page.locator(".history-page"),rows=history.locator(".history-thread-row"),alert=history.getByRole("alert"),load=history.getByRole("button",{name:"Load older threads",exact:true});
+    const historyButton=page.getByRole("button",{name:"History",exact:true});
+    await historyButton.click();await expect(rows).toHaveCount(6);await expect(load).toBeVisible();
+    // Settings, then History again, whose first page the runtime now fails to list: the six threads stay, below the failure.
+    harness.control.listError="Deliberate thread list failure";
+    await page.getByRole("button",{name:"Settings",exact:true}).click();await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
+    await historyButton.click();
+    await expect(alert).toHaveText(/^Could not load thread history: Deliberate thread list failure/);
+    await expect(rows).toHaveCount(6);await expect(load).toBeVisible();
+    // The space from the band down to the first thread, and from the last thread down to Load older threads.
+    const gaps=()=>history.evaluate(node=>{
+      const box=selector=>node.querySelector(selector).getBoundingClientRect(),listed=[...node.querySelectorAll(":scope>.history-thread-row")];
+      return {band:Math.round(listed[0].getBoundingClientRect().top-box(":scope>.history-load-error").bottom),load:Math.round(box(":scope>.history-load-more").top-listed.at(-1).getBoundingClientRect().bottom)};
+    });
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:800});
+      if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+      for(const width of [1280,700]){
+        await page.setViewportSize({width,height:800});
+        expect(await gaps(),`${mode} ${width}`).toEqual({band:12,load:12});
+        await page.screenshot({animations:"disabled",path:auditDir+`polish/history/history-failed-above-kept-threads-${mode}-${width}.png`});
+      }
+    }
+    await page.setViewportSize({width:1280,height:800});await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
+    // Retry, pressed from the keyboard, fails again: the band says it still could not, as clear of the threads.
+    await alert.getByRole("button",{name:"Retry",exact:true}).focus();await page.keyboard.press("Enter");
+    await expect(alert).toHaveText(/^Still could not load thread history: Deliberate thread list failure/);
+    await expect(rows).toHaveCount(6);
+    expect(await gaps(),"after a Retry that failed again").toEqual({band:12,load:12});
+  }finally{await harness.close()}
+});
