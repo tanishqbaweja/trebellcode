@@ -177,7 +177,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [hookRuns,setHookRuns]=useState([]);
   const [authRecovery,setAuthRecovery]=useState(null);
   const [modelNotices,setModelNotices]=useState([]);
-  Object.assign(self,{showBusy,showErrors,refresh,showSandbox,showImport,scanHistory,setHistoryMessage,setHistoryImport,setHistoryScanFailed});
+  // A plugin search's answer, with the search it answers on a page drawn again meanwhile, whose box is empty.
+  const showSearch=(results,cursor,query)=>{if(query){setPluginSearchTerm(query[0]);setPluginSearchScope(query[1])}setPluginSearchResults(results);setPluginSearchCursor(cursor);setPluginSearchRan(true)};
+  Object.assign(self,{showBusy,showErrors,refresh,showSandbox,showImport,scanHistory,setHistoryMessage,setHistoryImport,setHistoryScanFailed,setPluginDetail,showSearch});
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -413,13 +415,14 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     }catch(error){shareDone[action]=["plugin/list",list=>{const item=listedPlugin(list,plugin.id);return !!item&&!!item.installed===nextInstalled}];setErrors(prev=>({...prev,[action]:failureText((plugin.installed?"Could not uninstall ":"Could not install ")+pluginLabel(plugin),error)}))}
     finally{setBusy("")}
   }
+  // A search's results and a plugin's details show on the page drawn now, as busy does: they went to the page that sent them, so on
+  // the page drawn again Searching… ended with the box empty and the catalog listed, and Loading… turned back into Details.
   async function searchPlugins({append=false}={}){
     const searchTerm=pluginSearchTerm.trim();if(!rpc||searchTerm.length<2)return;
     setBusy(append?"plugin:more":"plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
     try{
       const result=await request("plugin/search",{searchTerm,scope:pluginSearchScope,cwds:projectPath?[projectPath]:null,cursor:append?pluginSearchCursor:null,limit:20});
-      setPluginSearchResults(current=>append?[...current,...(result?.data||[])]:result?.data||[]);
-      setPluginSearchCursor(result?.nextCursor||null);setPluginSearchRan(true);
+      const to=page();to?.showSearch(append?[...pluginSearchResults,...(result?.data||[])]:result?.data||[],result?.nextCursor||null,to!==self&&[pluginSearchTerm,pluginSearchScope]);
     }catch(error){setErrors(prev=>({...prev,"plugin/search":failureText("Could not search plugins",error)}))}
     finally{setBusy("")}
   }
@@ -427,7 +430,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!rpc||!plugin?.name)return;setBusy("plugin:read:"+plugin.id);setErrors(prev=>({...prev,"plugin/read":null}));setPluginSkillDetail(null);
     try{
       const result=await request("plugin/read",{marketplacePath:marketplace.path||null,remoteMarketplaceName:marketplace.path?null:(marketplace.name||null),pluginName:plugin.name});
-      setPluginDetail(result?.plugin||null);
+      page()?.setPluginDetail(result?.plugin||null);
     }catch(error){setErrors(prev=>({...prev,"plugin/read":failureText("Could not load details for "+pluginLabel(plugin),error)}))}
     finally{setBusy("")}
   }
