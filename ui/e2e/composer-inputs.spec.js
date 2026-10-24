@@ -998,14 +998,19 @@ test("a Goal panel drawn again while its save is on its way, back from Files, wi
     await expect.soft(save,"with the bar's other buttons off").toHaveAttribute("aria-disabled","true");
     socket.release();await expect(status).toHaveText("paused");await expect(button("Resume")).not.toHaveAttribute("aria-disabled");
     await button("Resume").click();await expect(status).toHaveText("active");
-    // The notes the same way: Save continuity reads Saving… back from Files, with the bars' other buttons off, a second press sends
-    // nothing, and once the save lands the note is saved.
+    // The notes the same way: back from Files the panel draws Continuity state open, with Save continuity reading Saving… in sight
+    // and the bars' other buttons off, a second press sends nothing, and once the save lands the note is saved. The section was drawn
+    // closed, so nothing in sight said why the goal's bar was off.
     const notes=panel.locator(".continuity-actions"),saveNotes=notes.locator("button.primary"),done=panel.getByLabel("Completed work",{exact:true});
     const summary=panel.locator(".goal-continuity-details>summary"),showNotes=()=>panel.getByText("Continuity state",{exact:true}).click();
     await showNotes();await typeOver(page,done,"Fixed the session refresh");
     socket.hold("thread/continuity/set");const notesBefore=socket.sent("thread/continuity/set").length;
     await saveNotes.click();await expect(saveNotes).toHaveText("Saving…");
-    await ways["back from Files"]();await showNotes();await expect(done).toHaveValue("Fixed the session refresh");
+    await ways["back from Files"]();
+    await expect.soft(saveNotes,"the panel drawn again draws Continuity state open, its save on its way in sight").toBeVisible();
+    // A build that draws it closed: the person opens it to go on.
+    if(!await saveNotes.isVisible())await showNotes();
+    await expect(done).toHaveValue("Fixed the session refresh");
     await expect.soft(saveNotes,"the notes drawn again say their save is on its way").toHaveText("Saving…");
     await expect.soft(saveNotes,"marked busy").toHaveAttribute("aria-busy","true");
     await expect.soft(notes.getByRole("button",{name:"Discard changes",exact:true}),"the notes' Discard changes is off").toHaveAttribute("aria-disabled","true");
@@ -1024,6 +1029,39 @@ test("a Goal panel drawn again while its save is on its way, back from Files, wi
     await expect(bar.getByRole("alert"),"the refusal is said above the bar of the panel drawn again").toContainText("Goal store is read-only");
     await expect(save).toHaveText("Update goal");await expect(objective).toHaveValue("Make the checkout tests pass");await expect(button("Discard changes")).toBeVisible();
     await shoot("goal-drawn-again-save-refused",bar.getByRole("alert"));
+    // A notes save refused once the panel is drawn again (with the right panel closed and opened again): Continuity state is drawn
+    // open with Saving… in sight, the refusal is said above Save continuity, in view, and the note stays to save again. So it is when
+    // the person closed the section meanwhile: the refusal opens it. The refusal was drawn in the closed section, out of sight, while
+    // the bars came back live.
+    const refusal=notes.getByRole("alert");
+    if(!await saveNotes.isVisible())await showNotes();
+    await typeOver(page,done,"Moved the form to the new API");
+    socket.hold("thread/continuity/set");await saveNotes.click();await expect(saveNotes).toHaveText("Saving…");
+    await ways["with the right panel closed and opened again"]();
+    await expect.soft(saveNotes,"the panel drawn again shows the notes' save on its way").toBeVisible();
+    socket.release("Continuity store is read-only");
+    await expect(refusal,"the notes' refusal is said in sight on the panel drawn again").toBeVisible();
+    await expect(refusal).toContainText("Continuity store is read-only");await expect(refusal).toBeInViewport();
+    await expect(done).toHaveValue("Moved the form to the new API");await expect(notes.getByRole("button",{name:"Discard changes",exact:true})).toBeVisible();
+    await expect(save,"the goal's bar is live again").not.toHaveAttribute("aria-disabled");
+    await shoot("goal-notes-drawn-again-save-refused",refusal);
+    socket.hold("thread/continuity/set");await saveNotes.click();await expect(saveNotes).toHaveText("Saving…");
+    await ways["back from Files"]();
+    if(await saveNotes.isVisible())await summary.click();
+    await expect(saveNotes,"the person has closed Continuity state").toBeHidden();
+    socket.release("Continuity store is read-only");
+    await expect(refusal,"a refusal opens the section the person closed, and is said in sight").toBeVisible();await expect(refusal).toBeInViewport();
+    // A refusal that lands while no Goal panel is drawn (the person is on Files) is said once the panel is drawn again, above its bar;
+    // it was said nowhere.
+    await typeOver(page,objective,"Make the payment tests pass");
+    socket.hold("thread/goal/set");await save.click();await expect(save).toHaveText("Saving…");
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(panel).toHaveCount(0);
+    socket.release("Goal store is locked for the release");await page.waitForTimeout(600);await painted(page);
+    await tabs.getByRole("button",{name:"Goal",exact:true}).click();
+    await expect(bar.getByRole("alert"),"a refusal that landed while no panel was drawn is said once it is drawn again").toHaveText("Goal store is locked for the release");
+    await expect(bar.getByRole("alert")).toBeInViewport();
+    await expect(save).toHaveText("Update goal");await expect(objective).toHaveValue("Make the payment tests pass");await expect(button("Discard changes")).toBeVisible();
+    await shoot("goal-refused-while-away",bar.getByRole("alert"));
   }finally{await harness.close()}
 });
 

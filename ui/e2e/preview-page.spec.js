@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 mkdirSync(auditDir,{recursive:true});
 
-// A local site whose pages name their path, so a test can read which page the preview frame shows.
+// A local site whose pages name their path, so a test can read which page the preview frame shows. Its /press page is one button
+// as big as the page that counts the presses it takes.
+const PRESS_PAGE=`<!doctype html><title>Press page</title><style>html,body{margin:0;height:100%}button{display:block;width:100%;height:100vh;font:16px sans-serif}</style><button>Pressed 0</button><script>let presses=0;addEventListener("mousedown",()=>{document.querySelector("button").textContent="Pressed "+ ++presses})</script>`;
 async function startSite(port=0){
-  const server=createServer((req,res)=>{const path=new URL(req.url,"http://site").pathname;res.writeHead(200,{"content-type":"text/html; charset=utf-8"});res.end(`<!doctype html><title>Page ${path}</title><h1>Page ${path}</h1>`)});
+  const server=createServer((req,res)=>{const path=new URL(req.url,"http://site").pathname;res.writeHead(200,{"content-type":"text/html; charset=utf-8"});res.end(path==="/press"?PRESS_PAGE:`<!doctype html><title>Page ${path}</title><h1>Page ${path}</h1>`)});
   await new Promise((resolve,reject)=>server.listen(port,"127.0.0.1",resolve).once("error",reject));
   const address=server.address();
   return {url:"http://127.0.0.1:"+address.port,port:address.port,close:()=>new Promise(resolve=>server.close(resolve))};
@@ -971,9 +973,9 @@ function scriptedSlowProfileImports(){
 // the address bar to Import profile and Enter, which leaves the keyboard on Import profile. mode() switches to a mode at 1280 wide.
 async function openProfileList(page,request){
   await page.addInitScript(scriptedSlowProfileImports);
-  const {panel,address}=await openBrowserPanel(page,request);
+  const {panel,address,frame}=await openBrowserPanel(page,request);
   const open=panel.getByRole("button",{name:"Import profile",exact:true}),list=panel.getByTestId("browser-profile-import");
-  return {panel,open,list,
+  return {panel,open,list,address,frame,
     imports:()=>page.evaluate(()=>window.profileImports),
     async mode(mode){
       await page.setViewportSize({width:1280,height:800});
@@ -994,6 +996,8 @@ test("Enter on a profile's Import keeps the keyboard on it while the profile imp
   const profiles=await openProfileList(page,request);
   const {panel,open,list}=profiles,work=list.getByRole("button",{name:/Work profile/}),home=list.getByRole("button",{name:/Home profile/});
   const error=panel.locator(".browser-action-error"),notice=panel.getByTestId("browser-cookie-status");
+  // The cursor over each Import: the arrow while they wait, as over the toolbar's buttons, and the hand while they import.
+  const cursors=()=>Promise.all([work,home].map(button=>button.evaluate(node=>getComputedStyle(node).cursor)));
   for(const mode of ["dark","light"]){
     await profiles.mode(mode);
     await profiles.byEnter();await tabTo(page,work);
@@ -1001,12 +1005,14 @@ test("Enter on a profile's Import keeps the keyboard on it while the profile imp
     let before=await profiles.imports();await page.keyboard.press("Enter");await expect.poll(profiles.imports).toBe(before+1);await frames(page);
     await expect(work,"the keyboard stays on the Work profile's Import while it imports").toBeFocused();
     await expect(work,"the Work profile's Import says it is off while it imports").toBeDisabled();await expect(home).toBeDisabled();
+    expect(await cursors(),"the Imports that wait show the arrow, not the hand").toEqual(["default","default"]);
     // A second Enter while it imports imports nothing more.
     await page.keyboard.press("Enter");await frames(page);
     for(const width of [1280,700]){await page.setViewportSize({width,height:800});await work.scrollIntoViewIfNeeded();await expect(work).toBeFocused();await page.screenshot({animations:"disabled",path:auditDir+"browser-profile-import-held-keyboard-"+mode+"-"+width+".png"})}
     await page.setViewportSize({width:1280,height:800});
     await page.evaluate(()=>window.failShell("Firefox profile is locked"));
     await expect(error).toHaveText("Profile import failed: Firefox profile is locked");await expect(work).toBeEnabled();
+    expect(await cursors(),"the Imports show the hand once they import again").toEqual(["pointer","pointer"]);
     await expect(work,"the keyboard stays on the Work profile's Import when the import is refused").toBeFocused();
     expect(await ringed(work),"with its ring").toBe(true);
     expect(await profiles.imports(),"one import for the two presses").toBe(before+1);
@@ -1035,9 +1041,10 @@ test("Enter on a profile's Import keeps the keyboard on it while the profile imp
 });
 
 // The profile list's X closes it and gives the keyboard back to Import profile, which opened it: pressed with Enter, held (its
-// repeats open nothing again), clicked, and double clicked (the second click lands on what came up under it, and takes nothing).
-// It took the keyboard to the page.
-test("the profile list's X gives the keyboard back to Import profile, pressed with Enter, held, clicked or double clicked",async({page,request})=>{
+// repeats open nothing again), clicked, and double clicked (the second click lands on what came up under it, and takes nothing),
+// also with a page previewed, whose frame comes up under the X as the list closes. It took the keyboard to the page; with a page
+// previewed the second click pressed the previewed page, and the keyboard went into its frame.
+test("the profile list's X gives the keyboard back to Import profile, pressed with Enter, held, clicked or double clicked, also over a page previewed",async({page,request})=>{
   test.setTimeout(90_000);
   const profiles=await openProfileList(page,request);
   const {open,list}=profiles,close=list.getByRole("button",{name:"Close profile import"});
@@ -1063,4 +1070,30 @@ test("the profile list's X gives the keyboard back to Import profile, pressed wi
   await open.click();await expect(list).toBeVisible();
   await close.dblclick();await expect(list).toHaveCount(0);await frames(page);
   await expect(open,"the list's X double clicked gives the keyboard back to Import profile, and the second click takes nothing").toBeFocused();
+  // With a page previewed: the list stands over the preview's frame, which comes up under the X as the list closes, so the second
+  // click of a double click on the X lands where the previewed page is. The page takes none of it, the keyboard is on Import
+  // profile, and a press of the person's own then reaches the page.
+  const site=await startSite();
+  try{
+    await typeAddress(page,profiles.address,site.url+"/press");await page.keyboard.press("Enter");
+    const shown=page.locator('iframe[title="Trebell preview"]'),pressedPage=profiles.frame.locator("button"),presses=async()=>Number((await pressedPage.textContent()).replace(/\D+/g,""));
+    await expect(pressedPage).toHaveText("Pressed 0");
+    for(const mode of ["dark","light"]){
+      await profiles.mode(mode);
+      const before=await presses();
+      await open.click();await expect(list).toBeVisible();
+      const box=await close.boundingBox(),x=box.x+box.width/2,y=box.y+box.height/2;
+      await page.mouse.dblclick(x,y);await expect(list).toHaveCount(0);await frames(page);
+      const frameBox=await shown.boundingBox();
+      expect(x>frameBox.x&&x<frameBox.x+frameBox.width&&y>frameBox.y&&y<frameBox.y+frameBox.height,"the preview's frame came up under the X").toBe(true);
+      expect.soft(await presses(),"the previewed page takes no click of a double click on the X in "+mode).toBe(before);
+      await expect.soft(open,"the keyboard is on Import profile after a double click on the X over a page previewed in "+mode).toBeFocused();
+      for(const width of [1280,700]){await page.setViewportSize({width,height:800});await open.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+"browser-profile-list-closed-over-preview-"+mode+"-"+width+".png"})}
+      await page.setViewportSize({width:1280,height:800});
+      // A press of the person's own, once the double click is over, reaches the previewed page.
+      await expect.poll(()=>shown.evaluate(node=>getComputedStyle(node).pointerEvents)).not.toBe("none");
+      const now=await presses();await page.mouse.click(x,y);
+      await expect.poll(presses,"a press of the person's own reaches the previewed page").toBe(now+1);
+    }
+  }finally{await site.close()}
 });

@@ -13,8 +13,10 @@ async function freePort(){
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
 
+// holdRepair() keeps the repair requests from then on until the function it gives back answers them: started, or refused with the
+// reason it is given (a harness slow to start the repair).
 async function startHarness(thread,continuity){
-  let socket=null,repairRequests=0;
+  let socket=null,repairRequests=0,heldRepairs=null;
   const upstreamHttp=createServer(),wss=new WebSocketServer({noServer:true});
   upstreamHttp.on("upgrade",(req,raw,head)=>wss.handleUpgrade(req,raw,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
@@ -31,7 +33,10 @@ async function startHarness(thread,continuity){
       else if(message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
       else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
-      else if(message.method==="thread/verification/repair"){repairRequests++;result={record:{id:"verification-1"},nextAction:{action:"repair"},turn:{id:"repair-turn",status:"inProgress"}}}
+      else if(message.method==="thread/verification/repair"){
+        repairRequests++;result={record:{id:"verification-1"},nextAction:{action:"repair"},turn:{id:"repair-turn",status:"inProgress"}};
+        if(heldRepairs){const started=result;heldRepairs.push(reason=>ws.send(JSON.stringify(reason?{id:message.id,error:{code:-32000,message:reason}}:{id:message.id,result:started})));return}
+      }
       ws.send(JSON.stringify({id:message.id,result}));
     });
   });
@@ -41,6 +46,7 @@ async function startHarness(thread,continuity){
   return {
     wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",
     repairRequests:()=>repairRequests,
+    holdRepair(){const held=heldRepairs=[];return reason=>{if(heldRepairs===held)heldRepairs=null;for(const answer of held.splice(0))answer(reason)}},
     async close(){relay.close();try{socket?.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])},
   };
 }
@@ -91,5 +97,69 @@ test("failed verification can start a same-thread repair turn from continuity",a
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
     await expect.poll(()=>repair.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 248, 240)");
     await page.screenshot({animations:"disabled",path:auditDir+"verification-repair-light-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+// A Goal panel drawn again (the right panel closed and opened again) while its repair is starting draws Continuity state open,
+// with the repair's Starting… in sight, and says what became of the start there: why the harness refused it, in view, with Repair
+// failed verification offered again, or that the repair turn started, with Repair started held. The section was drawn closed, so
+// the goal's buttons were off with nothing in sight saying why, a refusal was drawn where nothing showed it, and a start that went
+// through was said nowhere, with Repair failed verification offered again for the same failure.
+test("a Goal panel drawn again while its verification repair starts draws Continuity state open with Starting…, and says the start or why it was refused",async({page})=>{
+  test.setTimeout(45_000);
+  const thread={id:"verification-repair-redrawn-thread",name:"Verification repair redrawn",preview:"Repair loop",cwd:process.cwd(),model:"test/coding-fast",createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const continuity={
+    threadId:thread.id,notes:{completedWork:[],unresolvedFailures:[],importantDecisions:[],artifactsCreated:[],pendingNextActions:[],updatedAt:0},
+    workspace:{cwd:process.cwd(),branch:null,environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default"},
+    verification:{status:"failed",risk:"medium",verified:false,summary:"Affected parser tests failed.",updatedAt:Date.now()},
+    completedTurnIds:["turn-1"],unresolvedFailures:[],recentFailures:[],artifactsCreated:[],pendingNextActions:[],completedWork:[],importantDecisions:[],meaningful:true,updatedAt:Date.now(),
+  };
+  const harness=await startHarness(thread,continuity);
+  try{
+    await routeApp(page,harness,thread);
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Verification repair redrawn"]')});
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    const goalButton=page.locator(".workspace-header").getByRole("button",{name:"Thread goal",exact:true});
+    await goalButton.click();
+    const panel=page.getByTestId("goal-panel"),repair=panel.getByTestId("verification-repair-card");await expect(panel).toBeVisible();
+    const summary=panel.locator(".goal-continuity-details>summary"),save=panel.locator(":scope>.goal-actions>button.primary");
+    const redraw=async()=>{await page.getByRole("button",{name:"Close right panel"}).click();await expect(panel).toHaveCount(0);await goalButton.click();await expect(panel).toBeVisible()};
+    const shoot=async(name,shown)=>{
+      for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);for(const width of [1280,700]){await page.setViewportSize({width,height:800});await shown.evaluate(node=>node.scrollIntoView({block:"center"}));await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+"x800.png"})}}
+      await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    };
+    await summary.click();
+    // Refused: the panel drawn again says why, in view, and offers the repair again.
+    let answer=harness.holdRepair();
+    await repair.getByRole("button",{name:"Repair failed verification",exact:true}).click();
+    await expect(repair.getByRole("button",{name:"Starting…",exact:true})).toBeDisabled();
+    await expect.poll(()=>harness.repairRequests()).toBe(1);
+    await redraw();
+    await expect.soft(repair.getByRole("button",{name:"Starting…",exact:true}),"the panel drawn again draws Continuity state open, with the repair starting in sight").toBeVisible();
+    await expect.soft(save,"and the goal's bar off meanwhile").toHaveAttribute("aria-disabled","true");
+    await shoot("verification-repair-drawn-again-starting",repair);
+    // A build that draws it closed: the person opens it to go on.
+    if(!await repair.isVisible())await summary.click();
+    answer("The failed step's record could not be read");
+    const refusal=panel.getByRole("alert").filter({hasText:"The failed step's record could not be read"});
+    await expect(refusal,"the refusal is said on the panel drawn again").toBeVisible();await expect(refusal).toBeInViewport();
+    await expect(repair.getByRole("button",{name:"Repair failed verification",exact:true})).toBeEnabled();
+    await shoot("verification-repair-drawn-again-refused",refusal);
+    // Started: the panel drawn again says the repair turn started, and holds Repair started, so the failure is not repaired twice.
+    answer=harness.holdRepair();
+    await repair.getByRole("button",{name:"Repair failed verification",exact:true}).click();
+    await expect.poll(()=>harness.repairRequests()).toBe(2);
+    await redraw();
+    await expect.soft(repair.getByRole("button",{name:"Starting…",exact:true}),"the panel drawn again shows the repair starting").toBeVisible();
+    if(!await repair.isVisible())await summary.click();
+    answer();
+    await expect(panel.getByText("Repair turn started on this thread.",{exact:true}),"the panel drawn again says the repair turn started").toBeVisible();
+    await expect(repair.getByRole("button",{name:"Repair started",exact:true})).toBeDisabled();
+    await expect(refusal).toHaveCount(0);
+    await shoot("verification-repair-drawn-again-started",repair);
+    expect(harness.repairRequests(),"one repair for each press").toBe(2);
   }finally{await harness.close()}
 });

@@ -91,8 +91,9 @@ function pressOnce(event,pressed){
 // each thread: one drawn again while a write is on its way (back from another tab, with the right panel closed and opened, or from
 // another thread) says so on the button pressed, with the rest off, takes no second press until it lands, and says why if it is
 // refused, as the panel that sent it would. The write went with the panel that sent it, so the one drawn again offered every
-// button, a second Update goal saved again, and a refusal was said nowhere.
-const writes=new Map(),panels=new Map();
+// button, a second Update goal saved again, and a refusal was said nowhere. A refusal that lands while no panel is shown for the
+// thread (the person is on Files) waits for the next one (refused), which says it: it was said nowhere either.
+const writes=new Map(),panels=new Map(),refused=new Map();
 
 // covered: another thread's opening state is up. The panel belongs to the thread being left, so it hides without unmounting: a
 // failed open brings it back with the drafts in it.
@@ -109,7 +110,9 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [validationExpectations,setValidationExpectations]=useState("");
   const [detailsOpen,setDetailsOpen]=useState(false);
   const [advancedBudgetOpen,setAdvancedBudgetOpen]=useState(false);
-  const [continuityOpen,setContinuityOpen]=useState(false);
+  // A panel drawn while a notes write or a repair start is on its way draws Continuity state open, as its button, which says so,
+  // and the refusal it may bring are in it: drawn closed, nothing in sight said why the goal's buttons were off.
+  const [continuityOpen,setContinuityOpen]=useState(()=>/^(co|ve)/.test(writes.get(thread?.id)));
   const [verificationOpen,setVerificationOpen]=useState(false);
   const [verificationEvidence,setVerificationEvidence]=useState(null);
   const [verificationEvidenceLoading,setVerificationEvidenceLoading]=useState(false);
@@ -134,17 +137,22 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     const types=["pointerdown","focusin"];for(const type of types)document.addEventListener(type,over,true);
     return()=>{for(const type of types)document.removeEventListener(type,over,true)};
   },[]);
-  // The last refusal, said where it was asked for (at): the goal's bar, the notes' buttons or the repair card. It is brought into
-  // view as it shows, clear of the goal's bar pinned below.
+  // The last refusal, said where it was asked for (at): the goal's bar, the notes' buttons or the repair card. One said in
+  // Continuity state opens it, closed or not, and it is brought into view as it shows, clear of the goal's bar pinned below.
   const [error,setError]=useState(null),errorRef=useRef(null);
   useEffect(()=>{errorRef.current?.scrollIntoView({block:"nearest"})},[error]);
-  // The panel shown for the thread (panels) says what a write on its way from the one before does, and why it was refused.
-  useEffect(()=>{const id=thread?.id,shown={showBusy,setError};panels.set(id,shown);showBusy(writes.get(id)||"");return()=>{if(panels.get(id)===shown)panels.delete(id)}},[]);
+  // The panel shown for the thread (panels) says what a write on its way from the one before does: why it was refused (say), and
+  // that a repair it started has started (started), so its button holds Repair started; and a refusal that waited for it.
+  useEffect(()=>{
+    const id=thread?.id,shown={showBusy,say(said){if(said.at!=="goal")setContinuityOpen(true);setError(said)},started(status,key){setRepairStatus(status);setRepairStartedFor(key)}};
+    panels.set(id,shown);showBusy(writes.get(id)||"");const said=refused.get(id);if(said){refused.delete(id);shown.say(said)}
+    return()=>{if(panels.get(id)===shown)panels.delete(id)};
+  },[]);
   const goalFields=[objective,tokenBudget,timeBudget,turnBudget,toolCallBudget,childAgentBudget,costBudgetUsd,completionConditions,constraints,validationExpectations];
   const goalSaved=useSavedFields("goal",thread?.id,goalValues(goal),goalFields,[setObjective,setTokenBudget,setTimeBudget,setTurnBudget,setToolCallBudget,setChildAgentBudget,setCostBudgetUsd,setCompletionConditions,setConstraints,setValidationExpectations]);
   const notes=[completedWork,unresolvedFailures,importantDecisions,artifactsCreated,pendingNextActions];
   const notesSaved=useSavedFields("notes",thread?.id,noteValues(continuity),notes,[setCompletedWork,setUnresolvedFailures,setImportantDecisions,setArtifactsCreated,setPendingNextActions]);
-  useEffect(()=>{setDetailsOpen(false);setAdvancedBudgetOpen(false);setContinuityOpen(false);setVerificationOpen(false);setVerificationEvidence(null);setVerificationEvidenceError("");setRepairStatus("");setRepairStartedFor(null)},[thread?.id]);
+  useEffect(()=>{setDetailsOpen(false);setAdvancedBudgetOpen(false);setVerificationOpen(false);setVerificationEvidence(null);setVerificationEvidenceError("");setRepairStatus("");setRepairStartedFor(null)},[thread?.id]);
   // A started repair holds the button until its turn ends or the thread records a newer verification, so one failure
   // is not repaired twice at once.
   const threadRunning=thread?.status?.type==="active",threadWasRunning=useRef(threadRunning);
@@ -162,7 +170,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   // A write is the thread's (writes), and what it does and why it was refused are said by the panel shown for the thread, which may
   // be one drawn after the panel that sent it went.
   function setBusy(what){if(what)writes.set(thread.id,what);else writes.delete(thread.id);panels.get(thread.id)?.showBusy(what)}
-  const failAt=(at,e)=>panels.get(thread.id)?.setError({at,text:e?.message||String(e)});
+  const failAt=(at,e)=>{const said={at,text:e?.message||String(e)},shown=panels.get(thread.id);if(shown)shown.say(said);else refused.set(thread.id,said)};
   const alertAt=at=>error?.at===at&&<div ref={errorRef} className="inline-error" role="alert">{error.text}</div>;
   // While a write is on its way the bars' buttons only say they are off (pressOnce takes no press of them), and the one pressed,
   // which busy names ("save", the status Pause, Resume or Complete sets, "clear", "continuity" ...), says what it does, marked busy.
@@ -221,7 +229,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     if(!rpc)return;setBusy("verification-repair");setError(null);setRepairStatus("");
     try{
       const result=await startSameThreadVerificationRepair({rpc,thread});
-      setRepairStatus(result?.turn?.id?"Repair turn started on this thread.":"Repair request started.");setRepairStartedFor(verificationKey);
+      panels.get(thread.id)?.started(result?.turn?.id?"Repair turn started on this thread.":"Repair request started.",verificationKey);
     }catch(e){failAt("repair",e)}finally{setBusy("")}
   }
   // Codex's own goal statuses (usageLimited, budgetLimited) read as words rather than Codex's identifiers.
