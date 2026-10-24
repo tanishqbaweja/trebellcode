@@ -864,9 +864,11 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
   .main-frame.terminal-open .chat-workspace .conversation-column>.welcome>.suggestions{margin-top:10px}
 }
 
-/* Docked inspector at 901px and up: the main column may shrink, and App clamps --right-panel-width to the window, so the
-   panel never runs past the right edge (960-1140px windows). */
-@media (min-width:901px){
+/* Docked inspector wider than 900px: the main column may shrink, and App clamps --right-panel-width to the window, so the
+   panel never runs past the right edge (960-1140px windows). Its test is the overlay drawer's below, negated, so every width,
+   fractional ones too (a zoomed window or a scaled display), is one or the other: 900.8px matched neither (min-width:901px) nor
+   (max-width:900px), and Chrome takes 900.00006px (a 1575px window at 175%) for both (width > 900px) and (max-width:900px). */
+@media not (max-width:900px){
   .workspace-shell.right-open:not(.right-maximized){grid-template-columns:minmax(0,1fr) var(--right-panel-width,440px)}
 }
 

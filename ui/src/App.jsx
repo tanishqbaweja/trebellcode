@@ -266,6 +266,18 @@ function useLatestCallback(callback){
   return useCallback((...args)=>ref.current?.(...args),[]);
 }
 
+// Whether the window matches a media query, followed as it changes: App takes the shell's breakpoints as the stylesheets test them,
+// where window.innerWidth gives the fractional width of a zoomed window or a scaled display as a whole number (900.57px read 900).
+function useMediaQuery(query){
+  const [matches,setMatches]=useState(()=>Boolean(window.matchMedia?.(query)?.matches));
+  useEffect(()=>{
+    const media=window.matchMedia?.(query);if(!media)return;
+    const change=()=>setMatches(media.matches);change();
+    media.addEventListener?.("change",change);return()=>media.removeEventListener?.("change",change);
+  },[query]);
+  return matches;
+}
+
 // The appearance this browser last applied. index.html reads the same key before the stylesheets load, so a light-mode user's
 // first frame is light, and the first render starts from it instead of the dark default until /api/state answers.
 const APPEARANCE_CACHE_KEY="trebell-appearance-v1";
@@ -1499,8 +1511,10 @@ export default function App(){
   },[narrowWindow]);
   // The docked inspector (wider than 900px) never pushes the main column under 400px or past the window edge: it takes the stored
   // width when the window has room and shrinks toward its 340px minimum when it does not. The stored preference stays for wider
-  // windows. The sidebar column follows the shell's own breakpoints (t3-workspace.css: 224px up to 1120px wide).
-  const sidebarColumnWidth=!sidebarOpen?0:viewportWidth<=900?196:viewportWidth<=1120?224:layoutPrefs.sidebarWidth;
+  // windows. The sidebar column follows the shell's own breakpoints (t3-workspace.css: 196px up to 900px wide, where the inspector
+  // is the overlay drawer, and 224px up to 1120px), tested as the stylesheets test them.
+  const narrowDrawer=useMediaQuery("(max-width:900px)"),mediumWindow=useMediaQuery("(max-width:1120px)");
+  const sidebarColumnWidth=!sidebarOpen?0:narrowDrawer?196:mediumWindow?224:layoutPrefs.sidebarWidth;
   const rightPanelWidth=Math.max(LAYOUT_LIMITS.rightPanelWidth[0],Math.min(layoutPrefs.rightPanelWidth,viewportWidth-sidebarColumnWidth-400));
   // The largest size a pane may take in this window; the pointer and keyboard resizers share these limits.
   function layoutMaximum(kind){
@@ -5152,13 +5166,12 @@ export default function App(){
   // The composer's Configure buttons ask for the provider's API key, so they land in its field.
   const configureProviderKey=useCallback(()=>{setSettingsEntry({section:"agents",target:"agents-provider",focus:"provider-api-key",nonce:Date.now()});navigateSection("settings")},[]);
   useEffect(()=>{if(section!=="settings")setSettingsEntry(null)},[section]);
-  // At 900px and below the inspector is an overlay drawer over the main column. Opening a full page closes it (the page would
-  // otherwise sit mostly under it); Escape and a click on the dimmed area close it too, and focus moves into the drawer when it
-  // opens and back to the control that opened it when it closes.
-  const narrowDrawer=viewportWidth<=900;
+  // At 900px and below (narrowDrawer, above) the inspector is an overlay drawer over the main column. Opening a full page closes it
+  // (the page would otherwise sit mostly under it); Escape and a click on the dimmed area close it too, and focus moves into the
+  // drawer when it opens and back to the control that opened it when it closes.
   const drawerOpenerRef=useRef(null);
   useEffect(()=>{
-    if(!PAGE_CRUMBS[section]||!rightPanelOpen||!window.matchMedia?.("(max-width:900px)")?.matches)return;
+    if(!PAGE_CRUMBS[section]||!rightPanelOpen||!narrowDrawer)return;
     setRightPanelOpen(false);setRightPanelMaximized(false);
   },[section]);
   useEffect(()=>{

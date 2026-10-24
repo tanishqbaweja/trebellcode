@@ -1,5 +1,5 @@
 import { test,expect } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync,writeFileSync } from "node:fs";
 import { mkdtemp,rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -2300,4 +2300,93 @@ test("a narrow browser window collapses the sidebar instead of scrolling sideway
   await page.setViewportSize({width:700,height:800});await settle(page);
   await page.setViewportSize({width:1280,height:800});await settle(page);
   await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
+});
+
+// The page zoomed with the browser's keys (or laid out on a display Windows scales) is a fractional number of CSS pixels wide: at
+// 110%, 125% and 150% the windows 991, 1126 and 1351px wide are 900.91, 900.8 and 900.67px. The shell docked the inspector at
+// (min-width:901px) and made it the overlay drawer at (max-width:900px), so those widths matched neither: the 1120px rule's grid
+// laid out a 460px column and a 360px inspector beside the 224px sidebar, 143px past the window's right edge, with the inspector's
+// Close, Maximize, Commit and Sync out of view, and Tab to Sync slid the whole app sideways and left it there (UI lane D, round 8).
+// App chose the drawer (its scrim and Escape) and the sidebar's width by window.innerWidth, which reads such a width as a whole
+// number: at 175%, 200% and 250% the windows 1576, 1801 and 2251px wide are 900.57, 900.5 and 900.4px, which it read as 900. And a
+// 1575px window at 175% is 900.00006px, which (max-width:900px) takes, within its 64th of a pixel of tolerance, and which
+// (width > 900px) takes too. So the window is zoomed in a step at a time to 250%, through the zoom levels Chrome's Ctrl+= steps
+// through, and at each step set to every width from the one at or under 900 CSS pixels to the one at or over 901 and back. A
+// headless browser has no zoom keys or menu of its own: an extension of the test's own zooms the page with chrome.tabs.setZoom, as
+// they do (the full Chromium's headless mode runs extensions). Its browser profile goes in the temp folder: under a test's output
+// folder the profile's deepest files passed Windows' 260-character path limit, its service worker's script could not be kept, and
+// the worker stopped.
+const ZOOM_EXTENSION={
+  "manifest.json":JSON.stringify({manifest_version:3,name:"Zoom",version:"1.0",background:{service_worker:"zoom.js"}}),
+  "zoom.js":"self.zoomTo=async factor=>{const [tab]=await chrome.tabs.query({active:true});await chrome.tabs.setZoom(tab.id,factor)};",
+};
+for(const mode of ["dark","light"])test(`zoomed from 110% to 250%, the inspector docks inside the window or opens as the drawer with its scrim at every width around 900 CSS pixels, its Close, Maximize, Commit and Sync in view, Tab leaving the app in place and Escape closing only the drawer, in ${mode} mode`,async({playwright,baseURL,proxy,headless})=>{
+  test.setTimeout(300_000);
+  const project={id:"zoom-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
+  const threads=["Repo task one","Repo task two"].map((title,index)=>({id:"zoom-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const dir=await mkdtemp(join(tmpdir(),"trebell-zoom-")),extension=join(dir,"extension");mkdirSync(extension);
+  for(const [name,text] of Object.entries(ZOOM_EXTENSION))writeFileSync(join(extension,name),text);
+  const harness=await startHarness(threads);let context=null;
+  try{
+    context=await playwright.chromium.launchPersistentContext(join(dir,"profile"),{channel:"chromium",headless,baseURL,proxy,viewport:{width:1280,height:800},args:["--disable-extensions-except="+extension,"--load-extension="+extension]});
+    const zoom=context.serviceWorkers()[0]||await context.waitForEvent("serviceworker");
+    const page=context.pages()[0]||await context.newPage();
+    await openApp(page,{harness,threads,meta:Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}])),project,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),toggle=page.getByTestId("right-panel-toggle");
+    if(!(await right.isVisible())){await toggle.click();await expect(right).toBeVisible()}
+    await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+    const message=right.getByPlaceholder("Commit message"),sync=right.getByRole("button",{name:"Sync",exact:true});
+    const kept={Close:right.getByRole("button",{name:"Close right panel",exact:true}),Maximize:right.getByRole("button",{name:"Maximize right panel",exact:true}),Commit:right.getByRole("button",{name:"Commit",exact:true}),Sync:sync};
+    await expect(message).toBeVisible();
+    // The window's width in CSS pixels, the inspector, the conversation's column beside or under it and the sidebar, whether the
+    // scrim shows (null: App drew none), and what scrolled sideways.
+    const read=()=>page.evaluate(()=>{
+      const box=node=>{const rect=node?.getBoundingClientRect();return rect?{left:+rect.left.toFixed(2),right:+rect.right.toFixed(2)}:null},scrim=document.querySelector("[data-testid=inspector-scrim]");
+      return {width:document.documentElement.getBoundingClientRect().width,panel:box(document.querySelector("[data-testid=right-panel]")),column:box(document.querySelector(".chat-workspace")),sidebar:box(document.querySelector(".sidebar")),scrim:scrim?getComputedStyle(scrim).display!=="none":null,scrolled:[document.scrollingElement,document.querySelector(".app-shell"),document.querySelector(".workspace-shell")].filter(node=>node?.scrollLeft).map(node=>(node.className||node.tagName)+" "+node.scrollLeft)};
+    });
+    const seen=[];
+    const at=async(level,width,shot)=>{
+      await page.setViewportSize({width,height:Math.round(800*level)});
+      // Settled: the same layout two frames running, at the window's width over the zoom.
+      let state=null;
+      await expect.poll(async()=>{await settle(page);const next=await read(),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same&&Math.abs(next.width-width/level)<0.01},{message:`the layout settles at ${width}px zoomed to ${Math.round(level*100)}%`,intervals:[50]}).toBe(true);
+      const where=`at ${width}px zoomed to ${Math.round(level*100)}% (${state.width.toFixed(3)} CSS pixels)`,edge=state.width+0.5,drawer=state.panel.left<state.column.right-0.5;
+      seen.push(`${Math.round(level*100)}% ${width} ${state.width.toFixed(2)}px ${drawer?"drawer":"docked"} ${state.panel.left}-${state.panel.right}`);
+      expect.soft(state.panel.right,`the inspector ends inside the window ${where}`).toBeLessThanOrEqual(edge);
+      if(drawer){
+        expect.soft(state.scrim,`the inspector over the conversation is the drawer, with its scrim, ${where}`).toBe(true);
+        expect.soft(state.column.right,`the conversation under the drawer keeps the window's width ${where}`).toBeGreaterThanOrEqual(state.width-0.5);
+      }else expect.soft(state.scrim,`the docked inspector has no scrim ${where}`).toBe(null);
+      for(const [name,control] of Object.entries(kept)){const [left,end]=await control.evaluate(node=>{const rect=node.getBoundingClientRect();return [rect.left,rect.right]});expect.soft(left>=-0.5&&end<=edge,`${name} is wholly in the window ${where} (${left.toFixed(1)} to ${end.toFixed(1)})`).toBe(true)}
+      // From the commit message Tab goes through the inspector to Sync, Commit on the way (a message typed in the inspector opened
+      // again), and the app stays where it is.
+      await message.click();
+      if(!(await message.inputValue())){await page.keyboard.type("Fit the inspector",{delay:10});await expect(kept.Commit).toBeEnabled()}
+      const passed=[];
+      for(let presses=1;presses<=8&&!(await sync.evaluate(node=>node===document.activeElement));presses++){
+        await page.keyboard.press("Tab");const now=await read();passed.push(await page.evaluate(()=>document.activeElement?.textContent?.trim()));
+        expect.soft({sidebar:now.sidebar.left,scrolled:now.scrolled},`Tab ${presses} from the commit message leaves the app in place ${where}`).toEqual({sidebar:0,scrolled:[]});
+      }
+      expect.soft(passed,`Tab from the commit message passes Commit ${where}`).toContain("Commit");
+      await expect.soft(sync,`Tab from the commit message reaches Sync ${where}`).toBeFocused();
+      if(shot)await page.screenshot({path:join(shotsDir,`inspector-zoom-${Math.round(level*100)}-${mode}-${width}.png`),animations:"disabled"});
+      // Escape closes the drawer, and only the drawer.
+      await page.keyboard.press("Escape");await settle(page);
+      if(drawer)await expect.soft(right,`Escape closes the drawer ${where}`).toBeHidden();
+      else await expect.soft(right,`Escape leaves the docked inspector open ${where}`).toBeVisible();
+      if(!(await right.isVisible())){await toggle.click();await expect(right).toBeVisible()}
+      await expect(message).toBeVisible();
+    };
+    for(const level of [1.1,1.25,1.5,1.75,2,2.5]){
+      // The window at the step's first width, then zoomed in a step, as Ctrl+= zooms it.
+      const from=Math.floor(900*level),to=Math.ceil(901*level),widths=Array.from({length:to-from+1},(_,index)=>from+index);
+      await page.setViewportSize({width:from,height:Math.round(800*level)});
+      await zoom.evaluate(factor=>self.zoomTo(factor),level);
+      await expect.poll(()=>page.evaluate(()=>devicePixelRatio),{message:`the window zooms to ${Math.round(level*100)}%`}).toBeCloseTo(level,3);
+      for(const width of widths)await at(level,width,width/level>900.01&&width/level<900.99);
+      for(const width of widths.slice(0,-1).reverse())await at(level,width,false);
+    }
+    console.log(`the inspector zoomed in ${mode} mode: ${seen.join(", ")}`);
+  }finally{await context?.close();await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
