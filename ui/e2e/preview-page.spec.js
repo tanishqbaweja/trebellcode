@@ -54,11 +54,12 @@ function scriptedAgentBrowser(){
   };
 }
 
-async function openBrowserPanel(page,request){
+// The panel opens at 460 px beside a 258 px sidebar, as a person left them, or with ownLayout at the app's own widths (440 and 264).
+async function openBrowserPanel(page,request,{ownLayout=false}={}){
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{},panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"Preview Workspace",activate:true}});
-  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  if(!ownLayout)await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
   await expect(page.getByTestId("model-picker")).toBeEnabled({timeout:10_000});
@@ -1096,4 +1097,68 @@ test("the profile list's X gives the keyboard back to Import profile, pressed wi
       await expect.poll(presses,"a press of the person's own reaches the previewed page").toBe(now+1);
     }
   }finally{await site.close()}
+});
+
+// The shell's import sources as desktop/main.mjs lists them, scripted: Firefox, closed, with three profiles, two of whose names share
+// a start, as a person has them, and Helium, left open, with a short profile name and a long one. Nothing is imported.
+function scriptedProfileNames(){
+  const profiles=names=>names.map(name=>({id:"C:/Profiles/"+name,name}));
+  Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{
+    state:async()=>({open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:1280,height:800}),
+    onState:()=>()=>{},
+    snapshot:async()=>({url:"",title:"",elements:[]}),
+    importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",installed:true,running:false,profiles:profiles(["default-release","work-profile-alpha","work-profile-beta"])},{id:"helium",name:"Helium",installed:true,running:true,profiles:profiles(["Default","Work profile for the staging dashboards"])}]}),
+  }}});
+}
+
+// Each profile in the list reads whole, so a person can tell apart profiles whose names share a start before copying one's cookies,
+// and a browser left open names each of its profiles beside Browser running: with the right panel at its own width, a little wider,
+// as wide as the window lets it go, and in narrow windows, at its narrowest or as a drawer, in dark and light. On a55e6c14 each name
+// was cut short with an ellipsis, and nothing to hover, at 440 and 460 px ("work-profi…" and "work-pr…"), and the two work profiles
+// were still cut with the panel at its widest.
+test("the profile list shows each profile's whole name with the panel at its own width, wider, at its widest and in narrow windows",async({page,request})=>{
+  test.setTimeout(60_000);
+  await page.addInitScript(scriptedProfileNames);
+  const {panel}=await openBrowserPanel(page,request,{ownLayout:true});
+  const list=panel.getByTestId("browser-profile-import"),resizer=page.getByTestId("right-panel-resizer"),width=async()=>Number(await resizer.getAttribute("aria-valuenow"));
+  await panel.getByRole("button",{name:"Import profile",exact:true}).click();
+  await expect(list.locator("section>button>span")).toHaveText(["default-release","work-profile-alpha","work-profile-beta","Default","Work profile for the staging dashboards"]);
+  // What a person reads: each name, none of it cut off or clipped, in its button with its Import (or Browser running), the buttons
+  // clear of each other and inside the list, and nothing of the list off its side.
+  const read=()=>list.evaluate(node=>{
+    const box=element=>element.getBoundingClientRect(),within=(inner,outer)=>inner.left>=outer.left-.5&&inner.right<=outer.right+.5&&inner.top>=outer.top-.5&&inner.bottom<=outer.bottom+.5;
+    const apart=(a,b)=>a.right<=b.left+.5||b.right<=a.left+.5||a.bottom<=b.top+.5||b.bottom<=a.top+.5,buttons=[...node.querySelectorAll("section>button")];
+    return {whole:buttons.map(button=>{const name=button.querySelector("span");return name.scrollWidth-name.clientWidth<=1&&name.scrollHeight-name.clientHeight<=1&&within(box(name),box(button))}),
+      laidOut:[buttons.every(button=>within(box(button.querySelector("small")),box(button))),buttons.every((button,at)=>buttons.slice(at+1).every(other=>apart(box(button),box(other)))),buttons.every(button=>within(box(button),box(node))),[node,...node.querySelectorAll("section")].every(part=>part.scrollWidth-part.clientWidth<=1)]};
+  });
+  const reads=async(where,mode,shot)=>{
+    const shown=await read();
+    expect(shown.whole,`each profile's whole name reads ${where} in ${mode}`).toEqual([true,true,true,true,true]);
+    expect(shown.laidOut,`each button holds its Import, apart from the others and inside the list, with nothing off its side, ${where} in ${mode}`).toEqual([true,true,true,true]);
+    await list.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`browser-profile-names-${shot}-${mode}.png`});
+  };
+  // The panel's edge dragged with the mouse, as a person widens or narrows the panel: to px wide, or as far left as it goes.
+  const drag=async px=>{
+    const box=await resizer.boundingBox(),x=box.x+box.width/2,y=box.y+Math.min(300,box.height/2),dx=px?await width()-px:-400;
+    await page.mouse.move(x,y);await page.mouse.down();for(let step=1;step<=10;step++)await page.mouse.move(x+dx*step/10,y);
+    await page.mouse.up();await page.mouse.move(5,790);
+    await expect.poll(width).toBe(px||Number(await resizer.getAttribute("aria-valuemax")));
+  };
+  for(const mode of ["dark","light"]){
+    await page.setViewportSize({width:1280,height:800});
+    if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+    // In dark the panel at its own 440 px, dragged 20 px wider, then as wide as the 1280 px window lets it go; in light the other way.
+    for(const px of mode==="dark"?[440,460,0]:[0,460,440]){
+      if(mode==="dark"&&px===440)expect(await width(),"the panel opens at its own width").toBe(440);else await drag(px);
+      await reads(px?`with the panel at ${px} px`:`with the panel at its widest, ${await width()} px`,mode,px?"panel-"+px:"panel-widest");
+    }
+    // Narrow windows: at 960 px the panel is at its narrowest, and at 700 px it is a drawer over the page.
+    await page.setViewportSize({width:960,height:800});await expect.poll(width).toBe(340);
+    await reads("with the panel at its narrowest, 340 px",mode,"window-960");
+    await page.setViewportSize({width:700,height:800});await frames(page);
+    await reads("in the drawer of a 700 px window",mode,"window-700");
+  }
+  await page.setViewportSize({width:1280,height:800});
+  await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","dark");
 });
