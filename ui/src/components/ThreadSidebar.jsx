@@ -29,11 +29,11 @@ function closeRowMenu(menu){if(!menu)return;menu.open=false;showRowMenu(menu,fal
 // which lands on what was under the item once its menu closed (another row, a destination), and the repeats of Enter held on it,
 // which go to what took the focus (the menu's button, or the next row when the thread moved to another group). Either would open it.
 // A queued follow-up's buttons take only a press of their own the same way (App.jsx), as do the composer footer's and its chips'
-// remove buttons (App.jsx), the Goal panel's (GoalPanel.jsx), the Browser panel's Record and Attach buttons and its profile list
-// (PreviewPage.jsx), the buttons of an app request and of an agent question (McpElicitationModal.jsx, QuestionModal.jsx), the
-// terminal drawer's tabs (TerminalPanel.jsx), the execution trace's Clear filters (RuntimeTrace.jsx), Settings' Capture now
-// (SettingsPage.jsx), History's Retry and Load older threads (App.jsx), the Environments page's buttons (EnvironmentsPage.jsx) and
-// the Tools page's plugin and marketplace actions (HarnessToolsPage.jsx).
+// remove buttons and the files of its @ menu (App.jsx), the Goal panel's (GoalPanel.jsx), the Browser panel's Record and Attach
+// buttons and its profile list (PreviewPage.jsx), the buttons of an app request and of an agent question (McpElicitationModal.jsx,
+// QuestionModal.jsx), the terminal drawer's tabs (TerminalPanel.jsx), the execution trace's Clear filters (RuntimeTrace.jsx),
+// Settings' Capture now (SettingsPage.jsx), History's Retry and Load older threads (App.jsx), the Environments page's buttons
+// (EnvironmentsPage.jsx) and the Tools page's plugin and marketplace actions (HarnessToolsPage.jsx).
 export function ignorePressRest(keyboard){
   const types=keyboard?["keydown","keyup"]:["mousedown","mouseup","click","dblclick"],off=()=>{for(const type of types)window.removeEventListener(type,stop,true)};
   const stop=event=>{if(keyboard?event.repeat&&event.key==="Enter":event.detail>1){event.preventDefault();event.stopPropagation()}else if(event.type===(keyboard?"keyup":"mousedown"))off()};

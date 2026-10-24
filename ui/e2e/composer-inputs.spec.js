@@ -1909,6 +1909,96 @@ test("a file picked from the @ menu with the caret inside its word replaces the 
   }finally{await harness.close()}
 });
 
+// The file picked from the @ menu is imported before it goes into the draft, and the composer takes keys meanwhile, so a person types
+// on: once the file is in it goes on the word it was picked on, with what was typed meanwhile after it and the caret at its end. The
+// draft as it was at the pick went in over what was typed (an import slowed by a remote environment, a big file or a busy machine), and
+// a letter typed as it went in landed before the caret the next frame put back (round 8). A refused import keeps the draft as typed.
+test("letters typed on while a file picked from the @ menu imports stay after it once it is in, the caret after them, by Enter or a click, and a refused import leaves them as typed",async({page})=>{
+  test.setTimeout(180_000);
+  const harness=await openComposerApp(page);
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip"),toast=page.getByTestId("app-action-error");
+    // The import held as a slow one is: hold ms, and until typed settles when it is set. A refusal, when set, refuses it.
+    let hold=0,typed=null,refusal="";
+    await page.route(/\/api\/attachments\/import$/,async route=>{
+      await Promise.all([new Promise(done=>setTimeout(done,hold)),typed]);
+      if(refusal)await route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:refusal})});else await route.fallback();
+    });
+    // 'Check @log' typed in the emptied composer, login.js picked by Enter (held 80 ms), a click or a double click on it, and 'now'
+    // typed at a person's pace: the first letter 120 ms after Enter or the click is let go, 60 ms a key.
+    const pickAndType=async pick=>{
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type("Check @log",{delay:20});await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      const file=menu.locator("button").filter({hasText:"src/login.js"});
+      if(pick==="Enter"){await page.keyboard.down("Enter");await page.waitForTimeout(80);await page.keyboard.up("Enter")}
+      else if(pick==="a click")await file.click({delay:80});else await file.dblclick();
+      await page.waitForTimeout(120);await page.keyboard.type("now",{delay:60});
+    };
+    for(const [mode,ms] of [["dark",900],["light",900],["dark",300],["light",300]]){
+      await switchMode(page,mode);
+      for(const pick of ["Enter","a click","a double click"]){
+        const where=` in ${mode}, the import ${ms} ms slow and login.js picked by ${pick}`;
+        let release=null;hold=ms;typed=ms===900?new Promise(done=>{release=done}):null;
+        await pickAndType(pick);
+        // At 900 ms every letter is typed while the file imports (at 300 ms it comes in between them): the draft reads as typed.
+        if(release){
+          await expect.soft(composer,"the draft while the file imports"+where).toHaveValue("Check @lognow");await expect(context).toHaveCount(0);
+          if(pick==="Enter")await page.screenshot({animations:"disabled",path:auditDir+`mention-typed-on-while-the-file-imports-${mode}-1280x800.png`});
+          release();
+        }
+        await expect(context).toHaveCount(1);
+        await expect.soft(composer,"the draft once the file is in"+where).toHaveValue("Check @src/login.js now");
+        expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret"+where).toEqual([23,23]);
+        await page.keyboard.type("!",{delay:20});await expect.soft(composer,"the draft typed on"+where).toHaveValue("Check @src/login.js now!");
+        if(pick==="Enter")await page.screenshot({animations:"disabled",path:auditDir+`mention-typed-on-after-the-file-imported-${ms}ms-${mode}-1280x800.png`});
+        await context.locator("button").click();await expect(context).toHaveCount(0);
+      }
+    }
+    // Something else done while the file is held: letters typed before the word (Home, then 'Please '), the word erased, or letters
+    // typed in another field (the thread search). The draft keeps what was typed, the caret its place and the keyboard its field.
+    const search=page.getByRole("textbox",{name:"Search threads"});
+    for(const [how,edit,draft,caret] of [
+      ["letters typed before the word",async()=>{await page.keyboard.press("Home");await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js ",7],
+      ["the word erased",async()=>{for(let key=0;key<4;key++)await page.keyboard.press("Backspace")},"Check ",6],
+      ["letters typed in the thread search",async()=>{await search.click();await page.keyboard.type("zz",{delay:60})},"Check @src/login.js ",20],
+    ]){
+      let release=null;hold=300;typed=new Promise(done=>{release=done});
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type("Check @log",{delay:20});await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      await page.keyboard.press("Enter");await edit();release();
+      await expect(context).toHaveCount(1);await expect.soft(composer,`the draft with ${how} while the file imports`).toHaveValue(draft);
+      expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),`the caret with ${how} while the file imports`).toEqual([caret,caret]);
+      if(how.includes("search")){await expect.soft(search,"the keyboard in the thread search").toBeFocused();await expect(search).toHaveValue("zz");await page.keyboard.press("Control+A");await page.keyboard.press("Backspace")}
+      else await expect.soft(composer,`the keyboard in the composer with ${how}`).toBeFocused();
+      await context.locator("button").click();await expect(context).toHaveCount(0);
+    }
+    // The file in at once. Letters typed straight after Enter, as a script types, each land where they were typed, none before the
+    // caret (the next frame put it back after the file, before a letter typed in between). A double click's second click, on what is
+    // under the menu once the file is in, leaves the keyboard in the composer for what is typed on.
+    hold=0;typed=null;
+    for(const [mode,pick] of [["dark","Enter"],["light","Enter"],["dark","a double click"],["light","a double click"]]){
+      await switchMode(page,mode);
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type("Check @log",{delay:20});await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      if(pick==="Enter")await page.keyboard.press("Enter");
+      else{
+        // The first click, and once the file is in and the menu gone the second, where the pointer still is.
+        await menu.locator("button").filter({hasText:"src/login.js"}).click();await expect(context).toHaveCount(1);await expect(menu).toHaveCount(0);
+        await page.mouse.down({clickCount:2});await page.mouse.up({clickCount:2});
+      }
+      await page.keyboard.type("now",{delay:20});
+      await expect(context).toHaveCount(1);await expect.soft(composer,`the draft typed on straight after ${pick} in ${mode}`).toHaveValue("Check @src/login.js now");
+      await context.locator("button").click();await expect(context).toHaveCount(0);
+    }
+    // A refused import: the draft stays as typed, with no file, and the toast says why.
+    hold=300;typed=null;refusal="Remote attachment copy exited with code 255";
+    await pickAndType("Enter");
+    await expect(toast).toHaveText("Could not attach file mention: Remote attachment copy exited with code 255");
+    await frames(page);await expect(composer).toHaveValue("Check @lognow");await expect(context).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
 test("Enter on a draft over the 120,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);

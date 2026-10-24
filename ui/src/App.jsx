@@ -21,7 +21,7 @@ import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, ruleRuns, shadowedKeybindings, shortcutHint } from "./keybindings.js";
 import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, movedDuringStep, navigationKey, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
-import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
+import { applyFileMention, fileMentionAt, movedFileMention, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
 import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId, sessionHandoffMessage, withSessionHandoff } from "./thread-history.js";
 import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain, turnTrailers } from "./turn-outcome.js";
@@ -839,16 +839,18 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     };
     try{recognition.start()}catch(error){recognitionRef.current=null;setDictationAlert({kind:"dictation",text:"Dictation could not start: "+sentenceText(error?.message||String(error))})}
   }
+  // The composer takes keys while the picked file imports, so the pick goes into the draft as it is once the file is in: on its word
+  // where that is then, what was typed meanwhile kept and the caret in it (a word edited or erased meanwhile gets nothing). The draft
+  // and the caret go in at once, so the next key lands after them, and the keyboard comes back unless another field has it meanwhile.
   async function chooseMention(item){
     if(!activeMention||!item||mentionBusy)return;
-    setMentionBusy(true);
+    const from=prompt,mention=activeMention,focused=document.activeElement;setMentionBusy(true);
     try{
-      const attached=await onFileMentionAttach?.(item);
-      if(!attached)return;
-      const label=item.relativePath||item.name||item.path;
-      const next=applyFileMention(prompt,activeMention,label);
-      onPromptEdit?.();setPrompt(next.text);setMentionItems([]);setCaret(next.caret);
-      requestAnimationFrame(()=>{composerRef.current?.focus();composerRef.current?.setSelectionRange(next.caret,next.caret)});
+      const attached=await onFileMentionAttach?.(item),node=composerRef.current,now=node?node.value:from,caret=node?.selectionEnd;
+      const at=attached&&movedFileMention(from,mention,now,caret);if(!at)return;
+      const next=applyFileMention(now,at,item.relativePath||item.name||item.path,caret),active=document.activeElement;
+      flushSync(()=>{onPromptEdit?.();setPrompt(next.text);setMentionItems([]);setCaret(next.caret)});
+      if(!active||active===document.body||active===focused)node?.focus();node?.setSelectionRange(next.caret,next.caret);
     }finally{setMentionBusy(false)}
   }
   function chooseSlash(cmd){
@@ -1035,7 +1037,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     :`Configure ${agentRuntimeLabel} in Settings…`;
   return <div ref={wrapRef} className={"composer-wrap"+(prompt.length>=LONG_DRAFT_CHARS?" long-draft":"")} onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
     {slashMenuOpen&&<div className="slash-menu" ref={slashMenuRef}>{slashItems.map(([cmd,desc],index)=><button key={cmd} type="button" className={index===slashActive?"active":undefined} onMouseDown={e=>{e.preventDefault();chooseSlash(cmd)}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
-    {mentionMenuOpen&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef}>{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
+    {/* A file in the @ menu takes only a press of its own, and its buttons only say they are off while the file picked imports
+        (aria-disabled), so the keyboard stays in the composer: the second click of a double click, on a button turned off or on what
+        is under the menu once the file is in, took the keyboard out of it, and what was typed on went nowhere. */}
+    {mentionMenuOpen&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef}>{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} aria-disabled={mentionBusy||undefined} onMouseDown={event=>{event.preventDefault();ignorePressRest(!event.detail);chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips" onClick={chipPressOnce}>{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={[[chip.label,chip.detail].filter(Boolean).join(" · "),chip.path].filter(Boolean).join("\n")}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveContext(chip.path))} title="Remove context"><X size={10}/></button></span>)}</div>}
     <div className="attachment-shelf" ref={shelfRef} onClick={chipPressOnce}>{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/><bdi>{attachmentDisplayName(path)}</bdi><button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveAttachment(path))} title={"Remove "+attachmentDisplayName(path)}><X size={10}/></button></span>)}{uploadingFiles.map(file=><span key={file.id} className="uploading" aria-busy="true" title={"Uploading "+file.name+"…"}><LoaderCircle size={11} aria-hidden="true"/><bdi>{file.name}</bdi><small>Uploading…</small></span>)}</div>
     <textarea ref={composerRef} data-testid="composer" value={prompt} onInput={()=>setMenuDismissed(null)} onChange={e=>{onPromptEdit?.();setDictationAlert(null);setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={composerPlaceholder} disabled={composerOff}/>

@@ -7,13 +7,24 @@ export function fileMentionAt(text,caret){
   return {start,end,query};
 }
 
-export function applyFileMention(text,mention,label){
+// caret: where the person's caret is in text, which stays before the word, moves with what follows it, and goes after the file in it.
+export function applyFileMention(text,mention,label,caret=mention?.end){
   const value=String(text||"");if(!mention)return {text:value,caret:value.length};
   const safe=String(label||"").trim().replace(/\s+/g," ");
   const nextChar=value[mention.end]||"";
   const replacement=safe?`@${safe}${nextChar&&/\s/.test(nextChar)?"":" "}`:"";
   const next=value.slice(0,mention.start)+replacement+value.slice(mention.end);
-  return {text:next,caret:mention.start+replacement.length};
+  return {text:next,caret:caret<=mention.start?caret:Math.max(caret,mention.end)+next.length-value.length};
+}
+
+// The word a file was picked on (mention, in from: the draft at the pick) in the draft as it is once the file is in (text, its caret at
+// caret), the person having typed on meanwhile: an edit before the word moves it and one after it leaves it, while one in it or over it
+// leaves no word to put the file on (null). An insertion or removal that fits more than one place (a g typed by a g) is put at the caret.
+export function movedFileMention(from,mention,text,caret){
+  const a=String(from||""),b=String(text||""),min=Math.min(a.length,b.length),shift=b.length-a.length;if(!mention||a===b)return mention;
+  let p=0,s=0;while(p<min&&a[p]===b[p])p++;while(s<min&&a[a.length-1-s]===b[b.length-1-s])s++;
+  if(p+s>=min){p=Math.max(min-s,Math.min(p,(caret??b.length)-Math.max(0,shift)));s=min-p}
+  return a.length-s<=mention.start?{...mention,start:mention.start+shift,end:mention.end+shift}:p>=mention.end?mention:null;
 }
 
 export function rankFileMentions(items,query,{limit=8}={}){
