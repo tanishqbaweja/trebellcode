@@ -100,11 +100,12 @@ test("failed verification can start a same-thread repair turn from continuity",a
   }finally{await harness.close()}
 });
 
-// A Goal panel drawn again (the right panel closed and opened again) while its repair is starting draws Continuity state open,
-// with the repair's Starting… in sight, and says what became of the start there: why the harness refused it, in view, with Repair
-// failed verification offered again, or that the repair turn started, with Repair started held. The section was drawn closed, so
-// the goal's buttons were off with nothing in sight saying why, a refusal was drawn where nothing showed it, and a start that went
-// through was said nowhere, with Repair failed verification offered again for the same failure.
+// A Goal panel drawn again (the right panel closed and opened again, or back from Files in a narrow window) while its repair is
+// starting draws Continuity state open, with the repair's Starting… in sight above the goal's bar pinned at the panel's foot, and
+// says what became of the start there: why the harness refused it, in view, with Repair failed verification offered again, or that
+// the repair turn started, with Repair started held. The section was drawn closed, so the goal's buttons were off with nothing in
+// sight saying why, a refusal was drawn where nothing showed it, and a start that went through was said nowhere, with Repair failed
+// verification offered again for the same failure; then drawn open, but with Starting… below the window and the bar.
 test("a Goal panel drawn again while its verification repair starts draws Continuity state open with Starting…, and says the start or why it was refused",async({page})=>{
   test.setTimeout(45_000);
   const thread={id:"verification-repair-redrawn-thread",name:"Verification repair redrawn",preview:"Repair loop",cwd:process.cwd(),model:"test/coding-fast",createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
@@ -131,6 +132,15 @@ test("a Goal panel drawn again while its verification repair starts draws Contin
       for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);for(const width of [1280,700]){await page.setViewportSize({width,height:800});await shown.evaluate(node=>node.scrollIntoView({block:"center"}));await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+width+"x800.png"})}}
       await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     };
+    // Starting… as the person sees it on the panel drawn again, without scrolling: all of it in the window, and above the goal's bar
+    // pinned at the panel's foot, which toBeVisible and toBeInViewport take for in sight; shot as it is drawn.
+    const startingInSight=async(way,name)=>{
+      const starting=repair.getByRole("button",{name:"Starting…",exact:true});
+      await expect.soft(starting,"the panel drawn again "+way+" has the repair's Starting… in sight").toBeInViewport({ratio:1});
+      const box=await starting.boundingBox({timeout:2000}).catch(()=>null),barBox=await panel.locator(":scope>.goal-actions").boundingBox();
+      expect.soft(Boolean(box&&barBox&&box.y+box.height<=barBox.y+0.5),"Starting… above the goal's bar "+way).toBe(true);
+      const mode=await page.locator("html").getAttribute("data-mode");await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+page.viewportSize().width+"x800.png"});
+    };
     await summary.click();
     // Refused: the panel drawn again says why, in view, and offers the repair again.
     let answer=harness.holdRepair();
@@ -140,6 +150,7 @@ test("a Goal panel drawn again while its verification repair starts draws Contin
     await redraw();
     await expect.soft(repair.getByRole("button",{name:"Starting…",exact:true}),"the panel drawn again draws Continuity state open, with the repair starting in sight").toBeVisible();
     await expect.soft(save,"and the goal's bar off meanwhile").toHaveAttribute("aria-disabled","true");
+    await startingInSight("with the right panel closed and opened again","verification-repair-drawn-again-starting-in-sight");
     await shoot("verification-repair-drawn-again-starting",repair);
     // A build that draws it closed: the person opens it to go on.
     if(!await repair.isVisible())await summary.click();
@@ -154,6 +165,13 @@ test("a Goal panel drawn again while its verification repair starts draws Contin
     await expect.poll(()=>harness.repairRequests()).toBe(2);
     await redraw();
     await expect.soft(repair.getByRole("button",{name:"Starting…",exact:true}),"the panel drawn again shows the repair starting").toBeVisible();
+    await startingInSight("once more","verification-repair-drawn-again-starting-in-sight-again");
+    // And back from Files in a window 700 wide, where the right panel lies over the chat, in light.
+    await page.setViewportSize({width:700,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    const tabs=page.getByTestId("right-panel").locator(".context-panel-tab-scroll");
+    await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(panel).toHaveCount(0);await tabs.getByRole("button",{name:"Goal",exact:true}).click();await expect(panel).toBeVisible();
+    await startingInSight("back from Files in a window 700 wide","verification-repair-drawn-again-starting-in-sight");
+    await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     if(!await repair.isVisible())await summary.click();
     answer();
     await expect(panel.getByText("Repair turn started on this thread.",{exact:true}),"the panel drawn again says the repair turn started").toBeVisible();

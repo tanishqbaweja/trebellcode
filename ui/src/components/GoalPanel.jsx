@@ -148,10 +148,13 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [error,setError]=useState(null),errorRef=useRef(null);
   useEffect(()=>{errorRef.current?.scrollIntoView({block:"nearest"})},[error]);
   // The panel shown for the thread (panels) says what a write on its way from the one before does: why it was refused (say), and
-  // that a repair it started has started (started), so its button holds Repair started; and a refusal that waited for it.
+  // that a repair it started has started (started), so its button holds Repair started; and a refusal that waited for it. With a
+  // write of Continuity state on its way, that write's button (Saving…, Clearing…, Starting…) comes into view as a refusal does,
+  // clear of the goal's bar: the panel drawn at its top had the section under that bar and the button below the window.
   useEffect(()=>{
     const id=thread?.id,shown={showBusy,say(said){if(said.at!=="goal"){setContinuityOpen(true);if(continuityRef.current)continuityRef.current.open=true}setError(said)},started(status,key){setRepairStatus(status);setRepairStartedFor(key)}};
     panels.set(id,shown);showBusy(writes.get(id)||"");const said=refused.get(id);if(said){refused.delete(id);shown.say(said)}
+    else if(CONTINUITY_WRITES.includes(writes.get(id)))continuityRef.current?.querySelector("[aria-busy=true]")?.scrollIntoView({block:"nearest"});
     return()=>{if(panels.get(id)===shown)panels.delete(id)};
   },[]);
   const goalFields=[objective,tokenBudget,timeBudget,turnBudget,toolCallBudget,childAgentBudget,costBudgetUsd,completionConditions,constraints,validationExpectations];
@@ -309,7 +312,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
             </>}
           </div>
         </details>
-        {continuity?.verification?.status==="failed"&&<div className="verification-repair-card" data-testid="verification-repair-card"><div><strong>Verification needs repair</strong><span>Start a same-thread repair turn with the persisted failed-step evidence. No second reviewer model is spawned.</span></div><button type="button" onClick={repairVerification} disabled={!!busy||repairStarted||threadRunning} title={!repairStarted&&threadRunning?"A repair can start once the running turn ends":undefined}>{busy==="verification-repair"?"Starting…":repairStarted?"Repair started":"Repair failed verification"}</button></div>}
+        {continuity?.verification?.status==="failed"&&<div className="verification-repair-card" data-testid="verification-repair-card"><div><strong>Verification needs repair</strong><span>Start a same-thread repair turn with the persisted failed-step evidence. No second reviewer model is spawned.</span></div><button type="button" onClick={repairVerification} disabled={!!busy||repairStarted||threadRunning} aria-busy={busy==="verification-repair"||undefined} title={!repairStarted&&threadRunning?"A repair can start once the running turn ends":undefined}>{busy==="verification-repair"?"Starting…":repairStarted?"Repair started":"Repair failed verification"}</button></div>}
         {repairStatus&&<div className="verification-repair-status">{repairStatus}</div>}{alertAt("repair")}
         <label>Completed work <span>(one per line)</span><textarea aria-label="Completed work" value={completedWork} onChange={e=>setCompletedWork(e.target.value)} placeholder={"Implemented the parser\nAdded regression tests"}/></label>
         <label>Unresolved failures <span>(one per line)</span><textarea aria-label="Unresolved failures" value={unresolvedFailures} onChange={e=>setUnresolvedFailures(e.target.value)} placeholder={"Preview still fails on Windows"}/></label>

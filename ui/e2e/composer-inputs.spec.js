@@ -1070,6 +1070,13 @@ const goalPanelAway={
   "back from Files":async page=>{const tabs=page.getByTestId("right-panel").locator(".context-panel-tab-scroll");await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(page.getByTestId("goal-panel")).toHaveCount(0);await tabs.getByRole("button",{name:"Goal",exact:true}).click()},
   "with the right panel closed and opened again":async page=>{await page.getByRole("button",{name:"Close right panel"}).click();await expect(page.getByTestId("goal-panel")).toHaveCount(0);await page.getByRole("button",{name:"Thread goal",exact:true}).click()},
 };
+// What the person sees of target in the Goal panel without scrolling: all of it in the window, and above the goal's bar pinned at
+// the panel's foot, which toBeVisible and toBeInViewport take for in sight.
+async function inSightAboveBar(target,bar,what){
+  await expect.soft(target,what).toBeInViewport({ratio:1});
+  const box=await target.boundingBox({timeout:2000}).catch(()=>null),barBox=await bar.boundingBox();
+  expect.soft(Boolean(box&&barBox&&box.y+box.height<=barBox.y+0.5),what+", above the goal's bar").toBe(true);
+}
 // The window as the person has it, nothing scrolled into view for the shot, in its mode and width.
 async function shootAsDrawn(page,name){
   const mode=await page.locator("html").getAttribute("data-mode");
@@ -1109,6 +1116,46 @@ test("a Goal panel drawn again while Complete is on its way, back from Files or 
       if(index){socket.release();await expect(status).toHaveText("complete")}
       else{socket.release("Goal store is read-only");await expect(bar.getByRole("alert")).toContainText("Goal store is read-only");await expect(status).toHaveText("active")}
     }
+  }finally{await harness.close()}
+});
+
+// A Goal panel drawn again while a notes save is on its way (back from Files, with the right panel closed and opened again, back
+// from another thread, and back from Files in a narrow window) brings Save continuity, which reads Saving…, into view above the
+// goal's bar pinned at the panel's foot, so the person sees why that bar is off. The section was drawn open, but with the panel at
+// its top: its heading lay under the bar and Saving… far below the window. One drawn again while the goal saves stays at its top.
+test("a Goal panel drawn again while a notes save is on its way brings Saving… into view above the goal's bar, in a wide and a narrow window, and one drawn again while the goal saves stays at its top",async({page})=>{
+  test.setTimeout(150_000);
+  const socket=await relaySocket(page);
+  const harness=await openComposerApp(page,{others:["Second thread"]});
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const bar=panel.locator(":scope>.goal-actions"),save=bar.locator("button.primary"),saveNotes=panel.locator(".continuity-actions>button.primary"),done=panel.getByLabel("Completed work",{exact:true});
+    const composer=page.getByTestId("composer");
+    const openThread=async name=>{const row=threadRow(page,name);await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");await painted(page)};
+    const ways=[
+      ["back from Files",1280,goalPanelAway["back from Files"]],
+      ["with the right panel closed and opened again",1280,goalPanelAway["with the right panel closed and opened again"]],
+      ["back from another thread",1280,async()=>{await openThread("Second thread");await expect(save).toHaveText("Set goal");await openThread("Composer thread")}],
+      ["back from Files in a window 700 wide",700,goalPanelAway["back from Files"]],
+    ];
+    await panel.getByText("Continuity state",{exact:true}).click();
+    for(const [index,[way,width,away]] of ways.entries()){
+      await switchMode(page,index%2?"light":"dark");await page.setViewportSize({width,height:800});
+      await typeOver(page,done,"Fixed the session refresh, "+way);
+      socket.hold("thread/continuity/set");await saveNotes.click();await expect(saveNotes).toHaveText("Saving…");
+      await away(page);
+      await expect(saveNotes,"the panel drawn again "+way+" says the notes' save is on its way").toHaveText("Saving…");await painted(page);
+      await inSightAboveBar(saveNotes,bar,"Saving… is in sight on the panel drawn again "+way);
+      await shootAsDrawn(page,"goal-notes-drawn-again-saving-in-sight-"+(index+1));
+      socket.release();await expect(saveNotes).toHaveText("Save continuity");await expect(done).toHaveValue("Fixed the session refresh, "+way);
+    }
+    await page.setViewportSize({width:1280,height:800});
+    // The goal's save on its way, nothing of Continuity state's: the panel drawn again is drawn at its top.
+    await typeOver(page,objective,"Make the login and signup tests pass");
+    socket.hold("thread/goal/set");await save.click();await expect(save).toHaveText("Saving…");
+    await goalPanelAway["back from Files"](page);await expect(save).toHaveText("Saving…");await painted(page);
+    expect.soft(await panel.evaluate(node=>node.scrollTop),"a panel drawn again while the goal saves is drawn at its top").toBe(0);
+    socket.release();await expect(save).toHaveText("Update goal");
   }finally{await harness.close()}
 });
 
