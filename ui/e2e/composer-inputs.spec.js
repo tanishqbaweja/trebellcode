@@ -1065,6 +1065,53 @@ test("a Goal panel drawn again while its save is on its way, back from Files, wi
   }finally{await harness.close()}
 });
 
+// Two ways a person takes the Goal panel away and draws it again: a look at Files, and the right panel closed and opened again.
+const goalPanelAway={
+  "back from Files":async page=>{const tabs=page.getByTestId("right-panel").locator(".context-panel-tab-scroll");await tabs.getByRole("button",{name:"Files",exact:true}).click();await expect(page.getByTestId("goal-panel")).toHaveCount(0);await tabs.getByRole("button",{name:"Goal",exact:true}).click()},
+  "with the right panel closed and opened again":async page=>{await page.getByRole("button",{name:"Close right panel"}).click();await expect(page.getByTestId("goal-panel")).toHaveCount(0);await page.getByRole("button",{name:"Thread goal",exact:true}).click()},
+};
+// The window as the person has it, nothing scrolled into view for the shot, in its mode and width.
+async function shootAsDrawn(page,name){
+  const mode=await page.locator("html").getAttribute("data-mode");
+  await page.screenshot({animations:"disabled",path:auditDir+name+"-"+mode+"-"+page.viewportSize().width+"x800.png"});
+}
+
+// A Goal panel drawn again while Complete is on its way (back from Files, or with the right panel closed and opened again, Complete
+// pressed with the mouse or from the keyboard) draws Continuity state as the person left it, closed, with the panel at its top.
+// Complete's write ("complete") was taken for one of the section's own, whose names begin the same, so the section the person had
+// closed came open with all its notes fields, while Pause on its way left it closed.
+test("a Goal panel drawn again while Complete is on its way, back from Files or with the right panel closed and opened again, draws Continuity state closed as the person left it",async({page})=>{
+  test.setTimeout(120_000);
+  const socket=await relaySocket(page);
+  const harness=await openComposerApp(page);
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const bar=panel.locator(":scope>.goal-actions"),button=name=>bar.getByRole("button",{name,exact:true}),status=panel.locator(".goal-status");
+    const details=panel.locator(".goal-continuity-details"),summary=details.locator(":scope>summary"),done=panel.getByLabel("Completed work",{exact:true});
+    // The person opens Continuity state, looks at it, and closes it.
+    await summary.click();await expect(done).toBeVisible();await summary.click();await expect(done).toBeHidden();
+    for(const [index,[way,away]] of Object.entries(goalPanelAway).entries()){
+      await switchMode(page,index?"light":"dark");
+      socket.hold("thread/goal/set");
+      // With the mouse, then from the keyboard: Tab from the Objective to Complete, and Enter.
+      if(index){await objective.click();await tabTo(page,button("Complete"));await page.keyboard.press("Enter")}else await button("Complete").click();
+      await expect(button("Completing…")).toHaveAttribute("aria-busy","true");
+      await away(page);
+      await expect(button("Completing…"),"the panel drawn again "+way+" says Complete is on its way").toHaveAttribute("aria-busy","true");await painted(page);
+      // Soft, so a build that opens the section says so for each way.
+      await expect.soft(done,"Continuity state is drawn closed "+way+", as the person left it").toBeHidden();
+      expect.soft(await details.evaluate(node=>node.open),"its section is closed "+way).toBe(false);
+      expect.soft(await panel.evaluate(node=>node.scrollTop),"and the panel is drawn at its top "+way).toBe(0);
+      await shootAsDrawn(page,"goal-drawn-again-complete-held");
+      // The person scrolls down to Continuity state, and finds it as they left it.
+      await summary.evaluate(node=>node.scrollIntoView({block:"center"}));await shootAsDrawn(page,"goal-drawn-again-complete-held-continuity-closed");
+      // The harness refuses the first Complete, so the goal is still active for the second, which lands.
+      if(index){socket.release();await expect(status).toHaveText("complete")}
+      else{socket.release("Goal store is read-only");await expect(bar.getByRole("alert")).toContainText("Goal store is read-only");await expect(status).toHaveText("active")}
+    }
+  }finally{await harness.close()}
+});
+
 // The Goal panel's clears (the goal's and the notes'), each held from when hold() is called until the function it gives back is, as
 // a harness slow to answer them; with hold("answer") only the answer waits, once the harness has said the clear is done.
 async function openSlowClears(page){

@@ -94,6 +94,8 @@ function pressOnce(event,pressed){
 // button, a second Update goal saved again, and a refusal was said nowhere. A refusal that lands while no panel is shown for the
 // thread (the person is on Files) waits for the next one (refused), which says it: it was said nowhere either.
 const writes=new Map(),panels=new Map(),refused=new Map();
+// The writes of Continuity state's own buttons: the notes' save and clear, and the repair start.
+const CONTINUITY_WRITES=["continuity","continuity-clear","verification-repair"];
 
 // covered: another thread's opening state is up. The panel belongs to the thread being left, so it hides without unmounting: a
 // failed open brings it back with the drafts in it.
@@ -111,8 +113,9 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [detailsOpen,setDetailsOpen]=useState(false);
   const [advancedBudgetOpen,setAdvancedBudgetOpen]=useState(false);
   // A panel drawn while a notes write or a repair start is on its way draws Continuity state open, as its button, which says so,
-  // and the refusal it may bring are in it: drawn closed, nothing in sight said why the goal's buttons were off.
-  const [continuityOpen,setContinuityOpen]=useState(()=>/^(co|ve)/.test(writes.get(thread?.id)));
+  // and the refusal it may bring are in it: drawn closed, nothing in sight said why the goal's buttons were off. Those writes are
+  // named whole: Complete's ("complete") began as the notes' do, and opened the section the person had closed.
+  const [continuityOpen,setContinuityOpen]=useState(()=>CONTINUITY_WRITES.includes(writes.get(thread?.id)));
   // The section's element (continuityRef): a person's close is in the element at once but in the state only with the browser's toggle
   // event, a moment later, so a refusal said in between found the state still open, changed nothing, and the toggle then closed it.
   const continuityRef=useRef(null);
