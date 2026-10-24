@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -298,20 +299,22 @@ test("closing the terminals' socket server ends the terminal sockets still open,
 
 // On Windows a terminal's shell runs in a pseudo-console, and closing it ends only the programs attached to it then: a program the
 // shell was still starting (a project action stopped as it starts on a loaded host, or a terminal whose worker ended as it opened)
-// missed the close and ran on with its console host and nothing left to stop it, and one started detached never gets it. Each test
-// runs a program that starts two of its own, one on the terminal's console and one detached, as a dev server's tools can, ends its
-// terminal one way, and looks for every process of it by a mark in its command line (the shell's holds the program's): the shell,
+// missed the close and ran on with its console host and nothing left to stop it, and one started detached never gets it. A terminal
+// that runs one command as its own program (endsTree: a project action, a worktree setup) ends all that its command started. Each
+// test runs a program that starts two of its own, one on the terminal's console and one detached, as a dev server's tools can, ends
+// its terminal one way, and looks for every process of it by a mark in its command line (the shell's holds the program's): the shell,
 // the program and its two, and by its parent, the worker, the terminal's console host. Whatever a test finds left it ends by its pid.
 const WINDOWS_TREE={skip:process.platform!=="win32"&&"Windows process trees",timeout:180_000};
+const markedProgram=mark=>`/*${mark}*/const {spawn}=require('child_process');spawn(process.execPath,['-e','/*${mark}:console*/setInterval(()=>{},1000)'],{stdio:'inherit'});spawn(process.execPath,['-e','/*${mark}:detached*/setInterval(()=>{},1000)'],{stdio:'ignore',detached:true}).unref();console.log('started');setInterval(()=>{},1000)`;
 async function programTree(end,{running=false,rounds=1}={}){
   const terminals=new TerminalManager({persist:false}),mark="trebell-tree-"+randomUUID(),workers=new Set(),since=Date.now()-1000;let left=null;
-  const program=`/*${mark}*/const {spawn}=require('child_process');spawn(process.execPath,['-e','/*${mark}:console*/setInterval(()=>{},1000)'],{stdio:'inherit'});spawn(process.execPath,['-e','/*${mark}:detached*/setInterval(()=>{},1000)'],{stdio:'ignore',detached:true}).unref();console.log('started');setInterval(()=>{},1000)`;
+  const program=markedProgram(mark);
   const shell=process.env.COMSPEC||"cmd.exe",args=`/d /s /c "node -e "${program}""`;
   const ours=rows=>rows.filter(row=>row.commandLine.includes(mark)||workers.has(row.ppid)&&row.created>=since&&row.name==="conhost.exe"&&row.commandLine.includes("--headless"));
   const named=rows=>rows.map(row=>(row.name==="cmd.exe"?"the shell":row.name==="conhost.exe"?"the console host":row.commandLine.includes("spawn(")?"the program":row.commandLine.includes(":detached")?"the program it started detached":"the program it started on its console")+" "+row.pid);
   try{
     for(let round=0;round<rounds;round++){
-      const session=await terminals.create({cwd:process.cwd(),shell,args,name:"Dev server"});workers.add(terminals.child.pid);
+      const session=await terminals.create({cwd:process.cwd(),shell,args,name:"Dev server",endsTree:true});workers.add(terminals.child.pid);
       if(running){
         assert.ok(await until(()=>terminals.snapshot(session.id).buffer.includes("started"),20000),"the program starts its two");
         const runs=named(ours(await windowsProcesses())).map(name=>name.replace(/ \d+$/,"")).sort();
@@ -333,3 +336,103 @@ test("on Windows, closing a terminal ends its shell, its program and the program
 test("on Windows, a terminal whose manager shuts down as it starts leaves none of its programs, nor its console host, running",WINDOWS_TREE,()=>programTree(terminals=>terminals.shutdown()));
 test("on Windows, a terminal whose worker dies as it starts leaves none of its programs, nor its console host, running",WINDOWS_TREE,()=>programTree(workerEnds("killed")));
 test("on Windows, a terminal whose server is gone leaves none of its programs, also one started detached, nor its console host, running",WINDOWS_TREE,()=>programTree(workerEnds("orphaned"),{running:true}));
+
+// A terminal a person types into (a tab, a sign-in) ends as a terminal's close does: its console closes, which ends its shell and
+// the programs on its console, and its console host goes. A program started from it off its console runs on, as a window program a
+// person started from a tab must (Notepad with unsaved work, a browser a sign-in opened): only a terminal that runs one command as
+// its own program ends everything its shell started. The stand-in for the window program is a detached Node process, which no
+// console reaches either. The program is typed into the shell, as a person runs it; its shell is known by its pid and start time.
+async function typedProgramTree(end){
+  const terminals=new TerminalManager({persist:false}),mark="trebell-tab-"+randomUUID(),since=Date.now()-1000;let worker=0,shell=null;
+  // It prints started-42 only once it runs: the typed line the shell echoes holds 'started-'+6*7.
+  const program=markedProgram(mark).replace("console.log('started')","console.log('started-'+6*7)");
+  const isShell=row=>Boolean(shell)&&row.pid===shell.pid&&row.created===shell.created;
+  const ours=rows=>rows.filter(row=>row.commandLine.includes(mark)||isShell(row)||row.ppid===worker&&row.created>=since&&row.name==="conhost.exe"&&row.commandLine.includes("--headless"));
+  const kept=row=>row.commandLine.includes(":detached")&&!row.commandLine.includes("spawn(");
+  const named=rows=>rows.map(row=>(isShell(row)?"the shell":row.name==="conhost.exe"?"the console host":row.commandLine.includes("spawn(")?"the program":kept(row)?"the program it started off its console":"the program it started on its console")+" "+row.pid);
+  try{
+    const session=await terminals.create({cwd:process.cwd(),name:"Terminal"});worker=terminals.child.pid;
+    await terminals.write(session.id,`node -e "${program}"\r`);
+    assert.ok(await until(()=>terminals.snapshot(session.id).buffer.includes("started-42"),20000),"the program starts its two: "+JSON.stringify(terminals.snapshot(session.id).buffer.slice(-300)));
+    const before=await windowsProcesses();shell=before.find(row=>row.pid===session.pid&&row.created>=since)||null;assert.ok(shell,"the shell runs");
+    assert.deepEqual(named(ours(before)).map(name=>name.replace(/ \d+$/,"")).sort(),["the console host","the program","the program it started off its console","the program it started on its console","the shell"],"the shell, the program, its two and the console host run");
+    await end(terminals,session);
+    const left=await processesLeft(rows=>ours(rows).filter(row=>!kept(row)));
+    assert.deepEqual(named(left),[],"its shell, its program, the program on its console and its console host end");
+    assert.deepEqual(named(ours(await windowsProcesses()).filter(kept)).map(name=>name.replace(/ \d+$/,"")),["the program it started off its console"],"the program it started off its console runs on, as a window program started from a tab does");
+  }finally{
+    await terminals.shutdown();
+    for(const row of ours(await windowsProcesses().catch(()=>[])))try{process.kill(row.pid)}catch{}
+  }
+}
+test("on Windows, closing a terminal a person types into ends its shell, the programs on its console and its console host, and leaves a program started from it off its console running",WINDOWS_TREE,()=>typedProgramTree((terminals,session)=>terminals.close(session.id)));
+test("on Windows, Stop of a terminal a person types into ends its shell, the programs on its console and its console host, and leaves a program started from it off its console running",WINDOWS_TREE,()=>typedProgramTree(async(terminals,session)=>assert.equal((await terminals.stop(session.id)).running,false)));
+test("on Windows, Quit with a terminal a person types into ends its shell, the programs on its console and its console host, and leaves a program started from it off its console running",WINDOWS_TREE,()=>typedProgramTree(terminals=>terminals.shutdown()));
+
+// A project action's end gives the programs on its console their close event first (CTRL_CLOSE_EVENT, which Node hears as SIGHUP
+// and Go as SIGTERM), so each can shut down cleanly (a docker compose up stops its containers, a server runs its shutdown hook), and
+// ends what is left of its tree only after that, also the program started detached, which no close event reaches. Its process tree
+// ended first (taskkill /t /f) ended every program before any close event came. Here each program on the console notes its close
+// event in a file; the action's program takes 1.5 s to shut down, as a server's shutdown hook can, and Stop answers once it has.
+test("on Windows, Stop gives a project action's programs on its console their close event before it ends what is left of its tree",WINDOWS_TREE,async()=>{
+  const terminals=new TerminalManager({persist:false}),mark="trebell-close-event-"+randomUUID(),since=Date.now()-1000,heard=join(tmpdir(),mark+".log");let worker=0,left=null;
+  const noted=(who,ms=0)=>`process.on('SIGHUP',()=>{const fs=require('fs');fs.appendFileSync(process.env.TREBELL_TEST_HEARD,'${who} ');setTimeout(()=>{fs.appendFileSync(process.env.TREBELL_TEST_HEARD,'${who}-done ');process.exit(0)},${ms})});`;
+  const notes=()=>{try{return fs.readFileSync(heard,"utf8").trim().split(/\s+/).filter(Boolean).sort()}catch{return []}};
+  const child=`/*${mark}:console*/${noted("child")}setInterval(()=>{},1000)`;
+  const program=`/*${mark}*/const {spawn}=require('child_process');${noted("program",1500)}spawn(process.execPath,['-e',process.env.TREBELL_TEST_CHILD],{stdio:'inherit'});spawn(process.execPath,['-e','/*${mark}:detached*/setInterval(()=>{},1000)'],{stdio:'ignore',detached:true}).unref();console.log('started');setInterval(()=>{},1000)`;
+  const ours=rows=>rows.filter(row=>row.commandLine.includes(mark)||row.ppid===worker&&row.created>=since&&row.name==="conhost.exe"&&row.commandLine.includes("--headless"));
+  const named=rows=>rows.map(row=>(row.name==="cmd.exe"?"the shell":row.name==="conhost.exe"?"the console host":row.commandLine.includes("spawn(")?"the program":row.commandLine.includes(":detached")?"the program it started detached":"the program it started on its console")+" "+row.pid);
+  try{
+    const session=await terminals.create({cwd:process.cwd(),shell:process.env.COMSPEC||"cmd.exe",args:`/d /s /c "node -e "${program}""`,env:{TREBELL_TEST_HEARD:heard,TREBELL_TEST_CHILD:child},name:"Dev server",endsTree:true});worker=terminals.child.pid;
+    assert.ok(await until(()=>terminals.snapshot(session.id).buffer.includes("started"),20000),"the program starts its two");
+    assert.deepEqual(named(ours(await windowsProcesses())).map(name=>name.replace(/ \d+$/,"")).sort(),["the console host","the program","the program it started detached","the program it started on its console","the shell"],"the shell, the program, its two and the console host run");
+    assert.equal((await terminals.stop(session.id)).running,false);
+    const atStop=notes();
+    left=await processesLeft(ours);
+    assert.deepEqual(named(left),[],"Stop leaves no shell, program, program it started or console host of it running");
+    assert.deepEqual(notes(),["child","child-done","program","program-done"],"the program and the program it started on its console each heard the close event and shut down before they were ended");
+    assert.deepEqual(atStop,["child","child-done","program","program-done"],"Stop answers once the programs on its console have shut down");
+  }finally{
+    await terminals.shutdown();
+    for(const row of left??ours(await windowsProcesses().catch(()=>[])))try{process.kill(row.pid)}catch{}
+    await rm(heard,{force:true}).catch(()=>{});
+  }
+});
+
+// The server's own death on Windows. The desktop app's main process holds the GUI server, and when it crashes or is ended from
+// outside, Windows ends with it each process it started that is not detached (Node puts them in a job that closes with it). The
+// terminal worker went with it before it could end anything, and every terminal's shell, programs and console host ran on: the tests
+// above close only the worker's input, which a server's death does only once the worker outlives it. Here the server is a Node
+// process of its own with a terminal manager, a project action's terminal and a person's tab, and the test ends it as Task Manager
+// does.
+test("on Windows, terminals whose server dies leave none of their programs, nor their console hosts, nor the terminal worker, running",WINDOWS_TREE,async()=>{
+  const mark="trebell-server-dies-"+randomUUID(),since=Date.now()-1000,dir=await mkdtemp(join(tmpdir(),"trebell-server-dies-"));let server=null,ids=null,known=[],left=null;
+  const script=join(dir,"server.mjs");
+  await writeFile(script,[
+    `import { TerminalManager } from ${JSON.stringify(new URL("../src/terminal-manager.mjs",import.meta.url).href)};`,
+    `const terminals=new TerminalManager({persist:false});`,
+    `const action=await terminals.create({cwd:process.cwd(),shell:process.env.COMSPEC||"cmd.exe",args:process.env.TREBELL_TEST_ARGS,name:"Dev server",endsTree:true});`,
+    `const tab=await terminals.create({cwd:process.cwd(),name:"Terminal"});`,
+    `for(const end=Date.now()+20000;!terminals.snapshot(action.id).buffer.includes("started")||!terminals.snapshot(tab.id).buffer.length;await new Promise(resolve=>setTimeout(resolve,50)))if(Date.now()>end)throw new Error("the terminals did not start");`,
+    `process.stdout.write(JSON.stringify({worker:terminals.child.pid,tab:tab.pid})+"\\n");`,
+    `setInterval(()=>{},1000);`,
+  ].join("\n"));
+  const isKnown=row=>known.some(item=>item.pid===row.pid&&item.created===row.created);
+  const ours=rows=>rows.filter(row=>row.commandLine.includes(mark)||isKnown(row)||ids&&row.ppid===ids.worker&&row.created>=since&&row.name==="conhost.exe"&&row.commandLine.includes("--headless"));
+  const named=rows=>rows.map(row=>(ids&&row.pid===ids.worker?"the terminal worker":ids&&row.pid===ids.tab?"the tab's shell":row.name==="cmd.exe"?"the action's shell":row.name==="conhost.exe"?"a console host":row.commandLine.includes("spawn(")?"the action's program":row.commandLine.includes(":detached")?"the program it started detached":"the program it started on its console")+" "+row.pid);
+  try{
+    server=spawn(process.execPath,[script],{cwd:process.cwd(),env:{...process.env,TREBELL_TEST_ARGS:`/d /s /c "node -e "${markedProgram(mark)}""`},stdio:["ignore","pipe","pipe"],windowsHide:true});
+    let out="",err="";server.stdout.on("data",data=>{out+=data});server.stderr.on("data",data=>{err+=data});
+    assert.ok(await until(()=>/^\{.*\}$/m.test(out)||server.exitCode!==null,30000),"the server starts its terminals: "+err.slice(-500));
+    ids=JSON.parse(out.match(/^\{.*\}$/m)[0]);
+    const before=await windowsProcesses();known=before.filter(row=>(row.pid===ids.worker||row.pid===ids.tab)&&row.created>=since);
+    assert.deepEqual(named(ours(before)).map(name=>name.replace(/ \d+$/,"")).sort(),["a console host","a console host","the action's program","the action's shell","the program it started detached","the program it started on its console","the tab's shell","the terminal worker"],"the worker, both terminals' shells and console hosts, and the action's program and its two run");
+    const gone=new Promise(resolve=>server.once("exit",resolve));server.kill();await gone;
+    left=await processesLeft(ours);
+    assert.deepEqual(named(left),[],"once the server is gone, nothing of its terminals runs, and the worker has exited");
+  }finally{
+    try{server?.kill()}catch{}
+    for(const row of left??ours(await windowsProcesses().catch(()=>[])))try{process.kill(row.pid)}catch{}
+    await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:100}).catch(()=>{});
+  }
+});

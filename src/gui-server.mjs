@@ -715,16 +715,17 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   const runningProjectAction=key=>{const session=terminals?.snapshot(projectActionSessions.get(key)||"");if(session?.running)return session;projectActionSessions.delete(key);return null};
   const actionSessionSummary=session=>{const {buffer,...rest}=session||{};return rest};
   // An action runs its command as the terminal's own program, as worktree setup does, so its terminal runs exactly while the action
-  // does: it ends with the command (its exit code on the tab) and Stop ends it. A remote environment runs it with sh -lc there.
+  // does: it ends with the command (its exit code on the tab) and Stop ends it, with all that the command started (endsTree). A
+  // remote environment runs it with sh -lc there.
   async function createProjectActionSession(projectPath,environmentId,script){
     const command=String(script.command||""),base=terminalOptions({environmentId,cwd:projectPath,name:script.name||"Project action",cols:120,rows:32});
     const profile=environmentId?environments.get(environmentId):null;
     if(profile&&profile.type!=="local"){
       const remote=environments.terminalArgvSpec(environmentId,{command:"sh",args:["-lc",command],cwd:projectPath});
-      return terminals.create({...base,cwd:remote.cwd,shell:remote.shell,args:remote.args,environmentId:remote.environmentId??base.environmentId,environmentName:remote.environmentName||base.environmentName,environmentType:remote.environmentType||base.environmentType});
+      return terminals.create({...base,cwd:remote.cwd,shell:remote.shell,args:remote.args,endsTree:true,environmentId:remote.environmentId??base.environmentId,environmentName:remote.environmentName||base.environmentName,environmentType:remote.environmentType||base.environmentType});
     }
     const spec=commandShellSpec(command,env);
-    return terminals.create({...base,shell:spec.shell,args:spec.args});
+    return terminals.create({...base,shell:spec.shell,args:spec.args,endsTree:true});
   }
   function terminalOptions({environmentId=null,cwd=null,name=null,cols=120,rows=32,terminalEnv=null}={}){
     const spec=environments.terminalSpec(environmentId,{cwd});
@@ -1366,10 +1367,10 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       if(setup&&!mock&&terminals){
         if(environmentId){
           const remote=environments.terminalArgvSpec(environmentId,{command:"sh",args:["-lc",String(setup.command||"")],cwd:created.worktree}),profile=environments.get(environmentId);
-          setupSession=await terminals.create({cwd:remote.cwd,displayCwd:created.worktree,name:`${setup.name||"Setup"} · delegated setup`,cols:120,rows:32,shell:remote.shell,args:remote.args,env:remoteTransportEnvironment(env,{platform:process.platform}),replaceEnv:true,environmentId:remote.environmentId,environmentName:remote.environmentName||profile?.name||"Remote environment",environmentType:remote.environmentType||profile?.type||"remote"});
+          setupSession=await terminals.create({cwd:remote.cwd,displayCwd:created.worktree,name:`${setup.name||"Setup"} · delegated setup`,cols:120,rows:32,shell:remote.shell,args:remote.args,env:remoteTransportEnvironment(env,{platform:process.platform}),replaceEnv:true,endsTree:true,environmentId:remote.environmentId,environmentName:remote.environmentName||profile?.name||"Remote environment",environmentType:remote.environmentType||profile?.type||"remote"});
         }else{
           const shell=commandShellSpec(setup.command,env);
-          setupSession=await terminals.create({cwd:created.worktree,name:`${setup.name||"Setup"} · delegated setup`,cols:120,rows:32,shell:shell.shell,args:shell.args});
+          setupSession=await terminals.create({cwd:created.worktree,name:`${setup.name||"Setup"} · delegated setup`,cols:120,rows:32,shell:shell.shell,args:shell.args,endsTree:true});
         }
         if(setup.waitForSetup){
           const settled=await terminals.waitForExit(setupSession.id,{timeoutMs:30*60_000});
@@ -2475,7 +2476,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
             const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
             if(setup&&!mock&&terminals){
               const spec=commandShellSpec(setup.command,env);
-              const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} · setup`,cols:120,rows:32,shell:spec.shell,args:spec.args});
+              const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} · setup`,cols:120,rows:32,shell:spec.shell,args:spec.args,endsTree:true});
               result={...result,setup:{scriptId:setup.id,scriptName:setup.name,command:setup.command,waitForSetup:Boolean(setup.waitForSetup),session:terminals.snapshot(session.id)}};
             }
             break;

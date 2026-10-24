@@ -24,16 +24,19 @@ function trimBuffer(text){
   return value;
 }
 
-// Ends a terminal's shell with every program it started, on Windows (taskkill /t /f, hidden, at normal priority, waited for up to
-// 3 s), for a terminal whose worker did not end it: the worker ends its terminals' process trees itself (terminal-worker.mjs), but
-// one that ends first (it crashed, something ended it, or it did not answer the shutdown on a loaded host) leaves the programs to run
-// on with their console hosts. Elsewhere the worker's end, which closes the terminals' ptys, ends them.
-function endProcessTree(pid){
-  if(process.platform!=="win32"||!(Number(pid)>0))return Promise.resolve();
+// Ends the shell of a terminal whose worker did not end it, on Windows (taskkill, hidden, at normal priority, waited for up to 3 s):
+// the worker ends its terminals itself (terminal-worker.mjs), but one that ends first (it crashed, something ended it, or it did not
+// answer the shutdown on a loaded host) can leave a shell to run on with its console host and the programs it started. The shell of
+// a terminal that runs one command as its own program (endsTree: a project action, a worktree setup) goes with its process tree
+// (/t); a person's tab or sign-in loses only its shell, whose console host then goes too, so a window program started from it
+// (Notepad, a browser) runs on. Elsewhere the worker's end, which closes the terminals' ptys, ends them.
+function endShell(session){
+  const pid=Number(session?.pid);
+  if(process.platform!=="win32"||!(pid>0))return Promise.resolve();
   return new Promise(resolve=>{
     const timer=setTimeout(resolve,3000),done=()=>{clearTimeout(timer);resolve()};
     try{
-      const killer=spawn("taskkill",["/pid",String(pid),"/t","/f"],{windowsHide:true,stdio:"ignore"});killer.once("error",done);killer.once("exit",done);
+      const killer=spawn("taskkill",["/pid",String(pid),...(session.endsTree?["/t"]:[]),"/f"],{windowsHide:true,stdio:"ignore"});killer.once("error",done);killer.once("exit",done);
       try{setPriority(killer.pid,constants.priority.PRIORITY_NORMAL)}catch{}
     }catch{done()}
   });
@@ -77,7 +80,13 @@ export class TerminalManager extends EventEmitter{
     const workerPath=fileURLToPath(new URL("./terminal-worker.mjs",import.meta.url));
     const childEnv={...this.env};
     if(this.env.TREBELL_ELECTRON_AS_NODE==="1"||process.versions.electron) childEnv.ELECTRON_RUN_AS_NODE="1";
-    this.child=spawn(process.execPath,[workerPath],{env:childEnv,stdio:["pipe","pipe","pipe"],windowsHide:true});
+    // Detached on Windows, where a process Node starts otherwise ends at once with the one that started it (it is put in a job that
+    // closes with it): a server that crashed or was ended (the desktop app's main process holds it) took the worker with it before
+    // the worker could end anything, and its terminals' shells, programs and console hosts ran on. A detached worker outlives it,
+    // sees its input close and ends its terminals (terminal-worker.mjs). Without a console of its own it starts nothing that opens a
+    // console window: its shells run in pseudo-consoles, what it runs itself is hidden, and it closes a console without node-pty's
+    // kill, whose console-list agent would get one.
+    this.child=spawn(process.execPath,[workerPath],{env:childEnv,stdio:["pipe","pipe","pipe"],windowsHide:true,detached:process.platform==="win32"});
     readline.createInterface({input:this.child.stdout,crlfDelay:Infinity}).on("line",line=>{
       let msg; try{msg=JSON.parse(line)}catch{return}
       if(msg.type==="response"){
@@ -109,9 +118,9 @@ export class TerminalManager extends EventEmitter{
       for(const p of this.pending.values())p.reject(new Error("Terminal worker exited"));this.pending.clear();
       // Its terminals all end at once, so their history is written once: each write redacts and rewrites every terminal's scrollback
       // (8 MB each at most) on the server's event loop, in the desktop app its main process, which a write for each terminal held
-      // that many times over. Their shells' process trees are ended here, as the worker could not.
+      // that many times over. Their shells are ended here, as the worker could not end them.
       let ended=0;
-      for(const session of this.sessions.values())if(session.running){void endProcessTree(session.pid);this.#exited(session.id,null,null,{save:false});ended++}
+      for(const session of this.sessions.values())if(session.running){void endShell(session);this.#exited(session.id,null,null,{save:false});ended++}
       if(ended)this.#saveHistory();
     });
   }
@@ -130,10 +139,13 @@ export class TerminalManager extends EventEmitter{
     this.child.stdin.write(JSON.stringify({rid,action,...payload})+"\n");
     return new Promise((resolve,reject)=>{this.pending.set(rid,{resolve,reject});setTimeout(()=>{if(this.pending.delete(rid))reject(new Error("Terminal worker timed out"));},timeoutMs);});
   }
-  async create({cwd,displayCwd=null,cols=120,rows=32,shell=null,args=null,name=null,env=null,replaceEnv=false,environmentId=null,environmentName="Local machine",environmentType="local"}={}){
+  // endsTree: the terminal runs one command as its own program (a project action, a worktree setup), so ending it ends all that the
+  // command started (on Windows, its shell's process tree, also a program started off its console). A terminal a person types into
+  // (a tab, a sign-in) ends as a terminal's close does: the programs on its console end, and a window program started from it runs on.
+  async create({cwd,displayCwd=null,cols=120,rows=32,shell=null,args=null,name=null,env=null,replaceEnv=false,endsTree=false,environmentId=null,environmentName="Local machine",environmentType="local"}={}){
     const id=randomUUID();
-    const result=await this.#rpc("create",{id,cwd,cols,rows,shell,args,env,replaceEnv:Boolean(replaceEnv)});
-    const session={id,name:name||"Terminal",cwd:displayCwd||cwd||process.cwd(),environmentId:environmentId||null,environmentName:environmentName||"Local machine",environmentType:environmentType||"local",cols,rows,pid:result.pid,buffer:"",running:true,exitCode:null,createdAt:Date.now(),updatedAt:Date.now()};
+    const result=await this.#rpc("create",{id,cwd,cols,rows,shell,args,env,replaceEnv:Boolean(replaceEnv),endsTree:Boolean(endsTree)});
+    const session={id,name:name||"Terminal",cwd:displayCwd||cwd||process.cwd(),environmentId:environmentId||null,environmentName:environmentName||"Local machine",environmentType:environmentType||"local",cols,rows,pid:result.pid,endsTree:Boolean(endsTree),buffer:"",running:true,exitCode:null,createdAt:Date.now(),updatedAt:Date.now()};
     this.sessions.set(id,session);this.#saveHistory(); return this.snapshot(id);
   }
   list(environmentId=undefined){
@@ -159,12 +171,12 @@ export class TerminalManager extends EventEmitter{
       },Math.max(1000,Number(timeoutMs)||30*60_000));
     });
   }
-  // Ends a session's program and forgets the session at once: the worker's kill, which on Windows ends the shell's process tree
-  // first, goes on without the closed tab waiting for it.
+  // Ends a session's program and forgets the session at once: the worker's kill, which on Windows ends a project action's process
+  // tree after its programs' grace period, goes on without the closed tab waiting for it.
   async close(id){const session=this.sessions.get(id);if(session?.running)this.#rpc("kill",{id}).catch(()=>{});this.sessions.delete(id);this.#saveHistory();}
   // Ends a session's program and keeps the session, with its output and exit, as stopped history, as the program's own exit does
   // (close also forgets it). It answers once the exit has come, or after 5 s with the session as it is then, also while the worker's
-  // kill, which ends the shell's process tree first on Windows, takes longer.
+  // kill, which on Windows ends what is left of a project action's process tree after its programs' grace period, takes longer.
   async stop(id){
     const session=this.sessions.get(id);if(!session)return null;
     if(session.running){const exited=this.waitForExit(id,{timeoutMs:5000});this.#rpc("kill",{id}).catch(()=>{});await exited}
@@ -203,18 +215,20 @@ export class TerminalManager extends EventEmitter{
     // install waited on the terminal drawer's for good): they are ended here, as the Codex and agent relays end theirs.
     return {close:()=>{server.off("upgrade",upgrade);for(const ws of wss.clients)try{ws.terminate()}catch{}try{wss.close()}catch{}}};
   }
-  // The worker's shutdown ends every terminal, each with the programs its shell started, and exits. One that does not answer in 5 s
-  // (a loaded host) may have ended none of them, so on Windows the process trees of the terminals whose exit it has not told are
-  // ended from here before it is. The terminals are stopped history before the worker goes, so its exit does not end them again.
+  // The worker's shutdown ends every terminal, as its kill does, and exits. It answers within 10 s: on Windows a project action's
+  // end lists its process tree (up to 3 s), gives its programs their grace period (up to 2 s) and lists it again (up to 3 s). One
+  // that does not answer by then (a loaded host) may have ended none of them, so on Windows the shells of the terminals whose exit it
+  // has not told are ended from here before it is. The terminals are stopped history before the worker goes, so its exit does not
+  // end them again.
   async shutdown(){
     if(this.closed)return;this.closed=true;
     clearTimeout(this.saveTimer);this.saveTimer=null;
     const child=this.child;
     if(child){
-      const answered=await this.#rpc("shutdown",{},5000).then(()=>true,()=>false);
+      const answered=await this.#rpc("shutdown",{},10000).then(()=>true,()=>false);
       const running=[...this.sessions.values()].filter(session=>session.running);
       for(const session of running){session.running=false;session.updatedAt=Date.now()}
-      if(!answered)await Promise.all(running.map(session=>endProcessTree(session.pid)));
+      if(!answered)await Promise.all(running.map(session=>endShell(session)));
       try{child.kill()}catch{}
     }
     for(const session of this.sessions.values()){session.pid=null;session.restored=true}
