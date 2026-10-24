@@ -1741,6 +1741,14 @@ test("Tools stops waiting for a Windows sandbox setup whose Codex connection dro
     await expect.soft(setup("Set up unelevated"),"and the other setup").toBeEnabled();
     await expect.soft(line,"and says the setup's end is unknown").toHaveText(unknown);
     await shootTools(page,"tools-sandbox-setup-dropped",card);
+    // Codex finishes that setup meanwhile, its notice gone with the connection: read again with Refresh, the sandbox reads Ready, with
+    // no setup offered, and the line saying the setup's end is unknown goes with them. It stayed under Ready.
+    const refresh=page.locator(".capabilities-toolbar button");
+    fixture.control.sandbox="ready";await refresh.click();await expect(refresh).toHaveText("Refresh");
+    await expect(setup("Set up elevated")).toHaveCount(0);await expect(card).toContainText("Ready");
+    await expect.soft(line,"the setup the sandbox reads done is no longer said to have an unknown end").toHaveCount(0);
+    await shootTools(page,"tools-sandbox-setup-dropped-then-ready",card);
+    fixture.control.sandbox="notConfigured";await refresh.click();await expect(setup("Set up elevated")).toBeEnabled();
     // Set up again with the keys sends a second setup; one Codex finished meanwhile reads Ready, with no line.
     await setup("Set up elevated").focus();await page.keyboard.press("Enter");
     await expect.poll(()=>fixture.control.setups.length).toBe(2);await expect(setup("Setting up…")).toBeDisabled();
@@ -1780,12 +1788,19 @@ test("Tools stops waiting for an agent configuration import whose Codex connecti
     await expect.soft(start,"and the import").toBeEnabled();
     await expect.soft(line,"and says the import's end is unknown").toHaveText("Codex disconnected before reporting how the agent configuration import ended, so it may still be running.");
     await shootTools(page,"tools-config-import-dropped",card);
+    // Codex finishes that import meanwhile and lists it done: read again with Refresh, the line saying its end is unknown goes. It
+    // stayed beside the import listed done.
+    const listed=importId=>({importId,providerId:"claude",completedAtMs:Date.now(),successes:[{itemType:"SKILLS",cwd:null,source:"claude",target:"skills",title:null}],failures:[]});
+    fixture.control.histories.push(listed("import-1"));await page.locator(".capabilities-toolbar button").click();
+    await expect(card.getByText("Previous native imports · 1")).toBeVisible();
+    await expect.soft(line,"the import Codex lists done is no longer said to have an unknown end").toHaveCount(0);
+    await shootTools(page,"tools-config-import-dropped-then-listed",card);
     // Imported again; one Codex finished meanwhile is in its import history: nothing waits, and no line.
     await start.click();await expect(importing).toBeDisabled();await expect.poll(()=>fixture.control.imports.length).toBe(2);
-    await dropCodex(page,fixture,()=>fixture.control.histories.push({importId:"import-2",providerId:"claude",completedAtMs:Date.now(),successes:[{itemType:"SKILLS",cwd:null,source:"claude",target:"skills",title:null}],failures:[]}));
+    await dropCodex(page,fixture,()=>fixture.control.histories.push(listed("import-2")));
     await expect(scan).toBeEnabled();await expect(importing).toHaveCount(0);
     await expect.soft(line,"an import Codex lists done says nothing more").toHaveCount(0);
-    await expect(card.getByText("Previous native imports · 1")).toBeVisible();
+    await expect(card.getByText("Previous native imports · 2")).toBeVisible();
     // The page drawn after says nothing of it.
     await ways.mouse();await wheelTo(page,card);
     await expect(scan).toBeEnabled();await expect.soft(line).toHaveCount(0);

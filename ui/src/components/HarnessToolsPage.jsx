@@ -259,11 +259,13 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     }));
     // An import Codex lists done ended while no page was shown to hear it end. One started on a connection since gone, and a setup,
     // end where no page hears them: the page waits no more, as a page drawn since does, and says their end is unknown unless what it
-    // read shows them done (the import listed, the sandbox ready). The page that stayed waited for good.
+    // read shows them done (the import listed, the sandbox ready). The page that stayed waited for good. Said unknown, they are kept
+    // as such (unknown), so a later read that shows them done takes the line back: it stayed under the sandbox's Ready, or beside the
+    // import listed done, until the page was drawn again.
     if(importHistories)setMigrationHistory({data:importHistories.data||[],connectors:importHistories.connectors||[]});
-    const ended=!!importing.id&&!!importHistories?.data?.some(entry=>entry.importId===importing.id),unknown=what=>`Codex disconnected before reporting how the ${what} ended, so it may still be running.`;
-    if(ended||importing.rpc&&importing.rpc!==rpc){setMigrationImportId(null);setMigrationMessage(ended?"":unknown("agent configuration import"))}
-    if(setup.rpc&&setup.rpc!==rpc){setSandboxMessage(windowsSandbox?.status==="ready"?"":unknown(setup.mode+" Windows sandbox setup"));setSandboxPending("")}
+    const id=importing.id||importing.unknown,ended=!!id&&!!importHistories?.data?.some(entry=>entry.importId===id),ready=windowsSandbox?.status==="ready",mode=setup.mode||setup.unknown,unknown=what=>`Codex disconnected before reporting how the ${what} ended, so it may still be running.`;
+    if(ended||importing.rpc&&importing.rpc!==rpc){setMigrationImportId(null);if(!ended)importing={unknown:id};setMigrationMessage(ended?"":unknown("agent configuration import"))}
+    if(setup.rpc&&setup.rpc!==rpc||setup.unknown&&ready){setSandboxPending("");if(!ready)setup={unknown:mode};setSandboxMessage(ready?"":unknown(mode+" Windows sandbox setup"))}
     setLoading(false);
   }
   useEffect(()=>{refresh()},[rpc,rpcStatus,projectPath,activeThread?.id,platform]);
