@@ -806,22 +806,96 @@ test("a Settings search result taller than the window opens with its heading and
   }finally{release()}
 });
 
+// The Settings error alert sticks to the top of the page while it is up, over what scrolls under it. A search result taller than the
+// window, which opens at its top, had its heading under the alert: Keyboard shortcuts with Enter or a click, wide or narrow, and
+// Agent harness in a short window each time the harness list loading in under it scrolled it there again. It opens with its heading
+// and first row below the alert, in view.
+test("a Settings search result taller than the window opens with its heading and first rows clear of the error alert that is up",async({page,request})=>{
+  test.setTimeout(90_000);
+  // The harness list waits while `hold` is set, until release().
+  let hold=true;const held=[],release=()=>{hold=false;for(const resolve of held.splice(0))resolve()};
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openSettings(page,request,"Search Under Alert Workspace",{continueThreadsAfterRestart:false});
+    await page.route(/\/api\/agent-runtimes$/,async route=>{if(hold)await new Promise(resolve=>held.push(resolve));await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(everyRuntime("codex"))}).catch(()=>{})});
+    // Only the restart recovery save fails, so the header's mode button still saves.
+    await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"&&"continueThreadsAfterRestart" in (route.request().postDataJSON()||{})
+      ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate restart recovery failure"})})
+      :route.continue());
+    const alert=page.locator(".settings-action-error"),search=page.getByRole("textbox",{name:"Search settings"}),results=page.getByTestId("settings-search-results");
+    await page.getByLabel("Continue supported active threads after restarts").click();
+    await expect(alert).toContainText("Deliberate restart recovery failure");
+    // The card against the part of the page the window shows below the alert: whether it is taller than that, and whether its
+    // heading and its first row show whole there, under the alert's bottom edge.
+    const place=card=>card.evaluate(node=>{
+      const area=node.closest(".secondary-page").getBoundingClientRect(),under=document.querySelector(".settings-action-error").getBoundingClientRect().bottom;
+      const clear=element=>{const box=element.getBoundingClientRect();return box.top>=under&&box.bottom<=area.bottom};
+      return {taller:node.offsetHeight>area.bottom-under,heading:clear(node.querySelector("h3")),firstRow:clear(node.querySelector(".keybinding-row,.agent-runtime-option"))};
+    });
+    const top=card=>async()=>Math.round((await card.boundingBox()).y);
+    const open=async(query,title,how)=>{
+      await page.locator(".settings-nav").getByRole("button",{name:/General/}).click();
+      await search.click();await page.keyboard.type(query,{delay:20});
+      const first=results.getByRole("button").first();await expect(first).toContainText(title);
+      if(how==="Enter")await page.keyboard.press("Enter");else await first.click();
+    };
+    const shortcuts=page.locator(".keybindings-settings");
+    for(const [query,how,mode,width] of [["Keyboard shortcuts","Enter","dark",1280],["shortcut","click","light",1280],["Keyboard shortcuts","Enter","light",700],["shortcut","click","dark",700]]){
+      await page.setViewportSize({width,height:800});await switchMode(page,mode);
+      await open(query,"Keyboard shortcuts",how);
+      await expect(shortcuts).toHaveClass(/settings-search-hit/);await settles(top(shortcuts));
+      await expect(alert,"the alert is still up").toBeVisible();
+      expect.soft(await place(shortcuts),`Keyboard shortcuts opened with ${how} at ${width} in ${mode}, under the alert`).toEqual({taller:true,heading:true,firstRow:true});
+      await page.screenshot({animations:"disabled",path:shots+`search-result-tall-under-alert-shortcuts-${how.toLowerCase()}-${mode}-${width}.png`});
+    }
+    // Agent harness in a short window, opened while its list still loads, and again once the list has come in under its heading.
+    await page.setViewportSize({width:1280,height:600});await switchMode(page,"dark");
+    const harness=page.locator(".agent-runtime-settings");
+    await open("Agent harness","Agent harness","Enter");
+    await expect(harness).toHaveClass(/settings-search-hit/);await expect(harness.getByTestId("agent-runtime-skeleton").first()).toBeVisible();
+    await settles(top(harness));
+    expect.soft(await place(harness),"Agent harness opened while its list loads, under the alert").toEqual({taller:true,heading:true,firstRow:true});
+    release();
+    await expect(harness.locator(".agent-runtime-option:not(.agent-runtime-skeleton)")).toHaveCount(7);await settles(top(harness));
+    expect.soft(await place(harness),"Agent harness once its list has loaded, under the alert").toEqual({taller:true,heading:true,firstRow:true});
+    await page.screenshot({animations:"disabled",path:shots+"search-result-tall-under-alert-agent-harness-dark-1280x600.png"});
+    await switchMode(page,"light");
+    await open("Agent harness","Agent harness","click");
+    await expect(harness).toHaveClass(/settings-search-hit/);await settles(top(harness));
+    expect.soft(await place(harness),"Agent harness opened with a click, under the alert").toEqual({taller:true,heading:true,firstRow:true});
+    await page.screenshot({animations:"disabled",path:shots+"search-result-tall-under-alert-agent-harness-light-1280x600.png"});
+    // With the alert dismissed, the result opens at the page's top again.
+    await page.getByRole("button",{name:"Dismiss settings error"}).click();await expect(alert).toHaveCount(0);
+    await open("Agent harness","Agent harness","Enter");
+    await expect(harness).toHaveClass(/settings-search-hit/);await settles(top(harness));
+    const gap=await harness.evaluate(node=>node.getBoundingClientRect().top-node.closest(".secondary-page").getBoundingClientRect().top);
+    expect(Math.abs(gap-12),"with no alert up the card opens 12 px under the page's top").toBeLessThan(1.5);
+    await page.setViewportSize({width:1280,height:800});await switchMode(page,"dark");
+  }finally{release()}
+});
+
 // Some cards show only for some harnesses: Model provider for Trebell Native, MCP servers for Trebell Native, Claude Code, Cursor, Grok
 // and Antigravity, and Custom models for every harness but Trebell Native; Desktop notifications only in the desktop app. The search
 // offered each whatever the harness, and Enter on it opened Agents & models (or General) at its head, with no such card on the page.
+// Runtime profiles shows only for a harness that takes profiles of its own, not for Trebell Native: before the harness list had come
+// in on a first visit the search offered it, and Agents & models drew an empty Profiles block, which went once the list came.
 test("the Settings search offers only the cards the harness in use shows, and Enter or a click on one opens it",async({page,request})=>{
   test.setTimeout(90_000);
+  // The harness list waits while `hold` is set, until release().
+  let hold=true;const held=[],release=()=>{hold=false;for(const resolve of held.splice(0))resolve()};
   try{
     await page.setViewportSize({width:1280,height:800});
-    for(const [runtime,name,missing,shown] of [
-      ["codex","Codex",["MCP servers","Model provider","Desktop notifications"],[["Custom models","agents-models"]]],
-      ["native","Trebell Native",["Custom models","Desktop notifications"],[["MCP servers","agents-mcp"],["Model provider","agents-provider"]]],
+    for(const [runtime,name,missing,shown,profiles] of [
+      ["codex","Codex",["MCP servers","Model provider","Desktop notifications"],[["Custom models","agents-models"]],true],
+      ["native","Trebell Native",["Custom models","Desktop notifications","Runtime profiles"],[["MCP servers","agents-mcp"],["Model provider","agents-provider"]],false],
     ]){
+      hold=true;
       await openSettings(page,request,"Search Harness Cards Workspace",{agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default"});
-      await page.route(/\/api\/agent-runtimes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(everyRuntime(runtime))}));
+      await page.route(/\/api\/agent-runtimes$/,async route=>{if(hold)await new Promise(resolve=>held.push(resolve));await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(everyRuntime(runtime))}).catch(()=>{})});
       const search=page.getByRole("textbox",{name:"Search settings"}),results=page.getByTestId("settings-search-results");
       const type=async query=>{await search.click();await page.keyboard.press("Control+A");await page.keyboard.type(query,{delay:20})};
-      // Not offered, and Enter opens nothing: the query stays, and so does General.
+      // Not offered, and Enter opens nothing: the query stays, and so does General. General reads no harness list, so these are
+      // offered or not before the list has come in.
       for(const title of missing){
         await type(title);
         await expect(results.getByRole("button",{name:title}),`${title} is not offered with ${name}`).toHaveCount(0);
@@ -831,6 +905,23 @@ test("the Settings search offers only the cards the harness in use shows, and En
         if(title===missing[0])for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:shots+`search-not-offered-${runtime}-${mode}-1280.png`})}
       }
       await switchMode(page,"dark");
+      // Runtime profiles, offered only with a harness that takes profiles, and its Profiles block on Agents & models, the same before
+      // the harness list has come in (its rows say Checking…) and after.
+      const offered=results.getByRole("button",{name:"Runtime profiles"}),block=page.locator(".runtime-profiles");
+      await type("Runtime profiles");
+      await expect(offered,`Runtime profiles is ${profiles?"":"not "}offered with ${name} before the harness list comes in`).toHaveCount(profiles?1:0);
+      await search.press("Escape");await expect(search).toHaveValue("");
+      await page.locator(".settings-nav").getByRole("button",{name:/Agents & models/}).click();
+      await expect(page.getByTestId("agent-runtime-skeleton").first()).toBeVisible();
+      await expect(block,`Agents & models ${profiles?"draws":"draws no"} Profiles block with ${name} while the harness list loads`).toHaveCount(profiles?1:0);
+      if(!profiles)for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:shots+`search-profiles-while-list-loads-${runtime}-${mode}-1280.png`})}
+      await switchMode(page,"dark");
+      release();
+      await expect(page.locator(".agent-runtime-option:not(.agent-runtime-skeleton)")).toHaveCount(7);
+      await expect(block,`and ${profiles?"draws":"draws no"} Profiles block once it has come in`).toHaveCount(profiles?1:0);
+      await type("Runtime profiles");
+      await expect(offered,`Runtime profiles is ${profiles?"":"not "}offered with ${name} once the harness list has come in`).toHaveCount(profiles?1:0);
+      await search.press("Escape");await page.locator(".settings-nav").getByRole("button",{name:/General/}).click();
       // Offered, and Enter (the first) or a click (the next) opens its card, marked and in view.
       for(const [index,[title,id]] of shown.entries()){
         await type(title);
@@ -843,7 +934,7 @@ test("the Settings search offers only the cards the harness in use shows, and En
         await page.screenshot({animations:"disabled",path:shots+`search-opens-${id}-${runtime}-dark-1280.png`});
       }
     }
-  }finally{await request.post("/api/settings",{data:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-default"}})}
+  }finally{release();await request.post("/api/settings",{data:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-default"}})}
 });
 
 test("failed saves from inline settings controls stay in the alert without unhandled rejections",async({page,request})=>{

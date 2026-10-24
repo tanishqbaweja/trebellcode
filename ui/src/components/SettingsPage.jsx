@@ -135,8 +135,16 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
 const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity"];
 // A setting opened from the search that is taller than the part of the page the window shows opens at its top, its heading and first
 // rows in view, and a shorter one in the middle: centred, the Keyboard shortcuts card showed rows from the middle of its list, its
-// heading far above the window.
-function settingBlock(target){return target.offsetHeight>(target.closest(".secondary-page")?.clientHeight??window.innerHeight)?"start":"center"}
+// heading far above the window. While the settings error alert is up it stands over the top of the page as it scrolls, so the part
+// the window shows is the part under it, where the scroll leaves the setting (the page's scroll-padding): the card's heading went
+// under the alert. The alert sticks its top offset below the page's own top padding (44 px wide, 28 px narrow), not below the
+// page's edge, so the part under it starts below that padding too: counted from the edge, the heading still went under it at 1280.
+function settingBlock(target){
+  const page=target.closest(".secondary-page"),alert=page?.querySelector(".settings-action-error");
+  const under=alert?parseFloat(getComputedStyle(page).paddingTop)+parseFloat(getComputedStyle(alert).top)+alert.offsetHeight:0;
+  if(page)page.style.scrollPaddingTop=under?under+"px":"";
+  return target.offsetHeight>(page?page.clientHeight-under:window.innerHeight)?"start":"center";
+}
 // A setting opened from the search stays in view while the page around it settles: a card above it that loads later (Project
 // defaults shows its fields once the scoped settings answer) grew after its one scroll and pushed it out of view. Each change of the
 // page's height scrolls to it again at once, before the change is painted (ending its first scroll if that is still on its way), so
@@ -951,10 +959,12 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const availableSettingsSections=new Set(settingsSections.map(item=>item[0]));
   // The cards drawn only for some harnesses or only in the desktop app, by their search id, which the cards below are drawn by too:
   // the search offers a card only where it is drawn, so Enter on it opens it. With Codex, Model provider and MCP servers were offered,
-  // and Enter on either opened Agents & models at its head.
+  // and Enter on either opened Agents & models at its head. Trebell Native and Antigravity take no runtime profiles (the server's
+  // harness table), which is known before the harness list comes: until it came, both drew an empty Profiles block, and the search
+  // offered Runtime profiles, which went once it came.
   const settingDrawn={
     "general-notifications":Boolean(window.trebellDesktop?.notify),
-    "agents-profiles":selectedAgentDefinition?.multipleInstances!==false,
+    "agents-profiles":selectedAgentDefinition?selectedAgentDefinition.multipleInstances!==false:!["native","antigravity"].includes(selectedAgent),
     "agents-provider":selectedManagedInference,
     "agents-models":["codex","claude","opencode","cursor","grok","antigravity"].includes(selectedAgent),
     "agents-mcp":["native","claude","cursor","grok","antigravity"].includes(selectedAgent),
