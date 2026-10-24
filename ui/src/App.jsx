@@ -5489,10 +5489,11 @@ export default function App(){
     // until it is saved or discarded), never with the previous thread's draft or error. A save that answers after another thread
     // opened updates nothing on screen (that thread loads its own goal), like every other goal and continuity update here. While
     // another thread's opening state is up, the panel waits for that thread instead of offering the goal of the one being left,
-    // which only hides: a failed open brings it back with what was being written in it.
+    // which only hides: a failed open brings it back with what was being written in it. From the click on (leaving), also before
+    // that state is up, a refusal said on it is kept for the thread's next panel as well, as the panel goes once the open lands.
     if(rightPanelTab==="goal"){
       const goalThreadId=activeThread?.id||null,forGoalThread=apply=>next=>{if(goalThreadId&&activeThreadRef.current?.id===goalThreadId)apply(next)};
-      return <>{openingShown&&<div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>}<GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} covered={openingShown} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/></>;
+      return <>{openingShown&&<div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>}<GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} covered={openingShown} leaving={openingPending} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/></>;
     }
     return <div className="runtime-surface">
       <section className="runtime-summary">

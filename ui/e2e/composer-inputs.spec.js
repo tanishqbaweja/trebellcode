@@ -1176,6 +1176,8 @@ test("a Goal panel drawn again while a notes save is on its way brings Saving…
 test("a goal or notes save refused while another thread opens is said once the thread's Goal panel is shown again, back on the thread or when the other thread's open fails",async({page})=>{
   test.setTimeout(150_000);
   const socket=await relaySocket(page);
+  // The page's clock runs as the real one, and stands still only where a step says so (refusedAsSecondOpens).
+  await page.clock.install();
   const harness=await openComposerApp(page,{others:["Second thread"]});
   try{
     const {panel,objective}=await setGoalInPanel(page);
@@ -1225,6 +1227,64 @@ test("a goal or notes save refused while another thread opens is said once the t
     await expect.soft(notesRefusal,"the notes' refusal is said on the panel uncovered once Second thread's open failed").toHaveText("Continuity store is locked for the release");
     await inSightAboveBar(notesRefusal,bar,"the notes' refusal is in sight on the panel uncovered");
     await shootAsDrawn(page,"goal-notes-refused-while-another-thread-failed-to-open");
+    // Refused in the moment after the click on Second thread, before its opening state comes up (once the open has taken 200 ms): the
+    // refusal is said on the panel the person has just clicked away from, still shown, and said again back on the thread once Second
+    // thread has opened, whether its opening state came up meanwhile (covered) or the open landed at once. It went with that panel, so
+    // back on the thread the edit sat with Discard changes and no refusal. When the open fails instead, the panel stays with the
+    // refusal said on it, in sight, once: drawn again from Files it says it no more, as any refusal it said. said is the refusal in
+    // the DOM, shown or hidden under the opening state. The page's clock stands still from just before the click until the refusal
+    // has landed, so the opening state is not up yet when it lands, however long the relay takes to bring it, and an open that
+    // lands at once lands before any opening state could come up; the clock then runs on.
+    const refusedAsSecondOpens=async(pressed,reason,said,{covered=false,fails=false}={})=>{
+      const open=socket.slow("thread/resume",params=>params.threadId===second.id),opening=page.getByTestId("thread-opening");
+      await page.clock.pauseAt(await page.evaluate(()=>Date.now())+1000);
+      await threadRow(page,"Second thread").locator(".thread-main").click();socket.release(reason);
+      await expect(pressed,"the refusal has landed").not.toHaveText("Saving…");
+      await expect(said,"said on the panel the person has clicked away from, before Second thread's opening state is up").toHaveText(reason);
+      await expect(opening).toHaveCount(0);
+      if(!covered&&!fails){open();await expect(save,"Second thread has opened, before any opening state").toHaveText("Set goal");await expect(opening).toHaveCount(0)}
+      await page.clock.resume();
+      if(covered){await expect(opening).toBeVisible();await expect(panel).toHaveClass(/opening-covered/)}
+      if(fails){open("Session store is busy");await opened("Composer thread");await expect(panel).not.toHaveClass(/opening-covered/)}
+      else{if(covered)open();await opened("Second thread");await expect(save).toHaveText("Set goal");await threadRow(page,"Composer thread").locator(".thread-main").click();await opened("Composer thread")}
+      await painted(page);
+    };
+    const goalSaid=bar.locator(":scope>.inline-error"),notesSaid=notes.locator(":scope>.inline-error");
+    // A goal save, in dark: the opening state comes up after the refusal, then the open lands, and back on the thread.
+    await switchMode(page,"dark");await typeOver(page,objective,"Make the refund tests pass");
+    socket.hold("thread/goal/set");await save.click();await expect(save).toHaveText("Saving…");
+    await refusedAsSecondOpens(save,"Goal store is read-only for refunds",goalSaid,{covered:true});
+    await expect.soft(goalRefusal,"back on the thread, the goal's refusal that landed before Second thread's opening state came up is said above its bar").toHaveText("Goal store is read-only for refunds");
+    await expect.soft(goalRefusal).toBeInViewport();
+    await expect(objective,"the edit is kept to save again").toHaveValue("Make the refund tests pass");await expect(save).toHaveText("Update goal");
+    await shootAsDrawn(page,"goal-refused-before-another-thread-opening-state");
+    // A notes save, in light: Second thread opens at once once the refusal has landed, before any opening state.
+    await switchMode(page,"light");await showNotes();await typeOver(page,done,"Moved the refunds to the new API");
+    socket.hold("thread/continuity/set");await saveNotes.click();await expect(saveNotes).toHaveText("Saving…");
+    await refusedAsSecondOpens(saveNotes,"Continuity store is read-only for refunds",notesSaid);
+    await expect.soft(notesRefusal,"back on the thread, the notes' refusal that landed as Second thread opened at once is said above Save continuity").toHaveText("Continuity store is read-only for refunds");
+    await inSightAboveBar(notesRefusal,bar,"the notes' refusal that landed as Second thread opened at once is in sight back on the thread");
+    await shootAsDrawn(page,"goal-notes-refused-as-another-thread-opened-at-once");
+    await showNotes();await expect(done,"the note is kept to save again").toHaveValue("Moved the refunds to the new API");
+    // A notes save, in dark, refused before the opening state comes up, and the open then fails: the panel uncovered says the refusal,
+    // in sight above the goal's bar, and drawn again from Files says it no more.
+    await switchMode(page,"dark");await typeOver(page,done,"Kept the refunds form for the release");
+    socket.hold("thread/continuity/set");await saveNotes.click();await expect(saveNotes).toHaveText("Saving…");
+    await refusedAsSecondOpens(saveNotes,"Continuity store is locked for refunds",notesSaid,{covered:true,fails:true});
+    await expect.soft(notesRefusal,"the notes' refusal stays said on the panel uncovered once Second thread's open failed").toHaveText("Continuity store is locked for refunds");
+    await inSightAboveBar(notesRefusal,bar,"the notes' refusal said before the opening state came up is in sight on the panel uncovered");
+    await shootAsDrawn(page,"goal-notes-refused-before-another-thread-failed-to-open");
+    await goalPanelAway["back from Files"](page);await painted(page);
+    await expect(notesSaid,"drawn again from Files, the panel does not say the refusal it said already").toHaveCount(0);
+    await showNotes();await expect(done,"the note is kept to save again").toHaveValue("Kept the refunds form for the release");
+    // A goal save, in light, refused before Second thread's open fails at once: said on the panel that stays, and once.
+    await switchMode(page,"light");await typeOver(page,objective,"Make the invoice tests pass");
+    socket.hold("thread/goal/set");await save.click();await expect(save).toHaveText("Saving…");
+    await refusedAsSecondOpens(save,"Goal store is locked for invoices",goalSaid,{fails:true});
+    await expect(goalRefusal,"the goal's refusal stays said on the panel once Second thread's open failed").toHaveText("Goal store is locked for invoices");
+    await goalPanelAway["back from Files"](page);await expect(objective).toHaveValue("Make the invoice tests pass");await painted(page);
+    await expect(goalSaid,"drawn again from Files, the panel does not say the refusal it said already").toHaveCount(0);
+    await expect(save).toHaveText("Update goal");
   }finally{await harness.close()}
 });
 

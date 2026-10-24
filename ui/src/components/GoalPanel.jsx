@@ -98,8 +98,9 @@ const writes=new Map(),panels=new Map(),refused=new Map();
 const CONTINUITY_WRITES=["continuity","continuity-clear","verification-repair"];
 
 // covered: another thread's opening state is up. The panel belongs to the thread being left, so it hides without unmounting: a
-// failed open brings it back with the drafts in it.
-export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,onContinuity,covered=false}){
+// failed open brings it back with the drafts in it. leaving: another thread's open is on its way, from the click, so also in the
+// moment before its opening state comes up, and in an open that lands before it would.
+export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,onContinuity,covered=false,leaving=false}){
   const [objective,setObjective]=useState("");
   const [tokenBudget,setTokenBudget]=useState("");
   const [timeBudget,setTimeBudget]=useState("");
@@ -153,13 +154,19 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   // clear of the goal's bar: the panel drawn at its top had the section under that bar and the button below the window. A panel
   // covered while another thread opens is hidden, so a refusal waits for the panel shown next, as while no panel is shown: this one
   // uncovered once that open fails, or the thread's drawn again once it has opened. Said on the hidden one, it went with it. This
-  // runs again in the commit that covers or uncovers the panel, so no refusal comes in between.
+  // runs again in the commit that covers or uncovers the panel, so no refusal comes in between. One that lands in the moment after
+  // the click, before the opening state is up (leaving), is said here and kept as well: this panel goes once that open lands, and it
+  // went with it, said for that moment on a panel the person had clicked away from, also in an open that landed before any opening
+  // state. The open over with this panel still here (it failed, or the thread was asked for again), the one said here is not kept
+  // (saidHere): said once, as any refusal it says.
+  const leavingRef=useRef(leaving),saidHere=useRef(null);
   useLayoutEffect(()=>{
-    const id=thread?.id,shown={showBusy,say(said){if(covered){refused.set(id,said);return}if(said.at!=="goal"){setContinuityOpen(true);if(continuityRef.current)continuityRef.current.open=true}setError(said)},started(status,key){setRepairStatus(status);setRepairStartedFor(key)}};
+    const id=thread?.id,shown={showBusy,say(said){if(covered||leavingRef.current)refused.set(id,said);if(covered)return;saidHere.current=said;if(said.at!=="goal"){setContinuityOpen(true);if(continuityRef.current)continuityRef.current.open=true}setError(said)},started(status,key){setRepairStatus(status);setRepairStartedFor(key)}};
     panels.set(id,shown);showBusy(writes.get(id)||"");const said=refused.get(id);if(said){refused.delete(id);shown.say(said)}
     else if(!covered&&CONTINUITY_WRITES.includes(writes.get(id)))continuityRef.current?.querySelector("[aria-busy=true]")?.scrollIntoView({block:"nearest"});
     return()=>{if(panels.get(id)===shown)panels.delete(id)};
   },[covered]);
+  useLayoutEffect(()=>{leavingRef.current=leaving;const id=thread?.id;if(!leaving&&refused.get(id)===saidHere.current)refused.delete(id)},[leaving]);
   const goalFields=[objective,tokenBudget,timeBudget,turnBudget,toolCallBudget,childAgentBudget,costBudgetUsd,completionConditions,constraints,validationExpectations];
   const goalSaved=useSavedFields("goal",thread?.id,goalValues(goal),goalFields,[setObjective,setTokenBudget,setTimeBudget,setTurnBudget,setToolCallBudget,setChildAgentBudget,setCostBudgetUsd,setCompletionConditions,setConstraints,setValidationExpectations]);
   const notes=[completedWork,unresolvedFailures,importantDecisions,artifactsCreated,pendingNextActions];
