@@ -188,10 +188,14 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // closed is done all the same, as Codex finishes what it was asked, but its answer is lost. The plugin catalog is
 // `control.marketplaces`: a plugin shared, installed or uninstalled and a marketplace upgraded or removed change it once answered,
 // and wait while `holdShare` is set as well; a plugin search lists the catalog's plugins whose name has the term in it. The
-// effective configuration is `control.config`. `drop()` closes the app's connections while the fixture keeps listening, so the app
-// connects again.
+// effective configuration is `control.config`. `control.listReads` counts the catalog's reads. The Windows sandbox's readiness is
+// `control.sandbox`, and a setup started answers that it started (`control.setups` lists them); the agent configuration found is
+// `control.migrationItems`, and an import of it answers with its id (`control.imports` lists them; Codex's import history, the imports
+// done, is `control.histories`). `notify(method,params)` sends a
+// notification on the app's connections, as Codex says a setup or an import is done. `drop()` closes the app's connections while
+// the fixture keeps listening, so the app connects again.
 async function startHeldMcpFixture({threads=[]}={}){
-  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[],holdShare:false,heldShare:[],marketplaces:[],config:{}};
+  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[],holdShare:false,heldShare:[],marketplaces:[],config:{},listReads:0,sandbox:"ready",setups:[],migrationItems:[],imports:[],histories:[]};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
   const skill={name:"release-notes",description:"Draft release notes from merged pull requests",path:"/home/test/.codex/skills/release-notes/SKILL.md",scope:"user",enabled:true,interface:{displayName:"Release notes"}};
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
@@ -247,7 +251,7 @@ async function startHeldMcpFixture({threads=[]}={}){
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="thread/continuity/get")result={continuity:null};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
-      else if(message.method==="plugin/list")result={marketplaces:control.marketplaces};
+      else if(message.method==="plugin/list"){control.listReads++;result={marketplaces:control.marketplaces}}
       else if(message.method==="plugin/search")result={data:control.marketplaces.flatMap(market=>(market.plugins||[]).filter(plugin=>plugin.name.includes(message.params?.searchTerm)).map(plugin=>({marketplaceName:market.name,marketplacePath:market.path,plugin}))),nextCursor:null};
       else if(message.method==="app/installed")result={apps:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
@@ -258,8 +262,11 @@ async function startHeldMcpFixture({threads=[]}={}){
       else if(message.method==="configRequirements/read")result={requirements:null};
       else if(message.method==="memory/status")result={v2ConsolidatedThreads:3,v2Ready:false};
       else if(message.method==="server/diagnostics")result={process:{id:321,residentMemoryBytes:4096},gauges:[]};
-      else if(message.method==="externalAgentConfig/import/readHistories")result={data:[],connectors:[]};
-      else if(message.method==="windowsSandbox/readiness")result={status:"ready"};
+      else if(message.method==="externalAgentConfig/import/readHistories")result={data:control.histories,connectors:[]};
+      else if(message.method==="externalAgentConfig/detect")result={items:control.migrationItems,connectors:[]};
+      else if(message.method==="externalAgentConfig/import"){control.imports.push(message.params);result={importId:"import-"+control.imports.length}}
+      else if(message.method==="windowsSandbox/readiness")result={status:control.sandbox};
+      else if(message.method==="windowsSandbox/setupStart"){control.setups.push(message.params);result={started:true}}
       send({result});
     });
   });
@@ -270,13 +277,15 @@ async function startHeldMcpFixture({threads=[]}={}){
     releaseSkills(){control.holdSkills=false;for(const answer of control.heldSkills.splice(0))answer()},
     releaseShare(){for(const answer of control.heldShare.splice(0))answer()},
     refuseShare(reason){for(const answer of control.heldShare.splice(0))answer(reason)},
+    notify(method,params){for(const socket of sockets)if(socket.readyState===socket.OPEN)socket.send(JSON.stringify({method,params}))},
     drop(){for(const socket of sockets)try{socket.terminate()}catch{}},
     async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
 }
-// projects are the saved projects (activeProjectId the open one); opening one answers with it, as the server does.
-async function openTools(page,wsUrl,{connected=true,cwd=process.cwd(),projects=[],activeProjectId=null,threadMeta={}}={}){
+// projects are the saved projects (activeProjectId the open one); opening one answers with it, as the server does. platform is the
+// host's the app is told of (the Windows sandbox card shows on win32).
+async function openTools(page,wsUrl,{connected=true,cwd=process.cwd(),projects=[],activeProjectId=null,threadMeta={},platform=process.platform}={}){
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
-  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd,platform:process.platform,version:"tools-held-list-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl,cwd,platform,version:"tools-held-list-fixture",activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...(activeProjectId?{activeProjectId}:{})},projects,threadMeta}));
   await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
   await page.route(/\/api\/projects$/,route=>{
@@ -616,12 +625,14 @@ test("Tools Skills card drops the previous workspace's skills while the next wor
 
 // A plugin shared with the account, as Codex lists it, with no local copy yet.
 const share=(id,name,version)=>({plugin:{id,name,...(version?{version}:{}),remotePluginId:"remote-"+id,shareContext:{remotePluginId:"remote-"+id,discoverability:"PRIVATE",shareUrl:"https://plugins.example.invalid/share/"+id,creatorName:"Lane G"}},localPluginPath:null});
-// The mouse wheel over the page, notch by notch, as a person scrolls a card up to read it, until its head is near the window's top.
+// The mouse wheel over the page, notch by notch, as a person scrolls a card up to read it, until its head is near the window's top,
+// or, for a card at the page's foot, until the page ends with it in view.
 async function wheelTo(page,card){
   const scroller=page.locator(".secondary-page");
   await page.mouse.move(760,420);
   for(let notch=0;notch<40;notch++){
     const {y}=await card.boundingBox();if(y>=60&&y<=200)return;
+    if(y>200&&await scroller.evaluate(node=>node.scrollTop+node.clientHeight>=node.scrollHeight-1))return;
     const before=await scroller.evaluate(node=>node.scrollTop);
     await page.mouse.wheel(0,Math.max(-400,Math.min(400,y-120)));
     await expect.poll(()=>scroller.evaluate(node=>node.scrollTop)).not.toBe(before);
@@ -1172,6 +1183,13 @@ test("Tools drops the line of a Plugins or Marketplaces action a dropped Codex c
   }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
+// A round trip to Codex on the app's connection: the toolbar's Refresh, which no action waits for, reads the catalog again, and the
+// frames of one connection arrive in order, so once that read has reached the fixture so has whatever the presses before it sent.
+async function roundTrip(page,fixture){
+  const refresh=page.locator(".capabilities-toolbar button"),reads=fixture.control.listReads;
+  await refresh.click();await expect.poll(()=>fixture.control.listReads).toBeGreaterThan(reads);await expect(refresh).toHaveText("Refresh");
+}
+
 // A Tools page drawn again while a Plugins action is on its way (back from Settings with the mouse or the keys, or back from Usage)
 // says so as the page that sent it did: the action's button reads Sharing…, Updating… or Installing…, marked busy, with the page's
 // other actions waiting, and a second press, a click or Enter, sends nothing. Once Codex answers, the row shows what the action did,
@@ -1195,8 +1213,9 @@ test("Tools drawn again while a Plugins action is on its way says so on its butt
       "back from Usage":async()=>{await page.getByRole("button",{name:"Usage",exact:true}).click();await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();await page.getByRole("button",{name:"Tools",exact:true}).click()},
     };
     const away=async way=>{await ways[way]();await expect(tools).toBeVisible();await expect(refresh).toHaveText("Refresh");await wheelTo(page,plugins)};
-    // A second press as a person makes it on the action's button: a click on it, then Enter.
-    const pressAgain=async target=>{await target.scrollIntoViewIfNeeded();const box=await target.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);await target.focus();await page.keyboard.press("Enter")};
+    // A second press as a person makes it on the action's button: a click on it, then Enter; then a round trip to Codex, so what
+    // either sent has reached the fixture before it is counted.
+    const pressAgain=async target=>{await target.scrollIntoViewIfNeeded();const box=await target.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);await target.focus();await page.keyboard.press("Enter");await roundTrip(page,fixture)};
     const shoot=async(name,shown)=>{
       for(const width of [1280,700]){await page.setViewportSize({width,height:800});await shown.evaluate(node=>node.scrollIntoView({block:"center"}));for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${width}x800.png`,fullPage:false})}}
       await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
@@ -1241,4 +1260,202 @@ test("Tools drawn again while a Plugins action is on its way says so on its butt
     await expect(button("Uninstall")).toBeEnabled();
     await shoot("tools-drawn-again-uninstall-refused",row);
   }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// The ways a person leaves Tools and comes back to it, with Tools read again on its return.
+function toolsWays(page){
+  const settings=page.getByRole("heading",{name:"Settings",level:1}),tools=page.getByRole("heading",{name:"Harness capabilities",level:2}),refresh=page.locator(".capabilities-toolbar button");
+  const back=async()=>{await expect(tools).toBeVisible();await expect(refresh).toHaveText("Refresh")};
+  return {settings,
+    async mouse(){await page.getByRole("button",{name:"Settings",exact:true}).click();await expect(settings).toBeVisible();await page.getByRole("button",{name:"Tools",exact:true}).click();await back()},
+    async keys(){await page.keyboard.press("Control+,");await expect(settings).toBeVisible();await page.keyboard.press("Control+[");await back()},
+    async to(){await page.getByRole("button",{name:"Settings",exact:true}).click();await expect(settings).toBeVisible()},
+    async from(){await page.getByRole("button",{name:"Tools",exact:true}).click();await back()},
+  };
+}
+const shootTools=async(page,name,shown)=>{
+  for(const width of [1280,700]){await page.setViewportSize({width,height:800});await shown.evaluate(node=>node.scrollIntoView({block:"center"}));for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${width}x800.png`,fullPage:false})}}
+  await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+};
+
+// A page drawn again while a marketplace's Remove is on its way keeps the keyboard's place as the page that sent it does: put on
+// Removing… there with Tab, and Enter pressed on it (which does nothing more), once Codex answers and the marketplace's row goes the
+// keyboard is on the next marketplace's Upgrade, whether the Remove was pressed with the keys or the mouse. It fell to the page: only
+// the page that sent the Remove knew where the keyboard was.
+test("Tools drawn again while a Remove is on its way hands the keyboard on to the next marketplace's Upgrade once its row goes",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=markets();fixture.control.holdShare=true;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),card=toolsCard(page,"Marketplaces"),rows=card.locator(".capability-list>div"),names=rows.locator("strong");
+    await expect(names).toHaveText(["Lane G Alpha","Lane G Beta","Lane G Gamma"]);
+    await wheelTo(page,card);
+    for(const [how,left] of [["keys",["Lane G Beta","Lane G Gamma"]],["mouse",["Lane G Gamma"]]]){
+      const remove=rows.nth(0).getByRole("button",{name:"Remove",exact:true});
+      if(how==="keys"){await rows.nth(0).getByRole("button",{name:"Upgrade",exact:true}).focus();await page.keyboard.press("Tab");await expect(remove).toBeFocused();await page.keyboard.press("Enter")}
+      else await remove.click();
+      await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+      await ways.keys();await wheelTo(page,card);
+      const removing=rows.nth(0).getByRole("button",{name:"Removing…",exact:true});
+      await card.getByPlaceholder("Git URL or local path").focus();await page.keyboard.press("Tab");
+      await expect(removing,"Tab from the source field reaches Removing… on the page drawn again").toBeFocused();
+      await page.keyboard.press("Enter");
+      fixture.releaseShare();
+      await expect(names).toHaveText(left);
+      await expect.soft(rows.nth(0).getByRole("button",{name:"Upgrade",exact:true}),`once the row goes the keyboard is on the next marketplace's Upgrade (Remove pressed with the ${how})`).toBeFocused();
+      await shootTools(page,"tools-drawn-again-marketplace-removed-keyboard-"+how,card);
+    }
+  }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// A Plugins action Codex refuses while the person is away from Tools (on Settings) is said once Tools is drawn again, as to a page
+// that stays, with the action offered again: the line went with the page that sent it, and the page drawn again said nothing.
+test("Tools says why Codex refused a Plugins action while the person was away, once Tools is drawn again, and offers the action again",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=catalog();fixture.control.holdShare=true;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),plugins=toolsCard(page,"Plugins"),row=plugins.locator(".capability-list>div").filter({hasText:"Lane G Local"}),button=name=>row.getByRole("button",{name,exact:true});
+    await wheelTo(page,plugins);
+    for(const [action,said,reason] of [["Install","Could not install Lane G Local","the marketplace is offline"],["Share privately","Could not share Lane G Local","sharing is turned off for this workspace"]]){
+      await button(action).click();await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+      await ways.to();
+      fixture.refuseShare(reason);await page.waitForTimeout(600);
+      await ways.from();await wheelTo(page,plugins);
+      await expect.soft(plugins.locator(".capability-error"),`the refusal of ${action} that came while Settings showed is said once Tools is drawn again`).toHaveText([said+": "+reason]);
+      await expect(button(action),action+" is offered again").toBeEnabled();
+      await shootTools(page,"tools-refused-while-away-"+action.split(" ")[0].toLowerCase(),row);
+    }
+  }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// A history import says what it did once Conversation history is scanned again: the scan cleared the line as it started, so the
+// summary never showed. Import available pressed, then Settings and back while the import runs: the page drawn again has no scan to
+// draw Import available from, and says Importing… in its place, with Scan history waiting; once the import lands it says what was
+// imported, and lists the scan read again. It showed only a disabled Scan history, and what the import did went with the page that
+// sent it.
+test("Tools says what a history import did, and drawn again while it runs says Importing…, and once it lands what it imported",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  const imported=new Set(),heldImports=[];let hold=false;
+  const session=(index,title)=>({id:"history-claude-"+index,source:"claude",providerSessionId:"claude-history-"+index,cwd:process.cwd(),title,preview:title});
+  const sessions=[session(1,"Recent Claude conversation"),session(2,"Older Claude conversation")];
+  const answer=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route(/\/api\/history-import$/,route=>{
+    if(route.request().method()!=="POST")return answer(route,{codexImportAvailable:true,sessions:sessions.map(item=>({...item,alreadyImported:imported.has(item.id)}))});
+    if(hold)return heldImports.push(route);
+    const ids=route.request().postDataJSON()?.sessionIds||[];for(const id of ids)imported.add(id);
+    return answer(route,{results:ids.map(id=>({id,status:"imported"}))});
+  });
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),history=toolsCard(page,"Conversation history"),scan=history.getByRole("button",{name:"Scan history",exact:true});
+    const list=history.locator(".history-import-list"),row=title=>list.locator(":scope>div").filter({hasText:title}),status=history.locator(".capability-status");
+    await wheelTo(page,history);
+    await scan.click();await expect(list).toContainText("Recent Claude conversation");
+    // On the page that stays: Import on the first conversation's row.
+    await row("Recent Claude conversation").getByRole("button",{name:"Import",exact:true}).click();
+    await expect(row("Recent Claude conversation")).toContainText("imported");await expect(scan).toBeEnabled();
+    await expect.soft(status,"the page says what the import did once the history is scanned again").toHaveText("1 imported");
+    // Drawn again while Import available runs.
+    hold=true;
+    await history.getByRole("button",{name:"Import available",exact:true}).click();await expect.poll(()=>heldImports.length).toBe(1);
+    await ways.mouse();await wheelTo(page,history);
+    await expect.soft(history.getByRole("button",{name:"Importing…",exact:true}),"the page drawn again says the import runs").toBeDisabled();
+    await expect.soft(scan,"with Scan history waiting").toBeDisabled();
+    await shootTools(page,"tools-drawn-again-history-importing",history);
+    hold=false;
+    for(const route of heldImports.splice(0)){imported.add(sessions[1].id);await answer(route,{results:[{id:sessions[1].id,status:"imported"},{id:sessions[0].id,status:"skipped"}]})}
+    await expect.soft(status,"once the import lands the page drawn again says what it imported").toHaveText("1 imported · 1 already imported");
+    await expect(row("Older Claude conversation"),"and lists the scan read again").toContainText("imported");
+    await expect(scan).toBeEnabled();
+    await shootTools(page,"tools-drawn-again-history-imported",history);
+  }finally{for(const route of heldImports.splice(0))await answer(route,{results:[]}).catch(()=>{});await fixture.close()}
+});
+
+// A Windows sandbox setup Codex has started runs until Codex says it is done, while Windows may ask for permission: a page drawn again
+// meanwhile still says Setting up…, with both setups waiting, so a press sends no second setup, which could raise a second elevation
+// prompt, until Codex says the setup is done. One done while the person is away leaves nothing waiting. The page drawn again offered
+// both setups live.
+test("Tools drawn again while a Windows sandbox setup runs says Setting up…, sends no second setup, and offers it again once Codex says it is done",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();fixture.control.sandbox="notConfigured";
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl,{platform:"win32"});
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),card=toolsCard(page,"Windows sandbox"),setup=name=>card.getByRole("button",{name,exact:true}),settingUp=setup("Setting up…");
+    await expect(card).toContainText("Not configured");await wheelTo(page,card);
+    await setup("Set up elevated").click();await expect(settingUp).toBeDisabled();await expect.poll(()=>fixture.control.setups.length).toBe(1);
+    await ways.mouse();await wheelTo(page,card);
+    await expect.soft(settingUp,"the page drawn again says the setup runs").toBeDisabled();
+    await expect.soft(setup("Set up unelevated"),"and the other setup waits").toBeDisabled();
+    // A person tries again, on either setup it offers.
+    for(const name of ["Set up elevated","Set up unelevated"])if(await setup(name).count()&&await setup(name).isEnabled())await setup(name).click();
+    await roundTrip(page,fixture);
+    expect.soft(fixture.control.setups.length,"no second setup while the first runs").toBe(1);
+    await shootTools(page,"tools-drawn-again-sandbox-setting-up",card);
+    // Codex says the setup failed: the page drawn again says so, and offers both setups again.
+    fixture.notify("windowsSandbox/setupCompleted",{mode:"elevated",success:false,error:"Deliberate sandbox setup failure"});
+    await expect(card.locator(".capability-error")).toContainText("Windows sandbox setup failed: Deliberate sandbox setup failure");
+    await expect(setup("Set up elevated")).toBeEnabled();await expect(setup("Set up unelevated")).toBeEnabled();
+    // A setup Codex says is done while the person is away leaves nothing waiting on the page drawn after, which says why it failed.
+    await setup("Set up elevated").click();await expect(settingUp).toBeDisabled();await expect.poll(()=>fixture.control.setups.length).toBe(2);
+    await ways.to();
+    fixture.notify("windowsSandbox/setupCompleted",{mode:"elevated",success:false,error:"Deliberate sandbox setup failure while away"});await page.waitForTimeout(600);
+    await ways.from();await wheelTo(page,card);
+    await expect(setup("Set up elevated"),"a setup done while the person was away leaves nothing waiting").toBeEnabled();
+    await expect(setup("Set up unelevated")).toBeEnabled();
+    await expect.soft(card.locator(".capability-error"),"and the page drawn after says why it failed").toHaveText(["Windows sandbox setup failed: Deliberate sandbox setup failure while away"]);
+    await shootTools(page,"tools-sandbox-setup-failed-while-away",card);
+  }finally{await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// An agent configuration import Codex has started runs until Codex says it is done: a page drawn again meanwhile says Importing…,
+// with Scan waiting, so no second import goes out, and says what the import did once Codex says it is done. The page drawn again
+// offered Scan, and from it a second import, and passed over the first import's completion.
+test("Tools drawn again while an agent configuration import runs says Importing…, sends no second import, and says what the import did",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.migrationItems=[{itemType:"SKILLS",description:"Claude Code skills",cwd:null}];
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),card=toolsCard(page,"Import agent configuration"),scan=card.getByRole("button",{name:"Scan",exact:true});
+    const importing=card.getByRole("button",{name:"Importing…",exact:true}),start=card.getByRole("button",{name:"Import 1 item",exact:true});
+    await wheelTo(page,card);
+    await scan.click();await start.click();
+    await expect(importing).toBeDisabled();await expect.poll(()=>fixture.control.imports.length).toBe(1);
+    await ways.keys();await wheelTo(page,card);
+    await expect.soft(importing,"the page drawn again says the import runs").toBeDisabled();
+    await expect.soft(scan,"with Scan waiting").toBeDisabled();
+    // A person tries again: Scan, and Import once it is offered.
+    if(await scan.isEnabled()){await scan.click();await expect(start).toBeVisible();if(await start.isEnabled())await start.click()}
+    await roundTrip(page,fixture);
+    expect.soft(fixture.control.imports.length,"no second import while the first runs").toBe(1);
+    await shootTools(page,"tools-drawn-again-config-importing",card);
+    const done={itemTypeResults:[{itemType:"SKILLS",successes:[{itemType:"SKILLS",description:"release-notes"}],failures:[]}]};
+    fixture.notify("externalAgentConfig/import/completed",{importId:"import-1",...done});
+    await expect.soft(card.locator(".capability-status"),"the page drawn again says what the import did").toHaveText("Import complete · Skills · 1 imported");
+    await expect(scan).toBeEnabled();
+    await shootTools(page,"tools-drawn-again-config-imported",card);
+    // An import Codex ends while the person is away (on Settings), which no page heard end, leaves nothing waiting on the page drawn
+    // after, as Codex lists it done in its import history.
+    await start.click();await expect(importing).toBeDisabled();await expect.poll(()=>fixture.control.imports.length).toBe(2);
+    await ways.to();
+    fixture.control.histories.push({importId:"import-2",providerId:"claude",completedAtMs:Date.now(),successes:[{itemType:"SKILLS",cwd:null,source:"claude",target:"skills",title:null}],failures:[]});
+    fixture.notify("externalAgentConfig/import/completed",{importId:"import-2",...done});await page.waitForTimeout(600);
+    await ways.from();await wheelTo(page,card);
+    await expect(scan,"an import done while the person was away leaves nothing waiting").toBeEnabled();await expect(importing).toHaveCount(0);
+    await expect(card.getByText("Previous native imports · 1")).toBeVisible();
+  }finally{await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });

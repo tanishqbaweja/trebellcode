@@ -30,6 +30,14 @@ const listedPlugin=(marketplaces,id)=>marketplaces.flatMap(m=>m.plugins||[]).fin
 let running="",shown=null;
 // How the lists show each action done (shareDone, read by refresh), kept with the action outside the page too.
 const shareDone={};
+// What an action says while no page is shown (a refusal that lands while Settings shows), kept for the next page drawn, which says
+// it and keeps it through its first read of Codex, as the read once Codex is back keeps what the actions said: it was said nowhere.
+// And what Codex runs once its request has answered, until it says it is done: a Windows sandbox setup (setup) and an agent
+// configuration import (importing), on the connection they were started on, as one dropped since may never say so. A page drawn
+// again meanwhile waits for them as the page that started them does: it offered a second setup, which can raise a second
+// elevation prompt, and a second import, and passed over the first one's end.
+let said={},setup={},importing={};
+window.addEventListener("trebell:windows-sandbox-setup",event=>{setup={};if(!shown)said={...said,"windowsSandbox/setupStart":event.detail?.success?null:failureText("Windows sandbox setup failed",event.detail?.error)}});
 
 // A header badge is a bare count, or a label that says what it counts when the card lists more than one kind of row.
 function Section({title,icon:Icon,count,badge,children}){
@@ -90,32 +98,35 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // loses only Codex's answer, so that refresh drops the line of an action the list read again shows done (shareDone holds, for each
   // such action's line, the read that lists it and how that list shows the action done: a plugin shared, installed or uninstalled, a
   // marketplace removed, or a shared plugin checked out, its visibility set or its share deleted): the line said it failed beside a
-  // row that showed it done, as Lane G Local offered Update share under "Could not share Lane G Local: Codex disconnected".
-  const away=useRef(false);
+  // row that showed it done, as Lane G Local offered Update share under "Could not share Lane G Local: Codex disconnected". A page's
+  // first read keeps them too: the lines said while no page was shown (said).
+  const away=useRef(true);
   // The control an action was pressed on keeps the keyboard while Codex answers it (ActionButton). One the action took away with the
   // keyboard still on it hands the keyboard on, as a thread's row does, instead of dropping it on the page, and leaves the page where
   // the person has scrolled it meanwhile: a Checkout once checked out to the control now in its place in its row, and the row of a
   // deleted share or of a removed marketplace to the first control of the row after it, or of the one before (in Remove's place
   // there stood the next marketplace's Remove, which removes at once). A control pressed with the mouse (its focus not shown), or one
   // the person moved the focus from meanwhile, to blank page space too, leaves the focus where it falls: the select in the place of a
-  // Checkout clicked with the mouse took it, with its focus ring.
+  // Checkout clicked with the mouse took it, with its focus ring. On a page drawn again while an action runs, the control the keyboard
+  // comes to (onFocus, its focus shown) stands for the one pressed: Removing… reached with Tab dropped the keyboard on the page as its
+  // row went, as only the page that sent the Remove knew where the keyboard was.
   const [busy,showBusy]=useState(()=>running),pressed=useRef(null);
   // This page as an action reaches it (running, shown): one pressed on a page since gone says what it does, and reads Codex again, on
-  // the page drawn now (page), and a refresh the page gone had under way lands on nothing.
-  const self=useRef({}).current;Object.assign(self,{showBusy,showErrors,refresh});
-  const page=()=>self.gone?shown:self,setErrors=update=>page()?.showErrors(update);
-  useEffect(()=>{self.gone=false;shown=self;showBusy(running);return()=>{self.gone=true;if(shown===self)shown=null}},[]);
-  const setBusy=value=>{
-    const node=document.activeElement,row=node?.closest?.(".capability-list>div");
-    if(value&&!self.gone&&row&&!pressed.current&&node.matches(":focus-visible")){
+  // the page drawn now (page), and a refresh the page gone had under way lands on nothing. With no page shown, its lines wait (said).
+  const self=useRef({}).current;
+  const page=()=>self.gone?shown:self,setErrors=update=>{const to=page();if(to)to.showErrors(update);else said=update(said)};
+  useEffect(()=>{self.gone=false;shown=self;showBusy(running);if(Object.keys(said).length){const lines=said;said={};showErrors(prev=>({...prev,...lines}))}return()=>{self.gone=true;if(shown===self)shown=null}},[]);
+  const hold=node=>{
+    const row=node?.closest?.(".capability-list>div");
+    if(!self.gone&&row&&!pressed.current&&node.matches(":focus-visible")){
       const from=pressed.current={node,row,list:row.parentElement,at:[...row.parentElement.children].indexOf(row),index:[...row.querySelectorAll("button,select")].indexOf(node)};
       // The focus moved off the control while it is still on the page is the person's; moved back, it is the keyboard's again. Read
       // once the event is over: Chromium fires focusout on the control as it is taken away, still on the page then.
       from.note=()=>queueMicrotask(()=>{from.left=node.isConnected&&document.activeElement!==node});
       for(const type of ["focusin","focusout"])node.addEventListener(type,from.note);
     }
-    running=value;page()?.showBusy(value);
   };
+  const setBusy=value=>{if(value)hold(document.activeElement);running=value;page()?.showBusy(value)};
   useLayoutEffect(()=>{
     const from=pressed.current;if(busy||!from)return;pressed.current=null;
     for(const type of ["focusin","focusout"])from.node.removeEventListener(type,from.note);
@@ -128,7 +139,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [migrationHistory,setMigrationHistory]=useState({data:[],connectors:[]});
   const [migrationMessage,setMigrationMessage]=useState("");
   const [migrationFailures,setMigrationFailures]=useState([]);
-  const [migrationImportId,setMigrationImportId]=useState(null);
+  const [migrationImportId,showImport]=useState(()=>importing.rpc===rpc&&importing.id||null);
+  const setMigrationImportId=id=>{importing=id?{id,rpc}:{};page()?.showImport(id)};
   const [historyImport,setHistoryImport]=useState(null);
   // Whether the latest history scan failed. Sessions an earlier scan listed stay on screen beside the failure, but an earlier
   // empty answer is not claimed there.
@@ -145,7 +157,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   },[historyMessage]);
   const [memoryMessage,setMemoryMessage]=useState("");
   const [memoryResetArmed,setMemoryResetArmed]=useState(false);
-  const [sandboxPending,setSandboxPending]=useState("");
+  const [sandboxPending,showSandbox]=useState(()=>setup.rpc===rpc&&setup.mode||"");
+  const setSandboxPending=mode=>{setup=mode?{mode,rpc}:{};page()?.showSandbox(mode)};
   const [sandboxMessage,setSandboxMessage]=useState("");
   const [sandboxWarning,setSandboxWarning]=useState("");
   const [skillRootsText,setSkillRootsText]=useState("");
@@ -163,6 +176,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [hookRuns,setHookRuns]=useState([]);
   const [authRecovery,setAuthRecovery]=useState(null);
   const [modelNotices,setModelNotices]=useState([]);
+  Object.assign(self,{showBusy,showErrors,refresh,showSandbox,showImport,scanHistory,setHistoryMessage});
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -233,7 +247,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       ...(diagnostics!==null?{diagnostics}:{}),
       ...(platform==="win32"&&windowsSandbox!==null?{windowsSandbox}:{}),
     }));
-    if(importHistories)setMigrationHistory({data:importHistories.data||[],connectors:importHistories.connectors||[]});
+    // An import Codex lists done ended while no page was shown to hear it end.
+    if(importHistories){setMigrationHistory({data:importHistories.data||[],connectors:importHistories.connectors||[]});if(importHistories.data?.some(entry=>entry.importId===migrationImportId))setMigrationImportId(null)}
     setLoading(false);
   }
   useEffect(()=>{refresh()},[rpc,rpcStatus,projectPath,activeThread?.id,platform]);
@@ -520,20 +535,25 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     catch(error){setHistoryScanFailed(true);setHistoryMessage(failureText("Could not scan conversation history",error))}
     finally{setBusy("")}
   }
+  // What an import did is said, and the history scanned again, on the page drawn now (say), so a page drawn again while it runs says
+  // it: both went with the page that sent it. The summary is said once the scan is read again, as the scan clears the line as it
+  // starts: it took the summary with it, so no page said what was imported. A scan that fails says so instead.
   async function importHistory(sessionIds){
     const ids=(sessionIds||[]).filter(Boolean);if(!ids.length)return;
     setBusy("history:import");setHistoryMessage("");
+    const say=text=>page()?.setHistoryMessage(text);
     let result;
     try{result=await api("/api/history-import",{method:"POST",body:{sessionIds:ids.slice(0,50)}})}
-    catch(error){setHistoryMessage(failureText("Could not import conversations",error));setBusy("");return}
+    catch(error){say(failureText("Could not import conversations",error));setBusy("");return}
     // A failure after the import itself (refreshing the thread list) is worded by the app, which says the import succeeded.
     try{
       const imported=(result.results||[]).filter(item=>item.status==="imported").length;
       const skipped=(result.results||[]).filter(item=>item.status==="skipped").length;
       const failed=(result.results||[]).filter(item=>item.status==="error").length;
-      setHistoryMessage([imported&&`${imported} imported`,skipped&&`${skipped} already imported`,failed&&`${failed} failed`].filter(Boolean).join(" · ")||"Nothing changed");
-      await scanHistory();await onHistoryImported?.(result);
-    }catch(error){setHistoryMessage(error.message||String(error))}
+      await page()?.scanHistory();
+      say(scan=>scan||[imported&&`${imported} imported`,skipped&&`${skipped} already imported`,failed&&`${failed} failed`].filter(Boolean).join(" · ")||"Nothing changed");
+      await onHistoryImported?.(result);
+    }catch(error){say(error.message||String(error))}
     finally{setBusy("")}
   }
   async function readResource(server,resource){
@@ -608,7 +628,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
 
   return <>
     {!connected&&<div className="empty-state capabilities-empty-state"><Wrench size={24}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>}
-    <div className="capabilities-page" ref={pageRef} hidden={!connected}>
+    <div className="capabilities-page" ref={pageRef} hidden={!connected} onFocus={event=>{if(busy)hold(event.target)}}>
     <div className="capabilities-toolbar"><div><h2>Harness capabilities</h2><p>Live inventory from the bundled Codex app-server. These are real runtime capabilities, not a hard-coded parity list.</p></div><button onClick={()=>{refresh();onSkillsReload?.()}} disabled={loading}><RefreshCw size={13}/>{loading?"Refreshing…":"Refresh"}</button></div>
 
     <div className="capability-grid">
@@ -769,7 +789,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <p>Copy recent local Codex and Claude conversations into Trebell. Source transcripts stay untouched; imported Codex sessions become independent Trebell forks.</p>
         <div className="capability-actions">
           <button onClick={scanHistory} disabled={!!busy}>{busy==="history:scan"?"Scanning…":"Scan history"}</button>
-          {(historyImport?.sessions||[]).some(item=>!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable))&&<button onClick={()=>importHistory((historyImport.sessions||[]).filter(item=>!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable)).map(item=>item.id))} disabled={!!busy}>{busy==="history:import"?"Importing…":"Import available"}</button>}
+          {/* A page drawn again while an import runs has no scan to offer it from, and says Importing… all the same. */}
+          {(busy==="history:import"||(historyImport?.sessions||[]).some(item=>!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable)))&&<button onClick={()=>importHistory((historyImport.sessions||[]).filter(item=>!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable)).map(item=>item.id))} disabled={!!busy}>{busy==="history:import"?"Importing…":"Import available"}</button>}
         </div>
         {historyMessage&&<p ref={historyMessageRef} className={/failed|could not|error/i.test(historyMessage)?"provider-status-error":"capability-status"} role={/failed|could not|error/i.test(historyMessage)?"alert":undefined}>{historyMessage}</p>}
         <div className="capability-list history-import-list">{(historyImport?.sessions||[]).slice(0,30).map(item=><div key={item.id}><div><strong>{item.title||"Untitled conversation"}</strong><span>{item.source==="codex"?"Codex":"Claude"} · {item.cwd}</span></div><div className="capability-inline-actions"><em className={item.alreadyImported?"ok":""} title={!item.alreadyImported&&item.source==="codex"&&!historyImport.codexImportAvailable?historyImport.codexImportUnavailable?.message||undefined:undefined}>{item.alreadyImported?"imported":item.source==="codex"&&!historyImport.codexImportAvailable?"needs local Codex":"available"}</em>{!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable)&&<button onClick={()=>importHistory([item.id])} disabled={!!busy}>Import</button>}</div></div>)}</div>
@@ -779,7 +800,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
 
       <Section title="Import agent configuration" icon={RefreshCw} count={migrations?(migrations.items||[]).length:undefined}>
         <p>Detect reusable configuration from supported external coding agents in your home directory and this workspace.</p>
-        <div className="capability-actions"><button onClick={detectExternalConfig} disabled={!!busy||!!migrationImportId}>Scan</button>{migrations?.items?.length>0&&<button onClick={importExternalConfig} disabled={!!busy||!!migrationImportId}>{migrationImportId?"Importing…":"Import "+migrations.items.length+(migrations.items.length===1?" item":" items")}</button>}</div>
+        <div className="capability-actions"><button onClick={detectExternalConfig} disabled={!!busy||!!migrationImportId}>Scan</button>{(migrationImportId||migrations?.items?.length>0)&&<button onClick={importExternalConfig} disabled={!!busy||!!migrationImportId}>{migrationImportId?"Importing…":"Import "+migrations.items.length+(migrations.items.length===1?" item":" items")}</button>}</div>
         <div className="capability-list">{(migrations?.items||[]).map((item,index)=><div key={index}><div><strong>{item.description||humanizeIdentifier(item.itemType)}</strong><span>{item.cwd||"User scope"}</span></div><em>{humanizeIdentifier(item.itemType)}</em></div>)}</div>
         {(migrations?.connectors||[]).length>0&&<p>{migrations.connectors.length} connector candidate{migrations.connectors.length===1?"":"s"} detected.</p>}
         {migrationMessage&&<p className="capability-status">{migrationMessage}</p>}
