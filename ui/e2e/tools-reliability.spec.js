@@ -859,6 +859,51 @@ test("Tools shows the default arrow, not the hand, over the action Codex is answ
   }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
+// A person points at a shared plugin's visibility select while it waits for another Tools action, pressed with the mouse or the
+// keys, and at the one Codex is saving a change of: both show the default arrow, as the actions that wait meanwhile do, and the hand
+// once they work again. On a55e6c14 the select that waited kept the hand at its faded opacity: the rule for the pages' selects gives
+// them the hand, and only a select saving its own change had the arrow back.
+test("Tools shows the default arrow, not the hand, over a shared plugin's visibility select that waits for another action or saves its change",async({page})=>{
+  test.setTimeout(45_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=catalog();fixture.control.shared=[share("short","lane-g-shared","2.0.0"),share("long","lane-g-shared-plugin-with-a-longer-name")];fixture.control.holdShare=true;
+  // The mouse on a control, as a person points at it: the pointer shown there and how faded the control is.
+  const pointed=async control=>{const box=await control.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);return control.evaluate(node=>getComputedStyle(node).cursor+" "+getComputedStyle(node).opacity)};
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const plugins=toolsCard(page,"Plugins"),shared=toolsCard(page,"Shared plugins"),rows=shared.locator(".shared-plugin-list>div");
+    const row=plugins.locator(".capability-list>div").filter({hasText:"Lane G Local"}),first=rows.nth(0).getByRole("combobox"),second=rows.nth(1).getByRole("combobox");
+    await wheelTo(page,shared);
+    expect(await pointed(first),"the visibility select, which works").toBe("pointer 1");
+    // Share privately clicked: while Codex shares, the visibility selects wait.
+    await wheelTo(page,plugins);
+    await row.getByRole("button",{name:"Share privately",exact:true}).click();
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await wheelTo(page,shared);
+    await expect(first).toBeDisabled();
+    expect(await pointed(first),"the visibility select while Codex shares").toBe("default 0.7");
+    fixture.releaseShare();
+    await expect(first).toBeEnabled();expect(await pointed(first),"the visibility select once Codex has shared").toBe("pointer 1");
+    // With the keys: Tab from the second row's Open to its select and ArrowDown. While Codex saves Unlisted that select says it is
+    // off, and the first row's waits: both show the arrow, in dark and light.
+    await rows.nth(1).getByRole("button",{name:"Open",exact:true}).focus();
+    await page.keyboard.press("Tab");await page.keyboard.press("Tab");
+    await expect(second).toBeFocused();await page.keyboard.press("ArrowDown");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await expect(second).toHaveAttribute("aria-busy","true");await expect(first).toBeDisabled();
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      expect([await pointed(first),await pointed(second)],`the select that waits and the one saving its change (${mode})`).toEqual(["default 0.7","default 0.7"]);
+      await page.screenshot({animations:"disabled",path:auditDir+`tools-shared-plugin-select-waiting-arrow-${mode}-1280x800.png`,fullPage:false});
+    }
+    fixture.releaseShare();
+    await expect(second).not.toHaveAttribute("aria-busy","true");await expect(first).toBeEnabled();
+    expect([await pointed(first),await pointed(second)],"both selects once Codex has saved").toEqual(["pointer 1","pointer 1"]);
+  }finally{fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
 // The wheel over the page's right edge, clear of the lists that scroll by themselves, a notch at a time, as a person scrolls the page
 // on down while Codex answers, until control is out of sight above.
 async function wheelPast(page,control){
