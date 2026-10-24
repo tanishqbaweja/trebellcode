@@ -6,8 +6,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
+import { randomUUID } from "node:crypto";
 import { TerminalManager } from "../src/terminal-manager.mjs";
 import { buildRuntimeEnvironment } from "../src/runtime-environment.mjs";
+import { processesLeft, windowsProcesses } from "./fixtures/windows-processes.mjs";
 
 test("the terminal worker starts with the first terminal, and a manager that ran none shuts down without one",{timeout:20000},async()=>{
   const idle=new TerminalManager({persist:false});
@@ -293,3 +295,41 @@ test("closing the terminals' socket server ends the terminal sockets still open,
     await socketClosed;
   }finally{try{socket?.terminate()}catch{}await terminals.shutdown()}
 });
+
+// On Windows a terminal's shell runs in a pseudo-console, and closing it ends only the programs attached to it then: a program the
+// shell was still starting (a project action stopped as it starts on a loaded host, or a terminal whose worker ended as it opened)
+// missed the close and ran on with its console host and nothing left to stop it, and one started detached never gets it. Each test
+// runs a program that starts two of its own, one on the terminal's console and one detached, as a dev server's tools can, ends its
+// terminal one way, and looks for every process of it by a mark in its command line (the shell's holds the program's): the shell,
+// the program and its two, and by its parent, the worker, the terminal's console host. Whatever a test finds left it ends by its pid.
+const WINDOWS_TREE={skip:process.platform!=="win32"&&"Windows process trees",timeout:180_000};
+async function programTree(end,{running=false,rounds=1}={}){
+  const terminals=new TerminalManager({persist:false}),mark="trebell-tree-"+randomUUID(),workers=new Set(),since=Date.now()-1000;let left=null;
+  const program=`/*${mark}*/const {spawn}=require('child_process');spawn(process.execPath,['-e','/*${mark}:console*/setInterval(()=>{},1000)'],{stdio:'inherit'});spawn(process.execPath,['-e','/*${mark}:detached*/setInterval(()=>{},1000)'],{stdio:'ignore',detached:true}).unref();console.log('started');setInterval(()=>{},1000)`;
+  const shell=process.env.COMSPEC||"cmd.exe",args=`/d /s /c "node -e "${program}""`;
+  const ours=rows=>rows.filter(row=>row.commandLine.includes(mark)||workers.has(row.ppid)&&row.created>=since&&row.name==="conhost.exe"&&row.commandLine.includes("--headless"));
+  const named=rows=>rows.map(row=>(row.name==="cmd.exe"?"the shell":row.name==="conhost.exe"?"the console host":row.commandLine.includes("spawn(")?"the program":row.commandLine.includes(":detached")?"the program it started detached":"the program it started on its console")+" "+row.pid);
+  try{
+    for(let round=0;round<rounds;round++){
+      const session=await terminals.create({cwd:process.cwd(),shell,args,name:"Dev server"});workers.add(terminals.child.pid);
+      if(running){
+        assert.ok(await until(()=>terminals.snapshot(session.id).buffer.includes("started"),20000),"the program starts its two");
+        const runs=named(ours(await windowsProcesses())).map(name=>name.replace(/ \d+$/,"")).sort();
+        assert.deepEqual(runs,["the console host","the program","the program it started detached","the program it started on its console","the shell"],"the shell, the program, its two and the console host run");
+      }
+      await end(terminals,session);
+    }
+    left=await processesLeft(ours);
+    assert.deepEqual(named(left),[],"no shell, program, program it started or console host is left");
+  }finally{
+    await terminals.shutdown();
+    for(const row of left??ours(await windowsProcesses().catch(()=>[])))try{process.kill(row.pid)}catch{}
+  }
+}
+const workerEnds=how=>async terminals=>{const worker=terminals.child,exited=new Promise(resolve=>worker.once("exit",resolve));if(how==="killed")worker.kill();else worker.stdin.end();await exited};
+test("on Windows, Stop ends a terminal's shell, its program and the programs that one started, also one started detached, and its console host",WINDOWS_TREE,()=>programTree((terminals,session)=>terminals.stop(session.id),{running:true}));
+test("on Windows, a terminal stopped as it starts leaves none of its programs, nor its console host, running",WINDOWS_TREE,()=>programTree((terminals,session)=>terminals.stop(session.id),{rounds:5}));
+test("on Windows, closing a terminal ends its shell, its program and the programs that one started, and its console host, without waiting for them",WINDOWS_TREE,()=>programTree(async(terminals,session)=>{const closed=terminals.close(session.id);assert.equal(terminals.snapshot(session.id),null,"the close forgets the terminal at once, not once its programs have ended");await closed},{running:true}));
+test("on Windows, a terminal whose manager shuts down as it starts leaves none of its programs, nor its console host, running",WINDOWS_TREE,()=>programTree(terminals=>terminals.shutdown()));
+test("on Windows, a terminal whose worker dies as it starts leaves none of its programs, nor its console host, running",WINDOWS_TREE,()=>programTree(workerEnds("killed")));
+test("on Windows, a terminal whose server is gone leaves none of its programs, also one started detached, nor its console host, running",WINDOWS_TREE,()=>programTree(workerEnds("orphaned"),{running:true}));

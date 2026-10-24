@@ -4,6 +4,7 @@ import readline from "node:readline";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { constants, setPriority } from "node:os";
 import { dirname, join } from "node:path";
 import { WebSocketServer } from "ws";
 import { trebellHome } from "./paths.mjs";
@@ -21,6 +22,21 @@ function trimBuffer(text){
   const lines=value.split("\n");
   if(lines.length>MAX_LINES) value=lines.slice(lines.length-MAX_LINES).join("\n");
   return value;
+}
+
+// Ends a terminal's shell with every program it started, on Windows (taskkill /t /f, hidden, at normal priority, waited for up to
+// 3 s), for a terminal whose worker did not end it: the worker ends its terminals' process trees itself (terminal-worker.mjs), but
+// one that ends first (it crashed, something ended it, or it did not answer the shutdown on a loaded host) leaves the programs to run
+// on with their console hosts. Elsewhere the worker's end, which closes the terminals' ptys, ends them.
+function endProcessTree(pid){
+  if(process.platform!=="win32"||!(Number(pid)>0))return Promise.resolve();
+  return new Promise(resolve=>{
+    const timer=setTimeout(resolve,3000),done=()=>{clearTimeout(timer);resolve()};
+    try{
+      const killer=spawn("taskkill",["/pid",String(pid),"/t","/f"],{windowsHide:true,stdio:"ignore"});killer.once("error",done);killer.once("exit",done);
+      try{setPriority(killer.pid,constants.priority.PRIORITY_NORMAL)}catch{}
+    }catch{done()}
+  });
 }
 
 export class TerminalManager extends EventEmitter{
@@ -93,9 +109,9 @@ export class TerminalManager extends EventEmitter{
       for(const p of this.pending.values())p.reject(new Error("Terminal worker exited"));this.pending.clear();
       // Its terminals all end at once, so their history is written once: each write redacts and rewrites every terminal's scrollback
       // (8 MB each at most) on the server's event loop, in the desktop app its main process, which a write for each terminal held
-      // that many times over.
+      // that many times over. Their shells' process trees are ended here, as the worker could not.
       let ended=0;
-      for(const session of this.sessions.values())if(session.running){this.#exited(session.id,null,null,{save:false});ended++}
+      for(const session of this.sessions.values())if(session.running){void endProcessTree(session.pid);this.#exited(session.id,null,null,{save:false});ended++}
       if(ended)this.#saveHistory();
     });
   }
@@ -108,11 +124,11 @@ export class TerminalManager extends EventEmitter{
     for(const resolve of waiters)resolve({exitCode,signal});
     for(const ws of this.clients.get(id)||[]) if(ws.readyState===ws.OPEN) ws.send(JSON.stringify({type:"exit",exitCode,signal}));
   }
-  #rpc(action,payload={}){
+  #rpc(action,payload={},timeoutMs=15000){
     if(!this.child){if(this.closed)return Promise.reject(new Error("Terminal worker is shut down"));this.#startWorker()}
     const rid=this.nextRid++;
     this.child.stdin.write(JSON.stringify({rid,action,...payload})+"\n");
-    return new Promise((resolve,reject)=>{this.pending.set(rid,{resolve,reject});setTimeout(()=>{if(this.pending.delete(rid))reject(new Error("Terminal worker timed out"));},15000);});
+    return new Promise((resolve,reject)=>{this.pending.set(rid,{resolve,reject});setTimeout(()=>{if(this.pending.delete(rid))reject(new Error("Terminal worker timed out"));},timeoutMs);});
   }
   async create({cwd,displayCwd=null,cols=120,rows=32,shell=null,args=null,name=null,env=null,replaceEnv=false,environmentId=null,environmentName="Local machine",environmentType="local"}={}){
     const id=randomUUID();
@@ -143,12 +159,15 @@ export class TerminalManager extends EventEmitter{
       },Math.max(1000,Number(timeoutMs)||30*60_000));
     });
   }
-  async close(id){const session=this.sessions.get(id);if(session?.running)await this.#rpc("kill",{id}).catch(()=>{});this.sessions.delete(id);this.#saveHistory();}
+  // Ends a session's program and forgets the session at once: the worker's kill, which on Windows ends the shell's process tree
+  // first, goes on without the closed tab waiting for it.
+  async close(id){const session=this.sessions.get(id);if(session?.running)this.#rpc("kill",{id}).catch(()=>{});this.sessions.delete(id);this.#saveHistory();}
   // Ends a session's program and keeps the session, with its output and exit, as stopped history, as the program's own exit does
-  // (close also forgets it). It answers once the exit has come, or after 5 s with the session as it is then.
+  // (close also forgets it). It answers once the exit has come, or after 5 s with the session as it is then, also while the worker's
+  // kill, which ends the shell's process tree first on Windows, takes longer.
   async stop(id){
     const session=this.sessions.get(id);if(!session)return null;
-    if(session.running){const exited=this.waitForExit(id,{timeoutMs:5000});await this.#rpc("kill",{id}).catch(()=>{});await exited}
+    if(session.running){const exited=this.waitForExit(id,{timeoutMs:5000});this.#rpc("kill",{id}).catch(()=>{});await exited}
     return this.snapshot(id);
   }
   pruneStopped({before=0}={}){
@@ -184,20 +203,21 @@ export class TerminalManager extends EventEmitter{
     // install waited on the terminal drawer's for good): they are ended here, as the Codex and agent relays end theirs.
     return {close:()=>{server.off("upgrade",upgrade);for(const ws of wss.clients)try{ws.terminate()}catch{}try{wss.close()}catch{}}};
   }
+  // The worker's shutdown ends every terminal, each with the programs its shell started, and exits. One that does not answer in 5 s
+  // (a loaded host) may have ended none of them, so on Windows the process trees of the terminals whose exit it has not told are
+  // ended from here before it is. The terminals are stopped history before the worker goes, so its exit does not end them again.
   async shutdown(){
     if(this.closed)return;this.closed=true;
     clearTimeout(this.saveTimer);this.saveTimer=null;
-    for(const session of this.sessions.values()){
-      if(session.running){
-        await this.#rpc("kill",{id:session.id}).catch(()=>{});
-        session.running=false;session.pid=null;session.restored=true;session.updatedAt=Date.now();
-      }else{
-        session.pid=null;session.restored=true;
-      }
+    const child=this.child;
+    if(child){
+      const answered=await this.#rpc("shutdown",{},5000).then(()=>true,()=>false);
+      const running=[...this.sessions.values()].filter(session=>session.running);
+      for(const session of running){session.running=false;session.updatedAt=Date.now()}
+      if(!answered)await Promise.all(running.map(session=>endProcessTree(session.pid)));
+      try{child.kill()}catch{}
     }
+    for(const session of this.sessions.values()){session.pid=null;session.restored=true}
     this.#saveHistory();
-    if(!this.child)return;
-    await this.#rpc("shutdown").catch(()=>{});
-    try{this.child.kill()}catch{}
   }
 }
