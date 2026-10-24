@@ -1873,13 +1873,38 @@ test("after Escape closes the @ file menu, the arrow keys, Home and End or a cli
 
 // A file picked from the @ menu with the caret inside the word (an arrow key or a click put it there) replaces the whole word, while
 // the menu lists what matches the part before the caret. The rest of the word stayed after the file, so the composer read 'Check
-// @src/login.js g' and a send carried the g (round 8).
-test("a file picked from the @ menu with the caret inside its word replaces the whole word, by Enter, Tab or a click, the caret put there by ArrowLeft or a click",async({page})=>{
+// @src/login.js g' and a send carried the g (round 8). The punctuation that ends the word is not part of it and stays after the file.
+test("a file picked from the @ menu with the caret inside its word replaces the whole word, keeping the punctuation after it, by Enter, Tab or a click, the caret put there by ArrowLeft or a click",async({page})=>{
   test.setTimeout(150_000);
   const harness=await openComposerApp(page,{replies:[{text:"Checked the login file."}]});
   try{
     await writeLoginFiles(harness);
     const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip");
+    // The caret put just before the punctuation after '@log' (a full stop at the draft's end, a comma with more words after it, a
+    // closing bracket) and the menu listing what matches 'log': the file goes on the word, the punctuation stays after it with the
+    // caret between them, and what is typed on goes there. The pick took the whole word up to the next whitespace, the punctuation
+    // with it: 'Look at @src/login.js ' (round 8 repair).
+    for(const [index,[mode,width,draft,left,pick,picked,typed]] of [
+      ["dark",1280,"Look at @log.",1,"Enter","Look at @src/login.js .","Look at @src/login.js now."],
+      ["light",900,"Check @log, then run it",13,"a click","Check @src/login.js , then run it","Check @src/login.js now, then run it"],
+      ["light",1280,"(see @log) please",8,"Tab","(see @src/login.js ) please","(see @src/login.js now) please"],
+    ].entries()){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      const where=` in ${mode} at ${width}, the caret put before what follows '@log' in '${draft}' and the file picked by ${pick}`,caret=draft.indexOf("@log")+4;
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type(draft,{delay:20});
+      const answered=mentionSearched(page,"log");for(let key=0;key<left;key++)await page.keyboard.press("ArrowLeft");
+      await (await answered).finished();await painted(page);
+      await expect.poll(()=>composer.evaluate(node=>node.selectionStart),"the caret"+where).toBe(caret);
+      await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      if(pick==="a click")await menu.locator("button").filter({hasText:"src/login.js"}).click();else await page.keyboard.press(pick);
+      await expect(context).toHaveCount(1);
+      await expect.soft(composer,"the draft once the file is in"+where).toHaveValue(picked);
+      expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret after the file"+where).toEqual([caret+10,caret+10]);
+      await frames(page);await page.keyboard.type("now",{delay:20});await expect.soft(composer,"the draft typed on"+where).toHaveValue(typed);
+      if(index<2)await page.screenshot({animations:"disabled",path:auditDir+`mention-picked-before-the-punctuation-after-its-word-${mode}-${width}x800.png`});
+      await context.locator("button").click();await expect(context).toHaveCount(0);
+    }
     const rounds=[["dark",1280,"ArrowLeft","Enter"],["dark",1280,"a click","a click"],["light",900,"a click","Enter"],["light",900,"ArrowLeft","a click"],["light",1280,"ArrowLeft","Tab"]];
     for(const [index,[mode,width,move,pick]] of rounds.entries()){
       await switchMode(page,mode);await page.setViewportSize({width,height:800});

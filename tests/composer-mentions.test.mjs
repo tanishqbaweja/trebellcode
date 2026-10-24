@@ -24,6 +24,23 @@ test("a file picked with the caret inside its word replaces the whole word",()=>
   assert.deepEqual(applyFileMention("Check @log please",fileMentionAt("Check @log please",8),"src/login.js"),{text:"Check @src/login.js please",caret:19});
 });
 
+// The punctuation that ends the word (a full stop, a comma, a closing bracket or quote) is not part of it: a pick with the caret before
+// it or inside the word keeps it after the file, where the whole word up to the next whitespace took it (round 8 repair).
+test("a file picked with the caret before the punctuation after its word, or inside the word, keeps the punctuation",()=>{
+  assert.deepEqual(fileMentionAt("Look at @log.",12),{start:8,end:12,query:"log"});
+  assert.deepEqual(fileMentionAt("Look at @log.",11),{start:8,end:12,query:"lo"});
+  assert.deepEqual(fileMentionAt("Check @log, then run it",10),{start:6,end:10,query:"log"});
+  assert.deepEqual(fileMentionAt("Is it @log?!",9),{start:6,end:10,query:"lo"});
+  assert.deepEqual(applyFileMention("Look at @log.",fileMentionAt("Look at @log.",12),"src/login.js"),{text:"Look at @src/login.js .",caret:22});
+  assert.deepEqual(applyFileMention("Check @log, then run it",fileMentionAt("Check @log, then run it",10),"src/login.js"),{text:"Check @src/login.js , then run it",caret:20});
+  assert.deepEqual(applyFileMention("(see @log) please",fileMentionAt("(see @log) please",9),"src/login.js"),{text:"(see @src/login.js ) please",caret:19});
+  assert.deepEqual(applyFileMention('"see @log" now',fileMentionAt('"see @log" now',9),"src/login.js"),{text:'"see @src/login.js " now',caret:19});
+  assert.deepEqual(applyFileMention("See @log... ok",fileMentionAt("See @log... ok",8),"src/login.js"),{text:"See @src/login.js ... ok",caret:18});
+  // Punctuation inside the word is part of it: the dots of a path, a bracket with more of the path after it.
+  assert.deepEqual(fileMentionAt("Open @src/App.jsx.",9),{start:5,end:17,query:"src"});
+  assert.deepEqual(fileMentionAt("Open @app/(auth)/page.tsx now",10),{start:5,end:25,query:"app/"});
+});
+
 // The person types on while the picked file imports: the pick goes on its word where it is in the draft once the file is in.
 test("a pick put into the draft typed on meanwhile finds its word again and keeps what was typed around it",()=>{
   const at={start:6,end:10,query:"log"};

@@ -2,9 +2,11 @@ export function fileMentionAt(text,caret){
   const value=String(text||"");const at=Math.max(0,Math.min(value.length,Number(caret)||0));
   const prefix=value.slice(0,at);const match=prefix.match(/(^|\s)@([^\s@]*)$/);
   if(!match)return null;
-  // The menu looks for what is typed before the caret, and a pick replaces the whole word, up to the next whitespace.
-  const query=match[2]||"";const start=at-query.length-1,end=at+value.slice(at).search(/\s|$/);
-  return {start,end,query};
+  // The menu looks for what is typed before the caret, and a pick replaces the whole word, up to the next whitespace but for the
+  // punctuation that ends it, which stays: a full stop, a comma, a closing bracket or quote ('@log.', '(see @log)').
+  const query=match[2]||"";let end=at+value.slice(at).search(/\s|$/);
+  while(end>at&&".,;:!?)]}\"'`”’»…".includes(value[end-1]))end--;
+  return {start:at-query.length-1,end,query};
 }
 
 // caret: where the person's caret is in text, which stays before the word, moves with what follows it, and goes after the file in it.
