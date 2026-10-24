@@ -113,6 +113,9 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   // A panel drawn while a notes write or a repair start is on its way draws Continuity state open, as its button, which says so,
   // and the refusal it may bring are in it: drawn closed, nothing in sight said why the goal's buttons were off.
   const [continuityOpen,setContinuityOpen]=useState(()=>/^(co|ve)/.test(writes.get(thread?.id)));
+  // The section's element (continuityRef): a person's close is in the element at once but in the state only with the browser's toggle
+  // event, a moment later, so a refusal said in between found the state still open, changed nothing, and the toggle then closed it.
+  const continuityRef=useRef(null);
   const [verificationOpen,setVerificationOpen]=useState(false);
   const [verificationEvidence,setVerificationEvidence]=useState(null);
   const [verificationEvidenceLoading,setVerificationEvidenceLoading]=useState(false);
@@ -144,7 +147,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   // The panel shown for the thread (panels) says what a write on its way from the one before does: why it was refused (say), and
   // that a repair it started has started (started), so its button holds Repair started; and a refusal that waited for it.
   useEffect(()=>{
-    const id=thread?.id,shown={showBusy,say(said){if(said.at!=="goal")setContinuityOpen(true);setError(said)},started(status,key){setRepairStatus(status);setRepairStartedFor(key)}};
+    const id=thread?.id,shown={showBusy,say(said){if(said.at!=="goal"){setContinuityOpen(true);if(continuityRef.current)continuityRef.current.open=true}setError(said)},started(status,key){setRepairStatus(status);setRepairStartedFor(key)}};
     panels.set(id,shown);showBusy(writes.get(id)||"");const said=refused.get(id);if(said){refused.delete(id);shown.say(said)}
     return()=>{if(panels.get(id)===shown)panels.delete(id)};
   },[]);
@@ -279,7 +282,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
         <label>Validation expectations <span>(one per line)</span><textarea aria-label="Validation expectations" value={validationExpectations} onChange={e=>setValidationExpectations(e.target.value)} placeholder={"Run targeted tests\nVerify the UI with a screenshot"}/></label>
       </div>
     </details>
-    <details className="goal-details goal-continuity-details" open={continuityOpen} onToggle={e=>setContinuityOpen(e.currentTarget.open)}>
+    <details className="goal-details goal-continuity-details" ref={continuityRef} open={continuityOpen} onToggle={e=>setContinuityOpen(e.currentTarget.open)}>
       <summary><span><strong>Continuity state</strong><small>{continuityNoteCount?continuityNoteCount+" explicit note"+(continuityNoteCount===1?"":"s"):"Derived facts only"}{continuity?.meaningful?" · durable state available":""}</small></span><ChevronDown size={14}/></summary>
       <div className="goal-details-body continuity-body">
         <div className="continuity-derived" data-testid="continuity-derived">
