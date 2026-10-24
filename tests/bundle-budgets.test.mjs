@@ -52,7 +52,13 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // offering only the cards the harness draws, and History's first-page error kept clear of the list), which took them 2.4 / 1.2 KB
 // over it: its headroom stays 1.0 / 0.0 KB, as on main before round 7. Lane R7B adds 0.6 / 0.2 KB to the first bundle (the composer
 // menus' dismissal kept with the draft in App; now 199.4 of its 200 KB gzip) and nothing to the lazy chunks.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:754.3,gzipKB:247.8}};
+// Then by what round 8's fix lanes add to the lazy chunks, 1.2 / 0.5 KB (lane R8A's: the Goal panel's refusals kept through another
+// thread's opening and its busy button brought into view above the goal's bar, and the Tools page's details, search results and
+// history import that land while the person is away shown once it is drawn again; lane R8B's 0.1 KB gzip is the first bundle's new
+// name in them), which took them 0.2 / 0.5 KB over it: its headroom stays 1.0 / 0.0 KB, as on main before round 8. Lane R8B adds
+// 1.2 / 0.5 KB to the first bundle (letters typed while an @ file imports kept, the whole word replaced by the file, and the right
+// panel docked or overlaid at every width; now 199.9 of its 200 KB gzip), and lane R8C changes no UI code.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:755.5,gzipKB:248.3}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
