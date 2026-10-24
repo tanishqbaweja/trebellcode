@@ -35,8 +35,9 @@ const shareDone={};
 // And what Codex runs once its request has answered, until it says it is done: a Windows sandbox setup (setup) and an agent
 // configuration import (importing), on the connection they were started on, as one dropped since may never say so. A page drawn
 // again meanwhile waits for them as the page that started them does: it offered a second setup, which can raise a second
-// elevation prompt, and a second import, and passed over the first one's end.
-let said={},setup={},importing={};
+// elevation prompt, and a second import, and passed over the first one's end. And what a history import did (told), which the next
+// page drawn says once it has scanned the history again: the page drawn after showed only Scan history.
+let said={},setup={},importing={},told=null;
 window.addEventListener("trebell:windows-sandbox-setup",event=>{setup={};if(!shown)said={...said,"windowsSandbox/setupStart":event.detail?.success?null:failureText("Windows sandbox setup failed",event.detail?.error)}});
 
 // A header badge is a bare count, or a label that says what it counts when the card lists more than one kind of row.
@@ -115,7 +116,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // the page drawn now (page), and a refresh the page gone had under way lands on nothing. With no page shown, its lines wait (said).
   const self=useRef({}).current;
   const page=()=>self.gone?shown:self,setErrors=update=>{const to=page();if(to)to.showErrors(update);else said=update(said)};
-  useEffect(()=>{self.gone=false;shown=self;showBusy(running);if(Object.keys(said).length){const lines=said;said={};showErrors(prev=>({...prev,...lines}))}return()=>{self.gone=true;if(shown===self)shown=null}},[]);
+  useEffect(()=>{self.gone=false;shown=self;showBusy(running);if(Object.keys(said).length){const lines=said;said={};showErrors(prev=>({...prev,...lines}))}if(told){const line=told;told=null;tell(line,true)}return()=>{self.gone=true;if(shown===self)shown=null}},[]);
   const hold=node=>{
     const row=node?.closest?.(".capability-list>div");
     if(!self.gone&&row&&!pressed.current&&node.matches(":focus-visible")){
@@ -176,7 +177,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [hookRuns,setHookRuns]=useState([]);
   const [authRecovery,setAuthRecovery]=useState(null);
   const [modelNotices,setModelNotices]=useState([]);
-  Object.assign(self,{showBusy,showErrors,refresh,showSandbox,showImport,scanHistory,setHistoryMessage});
+  Object.assign(self,{showBusy,showErrors,refresh,showSandbox,showImport,scanHistory,setHistoryMessage,setHistoryImport,setHistoryScanFailed});
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -529,31 +530,33 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     }catch(error){setMigrationImportId(null);setErrors(prev=>({...prev,"externalAgentConfig/import":failureText("Could not import the agent configuration",error)}))}
     finally{setBusy("")}
   }
+  // A scan's answer lands on the page drawn now, as busy does.
   async function scanHistory(){
     setBusy("history:scan");setHistoryMessage("");setHistoryScanFailed(false);
-    try{setHistoryImport(await api("/api/history-import"))}
-    catch(error){setHistoryScanFailed(true);setHistoryMessage(failureText("Could not scan conversation history",error))}
+    try{const found=await api("/api/history-import");page()?.setHistoryImport(found)}
+    catch(error){const to=page();to?.setHistoryScanFailed(true);to?.setHistoryMessage(failureText("Could not scan conversation history",error))}
     finally{setBusy("")}
   }
-  // What an import did is said, and the history scanned again, on the page drawn now (say), so a page drawn again while it runs says
-  // it: both went with the page that sent it. The summary is said once the scan is read again, as the scan clears the line as it
-  // starts: it took the summary with it, so no page said what was imported. A scan that fails says so instead.
+  // What an import did (line) is said, once the history is scanned again (scan), on the page drawn now, so a page drawn again while it
+  // runs says it: both went with the page that sent it. With no page shown both wait for the next page drawn (told): they went
+  // nowhere. The summary is said once the scan is read again, as the scan clears the line as it starts: it took the summary with it,
+  // so no page said what was imported. A scan that fails says so instead.
+  async function tell(line,scan){let to=page();if(to&&scan){await to.scanHistory();to=page()}if(to)to.setHistoryMessage(line);else told=line}
   async function importHistory(sessionIds){
     const ids=(sessionIds||[]).filter(Boolean);if(!ids.length)return;
     setBusy("history:import");setHistoryMessage("");
-    const say=text=>page()?.setHistoryMessage(text);
     let result;
+    // A refusal leaves the page that sent it as it was, offering the conversations again; a page drawn since reads them again.
     try{result=await api("/api/history-import",{method:"POST",body:{sessionIds:ids.slice(0,50)}})}
-    catch(error){say(failureText("Could not import conversations",error));setBusy("");return}
+    catch(error){await tell(failureText("Could not import conversations",error),page()!==self);setBusy("");return}
     // A failure after the import itself (refreshing the thread list) is worded by the app, which says the import succeeded.
     try{
       const imported=(result.results||[]).filter(item=>item.status==="imported").length;
       const skipped=(result.results||[]).filter(item=>item.status==="skipped").length;
       const failed=(result.results||[]).filter(item=>item.status==="error").length;
-      await page()?.scanHistory();
-      say(scan=>scan||[imported&&`${imported} imported`,skipped&&`${skipped} already imported`,failed&&`${failed} failed`].filter(Boolean).join(" · ")||"Nothing changed");
+      await tell(scan=>scan||[imported&&`${imported} imported`,skipped&&`${skipped} already imported`,failed&&`${failed} failed`].filter(Boolean).join(" · ")||"Nothing changed",true);
       await onHistoryImported?.(result);
-    }catch(error){say(error.message||String(error))}
+    }catch(error){tell(error.message||String(error))}
     finally{setBusy("")}
   }
   async function readResource(server,resource){

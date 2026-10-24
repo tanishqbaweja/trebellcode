@@ -1381,6 +1381,63 @@ test("Tools says what a history import did, and drawn again while it runs says I
   }finally{for(const route of heldImports.splice(0))await answer(route,{results:[]}).catch(()=>{});await fixture.close()}
 });
 
+// A history import that lands, or is refused, while the person is away from Tools (on Settings or Usage) is said once Tools is drawn
+// again, with the conversations read again: what it imported, both conversations listed imported, or why it was refused, both
+// offered again; and only once, not again on the page drawn after. Both went nowhere: the page drawn again showed only Scan history,
+// and only a second scan showed what the import had done.
+test("Tools says what a history import that landed while the person was away did, or why it was refused, once Tools is drawn again, with the conversations read again",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  const imported=new Set(),heldImports=[];
+  const session=(index,title)=>({id:"history-claude-"+index,source:"claude",providerSessionId:"claude-history-"+index,cwd:process.cwd(),title,preview:title});
+  const sessions=[session(1,"Recent Claude conversation"),session(2,"Older Claude conversation")];
+  const answer=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route(/\/api\/history-import$/,route=>{
+    if(route.request().method()!=="POST")return answer(route,{codexImportAvailable:true,sessions:sessions.map(item=>({...item,alreadyImported:imported.has(item.id)}))});
+    heldImports.push(route);
+  });
+  // The held import answered while Tools is not shown, and read by the page before the person comes back.
+  const land=async(value,status)=>{
+    const read=page.waitForEvent("requestfinished",request=>request.method()==="POST"&&/\/api\/history-import$/.test(request.url()));
+    for(const route of heldImports.splice(0))await answer(route,value,status);
+    await read;await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,0)));
+  };
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),history=toolsCard(page,"Conversation history"),scan=history.getByRole("button",{name:"Scan history",exact:true}),importAll=history.getByRole("button",{name:"Import available",exact:true});
+    const states=history.locator(".history-import-list>div em"),status=history.locator(".capability-status"),alert=history.getByRole("alert");
+    await wheelTo(page,history);
+    await scan.click();await expect(states).toHaveText(["available","available"]);
+    // Import available, then Settings, where the import lands: back on Tools the card says what it imported, both conversations
+    // listed imported.
+    await importAll.click();await expect.poll(()=>heldImports.length).toBe(1);
+    await ways.to();
+    for(const item of sessions)imported.add(item.id);
+    await land({results:sessions.map(item=>({id:item.id,status:"imported"}))});
+    await ways.from();await wheelTo(page,history);
+    await expect.soft(status,"an import that landed while Settings showed is said once Tools is drawn again").toHaveText("2 imported");
+    await expect.soft(states,"with the conversations read again, both imported").toHaveText(["imported","imported"]);
+    await expect(scan).toBeEnabled();await expect(importAll).toHaveCount(0);
+    await shootTools(page,"tools-history-landed-while-away",history);
+    // Said once: the page drawn after, back from Settings with the keys, says it no more.
+    await ways.keys();await wheelTo(page,history);
+    await expect.soft(status,"said once, not again on the page drawn after").toHaveCount(0);
+    // Refused while Usage shows: back on Tools the card says why, and offers both conversations again.
+    imported.clear();
+    await scan.click();await expect(states).toHaveText(["available","available"]);
+    await importAll.click();await expect.poll(()=>heldImports.length).toBe(1);
+    await page.getByRole("button",{name:"Usage",exact:true}).click();await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();
+    await land({error:"Deliberate history import failure"},500);
+    await ways.from();await wheelTo(page,history);
+    await expect.soft(alert,"a refusal that came while Usage showed is said once Tools is drawn again").toHaveText("Could not import conversations: Deliberate history import failure");
+    await expect.soft(states,"with the conversations read again, both offered again").toHaveText(["available","available"]);
+    await expect.soft(importAll,"Import available is offered again").toBeEnabled();
+    await shootTools(page,"tools-history-refused-while-away",history);
+  }finally{for(const route of heldImports.splice(0))await answer(route,{results:[]}).catch(()=>{});await fixture.close()}
+});
+
 // A Windows sandbox setup Codex has started runs until Codex says it is done, while Windows may ask for permission: a page drawn again
 // meanwhile still says Setting up…, with both setups waiting, so a press sends no second setup, which could raise a second elevation
 // prompt, until Codex says the setup is done. One done while the person is away leaves nothing waiting. The page drawn again offered
