@@ -448,16 +448,21 @@ test("a double click on the Goal panel's Pause pauses the goal once and one on R
 // The page's socket to the relay, passed through here; set it up before the app opens. hold(method) keeps that method's requests
 // until release() sends them on (a slow harness), or release(reason) refuses them with reason (a slow harness that refuses them);
 // drop() closes the socket and keeps the window from connecting again until back() (a harness that goes away and comes back);
-// answer(method,change) changes what the relay answers to that method from then on.
+// answer(method,change) changes what the relay answers to that method from then on. slow(method,match), apart from hold, keeps the
+// requests of method whose params match until the function it gives back sends them on, or refuses them and every one after with
+// the reason it is given (a harness slow to open one thread, or one that cannot open it); a later slow() for them goes first.
 async function relaySocket(page){
-  const sent=[],sockets=[],held=[],answers=new Map();let holding=null,away=false;
+  const sent=[],sockets=[],held=[],slows=[],answers=new Map();let holding=null,away=false;
   await page.routeWebSocket(/\/api\/agent\/ws$/,ws=>{
     if(away){ws.close({code:1011,reason:"harness down"}).catch(()=>{});return}
     const server=ws.connectToServer(),asked=new Map();sockets.push({ws,server});
     ws.onMessage(message=>{
       let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
       if(parsed?.method){sent.push(parsed);if(parsed.id!=null)asked.set(parsed.id,parsed.method)}
-      if(parsed?.method&&parsed.method===holding)held.push(reason=>reason?ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:reason}})):server.send(message));else server.send(message);
+      const send=reason=>reason?ws.send(JSON.stringify({id:parsed.id,error:{code:-32000,message:reason}})):server.send(message);
+      const slow=parsed?.method&&slows.findLast(gate=>gate.method===parsed.method&&gate.match(parsed.params||{}));
+      if(slow){if(slow.reason)send(slow.reason);else slow.held.push(send)}
+      else if(parsed?.method&&parsed.method===holding)held.push(send);else server.send(message);
     });
     server.onMessage(message=>{
       let parsed=null;try{parsed=JSON.parse(String(message))}catch{}
@@ -468,6 +473,10 @@ async function relaySocket(page){
   return {
     sent:method=>sent.filter(message=>message.method===method).map(message=>message.params||{}),
     hold(method){holding=method},release(reason){holding=null;for(const send of held.splice(0))send(reason)},
+    slow(method,match){
+      const gate={method,match,held:[],reason:null};slows.push(gate);
+      return reason=>{if(reason)gate.reason=reason;else if(slows.includes(gate))slows.splice(slows.indexOf(gate),1);for(const send of gate.held.splice(0))send(reason)};
+    },
     answer(method,change){answers.set(method,change)},
     drop(){away=true;for(const {ws,server} of sockets.splice(0)){ws.close({code:1011,reason:"harness down"}).catch(()=>{});server.close().catch(()=>{})}},
     back(){away=false},
@@ -1156,6 +1165,66 @@ test("a Goal panel drawn again while a notes save is on its way brings Saving…
     await goalPanelAway["back from Files"](page);await expect(save).toHaveText("Saving…");await painted(page);
     expect.soft(await panel.evaluate(node=>node.scrollTop),"a panel drawn again while the goal saves is drawn at its top").toBe(0);
     socket.release();await expect(save).toHaveText("Update goal");
+  }finally{await harness.close()}
+});
+
+// A goal or notes save the harness refuses while the person is opening another thread, whose opening state covers the thread's Goal
+// panel (hidden, and kept for a failed open), is said once the thread's panel is shown again: back on the thread once the other one
+// has opened, above the goal's bar or above Save continuity, in view, or on the panel uncovered when the other thread's open fails.
+// It was said on the covered panel, which went with it once the other thread opened, so back on the thread the edit sat with
+// Discard changes and no refusal, as if it were still to be saved.
+test("a goal or notes save refused while another thread opens is said once the thread's Goal panel is shown again, back on the thread or when the other thread's open fails",async({page})=>{
+  test.setTimeout(150_000);
+  const socket=await relaySocket(page);
+  const harness=await openComposerApp(page,{others:["Second thread"]});
+  try{
+    const {panel,objective}=await setGoalInPanel(page);
+    const second=harness.threads[1],composer=page.getByTestId("composer");
+    const bar=panel.locator(":scope>.goal-actions"),save=bar.locator("button.primary"),notes=panel.locator(".continuity-actions"),saveNotes=notes.locator("button.primary");
+    const done=panel.getByLabel("Completed work",{exact:true}),showNotes=async()=>{if(!await done.isVisible())await panel.getByText("Continuity state",{exact:true}).click()};
+    const opened=async name=>{await expect(threadRow(page,name)).toHaveClass(/active/);await expect(composer).not.toHaveAttribute("placeholder","Opening thread…");await painted(page)};
+    // The person clicks Second thread, whose open the harness is slow to answer, so its opening state comes up and covers the Goal
+    // panel; the save on its way (pressed) is refused meanwhile; then the open lands and the person opens the thread again, or the
+    // open fails, which uncovers the panel.
+    const refusedWhileSecondOpens=async(pressed,reason,fails)=>{
+      const open=socket.slow("thread/resume",params=>params.threadId===second.id);
+      await threadRow(page,"Second thread").locator(".thread-main").click();
+      await expect(page.getByTestId("thread-opening")).toBeVisible();await expect(panel).toHaveClass(/opening-covered/);
+      socket.release(reason);await expect(pressed,"the refusal has landed on the covered panel").not.toHaveText("Saving…");await painted(page);
+      if(fails){open("Session store is busy");await expect(page.getByTestId("composer-alert")).toContainText("Could not open “Second thread”");await expect(panel).not.toHaveClass(/opening-covered/)}
+      else{open();await opened("Second thread");await expect(save).toHaveText("Set goal");await threadRow(page,"Composer thread").locator(".thread-main").click();await opened("Composer thread")}
+      await painted(page);
+    };
+    const goalRefusal=bar.getByRole("alert"),notesRefusal=notes.getByRole("alert");
+    // A goal save, refused while Second thread opens, then back on the thread.
+    await typeOver(page,objective,"Make the checkout tests pass");
+    socket.hold("thread/goal/set");await save.click();await expect(save).toHaveText("Saving…");
+    await refusedWhileSecondOpens(save,"Goal store is read-only",false);
+    await expect.soft(goalRefusal,"back on the thread, the goal's refusal that landed while Second thread opened is said above its bar").toHaveText("Goal store is read-only");
+    await expect(objective,"the edit is kept to save again").toHaveValue("Make the checkout tests pass");await expect(save).toHaveText("Update goal");
+    await shootAsDrawn(page,"goal-refused-while-another-thread-opened");
+    // A notes save, the same way, in light: Continuity state is drawn open with the refusal above Save continuity, in sight.
+    await switchMode(page,"light");await showNotes();await typeOver(page,done,"Moved the form to the new API");
+    socket.hold("thread/continuity/set");await saveNotes.click();await expect(saveNotes).toHaveText("Saving…");
+    await refusedWhileSecondOpens(saveNotes,"Continuity store is read-only",false);
+    await expect.soft(notesRefusal,"back on the thread, the notes' refusal that landed while Second thread opened is said above Save continuity").toHaveText("Continuity store is read-only");
+    await inSightAboveBar(notesRefusal,bar,"the notes' refusal is in sight back on the thread");
+    await shootAsDrawn(page,"goal-notes-refused-while-another-thread-opened");
+    await showNotes();await expect(done,"the note is kept to save again").toHaveValue("Moved the form to the new API");
+    // A goal save refused while Second thread opens, whose open then fails: the panel uncovered says the refusal.
+    await switchMode(page,"dark");await typeOver(page,objective,"Make the payment tests pass");
+    socket.hold("thread/goal/set");await save.click();await expect(save).toHaveText("Saving…");
+    await refusedWhileSecondOpens(save,"Goal store is locked for the release",true);
+    await expect.soft(goalRefusal,"the goal's refusal is said on the panel uncovered once Second thread's open failed").toHaveText("Goal store is locked for the release");
+    await expect(objective).toHaveValue("Make the payment tests pass");
+    await shootAsDrawn(page,"goal-refused-while-another-thread-failed-to-open");
+    // And a notes save, in light: the refusal above Save continuity, in sight.
+    await switchMode(page,"light");await showNotes();await typeOver(page,done,"Kept the old form for the release");
+    socket.hold("thread/continuity/set");await saveNotes.click();await expect(saveNotes).toHaveText("Saving…");
+    await refusedWhileSecondOpens(saveNotes,"Continuity store is locked for the release",true);
+    await expect.soft(notesRefusal,"the notes' refusal is said on the panel uncovered once Second thread's open failed").toHaveText("Continuity store is locked for the release");
+    await inSightAboveBar(notesRefusal,bar,"the notes' refusal is in sight on the panel uncovered");
+    await shootAsDrawn(page,"goal-notes-refused-while-another-thread-failed-to-open");
   }finally{await harness.close()}
 });
 

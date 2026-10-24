@@ -150,13 +150,16 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   // The panel shown for the thread (panels) says what a write on its way from the one before does: why it was refused (say), and
   // that a repair it started has started (started), so its button holds Repair started; and a refusal that waited for it. With a
   // write of Continuity state on its way, that write's button (Saving…, Clearing…, Starting…) comes into view as a refusal does,
-  // clear of the goal's bar: the panel drawn at its top had the section under that bar and the button below the window.
-  useEffect(()=>{
-    const id=thread?.id,shown={showBusy,say(said){if(said.at!=="goal"){setContinuityOpen(true);if(continuityRef.current)continuityRef.current.open=true}setError(said)},started(status,key){setRepairStatus(status);setRepairStartedFor(key)}};
+  // clear of the goal's bar: the panel drawn at its top had the section under that bar and the button below the window. A panel
+  // covered while another thread opens is hidden, so a refusal waits for the panel shown next, as while no panel is shown: this one
+  // uncovered once that open fails, or the thread's drawn again once it has opened. Said on the hidden one, it went with it. This
+  // runs again in the commit that covers or uncovers the panel, so no refusal comes in between.
+  useLayoutEffect(()=>{
+    const id=thread?.id,shown={showBusy,say(said){if(covered){refused.set(id,said);return}if(said.at!=="goal"){setContinuityOpen(true);if(continuityRef.current)continuityRef.current.open=true}setError(said)},started(status,key){setRepairStatus(status);setRepairStartedFor(key)}};
     panels.set(id,shown);showBusy(writes.get(id)||"");const said=refused.get(id);if(said){refused.delete(id);shown.say(said)}
-    else if(CONTINUITY_WRITES.includes(writes.get(id)))continuityRef.current?.querySelector("[aria-busy=true]")?.scrollIntoView({block:"nearest"});
+    else if(!covered&&CONTINUITY_WRITES.includes(writes.get(id)))continuityRef.current?.querySelector("[aria-busy=true]")?.scrollIntoView({block:"nearest"});
     return()=>{if(panels.get(id)===shown)panels.delete(id)};
-  },[]);
+  },[covered]);
   const goalFields=[objective,tokenBudget,timeBudget,turnBudget,toolCallBudget,childAgentBudget,costBudgetUsd,completionConditions,constraints,validationExpectations];
   const goalSaved=useSavedFields("goal",thread?.id,goalValues(goal),goalFields,[setObjective,setTokenBudget,setTimeBudget,setTurnBudget,setToolCallBudget,setChildAgentBudget,setCostBudgetUsd,setCompletionConditions,setConstraints,setValidationExpectations]);
   const notes=[completedWork,unresolvedFailures,importantDecisions,artifactsCreated,pendingNextActions];
