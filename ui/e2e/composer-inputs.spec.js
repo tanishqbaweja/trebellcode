@@ -1913,7 +1913,9 @@ test("a file picked from the @ menu with the caret inside its word replaces the 
 // on: once the file is in it goes on the word it was picked on, with what was typed meanwhile after it and the caret at its end. The
 // draft as it was at the pick went in over what was typed (an import slowed by a remote environment, a big file or a busy machine), and
 // a letter typed as it went in landed before the caret the next frame put back (round 8). A refused import keeps the draft as typed.
-test("letters typed on while a file picked from the @ menu imports stay after it once it is in, the caret after them, by Enter or a click, and a refused import leaves them as typed",async({page})=>{
+// Meanwhile the menu's files are dimmed, as they were while they were disabled: aria-disabled took the place of disabled and left them
+// at full strength, a menu that looked live and took no press (round 8 repair).
+test("letters typed on while a file picked from the @ menu imports stay after it once it is in, the caret after them, by Enter or a click, the menu's files dimmed meanwhile, and a refused import leaves them as typed",async({page})=>{
   test.setTimeout(180_000);
   const harness=await openComposerApp(page);
   try{
@@ -1925,14 +1927,19 @@ test("letters typed on while a file picked from the @ menu imports stay after it
       await Promise.all([new Promise(done=>setTimeout(done,hold)),typed]);
       if(refusal)await route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:refusal})});else await route.fallback();
     });
+    // The menu's files as a person sees them: on or off (aria-disabled), and their opacity.
+    const rowsLook=()=>menu.locator("button").evaluateAll(rows=>[...new Set(rows.map(row=>(row.getAttribute("aria-disabled")==="true"?"off ":"on ")+getComputedStyle(row).opacity))]);
     // 'Check @log' typed in the emptied composer, login.js picked by Enter (held 80 ms), a click or a double click on it, and 'now'
-    // typed at a person's pace: the first letter 120 ms after Enter or the click is let go, 60 ms a key.
-    const pickAndType=async pick=>{
+    // typed at a person's pace: the first letter 120 ms after Enter or the click is let go, 60 ms a key. Where held names the import
+    // held till the letters are typed, the menu's files are at full strength before the pick and dimmed and off after it.
+    const pickAndType=async(pick,held="")=>{
       await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
       await page.keyboard.type("Check @log",{delay:20});await expect(menu.locator("button.active strong")).toHaveText("login.js");
       const file=menu.locator("button").filter({hasText:"src/login.js"});
+      if(held)await expect.soft.poll(rowsLook,"the menu's files before the pick"+held).toEqual(["on 1"]);
       if(pick==="Enter"){await page.keyboard.down("Enter");await page.waitForTimeout(80);await page.keyboard.up("Enter")}
       else if(pick==="a click")await file.click({delay:80});else await file.dblclick();
+      if(held)await expect.soft.poll(rowsLook,"the menu's files while login.js imports"+held).toEqual(["off 0.62"]);
       await page.waitForTimeout(120);await page.keyboard.type("now",{delay:60});
     };
     for(const [mode,ms] of [["dark",900],["light",900],["dark",300],["light",300]]){
@@ -1940,7 +1947,7 @@ test("letters typed on while a file picked from the @ menu imports stay after it
       for(const pick of ["Enter","a click","a double click"]){
         const where=` in ${mode}, the import ${ms} ms slow and login.js picked by ${pick}`;
         let release=null;hold=ms;typed=ms===900?new Promise(done=>{release=done}):null;
-        await pickAndType(pick);
+        await pickAndType(pick,release?where:"");
         // At 900 ms every letter is typed while the file imports (at 300 ms it comes in between them): the draft reads as typed.
         if(release){
           await expect.soft(composer,"the draft while the file imports"+where).toHaveValue("Check @lognow");await expect(context).toHaveCount(0);
