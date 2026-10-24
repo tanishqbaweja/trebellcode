@@ -2031,6 +2031,55 @@ test("letters typed on while a file picked from the @ menu imports stay after it
   }finally{await harness.close()}
 });
 
+// A page opened while the picked file imports (Settings by Ctrl+, or from the sidebar, History) takes the composer away with the chat,
+// and the person comes back to the thread from its row. Once the file is in it goes on its word in the draft as it is then: with the
+// page still up, into the draft the composer drawn again shows; with the composer drawn again, into it, what was typed there kept and
+// its caret set with it, so no @ menu opens over the draft for the caret it had before. The draft as it was at the pick went in over
+// what was typed before the page opened and after (round 8 repair).
+test("letters typed on while a file picked from the @ menu imports stay after it once it is in, also when Settings or History takes the composer away meanwhile and the thread is opened again before or after the file is in",async({page})=>{
+  test.setTimeout(150_000);
+  const harness=await openComposerApp(page);
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip"),destinations=page.getByRole("navigation",{name:"Destinations"});
+    // The import held until the round lets it in.
+    let held=null;
+    await page.route(/\/api\/attachments\/import$/,async route=>{await held;await route.fallback()});
+    for(const [mode,away,heading,landsAway,draft] of [
+      ["dark","Ctrl+,","Settings",true,"Check @src/login.js now"],
+      ["light","Settings","Settings",false,"Check @src/login.js now!"],
+      ["dark","History","Thread history",false,"Check @src/login.js now!"],
+      ["light","History","Thread history",true,"Check @src/login.js now"],
+    ]){
+      await switchMode(page,mode);
+      const where=` with ${away} opened while the file imports and the file in ${landsAway?"before":"after"} the thread is opened again, in ${mode}`,shown=away==="History"?"history":"settings";
+      let release=null;held=new Promise(done=>{release=done});
+      // The file let in, and the app done with the import's answer.
+      const fileIn=async()=>{const done=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/attachments/import");release();await (await done).finished();await painted(page)};
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type("Check @log",{delay:20});await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      await page.keyboard.press("Enter");await page.keyboard.type(" now",{delay:60});await expect(composer).toHaveValue("Check @log now");
+      if(away==="Ctrl+,")await page.keyboard.press("Control+Comma");else await destinations.getByRole("button",{name:away,exact:true}).click();
+      await expect(page.getByRole("heading",{name:heading,exact:true,level:1})).toBeVisible();await expect(composer).toHaveCount(0);
+      if(landsAway)await fileIn();
+      await threadRow(page,"Composer thread").locator(".thread-main").click();await expect(composer).toBeEnabled();await painted(page);
+      if(!landsAway){
+        await expect(composer).toHaveValue("Check @log now");await expect(context).toHaveCount(0);
+        await clickInDraft(page,14,40);await page.keyboard.type("!",{delay:20});await expect(composer).toHaveValue("Check @log now!");await fileIn();
+      }
+      await expect(context).toHaveCount(1);await expect.soft(composer,"the draft"+where).toHaveValue(draft);
+      if(!landsAway){
+        expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret"+where).toEqual([24,24]);
+        await expect.soft(composer,"the keyboard in the composer"+where).toBeFocused();
+      }
+      // No @ menu over the draft, once a search for the word at the caret the composer had before would have answered.
+      await page.waitForTimeout(400);await painted(page);await expect.soft(menu,"the @ menu"+where).toHaveCount(0);
+      await page.screenshot({animations:"disabled",path:auditDir+(landsAway?`mention-file-in-while-${shown}-is-up`:`mention-file-in-after-${shown}-and-back`)+`-${mode}-1280x800.png`});
+      await context.locator("button").click();await expect(context).toHaveCount(0);
+    }
+  }finally{await harness.close()}
+});
+
 test("Enter on a draft over the 120,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);

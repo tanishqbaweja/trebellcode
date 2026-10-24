@@ -732,6 +732,10 @@ const DICTATION_ERRORS={
   "service-not-allowed":"The microphone is blocked. Allow microphone access for Trebell Code to dictate.",
   "audio-capture":"No microphone was found to dictate with.",
 };
+// The composer drawn now: its field, and the setters of its caret and its @ menu's files. A file picked from the @ menu goes into the
+// composer drawn once the file is in, which is another one when a page (Settings, History) took the chat's place meanwhile, and into
+// App's draft while the page is still up.
+let shownComposer=null;
 const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,starting=false,providerReady,transportReady=true,transportStatus="",transportReason="",onRetryTransport,runtimeSwitchLabel="",modelsLoading=false,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,attachments,uploadingFiles=[],contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,threadSettingsWait=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onReasoningEffort,onServiceTier,onModelOption,onModelPickerOpenChange,onMenuShown=null,menuDismissed=null,setMenuDismissed,codexThread=null,onCancelEdit=null}){
   const [modelOpen,setModelOpen]=useState(false);
   const [modelQuery,setModelQuery]=useState("");
@@ -750,6 +754,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const [mentionBusy,setMentionBusy]=useState(false);
   const [slashIndex,setSlashIndex]=useState(0);
   const composerRef=useRef(null),slashMenuRef=useRef(null),mentionMenuRef=useRef(null),modelMenuRef=useRef(null),modelButtonRef=useRef(null),wrapRef=useRef(null),shelfRef=useRef(null);
+  useLayoutEffect(()=>{const shown={composerRef,setCaret,setMentionItems};shownComposer=shown;return()=>{if(shownComposer===shown)shownComposer=null}},[]);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
   useLayoutEffect(()=>{resizeTextarea(composerRef.current,{min:40,max:160})},[prompt]);
   // A send leaves the composer on, with the keyboard, so what the person types straight on while it goes (Sending…) lands there: only
@@ -854,15 +859,19 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // The composer takes keys while the picked file imports, so the pick goes into the draft as it is once the file is in: on its word
   // where that is then, what was typed meanwhile kept and the caret in it (a word edited or erased meanwhile gets nothing). The draft
   // and the caret go in at once, so the next key lands after them, and the keyboard comes back unless another field has it meanwhile.
+  // A page opened meanwhile (Settings, History) took this composer away with the chat: the pick goes into the composer drawn again,
+  // whose caret is set with it (the one it had would open the @ menu over the draft), or into App's draft as it is then while the page
+  // is up. The draft as it was at the pick went in over what was typed since.
   async function chooseMention(item){
     if(!activeMention||!item||mentionBusy)return;
-    const from=prompt,mention=activeMention,focused=document.activeElement;setMentionBusy(true);
+    const from=prompt,mention=activeMention,focused=document.activeElement,label=item.relativePath||item.name||item.path;setMentionBusy(true);
     try{
-      const attached=await onFileMentionAttach?.(item),node=composerRef.current,now=node?node.value:from,caret=node?.selectionEnd;
-      const at=attached&&movedFileMention(from,mention,now,caret);if(!at)return;
-      const next=applyFileMention(now,at,item.relativePath||item.name||item.path,caret),active=document.activeElement;
-      flushSync(()=>{onPromptEdit?.();setPrompt(next.text);setMentionItems([]);setCaret(next.caret)});
-      if(!active||active===document.body||active===focused)node?.focus();node?.setSelectionRange(next.caret,next.caret);
+      const attached=await onFileMentionAttach?.(item),shown=shownComposer,node=shown?.composerRef.current;if(!attached)return;
+      if(!node){onPromptEdit?.();setPrompt(current=>{const at=movedFileMention(from,mention,current,current.length);return at?applyFileMention(current,at,label).text:current});return}
+      const now=node.value,caret=node.selectionEnd,at=movedFileMention(from,mention,now,caret);if(!at)return;
+      const next=applyFileMention(now,at,label,caret),active=document.activeElement;
+      flushSync(()=>{onPromptEdit?.();setPrompt(next.text);shown.setMentionItems([]);shown.setCaret(next.caret)});
+      if(!active||active===document.body||active===focused)node.focus();node.setSelectionRange(next.caret,next.caret);
     }finally{setMentionBusy(false)}
   }
   function chooseSlash(cmd){
