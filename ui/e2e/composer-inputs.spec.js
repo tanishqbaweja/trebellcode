@@ -1871,6 +1871,44 @@ test("after Escape closes the @ file menu, the arrow keys, Home and End or a cli
   }finally{await harness.close()}
 });
 
+// A file picked from the @ menu with the caret inside the word (an arrow key or a click put it there) replaces the whole word, while
+// the menu lists what matches the part before the caret. The rest of the word stayed after the file, so the composer read 'Check
+// @src/login.js g' and a send carried the g (round 8).
+test("a file picked from the @ menu with the caret inside its word replaces the whole word, by Enter, Tab or a click, the caret put there by ArrowLeft or a click",async({page})=>{
+  test.setTimeout(150_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Checked the login file."}]});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip");
+    const rounds=[["dark",1280,"ArrowLeft","Enter"],["dark",1280,"a click","a click"],["light",900,"a click","Enter"],["light",900,"ArrowLeft","a click"],["light",1280,"ArrowLeft","Tab"]];
+    for(const [index,[mode,width,move,pick]] of rounds.entries()){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      const where=` in ${mode} at ${width}, the caret put in the word by ${move} and the file picked by ${pick}`;
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type("Check @log",{delay:20});await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      // The caret between 'lo' and 'g', and the menu then lists what matches 'lo'.
+      const answered=mentionSearched(page,"lo");
+      if(move==="ArrowLeft")await page.keyboard.press("ArrowLeft");else await clickInDraft(page,9,2);
+      await (await answered).finished();await painted(page);
+      await expect.poll(()=>composer.evaluate(node=>node.selectionStart),"the caret"+where).toBe(9);
+      await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      if(pick==="a click")await menu.locator("button").filter({hasText:"src/login.js"}).click();else await page.keyboard.press(pick);
+      await expect(context).toHaveCount(1);
+      await expect.soft(composer,"the draft once the file is in"+where).toHaveValue("Check @src/login.js ");
+      expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret after the file"+where).toEqual([20,20]);
+      await frames(page);await page.keyboard.type("now",{delay:20});await expect.soft(composer,"the draft typed on"+where).toHaveValue("Check @src/login.js now");
+      if(index===0||index===2)await page.screenshot({animations:"disabled",path:auditDir+`mention-picked-inside-its-word-${mode}-${width}x800.png`});
+      if(index<rounds.length-1){await context.locator("button").click();await expect(context).toHaveCount(0)}
+    }
+    // Enter sends the message as it reads, with the file.
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Checked the login file.",{exact:true})).toBeVisible({timeout:15_000});
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page","Check @src/login.js now"]);
+    await expect(page.locator(".user-bubble").last()).toContainText("Check @src/login.js now");await expect(page.locator(".user-bubble").last()).toContainText("login.js");
+    await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
 test("Enter on a draft over the 120,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);
