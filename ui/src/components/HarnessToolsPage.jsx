@@ -248,8 +248,13 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       ...(diagnostics!==null?{diagnostics}:{}),
       ...(platform==="win32"&&windowsSandbox!==null?{windowsSandbox}:{}),
     }));
-    // An import Codex lists done ended while no page was shown to hear it end.
-    if(importHistories){setMigrationHistory({data:importHistories.data||[],connectors:importHistories.connectors||[]});if(importHistories.data?.some(entry=>entry.importId===migrationImportId))setMigrationImportId(null)}
+    // An import Codex lists done ended while no page was shown to hear it end. One started on a connection since gone, and a setup,
+    // end where no page hears them: the page waits no more, as a page drawn since does, and says their end is unknown unless what it
+    // read shows them done (the import listed, the sandbox ready). The page that stayed waited for good.
+    if(importHistories)setMigrationHistory({data:importHistories.data||[],connectors:importHistories.connectors||[]});
+    const ended=!!importing.id&&!!importHistories?.data?.some(entry=>entry.importId===importing.id),unknown=what=>`Codex disconnected before reporting how the ${what} ended, so it may still be running.`;
+    if(ended||importing.rpc&&importing.rpc!==rpc){setMigrationImportId(null);setMigrationMessage(ended?"":unknown("agent configuration import"))}
+    if(setup.rpc&&setup.rpc!==rpc){setSandboxMessage(windowsSandbox?.status==="ready"?"":unknown(setup.mode+" Windows sandbox setup"));setSandboxPending("")}
     setLoading(false);
   }
   useEffect(()=>{refresh()},[rpc,rpcStatus,projectPath,activeThread?.id,platform]);

@@ -1516,3 +1516,85 @@ test("Tools drawn again while an agent configuration import runs says Importing�
     await expect(card.getByText("Previous native imports · 1")).toBeVisible();
   }finally{await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
+
+// Codex's connection drops, and Codex comes back on a new one, with what it finished meanwhile done (done); resolves once the page
+// has read Codex again.
+async function dropCodex(page,fixture,done=()=>{}){
+  fixture.control.holdInit=true;fixture.drop();
+  await expect(page.getByText("Codex harness is not connected",{exact:true})).toBeVisible();
+  done();fixture.releaseInit();
+  await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible({timeout:15_000});
+  await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh",{timeout:15_000});
+}
+
+// A Windows sandbox setup Codex started on a connection that drops is heard to end on none, as Codex reports it on the connection it
+// was started on: once Codex is back the page that stays waits no more, as a page drawn again does, offers both setups again and
+// says the setup's end is unknown, unless the sandbox reads ready. Dropped while Settings shows, the page drawn after says so, once.
+// The page that stayed said Setting up… for good, with Set up unelevated waiting, while the page drawn again offered both.
+test("Tools stops waiting for a Windows sandbox setup whose Codex connection dropped, says its end is unknown unless the sandbox reads ready, and offers it again",async({page})=>{
+  test.setTimeout(90_000);
+  const fixture=await startHeldMcpFixture();fixture.release();fixture.control.sandbox="notConfigured";
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl,{platform:"win32"});
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),card=toolsCard(page,"Windows sandbox"),setup=name=>card.getByRole("button",{name,exact:true}),line=card.locator(".capability-status");
+    const unknown="Codex disconnected before reporting how the elevated Windows sandbox setup ended, so it may still be running.";
+    await expect(card).toContainText("Not configured");await wheelTo(page,card);
+    // Set up elevated, then the drop: the page that stays offers both setups again, and says the setup's end is unknown.
+    await setup("Set up elevated").click();await expect(setup("Setting up…")).toBeDisabled();
+    await dropCodex(page,fixture);
+    await expect(setup("Set up elevated"),"the page that stays offers the setup again once Codex is back").toBeEnabled();
+    await expect.soft(setup("Set up unelevated"),"and the other setup").toBeEnabled();
+    await expect.soft(line,"and says the setup's end is unknown").toHaveText(unknown);
+    await shootTools(page,"tools-sandbox-setup-dropped",card);
+    // Set up again with the keys sends a second setup; one Codex finished meanwhile reads Ready, with no line.
+    await setup("Set up elevated").focus();await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.setups.length).toBe(2);await expect(setup("Setting up…")).toBeDisabled();
+    await dropCodex(page,fixture,()=>{fixture.control.sandbox="ready"});
+    await expect(card).toContainText("Ready");await expect(setup("Setting up…")).toHaveCount(0);
+    await expect.soft(line,"a setup the sandbox reads done says nothing more").toHaveCount(0);
+    // Dropped while Settings shows: the page drawn after offers the setup and says its end is unknown, once.
+    fixture.control.sandbox="notConfigured";await page.locator(".capabilities-toolbar button").click();
+    await setup("Set up elevated").click();await expect(setup("Setting up…")).toBeDisabled();await expect.poll(()=>fixture.control.setups.length).toBe(3);
+    await ways.to();
+    fixture.control.holdInit=true;fixture.drop();await expect.poll(()=>fixture.control.heldInit.length).toBe(1);fixture.releaseInit();
+    await ways.from();await wheelTo(page,card);
+    await expect(setup("Set up elevated")).toBeEnabled();
+    await expect.soft(line,"the page drawn after a drop while Settings showed says the setup's end is unknown").toHaveText(unknown);
+    await ways.mouse();await wheelTo(page,card);
+    await expect.soft(line,"once").toHaveCount(0);
+  }finally{fixture.releaseInit();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// An agent configuration import Codex started on a connection that drops is heard to end on none: once Codex is back the page that
+// stays offers Scan and the import again, as a page drawn again does, and says the import's end is unknown, unless Codex lists it
+// done in its import history. The page that stayed said Importing… for good, with Scan waiting.
+test("Tools stops waiting for an agent configuration import whose Codex connection dropped, says its end is unknown unless Codex lists it done, and offers it again",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.migrationItems=[{itemType:"SKILLS",description:"Claude Code skills",cwd:null}];
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),card=toolsCard(page,"Import agent configuration"),scan=card.getByRole("button",{name:"Scan",exact:true}),line=card.locator(".capability-status");
+    const importing=card.getByRole("button",{name:"Importing…",exact:true}),start=card.getByRole("button",{name:"Import 1 item",exact:true});
+    await wheelTo(page,card);
+    await scan.click();await start.click();await expect(importing).toBeDisabled();await expect.poll(()=>fixture.control.imports.length).toBe(1);
+    await dropCodex(page,fixture);
+    await expect(scan,"the page that stays offers Scan again once Codex is back").toBeEnabled();
+    await expect.soft(start,"and the import").toBeEnabled();
+    await expect.soft(line,"and says the import's end is unknown").toHaveText("Codex disconnected before reporting how the agent configuration import ended, so it may still be running.");
+    await shootTools(page,"tools-config-import-dropped",card);
+    // Imported again; one Codex finished meanwhile is in its import history: nothing waits, and no line.
+    await start.click();await expect(importing).toBeDisabled();await expect.poll(()=>fixture.control.imports.length).toBe(2);
+    await dropCodex(page,fixture,()=>fixture.control.histories.push({importId:"import-2",providerId:"claude",completedAtMs:Date.now(),successes:[{itemType:"SKILLS",cwd:null,source:"claude",target:"skills",title:null}],failures:[]}));
+    await expect(scan).toBeEnabled();await expect(importing).toHaveCount(0);
+    await expect.soft(line,"an import Codex lists done says nothing more").toHaveCount(0);
+    await expect(card.getByText("Previous native imports · 1")).toBeVisible();
+    // The page drawn after says nothing of it.
+    await ways.mouse();await wheelTo(page,card);
+    await expect(scan).toBeEnabled();await expect.soft(line).toHaveCount(0);
+  }finally{fixture.releaseInit();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
