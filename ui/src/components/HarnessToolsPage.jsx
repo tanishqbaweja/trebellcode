@@ -38,6 +38,10 @@ const shareDone={};
 // elevation prompt, and a second import, and passed over the first one's end. And what a history import did (told), which the next
 // page drawn says once it has scanned the history again: the page drawn after showed only Scan history.
 let said={},setup={},importing={},told=null;
+// What Codex answers while no page is shown (kept): a plugin's details, a search's results with the search they answer, or a
+// history scan's conversations or why it failed, which the next page drawn shows, as it says the lines (said); they went nowhere,
+// so the page drawn after offered Details with nothing shown, the catalog under an empty box, or Scan history alone.
+let kept=[];
 window.addEventListener("trebell:windows-sandbox-setup",event=>{setup={};if(!shown)said={...said,"windowsSandbox/setupStart":event.detail?.success?null:failureText("Windows sandbox setup failed",event.detail?.error)}});
 
 // A header badge is a bare count, or a label that says what it counts when the card lists more than one kind of row.
@@ -115,8 +119,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // This page as an action reaches it (running, shown): one pressed on a page since gone says what it does, and reads Codex again, on
   // the page drawn now (page), and a refresh the page gone had under way lands on nothing. With no page shown, its lines wait (said).
   const self=useRef({}).current;
-  const page=()=>self.gone?shown:self,setErrors=update=>{const to=page();if(to)to.showErrors(update);else said=update(said)};
-  useEffect(()=>{self.gone=false;shown=self;showBusy(running);if(Object.keys(said).length){const lines=said;said={};showErrors(prev=>({...prev,...lines}))}if(told){const line=told;told=null;tell(line,true)}return()=>{self.gone=true;if(shown===self)shown=null}},[]);
+  const page=()=>self.gone?shown:self,setErrors=update=>{const to=page();if(to)to.showErrors(update);else said=update(said)},land=show=>{const to=page();if(to)show(to);else kept.push(show)};
+  useEffect(()=>{self.gone=false;shown=self;showBusy(running);for(const show of kept.splice(0))show(self);if(Object.keys(said).length){const lines=said;said={};showErrors(prev=>({...prev,...lines}))}if(told){const line=told;told=null;tell(line,true)}return()=>{self.gone=true;if(shown===self)shown=null}},[]);
   const hold=node=>{
     const row=node?.closest?.(".capability-list>div");
     if(!self.gone&&row&&!pressed.current&&node.matches(":focus-visible")){
@@ -177,7 +181,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [hookRuns,setHookRuns]=useState([]);
   const [authRecovery,setAuthRecovery]=useState(null);
   const [modelNotices,setModelNotices]=useState([]);
-  // A plugin search's answer, with the search it answers on a page drawn again meanwhile, whose box is empty.
+  // A plugin search's answer, with the search it answers on a page drawn again meanwhile or after it (kept), whose box is empty.
   const showSearch=(results,cursor,query)=>{if(query){setPluginSearchTerm(query[0]);setPluginSearchScope(query[1])}setPluginSearchResults(results);setPluginSearchCursor(cursor);setPluginSearchRan(true)};
   Object.assign(self,{showBusy,showErrors,refresh,showSandbox,showImport,scanHistory,setHistoryMessage,setHistoryImport,setHistoryScanFailed,setPluginDetail,showSearch});
 
@@ -415,14 +419,15 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     }catch(error){shareDone[action]=["plugin/list",list=>{const item=listedPlugin(list,plugin.id);return !!item&&!!item.installed===nextInstalled}];setErrors(prev=>({...prev,[action]:failureText((plugin.installed?"Could not uninstall ":"Could not install ")+pluginLabel(plugin),error)}))}
     finally{setBusy("")}
   }
-  // A search's results and a plugin's details show on the page drawn now, as busy does: they went to the page that sent them, so on
-  // the page drawn again Searching… ended with the box empty and the catalog listed, and Loading… turned back into Details.
+  // A search's results and a plugin's details show on the page drawn now, as busy does, or with no page shown on the next one drawn
+  // (land): they went to the page that sent them, so on the page drawn again Searching… ended with the box empty and the catalog
+  // listed, and Loading… turned back into Details.
   async function searchPlugins({append=false}={}){
     const searchTerm=pluginSearchTerm.trim();if(!rpc||searchTerm.length<2)return;
     setBusy(append?"plugin:more":"plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
     try{
       const result=await request("plugin/search",{searchTerm,scope:pluginSearchScope,cwds:projectPath?[projectPath]:null,cursor:append?pluginSearchCursor:null,limit:20});
-      const to=page();to?.showSearch(append?[...pluginSearchResults,...(result?.data||[])]:result?.data||[],result?.nextCursor||null,to!==self&&[pluginSearchTerm,pluginSearchScope]);
+      const results=append?[...pluginSearchResults,...(result?.data||[])]:result?.data||[],cursor=result?.nextCursor||null,query=[pluginSearchTerm,pluginSearchScope];land(to=>to.showSearch(results,cursor,to!==self&&query));
     }catch(error){setErrors(prev=>({...prev,"plugin/search":failureText("Could not search plugins",error)}))}
     finally{setBusy("")}
   }
@@ -430,7 +435,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!rpc||!plugin?.name)return;setBusy("plugin:read:"+plugin.id);setErrors(prev=>({...prev,"plugin/read":null}));setPluginSkillDetail(null);
     try{
       const result=await request("plugin/read",{marketplacePath:marketplace.path||null,remoteMarketplaceName:marketplace.path?null:(marketplace.name||null),pluginName:plugin.name});
-      page()?.setPluginDetail(result?.plugin||null);
+      const detail=result?.plugin||null;land(to=>to.setPluginDetail(detail));
     }catch(error){setErrors(prev=>({...prev,"plugin/read":failureText("Could not load details for "+pluginLabel(plugin),error)}))}
     finally{setBusy("")}
   }
@@ -538,11 +543,11 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     }catch(error){setMigrationImportId(null);setErrors(prev=>({...prev,"externalAgentConfig/import":failureText("Could not import the agent configuration",error)}))}
     finally{setBusy("")}
   }
-  // A scan's answer lands on the page drawn now, as busy does.
+  // A scan's answer lands on the page drawn now, as busy does, or with no page shown on the next one drawn (land).
   async function scanHistory(){
     setBusy("history:scan");setHistoryMessage("");setHistoryScanFailed(false);
-    try{const found=await api("/api/history-import");page()?.setHistoryImport(found)}
-    catch(error){const to=page();to?.setHistoryScanFailed(true);to?.setHistoryMessage(failureText("Could not scan conversation history",error))}
+    try{const found=await api("/api/history-import");land(to=>to.setHistoryImport(found))}
+    catch(error){const line=failureText("Could not scan conversation history",error);land(to=>{to.setHistoryScanFailed(true);to.setHistoryMessage(line)})}
     finally{setBusy("")}
   }
   // What an import did (line) is said, once the history is scanned again (scan), on the page drawn now, so a page drawn again while it

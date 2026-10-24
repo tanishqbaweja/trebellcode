@@ -1433,6 +1433,76 @@ test("Tools drawn again while a plugin's Details or a plugin search is on its wa
   }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
+// A plugin's Details, a plugin search, or a Conversation history scan answered while the person is away from Tools (on Settings or
+// Usage) shows what it read once Tools is drawn again: the plugin's details, the results with the search they answer in the box and
+// select, or the conversations found; and a scan that failed says why. The answers went to no page: the page drawn again offered
+// Details with nothing shown, the catalog under an empty box, or Scan history alone, so each press read as one that did nothing,
+// while a refusal of the same Details or search in the same moment was said once Tools was drawn again.
+test("Tools shows a plugin's details, a plugin search's results or a history scan answered while the person was away, once Tools is drawn again",async({page})=>{
+  test.setTimeout(90_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=catalog();fixture.control.holdReads=true;
+  const frames=[];page.on("websocket",socket=>socket.on("framereceived",frame=>frames.push(String(frame.payload))));
+  const heldScans=[],answer=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)});
+  const session=(index,title)=>({id:"history-claude-"+index,source:"claude",providerSessionId:"claude-history-"+index,cwd:process.cwd(),title,preview:title,alreadyImported:false});
+  await page.route(/\/api\/history-import$/,route=>{heldScans.push(route)});
+  // Codex's held answer (one with text in it) sent while Tools is not shown, and read by the page before the person comes back; and
+  // the same for a held scan.
+  const answered=async text=>{
+    const count=()=>frames.filter(frame=>frame.includes(text)).length,before=count();
+    fixture.releaseReads();await expect.poll(count).toBeGreaterThan(before);await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,0)));
+  };
+  const scanned=async(value,status)=>{
+    const read=page.waitForEvent("requestfinished",request=>request.method()==="GET"&&/\/api\/history-import$/.test(request.url()));
+    for(const route of heldScans.splice(0))await answer(route,value,status);
+    await read;await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,0)));
+  };
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),plugins=toolsCard(page,"Plugins"),box=plugins.getByPlaceholder("Search plugins"),scope=plugins.locator(".plugin-search-controls select"),detail=plugins.locator(".plugin-detail");
+    const row=plugins.locator(".capability-list:not(.plugin-search-results)>div").filter({hasText:"Lane G Local"}),result=plugins.locator(".plugin-search-results>div").filter({hasText:"Lane G Local"});
+    const usage=async()=>{await page.getByRole("button",{name:"Usage",exact:true}).click();await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible()};
+    await wheelTo(page,plugins);
+    // Details, then Settings, where Codex answers: the page drawn after shows the plugin's details.
+    await row.getByRole("button",{name:"Details",exact:true}).click();await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    await ways.to();await answered("as Codex describes it.");
+    await ways.from();await wheelTo(page,plugins);
+    await expect.soft(detail,"the details Codex read while Settings showed, on the page drawn after").toContainText("What Lane G Local does, as Codex describes it.");
+    await expect(row.getByRole("button",{name:"Details",exact:true})).toBeEnabled();
+    await shootTools(page,"tools-plugin-details-landed-while-away",plugins);
+    if(await detail.count())await detail.getByRole("button",{name:"Close",exact:true}).click();
+    // A search in the Personal scope, Enter in the box, then Usage, where Codex answers: the page drawn after shows the results, with
+    // the search they answer in the box and select, in place of the catalog.
+    await scope.selectOption("personal");await box.fill("lane");await box.press("Enter");await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    await usage();await answered("\"marketplacePath\"");
+    await ways.from();await wheelTo(page,plugins);
+    await expect.soft(result,"the results Codex found while Usage showed, on the page drawn after").toHaveCount(1);
+    await expect.soft(box,"with the search they answer in the box").toHaveValue("lane");
+    await expect.soft(scope,"and its scope in the select").toHaveValue("personal");
+    await expect.soft(row,"in place of the catalog").toHaveCount(0);
+    await shootTools(page,"tools-plugin-search-landed-while-away",plugins);
+    // Scan history, then Settings, where the scan answers: the page drawn after lists the conversations found.
+    const history=toolsCard(page,"Conversation history"),states=history.locator(".history-import-list>div em"),scan=history.getByRole("button",{name:"Scan history",exact:true});
+    await wheelTo(page,history);
+    await scan.click();await expect.poll(()=>heldScans.length).toBe(1);
+    await ways.to();await scanned({codexImportAvailable:true,sessions:[session(1,"Recent Claude conversation"),session(2,"Older Claude conversation")]});
+    await ways.from();await wheelTo(page,history);
+    await expect.soft(states,"the conversations the scan found while Settings showed, on the page drawn after").toHaveText(["available","available"]);
+    await expect.soft(history.getByRole("button",{name:"Import available",exact:true}),"offered for import").toBeEnabled();
+    await expect(scan).toBeEnabled();
+    await shootTools(page,"tools-history-scan-landed-while-away",history);
+    // A scan that fails while Usage shows: the page drawn after says why.
+    await scan.click();await expect.poll(()=>heldScans.length).toBe(1);
+    await usage();await scanned({error:"Deliberate history scan failure while away"},500);
+    await ways.from();await wheelTo(page,history);
+    await expect.soft(history.getByRole("alert"),"a scan that failed while Usage showed is said on the page drawn after").toHaveText("Could not scan conversation history: Deliberate history scan failure while away");
+    await expect(scan).toBeEnabled();
+    await shootTools(page,"tools-history-scan-failed-while-away",history);
+  }finally{fixture.releaseReads();for(const route of heldScans.splice(0))await answer(route,{sessions:[]}).catch(()=>{});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
 // A history import says what it did once Conversation history is scanned again: the scan cleared the line as it started, so the
 // summary never showed. Import available pressed, then Settings and back while the import runs: the page drawn again has no scan to
 // draw Import available from, and says Importing… in its place, with Scan history waiting; once the import lands it says what was
