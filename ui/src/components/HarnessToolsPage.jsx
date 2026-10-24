@@ -38,10 +38,13 @@ const shareDone={};
 // elevation prompt, and a second import, and passed over the first one's end. And what a history import did (told), which the next
 // page drawn says once it has scanned the history again: the page drawn after showed only Scan history.
 let said={},setup={},importing={},told=null;
-// What Codex answers while no page is shown (kept): a plugin's details, a search's results with the search they answer, or a
-// history scan's conversations or why it failed, which the next page drawn shows, as it says the lines (said); they went nowhere,
-// so the page drawn after offered Details with nothing shown, the catalog under an empty box, or Scan history alone.
-let kept=[];
+// The search on its way (searching: its term and scope), so a page drawn while it runs shows it in its box and select, beside
+// Searching… and where its answer or refusal is said: the box was empty there, and the answer then put the search back over what
+// the person had typed. And what Codex answers while no page is shown (kept): a plugin's details, a search's results, or a history
+// scan's conversations or why it failed, which the next page drawn shows, as it says the lines (said); they went nowhere, so the
+// page drawn after offered Details with nothing shown, the catalog under an empty box, or Scan history alone. A search that ends
+// with no page shown keeps its term and scope for that page.
+let searching=null,kept=[];
 window.addEventListener("trebell:windows-sandbox-setup",event=>{setup={};if(!shown)said={...said,"windowsSandbox/setupStart":event.detail?.success?null:failureText("Windows sandbox setup failed",event.detail?.error)}});
 
 // A header badge is a bare count, or a label that says what it counts when the card lists more than one kind of row.
@@ -120,7 +123,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // the page drawn now (page), and a refresh the page gone had under way lands on nothing. With no page shown, its lines wait (said).
   const self=useRef({}).current;
   const page=()=>self.gone?shown:self,setErrors=update=>{const to=page();if(to)to.showErrors(update);else said=update(said)},land=show=>{const to=page();if(to)show(to);else kept.push(show)};
-  useEffect(()=>{self.gone=false;shown=self;showBusy(running);for(const show of kept.splice(0))show(self);if(Object.keys(said).length){const lines=said;said={};showErrors(prev=>({...prev,...lines}))}if(told){const line=told;told=null;tell(line,true)}return()=>{self.gone=true;if(shown===self)shown=null}},[]);
+  useEffect(()=>{self.gone=false;shown=self;showBusy(running);if(!running)searching=null;for(const show of kept.splice(0))show(self);if(Object.keys(said).length){const lines=said;said={};showErrors(prev=>({...prev,...lines}))}if(told){const line=told;told=null;tell(line,true)}return()=>{self.gone=true;if(shown===self)shown=null}},[]);
   const hold=node=>{
     const row=node?.closest?.(".capability-list>div");
     if(!self.gone&&row&&!pressed.current&&node.matches(":focus-visible")){
@@ -168,8 +171,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [sandboxWarning,setSandboxWarning]=useState("");
   const [skillRootsText,setSkillRootsText]=useState("");
   const [skillMessage,setSkillMessage]=useState("");
-  const [pluginSearchTerm,setPluginSearchTerm]=useState("");
-  const [pluginSearchScope,setPluginSearchScope]=useState("global");
+  const [pluginSearchTerm,setPluginSearchTerm]=useState(()=>searching?.[0]||"");
+  const [pluginSearchScope,setPluginSearchScope]=useState(()=>searching?.[1]||"global");
   const [pluginSearchResults,setPluginSearchResults]=useState([]);
   const [pluginSearchCursor,setPluginSearchCursor]=useState(null);
   const [pluginSearchRan,setPluginSearchRan]=useState(false);
@@ -181,8 +184,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [hookRuns,setHookRuns]=useState([]);
   const [authRecovery,setAuthRecovery]=useState(null);
   const [modelNotices,setModelNotices]=useState([]);
-  // A plugin search's answer, with the search it answers on a page drawn again meanwhile or after it (kept), whose box is empty.
-  const showSearch=(results,cursor,query)=>{if(query){setPluginSearchTerm(query[0]);setPluginSearchScope(query[1])}setPluginSearchResults(results);setPluginSearchCursor(cursor);setPluginSearchRan(true)};
+  // A plugin search's answer. It leaves the box and the select as they are: a page drawn while the search ran started them from it.
+  const showSearch=(results,cursor)=>{setPluginSearchResults(results);setPluginSearchCursor(cursor);setPluginSearchRan(true)};
   Object.assign(self,{showBusy,showErrors,refresh,showSandbox,showImport,scanHistory,setHistoryMessage,setHistoryImport,setHistoryScanFailed,setPluginDetail,showSearch});
 
   function routedParams(params){
@@ -424,12 +427,12 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // listed, and Loading… turned back into Details.
   async function searchPlugins({append=false}={}){
     const searchTerm=pluginSearchTerm.trim();if(!rpc||searchTerm.length<2)return;
-    setBusy(append?"plugin:more":"plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
+    searching=[pluginSearchTerm,pluginSearchScope];setBusy(append?"plugin:more":"plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
     try{
       const result=await request("plugin/search",{searchTerm,scope:pluginSearchScope,cwds:projectPath?[projectPath]:null,cursor:append?pluginSearchCursor:null,limit:20});
-      const results=append?[...pluginSearchResults,...(result?.data||[])]:result?.data||[],cursor=result?.nextCursor||null,query=[pluginSearchTerm,pluginSearchScope];land(to=>to.showSearch(results,cursor,to!==self&&query));
+      const results=append?[...pluginSearchResults,...(result?.data||[])]:result?.data||[],cursor=result?.nextCursor||null;land(to=>to.showSearch(results,cursor));
     }catch(error){setErrors(prev=>({...prev,"plugin/search":failureText("Could not search plugins",error)}))}
-    finally{setBusy("")}
+    finally{if(page())searching=null;setBusy("")}
   }
   async function readPlugin(plugin,marketplace={}){
     if(!rpc||!plugin?.name)return;setBusy("plugin:read:"+plugin.id);setErrors(prev=>({...prev,"plugin/read":null}));setPluginSkillDetail(null);

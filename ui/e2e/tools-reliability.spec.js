@@ -188,7 +188,7 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // closed is done all the same, as Codex finishes what it was asked, but its answer is lost. The plugin catalog is
 // `control.marketplaces`: a plugin shared, installed or uninstalled and a marketplace upgraded or removed change it once answered,
 // and wait while `holdShare` is set as well; a plugin search lists the catalog's plugins whose name has the term in it, and a
-// plugin's read describes it, both waiting while `holdReads` is set, until `releaseReads()`. The
+// plugin's read describes it, both waiting while `holdReads` is set, until `releaseReads()` (or `refuseReads(reason)`). The
 // effective configuration is `control.config`. `control.listReads` counts the catalog's reads. The Windows sandbox's readiness is
 // `control.sandbox`, and a setup started answers that it started (`control.setups` lists them); the agent configuration found is
 // `control.migrationItems`, and an import of it answers with its id (`control.imports` lists them; Codex's import history, the imports
@@ -242,7 +242,7 @@ async function startHeldMcpFixture({threads=[]}={}){
       }
       if(["plugin/search","plugin/read"].includes(message.method)){
         const {searchTerm,pluginName}=message.params||{},listed=control.marketplaces.flatMap(market=>(market.plugins||[]).map(plugin=>({market,plugin}))),read=listed.find(({plugin})=>plugin.name===pluginName);
-        const answer=()=>send({result:message.method==="plugin/search"?{data:listed.filter(({plugin})=>plugin.name.includes(searchTerm)).map(({market,plugin})=>({marketplaceName:market.name,marketplacePath:market.path,plugin})),nextCursor:null}
+        const answer=reason=>reason?send({error:{code:-32000,message:reason}}):send({result:message.method==="plugin/search"?{data:listed.filter(({plugin})=>plugin.name.includes(searchTerm)).map(({market,plugin})=>({marketplaceName:market.name,marketplacePath:market.path,plugin})),nextCursor:null}
           :{plugin:read?{summary:read.plugin,marketplaceName:read.market.name,description:"What "+(read.plugin.interface?.displayName||read.plugin.name)+" does, as Codex describes it.",skills:[],hooks:[],apps:[],mcpServers:[],scheduledTasks:[]}:null}});
         if(control.holdReads)control.heldReads.push(answer);else answer();
         return;
@@ -285,6 +285,7 @@ async function startHeldMcpFixture({threads=[]}={}){
     releaseShare(){for(const answer of control.heldShare.splice(0))answer()},
     refuseShare(reason){for(const answer of control.heldShare.splice(0))answer(reason)},
     releaseReads(){for(const answer of control.heldReads.splice(0))answer()},
+    refuseReads(reason){for(const answer of control.heldReads.splice(0))answer(reason)},
     notify(method,params){for(const socket of sockets)if(socket.readyState===socket.OPEN)socket.send(JSON.stringify({method,params}))},
     drop(){for(const socket of sockets)try{socket.terminate()}catch{}},
     async close(){for(const socket of sockets)try{socket.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))}};
@@ -1417,6 +1418,7 @@ test("Tools drawn again while a plugin's Details or a plugin search is on its wa
     await box.fill("lane");await box.press("Enter");await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
     await ways.keys();await wheelTo(page,plugins);
     await expect(plugins.getByRole("button",{name:"Searching…",exact:true})).toHaveAttribute("aria-busy","true");
+    await expect.soft(box,"the page drawn again shows the search on its way in the box, beside Searching…").toHaveValue("lane");
     fixture.releaseReads();
     await expect.soft(result,"the page drawn again shows the results").toHaveCount(1);
     await expect.soft(box,"with the search they answer in the box").toHaveValue("lane");
@@ -1430,6 +1432,29 @@ test("Tools drawn again while a plugin's Details or a plugin search is on its wa
       fixture.releaseReads();
       await expect.soft(detail,"the details of a search result read while Usage showed, on the page drawn again").toContainText("What Lane G Local does, as Codex describes it.");
     }
+    // A search in the Workspace scope, with the Search button, then Settings and back: the page drawn again shows that search in its
+    // box and select beside Searching…, and what the person types there meanwhile stays once Codex answers. The box was empty and
+    // the scope Global, and the answer then put the search back over what they had typed.
+    const scope=plugins.locator(".plugin-search-controls select");
+    await scope.selectOption("workspace");await box.fill("lane");await plugins.getByRole("button",{name:"Search",exact:true}).click();await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    await ways.mouse();await wheelTo(page,plugins);
+    await expect(plugins.getByRole("button",{name:"Searching…",exact:true})).toHaveAttribute("aria-busy","true");
+    await expect.soft(box,"the page drawn again shows the search on its way in the box").toHaveValue("lane");
+    await expect.soft(scope,"and its scope in the select").toHaveValue("workspace");
+    await shootTools(page,"tools-drawn-again-plugin-search-on-its-way",plugins);
+    await box.fill("share");
+    fixture.releaseReads();await expect(plugins.getByRole("button",{name:"Search",exact:true})).toBeEnabled();
+    await expect.soft(box,"what the person typed on the page drawn again stays once Codex answers").toHaveValue("share");
+    await expect.soft(scope,"with the scope as it was").toHaveValue("workspace");
+    // A search Codex refuses once Tools is drawn again from Usage: the refusal is said beside the search it refused.
+    await box.fill("lane");await box.press("Enter");await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    await page.getByRole("button",{name:"Usage",exact:true}).click();await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();
+    await ways.from();await wheelTo(page,plugins);
+    fixture.refuseReads("the plugin index is rebuilding");
+    await expect(plugins.locator(".capability-error")).toHaveText(["Could not search plugins: the plugin index is rebuilding"]);
+    await expect.soft(box,"said beside the search it refused").toHaveValue("lane");
+    await expect.soft(scope,"in its scope").toHaveValue("workspace");
+    await shootTools(page,"tools-drawn-again-plugin-search-refused",plugins);
   }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
