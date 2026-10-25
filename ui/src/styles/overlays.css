@@ -63,7 +63,9 @@
 .command-palette .command-palette-searching{flex:none;display:inline-flex;align-items:center;gap:6px;color:var(--tx3);font:500 10.5px var(--mono);white-space:nowrap}
 .command-palette .command-palette-searching::before{content:"";width:10px;height:10px;border:1.5px solid color-mix(in srgb,var(--ac) 35%,transparent);border-top-color:var(--ac);border-radius:50%;animation:tb-spin .8s linear infinite}
 .command-palette .tb-kbd{flex:none;font-family:var(--mono);font-size:10px;line-height:1.2;color:var(--tx2);background:var(--bg3);border:1px solid var(--line2);border-bottom-width:2px;border-radius:5px;padding:2px 5px;white-space:nowrap}
-.command-palette .command-palette-error{flex:none;margin:8px 8px 0;padding:8px 11px;border:1px solid var(--errb);border-radius:9px;background:var(--errt);color:var(--err);font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+.command-palette .command-palette-error{flex:none;display:flex;align-items:center;gap:10px;margin:8px 8px 0;padding:8px 11px;border:1px solid var(--errb);border-radius:9px;background:var(--errt);color:var(--err);font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+.command-palette .command-palette-error>span{flex:1;min-width:0}
+.command-palette .command-palette-error>button{flex:none;margin:-3px -5px -3px 0}
 /* Degraded message search on its own is a warning (results still come from loaded threads), not a failure. */
 .command-palette .command-palette-error.is-warning{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
 .command-palette .command-palette-results{flex:1 1 auto;min-height:0;max-height:none;overflow-y:auto;overscroll-behavior:contain;padding:6px}

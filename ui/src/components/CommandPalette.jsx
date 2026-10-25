@@ -57,6 +57,9 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
   // Degraded message search ("Full thread search unavailable…") is a warning, kept apart from command failures so a
   // search that finishes late can no longer replace or wipe a command's error message.
   const [searchWarning,setSearchWarning]=useState("");
+  // A message search that could not run at all (its code could not load) offers Reload, and with no message searched an empty list
+  // says that no command or thread name matches, not that no thread does. It counts only while its warning shows.
+  const [searchFailed,setSearchFailed]=useState(false);
   const inputRef=useRef(null);
   const resultsRef=useRef(null);
   const refocusRef=useRef(false);
@@ -106,12 +109,12 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
     if(raw.startsWith(">")||q.length<2||!messageSearchRef.current){setMessageMatches(current=>current.length?[]:current);setMessageSearching(false);setActionError("");setSearchWarning("");return}
     let cancelled=false;setMessageSearching(true);setActionError("");setSearchWarning("");
     const timer=setTimeout(async()=>{
-      let result;
+      let result,failed=false;
       try{result=await messageSearchRef.current(q)}
-      catch(error){result={matches:[],warning:error?.message||String(error)||"Could not search thread messages."}}
+      catch(error){failed=true;result={matches:[],warning:"Could not search thread messages: "+(error?.message||String(error))}}
       const matches=Array.isArray(result)?result:(result?.matches||[]);
       const warning=Array.isArray(result)?"":(result?.warning||"");
-      if(!cancelled){setMessageMatches(matches);setMessageSearching(false);setSearchWarning(warning)}
+      if(!cancelled){setMessageMatches(matches);setMessageSearching(false);setSearchWarning(warning);setSearchFailed(failed)}
     },180);
     return()=>{cancelled=true;clearTimeout(timer)}
   },[open,query]);
@@ -183,11 +186,11 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
     if(event.key.length===1&&!event.ctrlKey&&!event.metaKey&&!event.altKey&&event.key!==" ")inputRef.current?.focus();
   }
   const visibleError=[dataError,actionError,searchWarning].filter(Boolean).join(" · ");
-  const warningOnly=Boolean(searchWarning)&&!dataError&&!actionError;
+  const warningOnly=Boolean(searchWarning)&&!dataError&&!actionError,unsearched=searchFailed&&Boolean(searchWarning);
   return <div className="command-palette-backdrop" data-testid="command-palette" onMouseDown={event=>event.target===event.currentTarget&&onClose?.()}>
     <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={dialogRef} tabIndex={-1}>
       <div className="command-palette-search"><Search size={16}/><input ref={inputRef} value={query} onChange={event=>{handedKeysRef.current=null;setQuery(event.target.value);setSelected(0);setActionError("");setSearchWarning("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)} spellCheck={false} autoComplete="off"/>{messageSearching&&<span className="command-palette-searching">Searching messages…</span>}<kbd className="tb-kbd">Esc</kbd></div>
-      {visibleError&&<div className={"command-palette-error"+(warningOnly?" is-warning":"")} role="alert">{visibleError}</div>}
+      {visibleError&&<div className={"command-palette-error"+(warningOnly?" is-warning":"")} role="alert"><span>{visibleError}</span>{unsearched&&<button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button>}</div>}
       <div className="command-palette-results" ref={resultsRef} onKeyDown={resultsKeyDown}>
         {items.map((item,index)=><React.Fragment key={item.id}>
           {item.kind!==items[index-1]?.kind&&<div className="command-palette-group" role="presentation">{GROUP_LABELS[item.kind]||"Results"}</div>}
@@ -196,7 +199,7 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
             <span className="command-palette-text"><strong>{item.label}</strong><small>{runningId===item.id?"Running…":item.detail||""}</small></span>{item.shortcut&&<kbd className="tb-kbd">{item.shortcut}</kbd>}
           </button>
         </React.Fragment>)}
-        {!items.length&&<div className="command-palette-empty"><Search size={18}/><span>No matching command or thread.</span></div>}
+        {!items.length&&<div className="command-palette-empty"><Search size={18}/><span>{unsearched?"No matching command or thread name.":"No matching command or thread."}</span></div>}
       </div>
       <div className="command-palette-footer" aria-hidden="true"><span><kbd className="tb-kbd">↑</kbd><kbd className="tb-kbd">↓</kbd> navigate</span><span><kbd className="tb-kbd">↵</kbd> run</span><span><kbd className="tb-kbd">esc</kbd> close</span><span className="command-palette-hint"><kbd className="tb-kbd">&gt;</kbd> commands only</span></div>
     </div>

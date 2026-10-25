@@ -906,6 +906,51 @@ test("a Ctrl+F whose find bar cannot load says why, opens nothing over the conve
   }finally{await harness.close()}
 });
 
+// The palette finds threads by their names with code of its own, so one whose message search cannot load still does. It says what it
+// could not do, as the sidebar's search and Ctrl+F say theirs, with Reload, and a word only a message holds reads as matching no
+// command or thread name: it said only "Part of Trebell could not load…", above "No matching command or thread.".
+test("a palette whose message search cannot load says it could not search thread messages, with Reload, and still finds threads by name, by keyboard and by mouse",async({page})=>{
+  test.setTimeout(90_000);
+  const needle="violet-harbor-207";
+  let refuse=true,refused=0;
+  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>{if(!refuse)return route.continue();refused++;return route.abort("failed")});
+  const {harness}=await openRelayThreads(page,[{name:"Quill release",user:"Plan the release",reply:"The release plan is ready."},{name:"Beta notes",user:"Write the notes",reply:`The notes mention ${needle} once.`}]);
+  try{
+    await expect.poll(()=>refused,{message:"the parts asked for at idle"}).toBeGreaterThan(0);
+    const palette=page.getByTestId("command-palette"),said=palette.getByRole("alert"),reload=said.getByRole("button",{name:"Reload",exact:true}),empty=palette.locator(".command-palette-empty");
+    const notice=/^Could not search thread messages: Part of Trebell could not load\. Reload Trebell to get it back\.\s*Reload$/;
+    // By keyboard: Ctrl+K from the composer, and a word only Beta notes' reply holds.
+    await page.getByTestId("composer").click();await page.keyboard.press("Control+k");await expect(palette).toBeVisible();
+    await page.keyboard.type(needle,{delay:15});
+    await expect(said).toHaveText(notice);
+    await expect(empty).toHaveText("No matching command or thread name.");await expect(palette.locator(".command-palette-item")).toHaveCount(0);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      for(const width of [1280,700]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+`palette-message-search-cannot-load-${mode}-${width}x800.png`})}
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1280,height:800});
+    // A thread's name still finds the thread, and the palette still says what it could not search.
+    await page.keyboard.press("Control+a");await page.keyboard.type("Quill",{delay:15});
+    await expect(palette.locator(".command-palette-item").filter({hasText:"Quill release"})).toBeVisible();
+    await expect(said).toHaveText(notice);await expect(empty).toHaveCount(0);
+    // Tab from the search reaches Reload, and Enter loads Trebell again.
+    await page.keyboard.press("Tab");await expect(reload).toBeFocused();
+    await Promise.all([page.waitForEvent("load"),page.keyboard.press("Enter")]);
+    await expect(page.locator(".thread-row")).toHaveCount(2,{timeout:10_000});
+    // By mouse: Search or jump to, the word, and a click on Reload, which brings the message search back with the script let through.
+    await page.getByRole("button",{name:"Search or jump to"}).click();await expect(palette).toBeVisible();
+    await page.keyboard.type(needle,{delay:15});await expect(said).toHaveText(notice);
+    refuse=false;
+    await Promise.all([page.waitForEvent("load"),reload.click()]);
+    await expect(page.locator(".thread-row")).toHaveCount(2,{timeout:10_000});
+    await page.getByRole("button",{name:"Search or jump to"}).click();await expect(palette).toBeVisible();
+    await page.keyboard.type(needle,{delay:15});
+    await expect(palette.locator(".command-palette-item.message-match").filter({hasText:"Beta notes"})).toBeVisible({timeout:10_000});
+    await expect(said).toHaveCount(0);
+    await appStays(page);
+  }finally{await harness.close()}
+});
+
 // Nor does Cite's: the end of a conversation says nothing (no reply reads as failed to show, and nothing there is announced or in
 // Tab's order). Text selected in a reply says it, where Cite would come and for as long as the selection lasts, with Reload.
 test("a Cite whose script cannot load says so only where its button would come, above text selected in a reply, by mouse and by keyboard",async({page})=>{
