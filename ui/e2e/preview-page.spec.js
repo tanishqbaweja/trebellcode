@@ -1144,11 +1144,19 @@ test("the profile list shows each profile's whole name with the panel at its own
     await page.mouse.up();await page.mouse.move(5,790);
     await expect.poll(width).toBe(px||Number(await resizer.getAttribute("aria-valuemax")));
   };
+  // The shell as the window lays it out: whether the sidebar is open, and the panel's width and the widest its handle takes it to.
+  const shell=()=>page.evaluate(()=>{const handle=document.querySelector("[data-testid=right-panel-resizer]");return [!document.querySelector(".app-shell").classList.contains("sidebar-collapsed"),Number(handle.getAttribute("aria-valuenow")),Number(handle.getAttribute("aria-valuemax"))]});
+  let left=null;
   for(const mode of ["dark","light"]){
     await page.setViewportSize({width:1280,height:800});await frames(page);
     // The header's theme button, or its row in More actions where the header folded it away: the panel the dark pass left at its
-    // widest leaves the conversation 400 px at 1280 px.
+    // widest leaves the conversation 400 px at 1280 px. Chosen once the window is laid out as the dark pass left it at 1280 px, the
+    // sidebar the 700 px window collapsed open again beside the panel at its widest, and two frames on, when the header has fitted
+    // itself to that. The window lays out in steps: the app reads the new width a frame after the window widens and opens the sidebar
+    // a render later, and the header folds the button as the sidebar comes back. On the way the conversation is 940 and 664 px wide,
+    // with the button shown, and a press chosen there waited on a button the header then folded away.
     if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode){
+      await expect.poll(shell,{message:"the 1280 px window laid out as the dark pass left it, the sidebar open beside the panel at its widest"}).toEqual(left);await frames(page);
       const toggle=page.locator("[data-testid=appearance-toggle]:visible").first();
       if(await toggle.count())await toggle.click();
       else{await page.locator(".chat-workspace .workspace-header").getByRole("button",{name:"More actions",exact:true}).click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:/^Switch to (light|dark) mode$/}).click()}
@@ -1159,6 +1167,7 @@ test("the profile list shows each profile's whole name with the panel at its own
       if(mode==="dark"&&px===440)expect(await width(),"the panel opens at its own width").toBe(440);else await drag(px);
       await reads(px?`with the panel at ${px} px`:`with the panel at its widest, ${await width()} px`,mode,px?"panel-"+px:"panel-widest");
     }
+    left=await shell();
     // Narrow windows: at 960 px the panel is at its narrowest, and at 700 px it is a drawer over the page.
     await page.setViewportSize({width:960,height:800});await expect.poll(width).toBe(340);
     await reads("with the panel at its narrowest, 340 px",mode,"window-960");
