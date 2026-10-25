@@ -63,7 +63,11 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // the thread-move, snooze and /goal helpers moved to the lazy chunks that use them), the rest the Tools page's searches and skill
 // reads kept for the page drawn again (R9A) and the right panel's handles (R9C). Its headroom stays 1.0 / 0.0 KB, as on main before
 // round 9. The first bundle went down, 624.9 / 199.9 to 619.2 / 198.3 KB, with the composer's @-menu fixes (R9B) in it.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:765.3,gzipKB:252.2}};
+// Then by what round 10's fix lanes add to the lazy chunks, 0.6 / 0.2 KB (the Tools page's Close and search box waiting while a
+// skill read or Load more runs (R10A), the palette's thread-search failure line with its Reload (R10B)), which took them 0.2 KB gzip
+// over it: its headroom stays 1.0 / 0.0 KB, as on main before round 10. The first bundle grew 619.2 / 198.3 to 619.8 / 198.6 KB
+// with the composer's @-menu, Cite and queued-follow-up fixes (R10B) and the right panel's and terminal drawer's sizes (R10C).
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:765.9,gzipKB:252.4}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
