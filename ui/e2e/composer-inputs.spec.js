@@ -2418,6 +2418,96 @@ test("a file picked from the @ menu whose word is gone once it is in leaves no c
   }finally{await harness.close()}
 });
 
+// A file picked from the @ menu shows where its chip comes, as attaching (login.js, Attaching… and its icon turning), while it imports
+// with its word in the draft, also in the composer drawn again back from Settings, as a file that uploads shows on the shelf: Enter and
+// Send wait for it, and only Send's title said why, the @ menu that showed the file shut once the caret left its word. Once the word is
+// gone (erased, or the draft emptied by New task) the file will not go with the message, so the chip goes and Send is on again for the
+// draft as it is: Send stayed off, its title waiting for the file, until the import ended (round 9 repair).
+test("a file picked from the @ menu shows as attaching where its chip comes while it imports, also back from Settings, and once its word is gone the wait ends and the message goes without it, also on New task",async({page})=>{
+  test.setTimeout(180_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Checked the login page without the file."}]});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip"),send=page.getByTestId("send"),users=page.locator(".user-bubble");
+    const imports=await holdMentionImports(page),waiting="Waiting for src/login.js to attach";
+    // The file let in, and the app done with the import's answer.
+    const fileIn=async release=>{const done=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/attachments/import");release();await (await done).finished();await painted(page)};
+    // The attaching chip as a person sees it: in the composer's chip row above the draft, the file's name, Attaching… and its icon
+    // turning, or null with none.
+    const readAttaching=()=>page.evaluate(()=>{
+      const chip=document.querySelector("[data-testid=mention-attaching]");if(!chip)return null;
+      const draft=document.querySelector("[data-testid=composer]").getBoundingClientRect(),box=chip.getBoundingClientRect(),icon=chip.querySelector("svg");
+      return {row:Boolean(chip.closest(".composer-wrap [data-testid=context-chips]")),above:box.bottom<=draft.top,name:chip.querySelector("strong")?.textContent,note:chip.querySelector("small")?.textContent,title:chip.title,busy:chip.getAttribute("aria-busy"),turning:icon?getComputedStyle(icon).animationName:"no icon"};
+    });
+    // While the file imports with its word in the draft: the chip, and Send off, its title saying why.
+    const waits=async where=>{
+      await expect.soft.poll(readAttaching,"the attaching chip"+where).toEqual({row:true,above:true,name:"login.js",note:"Attaching…",title:"Attaching src/login.js…",busy:"true",turning:"tb-spin"});
+      await expect.soft(send,"Send"+where).toBeDisabled();await expect.soft(send,"Send's title"+where).toHaveAttribute("title",waiting);
+    };
+    // Once the word is gone: no chip, and Send on for the draft as it is, with its own title.
+    const goesOn=async where=>{
+      await expect.soft.poll(readAttaching,"the attaching chip"+where).toBe(null);
+      await expect.soft(send,"Send"+where).toBeEnabled();await expect.soft(send,"Send's title"+where).toHaveAttribute("title","Send message");
+    };
+    // Picked by Enter or a click and ' please' typed on: the chip shows, Enter sends nothing, and the file's chip takes its place once
+    // the file is in.
+    for(const [mode,width,pick] of [["dark",1280,"Enter"],["light",900,"a click"]]){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      const where=` in ${mode} at ${width}, login.js picked by ${pick} and ' please' typed on while it imports`;
+      let release=null;imports.hold=300;imports.held=new Promise(done=>{release=done});
+      await typeMention(page);await pickLogin(page,pick);await page.waitForTimeout(120);await page.keyboard.type(" please",{delay:60});
+      await expect(composer).toHaveValue("Check @log please");await expect(menu).toHaveCount(0);
+      await waits(where);
+      await page.keyboard.press("Enter");await painted(page);await expect(users,"the messages"+where).toHaveCount(1);await expect(composer).toHaveValue("Check @log please");
+      await page.screenshot({animations:"disabled",path:auditDir+`mention-attaching-chip-${mode}-${width}x800.png`});
+      await fileIn(release);
+      await expect(context).toHaveCount(1);await expect(composer,"the draft once the file is in"+where).toHaveValue("Check @src/login.js please");
+      expect.soft(await readAttaching(),"the attaching chip once the file is in"+where).toBe(null);await expect(send).toBeEnabled();
+      await context.locator("button").click();await expect(context).toHaveCount(0);
+    }
+    await page.setViewportSize({width:1280,height:800});
+    // Settings opened by Ctrl+, while the file imports and the thread opened again from its row: the composer drawn again shows the
+    // chip too.
+    {
+      await switchMode(page,"dark");let release=null;imports.held=new Promise(done=>{release=done});
+      await typeMention(page);await pickLogin(page,"Enter");await page.keyboard.type(" please",{delay:60});await expect(composer).toHaveValue("Check @log please");
+      await page.keyboard.press("Control+Comma");await expect(page.getByRole("heading",{name:"Settings",exact:true,level:1})).toBeVisible();await expect(composer).toHaveCount(0);
+      await threadRow(page,"Composer thread").locator(".thread-main").click();await expect(composer).toBeEnabled();await painted(page);
+      await waits(" back from Settings");
+      await page.screenshot({animations:"disabled",path:auditDir+"mention-attaching-chip-back-from-settings-dark-1280x800.png"});
+      await fileIn(release);await expect(context).toHaveCount(1);await expect(composer).toHaveValue("Check @src/login.js please");
+      await context.locator("button").click();await expect(context).toHaveCount(0);
+    }
+    // The word erased while the file imports and other words typed: no chip, Send on, and Enter sends the message without the file;
+    // the file in after that leaves no chip, and the composer empty.
+    {
+      await switchMode(page,"light");let release=null;imports.held=new Promise(done=>{release=done});
+      await typeMention(page);await pickLogin(page,"Enter");for(let key=0;key<4;key++)await page.keyboard.press("Backspace");
+      await page.keyboard.type("the login page",{delay:20});await expect(composer).toHaveValue("Check the login page");
+      await goesOn(" with the word erased while the file imports");
+      await page.screenshot({animations:"disabled",path:auditDir+"mention-word-erased-send-on-light-1280x800.png"});
+      await page.keyboard.press("Enter");
+      await expect(page.getByText("Checked the login page without the file.",{exact:true})).toBeVisible({timeout:15_000});
+      await expect(users).toHaveCount(2);await expect(users.last().locator("p")).toHaveText("Check the login page");await expect(users.last().locator(".user-attachments > span")).toHaveCount(0);
+      await fileIn(release);
+      await expect.soft(context,"the chips once the file is in, after the message went without it").toHaveCount(0);await expect(composer).toHaveValue("");
+    }
+    // New task opened while the file imports: its composer shows no chip and Send is on for what is typed there, and the file in leaves
+    // it as typed, with no chip.
+    {
+      await switchMode(page,"dark");let release=null;imports.held=new Promise(done=>{release=done});
+      await typeMention(page);await pickLogin(page,"Enter");await page.keyboard.type(" please",{delay:60});await waits(" before New task");
+      await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"New task",exact:true}).click();
+      await expect(composer).toHaveValue("");await composer.click();await page.keyboard.type("Start on the login page",{delay:20});
+      await goesOn(" on New task");
+      await page.screenshot({animations:"disabled",path:auditDir+"mention-new-task-send-on-dark-1280x800.png"});
+      await fileIn(release);
+      await expect.soft(context,"the chips on New task once the file is in").toHaveCount(0);await expect(composer).toHaveValue("Start on the login page");
+    }
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page","Check the login page"]);
+  }finally{await harness.close()}
+});
+
 // Letters typed on both sides of the picked word while its file imports, after it and then before it (Home or a click at the draft's
 // start) or the other way, keep the word: once the file is in it goes on the word, with all that was typed kept. The two edits read as
 // one over the word, so the file was not put on it and the message went with '@log' in its text and the chip (round 9).

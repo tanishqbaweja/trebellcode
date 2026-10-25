@@ -581,6 +581,10 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .context-chip :is(svg,strong,button){flex:none}
 .composer-wrap .context-chip button{width:18px;height:18px;color:var(--tx2)}
 .composer-wrap .context-chip button:hover{background:var(--bg3);color:var(--tx0)}
+/* A file picked from the @ menu while it imports: no remove button yet, and Attaching… with its icon turning as a file that uploads. */
+.composer-wrap .context-chip.attaching{padding-right:9px}
+.composer-wrap .context-chip.attaching small{flex:none;color:var(--tx2);font:10.5px var(--font)}
+.composer-wrap .context-chip.attaching svg{color:var(--ac);animation:tb-spin 1s linear infinite}
 /* An empty shelf takes no room, nor the clicks on the end of the reply above the composer. */
 .composer-wrap .attachment-shelf:empty{display:none}
 /* The shelf stands on the composer's top and its rows go up from there, three and a part of the row above them at most, then it
