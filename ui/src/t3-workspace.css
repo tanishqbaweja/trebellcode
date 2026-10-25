@@ -353,6 +353,8 @@ html[data-custom-theme="true"] .settings-action-error{background:color-mix(in sr
 
 @media(max-width:1120px){
   .app-shell{grid-template-columns:224px minmax(0,1fr)}
+  /* The sidebar's column is fixed here, so it has no resize handle: one at the stored width stood off its edge and moved nothing. */
+  .sidebar-resizer{display:none}
   .workspace-shell.right-open{grid-template-columns:minmax(460px,1fr) minmax(360px,42vw)}
   .context-panel-tabs button span{display:none}
   .context-panel-tabs button{width:30px;padding:0;justify-content:center}
@@ -361,6 +363,8 @@ html[data-custom-theme="true"] .settings-action-error{background:color-mix(in sr
   .app-shell{grid-template-columns:196px minmax(0,1fr)}
   .workspace-shell.right-open{grid-template-columns:minmax(0,1fr)}
   .context-panel{position:absolute;inset:32px 0 0 auto;width:min(82vw,520px);z-index:30;box-shadow:-20px 0 50px rgba(0,0,0,.35)}
+  /* The overlay drawer keeps that width, so it has no resize handle either: the docked one stood inside it, over its controls. */
+  .right-panel-resizer{display:none}
   .workspace-header{padding-left:10px}
   .header-control.branch-control span{display:none}
   .composer-wrap{width:calc(100% - 24px)}

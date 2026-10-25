@@ -2390,3 +2390,158 @@ for(const mode of ["dark","light"])test(`zoomed from 110% to 250%, the inspector
     console.log(`the inspector zoomed in ${mode} mode: ${seen.join(", ")}`);
   }finally{await context?.close();await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
+
+// The sidebar and the docked inspector each have a resize handle on their edge, which a pull or the arrow keys move. Where the shell
+// fixes a width, the handles stood off any edge and moved nothing a person saw: the sidebar's stayed at the width the person had
+// given the sidebar (258px) where the shell lays the sidebar out 224px wide (up to 1120px) or 196px (up to 900px), over the
+// conversation or the drawer's dim, so a click on the dim there left the drawer open, and a pull or a key there moved only the handle,
+// the sidebar then opening that wide in a wider window; and the inspector's stood the docked inspector's width (340px) in from the
+// window's edge, 180px inside the 520px drawer, over its tabs, the branch select and the commit message, so a click on the select
+// there did nothing, and Shift+Tab from the drawer's tabs reached it, whose keys set the inspector's width for wider windows (UI lane
+// D, round 9). So at each width, zoomed to 100%, 110%, 125% and 150%, the mouse finds a handle only on an edge it moves and the keys
+// reach only those; at 100% the handles shown take the pointer with their cursor and line and follow a pull and the arrow keys, and
+// the places the others stood take the pointer and the clicks as what lies there does (the pull there last, so the dim is clicked
+// where the handle stood); keys pressed on the sidebar's handle after the window narrows past 1120px change nothing; and each opens
+// at its own width again at 1280px.
+for(const mode of ["dark","light"])test(`a resize handle shows only on an edge it moves, the sidebar's where it takes its own width and the docked inspector's, and none where the shell narrows the sidebar or in the drawer, at 100% to 150% zoom, in ${mode} mode`,async({playwright,baseURL,proxy,headless})=>{
+  test.setTimeout(300_000);
+  const project={id:"handles-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
+  const threads=["Repo task one","Repo task two"].map((title,index)=>({id:"handles-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const dir=await mkdtemp(join(tmpdir(),"trebell-handles-")),extension=join(dir,"extension");mkdirSync(extension);
+  for(const [name,text] of Object.entries(ZOOM_EXTENSION))writeFileSync(join(extension,name),text);
+  const harness=await startHarness(threads);let context=null;
+  try{
+    context=await playwright.chromium.launchPersistentContext(join(dir,"profile"),{channel:"chromium",headless,baseURL,proxy,viewport:{width:1280,height:800},args:["--disable-extensions-except="+extension,"--load-extension="+extension]});
+    const zoom=context.serviceWorkers()[0]||await context.waitForEvent("serviceworker");
+    const page=context.pages()[0]||await context.newPage();
+    await openApp(page,{harness,threads,meta:Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}])),project,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),toggle=page.getByTestId("right-panel-toggle"),branch=right.getByRole("combobox",{name:"Current branch"});
+    const reopen=async()=>{if(!(await right.isVisible())){await toggle.click();await expect(right).toBeVisible()}await expect(branch).toBeVisible()};
+    if(!(await right.isVisible())){await toggle.click();await expect(right).toBeVisible()}
+    await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+    await expect(branch).toBeVisible();
+    // Where the mouse finds each resize handle along three rows across the window (from and to, in CSS pixels), the sidebar (null:
+    // collapsed), the inspector and the conversation's column.
+    const read=()=>page.evaluate(()=>{
+      const box=node=>{const rect=node?.getBoundingClientRect();return rect?.width?{left:+rect.left.toFixed(2),right:+rect.right.toFixed(2),width:+rect.width.toFixed(2)}:null},handles={};
+      for(const y of [150,400,650])for(let x=0.5;x<innerWidth;x++){const id=document.elementFromPoint(x,y)?.closest(".layout-resizer")?.dataset.testid;if(id){const span=handles[id]||={from:x,to:x};span.from=Math.min(span.from,x);span.to=Math.max(span.to,x)}}
+      return {width:document.documentElement.getBoundingClientRect().width,handles,sidebar:box(document.querySelector(".app-shell:not(.sidebar-collapsed)>.sidebar")),panel:box(document.querySelector("[data-testid=right-panel]")),column:box(document.querySelector(".chat-workspace"))};
+    });
+    const middle=span=>span?(span.from+span.to)/2:NaN;
+    // What has the keyboard: a resize handle, by its name, or the part of the app it is in.
+    const focused=()=>page.evaluate(()=>{const node=document.activeElement;return node?.getAttribute("role")==="separator"?node.getAttribute("aria-label"):node?.closest(".sidebar")?"the sidebar":node?.closest("[data-testid=right-panel]")?"the inspector":"the workspace"});
+    const tabToSidebarHandle=async()=>{await page.locator(".sidebar-provider").focus();await page.keyboard.press("Tab")};
+    const tabToPanelHandle=async()=>{await right.locator(".context-panel-tab").first().focus();await page.keyboard.press("Shift+Tab")};
+    // What the pointer finds at a point once its hover has settled: the handle there (or the control, or the dim), the cursor it
+    // shows and the handle's line.
+    const pointer=async(x,y)=>{
+      await page.mouse.move(x,y);let seen=null;
+      await expect.poll(async()=>{const next=await page.evaluate(([x,y])=>{const node=document.elementFromPoint(x,y),handle=node.closest(".layout-resizer");return {under:handle?handle.getAttribute("aria-label"):node.getAttribute("aria-label")||node.dataset.testid||node.tagName.toLowerCase(),cursor:getComputedStyle(node).cursor,line:handle?getComputedStyle(handle,"::after").opacity:"none"}},[x,y]),same=JSON.stringify(next)===JSON.stringify(seen);seen=next;return same},{intervals:[60]}).toBe(true);
+      return seen;
+    };
+    // The width of what a handle moves, and whether the handle is on its edge, once a pull or a key has moved it.
+    const follows=(id,width,message)=>expect.poll(async()=>{const now=await read(),box=id==="sidebar-resizer"?now.sidebar:now.panel;return [Math.round(box.width),Math.abs(middle(now.handles[id])-(id==="sidebar-resizer"?box.right:box.left))<=1.5]},{message}).toEqual([width,true]);
+    // The window set to css CSS pixels at the zoom, and the layout once it is the same two frames running.
+    const settled=async(level,css)=>{
+      await page.setViewportSize({width:Math.round(css*level),height:Math.round(800*level)});
+      let state=null;
+      await expect.poll(async()=>{await settle(page);const next=await read(),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same&&Math.abs(next.width-css)<0.05},{message:`the layout settles at ${css} CSS pixels zoomed to ${Math.round(level*100)}%`,intervals:[50]}).toBe(true);
+      return state;
+    };
+    const at=async(level,css)=>{
+      const state=await settled(level,css);
+      const where=`at ${css} CSS pixels zoomed to ${Math.round(level*100)}% (a ${Math.round(css*level)}px window)`,drawer=state.panel.left<state.column.right-0.5,own=css>1120;
+      // The edges a pull or the keys move: the sidebar's where it takes its own width (the shell lays it out 224px wide up to 1120px
+      // and 196px up to 900px, and collapses it under 820px), and the docked inspector's. Each opens at its own width at 1280px.
+      if(state.sidebar)expect.soft(Math.round(state.sidebar.width),`the sidebar's width ${where}`).toBe(own?258:css>900?224:196);
+      if(own)expect.soft(Math.round(state.panel.width),`the inspector's width ${where}`).toBe(460);
+      const edges={...(own&&state.sidebar?{"sidebar-resizer":state.sidebar.right}:{}),...(drawer?{}:{"right-panel-resizer":state.panel.left})};
+      const off=Object.entries(state.handles).filter(([id,span])=>!(id in edges)||Math.abs(middle(span)-edges[id])>1.5).map(([id,span])=>`${id} at ${span.from}-${span.to}`);
+      expect.soft(off,`the mouse finds no resize handle off an edge it moves ${where} (the sidebar ends at ${state.sidebar?.right??"0, collapsed"}, the inspector is ${state.panel.left}-${state.panel.right}${drawer?", the drawer":""})`).toEqual([]);
+      expect.soft(Object.keys(edges).filter(id=>!state.handles[id]),`each edge a person can move has its handle ${where}`).toEqual([]);
+      await expect.soft(page.getByRole("separator",{name:"Resize sidebar"}),`the sidebar offers its resize handle ${where} only where it takes its own width`).toHaveCount(own&&state.sidebar?1:0,{timeout:1000});
+      await expect.soft(page.getByRole("separator",{name:"Resize workspace panel"}),`the inspector offers its resize handle ${where} only where it is docked`).toHaveCount(drawer?0:1,{timeout:1000});
+      // The handles shown take the pointer with their cursor and line, zoomed or not.
+      for(const id of Object.keys(edges)){
+        const handle=page.getByTestId(id);await handle.hover();
+        await expect.poll(()=>handle.evaluate(node=>[node.matches(":hover"),getComputedStyle(node).cursor,getComputedStyle(node,"::after").opacity]),{message:`the handle ${id} under the pointer shows its cursor and line ${where}`}).toEqual([true,"col-resize","0.8"]);
+      }
+      // Tab from the sidebar's last control reaches its handle only where the sidebar takes its own width, and Shift+Tab from the
+      // inspector's first tab reaches the inspector's only where it is docked.
+      if(state.sidebar){await tabToSidebarHandle();expect.soft(await focused(),`Tab from the sidebar's last control ${where}`).toBe(own?"Resize sidebar":"the workspace")}
+      await tabToPanelHandle();
+      expect.soft(await focused(),`Shift+Tab from the inspector's first tab ${where}`).toBe(drawer?"the workspace":"Resize workspace panel");
+      if(level!==1)return;
+      // The key a person presses on the handle Shift+Tab reached in the drawer.
+      if(drawer&&/^Resize/.test(await focused()))await page.keyboard.press("Shift+ArrowLeft");
+      if(own){
+        // The handles on the inspector's and the sidebar's edges take the pointer with their cursor and line, and a pull 40px and back
+        // and the arrow keys move the edge with the handle on it.
+        for(const [id,name,grow,width] of [["right-panel-resizer","Resize workspace panel",-1,460],["sidebar-resizer","Resize sidebar",1,258]]){
+          expect.soft(await pointer(middle(state.handles[id]),400),`the pointer on the handle ${name} ${where}`).toEqual({under:name,cursor:"col-resize",line:"0.8"});
+          if(id==="sidebar-resizer")await page.screenshot({path:join(shotsDir,`resize-handle-sidebar-hover-${mode}-${css}.png`),animations:"disabled"});
+          for(const [dx,to] of [[40*grow,width+40],[-40*grow,width]]){
+            const from=middle((await read()).handles[id]);
+            await page.mouse.move(from,400);await page.mouse.down();await page.mouse.move(from+dx,400,{steps:6});await page.mouse.up();
+            await follows(id,to,`a pull of ${dx}px on the handle ${name} ${where}`);
+          }
+          if(id==="sidebar-resizer")await tabToSidebarHandle();else await tabToPanelHandle();
+          for(const [key,to] of [[grow>0?"ArrowRight":"ArrowLeft",width+16],[grow>0?"ArrowLeft":"ArrowRight",width]]){await page.keyboard.press(key);await follows(id,to,`${key} on the handle ${name} ${where}`)}
+        }
+        return;
+      }
+      if(state.sidebar&&!drawer){
+        // Where the sidebar's handle stood, at the width the person gave the sidebar, the pointer finds the conversation, and a pull
+        // there leaves the sidebar as the shell lays it out.
+        const seen=await pointer(258.5,400);
+        expect.soft([seen.under,seen.cursor,seen.line],`the pointer at x 258.5, where the sidebar's handle stood, ${where}`).toEqual([expect.not.stringMatching(/^Resize/),expect.not.stringMatching(/^col-resize$/),"none"]);
+        if(css===1100){
+          await page.screenshot({path:join(shotsDir,`resize-handle-none-sidebar-${mode}-${css}.png`),animations:"disabled"});
+          await page.mouse.down();await page.mouse.move(298.5,400,{steps:6});await page.mouse.up();await settle(page);
+          expect.soft(Math.round((await read()).sidebar.width),`the sidebar's width after a pull from x 258.5 ${where}`).toBe(224);
+        }
+      }
+      if(drawer){
+        // Where the inspector's handle stood in the drawer, 180px in from its left edge, the pointer finds the branch select, and a
+        // click there gives the select the keyboard.
+        const select=await branch.boundingBox(),x=state.panel.left+179.5,y=select.y+select.height/2;
+        expect.soft(x>select.x&&x<select.x+select.width,`the branch select lies under x ${x}, 180px into the drawer, ${where}`).toBe(true);
+        const seen=await pointer(x,y);
+        expect.soft([seen.under,seen.cursor,seen.line],`the pointer on the branch select 180px into the drawer ${where}`).toEqual(["Current branch",expect.not.stringMatching(/^col-resize$/),"none"]);
+        if(css===900)await page.screenshot({path:join(shotsDir,`resize-handle-none-drawer-${mode}-${css}.png`),animations:"disabled"});
+        await page.mouse.click(x,y);
+        await expect.soft(branch,`a click on the branch select 180px into the drawer ${where}`).toBeFocused();
+        // Escape closes the list the click opened.
+        await page.keyboard.press("Escape");await reopen();
+        await expect.poll(()=>branch.evaluate(node=>{try{return node.matches(":open")}catch{return false}}),{message:`Escape closes the branch list ${where}`}).toBe(false);
+        if(state.sidebar){
+          // The dim where the sidebar's handle stood closes the drawer at a click.
+          const dim=await pointer(256,400);
+          expect.soft([dim.under,dim.line],`the pointer on the dim at x 256 ${where}`).toEqual(["inspector-scrim","none"]);
+          await page.mouse.click(256,400);
+          await expect.soft(right,`a click on the dim at x 256 closes the drawer ${where}`).toBeHidden();
+          await reopen();
+        }
+      }
+    };
+    for(const level of [1,1.1,1.25,1.5]){
+      if(level!==1){
+        // The window at the step's first width, then zoomed in a step, as Ctrl+= zooms it.
+        await page.setViewportSize({width:Math.round(1280*level),height:Math.round(800*level)});
+        await zoom.evaluate(factor=>self.zoomTo(factor),level);
+        await expect.poll(()=>page.evaluate(()=>devicePixelRatio),{message:`the window zooms to ${Math.round(level*100)}%`}).toBeCloseTo(level,3);
+      }
+      for(const css of level===1?[1280,1120,900,700,1100]:[1280,1120,1100,900,700])await at(level,css);
+      if(level!==1)continue;
+      // The sidebar's handle given the keyboard at 1280px, and the window narrowed to 1120px: the arrow keys pressed on change
+      // nothing, and back at 1280px the sidebar and the inspector open at their own widths.
+      await settled(1,1280);await tabToSidebarHandle();
+      expect.soft(await focused(),"Tab from the sidebar's last control at 1280px").toBe("Resize sidebar");
+      await settled(1,1120);
+      for(let press=0;press<2;press++)await page.keyboard.press("ArrowRight");
+      const back=await settled(1,1280);
+      expect.soft([Math.round(back.sidebar.width),Math.round(back.panel.width)],"the sidebar's and the inspector's widths at 1280px after ArrowRight twice at 1120px").toEqual([258,460]);
+    }
+  }finally{await context?.close();await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
+});
