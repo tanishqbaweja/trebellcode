@@ -1754,6 +1754,120 @@ test("Tools drawn again while a plugin's skill is read shows the plugin's detail
   }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
+// A person who changes their mind while Codex reads a plugin's skill or answers a plugin search's Load more: the details' Close, and
+// the search box with its scope, wait as the page's other actions do, so the details keep Read skill saying Reading…, and the results
+// Load more saying Loading… (or a result its Details' Loading…), until Codex answers, and then show the skill, or all the results under
+// their search; with the mouse or the keys, on the page that sent it and on the page drawn again (Settings and back). A search's own
+// term or scope may still be changed while Searching… runs beside them, and its answer then leaves the catalog under the new one. On
+// 859a89ef Close took the details away with Reading…, and keys typed in the box took the results away with Loading…, every action
+// staying grey with nothing saying what ran; the answer then showed the skill nowhere, or the results of the term searched under the
+// term typed since, and a page drawn again before it brought back the details the person had closed.
+test("Tools keeps Reading… or Loading… in view until Codex answers, with the plugin details' Close and the search box waiting, and shows no results under a term typed over a search",async({page})=>{
+  test.setTimeout(300_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=moreCatalog();fixture.control.searchPage=2;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),plugins=toolsCard(page,"Plugins"),box=plugins.getByPlaceholder("Search plugins"),scope=plugins.locator(".plugin-search-controls select"),results=plugins.locator(".plugin-search-results>div strong");
+    const listed=plugins.locator(".capability-list:not(.plugin-search-results)>div"),detail=plugins.locator(".plugin-detail"),close=detail.getByRole("button",{name:"Close",exact:true}),skill=detail.locator("details>summary");
+    const readSkill=detail.getByRole("button",{name:"Read skill",exact:true}),reading=detail.getByRole("button",{name:"Reading…",exact:true}),more=plugins.getByRole("button",{name:"Load more",exact:true}),loading=plugins.getByRole("button",{name:"Loading…",exact:true});
+    const first=["Lane G Local","Lane G Notes"],all=[...first,"Lane G Tasks"],held=()=>expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    // A click in the search box, End and " x": a new term typed over the search. Keys the box does not take go to the page, whose
+    // End and space scroll it, smoothly, so the page is let come to rest before it is looked at.
+    const typeOver=async()=>{
+      await box.click({force:true});await page.keyboard.press("End");await page.keyboard.type(" x");
+      await page.locator(".secondary-page").evaluate(node=>new Promise(done=>{let last=-1,still=0;const frame=()=>{still=node.scrollTop===last?still+1:0;last=node.scrollTop;if(still>=10)done();else requestAnimationFrame(frame)};frame()}));
+    };
+    // Lane G Notes' details, answered at once, then Read skill pressed (press) while Codex holds it.
+    const read=async press=>{
+      if(await detail.count())await close.click();
+      fixture.control.holdReads=false;await listed.filter({hasText:"Lane G Notes"}).getByRole("button",{name:"Details",exact:true}).click();await expect(readSkill).toBeEnabled();
+      fixture.control.holdReads=true;await press();await held();await expect(reading).toHaveAttribute("aria-busy","true");
+    };
+    // Close clicked and keys typed in the box while Codex reads the skill (where), and then its answer.
+    const closeWhileReading=async(where,shot)=>{
+      await close.click({force:true});await typeOver();
+      await expect.soft(reading,"the details keep Reading… "+where+" after a click on Close and keys typed in the search box").toHaveAttribute("aria-busy","true");
+      await expect.soft(close,"Close waits, as the page's other actions do").toBeDisabled();
+      await expect.soft(box,"and so does the search box").toBeDisabled();await expect.soft(box,"with nothing typed in it").toHaveValue("");
+      if(shot)await shootTools(page,shot,plugins);
+      fixture.releaseReads();
+      await expect.soft(skill,"once Codex answers, the details "+where+" show the skill").toHaveText("lane-notes · SKILL.md");
+      await expect.soft(close,"with Close live again").toBeEnabled();await expect(box).toBeEnabled();
+    };
+    // A search for "lane", answered at once with its first page, then Load more pressed (press) while Codex holds it.
+    const loadMore=async press=>{
+      fixture.control.holdReads=false;await box.fill("");await box.fill("lane");await box.press("Enter");await expect(results).toHaveText(first);
+      fixture.control.holdReads=true;await press();await held();await expect(loading).toHaveAttribute("aria-busy","true");
+    };
+    // Keys typed in the box while Codex answers Load more (where), and then its answer.
+    const typeWhileLoading=async(where,shot)=>{
+      await typeOver();
+      await expect.soft(loading,"the results keep Load more saying Loading… "+where+" after keys typed in the search box").toHaveAttribute("aria-busy","true");
+      await expect.soft(results,"the results stay").toHaveText(first);await expect.soft(box,"under their search").toHaveValue("lane");
+      await expect.soft(box,"the search box waits, as the page's other actions do").toBeDisabled();await expect.soft(scope,"and so does its scope").toBeDisabled();
+      if(shot)await shootTools(page,shot,plugins);
+      fixture.releaseReads();
+      await expect.soft(results,"once Codex answers, all the results "+where).toHaveText(all);
+      await expect(more).toHaveCount(0);await expect.soft(box,"under their search").toHaveValue("lane");await expect(box).toBeEnabled();
+    };
+    await wheelTo(page,plugins);
+    // Read skill clicked, then Close clicked and keys typed in the box, on the page that sent it.
+    await read(()=>readSkill.click());
+    await closeWhileReading("on the page that sent it","tools-plugin-skill-reading-close-waits");
+    // Read skill pressed with the keys: Shift+Tab from Reading… passes over Close and the box, which wait, and Tab comes back.
+    await read(async()=>{await readSkill.focus();await page.keyboard.press("Enter")});
+    await expect(reading).toBeFocused();await page.keyboard.press("Shift+Tab");
+    await expect.soft(close,"Shift+Tab from Reading… passes over Close").not.toBeFocused();await expect.soft(box,"and over the search box").not.toBeFocused();
+    await page.keyboard.press("Tab");await expect.soft(reading,"and Tab comes back to Reading…").toBeFocused();
+    fixture.releaseReads();await expect.soft(skill,"the skill once Codex answers").toHaveText("lane-notes · SKILL.md");
+    // Read skill clicked and Close clicked, then Settings and back: the page drawn again shows the details with Reading…, as Close
+    // left them, and Close waits there too.
+    await read(()=>readSkill.click());await close.click({force:true});
+    await ways.mouse();await wheelTo(page,plugins);
+    await closeWhileReading("on the page drawn again","tools-drawn-again-plugin-skill-reading-close-waits");
+    // Load more clicked, then keys typed in the box, on the page that sent it.
+    await loadMore(()=>more.click());
+    await typeWhileLoading("on the page that sent it","tools-plugin-load-more-box-waits");
+    // Load more pressed with the keys: Shift+Tab from Loading… passes over the scope and the box, which wait, and Tab comes back.
+    await loadMore(async()=>{await more.focus();await page.keyboard.press("Enter")});
+    await expect(loading).toBeFocused();await page.keyboard.press("Shift+Tab");
+    await expect.soft(scope,"Shift+Tab from Loading… passes over the scope").not.toBeFocused();await expect.soft(box,"and over the search box").not.toBeFocused();
+    await page.keyboard.press("Tab");await expect.soft(loading,"and Tab comes back to Loading…").toBeFocused();
+    fixture.releaseReads();await expect.soft(results,"all the results once Codex answers").toHaveText(all);
+    // Load more clicked, then Settings and back with the keys, and keys typed in the box on the page drawn again.
+    await loadMore(()=>more.click());
+    await ways.keys();await wheelTo(page,plugins);
+    await typeWhileLoading("on the page drawn again","tools-drawn-again-plugin-load-more-box-waits");
+    // A search result's Details clicked, then keys typed in the box: the result keeps Loading… until its details show.
+    const local=plugins.locator(".plugin-search-results>div").filter({hasText:"Lane G Local"});
+    fixture.control.holdReads=true;await local.getByRole("button",{name:"Details",exact:true}).click();await held();
+    await typeOver();
+    await expect.soft(local.getByRole("button",{name:"Loading…",exact:true}),"the result keeps its Details' Loading… after keys typed in the search box").toHaveAttribute("aria-busy","true");
+    fixture.releaseReads();
+    await expect.soft(detail.locator(".plugin-detail-head strong"),"and then shows its details").toHaveText("Lane G Local");
+    await expect.soft(results,"under the results of their search").toHaveText(all);
+    // A search whose term is typed over while Searching… runs: the box takes the new term, and the answer leaves the catalog under
+    // it, with no results for the term searched; Enter then searches the term typed.
+    await box.fill("");await box.fill("lane");fixture.control.holdReads=true;await box.press("Enter");await held();
+    await page.keyboard.type("-g-t");await expect(box).toHaveValue("lane-g-t");
+    fixture.releaseReads();await expect(plugins.getByRole("button",{name:"Search",exact:true})).toBeEnabled();
+    await expect.soft(results,"no results for the term searched under the term typed over it").toHaveCount(0);
+    await expect.soft(listed,"but the catalog").toHaveCount(3);
+    await shootTools(page,"tools-plugin-search-typed-over",plugins);
+    fixture.control.holdReads=false;await box.press("Enter");
+    await expect.soft(results,"Enter then searches the term typed").toHaveText(["Lane G Tasks"]);
+    // And one whose scope is changed while Searching… runs: the catalog under the scope picked.
+    await box.fill("lane");fixture.control.holdReads=true;await box.press("Enter");await held();
+    await scope.selectOption("workspace");
+    fixture.releaseReads();await expect(plugins.getByRole("button",{name:"Search",exact:true})).toBeEnabled();
+    await expect.soft(results,"no results for the scope searched under the scope picked since").toHaveCount(0);
+    await expect.soft(listed,"but the catalog").toHaveCount(3);
+  }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
 // A history import says what it did once Conversation history is scanned again: the scan cleared the line as it started, so the
 // summary never showed. Import available pressed, then Settings and back while the import runs: the page drawn again has no scan to
 // draw Import available from, and says Importing… in its place, with Scan history waiting; once the import lands it says what was
