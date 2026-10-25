@@ -933,8 +933,22 @@ test("a palette whose message search cannot load says it could not search thread
     await page.keyboard.press("Control+a");await page.keyboard.type("Quill",{delay:15});
     await expect(palette.locator(".command-palette-item").filter({hasText:"Quill release"})).toBeVisible();
     await expect(said).toHaveText(notice);await expect(empty).toHaveCount(0);
-    // Tab from the search reaches Reload, and Enter loads Trebell again.
+    // Tab from the search reaches Reload, which takes keys as a result does: a letter typed there goes back to the search box, where it
+    // lands, ArrowDown goes on to the first result and ArrowUp back to the search box, and none of them loads Trebell again. Arrows did
+    // nothing there and letters were lost (round 10 repair).
+    const search=palette.getByPlaceholder("Search commands, threads, and messages…"),quill=palette.locator(".command-palette-item").filter({hasText:"Quill release"});
+    let loads=0;page.on("load",()=>loads++);
     await page.keyboard.press("Tab");await expect(reload).toBeFocused();
+    await page.keyboard.type("e",{delay:15});
+    await expect.soft(search,"the search box after a letter typed on Reload").toBeFocused();await expect.soft(search,"the search after a letter typed on Reload").toHaveValue("Quille");
+    await search.fill("Quill");await expect(quill).toBeVisible();await expect(said).toHaveText(notice);
+    await page.keyboard.press("Tab");await expect(reload).toBeFocused();
+    await page.keyboard.press("ArrowDown");await expect.soft(quill,"the first result after ArrowDown on Reload").toBeFocused();
+    await reload.focus();await page.keyboard.press("ArrowUp");await expect.soft(search,"the search box after ArrowUp on Reload").toBeFocused();
+    await page.screenshot({animations:"disabled",path:auditDir+"palette-message-search-cannot-load-keys-on-reload-dark-1280x800.png"});
+    await page.waitForTimeout(500);expect(loads,"loads of Trebell made by the keys on Reload").toBe(0);await expect(said).toHaveText(notice);
+    // Enter on Reload loads Trebell again.
+    await search.focus();await page.keyboard.press("Tab");await expect(reload).toBeFocused();
     await Promise.all([page.waitForEvent("load"),page.keyboard.press("Enter")]);
     await expect(page.locator(".thread-row")).toHaveCount(2,{timeout:10_000});
     // By mouse: Search or jump to, the word, and a click on Reload, which brings the message search back with the script let through.

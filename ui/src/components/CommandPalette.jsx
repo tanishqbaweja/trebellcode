@@ -33,6 +33,9 @@ function useModalFocus(ref,active,focusOnOpen=true){
   },[ref,active,focusOnOpen]);
 }
 
+// A key that types a character, which goes back to the search box from a result or Reload; Space presses the button it is on.
+const typedKey=event=>event.key.length===1&&event.key!==" "&&!event.ctrlKey&&!event.metaKey&&!event.altKey;
+
 function actionIcon(item){
   if(item.icon)return item.icon;
   const id=String(item.id||"");
@@ -183,14 +186,25 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects
       buttons[Math.max(0,Math.min(buttons.length-1,at+(event.key==="ArrowDown"?1:-1)))]?.focus();
       return;
     }
-    if(event.key.length===1&&!event.ctrlKey&&!event.metaKey&&!event.altKey&&event.key!==" ")inputRef.current?.focus();
+    if(typedKey(event))inputRef.current?.focus();
+  }
+  // Reload, Tab's first stop from the search box while the message search could not load, takes keys as a result does: ArrowDown goes
+  // on to the first result and ArrowUp back to the search box, and typing goes back to the search box, where it lands. Space and
+  // Enter press it. Arrows did nothing there and letters were lost.
+  function reloadKeyDown(event){
+    if(event.key==="ArrowDown"||event.key==="ArrowUp"){
+      const next=event.key==="ArrowUp"?inputRef.current:resultsRef.current?.querySelector("button.command-palette-item");
+      if(next){event.preventDefault();next.focus()}
+      return;
+    }
+    if(typedKey(event))inputRef.current?.focus();
   }
   const visibleError=[dataError,actionError,searchWarning].filter(Boolean).join(" · ");
   const warningOnly=Boolean(searchWarning)&&!dataError&&!actionError,unsearched=searchFailed&&Boolean(searchWarning);
   return <div className="command-palette-backdrop" data-testid="command-palette" onMouseDown={event=>event.target===event.currentTarget&&onClose?.()}>
     <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={dialogRef} tabIndex={-1}>
       <div className="command-palette-search"><Search size={16}/><input ref={inputRef} value={query} onChange={event=>{handedKeysRef.current=null;setQuery(event.target.value);setSelected(0);setActionError("");setSearchWarning("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)} spellCheck={false} autoComplete="off"/>{messageSearching&&<span className="command-palette-searching">Searching messages…</span>}<kbd className="tb-kbd">Esc</kbd></div>
-      {visibleError&&<div className={"command-palette-error"+(warningOnly?" is-warning":"")} role="alert"><span>{visibleError}</span>{unsearched&&<button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button>}</div>}
+      {visibleError&&<div className={"command-palette-error"+(warningOnly?" is-warning":"")} role="alert"><span>{visibleError}</span>{unsearched&&<button type="button" className="tb-btn tb-btn--sm" onKeyDown={reloadKeyDown} onClick={()=>window.location.reload()}>Reload</button>}</div>}
       <div className="command-palette-results" ref={resultsRef} onKeyDown={resultsKeyDown}>
         {items.map((item,index)=><React.Fragment key={item.id}>
           {item.kind!==items[index-1]?.kind&&<div className="command-palette-group" role="presentation">{GROUP_LABELS[item.kind]||"Results"}</div>}
