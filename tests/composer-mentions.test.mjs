@@ -85,6 +85,37 @@ test("a pick put into a draft typed on before and after its word meanwhile finds
   assert.equal(movedFileMention("Check @log",at,"Please Check @lonowg",20),null);
 });
 
+// Letters typed next to the word while the file imports that end with the word's own last letters (' then debug' after '@log', ' please'
+// after '@service') or begin with its first ('@utils ' before '@log') are kept on their side of it: the word, whole, gets the file. Typed
+// on both sides, they read as one edit reaching into the word, which was then not looked for; typed on one side with the caret moved off
+// them meanwhile (Home, End, a click), they were put inside the word. Either way the file was dropped, and '@log' kept (round 9 repair).
+test("a pick put into a draft typed on next to its word with letters like the word's own at its ends still finds the word",()=>{
+  const at={start:6,end:10,query:"log"},service={start:6,end:14,query:"service"};
+  // Both sides of the word.
+  const debug=movedFileMention("Check @log",at,"Please Check @log then debug",7);
+  assert.deepEqual(debug,{start:13,end:17,query:"log"});
+  assert.deepEqual(applyFileMention("Please Check @log then debug",debug,"src/login.js",7),{text:"Please Check @src/login.js then debug",caret:7});
+  assert.deepEqual(movedFileMention("Check @log",at,"Please Check @log, it keeps failing",7),{start:13,end:17,query:"log"});
+  assert.deepEqual(movedFileMention("Check @service",service,"Hey Check @service please",4),{start:10,end:18,query:"service"});
+  assert.deepEqual(movedFileMention("Check @log",at,"Check @utils @log now",21),{start:13,end:17,query:"log"});
+  // One side, the caret moved off what was typed: Home, a click inside it, End after letters typed before the word, Home after
+  // letters erased after it.
+  assert.equal(movedFileMention("Check @log",at,"Check @log then debug",0),at);
+  assert.equal(movedFileMention("Check @log",at,"Check @log then debug",15),at);
+  assert.equal(movedFileMention("Check @log",at,"Check @log then debug",21),at);
+  assert.equal(movedFileMention("Check @service",service,"Check @service please",0),service);
+  assert.deepEqual(movedFileMention("Check @log",at,"Check @utils @log",17),{start:13,end:17,query:"log"});
+  assert.deepEqual(movedFileMention("Check @log",at,"Check @utils @log",0),{start:13,end:17,query:"log"});
+  assert.equal(movedFileMention("Check @log debug",at,"Check @log",0),at);
+  assert.deepEqual(applyFileMention("Check @log then debug",at,"src/login.js",15),{text:"Check @src/login.js then debug",caret:24});
+  // Still nothing for a word edited or gone, and a letter put at the caret inside the word is in it.
+  assert.equal(movedFileMention("Check @log",at,"Check @logg",10),null);
+  assert.equal(movedFileMention("Check @log",at,"Please Check @lo then debug",7),null);
+  assert.equal(movedFileMention("Check @log",at,"Please Check then debug",7),null);
+  assert.equal(movedFileMention("Check @log",at,"Check @lxog then debug",0),null);
+  assert.equal(movedFileMention("Check @service",service,"Hey Check @servic please",4),null);
+});
+
 test("file mention ranking prefers exact and prefix filename matches",()=>{
   const items=[
     {name:"Other.jsx",relativePath:"ui/AppHelper/Other.jsx"},

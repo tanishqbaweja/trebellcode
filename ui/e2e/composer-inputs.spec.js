@@ -2454,6 +2454,45 @@ test("letters typed before and after the word a file is picked on from the @ men
   }finally{await harness.close()}
 });
 
+// Letters typed after the picked word while its file imports that end with the word's own last letter (' then debug' or ', it keeps
+// failing' after '@log'), with letters typed before it too or with the caret then moved off them (Home, a click), keep the word: once
+// the file is in it goes on the word, all that was typed kept and the caret where it was. The g they end with read as the word's own,
+// so the word looked edited: the file was dropped, its chip taken back and '@log' left in the draft (round 9 repair).
+test("letters typed after the word a file is picked on from the @ menu while it imports that end with the word's last letter keep it, with letters typed before it too or the caret moved off them, so the file goes on it once it is in",async({page})=>{
+  test.setTimeout(150_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Checked the login file, then debugged it."}]});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),context=page.getByTestId("context-chip"),imports=await holdMentionImports(page);
+    // The file let in, and the app done with the import's answer.
+    const fileIn=async release=>{const done=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/attachments/import");release();await (await done).finished();await painted(page)};
+    const cases=[
+      ["dark",900,"Enter","' then debug' after it, then 'Please ' before it with Home",async()=>{await page.keyboard.type(" then debug",{delay:60});await page.keyboard.press("Home");await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js then debug",7],
+      ["light",900,"a click","', it keeps failing' after it, then 'Please ' before it with a click at the draft's start",async()=>{await page.keyboard.type(", it keeps failing",{delay:40});await clickInDraft(page,0,1);await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js , it keeps failing",7],
+      ["dark",300,"Tab","' then debug' after it, the caret then put at the draft's start with Home",async()=>{await page.keyboard.type(" then debug",{delay:60});await page.keyboard.press("Home")},"Check @src/login.js then debug",0],
+      ["light",300,"Enter","' then debug' after it, the caret then put after 'then' with a click",async()=>{await page.keyboard.type(" then debug",{delay:60});await clickInDraft(page,15,1)},"Check @src/login.js then debug",24],
+    ];
+    for(const [index,[mode,ms,pick,how,edit,draft,caret]] of cases.entries()){
+      await switchMode(page,mode);
+      const where=` in ${mode}, the import ${ms} ms slow, login.js picked by ${pick} and ${how} while it imports`;
+      let release=null;imports.hold=ms;imports.held=new Promise(done=>{release=done});
+      await typeMention(page);await pickLogin(page,pick);await page.waitForTimeout(120);await edit();
+      await expect(context).toHaveCount(0);await fileIn(release);
+      await expect.soft(context,"the file's chip once it is in"+where).toHaveCount(1);
+      await expect.soft(composer,"the draft once the file is in"+where).toHaveValue(draft);
+      expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret"+where).toEqual([caret,caret]);
+      await expect.soft(composer,"the keyboard in the composer"+where).toBeFocused();
+      if(index<2)await page.screenshot({animations:"disabled",path:auditDir+`mention-typed-around-the-word-ending-in-its-letter-${mode}-1280x800.png`});
+      if(index<cases.length-1&&await context.count()){await context.locator("button").click();await expect(context).toHaveCount(0)}
+    }
+    // Enter sends the message as it reads, with the file.
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Checked the login file, then debugged it.",{exact:true})).toBeVisible({timeout:15_000});
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page","Check @src/login.js then debug"]);
+    await expect(page.locator(".user-bubble").last().locator(".user-attachments > span")).toHaveText(["login.js"]);
+  }finally{await harness.close()}
+});
+
 // A file picked from the @ menu with the caret inside its word (ArrowLeft or a click put it there) while the import is slow: the caret
 // goes after the word at the pick, so the letters typed straight on go after it, and once the file is in it goes on the whole word with
 // them after it. They went into the word at the caret the pick left there ('Check @lonowg'), and the file was never put on it (round 9).
