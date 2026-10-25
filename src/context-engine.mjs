@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { parse as parseJavaScriptAst } from "@babel/parser";
@@ -777,6 +777,13 @@ function localContextIo(root,{environment=process.env}={}){
       const rel=relative(absolute,resolve(absolute,String(path??"")));
       return rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel)?null:slash(rel);
     },
+    // The same once '..' and links (a junction included) are followed on disk; null also when the path is not there.
+    realScope:async path=>{
+      try{
+        const [top,place]=await Promise.all([realpath(absolute),realpath(resolve(absolute,String(path??"")))]),rel=relative(top,place);
+        return rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel)?null:slash(rel);
+      }catch{return null}
+    },
   };
 }
 
@@ -956,6 +963,13 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     relativeScope:path=>{
       const raw=String(path??"").replace(/\\/g,"/"),target=raw.startsWith("/")?posix.normalize(raw):posix.normalize(posix.join(absolute,raw));
       const rel=posix.relative(absolute,target);return rel===".."||rel.startsWith("../")||posix.isAbsolute(rel)?null:rel;
+    },
+    // The same once '..' and links are followed by the environment's realpath; null also when that cannot tell.
+    realScope:async path=>{
+      const raw=String(path??"").replace(/\\/g,"/"),target=raw.startsWith("/")?posix.normalize(raw):posix.normalize(posix.join(absolute,raw));
+      const result=await run({command:"realpath",args:[absolute,target],cwd:"",timeoutMs:10_000,maxOutput:64*1024}).catch(()=>null);
+      const [top,place]=result?.exitCode===0?String(result.stdout||"").split(/\r?\n/):[];if(!top||!place)return null;
+      const rel=posix.relative(top,place);return rel===".."||rel.startsWith("../")||posix.isAbsolute(rel)?null:rel;
     },
   };
 }
@@ -1786,13 +1800,22 @@ export class ContextEngine{
   }
 
   async readSourceRange({root,path,startLine=1,endLine=null,maxLines=200,io=null}={}){
-    const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
+    const {contextIo,index}=await this.#indexed(root,io);let requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,"")),direct=false;
     // Besides indexed source, any discovered (non-ignored) text file in the workspace can be read, so the docs,
     // templates and configuration that search_code returns are readable through the same tool.
     if(!index.files.has(requested)){
       // The inventory can be reused or capped while search_code greps the live tree, so recheck a miss.
-      if(!(index.paths||[]).includes(requested)&&!(await contextIo.discoverFiles()).includes(requested))throw new Error(`Context file is not indexed: ${path}`);
+      if(!(index.paths||[]).includes(requested)&&!(await contextIo.discoverFiles()).includes(requested)){
+        // A file the inventory leaves out (Git ignores it, or it is in a folder the index skips, such as node_modules or build)
+        // is read directly by the same window when it is a text file inside the workspace once '..' and links are followed, so
+        // the model is not sent to another tool for it. A path out of the workspace is refused as before.
+        const scoped=typeof contextIo.realScope==="function"?contextIo.relativeScope?.(path):null;
+        if(!scoped)throw new Error(`Context file is not indexed: ${path}`);
+        requested=scoped;direct=true;
+      }
       const size=Number((typeof contextIo.metadata==="function"?await contextIo.metadata([requested]):null)?.get?.(requested)?.size);
+      if(direct&&!Number.isFinite(size))throw new Error(`Context file is not indexed and is not a file in the workspace: ${path}`);
+      if(direct&&await contextIo.realScope(requested)==null)throw new Error(`Context file is not indexed and leads outside the workspace: ${path}`);
       if(!Number.isFinite(size)||size>SEARCH_TEXT_MAX_BYTES)throw new Error(`Context file is not indexed and is too large to read as text: ${path}`);
     }
     const contents=await contextIo.readMany([requested]),content=contents.get(requested);if(typeof content!=="string")throw new Error(`Could not read context file: ${path}`);
@@ -1808,7 +1831,8 @@ export class ContextEngine{
     }
     if(selected.length)end=start+selected.length-1;else end=start-1;
     if(end<Math.min(lines.length,requestedEnd))truncated=true;
-    return {path:requested,startLine:start,endLine:end,totalLines:lines.length,content:selected.join("\n"),truncated};
+    return {path:requested,startLine:start,endLine:end,totalLines:lines.length,content:selected.join("\n"),truncated,
+      ...(direct?{indexed:false,note:"Read directly: the file is not in the repository index (Git ignores it, or it is in a folder the index skips), so searches do not cover it."}:{})};
   }
 
   async gitContext({root,io=null,maxStatusChars=12_000,maxDiffChars=16_000}={}){

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -993,6 +993,62 @@ test("a scoped remote code search sends the folder to git grep as a literal path
   assert.ok(grepCalls.at(-1).includes(":(literal)app"),grepCalls.at(-1).join(" "));
   assert.ok(grepCalls.at(-1).includes(":(exclude,glob)**/node_modules/**"));
   await assert.rejects(()=>new ContextEngine().searchCode({root,io,query:"8080",path:"/etc"}),/outside the repository/i);
+});
+
+test("read_source reads a text file the index leaves out directly, by the same line window, and says so",async()=>{
+  const root=await fixture(),away=await mkdtemp(join(tmpdir(),"trebell-context-away-"));
+  try{
+    await writeFile(join(root,".gitignore"),"generated/\n","utf8");
+    await mkdir(join(root,"generated"),{recursive:true});await mkdir(join(root,"node_modules","left-pad"),{recursive:true});
+    await writeFile(join(root,"generated","schema.py"),Array.from({length:12},(_,index)=>`FIELD_${index+1} = ${index+1}`).join("\n")+"\n","utf8");
+    await writeFile(join(root,"node_modules","left-pad","index.js"),"module.exports = function leftPad(value) {\n  return value;\n};\n","utf8");
+    await execFileAsync("git",["add","."],{cwd:root});
+    const engine=new ContextEngine();
+    const ignored=await engine.readSourceRange({root,path:"generated/schema.py",startLine:4,maxLines:3});
+    assert.deepEqual({...ignored,note:undefined},{path:"generated/schema.py",startLine:4,endLine:6,totalLines:13,content:"FIELD_4 = 4\nFIELD_5 = 5\nFIELD_6 = 6",truncated:false,indexed:false,note:undefined},"a file Git ignores is read by the window asked for");
+    assert.match(ignored.note,/^Read directly: the file is not in the repository index/);
+    const skipped=await engine.readSourceRange({root,path:"./node_modules/left-pad/index.js"});
+    assert.equal(skipped.path,"node_modules/left-pad/index.js");assert.equal(skipped.content,"module.exports = function leftPad(value) {\n  return value;\n};\n");assert.equal(skipped.indexed,false);
+    const indexed=await engine.readSourceRange({root,path:"src/auth/token.js",maxLines:1});
+    assert.equal(Object.hasOwn(indexed,"note"),false,"an indexed file reads as before");
+    // What the direct read still refuses: a path out of the workspace, by '..' or through a link, a missing file, a binary or
+    // too large one.
+    await assert.rejects(()=>engine.readSourceRange({root,path:"../outside.py"}),/not indexed/i);
+    await writeFile(join(away,"secret.txt"),"outside the workspace\n","utf8");await symlink(away,join(root,"generated","away"),"junction");
+    await assert.rejects(()=>engine.readSourceRange({root,path:"generated/away/secret.txt"}),/leads outside the workspace/i);
+    await assert.rejects(()=>engine.readSourceRange({root,path:"generated/missing.py"}),/not a file in the workspace/i);
+    await assert.rejects(()=>engine.readSourceRange({root,path:"generated"}),/not a file in the workspace/i);
+    await writeFile(join(root,"generated","blob.bin"),Buffer.from([1,0,2,3]));
+    await assert.rejects(()=>engine.readSourceRange({root,path:"generated/blob.bin"}),/binary/i);
+    await writeFile(join(root,"generated","huge.log"),"x".repeat(1_100_000),"utf8");
+    await assert.rejects(()=>engine.readSourceRange({root,path:"generated/huge.log"}),/too large/i);
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});await rm(away,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+test("read_source reads a remote file the index leaves out once the environment's realpath places it inside the workspace",async()=>{
+  const root="/srv/plain",files=new Map([["app/main.py","PORT = 8080\n"],["node_modules/pkg/index.js","module.exports = 8080;\n"],["node_modules/linked/secret.txt","outside\n"]]);
+  const ok=stdout=>({exitCode:0,stdout,stderr:"",timedOut:false}),placed=[];
+  const respond=(command,args)=>{
+    if(command==="find")return ok([...files.keys()].filter(path=>!path.startsWith("node_modules/")).map(path=>"./"+path).join("\0")+"\0");
+    if(command==="realpath"){placed.push(args);return ok(args.map(path=>path.replace(root+"/node_modules/linked","/etc/linked")).join("\n")+"\n")}
+    if(command==="git")return {exitCode:128,stdout:"",stderr:"fatal: not a git repository",timedOut:false};
+    return {exitCode:1,stdout:"",stderr:"unexpected "+command,timedOut:false};
+  };
+  const environments={
+    async executeArgv(_id,{command,args=[]}){const result=respond(command,args);return {...result,stdout:String(result.stdout).replace(/\u0000/g,"").replace(/\r/g,"").trimEnd()}},
+    async executeArgvInput(_id,{command,args=[],input=""}){
+      if(command!=="bash")return respond(command,args);
+      const script=String(args[1]||""),paths=String(input).split("\0").filter(Boolean).map(path=>path.replace(/^\.\//,"")).filter(path=>files.has(path));
+      if(script.includes("stat -c"))return ok(paths.map(path=>[Buffer.byteLength(files.get(path),"utf8"),"v1",Buffer.from(path,"utf8").toString("base64")].join("\t")).join("\n")+"\n");
+      return ok(paths.map(path=>[Buffer.from(path,"utf8").toString("base64"),Buffer.from(files.get(path),"utf8").toString("base64")].join("\t")).join("\n")+"\n");
+    },
+  };
+  const io=createRemoteContextIo({environments,environmentId:"ssh-plain",root}),engine=new ContextEngine();
+  const read=await engine.readSourceRange({root,io,path:"node_modules/pkg/index.js"});
+  assert.equal(read.content,"module.exports = 8080;\n");assert.equal(read.indexed,false);assert.match(read.note,/^Read directly/);
+  assert.deepEqual(placed[0],[root,root+"/node_modules/pkg/index.js"],"the workspace and the file are placed by one realpath");
+  await assert.rejects(()=>engine.readSourceRange({root,io,path:"node_modules/linked/secret.txt"}),/leads outside the workspace/i);
+  await assert.rejects(()=>engine.readSourceRange({root,io,path:"/etc/passwd"}),/not indexed/i);
 });
 
 test("read_source reads a file that appeared under an untracked directory after the path inventory was built",async()=>{
