@@ -188,9 +188,10 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // closed is done all the same, as Codex finishes what it was asked, but its answer is lost. The plugin catalog is
 // `control.marketplaces`: a plugin shared, installed or uninstalled and a marketplace upgraded or removed change it once answered,
 // and wait while `holdShare` is set as well; a plugin search lists the catalog's plugins whose name has the term in it,
-// `control.searchPage` at a time when set, with a cursor to the next page while more match, and a plugin's read describes it, both
-// waiting while `holdReads` is set, until `releaseReads()` (or `refuseReads(reason)`). The effective configuration is
-// `control.config`. `control.listReads` counts the catalog's reads. The Windows sandbox's readiness is
+// `control.searchPage` at a time when set, with a cursor to the next page while more match; a plugin's read describes it, with the
+// skills its catalog entry lists (`skills`), and a skill's read gives its SKILL.md; all three wait while `holdReads` is set, until
+// `releaseReads()` (or `refuseReads(reason)`). The effective configuration is `control.config`. `control.listReads` counts the
+// catalog's reads. The Windows sandbox's readiness is
 // `control.sandbox`, and a setup started answers that it started (`control.setups` lists them); the agent configuration found is
 // `control.migrationItems`, and an import of it answers with its id (`control.imports` lists them; Codex's import history, the imports
 // done, is `control.histories`). `notify(method,params)` sends a
@@ -241,11 +242,12 @@ async function startHeldMcpFixture({threads=[]}={}){
         if(control.holdShare)control.heldShare.push(answer);else answer();
         return;
       }
-      if(["plugin/search","plugin/read"].includes(message.method)){
-        const {searchTerm,pluginName,cursor}=message.params||{},listed=control.marketplaces.flatMap(market=>(market.plugins||[]).map(plugin=>({market,plugin}))),read=listed.find(({plugin})=>plugin.name===pluginName);
+      if(["plugin/search","plugin/read","plugin/skill/read"].includes(message.method)){
+        const {searchTerm,pluginName,skillName,cursor}=message.params||{},listed=control.marketplaces.flatMap(market=>(market.plugins||[]).map(plugin=>({market,plugin}))),read=listed.find(({plugin})=>plugin.name===pluginName);
         const found=listed.filter(({plugin})=>plugin.name.includes(searchTerm)).map(({market,plugin})=>({marketplaceName:market.name,marketplacePath:market.path,plugin})),from=Number(cursor)||0,to=control.searchPage?from+control.searchPage:found.length;
         const answer=reason=>reason?send({error:{code:-32000,message:reason}}):send({result:message.method==="plugin/search"?{data:found.slice(from,to),nextCursor:to<found.length?String(to):null}
-          :{plugin:read?{summary:read.plugin,marketplaceName:read.market.name,description:"What "+(read.plugin.interface?.displayName||read.plugin.name)+" does, as Codex describes it.",skills:[],hooks:[],apps:[],mcpServers:[],scheduledTasks:[]}:null}});
+          :message.method==="plugin/skill/read"?{contents:"# "+skillName+"\n\nWhat the "+skillName+" skill does, as its SKILL.md says it."}
+          :{plugin:read?{summary:read.plugin,marketplaceName:read.market.name,description:"What "+(read.plugin.interface?.displayName||read.plugin.name)+" does, as Codex describes it.",skills:read.plugin.skills||[],hooks:[],apps:[],mcpServers:[],scheduledTasks:[]}:null}});
         if(control.holdReads)control.heldReads.push(answer);else answer();
         return;
       }
@@ -1530,14 +1532,17 @@ test("Tools shows a plugin's details, a plugin search's results or a history sca
   }finally{fixture.releaseReads();for(const route of heldScans.splice(0))await answer(route,{sessions:[]}).catch(()=>{});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
-// The catalog with two more plugins a search for "lane" finds: Lane G Notes, installed, and Lane G Tasks.
+// The catalog with two more plugins a search for "lane" finds: Lane G Notes, installed and shared from the account, with a skill
+// Codex reads, and Lane G Tasks.
 const moreCatalog=()=>catalog().map(market=>({...market,plugins:[...market.plugins,
-  {id:"lane-g-notes@lane-g-market",name:"lane-g-notes",version:"1.0.0",installed:true,availability:"available",interface:{displayName:"Lane G Notes"}},
+  {id:"lane-g-notes@lane-g-market",name:"lane-g-notes",version:"1.0.0",installed:true,availability:"available",remotePluginId:"remote-lane-g-notes",interface:{displayName:"Lane G Notes"},skills:[{name:"lane-notes",description:"Keeps a Lane G task's notes"}]},
   {id:"lane-g-tasks@lane-g-market",name:"lane-g-tasks",version:"1.0.0",installed:false,availability:"available",interface:{displayName:"Lane G Tasks"}}]}));
-// Codex's held answer (one with text in it), released while Tools is not shown, and read by the page before the person comes back.
-const answeredAway=async(page,fixture,frames,text)=>{
+// Codex's held answer (one with text in it), released or refused (refuse) while Tools is not shown, and read by the page before
+// the person comes back.
+const answeredAway=async(page,fixture,frames,text,refuse)=>{
   const count=()=>frames.filter(frame=>frame.includes(text)).length,before=count();
-  fixture.releaseReads();await expect.poll(count).toBeGreaterThan(before);await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,0)));
+  if(refuse)fixture.refuseReads(refuse);else fixture.releaseReads();
+  await expect.poll(count).toBeGreaterThan(before);await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,0)));
 };
 
 // A plugin search's Load more that Codex answers once the person is back on Tools from Settings (by the mouse or the keys) or Usage
@@ -1596,6 +1601,81 @@ test("Tools drawn again while a plugin search's Load more is on its way shows th
     await expect.soft(box,"with the search in the box").toHaveValue("lane");
     await expect(more).toHaveCount(0);
     await shootTools(page,"tools-plugin-load-more-landed-while-away",plugins);
+  }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// A plugin's Read skill that Codex answers once the person is back on Tools from Settings (by the mouse or the keys) or Usage shows,
+// on the page drawn again, the plugin's details with Read skill saying Reading…, marked busy, and the page's other actions waiting,
+// and once Codex answers the skill's SKILL.md in those details, as the page that stays does; answered while Settings shows, the
+// page drawn after shows the details with the skill, and refused, the details with why beside them. The details and the skill were
+// the page's that pressed Read skill: the page drawn again showed no details and nothing saying Reading…, with every action grey,
+// and the skill Codex read showed nowhere.
+test("Tools drawn again while a plugin's skill is read shows the plugin's details with Reading… on Read skill, and the skill once Codex answers, or once Tools is drawn after it",async({page})=>{
+  test.setTimeout(150_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=moreCatalog();
+  const frames=[];page.on("websocket",socket=>socket.on("framereceived",frame=>frames.push(String(frame.payload))));
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),plugins=toolsCard(page,"Plugins"),detail=plugins.locator(".plugin-detail"),head=detail.locator(".plugin-detail-head strong"),skill=detail.locator("details");
+    const row=plugins.locator(".capability-list:not(.plugin-search-results)>div").filter({hasText:"Lane G Notes"}),readSkill=detail.getByRole("button",{name:"Read skill",exact:true}),reading=detail.getByRole("button",{name:"Reading…",exact:true});
+    const usage=async()=>{await page.getByRole("button",{name:"Usage",exact:true}).click();await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible()};
+    // Lane G Notes' details, answered at once, then Read skill pressed (press) while Codex holds it.
+    const read=async press=>{
+      if(await detail.count())await detail.getByRole("button",{name:"Close",exact:true}).click();
+      fixture.control.holdReads=false;await row.getByRole("button",{name:"Details",exact:true}).click();await expect(readSkill).toBeEnabled();
+      fixture.control.holdReads=true;await press();await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    };
+    // The skill shown in Lane G Notes' details (what says where).
+    const shown=async what=>{
+      await expect.soft(skill.locator("summary"),what).toHaveText("lane-notes · SKILL.md");
+      await expect.soft(skill.locator("pre"),"its SKILL.md, in Lane G Notes' details").toContainText("What the lane-notes skill does, as its SKILL.md says it.");
+    };
+    // The page drawn again (way) while Codex holds the read, and once it answers.
+    const drawnAgain=async(way,shot)=>{
+      await expect.soft(head,"the page drawn again "+way+" shows the details the skill is read from").toHaveText("Lane G Notes");
+      await expect.soft(reading,"with Read skill saying Reading…, marked busy").toHaveAttribute("aria-busy","true");
+      await expect.soft(row.getByRole("button",{name:"Details",exact:true}),"the page's other actions waiting").toBeDisabled();
+      if(shot)await shootTools(page,shot,plugins);
+      fixture.releaseReads();await shown("once Codex answers, the page drawn again "+way+" shows the skill");
+    };
+    await wheelTo(page,plugins);
+    // The page that stays: Reading… on Read skill, then the skill.
+    await read(()=>readSkill.click());
+    await expect(reading).toHaveAttribute("aria-busy","true");
+    fixture.releaseReads();await shown("the skill read on the page that stays");
+    // Read skill clicked, then Settings and back with the mouse.
+    await read(()=>readSkill.click());
+    await ways.mouse();await wheelTo(page,plugins);
+    await drawnAgain("back from Settings","tools-drawn-again-plugin-skill-reading");
+    await shootTools(page,"tools-drawn-again-plugin-skill-read",plugins);
+    // Read skill pressed with the keys, then Settings and back with the keys.
+    await read(async()=>{await readSkill.focus();await page.keyboard.press("Enter")});
+    await ways.keys();await wheelTo(page,plugins);
+    await drawnAgain("back from Settings with the keys");
+    // Read skill double clicked, which sends one, then Usage and back.
+    await read(()=>readSkill.dblclick());
+    await usage();await ways.from();await wheelTo(page,plugins);
+    await drawnAgain("back from Usage");
+    // Read skill clicked, then Settings, where Codex answers: the page drawn after shows the details with the skill.
+    await read(()=>readSkill.click());
+    await ways.to();await answeredAway(page,fixture,frames,"as its SKILL.md says it.");
+    await ways.from();await wheelTo(page,plugins);
+    await expect.soft(head,"the details the skill was read from, on the page drawn after").toHaveText("Lane G Notes");
+    await shown("with the skill Codex read while Settings showed");
+    await expect(row.getByRole("button",{name:"Details",exact:true})).toBeEnabled();
+    await shootTools(page,"tools-plugin-skill-read-while-away",plugins);
+    // Read skill clicked, then Usage, where Codex refuses it: the page drawn after says why beside the details, with Read skill
+    // offered again.
+    await read(()=>readSkill.click());
+    await usage();await answeredAway(page,fixture,frames,"the skill is being rewritten","the skill is being rewritten");
+    await ways.from();await wheelTo(page,plugins);
+    await expect(plugins.locator(".capability-error")).toHaveText(["Could not read the skill lane-notes: the skill is being rewritten"]);
+    await expect.soft(head,"said beside the details the skill was read from").toHaveText("Lane G Notes");
+    await expect.soft(readSkill,"with Read skill offered again").toBeEnabled();
+    await shootTools(page,"tools-plugin-skill-refused-while-away",plugins);
   }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 

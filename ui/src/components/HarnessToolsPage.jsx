@@ -41,12 +41,13 @@ let said={},setup={},importing={},told=null;
 // The search on its way (searching: its term and scope, and for a Load more the results it adds to and their next page), so a page
 // drawn while it runs shows it in its box and select, beside Searching… or over the results with Load more saying Loading…, and
 // where its answer or refusal is said: the box was empty there, and the answer then put the search back over what the person had
-// typed; drawn while Load more ran, the page listed the catalog under the search, with nothing saying Loading…. And what Codex
-// answers while no page is shown (kept): a plugin's details, a search's results, or a history scan's conversations or why it
-// failed, which the next page drawn shows, as it says the lines (said); they went nowhere, so the page drawn after offered Details
-// with nothing shown, the catalog under an empty box, or Scan history alone. A search that ends with no page shown keeps what it
-// was sent from for that page.
-let searching=null,kept=[];
+// typed; drawn while Load more ran, the page listed the catalog under the search, with nothing saying Loading…. And the details a
+// skill is read from (reading), so a page drawn while Codex reads it shows them, with Reading… on Read skill, and the skill once it
+// is read: it showed neither. And what Codex answers while no page is shown (kept): a plugin's details, a search's results, a skill,
+// or a history scan's conversations or why it failed, which the next page drawn shows, as it says the lines (said); they went
+// nowhere, so the page drawn after offered Details with nothing shown, the catalog under an empty box, or Scan history alone. A
+// search or a skill's read that ends with no page shown keeps what it was sent from for that page.
+let searching=null,reading=null,kept=[];
 window.addEventListener("trebell:windows-sandbox-setup",event=>{setup={};if(!shown)said={...said,"windowsSandbox/setupStart":event.detail?.success?null:failureText("Windows sandbox setup failed",event.detail?.error)}});
 
 // A header badge is a bare count, or a label that says what it counts when the card lists more than one kind of row.
@@ -125,7 +126,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // the page drawn now (page), and a refresh the page gone had under way lands on nothing. With no page shown, its lines wait (said).
   const self=useRef({}).current;
   const page=()=>self.gone?shown:self,setErrors=update=>{const to=page();if(to)to.showErrors(update);else said=update(said)},land=show=>{const to=page();if(to)show(to);else kept.push(show)};
-  useEffect(()=>{self.gone=false;shown=self;showBusy(running);if(!running)searching=null;for(const show of kept.splice(0))show(self);if(Object.keys(said).length){const lines=said;said={};showErrors(prev=>({...prev,...lines}))}if(told){const line=told;told=null;tell(line,true)}return()=>{self.gone=true;if(shown===self)shown=null}},[]);
+  useEffect(()=>{self.gone=false;shown=self;showBusy(running);if(!running)searching=reading=null;for(const show of kept.splice(0))show(self);if(Object.keys(said).length){const lines=said;said={};showErrors(prev=>({...prev,...lines}))}if(told){const line=told;told=null;tell(line,true)}return()=>{self.gone=true;if(shown===self)shown=null}},[]);
   const hold=node=>{
     const row=node?.closest?.(".capability-list>div");
     if(!self.gone&&row&&!pressed.current&&node.matches(":focus-visible")){
@@ -178,7 +179,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [pluginSearchResults,setPluginSearchResults]=useState(()=>searching?.[2]||[]);
   const [pluginSearchCursor,setPluginSearchCursor]=useState(()=>searching?.[3]||null);
   const [pluginSearchRan,setPluginSearchRan]=useState(()=>!!searching?.[2]);
-  const [pluginDetail,setPluginDetail]=useState(null);
+  const [pluginDetail,setPluginDetail]=useState(()=>reading);
   const [pluginSkillDetail,setPluginSkillDetail]=useState(null);
   const [pluginMessage,setPluginMessage]=useState("");
   const [configWarnings,setConfigWarnings]=useState([]);
@@ -188,7 +189,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [modelNotices,setModelNotices]=useState([]);
   // A plugin search's answer. It leaves the box and the select as they are: a page drawn while the search ran started them from it.
   const showSearch=(results,cursor)=>{setPluginSearchResults(results);setPluginSearchCursor(cursor);setPluginSearchRan(true)};
-  Object.assign(self,{showBusy,showErrors,refresh,showSandbox,showImport,scanHistory,setHistoryMessage,setHistoryImport,setHistoryScanFailed,setPluginDetail,showSearch});
+  Object.assign(self,{showBusy,showErrors,refresh,showSandbox,showImport,scanHistory,setHistoryMessage,setHistoryImport,setHistoryScanFailed,setPluginDetail,setPluginSkillDetail,showSearch});
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -426,9 +427,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     }catch(error){shareDone[action]=["plugin/list",list=>{const item=listedPlugin(list,plugin.id);return !!item&&!!item.installed===nextInstalled}];setErrors(prev=>({...prev,[action]:failureText((plugin.installed?"Could not uninstall ":"Could not install ")+pluginLabel(plugin),error)}))}
     finally{setBusy("")}
   }
-  // A search's results and a plugin's details show on the page drawn now, as busy does, or with no page shown on the next one drawn
-  // (land): they went to the page that sent them, so on the page drawn again Searching… ended with the box empty and the catalog
-  // listed, and Loading… turned back into Details.
+  // A search's results, a plugin's details and a skill read from them show on the page drawn now, as busy does, or with no page
+  // shown on the next one drawn (land): they went to the page that sent them, so on the page drawn again Searching… ended with the
+  // box empty and the catalog listed, Loading… turned back into Details, and the skill read showed nowhere.
   async function searchPlugins({append=false}={}){
     const searchTerm=pluginSearchTerm.trim();if(!rpc||searchTerm.length<2)return;
     searching=[pluginSearchTerm,pluginSearchScope,...append?[pluginSearchResults,pluginSearchCursor]:[]];setBusy(append?"plugin:more":"plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
@@ -449,9 +450,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function readPluginSkill(skill){
     const remotePluginId=pluginDetail?.summary?.remotePluginId,remoteMarketplaceName=pluginDetail?.marketplaceName;
     if(!rpc||!remotePluginId||!remoteMarketplaceName||!skill?.name)return;
-    setBusy("plugin:skill:"+skill.name);setErrors(prev=>({...prev,"plugin/skill/read":null}));
-    try{const result=await request("plugin/skill/read",{remoteMarketplaceName,remotePluginId,skillName:skill.name});setPluginSkillDetail({name:skill.name,contents:result?.contents||""})}
-    catch(error){setErrors(prev=>({...prev,"plugin/skill/read":failureText("Could not read the skill "+skill.name,error)}))}finally{setBusy("")}
+    reading=pluginDetail;setBusy("plugin:skill:"+skill.name);setErrors(prev=>({...prev,"plugin/skill/read":null}));
+    try{const result=await request("plugin/skill/read",{remoteMarketplaceName,remotePluginId,skillName:skill.name}),read={name:skill.name,contents:result?.contents||""};land(to=>to.setPluginSkillDetail(read))}
+    catch(error){setErrors(prev=>({...prev,"plugin/skill/read":failureText("Could not read the skill "+skill.name,error)}))}finally{if(page())reading=null;setBusy("")}
   }
   async function refreshInstalledApps(){
     if(!rpc)return;setBusy("apps:installed");setErrors(prev=>({...prev,"app/installed":null}));
