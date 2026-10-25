@@ -5177,7 +5177,8 @@ export default function App(){
   useEffect(()=>{if(section!=="settings")setSettingsEntry(null)},[section]);
   // At 900px and below (narrowDrawer, above) the inspector is an overlay drawer over the main column. Opening a full page closes it
   // (the page would otherwise sit mostly under it); Escape and a click on the dimmed area close it too, and focus moves into the
-  // drawer when it opens and back to the control that opened it when it closes.
+  // drawer when it opens, to the tab it shows (a selector list would match the first tab first), and back to the control that
+  // opened it when it closes.
   const drawerOpenerRef=useRef(null);
   useEffect(()=>{
     if(!PAGE_CRUMBS[section]||!rightPanelOpen||!narrowDrawer)return;
@@ -5187,7 +5188,7 @@ export default function App(){
     if(!narrowDrawer)return;
     if(rightPanelOpen){
       const opener=document.activeElement;drawerOpenerRef.current=opener&&!opener.closest?.("[data-testid=right-panel]")?opener:null;
-      const frame=requestAnimationFrame(()=>{const panel=document.querySelector("[data-testid=right-panel]");if(panel&&!panel.contains(document.activeElement))panel.querySelector(".context-panel-tab.active,.context-panel-tab")?.focus({preventScroll:true})});
+      const frame=requestAnimationFrame(()=>{const panel=document.querySelector("[data-testid=right-panel]");if(panel&&!panel.contains(document.activeElement))(panel.querySelector(".context-panel-tab.active:enabled")||panel.querySelector(".context-panel-tab"))?.focus({preventScroll:true})});
       return()=>cancelAnimationFrame(frame);
     }
     const opener=drawerOpenerRef.current;drawerOpenerRef.current=null;

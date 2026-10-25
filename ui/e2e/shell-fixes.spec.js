@@ -2545,3 +2545,44 @@ for(const mode of ["dark","light"])test(`a resize handle shows only on an edge i
     }
   }finally{await context?.close();await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
+
+// The overlay drawer gives the keyboard to the tab it shows when it opens, so Enter there keeps that tab. App took the first match of
+// ".context-panel-tab.active,.context-panel-tab", and a selector list matches in the page's order, not in its own, so that was the
+// strip's first tab: with the Git tab shown, the drawer opened as the window narrowed with the keyboard in the composer, by Enter or a
+// click on its toggle or by Ctrl+Alt+B put the focus on Files, and Enter then switched the drawer to Files (UI lane D, round 9).
+for(const mode of ["dark","light"])test(`the overlay drawer opened as the window narrows, by its toggle or by Ctrl+Alt+B gives the keyboard to the tab it shows, and Enter there keeps that tab, in ${mode} mode`,async({page})=>{
+  test.setTimeout(60_000);
+  const project={id:"drawer-focus-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
+  const threads=["Repo task one","Repo task two"].map((title,index)=>({id:"drawer-focus-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const harness=await startHarness(threads);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads,meta:Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}])),project,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),toggle=page.getByTestId("right-panel-toggle"),git=right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}),message=right.getByPlaceholder("Commit message");
+    // What has the keyboard: a tab of the drawer, by its name, or what else.
+    const focused=()=>page.evaluate(()=>{const node=document.activeElement;return node?.classList.contains("context-panel-tab")?"the "+node.getAttribute("aria-label")+" tab":node?.getAttribute("aria-label")||node?.dataset?.testid||node?.tagName.toLowerCase()||"nothing"});
+    const showGit=async()=>{if(!(await git.evaluate(node=>node.classList.contains("active"))))await git.click();await expect(git).toHaveClass(/active/);await expect(message).toBeVisible()};
+    if(!(await right.isVisible())){await toggle.click();await expect(right).toBeVisible()}
+    await showGit();
+    // The drawer opened one way with the Git tab shown: the keyboard goes to Git, Enter there leaves Git and its commit message shown,
+    // and Escape closes the drawer.
+    const opened=async(how,shot)=>{
+      await expect(right).toBeVisible();
+      await expect.soft(git,`the drawer opened ${how} gives the keyboard to the Git tab it shows`).toBeFocused({timeout:3000});
+      expect.soft(await focused(),`what has the keyboard once the drawer opened ${how}`).toBe("the Git tab");
+      if(shot)await page.screenshot({path:join(shotsDir,`drawer-focus-shown-tab-${mode}-900.png`),animations:"disabled"});
+      await page.keyboard.press("Enter");await settle(page);
+      await expect.soft(git,`Enter right after the drawer opened ${how} keeps the Git tab`).toHaveClass(/active/);
+      await expect.soft(message,`Enter right after the drawer opened ${how} keeps the Git tab's commit message`).toBeVisible();
+      await showGit();
+      await page.keyboard.press("Escape");await expect(right).toBeHidden();
+    };
+    await page.getByTestId("composer").click();
+    await page.setViewportSize({width:900,height:800});await expect(page.getByTestId("inspector-scrim")).toBeVisible();
+    await opened("as the window narrows with the keyboard in the composer");
+    await toggle.focus();await page.keyboard.press("Enter");await opened("by Enter on its toggle",true);
+    await toggle.click();await opened("by a click on its toggle");
+    await page.keyboard.press(process.platform==="darwin"?"Meta+Alt+B":"Control+Alt+B");await opened("by Ctrl+Alt+B");
+  }finally{await harness.close()}
+});
