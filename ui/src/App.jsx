@@ -1563,6 +1563,8 @@ export default function App(){
   const sidebarColumnWidth=!sidebarOpen?0:narrowDrawer?196:mediumWindow?224:layoutPrefs.sidebarWidth;
   const rightPanelMaximum=Math.max(LAYOUT_LIMITS.rightPanelWidth[0],Math.min(LAYOUT_LIMITS.rightPanelWidth[1],viewportWidth-sidebarColumnWidth-400));
   const rightPanelWidth=Math.min(layoutPrefs.rightPanelWidth,rightPanelMaximum);
+  // The size each pane shows, which its handle says and its keys and a pull start from.
+  const layoutShown={...layoutPrefs,rightPanelWidth};
   // The largest size a pane may take in this window; the pointer and keyboard resizers share these limits.
   function layoutMaximum(kind){
     if(kind==="sidebar")return Math.max(210,Math.min(420,window.innerWidth-620));
@@ -1570,35 +1572,32 @@ export default function App(){
     return Math.max(190,Math.min(620,window.innerHeight-260));
   }
   // Arrow keys move a separator (Shift for bigger steps): the sidebar grows rightward, the inspector leftward and the terminal
-  // upward; Home and End jump to the smallest and largest size.
+  // upward; Home and End jump to the smallest and largest size. A key that leaves the pane as it shows (the grow key or End at its
+  // largest) keeps the size stored for it, which a larger window shows again.
   function resizeLayoutFromKeyboard(kind,event){
     const key={sidebar:"sidebarWidth",right:"rightPanelWidth",terminal:"terminalHeight"}[kind];if(!key)return;
     const grow={sidebar:"ArrowRight",right:"ArrowLeft",terminal:"ArrowUp"}[kind],shrink={sidebar:"ArrowLeft",right:"ArrowRight",terminal:"ArrowDown"}[kind];
-    const step=event.shiftKey?64:16,min=LAYOUT_LIMITS[key][0],max=layoutMaximum(kind),current=key==="rightPanelWidth"?rightPanelWidth:layoutPrefs[key];
+    const step=event.shiftKey?64:16,min=LAYOUT_LIMITS[key][0],max=layoutMaximum(kind),current=layoutShown[key];
     const target=event.key===grow?current+step:event.key===shrink?current-step:event.key==="Home"?min:event.key==="End"?max:null;
     if(target==null)return;
     event.preventDefault();
-    setLayoutPrefs(prev=>({...prev,[key]:Math.min(max,clampLayoutValue(key,target))}));
+    const next=Math.min(max,clampLayoutValue(key,target));
+    if(next!==current)setLayoutPrefs(prev=>({...prev,[key]:next}));
   }
   function layoutSeparatorProps(kind){
     const key={sidebar:"sidebarWidth",right:"rightPanelWidth",terminal:"terminalHeight"}[kind];
-    return {tabIndex:0,"aria-valuemin":LAYOUT_LIMITS[key][0],"aria-valuemax":layoutMaximum(kind),"aria-valuenow":key==="rightPanelWidth"?rightPanelWidth:layoutPrefs[key],onKeyDown:event=>resizeLayoutFromKeyboard(kind,event)};
+    return {tabIndex:0,"aria-valuemin":LAYOUT_LIMITS[key][0],"aria-valuemax":layoutMaximum(kind),"aria-valuenow":layoutShown[key],onKeyDown:event=>resizeLayoutFromKeyboard(kind,event)};
   }
+  // A pull moves a separator as its keys do, from the size shown and up to the same largest, the sidebar's rightward, the inspector's
+  // leftward and the terminal's upward; one that leaves the pane as it shows keeps the size stored for it, as a key does.
   function beginLayoutResize(kind,event){
     if(event.button!==0)return;
     event.preventDefault();
-    const startX=event.clientX,startY=event.clientY,start={...layoutPrefs,rightPanelWidth};
+    const key={sidebar:"sidebarWidth",right:"rightPanelWidth",terminal:"terminalHeight"}[kind],max=layoutMaximum(kind),start=layoutShown[key],stored=layoutPrefs[key],startX=event.clientX,startY=event.clientY;
     document.documentElement.classList.add("layout-resizing");
     const move=moveEvent=>{
-      if(kind==="sidebar"){
-        const maxByViewport=Math.max(210,Math.min(420,window.innerWidth-620));
-        setLayoutPrefs(prev=>({...prev,sidebarWidth:Math.min(maxByViewport,clampLayoutValue("sidebarWidth",start.sidebarWidth+(moveEvent.clientX-startX)))}));
-      }else if(kind==="right"){
-        setLayoutPrefs(prev=>({...prev,rightPanelWidth:Math.min(rightPanelMaximum,clampLayoutValue("rightPanelWidth",start.rightPanelWidth-(moveEvent.clientX-startX)))}));
-      }else if(kind==="terminal"){
-        const maxByViewport=Math.max(190,Math.min(620,window.innerHeight-260));
-        setLayoutPrefs(prev=>({...prev,terminalHeight:Math.min(maxByViewport,clampLayoutValue("terminalHeight",start.terminalHeight-(moveEvent.clientY-startY)))}));
-      }
+      const next=Math.min(max,clampLayoutValue(key,start+(kind==="sidebar"?moveEvent.clientX-startX:kind==="right"?startX-moveEvent.clientX:startY-moveEvent.clientY)));
+      setLayoutPrefs(prev=>({...prev,[key]:next===start?stored:next}));
     };
     const up=()=>{document.documentElement.classList.remove("layout-resizing");window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",up)};
     window.addEventListener("pointermove",move);window.addEventListener("pointerup",up,{once:true});
