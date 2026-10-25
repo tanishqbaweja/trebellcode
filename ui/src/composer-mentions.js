@@ -1,12 +1,24 @@
+// The punctuation that ends a word and is not part of it: a full stop, a comma, a closing bracket or quote ('@log.', '(see @log)').
+const WORD_END=".,;:!?)]}\"'`”’»…";
 export function fileMentionAt(text,caret){
   const value=String(text||"");const at=Math.max(0,Math.min(value.length,Number(caret)||0));
   const prefix=value.slice(0,at);const match=prefix.match(/(^|\s)@([^\s@]*)$/);
   if(!match)return null;
   // The menu looks for what is typed before the caret, and a pick replaces the whole word, up to the next whitespace but for the
-  // punctuation that ends it, which stays: a full stop, a comma, a closing bracket or quote ('@log.', '(see @log)').
+  // punctuation that ends it, which stays.
   const query=match[2]||"";let end=at+value.slice(at).search(/\s|$/);
-  while(end>at&&".,;:!?)]}\"'`”’»…".includes(value[end-1]))end--;
+  while(end>at&&WORD_END.includes(value[end-1]))end--;
   return {start:at-query.length-1,end,query};
+}
+
+// Whether text names the file at path from its @ at start as a pick puts it there (its spaces kept, one each), up to whitespace or the
+// end but for the punctuation that ends a word: the path of a file with a space in its name goes on past the @ word at a caret in its
+// first part, which ends at the space ('@docs/Release' of '@docs/Release Notes.md').
+export function namesFileAt(text,start,path){
+  const value=String(text||""),word="@"+String(path||"").trim().replace(/\s+/g," ");let end=start+word.length;
+  if(word.length<2||!value.startsWith(word,start))return false;
+  while(end<value.length&&WORD_END.includes(value[end]))end++;
+  return end===value.length||/\s/.test(value[end]);
 }
 
 // caret: where the person's caret is in text, which stays before the word, moves with what follows it, and goes after the file in it.

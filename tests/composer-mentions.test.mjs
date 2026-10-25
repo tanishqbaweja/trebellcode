@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {applyFileMention,fileMentionAt,movedFileMention,rankFileMentions} from "../ui/src/composer-mentions.js";
+import {applyFileMention,fileMentionAt,movedFileMention,namesFileAt,rankFileMentions} from "../ui/src/composer-mentions.js";
 
 test("file mention parser targets only the active @ token",()=>{
   assert.deepEqual(fileMentionAt("check @App",10),{start:6,end:10,query:"App"});
@@ -114,6 +114,27 @@ test("a pick put into a draft typed on next to its word with letters like the wo
   assert.equal(movedFileMention("Check @log",at,"Please Check then debug",7),null);
   assert.equal(movedFileMention("Check @log",at,"Check @lxog then debug",0),null);
   assert.equal(movedFileMention("Check @service",service,"Hey Check @servic please",4),null);
+});
+
+// The @ menu stays shut on a word that names a file picked from it, read from the word's @: the path of a file with a space in its name
+// goes on past the @ word at a caret in its first part, which ends at the space, so that word never read as the file's path, and a
+// click or a double click in the path's first part opened the menu offering the file again (round 10 repair).
+test("a draft names a picked file from its @, a path with a space in it too, up to whitespace, the end or the punctuation after it",()=>{
+  const draft="Check @docs/Release Notes.md please";
+  assert.equal(namesFileAt(draft,fileMentionAt(draft,15).start,"docs/Release Notes.md"),true);
+  assert.equal(namesFileAt(draft,fileMentionAt(draft,12).start,"docs/Release Notes.md"),true);
+  assert.equal(namesFileAt("Check @docs/Release Notes.md",6,"docs/Release Notes.md"),true);
+  assert.equal(namesFileAt("See @docs/Release Notes.md). Then",4,"docs/Release Notes.md"),true);
+  // The draft has the path with its spaces one each, as the pick put it there.
+  assert.equal(namesFileAt("Check @docs/Release Notes.md now",6,"docs/Release  Notes.md"),true);
+  assert.equal(namesFileAt("Check @src/login.js now",6,"src/login.js"),true);
+  assert.equal(namesFileAt("Check @src/login.js.",6,"src/login.js"),true);
+  // Another word, a path edited or gone on past the file's, another @ word: not the file.
+  assert.equal(namesFileAt("Check @docs/Release now",6,"docs/Release Notes.md"),false);
+  assert.equal(namesFileAt("Check @docs/Release Notes.mdx now",6,"docs/Release Notes.md"),false);
+  assert.equal(namesFileAt("Check @src/login.js.bak",6,"src/login.js"),false);
+  assert.equal(namesFileAt("Check @src/login.js and @logout",24,"src/login.js"),false);
+  assert.equal(namesFileAt("Check @src/login.js",6,""),false);
 });
 
 test("file mention ranking prefers exact and prefix filename matches",()=>{

@@ -2704,7 +2704,7 @@ test("a file picked from the @ menu on a word a space follows leaves the menu sh
 // next Enter imported it a second time instead of sending (round 10).
 test("a file picked from the @ menu leaves the menu shut on its word after an edit puts the caret right after it again, or a click or a double click on it, also back from Settings, so Enter sends the message with the file",async({page})=>{
   test.setTimeout(180_000);
-  const replies=["Checked the login file.","Checked it without the space.","Checked it after the click.","Checked it after the double click.","Checked it back from Settings."];
+  const replies=["Checked the login file.","Checked it without the space.","Checked it after the click.","Checked it after the double click.","Checked it back from Settings.","Checked the release notes."];
   const harness=await openComposerApp(page,{replies:replies.map(text=>({text}))});
   try{
     await writeLoginFiles(harness);
@@ -2748,7 +2748,26 @@ test("a file picked from the @ menu leaves the menu shut on its word after an ed
       await expect(users.last().locator("p")).toHaveText(sent);await expect(files).toHaveText(["login.js"]);
       await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);expect.soft(imports-before,"the files imported"+where).toBe(1);
     }
-    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page",...cases.map(([,,,,,,,sent])=>sent)]);
+    // A file with a space in its name, picked on '@Rel': the @ word at a caret in its path's first part ends at the space, so it never
+    // read as the file's path, and once 'please' was typed a click after 'Rel' or a double click on 'Release' opened the menu offering
+    // the file again, where Enter put it in a second time over '@docs/Release' (round 10 repair). The menu stays shut, and Enter sends
+    // the message with the file.
+    await mkdir(join(harness.repo,"docs"),{recursive:true});await writeFile(join(harness.repo,"docs","Release Notes.md"),"# Release notes\n");
+    await switchMode(page,"light");await page.setViewportSize({width:1280,height:800});
+    const before=imports,spaced="Check @docs/Release Notes.md please";
+    await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+    await settled("Rel",()=>page.keyboard.type("Check @Rel",{delay:20}));await expect(menu.locator("button.active strong")).toHaveText("Release Notes.md");
+    await page.keyboard.press("Enter");await expect(context).toHaveCount(1);await expect(composer).toHaveValue("Check @docs/Release Notes.md ");
+    await page.keyboard.type("please",{delay:20});await expect(composer).toHaveValue(spaced);
+    for(const [how,q,place] of [["a click after 'Rel'","docs/Rel",()=>clickInDraft(page,15,1)],["a double click on 'Release'","docs/",()=>clickInDraft(page,14,1,2)]]){
+      await settled(q,place);await expect.soft(menu,`the @ menu after ${how} in the path of a file with a space in its name`).toHaveCount(0);
+    }
+    await page.screenshot({animations:"disabled",path:auditDir+"mention-menu-shut-on-a-path-with-a-space-light-1280x800.png"});
+    await page.keyboard.press("Enter");
+    await expect(page.getByText(replies[5],{exact:true})).toBeVisible({timeout:15_000});
+    await expect(users.last().locator("p")).toHaveText(spaced);await expect(files).toHaveText(["Release Notes.md"]);
+    await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);expect.soft(imports-before,"the files imported for the path with a space").toBe(1);
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page",...cases.map(([,,,,,,,sent])=>sent),spaced]);
   }finally{await harness.close()}
 });
 

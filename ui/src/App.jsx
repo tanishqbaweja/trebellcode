@@ -20,7 +20,7 @@ import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, ruleRuns, shadowedKeybindings, shortcutHint } from "./keybindings.js";
 import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, movedDuringStep, navigationKey, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
-import { applyFileMention, fileMentionAt, movedFileMention, rankFileMentions } from "./composer-mentions.js";
+import { applyFileMention, fileMentionAt, movedFileMention, namesFileAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
 import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId, sessionHandoffMessage, withSessionHandoff } from "./thread-history.js";
 import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain, turnTrailers } from "./turn-outcome.js";
@@ -987,11 +987,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // (menuDismissed) with the draft, so the composer drawn again (back from Settings or History) keeps the menu shut over it. Nor does
   // the @ menu open on a word that names a file picked from it that is on the draft (its chip's path), also once the draft has
   // changed: an edit that put the caret right after the file again ('x' typed and erased, the space the pick added erased), a click
-  // or a double click on it opened the menu offering the file again, and Enter imported it a second time instead of sending.
+  // or a double click on it opened the menu offering the file again, and Enter imported it a second time instead of sending. The path
+  // is read from the word's @ on (namesFileAt), as the @ word at a caret in the first part of a path with a space ends at the space.
   // Escape's dismissal of the draft as it stood (another @ word's menu closed while a picked file imports) lasts once the file is in
   // (every), with the pick's own: the menu came back on that word, and Enter picked its file instead of sending it as typed.
   const slashMenuOpen=slashOpen&&!/\s/.test(prompt)&&slashItems.length>0&&menuDismissed!==prompt;
-  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&(menuDismissed.every||menuDismissed.start===activeMention.start))&&!(contextChips||[]).some(chip=>chip.kind==="file"&&"@"+chip.detail===prompt.slice(activeMention.start,activeMention.end));
+  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&(menuDismissed.every||menuDismissed.start===activeMention.start))&&!(contextChips||[]).some(chip=>chip.kind==="file"&&namesFileAt(prompt,activeMention.start,chip.detail));
   const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0;
   useEffect(()=>{setSlashIndex(0)},[slashQuery]);
   // Keyboard choices stay in view in short windows, where the menus scroll.
