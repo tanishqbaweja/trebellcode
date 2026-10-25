@@ -749,9 +749,9 @@ const DICTATION_ERRORS={
   "service-not-allowed":"The microphone is blocked. Allow microphone access for Trebell Code to dictate.",
   "audio-capture":"No microphone was found to dictate with.",
 };
-// The composer drawn now: its field, and the setters of its caret and its @ menu's files. A file picked from the @ menu goes into the
-// composer drawn once the file is in, which is another one when a page (Settings, History) took the chat's place meanwhile, and into
-// App's draft while the page is still up.
+// The composer drawn now: its field and the setter of its caret. A file picked from the @ menu goes into the composer drawn once the
+// file is in, which is another one when a page (Settings, History) took the chat's place meanwhile, and into App's draft while the
+// page is still up.
 let shownComposer=null;
 const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,starting=false,providerReady,transportReady=true,transportStatus="",transportReason="",onRetryTransport,runtimeSwitchLabel="",modelsLoading=false,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,attachments,uploadingFiles=[],contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,threadSettingsWait=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onReasoningEffort,onServiceTier,onModelOption,onModelPickerOpenChange,onMenuShown=null,menuDismissed=null,setMenuDismissed,mentionBusy=null,setMentionBusy,codexThread=null,onCancelEdit=null}){
   const [modelOpen,setModelOpen]=useState(false);
@@ -770,7 +770,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const [mentionIndex,setMentionIndex]=useState(0);
   const [slashIndex,setSlashIndex]=useState(0);
   const composerRef=useRef(null),slashMenuRef=useRef(null),mentionMenuRef=useRef(null),modelMenuRef=useRef(null),modelButtonRef=useRef(null),wrapRef=useRef(null),shelfRef=useRef(null);
-  useLayoutEffect(()=>{const shown={composerRef,setCaret,setMentionItems};shownComposer=shown;return()=>{if(shownComposer===shown)shownComposer=null}},[]);
+  useLayoutEffect(()=>{const shown={composerRef,setCaret};shownComposer=shown;return()=>{if(shownComposer===shown)shownComposer=null}},[]);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
   useLayoutEffect(()=>{resizeTextarea(composerRef.current,{min:40,max:160})},[prompt]);
   // A send leaves the composer on, with the keyboard, so what the person types straight on while it goes (Sending…) lands there: only
@@ -880,11 +880,13 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // where that is then, what was typed meanwhile kept and the caret in it (a word edited or erased meanwhile gets nothing, and its chip
   // goes again unless the file was on the draft before). A caret inside the word goes after it at the pick, so what is typed on keeps the
   // word whole, and while the word is there a send waits for the file (mentionWaits). The draft and the caret go in at once, so the next
-  // key lands after them, with the @ menu shut on the file's word until the draft changes (menuDismissed), and the keyboard comes back
-  // unless another field has it meanwhile. A page opened meanwhile (Settings, History) took this composer away with the chat: the pick
-  // goes into the composer drawn again, whose caret is set with it (the one it had would open the @ menu over the draft), or into App's
-  // draft as it is then while the page is up. The draft as it was at the pick went in over what was typed since. mentionBusy, App's
-  // (so the composer drawn again knows it): the file's name and path, and the draft and the word it was picked on.
+  // key lands after them, with the @ menu shut on the file's word until the draft changes (menuDismissed), while the menu of another @
+  // word typed meanwhile with the caret in it keeps its files (emptied, it stayed gone, as nothing searched for that word again), and
+  // the keyboard comes back unless another field has it meanwhile. A page opened meanwhile (Settings, History) took this composer away
+  // with the chat: the pick goes into the composer drawn again, whose caret is set with it (the one it had would open the @ menu over
+  // the draft), or into App's draft as it is then while the page is up. The draft as it was at the pick went in over what was typed
+  // since. mentionBusy, App's (so the composer drawn again knows it): the file's name and path, and the draft and the word it was
+  // picked on.
   async function chooseMention(item){
     if(!activeMention||!item||mentionBusy)return;
     const from=prompt,mention=activeMention,focused=document.activeElement,label=item.relativePath||item.name||item.path,had=attachments;
@@ -896,7 +898,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
       if(!node){let text;flushSync(()=>{onPromptEdit?.();setPrompt(current=>(at=movedFileMention(from,mention,current,current.length))?text=applyFileMention(current,at,label).text:current)});if(at)setMenuDismissed({text,start:at.start});return}
       const now=node.value,caret=node.selectionEnd;at=movedFileMention(from,mention,now,caret);if(!at)return;
       const next=applyFileMention(now,at,label,caret),active=document.activeElement;
-      flushSync(()=>{onPromptEdit?.();setPrompt(next.text);setMenuDismissed({text:next.text,start:at.start});shown.setMentionItems([]);shown.setCaret(next.caret)});
+      flushSync(()=>{onPromptEdit?.();setPrompt(next.text);setMenuDismissed({text:next.text,start:at.start});shown.setCaret(next.caret)});
       if(!active||active===document.body||active===focused)node.focus();node.setSelectionRange(next.caret,next.caret);
     }finally{if(attached&&!at&&!had.includes(attached))onRemoveContext?.(attached);setMentionBusy(null)}
   }

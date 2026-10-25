@@ -2697,6 +2697,52 @@ test("a file picked from the @ menu on a word a space follows leaves the menu sh
   }finally{await harness.close()}
 });
 
+// A second @ word typed while the file picked from the @ menu imports ('Check @log', login.js picked, ' and @logout' typed straight on)
+// shows its menu with its files dimmed, and Enter on it does nothing meanwhile. Once the first file is in, the second word's menu is on
+// again, so Enter, Tab, a click or a double click picks its file and the next Enter sends the message with both, also when nothing was
+// pressed meanwhile, and in a narrow window. The first file's landing emptied the menu's files for the word the caret was in by then,
+// whose search had answered already, and nothing searched again for that word, unchanged: the menu was gone, and Enter sent the message
+// with the first file only, '@logout' as text (round 10).
+test("a second @ word typed while a file picked from the @ menu imports keeps its menu once that file is in, so Enter, Tab, a click or a double click picks its file and the next Enter sends the message with both",async({page})=>{
+  test.setTimeout(180_000);
+  const replies=["Checked both files.","Checked both files again.","Checked both once more.","Checked both a last time."];
+  const harness=await openComposerApp(page,{replies:replies.map(text=>({text}))});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip"),users=page.locator(".user-bubble");
+    const files=users.last().locator(".user-attachments > span"),imports=await holdMentionImports(page);
+    // The menu's files as a person sees them: on, or off (aria-disabled) while a picked file imports.
+    const rowsLook=()=>menu.locator("button").evaluateAll(rows=>[...new Set(rows.map(row=>row.getAttribute("aria-disabled")==="true"?"off":"on"))]);
+    for(const [index,[mode,width,pick,second,pressed]] of [["dark",1280,"Enter","Enter",true],["light",900,"a click","Tab",true],["dark",900,"Tab","a click",false],["light",1280,"Enter","a double click",false]].entries()){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      const where=` in ${mode} at ${width}, login.js picked by ${pick}, ' and @logout' typed while it imports${pressed?" and Enter pressed on its menu":""}, and logout.js picked by ${second}`;
+      let release=null;imports.held=new Promise(done=>{release=done});
+      await typeMention(page);await pickLogin(page,pick);
+      // ' and @logout' typed straight on, its search answered while login.js imports: its menu offers logout.js, dimmed.
+      const answered=mentionSearched(page,"logout");await page.keyboard.type(" and @logout",{delay:40});await (await answered).finished();await painted(page);
+      await expect(menu.locator("button.active strong")).toHaveText("logout.js");await expect.soft.poll(rowsLook,"the menu's files while login.js imports"+where).toEqual(["off"]);
+      if(pressed){await page.keyboard.press("Enter");await painted(page);await expect(composer).toHaveValue("Check @log and @logout");await expect(users).toHaveCount(index+1)}
+      if(index<2)await page.screenshot({animations:"disabled",path:auditDir+`mention-second-word-menu-dimmed-while-the-first-imports-${mode}-${width}x800.png`});
+      // login.js in: the menu on '@logout' is on again, offering logout.js.
+      const landed=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/attachments/import");release();await (await landed).finished();await painted(page);
+      await expect(context).toHaveCount(1);await expect(composer,"the draft once login.js is in"+where).toHaveValue("Check @src/login.js and @logout");
+      await expect.soft(menu.locator("button.active strong"),"the menu on '@logout' once login.js is in"+where).toHaveText("logout.js");
+      await expect.soft.poll(rowsLook,"the menu's files once login.js is in"+where).toEqual(["on"]);
+      if(index<2)await page.screenshot({animations:"disabled",path:auditDir+`mention-second-word-menu-on-once-the-first-is-in-${mode}-${width}x800.png`});
+      // logout.js picked: both files on the draft, the menu shut.
+      const file=menu.locator("button").filter({hasText:"src/logout.js"});
+      if(second==="a click")await file.click();else if(second==="a double click")await file.dblclick();else await page.keyboard.press(second);
+      await expect(context,"the chips once logout.js is picked"+where).toHaveCount(2);await expect(composer).toHaveValue("Check @src/login.js and @src/logout.js ");await expect(menu).toHaveCount(0);
+      // The next Enter sends the message with both.
+      await page.keyboard.press("Enter");
+      await expect(page.getByText(replies[index],{exact:true})).toBeVisible({timeout:15_000});
+      await expect(users.last().locator("p")).toHaveText("Check @src/login.js and @src/logout.js");await expect(files).toHaveText(["login.js","logout.js"]);
+      await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);
+    }
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page",...Array(4).fill("Check @src/login.js and @src/logout.js")]);
+  }finally{await harness.close()}
+});
+
 test("Enter on a draft over the 120,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);
