@@ -978,9 +978,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // draft, and Enter then attached a file instead of sending. A file picked from the @ menu shuts it the same way on the word the file
   // went on: the caret right after the file, before a space, searched for the file's path and opened the menu offering it again, and
   // Enter attached it a second time instead of sending. Another @ word of the draft opens it as before. App keeps the draft dismissed
-  // (menuDismissed) with the draft, so the composer drawn again (back from Settings or History) keeps the menu shut over it.
+  // (menuDismissed) with the draft, so the composer drawn again (back from Settings or History) keeps the menu shut over it. Nor does
+  // the @ menu open on a word that names a file picked from it that is on the draft (its chip's path), also once the draft has
+  // changed: an edit that put the caret right after the file again ('x' typed and erased, the space the pick added erased), a click
+  // or a double click on it opened the menu offering the file again, and Enter imported it a second time instead of sending.
   const slashMenuOpen=slashOpen&&!/\s/.test(prompt)&&slashItems.length>0&&menuDismissed!==prompt;
-  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&menuDismissed.start===activeMention.start);
+  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&menuDismissed.start===activeMention.start)&&!(contextChips||[]).some(chip=>chip.kind==="file"&&"@"+chip.detail===prompt.slice(activeMention.start,activeMention.end));
   const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0;
   useEffect(()=>{setSlashIndex(0)},[slashQuery]);
   // Keyboard choices stay in view in short windows, where the menus scroll.
