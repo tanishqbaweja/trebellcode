@@ -55,6 +55,9 @@ class TrebellNativeAgent(BaseInstalledAgent):
     _REMOTE_API_KEY = "/installed-agent/openai-api-key"
     _OUTPUT = "/logs/agent/trebell-native.txt"
     _METRICS = "/logs/agent/trebell-native-metrics.json"
+    # The store behind trebell_output/inspect: beside the runner, not in /tmp, which a task's own cleanup can empty under a
+    # running agent (an inspect of an earlier output then fails with ENOENT).
+    _TOOL_OUTPUT_DIR = "/installed-agent/tool-output"
     # Harbor runs agent commands with `bash -c` (non-login), while task images often activate the project
     # interpreter only for login shells (e.g. SWE-bench's `conda activate testbed` in ~/.bashrc, reached via
     # ~/.profile) and Codex runs every model command through `bash -lc`. Import a login shell's exported
@@ -108,7 +111,14 @@ class TrebellNativeAgent(BaseInstalledAgent):
         await ensure_ca_bundle(self, environment)
         # Harbor already mounts /logs/agent for each trial. Recreating the
         # mount point is unnecessary and can fail on Docker Desktop/Windows.
-        await self.exec_as_root(environment, command="mkdir -p /installed-agent")
+        # The tool-output store is made here as root and opened like the pinned
+        # Codex lanes' CODEX_HOME: the agent can be the image's own USER, whom
+        # Harbor gives no default_user to chown it to.
+        store = shlex.quote(self._TOOL_OUTPUT_DIR)
+        await self.exec_as_root(
+            environment,
+            command=f"mkdir -p /installed-agent {store}; chmod 0777 {store}",
+        )
         if environment.default_user is not None:
             owner = shlex.quote(str(environment.default_user))
             await self.exec_as_root(
@@ -299,6 +309,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
             "TREBELL_SERVICE_TIER": self.options.service_tier,
             "TREBELL_HOME": "/tmp/trebell-home",
             "TREBELL_METRICS_PATH": self._METRICS,
+            "TREBELL_TOOL_OUTPUT_DIR": self._TOOL_OUTPUT_DIR,
             "TREBELL_HARBOR_CONTEXT_WINDOW": os.environ.get(
                 "TREBELL_HARBOR_CONTEXT_WINDOW", "272000"
             ),

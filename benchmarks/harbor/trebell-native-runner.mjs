@@ -76,7 +76,10 @@ const tools=platformDynamicToolNamespaces({
   sourceControl:false,
   delegation:false,
 });
-const outputStore=new NativeToolOutputStore({directory:"/tmp/trebell-output",environment:process.env});
+// Not in /tmp, which a task's own cleanup can empty under the running agent: the Harbor adapter makes this folder beside the
+// runner and opens it to the agent's user.
+const outputDirectory=String(process.env.TREBELL_TOOL_OUTPUT_DIR||"/installed-agent/tool-output");
+const outputStore=new NativeToolOutputStore({directory:outputDirectory,environment:process.env});
 const toolCallLog=createToolCallLogger({path:toolCallsPath,environment:process.env});
 const contextEngine=new ContextEngine();
 const requests=[],assistantChunks=[],eventStarted=performance.now(),strategyMetrics=createNativeStrategyMetrics();let eventWrites=Promise.resolve();

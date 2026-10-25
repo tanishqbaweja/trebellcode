@@ -83,6 +83,24 @@ test("Harbor Native runner keeps durable output retrieval available and avoids a
   assert.match(source,/effectiveReasoningContexts/);
 });
 
+// The store behind trebell_output/inspect was in the container's /tmp, which a task's own cleanup can empty under a running
+// agent: an inspect of an earlier output then failed with ENOENT. It lives beside the runner instead, in a folder the adapter
+// makes as root before any early return of install() and opens like the pinned Codex lanes' CODEX_HOME, since the agent can be
+// the image's own USER, whom Harbor gives no default_user to chown it to.
+test("Harbor Native keeps its tool-output store out of /tmp, in a folder the adapter makes and opens to the agent's user",async()=>{
+  const runner=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
+  const adapter=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
+  assert.doesNotMatch(runner,/directory:"\/tmp\//,"no store directory under /tmp");
+  assert.match(runner,/const outputDirectory=String\(process\.env\.TREBELL_TOOL_OUTPUT_DIR\|\|"\/installed-agent\/tool-output"\);/);
+  assert.match(runner,/new NativeToolOutputStore\(\{directory:outputDirectory,environment:process\.env\}\)/);
+  assert.ok(adapter.includes('_TOOL_OUTPUT_DIR = "/installed-agent/tool-output"'));
+  const install=adapter.slice(adapter.indexOf("async def install("),adapter.indexOf("async def _upload_config_text("));
+  const made=install.indexOf('command=f"mkdir -p /installed-agent {store}; chmod 0777 {store}"');
+  assert.ok(made>0&&install.includes("store = shlex.quote(self._TOOL_OUTPUT_DIR)"),"install() makes the store folder as root and opens it");
+  assert.ok(made<install.indexOf("return"),"before install() can return early on an image's own runtime");
+  assert.ok(adapter.includes('"TREBELL_TOOL_OUTPUT_DIR": self._TOOL_OUTPUT_DIR,'),"the runner is told the folder the adapter made");
+});
+
 test("Harbor Native runner records when OpenAI server compaction arms in its context policy",async()=>{
   const source=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
   assert.match(source,/import \{ NativeAgentSession, openAiServerCompactionArmTokens \} from "\.\.\/\.\.\/src\/native-agent-session\.mjs"/);
