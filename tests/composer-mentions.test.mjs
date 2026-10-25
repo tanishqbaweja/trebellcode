@@ -63,6 +63,28 @@ test("a pick put into the draft typed on meanwhile finds its word again and keep
   assert.equal(movedFileMention("Check @log",at,"",0),null);
 });
 
+// Letters typed on both sides of the word while the file imports (after it, then before it with Home or a click, or the other way)
+// read as one edit over it: the word, still whole between them, is found itself, and the file goes on it. It got nothing (round 9).
+test("a pick put into a draft typed on before and after its word meanwhile finds the word between them",()=>{
+  const at={start:6,end:10,query:"log"};
+  const both=movedFileMention("Check @log",at,"Please Check @log now",7);
+  assert.deepEqual(both,{start:13,end:17,query:"log"});
+  assert.deepEqual(applyFileMention("Please Check @log now",both,"src/login.js",7),{text:"Please Check @src/login.js now",caret:7});
+  assert.deepEqual(applyFileMention("Please Check @log now",both,"src/login.js",21),{text:"Please Check @src/login.js now",caret:30});
+  const bang=movedFileMention("Check @log",at,"Now Check @log!",4);
+  assert.deepEqual(bang,{start:10,end:14,query:"log"});
+  assert.deepEqual(applyFileMention("Now Check @log!",bang,"src/login.js",4),{text:"Now Check @src/login.js !",caret:4});
+  // Letters taken away before the word and typed after it.
+  assert.deepEqual(movedFileMention("Please check @log",{start:13,end:17,query:"log"},"check @log now",14),{start:6,end:10,query:"log"});
+  // The same word twice in the draft: the one picked, where what was around it is kept.
+  assert.deepEqual(movedFileMention("Compare @log with @log",{start:18,end:22,query:"log"},"Please compare @log with @log now",7),{start:25,end:29,query:"log"});
+  assert.deepEqual(movedFileMention("Compare @log with @log",{start:8,end:12,query:"log"},"Please compare @log with @log now",7),{start:15,end:19,query:"log"});
+  // The word itself edited or gone as well: nothing to put the file on.
+  assert.equal(movedFileMention("Check @log",at,"Please Check @lo now",7),null);
+  assert.equal(movedFileMention("Check @log",at,"Please Check now",7),null);
+  assert.equal(movedFileMention("Check @log",at,"Please Check @lonowg",20),null);
+});
+
 test("file mention ranking prefers exact and prefix filename matches",()=>{
   const items=[
     {name:"Other.jsx",relativePath:"ui/AppHelper/Other.jsx"},

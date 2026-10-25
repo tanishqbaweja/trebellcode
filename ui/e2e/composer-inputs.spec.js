@@ -2418,6 +2418,42 @@ test("a file picked from the @ menu whose word is gone once it is in leaves no c
   }finally{await harness.close()}
 });
 
+// Letters typed on both sides of the picked word while its file imports, after it and then before it (Home or a click at the draft's
+// start) or the other way, keep the word: once the file is in it goes on the word, with all that was typed kept. The two edits read as
+// one over the word, so the file was not put on it and the message went with '@log' in its text and the chip (round 9).
+test("letters typed before and after the word a file is picked on from the @ menu while it imports keep it, so the file goes on it once it is in, by Enter, Tab or a click, Home, End or a click",async({page})=>{
+  test.setTimeout(150_000);
+  const harness=await openComposerApp(page,{replies:[{text:"Checked the login file now."}]});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),context=page.getByTestId("context-chip"),imports=await holdMentionImports(page);
+    const cases=[
+      ["dark",900,"Enter","after it, then before it with Home",async()=>{await page.keyboard.type(" now",{delay:60});await page.keyboard.press("Home");await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js now",7],
+      ["light",900,"a click","before it with Home, then after it with End",async()=>{await page.keyboard.press("Home");await page.keyboard.type("Please ",{delay:60});await page.keyboard.press("End");await page.keyboard.type(" now",{delay:60})},"Please Check @src/login.js now",30],
+      ["dark",300,"Tab","after it, then before it with a click at the draft's start",async()=>{await page.keyboard.type(" now",{delay:60});await clickInDraft(page,0,1);await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js now",7],
+      ["light",300,"Enter","'!' straight after it, then before it with Home",async()=>{await page.keyboard.type("!",{delay:60});await page.keyboard.press("Home");await page.keyboard.type("Now ",{delay:60})},"Now Check @src/login.js !",4],
+    ];
+    for(const [index,[mode,ms,pick,how,edit,draft,caret]] of cases.entries()){
+      await switchMode(page,mode);
+      const where=` in ${mode}, the import ${ms} ms slow, login.js picked by ${pick} and letters typed ${how} while it imports`;
+      let release=null;imports.hold=ms;imports.held=new Promise(done=>{release=done});
+      await typeMention(page);await pickLogin(page,pick);await page.waitForTimeout(120);await edit();
+      await expect(context).toHaveCount(0);release();
+      await expect(context).toHaveCount(1);
+      await expect.soft(composer,"the draft once the file is in"+where).toHaveValue(draft);
+      expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret"+where).toEqual([caret,caret]);
+      await expect.soft(composer,"the keyboard in the composer"+where).toBeFocused();
+      if(index<2)await page.screenshot({animations:"disabled",path:auditDir+`mention-typed-around-the-word-file-on-it-${mode}-1280x800.png`});
+      if(index<cases.length-1){await context.locator("button").click();await expect(context).toHaveCount(0)}
+    }
+    // Enter sends the message as it reads, with the file.
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Checked the login file now.",{exact:true})).toBeVisible({timeout:15_000});
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page","Now Check @src/login.js !"]);
+    await expect(page.locator(".user-bubble").last().locator(".user-attachments > span")).toHaveText(["login.js"]);
+  }finally{await harness.close()}
+});
+
 test("Enter on a draft over the 120,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);
