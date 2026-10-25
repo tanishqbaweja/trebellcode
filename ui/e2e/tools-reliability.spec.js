@@ -189,9 +189,9 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // `control.marketplaces`: a plugin shared, installed or uninstalled and a marketplace upgraded or removed change it once answered,
 // and wait while `holdShare` is set as well; a plugin search lists the catalog's plugins whose name has the term in it,
 // `control.searchPage` at a time when set, with a cursor to the next page while more match; a plugin's read describes it, with the
-// skills its catalog entry lists (`skills`), and a skill's read gives its SKILL.md; all three wait while `holdReads` is set, until
-// `releaseReads()` (or `refuseReads(reason)`). The effective configuration is `control.config`. `control.listReads` counts the
-// catalog's reads. The Windows sandbox's readiness is
+// skills its catalog entry lists (`skills`), a skill's read gives its SKILL.md and a reconcile changes nothing; all four wait while
+// `holdReads` is set, until `releaseReads()` (or `refuseReads(reason)`). The effective configuration is `control.config`.
+// `control.listReads` counts the catalog's reads. The Windows sandbox's readiness is
 // `control.sandbox`, and a setup started answers that it started (`control.setups` lists them); the agent configuration found is
 // `control.migrationItems`, and an import of it answers with its id (`control.imports` lists them; Codex's import history, the imports
 // done, is `control.histories`). `notify(method,params)` sends a
@@ -242,11 +242,12 @@ async function startHeldMcpFixture({threads=[]}={}){
         if(control.holdShare)control.heldShare.push(answer);else answer();
         return;
       }
-      if(["plugin/search","plugin/read","plugin/skill/read"].includes(message.method)){
+      if(["plugin/search","plugin/read","plugin/skill/read","plugin/reconcile"].includes(message.method)){
         const {searchTerm,pluginName,skillName,cursor}=message.params||{},listed=control.marketplaces.flatMap(market=>(market.plugins||[]).map(plugin=>({market,plugin}))),read=listed.find(({plugin})=>plugin.name===pluginName);
         const found=listed.filter(({plugin})=>plugin.name.includes(searchTerm)).map(({market,plugin})=>({marketplaceName:market.name,marketplacePath:market.path,plugin})),from=Number(cursor)||0,to=control.searchPage?from+control.searchPage:found.length;
         const answer=reason=>reason?send({error:{code:-32000,message:reason}}):send({result:message.method==="plugin/search"?{data:found.slice(from,to),nextCursor:to<found.length?String(to):null}
           :message.method==="plugin/skill/read"?{contents:"# "+skillName+"\n\nWhat the "+skillName+" skill does, as its SKILL.md says it."}
+          :message.method==="plugin/reconcile"?{changedPlugins:[],failedRemotePluginIds:[]}
           :{plugin:read?{summary:read.plugin,marketplaceName:read.market.name,description:"What "+(read.plugin.interface?.displayName||read.plugin.name)+" does, as Codex describes it.",skills:read.plugin.skills||[],hooks:[],apps:[],mcpServers:[],scheduledTasks:[]}:null}});
         if(control.holdReads)control.heldReads.push(answer);else answer();
         return;
@@ -1459,6 +1460,80 @@ test("Tools drawn again while a plugin's Details or a plugin search is on its wa
     await expect.soft(box,"said beside the search it refused").toHaveValue("lane");
     await expect.soft(scope,"in its scope").toHaveValue("workspace");
     await shootTools(page,"tools-drawn-again-plugin-search-refused",plugins);
+  }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// The Plugins card's search row stays inside the card, its first and last controls in line with the plugin rows under it, at every
+// width the card takes and with each label the row shows: Search or Searching…, Reconcile or Reconciling…, and the scope picked. It
+// keeps its height meanwhile, so the rows under it stay put as Codex starts and ends an answer. On d20e9c36, with the cards two a
+// row beside the open sidebar at 1280, Searching… (91 px to Search's 63) pushed Reconcile past the card's content box and over its
+// border, on the page that sent the search and on the page drawn again alike, and Reconciling… did the same; at 1180 (the desktop
+// window's narrowest) the row ran past the card before anything was pressed, and at 900 with the sidebar closed Reconcile lost its
+// padding and Searching… and Reconciling… were cut.
+test("Tools Plugins keeps its search row inside the card, in line with the plugins under it, at every width while Codex answers Search or Reconcile",async({page})=>{
+  test.setTimeout(120_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=catalog();fixture.control.holdReads=true;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),plugins=toolsCard(page,"Plugins"),box=plugins.getByPlaceholder("Search plugins"),scope=plugins.locator(".plugin-search-controls select"),shell=page.locator(".app-shell");
+    const button=name=>plugins.getByRole("button",{name,exact:true});
+    // Where the row's controls sit against the card's content box and the first plugin row under it, whether each button's label
+    // shows whole inside its padding and the scope inside the select, how wide the search box is and how tall the row is.
+    const rowAt=()=>plugins.evaluate(card=>{
+      const style=getComputedStyle(card),at=card.getBoundingClientRect(),row=card.querySelector(".plugin-search-controls"),listed=card.querySelector(".capability-list>div").getBoundingClientRect();
+      const select=row.querySelector("select"),font=getComputedStyle(select),pen=document.createElement("canvas").getContext("2d"),round=value=>Math.round(value*10)/10;pen.font=font.fontWeight+" "+font.fontSize+" "+font.fontFamily;
+      return {content:[round(at.left+parseFloat(style.borderLeftWidth)+parseFloat(style.paddingLeft)),round(at.right-parseFloat(style.borderRightWidth)-parseFloat(style.paddingRight))],listed:[round(listed.left),round(listed.right)],
+        controls:[...row.children].map(node=>{const place=node.getBoundingClientRect();return [node.tagName==="BUTTON"?node.textContent.trim():node.tagName.toLowerCase(),round(place.left),round(place.right)]}),
+        labelsWhole:[...row.querySelectorAll("button")].every(node=>{const label=document.createRange(),own=getComputedStyle(node);label.selectNodeContents(node);return label.getBoundingClientRect().width+parseFloat(own.paddingLeft)+parseFloat(own.paddingRight)+parseFloat(own.borderLeftWidth)+parseFloat(own.borderRightWidth)<=node.getBoundingClientRect().width+0.5}),
+        scopeWhole:pen.measureText(select.selectedOptions[0].textContent).width<=select.clientWidth-parseFloat(font.paddingLeft)-parseFloat(font.paddingRight),
+        box:round(row.querySelector("input").getBoundingClientRect().width),height:round(row.getBoundingClientRect().height)};
+    });
+    // The window widths a person sees the card at, the sidebar open or closed with its own button: two cards a row at 1280 either
+    // way, at 1180 beside the sidebar and at 1100 and 900 without it, one a row at 1100 and 900 beside it and at 700.
+    const layouts=[[1280,true],[1280,false],[1180,true],[1100,true],[1100,false],[900,true],[900,false],[700,false]],heights={};
+    const sidebar=async open=>{
+      if(!/sidebar-collapsed/.test(await shell.getAttribute("class"))===open)return;
+      await page.getByRole("button",{name:open?"Open sidebar":"Collapse sidebar",exact:true}).click();
+      await expect.poll(async()=>!/sidebar-collapsed/.test(await shell.getAttribute("class"))).toBe(open);
+    };
+    const check=async(state,width,open)=>{
+      await page.setViewportSize({width,height:800});await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+      await sidebar(open);
+      const at=await rowAt(),[left,right]=at.content,froms=at.controls.map(control=>control[1]),tos=at.controls.map(control=>control[2]);
+      const seen={inside:Math.min(...froms)>=left-0.5&&Math.max(...tos)<=right+0.5,inLine:Math.abs(Math.min(...froms)-at.listed[0])<=1&&Math.abs(Math.max(...tos)-at.listed[1])<=1,
+        labelsWhole:at.labelsWhole,scopeWhole:at.scopeWhole,box:at.box>=119.5,steady:Math.abs(at.height-(heights[width+" "+open]??=at.height))<=0.5};
+      expect.soft(seen,`${state} at ${width} with the sidebar ${open?"open":"closed"}: ${JSON.stringify(at)}`).toEqual({inside:true,inLine:true,labelsWhole:true,scopeWhole:true,box:true,steady:true});
+      await plugins.evaluate(node=>node.scrollIntoView({block:"center"}));
+      for(const mode of ["dark","light"]){await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);await page.screenshot({animations:"disabled",path:auditDir+`tools-plugin-search-row-${state}-${mode}-${width}x800${open?"":"-sidebar-closed"}.png`,fullPage:false})}
+      await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    };
+    const sweep=async state=>{for(const [width,open] of layouts)await check(state,width,open);await page.setViewportSize({width:1280,height:800});await sidebar(true)};
+    // Before anything is pressed: Search, off until a term is typed, and Reconcile.
+    await expect(button("Reconcile")).toBeEnabled();await expect(button("Search")).toBeDisabled();
+    await sweep("rest");
+    // The longest scope picked, a term typed and Enter pressed: Searching… until Codex answers, on the page that sent the search and
+    // on the page drawn again after Settings.
+    await scope.selectOption("workspace");await box.click();await page.keyboard.type("lane");await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    await expect(button("Searching…")).toHaveAttribute("aria-busy","true");
+    await sweep("searching");
+    await ways.mouse();
+    await expect(button("Searching…")).toHaveAttribute("aria-busy","true");
+    await check("searching-drawn-again",1280,true);await check("searching-drawn-again",1180,true);
+    // Answered: the results under the row, with Search back.
+    fixture.releaseReads();
+    await expect(plugins.locator(".plugin-search-results>div")).toHaveCount(1);await expect(button("Search")).toBeEnabled();
+    await sweep("results");
+    // Reconcile clicked: Reconciling… until Codex answers.
+    await button("Reconcile").click();
+    await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    await expect(button("Reconciling…")).toHaveAttribute("aria-busy","true");
+    await sweep("reconciling");
+    fixture.releaseReads();
+    await expect(plugins.getByText("0 plugin changes reconciled.",{exact:true})).toBeVisible();
   }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 

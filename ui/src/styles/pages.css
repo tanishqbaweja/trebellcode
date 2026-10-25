@@ -565,8 +565,20 @@
 :root:root .capabilities-page .skill-roots-editor label span{display:block;margin-top:3px;font-size:11.5px!important;line-height:1.5;color:var(--tx2)!important}
 :root:root .capabilities-page .skill-roots-editor textarea{min-height:74px;resize:vertical;padding:9px 12px!important;border:1px solid var(--line)!important;border-radius:9px!important;background:var(--bg2)!important;color:var(--tx0)!important;font:11.5px/1.55 var(--mono)!important;outline:0}
 :root:root .capabilities-page .skill-roots-editor .capability-actions{margin:0!important}
-:root:root .capabilities-page .plugin-search-controls{display:grid;grid-template-columns:minmax(120px,1fr) 118px auto auto;gap:8px;margin-bottom:10px}
+/* The search row is laid out by its own width, so it fits the card whether the cards sit two a row or one: on one line where the box
+   keeps 120px beside the scope, Searching… and Reconcile, else the box and the scope over Search and Reconcile, its lines the same
+   whatever the buttons say. */
+:root:root .capabilities-page .plugin-search-controls{container:plugin-search/inline-size;display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+:root:root .capabilities-page .plugin-search-controls input{flex:1 1 0}
+:root:root .capabilities-page .plugin-search-controls select{flex:0 0 118px}
+:root:root .capabilities-page .plugin-search-controls button{flex:none}
 :root:root .capabilities-page .plugin-search-controls :is(input,select){height:30px!important;font-size:12px!important}
+@container plugin-search (max-width:440px){
+  :root:root .capabilities-page .plugin-search-controls input{flex-basis:calc(100% - 119px)}
+  :root:root .capabilities-page .plugin-search-controls select{flex-basis:110px}
+  :root:root .capabilities-page .plugin-search-controls button{flex:1 1 0}
+  :root:root .capabilities-page .plugin-search-controls button:last-child{flex:0 0 110px}
+}
 :root:root .capabilities-page .plugin-search-results{margin-bottom:10px}
 :root:root .capabilities-page :is(.plugin-detail,.app-detail){margin-top:10px;padding:12px 14px!important;border:1px solid var(--line)!important;border-radius:var(--r-m)!important;background:var(--pg-row)!important;color:var(--tx1)!important}
 :root:root .capabilities-page :is(.plugin-detail-head,.app-detail-head){display:flex;align-items:center;justify-content:space-between;gap:10px}
@@ -589,7 +601,6 @@
   :root:root .capabilities-page .capability-grid{grid-template-columns:minmax(0,1fr)}
 }
 @container pg (max-width:520px){
-  :root:root .capabilities-page .plugin-search-controls{grid-template-columns:minmax(0,1fr) 110px}
   :root:root .capabilities-page .mcp-tool{grid-template-columns:minmax(0,1fr) auto}
   :root:root .capabilities-page .mcp-tool>div{grid-column:1/-1}
 }
