@@ -58,7 +58,12 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // name in them), which took them 0.2 / 0.5 KB over it: its headroom stays 1.0 / 0.0 KB, as on main before round 8. Lane R8B adds
 // 1.2 / 0.5 KB to the first bundle (letters typed while an @ file imports kept, the whole word replaced by the file, and the right
 // panel docked or overlaid at every width; now 199.9 of its 200 KB gzip), and lane R8C changes no UI code.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:755.5,gzipKB:248.3}};
+// Then by what round 9's fix lanes add to the lazy chunks, 9.8 / 3.9 KB, which took them 8.8 / 3.9 KB over it: most of it is lane
+// R9B's room in the first bundle (the Cite button, the find bar and the threads' searches loaded at idle after the first paint, and
+// the thread-move, snooze and /goal helpers moved to the lazy chunks that use them), the rest the Tools page's searches and skill
+// reads kept for the page drawn again (R9A) and the right panel's handles (R9C). Its headroom stays 1.0 / 0.0 KB, as on main before
+// round 9. The first bundle went down, 624.9 / 199.9 to 619.2 / 198.3 KB, with the composer's @-menu fixes (R9B) in it.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:765.3,gzipKB:252.2}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
