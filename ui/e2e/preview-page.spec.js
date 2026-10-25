@@ -1145,8 +1145,14 @@ test("the profile list shows each profile's whole name with the panel at its own
     await expect.poll(width).toBe(px||Number(await resizer.getAttribute("aria-valuemax")));
   };
   for(const mode of ["dark","light"]){
-    await page.setViewportSize({width:1280,height:800});
-    if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+    await page.setViewportSize({width:1280,height:800});await frames(page);
+    // The header's theme button, or its row in More actions where the header folded it away: the panel the dark pass left at its
+    // widest leaves the conversation 400 px at 1280 px.
+    if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode){
+      const toggle=page.locator("[data-testid=appearance-toggle]:visible").first();
+      if(await toggle.count())await toggle.click();
+      else{await page.locator(".chat-workspace .workspace-header").getByRole("button",{name:"More actions",exact:true}).click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:/^Switch to (light|dark) mode$/}).click()}
+    }
     await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
     // In dark the panel at its own 440 px, dragged 20 px wider, then as wide as the 1280 px window lets it go; in light the other way.
     for(const px of mode==="dark"?[440,460,0]:[0,460,440]){
