@@ -3904,10 +3904,11 @@ test("text typed straight on while /goal sets the thread's goal lands in the com
 // Cite puts a sentence in the draft that says what the cited text is for, which the message needs (a draft with no text cannot be
 // sent, and a harness is handed a citation as a file it may not read). Each Cite added it again, two spaces after the last, and a
 // citation removed with its chip's x left its sentence: two citations went with four sentences. The draft says it once while any
-// citation is attached, and the last one removed takes it, leaving what the person typed.
+// citation is attached, in words that fit any number of them (it named one excerpt over two, round 10 repair), and the last one
+// removed takes it, leaving what the person typed.
 test("Cite says once in the draft that the cited text is context, however many citations it holds, and the last one removed takes that sentence with it",async({page})=>{
   test.setTimeout(90_000);
-  const PARAGRAPHS=["First paragraph about the session token and where it is kept.","Second paragraph about the refresh timer and when it fires."],NOTE="Use the cited assistant excerpt as context.";
+  const PARAGRAPHS=["First paragraph about the session token and where it is kept.","Second paragraph about the refresh timer and when it fires."],NOTE="Use the cited assistant text as context.";
   const harness=await openComposerApp(page,{turns:[{user:"Explain the session handling",items:[replyItem("cite-reply",PARAGRAPHS.join("\n\n"))]}],replies:[{text:"Summarized both excerpts."}]});
   try{
     const composer=page.getByTestId("composer"),paragraphs=page.locator(".assistant-message-text").last().locator("p"),cite=page.getByTestId("assistant-selection-cite"),citations=page.getByTestId("context-chip");
@@ -3947,4 +3948,87 @@ test("Cite says once in the draft that the cited text is context, however many c
     expect(sent.filter(part=>part.type==="mention").length,"the citations that went with it").toBe(2);
     await expect(citations).toHaveCount(0);await expect(composer).toHaveValue("");
   }finally{await harness.close()}
+});
+
+// A citation can be on the draft as a file with none of Cite's chips: Edit from here brings a cited message's file back as a plain
+// attachment on the shelf, and a Trebell Native follow-up queued with a citation and loaded again after a reload brings its file back
+// with a file chip. Cite's sentence counted Cite's chips only: the citation Cite added next, removed with its x, took the sentence
+// though the file brought back was still attached, and the file brought back, removed from the shelf or by its chip's x, left the
+// sentence behind. Nor was a sentence the person put in the plural Cite's, so the next Cite added its own beside it and the last
+// citation removed left it (round 10 repair). The sentence stays while any citation file is on the draft and goes with the last one.
+test("Cite's sentence stays while a citation file brought back by Edit from here or with a queued follow-up is on the draft, goes with the last one removed from the shelf or by its chip, and is Cite's in the plural too",async({page})=>{
+  test.setTimeout(180_000);
+  const PARAGRAPHS=["First paragraph about the session token and where it is kept.","Second paragraph about the refresh timer and when it fires."];
+  let openMain=()=>{};const mainHeld=new Promise(done=>{openMain=done});
+  const harness=await openComposerApp(page,{turns:[{user:"Explain the session handling",items:[replyItem("cite-reply",PARAGRAPHS.join("\n\n"))]}],replies:[
+    {text:"Summarized the first excerpt."},{text:"Summarized the second excerpt."},async()=>{await mainHeld;return {text:"The main task is done."}},{text:"Checked the queued excerpt."},
+  ]});
+  try{
+    const composer=page.getByTestId("composer"),cite=page.getByTestId("assistant-selection-cite"),citations=page.getByTestId("context-chip"),shelf=chips(page);
+    const paragraphs=page.locator(".assistant-message-text").filter({hasText:PARAGRAPHS[0]}).locator("p"),row=threadRow(page,"Composer thread"),queued=page.locator(".queued-message");
+    // A triple-click selects a paragraph and Cite comes above it, once the selection has settled; Cite then adds the count-th chip.
+    const citeParagraph=async(index,count)=>{
+      await paragraphs.nth(index).click({clickCount:3});await expect(cite).toBeVisible();
+      await expect.poll(()=>page.evaluate(()=>String(getSelection()).trim())).toBe(PARAGRAPHS[index]);await frames(page);
+      await cite.click();await expect(citations).toHaveCount(count);
+    };
+    const emptyDraft=async()=>{await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("")};
+    const removeFromShelf=()=>shelf.getByRole("button",{name:"Remove assistant-citation.txt",exact:true}).click();
+    // The draft sent, and the message brought back by Edit from here: its text with Cite's sentence, its file on the shelf with no chip.
+    const sendAndEdit=async(reply,note)=>{
+      await composer.click();await page.keyboard.press("Enter");
+      await expect(page.getByText(reply,{exact:true})).toBeVisible({timeout:15_000});
+      const bubble=page.locator(".user-bubble").filter({hasText:"Summarize this"});await expect(bubble.locator(".user-attachments > span")).toHaveText(["assistant-citation.txt"]);
+      await bubble.getByRole("button",{name:"Edit from here",exact:true}).click();
+      await page.getByRole("dialog").getByRole("button",{name:"Edit from here",exact:true}).click();
+      await expect(composer).toHaveValue("Summarize this "+note,{timeout:15_000});await expect(bubble).toHaveCount(0);
+      await expect(shelf).toHaveText(["assistant-citation.txt"]);await expect(citations).toHaveCount(0);
+    };
+    // Cite's sentence as this build words it, after the words typed.
+    await composer.click();await typeOn(page,"Summarize this");await citeParagraph(1,1);
+    const note=(await composer.inputValue()).slice("Summarize this ".length).trim();expect(note,"Cite's sentence").toMatch(/^Use the \w+ assistant \w+ as context\.$/);
+    await expect(composer).toHaveValue("Summarize this "+note+" ");
+    // The file brought back, removed from the shelf, takes the sentence.
+    await sendAndEdit("Summarized the first excerpt.",note);
+    await removeFromShelf();await expect(shelf).toHaveCount(0);
+    await expect.soft(composer,"the draft once the citation Edit from here brought back is removed from the shelf").toHaveValue("Summarize this");
+    // Cited, sent and brought back again: a citation Cite adds to it, removed with its x, leaves the sentence for the file brought back,
+    // which takes it once removed from the shelf.
+    await emptyDraft();await typeOn(page,"Summarize this");await citeParagraph(1,1);await expect(composer).toHaveValue("Summarize this "+note+" ");
+    await sendAndEdit("Summarized the second excerpt.",note);
+    await citeParagraph(0,1);await expect(composer,"the draft with a citation added to the one brought back").toHaveValue("Summarize this "+note);
+    await citations.getByRole("button",{name:"Remove context"}).click();await expect(citations).toHaveCount(0);
+    await expect.soft(composer,"the draft once the citation added is removed, the one brought back still on the shelf").toHaveValue("Summarize this "+note);
+    await shootHere(page,"cite-sentence-kept-for-a-citation-brought-back");
+    await removeFromShelf();await expect(shelf).toHaveCount(0);await expect(composer,"the draft once the citation brought back is removed too").toHaveValue("Summarize this");
+    // A sentence the person put in the plural is Cite's too: the next Cite adds none beside it, and the last citation removed takes it.
+    await citeParagraph(1,1);await expect(composer).toHaveValue("Summarize this "+note+" ");
+    const plural="Use the cited assistant excerpts as context.";
+    await emptyDraft();await typeOn(page,"Summarize these "+plural+" ");
+    await citeParagraph(0,2);await expect.soft(composer,"the draft with the sentence in the plural, cited again").toHaveValue("Summarize these "+plural+" ");
+    await citations.first().getByRole("button",{name:"Remove context"}).click();await expect(citations).toHaveCount(1);
+    await citations.getByRole("button",{name:"Remove context"}).click();await expect(citations).toHaveCount(0);
+    await expect.soft(composer,"the draft once the last citation is removed, the sentence in the plural").toHaveValue("Summarize these");
+    // A follow-up queued with a citation while a turn runs, loaded again after a reload and edited: its file comes back with a file chip,
+    // whose x takes the sentence. Escape ends the edit, and once the turn ends the follow-up goes as it was queued, with its file.
+    await emptyDraft();await typeOn(page,"Run the main task");await page.keyboard.press("Enter");
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible({timeout:15_000});await expect(composer).toHaveAttribute("placeholder","Queue a follow-up…");
+    await citeParagraph(1,1);await composer.click();await page.keyboard.press("Control+End");await typeOn(page,"Check this");
+    await expect(composer).toHaveValue(note+" Check this");await page.keyboard.press("Enter");
+    await expect(queued).toContainText("Queued in Trebell Native");await expect(queued.locator("p")).toHaveText(note+" Check this");await expect(citations).toHaveCount(0);
+    await page.reload();await expect(row).toBeVisible({timeout:15_000});
+    if(!await row.evaluate(node=>node.classList.contains("active")))await row.locator(".thread-main").click();
+    await expect(queued.locator("p")).toHaveText(note+" Check this",{timeout:15_000});await expect(composer).toBeEnabled();
+    await queued.getByRole("button",{name:"Edit",exact:true}).click();
+    await expect(composer).toHaveValue(note+" Check this");await expect(citations).toHaveCount(1);
+    await citations.getByRole("button",{name:"Remove context"}).click();await expect(citations).toHaveCount(0);
+    await expect.soft(composer,"the queued follow-up's draft once its citation is removed by its file chip's x").toHaveValue("Check this");
+    await shootHere(page,"cite-sentence-gone-with-a-queued-citation");
+    await composer.click();await page.keyboard.press("Escape");await expect(composer).toHaveValue("");await expect(queued.locator("p")).toHaveText(note+" Check this");
+    openMain();
+    await expect(page.getByText("Checked the queued excerpt.",{exact:true})).toBeVisible({timeout:20_000});
+    const followUp=page.locator(".user-bubble").filter({hasText:"Check this"});
+    await expect(followUp.locator("p")).toHaveText(note+" Check this");await expect(followUp.locator(".user-attachments > span")).toHaveText(["assistant-citation.txt"]);
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Explain the session handling","Run the main task",note+" Check this"]);
+  }finally{openMain();await harness.close()}
 });

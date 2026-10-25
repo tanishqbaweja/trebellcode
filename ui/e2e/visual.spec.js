@@ -5050,7 +5050,7 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   await citeSelection.click();
   const citationChip=page.getByTestId("context-chip").filter({hasText:"Assistant excerpt"});
   await expect(citationChip).toBeVisible();
-  await expect(composer).toHaveValue(/cited assistant excerpt/i);
+  await expect(composer).toHaveValue(/cited assistant text/i);
   await page.screenshot({animations:"disabled",path:auditDir+"chat-assistant-selection-context-1600x980.png",fullPage:true});
   await citationChip.getByTitle("Remove context").click();
   await composer.fill("");

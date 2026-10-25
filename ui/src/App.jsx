@@ -742,9 +742,15 @@ function footerPressOnce(event){if(event.target.closest("button"))ignorePressRes
 // next chip's button comes up under the pointer (chips with names too long for them are all one width, and Browser screenshots all
 // read the same), and the repeats of Enter held, which go to the next chip's button that removeChip gives the keyboard.
 function chipPressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
-// The sentence Cite puts in the draft, which says it once however many citations the draft holds: the last one removed takes it,
-// with the space Cite put beside it, unless the person changed it (removeContext).
-const CITE_NOTE=/( ?)Use the (?:cited assistant excerpt|attached assistant citation) as context\.( ?)/;
+// The sentence Cite puts in the draft, which says it once however many citations the draft holds, in words that fit any number of
+// them: the last one removed takes it, with the space Cite put beside it, unless the person changed it to other words (dropCiteNote).
+// The sentences Cite put before (one excerpt, one citation) and their plurals count as it, so a draft brought back with one of them, or
+// with a person's plural, gets no second sentence and loses it with the last citation.
+const CITE_SENTENCE="Use the cited assistant text as context.",CITE_NOTE=/( ?)Use the (?:cited|attached) assistant (?:texts?|excerpts?|citations?) as context\.( ?)/;
+// A citation's file, by the name the server gives the text Cite attaches (assistant-citation.txt after its time and id, once more for a
+// remote environment's copy): on the draft with its chip, as a plain attachment Edit from here brought back, or with the file chip of
+// a queued follow-up loaded again.
+const CITE_FILE=/(?:^|[\\/])(?:\d{10,}-[0-9a-f]{8}-)+assistant-citation\.txt$/i;
 
 // What a refused or missing microphone means for dictation, by the browser's speech recognition error.
 const DICTATION_ERRORS={
@@ -4889,8 +4895,14 @@ export default function App(){
     return api("/api/attachments/validate",{method:"POST",body});
   }
   async function addContextAttachment({name,text,kind="context",label="Context",detail="",key=null}){const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});const [path]=await prepareAttachmentPaths([d.path]);return addContextPath(path,{kind,label,detail,key})}
+  // The last citation file taken off the draft, by its chip's x or the shelf's, takes Cite's sentence with it: the files are counted,
+  // whatever chip they have (CITE_FILE), as a citation brought back by Edit from here or with a queued follow-up has none of Cite's.
+  function dropCiteNote(path){
+    const cites=new Set([...contextChips.filter(chip=>chip.kind==="citation").map(chip=>chip.path),...attachments.filter(item=>CITE_FILE.test(item))]);
+    if(cites.size===1&&cites.has(path))setPrompt(prev=>prev.replace(CITE_NOTE,(note,before,after,at)=>before&&after&&at+note.length<prev.length?" ":""));
+  }
   function removeContext(path){
-    const cites=contextChips.filter(chip=>chip.kind==="citation");if(cites.length===1&&cites[0].path===path)setPrompt(prev=>prev.replace(CITE_NOTE,(note,before,after,at)=>before&&after&&at+note.length<prev.length?" ":""));
+    dropCiteNote(path);
     setContextChips(prev=>prev.filter(chip=>chip.path!==path));setAttachments(prev=>prev.filter(item=>item!==path));
   }
   const searchComposerFiles=useCallback(async query=>{
@@ -4977,7 +4989,7 @@ export default function App(){
     const threadLabel=activeThread?.name||activeThread?.id||"current thread";
     const text=[selected?"Assistant response excerpt":"Assistant response citation","Thread: "+threadLabel,message?.id?"Message: "+message.id:null,"",source].filter(value=>value!=null).join("\n");
     await addContextAttachment({name:"assistant-citation.txt",text,kind:"citation",label:selected?"Assistant excerpt":"Assistant citation",detail:selected?`${selected.length.toLocaleString()} chars · ${threadLabel}`:threadLabel});
-    setPrompt(prev=>CITE_NOTE.test(prev)?prev:(prev?prev+" ":"")+(selected?"Use the cited assistant excerpt as context. ":"Use the attached assistant citation as context. "));
+    setPrompt(prev=>CITE_NOTE.test(prev)?prev:(prev?prev+" ":"")+CITE_SENTENCE+" ");
     return true;
   }
   async function attachReviewComment(path,comment){
@@ -5340,7 +5352,7 @@ export default function App(){
   const composerSend=useLatestCallback(send);
   const composerBackgroundSend=useLatestCallback(sendInBackground);
   const composerSetModel=useLatestCallback(changeComposerModel);
-  const composerRemoveAttachment=useLatestCallback(path=>setAttachments(prev=>prev.filter(x=>x!==path)));
+  const composerRemoveAttachment=useLatestCallback(path=>{dropCiteNote(path);setAttachments(prev=>prev.filter(x=>x!==path))});
   const composerSetPermissionMode=useLatestCallback(mode=>{pickedModesRef.current.permission=true;setPermissionMode(mode)});
   const composerSetWorkspaceMode=useLatestCallback(mode=>{pickedModesRef.current.workspace=true;setWorkspaceMode(mode)});
   const composerRemoveContext=useLatestCallback(removeContext);
