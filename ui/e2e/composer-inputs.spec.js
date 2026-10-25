@@ -2211,22 +2211,25 @@ test("letters typed on while a file picked from the @ menu imports stay after it
       }
     }
     // Something else done while the file is held: letters typed before the word (Home, then 'Please '), the word erased, or letters
-    // typed in another field (the thread search). The draft keeps what was typed, the caret its place and the keyboard its field.
+    // typed in another field (the thread search). The draft keeps what was typed, the caret its place and the keyboard its field. The
+    // erased word gets no file, and no chip either (round 9: the chip stayed, and went with the next message).
     const search=page.getByRole("textbox",{name:"Search threads"});
-    for(const [how,edit,draft,caret] of [
-      ["letters typed before the word",async()=>{await page.keyboard.press("Home");await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js ",7],
-      ["the word erased",async()=>{for(let key=0;key<4;key++)await page.keyboard.press("Backspace")},"Check ",6],
-      ["letters typed in the thread search",async()=>{await search.click();await page.keyboard.type("zz",{delay:60})},"Check @src/login.js ",20],
+    for(const [how,edit,draft,caret,chip] of [
+      ["letters typed before the word",async()=>{await page.keyboard.press("Home");await page.keyboard.type("Please ",{delay:60})},"Please Check @src/login.js ",7,1],
+      ["the word erased",async()=>{for(let key=0;key<4;key++)await page.keyboard.press("Backspace")},"Check ",6,0],
+      ["letters typed in the thread search",async()=>{await search.click();await page.keyboard.type("zz",{delay:60})},"Check @src/login.js ",20,1],
     ]){
       let release=null;hold=300;typed=new Promise(done=>{release=done});
       await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
       await page.keyboard.type("Check @log",{delay:20});await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      const landed=chip?null:page.waitForResponse(response=>new URL(response.url()).pathname==="/api/attachments/import");
       await page.keyboard.press("Enter");await edit();release();
-      await expect(context).toHaveCount(1);await expect.soft(composer,`the draft with ${how} while the file imports`).toHaveValue(draft);
+      if(chip)await expect(context).toHaveCount(1);else{await (await landed).finished();await painted(page);await expect.soft(context,`the chips with ${how} while the file imports`).toHaveCount(0)}
+      await expect.soft(composer,`the draft with ${how} while the file imports`).toHaveValue(draft);
       expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),`the caret with ${how} while the file imports`).toEqual([caret,caret]);
       if(how.includes("search")){await expect.soft(search,"the keyboard in the thread search").toBeFocused();await expect(search).toHaveValue("zz");await page.keyboard.press("Control+A");await page.keyboard.press("Backspace")}
       else await expect.soft(composer,`the keyboard in the composer with ${how}`).toBeFocused();
-      await context.locator("button").click();await expect(context).toHaveCount(0);
+      if(await context.count()){await context.locator("button").click();await expect(context).toHaveCount(0)}
     }
     // The file in at once. Letters typed straight after Enter, as a script types, each land where they were typed, none before the
     // caret (the next frame put it back after the file, before a letter typed in between). A double click's second click, on what is
@@ -2300,6 +2303,118 @@ test("letters typed on while a file picked from the @ menu imports stay after it
       await page.screenshot({animations:"disabled",path:auditDir+(landsAway?`mention-file-in-while-${shown}-is-up`:`mention-file-in-after-${shown}-and-back`)+`-${mode}-1280x800.png`});
       await context.locator("button").click();await expect(context).toHaveCount(0);
     }
+  }finally{await harness.close()}
+});
+
+// The import of a file picked from the @ menu held as a slow one is: hold ms, and until the round lets it in (held).
+async function holdMentionImports(page){
+  const control={hold:0,held:null};
+  await page.route(/\/api\/attachments\/import$/,async route=>{await Promise.all([new Promise(done=>setTimeout(done,control.hold)),control.held]);await route.fallback()});
+  return control;
+}
+// The emptied composer with 'Check @log' typed in it, or draft, and its @ menu offering login.js first.
+async function typeMention(page,draft="Check @log"){
+  const composer=page.getByTestId("composer");
+  await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+  await page.keyboard.type(draft,{delay:20});await expect(page.getByTestId("file-mention-menu").locator("button.active strong")).toHaveText("login.js");
+}
+// login.js picked from the @ menu as a person picks it: Enter or Tab held 80 ms, or a click.
+async function pickLogin(page,pick){
+  if(pick==="a click")await page.getByTestId("file-mention-menu").locator("button").filter({hasText:"src/login.js"}).click({delay:80});
+  else{await page.keyboard.down(pick);await page.waitForTimeout(80);await page.keyboard.up(pick)}
+}
+
+// A send while the file picked from the @ menu imports waits for it, as a send waits for a file that uploads: Enter and a click on Send
+// do nothing, Send's title says what it waits for, also in the composer drawn again back from Settings, and once the file is in the
+// message goes with it. The message went at once with its text only, and the file's chip, landing in the composer the send had emptied,
+// went with the next message (round 9).
+test("a message sent while a file picked from the @ menu imports waits for the file, Send's title saying so, also back from Settings, and then goes with it, by Enter or a click on Send",async({page})=>{
+  test.setTimeout(240_000);
+  const replies=["Checked it with the file.","Checked it with the file again.","Checked it once more with the file.","Checked it after the file came in.","Checked it back from Settings."];
+  const harness=await openComposerApp(page,{replies:replies.map(text=>({text}))});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),context=page.getByTestId("context-chip"),send=page.getByTestId("send"),users=page.locator(".user-bubble");
+    const files=users.last().locator(".user-attachments > span"),waiting="Waiting for src/login.js to attach",imports=await holdMentionImports(page);
+    // A click where Send is, as a person clicks it whether it is on or off.
+    const clickSend=async()=>{const box=await send.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2)};
+    let sent=1;
+    for(const [index,[mode,ms,pick,how]] of [["dark",900,"Enter","Enter"],["light",900,"a click","a click on Send"],["dark",300,"Tab","a click on Send"],["light",300,"Enter","Enter"]].entries()){
+      await switchMode(page,mode);
+      const where=` in ${mode}, the import ${ms} ms slow, login.js picked by ${pick} and ${how} while it imports`;
+      let release=null;imports.hold=ms;imports.held=new Promise(done=>{release=done});
+      // ' please' typed at a person's pace, the first letter 120 ms after the pick, 60 ms a key, and the message sent.
+      await typeMention(page);await pickLogin(page,pick);await page.waitForTimeout(120);await page.keyboard.type(" please",{delay:60});
+      await expect(send,"Send"+where).toBeDisabled();await expect(send,"Send's title"+where).toHaveAttribute("title",waiting);
+      if(how==="Enter")await page.keyboard.press("Enter");else await clickSend();
+      await painted(page);
+      await expect(composer,"the draft"+where).toHaveValue("Check @log please");await expect(users,"the messages"+where).toHaveCount(sent);
+      if(index<2)await page.screenshot({animations:"disabled",path:auditDir+`mention-send-waits-for-the-file-${mode}-1280x800.png`});
+      release();
+      await expect(context).toHaveCount(1);await expect(composer,"the draft once the file is in"+where).toHaveValue("Check @src/login.js please");
+      await expect(send).toBeEnabled();await expect(send).toHaveAttribute("title","Send message");
+      if(how==="Enter")await page.keyboard.press("Enter");else await send.click();
+      await expect(page.getByText(replies[index],{exact:true})).toBeVisible({timeout:15_000});sent++;
+      await expect(users).toHaveCount(sent);await expect(users.last().locator("p")).toHaveText("Check @src/login.js please");await expect(files).toHaveText(["login.js"]);
+      await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);
+      if(index<2)await page.screenshot({animations:"disabled",path:auditDir+`mention-sent-with-the-file-once-in-${mode}-1280x800.png`});
+    }
+    // Settings opened while the file imports and the thread opened again from its row: the composer drawn again waits for the file too.
+    let release=null;imports.hold=0;imports.held=new Promise(done=>{release=done});
+    await typeMention(page);await page.keyboard.press("Enter");await page.keyboard.type(" please",{delay:60});await expect(composer).toHaveValue("Check @log please");
+    await page.keyboard.press("Control+Comma");await expect(page.getByRole("heading",{name:"Settings",exact:true,level:1})).toBeVisible();await expect(composer).toHaveCount(0);
+    await threadRow(page,"Composer thread").locator(".thread-main").click();await expect(composer).toBeEnabled();await painted(page);
+    await expect(send,"Send back from Settings").toBeDisabled();await expect(send,"Send's title back from Settings").toHaveAttribute("title",waiting);
+    await composer.click();await page.keyboard.press("End");await page.keyboard.press("Enter");await painted(page);
+    await expect(composer,"the draft back from Settings").toHaveValue("Check @log please");await expect(users,"the messages back from Settings").toHaveCount(sent);
+    release();await expect(context).toHaveCount(1);await expect(composer).toHaveValue("Check @src/login.js please");
+    await page.keyboard.press("End");await page.keyboard.press("Enter");
+    await expect(page.getByText(replies[4],{exact:true})).toBeVisible({timeout:15_000});
+    await expect(users).toHaveCount(sent+1);await expect(files).toHaveText(["login.js"]);await expect(context).toHaveCount(0);
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page",...Array(5).fill("Check @src/login.js please")]);
+  }finally{await harness.close()}
+});
+
+// A pick whose word is gone once its file is in (erased, or the draft cleared, while it imported) puts nothing on the draft and takes
+// its chip back, so the next message goes without the file: the chip stayed and went with the next message (round 9). A file the draft
+// had already keeps its chip.
+test("a file picked from the @ menu whose word is gone once it is in leaves no chip, and the next message goes without it, while a file the draft had already keeps its chip",async({page})=>{
+  test.setTimeout(150_000);
+  const replies=["The second message went alone.","The file went along."];
+  const harness=await openComposerApp(page,{replies:replies.map(text=>({text}))});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),context=page.getByTestId("context-chip"),users=page.locator(".user-bubble"),files=users.last().locator(".user-attachments > span");
+    const imports=await holdMentionImports(page);
+    // The file let in, and the app done with the import's answer.
+    const fileIn=async release=>{const done=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/attachments/import");release();await (await done).finished();await painted(page)};
+    for(const [mode,pick,how,edit,draft] of [
+      ["dark","Enter","the word erased",async()=>{for(let key=0;key<4;key++)await page.keyboard.press("Backspace")},"Check "],
+      ["light","a click","the word erased",async()=>{for(let key=0;key<4;key++)await page.keyboard.press("Backspace")},"Check "],
+      ["dark","Tab","the draft cleared",async()=>{await page.keyboard.press("Control+A");await page.keyboard.press("Backspace")},""],
+    ]){
+      await switchMode(page,mode);
+      let release=null;imports.hold=300;imports.held=new Promise(done=>{release=done});
+      await typeMention(page);await pickLogin(page,pick);await edit();await expect(composer).toHaveValue(draft);
+      await fileIn(release);
+      await expect.soft(context,`the chips once the file is in, with ${how} while it imported, in ${mode}`).toHaveCount(0);await expect(composer).toHaveValue(draft);
+      if(pick!=="Tab")await page.screenshot({animations:"disabled",path:auditDir+`mention-word-gone-no-chip-${mode}-1280x800.png`});
+    }
+    // The next message goes without the file.
+    await page.keyboard.type("The second message",{delay:20});await page.keyboard.press("Enter");
+    await expect(page.getByText(replies[0],{exact:true})).toBeVisible({timeout:15_000});
+    await expect(users.last().locator("p")).toHaveText("The second message");await expect(files,"the files the second message went with").toHaveCount(0);
+    // login.js on the draft already, picked again on another word that is erased while it imports: its chip stays, and goes with the message.
+    imports.hold=0;imports.held=null;
+    await typeMention(page);await page.keyboard.press("Enter");await expect(context).toHaveCount(1);await expect(composer).toHaveValue("Check @src/login.js ");
+    let release=null;imports.held=new Promise(done=>{release=done});
+    await page.keyboard.type("and @log",{delay:20});await expect(page.getByTestId("file-mention-menu").locator("button.active strong")).toHaveText("login.js");
+    await page.keyboard.press("Enter");for(let key=0;key<4;key++)await page.keyboard.press("Backspace");
+    await fileIn(release);
+    await expect(context,"the chip of the file on the draft already").toHaveCount(1);await expect(composer).toHaveValue("Check @src/login.js and ");
+    await page.keyboard.type("logout",{delay:20});await page.keyboard.press("Enter");
+    await expect(page.getByText(replies[1],{exact:true})).toBeVisible({timeout:15_000});
+    await expect(users.last().locator("p")).toHaveText("Check @src/login.js and logout");await expect(files).toHaveText(["login.js"]);
   }finally{await harness.close()}
 });
 
