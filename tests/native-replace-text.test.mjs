@@ -77,7 +77,15 @@ test("the single old_text/new_text form is unchanged, and an edits list takes no
   assert.throws(()=>replaceTextHunks({path:"x",expected_replacements:2,edits:[{old_text:"a",new_text:"b"}]}),/expected_replacements inside each edit/);
   assert.throws(()=>replaceTextHunks({path:"x",edits:[]}),/non-empty list/);
   assert.throws(()=>replaceTextHunks({path:"x",edits:[{old_text:"a",new_text:"b"},{old_text:"",new_text:"c"}]}),/edits\[1\]\.old_text must not be empty/);
-  assert.throws(()=>replaceTextHunks({path:"x",edits:Array.from({length:51},()=>({old_text:"a",new_text:"b"}))}),/at most 50/);
+  assert.throws(()=>replaceTextHunks({path:"x",edits:Array.from({length:501},()=>({old_text:"a",new_text:"b"}))}),/at most 500/);
+});
+
+test("an edits list of a bulk rename, over a hundred edits, applies in one call, all or nothing",()=>{
+  const names=Array.from({length:115},(_,i)=>`name_${i}_val`),source=names.map((name,i)=>`v${i} = ${name}\n`).join("");
+  const edits=names.map((name,i)=>({old_text:name,new_text:String(i)}));
+  assert.equal(replaceTextHunks({path:"x",old_text:"",new_text:"",expected_replacements:1,edits}).length,115);
+  assert.equal(applyReplaceTextHunks(source,replaceTextHunks({path:"x",edits}),{path:"x"}).content,names.map((_,i)=>`v${i} = ${i}\n`).join(""));
+  assert.throws(()=>applyReplaceTextHunks(source,replaceTextHunks({path:"x",edits:[...edits,{old_text:"missing_val",new_text:"0"}]}),{path:"x"}),/missing_val|No changes were written/);
 });
 
 test("a call that also sends the other form's fields empty or at their default is read as the form it fills in",()=>{

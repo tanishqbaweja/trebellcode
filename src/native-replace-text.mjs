@@ -3,7 +3,9 @@
 // old_text has no exact match, and where each match is when it has several. A call that applies returns a compact unified diff
 // of what changed; its before/after hashes stay in the raw result (and so in audit logs), not in what the model reads.
 
-export const REPLACE_TEXT_MAX_EDITS=50;
+// The schema states no limit, so the model learns this one only from a refusal: 50 refused a bulk rename's 115 edits and then
+// its 51 (2026-10-25, two re-sent calls of 9 and 4 KB). A call still applies all or nothing, and each diff has its own budget.
+export const REPLACE_TEXT_MAX_EDITS=500;
 const DIFF_CONTEXT_LINES=3,DIFF_MAX_LINES=200,DIFF_MAX_CHARS=12_000,DIFF_LINE_CHARS=300,DIFF_RUN_LINES=16,DIFF_MAX_EDIT_DISTANCE=1500,DIFF_WORK_BUDGET=20_000_000;
 const REGION_MAX_LINES=40,REGION_LINE_CHARS=300,MATCH_LIST_LIMIT=12,HEADER_SEARCH_LINES=3000,TOKEN_LIMIT=64;
 
