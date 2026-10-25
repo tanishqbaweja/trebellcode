@@ -190,6 +190,19 @@ test("Native replace_text applies an edits list to one file in order, all or not
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
+test("Native replace_text applies a filled old_text/new_text pair sent beside an edits list as its first edit, or writes nothing",async()=>{
+  const root=await workspace(),source="a = 1\nb = 1\n";
+  try{
+    await writeFile(join(root,"src","values.py"),source,"utf8");
+    const execute=createNativeBuiltins({root});
+    await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/values.py",old_text:"a = 1",new_text:"a = 2",expected_replacements:1,edits:[{old_text:"c = 1",new_text:"c = 2",expected_replacements:1}]}}),
+      error=>/^edits\[0\]: Expected 1 exact replacement in src\/values\.py, found 0\. No changes were written \(edits are all or nothing\)\./.test(error.message));
+    assert.equal(await readFile(join(root,"src","values.py"),"utf8"),source,"the pair is not written when an edit beside it fails");
+    const result=await execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/values.py",old_text:"a = 1",new_text:"a = 2",expected_replacements:1,edits:[{old_text:"b = 1",new_text:"b = 2",expected_replacements:1}]}});
+    assert.equal(result.replacements,2);assert.equal(await readFile(join(root,"src","values.py"),"utf8"),"a = 2\nb = 2\n");
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
 test("Native workspace tools keep absolute paths that name the workspace root or a path inside it",async()=>{
   const root=await workspace(),rooted=rootedSpelling(root),doubled=join(root,rooted.replace(/^[\\/]+/,""));
   try{

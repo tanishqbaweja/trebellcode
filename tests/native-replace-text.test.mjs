@@ -71,10 +71,9 @@ test("each hunk applies to the text the earlier hunks produced, and an expected 
   assert.deepEqual(applied,{content:"a = 2\nb = 3\n",replacements:3});
 });
 
-test("the single old_text/new_text form is unchanged, and the two forms cannot be mixed",()=>{
+test("the single old_text/new_text form is unchanged, and an edits list takes no half-filled pair or shared count beside it",()=>{
   assert.deepEqual(replaceTextHunks({path:"x",old_text:"a",new_text:"b",expected_replacements:2}),[{label:null,oldText:"a",newText:"b",expected:2}]);
   assert.throws(()=>replaceTextHunks({path:"x",old_text:"",new_text:"b"}),/old_text must not be empty/);
-  assert.throws(()=>replaceTextHunks({path:"x",old_text:"a",new_text:"b",edits:[{old_text:"a",new_text:"b"}]}),/either old_text\/new_text or edits/);
   assert.throws(()=>replaceTextHunks({path:"x",expected_replacements:2,edits:[{old_text:"a",new_text:"b"}]}),/expected_replacements inside each edit/);
   assert.throws(()=>replaceTextHunks({path:"x",edits:[]}),/non-empty list/);
   assert.throws(()=>replaceTextHunks({path:"x",edits:[{old_text:"a",new_text:"b"},{old_text:"",new_text:"c"}]}),/edits\[1\]\.old_text must not be empty/);
@@ -87,9 +86,29 @@ test("a call that also sends the other form's fields empty or at their default i
   assert.deepEqual(replaceTextHunks({path:"x",old_text:"a",new_text:"b",expected_replacements:1,edits:[]}),[{label:null,oldText:"a",newText:"b",expected:1}]);
   assert.deepEqual(replaceTextHunks({path:"x",old_text:"a",new_text:"",edits:null}),[{label:null,oldText:"a",newText:"",expected:1}]);
   assert.deepEqual(replaceTextHunks({path:"x",old_text:"",new_text:"",expected_replacements:1,edits:[{old_text:"a",new_text:"b"}]}),[{label:"edits[0]",oldText:"a",newText:"b",expected:1}]);
-  assert.throws(()=>replaceTextHunks({path:"x",old_text:"a",new_text:"",edits:[{old_text:"a",new_text:"b"}]}),/either old_text\/new_text or edits/);
-  assert.throws(()=>replaceTextHunks({path:"x",old_text:"",new_text:"b",edits:[{old_text:"a",new_text:"b"}]}),/either old_text\/new_text or edits/);
+  // A pair with one side filled beside a list could be a deletion or a stray field, so it is refused rather than guessed.
+  assert.throws(()=>replaceTextHunks({path:"x",old_text:"a",new_text:"",edits:[{old_text:"a",new_text:"b"}]}),/old_text and new_text beside edits must both be filled/);
+  assert.throws(()=>replaceTextHunks({path:"x",old_text:"",new_text:"b",edits:[{old_text:"a",new_text:"b"}]}),/old_text and new_text beside edits must both be filled/);
   assert.throws(()=>replaceTextHunks({path:"x",old_text:"",new_text:"",edits:[]}),/non-empty list/);
+});
+
+test("a filled old_text/new_text pair sent beside an edits list is applied as the list's first edit, all or nothing",()=>{
+  // The model fills every schema field, so a call can carry a real top-level pair and a real list; refusing it cost a retry.
+  const hunks=replaceTextHunks({path:"x",old_text:"a = 1",new_text:"a = 2",expected_replacements:1,edits:[{old_text:"b = 1",new_text:"b = 2"},{old_text:"c = 1",new_text:"c = 2"}]});
+  assert.deepEqual(hunks,[
+    {label:"old_text/new_text",oldText:"a = 1",newText:"a = 2",expected:1},
+    {label:"edits[0]",oldText:"b = 1",newText:"b = 2",expected:1},
+    {label:"edits[1]",oldText:"c = 1",newText:"c = 2",expected:1},
+  ]);
+  assert.deepEqual(applyReplaceTextHunks("a = 1\nb = 1\nc = 1\n",hunks,{path:"values.py"}),{content:"a = 2\nb = 2\nc = 2\n",replacements:3});
+  assert.deepEqual(replaceTextHunks({path:"x",old_text:"= 1",new_text:"= 2",expected_replacements:2,edits:[{old_text:"c = 1",new_text:"c = 3"}]})[0],{label:"old_text/new_text",oldText:"= 1",newText:"= 2",expected:2},"the top-level count belongs to the top-level pair");
+  // A copy of one of the edits in the top-level fields is that edit, not a second hunk that would find its text already replaced.
+  assert.deepEqual(replaceTextHunks({path:"x",old_text:"b = 1",new_text:"b = 2",edits:[{old_text:"a = 1",new_text:"a = 2"},{old_text:"b = 1",new_text:"b = 2"}]}).map(hunk=>hunk.label),["edits[0]","edits[1]"]);
+  assert.deepEqual(replaceTextHunks({path:"x",old_text:"a",new_text:"b",edits:[{old_text:"a",new_text:"b"}]}),[{label:"edits[0]",oldText:"a",newText:"b",expected:1}]);
+  assert.equal(fails(GREETER,{old_text:"import os\n",new_text:"import os\nimport sys\n",edits:[{old_text:"def helper(value):\n  return value * 2",new_text:"x"}]}).split("\n")[0],
+    "edits[0]: Expected 1 exact replacement in greet.py, found 0. No changes were written (edits are all or nothing).","a failing edit after the pair writes nothing");
+  assert.equal(fails(GREETER,{old_text:"import json\n",new_text:"import sys\n",edits:[{old_text:"import os\n",new_text:"import os\nimport re\n"}]}).split("\n")[0],
+    "old_text/new_text: Expected 1 exact replacement in greet.py, found 0. No changes were written (edits are all or nothing).","a failing pair is named by its fields");
 });
 
 test("an old_text that matches only when whitespace is ignored is answered with the exact current text and its line numbers",()=>{
