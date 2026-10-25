@@ -3842,3 +3842,51 @@ test("text typed straight on while /goal sets the thread's goal lands in the com
     await expect(composer,"what was typed stays once the goal is set").toHaveValue("Then check the signup page");
   }finally{goalSet.open();await harness.close()}
 });
+
+// Cite puts a sentence in the draft that says what the cited text is for, which the message needs (a draft with no text cannot be
+// sent, and a harness is handed a citation as a file it may not read). Each Cite added it again, two spaces after the last, and a
+// citation removed with its chip's x left its sentence: two citations went with four sentences. The draft says it once while any
+// citation is attached, and the last one removed takes it, leaving what the person typed.
+test("Cite says once in the draft that the cited text is context, however many citations it holds, and the last one removed takes that sentence with it",async({page})=>{
+  test.setTimeout(90_000);
+  const PARAGRAPHS=["First paragraph about the session token and where it is kept.","Second paragraph about the refresh timer and when it fires."],NOTE="Use the cited assistant excerpt as context.";
+  const harness=await openComposerApp(page,{turns:[{user:"Explain the session handling",items:[replyItem("cite-reply",PARAGRAPHS.join("\n\n"))]}],replies:[{text:"Summarized both excerpts."}]});
+  try{
+    const composer=page.getByTestId("composer"),paragraphs=page.locator(".assistant-message-text").last().locator("p"),cite=page.getByTestId("assistant-selection-cite"),citations=page.getByTestId("context-chip");
+    const remove=index=>citations.nth(index).getByRole("button",{name:"Remove context"});
+    await expect(paragraphs).toHaveText(PARAGRAPHS);
+    // A triple-click selects a paragraph and Cite comes above it, once the selection has settled (one still changing places Cite again).
+    const select=async index=>{
+      await paragraphs.nth(index).click({clickCount:3});await expect(cite).toBeVisible();
+      await expect.poll(()=>page.evaluate(()=>String(getSelection()).trim())).toBe(PARAGRAPHS[index]);await frames(page);
+    };
+    // Cited with a click, then from the keyboard (Tab from the selection to Cite, and Enter): two citations, the sentence once.
+    await select(1);await cite.click();
+    await expect(citations).toHaveCount(1);await expect(composer,"the draft with one citation").toHaveValue(NOTE+" ");
+    await select(0);await page.keyboard.press("Tab");await expect(cite).toBeFocused();await page.keyboard.press("Enter");
+    await expect(citations).toHaveCount(2);await expect(composer,"the draft with two citations").toHaveValue(NOTE+" ");
+    await shootHere(page,"cite-two-citations-one-sentence");
+    // The first removed with its x leaves the sentence for the other; the last, its x reached with Shift+Tab and pressed, takes it.
+    await remove(0).click();
+    await expect(citations).toHaveCount(1);await expect(composer,"the draft with one citation left").toHaveValue(NOTE+" ");
+    await composer.click();await page.keyboard.press("Shift+Tab");await expect(remove(0)).toBeFocused();await page.keyboard.press("Enter");
+    await expect(citations).toHaveCount(0);await expect(composer,"the draft with no citation left").toHaveValue("");await expect(composer).toBeFocused();
+    // In a narrower window: words typed beside a citation stay when it goes, and the message goes with them and the sentence once
+    // for the two citations made next, with a double click on Cite and from the keyboard.
+    await page.setViewportSize({width:900,height:800});
+    await select(1);await cite.click();await expect(citations).toHaveCount(1);
+    await composer.click();await page.keyboard.press("Control+End");await typeOn(page,"Summarize these");
+    await expect(composer).toHaveValue(NOTE+" Summarize these");
+    await remove(0).click();
+    await expect(citations).toHaveCount(0);await expect(composer,"the words typed, once the citation is gone").toHaveValue("Summarize these");
+    await select(1);await cite.dblclick();await expect(citations).toHaveCount(1);
+    await select(0);await page.keyboard.press("Tab");await expect(cite).toBeFocused();await page.keyboard.press("Enter");
+    await expect(citations).toHaveCount(2);await expect(composer,"the words typed and two citations").toHaveValue("Summarize these "+NOTE+" ");
+    await composer.click();await page.keyboard.press("Enter");
+    await expect(page.getByText("Summarized both excerpts.",{exact:true})).toBeVisible({timeout:15_000});
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Explain the session handling","Summarize these "+NOTE]);
+    const sent=harness.turns(harness.threads[0]).at(-1).items.find(item=>item.type==="userMessage")?.content||[];
+    expect(sent.filter(part=>part.type==="mention").length,"the citations that went with it").toBe(2);
+    await expect(citations).toHaveCount(0);await expect(composer).toHaveValue("");
+  }finally{await harness.close()}
+});
