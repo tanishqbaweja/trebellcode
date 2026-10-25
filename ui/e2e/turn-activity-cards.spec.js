@@ -28,10 +28,11 @@ const reply=(page,text)=>page.locator(".history-assistant:not([data-testid=turn-
 // The reply text that holds text, wherever it shows: streaming under the live card, or in the conversation.
 const replyText=(page,text)=>page.locator(".agent-block .assistant-answer, .history-assistant .assistant-message-text").filter({hasText:text});
 const timesIn=(text,part)=>text.split(part).length-1;
-// How many times the conversation as drawn reads part, for expect.poll: a row it has just added (a reply that ended moves into
-// one) is laid out in the browser's next frame, its rows being content-visibility:auto, and innerText read before then leaves
-// that row's text out.
-const timesDrawn=(page,part)=>page.locator(".conversation-column").innerText().then(text=>timesIn(text,part));
+// How many times the conversation reads part as the browser draws it. Its rows are content-visibility:auto, so a row it has just
+// added (a reply that ended moves into one) is laid out only in the browser's next rendering update, after that update's animation
+// frame callbacks, and innerText read before then leaves the row's text out: the read waits for the second frame, whose callbacks
+// come after it. One read, not a poll, so a part shown twice fails even when one of its copies goes soon after.
+const timesDrawn=async(page,part)=>{await frames(page,2);return timesIn(await page.locator(".conversation-column").innerText(),part)};
 // The socket frames the page has received, so a test knows a notification reached the window before the person goes on.
 function socketFrames(page){const seen=[];page.on("websocket",socket=>socket.on("framereceived",frame=>seen.push(String(frame.payload||""))));return seen}
 const userRow=(page,text)=>page.locator(".user-row").filter({hasText:text});
@@ -835,7 +836,7 @@ for(const listed of [false,true])test(`a Codex reply left streaming reads from i
     live.tools.emit({method:"item/completed",params:{threadId:live.tools.threadId,turnId:live.turn.id,item:{...live.answer}}});thread.status={type:"idle"};live.tools.finish("completed");
     await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
     await expect(replyText(page,"The end.")).toHaveText(full+" The end.");
-    await expect.poll(()=>timesDrawn(page,"First part of the notes.")).toBe(1);
+    expect(await timesDrawn(page,"First part of the notes.")).toBe(1);
   }finally{await harness.close()}
 });
 
@@ -882,7 +883,7 @@ test("a Codex reply kept from partway after the connection dropped reads from it
     live.tools.emit({method:"item/completed",params:{threadId:live.tools.threadId,turnId:live.turn.id,item:{...live.answer}}});thread.status={type:"idle"};live.tools.finish("completed");
     await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0);
     await expect(replyText(page,"The end.")).toHaveText(full+" The end.");
-    await expect.poll(()=>timesDrawn(page,"First part of the notes.")).toBe(1);
+    expect(await timesDrawn(page,"First part of the notes.")).toBe(1);
   }finally{await harness.close()}
 });
 
@@ -968,7 +969,7 @@ test("an ACP reply left streaming reads from its start back on its thread and af
     // The turn ends: the reply reads whole, once.
     await harness.write("finish");await expect(page.getByRole("button",{name:"Stop"})).toHaveCount(0,{timeout:10_000});
     await expect(replyText(page,"Fixture finished.")).toHaveText(soFar(4)+" Fixture finished.");
-    await expect.poll(()=>timesDrawn(page,parts[0])).toBe(1);
+    expect(await timesDrawn(page,parts[0])).toBe(1);
   }finally{await harness.close()}
 });
 
