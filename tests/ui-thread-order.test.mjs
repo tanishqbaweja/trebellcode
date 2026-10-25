@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { bulkActionFailure, movedSectionRanks, orderedSectionWithMove, sectionFirstThread, sectionOrderWrites, threadMoveAvailability, threadMoveTarget, threadOrderGroup, threadPlacement, threadPlacementAnchor, threadsInListOrder, undoOrder } from "../ui/src/thread-order.js";
+import { sectionFirstThread, threadMoveAvailability, threadsInListOrder } from "../ui/src/thread-order.js";
+import { bulkActionFailure, movedSectionRanks, orderedSectionWithMove, sectionOrderWrites, threadMoveTarget, threadOrderGroup, threadPlacement, threadPlacementAnchor, undoOrder } from "../ui/src/thread-moves.js";
 
 const pinned={name:"Pinned",id:"pinned"};
 // Each thread's place in its section in list order, as the agent relay lists them (sectionRank).

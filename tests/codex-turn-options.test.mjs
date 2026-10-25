@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CODEX_MAX_INPUT_CHARS, codexErrorInfoCode, codexErrorNotice, codexGoalStatusLabel, codexGoalsMissing, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal, parseCodexGoalCommand, parseCodexRetryProgress, splitCodexAttachmentText } from "../ui/src/codex-turn-options.js";
+import { CODEX_MAX_INPUT_CHARS, codexErrorInfoCode, codexErrorNotice, codexGoalStatusLabel, codexGoalsMissing, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal, parseCodexRetryProgress, splitCodexAttachmentText } from "../ui/src/codex-turn-options.js";
+import { parseCodexGoalCommand } from "../ui/src/codex-goal-command.js";
 import { queuedSubmissionDraft } from "../ui/src/native-queue.js";
 import { modelReasoningEffortKey } from "../src/model-reasoning-effort.mjs";
 import { modelServiceTierKey } from "../src/model-service-tier.mjs";

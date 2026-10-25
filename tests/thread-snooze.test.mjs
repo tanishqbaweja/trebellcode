@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { localDateTimeValue, nextSnoozeWakeAt, snoozeUntilFromDuration, timestampFromLocalDateTime } from "../ui/src/thread-snooze.js";
+import { nextSnoozeWakeAt } from "../ui/src/thread-snooze.js";
+import { localDateTimeValue, snoozeUntilFromDuration, timestampFromLocalDateTime } from "../ui/src/snooze-until.js";
 
 test("snooze duration supports minutes, hours and 24-hour days",()=>{
   const now=1_700_000_000_000;

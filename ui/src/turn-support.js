@@ -5,7 +5,8 @@
 // it, so App loads this module at idle after the first paint (B11). Each function takes what it reads of App's render as deps, as
 // App's own functions read it.
 import { api } from "./api.js";
-import { codexGoalsMissing, describeCodexGoal, parseCodexGoalCommand } from "./codex-turn-options.js";
+import { codexGoalsMissing, describeCodexGoal } from "./codex-turn-options.js";
+import { parseCodexGoalCommand } from "./codex-goal-command.js";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
 import { repositoryContextDeliveryPacket } from "./context-provenance.js";

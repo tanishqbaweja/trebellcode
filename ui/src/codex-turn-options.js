@@ -62,21 +62,6 @@ export function splitCodexAttachmentText(text){
   return {text:blocks.join("\n\n"),paths};
 }
 
-// T3 parseCodexGoalCommand: /goal shows the goal (as does /goal edit), clear, pause and resume control it, and any other
-// text becomes the new objective. Returns null for every other message.
-export function parseCodexGoalCommand(text){
-  const match=/^\/goal(?:\s+([\s\S]*))?$/u.exec(String(text??"").trim());
-  if(!match)return null;
-  const argument=(match[1]??"").trim();
-  switch(argument.toLowerCase()){
-    case "":case "edit":return {type:"show"};
-    case "clear":return {type:"clear"};
-    case "pause":return {type:"pause"};
-    case "resume":return {type:"resume"};
-    default:return {type:"set",objective:argument};
-  }
-}
-
 const GOAL_STATUS_LABELS={active:"active",paused:"paused",blocked:"blocked",usageLimited:"usage limited",budgetLimited:"budget limited",complete:"complete"};
 export function codexGoalStatusLabel(status){return GOAL_STATUS_LABELS[status]||String(status||"")}
 export function describeCodexGoal(goal){

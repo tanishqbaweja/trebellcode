@@ -51,6 +51,8 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
     document.addEventListener("keydown",onKey,true);
     scrollHost?.addEventListener("scroll",clear,{passive:true});
     window.addEventListener("resize",clear);
+    // App loads this at idle after the first paint (idle-parts.js): text selected in a reply before it came gets its button now.
+    update();
     return()=>{
       cancelAnimationFrame(frame);
       document.removeEventListener("selectionchange",update);

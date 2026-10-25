@@ -1,6 +1,7 @@
 import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { Clock3, X } from "lucide-react";
-import { formatSnoozeUntil, localDateTimeValue, snoozeUntilFromDuration, timestampFromLocalDateTime } from "../thread-snooze.js";
+import { formatSnoozeUntil } from "../thread-snooze.js";
+import { localDateTimeValue, snoozeUntilFromDuration, timestampFromLocalDateTime } from "../snooze-until.js";
 
 // Modal focus: move focus into the dialog when it opens and keep Tab/Shift+Tab inside it, so keyboard users cannot
 // reach (and activate) controls behind the backdrop. Focus that sits inside another open modal is left alone, the questions the

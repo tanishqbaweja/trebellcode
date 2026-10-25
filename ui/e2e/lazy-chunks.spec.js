@@ -4,6 +4,7 @@ import { WebSocketServer } from "ws";
 import { attachCodexRelay } from "../../src/codex-relay.mjs";
 import { keepThreadMeta } from "./test-home.js";
 import { auditDir,gate,startStreamingFixture } from "./native-stream-fixture.js";
+import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 
 // The parts of the app whose code loads after the first paint (lazy chunks), when that code cannot load: the UI was rebuilt or
 // updated under an open page, or the link to a remote Trebell server dropped. The browser keeps such a module as failed, so the
@@ -517,4 +518,317 @@ test("restart recovery that only needs inspection says so and the threads load w
     await page.setViewportSize({width:1280,height:800});
     await page.screenshot({animations:"disabled",path:auditDir+"restart-recovery-needs-inspection-dark-1280x800.png"});
   }finally{for(const route of held)await route.continue().catch(()=>{});await fixture.close()}
+});
+
+// The parts a person uses only once they do something, whose code left the app's first script (B11): the Cite button of text
+// selected in a reply, the find bar of Ctrl+F and the sidebar's and the palette's searches of the threads, which load at idle after
+// the first paint, and what a thread's moves and their Undo, the Snooze dialog's wake time and /goal work out, which load with the
+// thread actions, the dialog and the turn support. Each is used for the first time right after the app opens, by mouse and by
+// keyboard, and must draw within the frames it drew in when it came with the first script, counted from the press's own event and
+// each checked before it paints (a part still on its way would come frames later, with nothing in its place meanwhile), and answer
+// as it did. Ctrl+F's bar and a move draw in the press's own frame (1); Cite and a search's list come with the render after it (2),
+// which a machine under load can put a frame later.
+// The count starts at the press's own event: a click of detail clicks, or the keydown of key (Ctrl's own keydown comes before it).
+const framesUntil=(page,{shown=null,gone=null,order=null},event,{detail=0,key=null}={})=>page.evaluate(([shown,gone,order,event,detail,key])=>{
+  window.__drawnAfter=new Promise(resolve=>{
+    const drawn=()=>order?[...document.querySelectorAll(".thread-main")].map(node=>node.title).join(",")===order:shown?Boolean(document.querySelector(shown)):!document.querySelector(gone);
+    const start=input=>{
+      if((input.detail||0)<detail||(key&&input.key!==key))return;removeEventListener(event,start,true);
+      let frames=0;const tick=()=>{frames++;if(drawn())resolve(frames);else if(frames<120)requestAnimationFrame(tick);else resolve(null)};
+      requestAnimationFrame(tick);
+    };
+    addEventListener(event,start,true);
+  });
+},[shown,gone,order,event,detail,key]);
+const drawnAfter=page=>page.evaluate(()=>window.__drawnAfter);
+// A person's first action comes once the app has opened: here once what it loads at idle after the first paint has come (the turn
+// support is part of it in every build) and it asks for no other script. Armed before the page opens.
+function scriptsSettled(page){
+  let pending=0,last=Date.now(),idle=false;const script=request=>/\/assets\/[^/?]+\.js(?:\?.*)?$/.test(request.url());
+  page.on("request",request=>{if(!script(request))return;pending++;last=Date.now();if(/\/turn-support-[^/]*\.js/.test(request.url()))idle=true});
+  for(const event of ["requestfinished","requestfailed"])page.on(event,request=>{if(script(request)){pending--;last=Date.now()}});
+  return ()=>expect.poll(()=>idle&&pending===0&&Date.now()-last>=300,{message:"the app's idle scripts loaded",intervals:[100],timeout:15_000}).toBe(true);
+}
+// Trebell Native threads with their history on the agent relay (relay-history-harness.js), each {name,user,reply} or a turn list
+// [{user,reply}] given as turns, a minute apart, in a 1280x800 window opened on the new-task screen.
+async function openRelayThreads(page,threads){
+  const harness=await startRelayHarness();
+  for(const [index,{name,user,reply,turns}] of threads.entries())harness.seedThread(name,(turns||[{user,reply}]).map((turn,at)=>({user:turn.user,items:[replyItem("reply-"+index+"-"+at,turn.reply)]})));
+  const base=Math.floor(Date.now()/1000)-3600;harness.threads.forEach((thread,index)=>harness.threadStore.update(thread.id,{updatedAt:base-index*60},{touch:false}));
+  const {sent}=await routeRelayApp(page,harness),settled=scriptsSettled(page),json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  // What Trebell keeps of each thread (its wake time among it), as the GUI server keeps it.
+  const meta=Object.fromEntries(harness.threads.map(thread=>[thread.id,{projectless:false,environmentId:null,cwd:harness.repo,runtime:"native",runtimeInstanceId:"native-default"}]));
+  await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>{
+    const request=route.request(),body=request.method()==="POST"?request.postDataJSON()||{}:{},id=String(body.threadId||new URL(request.url()).searchParams.get("threadId")||"");
+    if(request.method()==="POST")meta[id]={...(meta[id]||{}),...(body.patch||{})};
+    return json(route,meta[id]||{});
+  });
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await expect(page.locator(".thread-row")).toHaveCount(threads.length,{timeout:10_000});
+  await expect(page.getByTestId("composer")).toBeVisible();
+  return {harness,sent,settled};
+}
+const relayRow=(page,name)=>page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
+const relayGroups=page=>page.locator(".thread-sections section").evaluateAll(sections=>sections.map(section=>[section.querySelector("h4 .thread-group-name").textContent,[...section.querySelectorAll(".thread-main")].map(node=>node.title)]));
+async function openRelayThread(page,name,reply){
+  await relayRow(page,name).locator(".thread-main").click();
+  await expect(page.locator(".assistant-message-text").last()).toContainText(reply);
+  await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
+}
+
+test("the Cite button of a first selection in a reply right after the app opens comes in its frames and cites, by mouse and by keyboard",async({page})=>{
+  test.setTimeout(60_000);
+  const PARAGRAPHS=["First paragraph about the session token.","Second paragraph about the refresh timer."];
+  const {harness,settled}=await openRelayThreads(page,[{name:"Cite after open",user:"Explain the session handling",reply:PARAGRAPHS.join("\n\n")}]);
+  try{
+    await settled();
+    await openRelayThread(page,"Cite after open",PARAGRAPHS[1]);
+    const paragraphs=page.locator(".assistant-message-text").last().locator("p"),cite=page.getByTestId("assistant-selection-cite"),chips=page.getByTestId("context-chip");
+    // By mouse: a triple-click selects the second paragraph, Cite comes with it, and a click on Cite takes the paragraph.
+    await framesUntil(page,{shown:'[data-testid="assistant-selection-cite"]'},"mouseup",{detail:3});
+    await paragraphs.nth(1).click({clickCount:3});
+    const mouseFrames=await drawnAfter(page);console.log("frames from the selection to Cite:",mouseFrames);
+    expect(mouseFrames,"frames from the selection to Cite").not.toBeNull();expect(mouseFrames).toBeLessThanOrEqual(3);
+    await expect(cite).toHaveText("Cite");
+    await cite.click();
+    await expect(chips).toHaveCount(1);await expect(chips.first()).toContainText("Assistant excerpt");await expect(chips.first()).toContainText(PARAGRAPHS[1].length+" chars");
+    await expect(cite).toHaveCount(0);
+    // By keyboard: Escape takes Cite away from a selection; Tab from the selection reaches Cite, and Enter takes the paragraph.
+    // (Each selection is let settle first: one still changing places Cite again where it ends.)
+    const selectParagraph=async index=>{
+      await paragraphs.nth(index).click({clickCount:3});await expect(cite).toBeVisible();
+      await expect.poll(()=>page.evaluate(()=>String(getSelection()).trim())).toBe(PARAGRAPHS[index]);
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    };
+    await selectParagraph(0);
+    await page.keyboard.press("Escape");await expect(cite).toHaveCount(0);
+    await selectParagraph(0);
+    await page.keyboard.press("Tab");await expect(cite).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(chips).toHaveCount(2);await expect(chips.nth(1)).toContainText(PARAGRAPHS[0].length+" chars");
+    await page.screenshot({animations:"disabled",path:auditDir+"lazy-cite-first-selection-dark-1280x800.png"});
+    await appStays(page);
+  }finally{await harness.close()}
+});
+
+test("the find bar of a first Ctrl+F right after the app opens comes in the frame of the key, finds and closes, by keyboard and by mouse",async({page})=>{
+  test.setTimeout(60_000);
+  const needle="amber-lantern-512";
+  const {harness,settled}=await openRelayThreads(page,[{name:"Find after open",turns:[{user:`Note ${needle} for later`,reply:"Noted the first one."},{user:"Something else",reply:`The second ${needle} is here.`}]}]);
+  try{
+    await settled();
+    await openRelayThread(page,"Find after open",`The second ${needle} is here.`);
+    const bar=page.getByTestId("thread-find-bar"),input=page.getByTestId("thread-find-input"),count=bar.locator(".thread-find-count");
+    // By keyboard: Ctrl+F shows the bar with the keyboard in its field, Enter steps through the matches and Escape closes it.
+    await framesUntil(page,{shown:'[data-testid="thread-find-bar"]'},"keydown",{key:"f"});
+    await page.keyboard.press("Control+f");
+    const keyFrames=await drawnAfter(page);console.log("frames from Ctrl+F to the find bar:",keyFrames);
+    expect(keyFrames,"frames from Ctrl+F to the find bar").toBe(1);
+    await expect(input).toBeFocused();
+    await page.keyboard.type(needle);
+    await expect(count).toHaveText("1 / 2",{timeout:10_000});
+    await page.keyboard.press("Enter");await expect(count).toHaveText("2 / 2");
+    await page.keyboard.press("Shift+Enter");await expect(count).toHaveText("1 / 2");
+    await page.keyboard.press("Escape");await expect(bar).toHaveCount(0);
+    // By mouse: Next and Previous match step, and Close find closes it.
+    await page.keyboard.press("Control+f");await expect(input).toBeFocused();
+    await input.fill(needle);await expect(count).toHaveText("1 / 2",{timeout:10_000});
+    await bar.getByRole("button",{name:"Next match"}).click();await expect(count).toHaveText("2 / 2");
+    await bar.getByRole("button",{name:"Previous match"}).click();await expect(count).toHaveText("1 / 2");
+    await page.screenshot({animations:"disabled",path:auditDir+"lazy-find-first-ctrl-f-dark-1280x800.png"});
+    await bar.getByRole("button",{name:"Close find"}).click();await expect(bar).toHaveCount(0);
+    await appStays(page);
+  }finally{await harness.close()}
+});
+
+test("a first search of the sidebar or the palette right after the app opens filters and finds as before, by keyboard and by mouse",async({page})=>{
+  test.setTimeout(60_000);
+  const needle="violet-harbor-207";
+  const {harness,settled}=await openRelayThreads(page,[{name:"Quill release",user:"Plan the release",reply:"The release plan is ready."},{name:"Beta notes",user:"Write the notes",reply:`The notes mention ${needle} once.`}]);
+  try{
+    await settled();
+    const search=page.getByRole("textbox",{name:"Search threads"}),alpha=relayRow(page,"Quill release"),beta=relayRow(page,"Beta notes");
+    // By keyboard: Search threads/projects (Ctrl+Shift+F) puts the keyboard in the search; its first letter filters the list at once
+    // (Q: only Quill release has one, its project's name none).
+    await page.keyboard.press("Control+Shift+F");await expect(search).toBeFocused();
+    await framesUntil(page,{gone:'.thread-main[title="Beta notes"]'},"input");
+    await page.keyboard.type("Q");
+    const typedFrames=await drawnAfter(page);console.log("frames from the first letter to the filtered list:",typedFrames);
+    expect(typedFrames,"frames from the first letter to the filtered list").not.toBeNull();expect(typedFrames).toBeLessThanOrEqual(3);
+    await expect(alpha).toBeVisible();await expect(beta).toHaveCount(0);
+    // A word only a message holds finds that message's thread.
+    await page.keyboard.press("Escape");await expect(search).toHaveValue("");await expect(beta).toBeVisible();
+    await page.keyboard.type(needle);
+    await expect(beta).toBeVisible({timeout:10_000});await expect(alpha).toHaveCount(0);
+    await expect(page.locator(".sidebar .sidebar-action-error")).toHaveCount(0);
+    // By mouse: the search found by its field, and the thread it finds opens with a click.
+    await page.keyboard.press("Escape");await expect(alpha).toBeVisible();
+    await search.click();await search.fill("Beta");await expect(alpha).toHaveCount(0);
+    await beta.locator(".thread-main").click();await expect(page.locator(".assistant-message-text").last()).toContainText(needle);
+    // The palette finds the message too, and its thread opens from there with a click or with Enter.
+    await search.fill("");
+    await page.getByRole("button",{name:"Search or jump to"}).click();
+    const palette=page.getByTestId("command-palette");await expect(palette).toBeVisible();
+    await page.keyboard.type(needle);
+    const found=palette.locator(".command-palette-item.message-match").filter({hasText:"Beta notes"});
+    await expect(found).toBeVisible({timeout:10_000});
+    await page.screenshot({animations:"disabled",path:auditDir+"lazy-search-first-palette-dark-1280x800.png"});
+    await found.click();await expect(palette).toHaveCount(0);
+    await alpha.locator(".thread-main").click();await expect(page.locator(".assistant-message-text").last()).toContainText("The release plan is ready.");
+    await page.keyboard.press("Control+k");await expect(palette).toBeVisible();
+    await page.keyboard.type(needle);await expect(found).toBeVisible({timeout:10_000});
+    await found.focus();await page.keyboard.press("Enter");await expect(palette).toHaveCount(0);
+    await expect(page.locator(".assistant-message-text").last()).toContainText(needle);
+    await appStays(page);
+  }finally{await harness.close()}
+});
+
+test("a first Move up right after the app opens shows at once, and a Pin's Undo puts the thread back in its place, by mouse and by keyboard",async({page})=>{
+  test.setTimeout(60_000);
+  const names=["Move one","Move two","Move three"];
+  const {harness,settled}=await openRelayThreads(page,names.map(name=>({name,user:"Work on "+name.toLowerCase(),reply:"Done with "+name.toLowerCase()+"."})));
+  try{
+    await settled();
+    await expect.poll(()=>relayGroups(page)).toEqual([["Active",names]]);
+    const undo=page.getByTestId("thread-undo-toast");
+    // A row's menu item, from the keyboard: Tab from the row to its menu button, Enter, then Tab to the item, which Enter runs.
+    const fromKeyboard=async(name,item)=>{
+      const row=relayRow(page,name),menu=row.locator(".thread-menu summary");
+      await row.locator(".thread-main").focus();await page.keyboard.press("Tab");await expect(menu).toBeFocused();
+      await page.keyboard.press("Enter");await expect(row.locator(".thread-menu")).toHaveAttribute("open","");
+      const button=row.getByRole("button",{name:item,exact:true});
+      for(let step=0;step<8&&!(await button.evaluate(node=>node===document.activeElement));step++)await page.keyboard.press("Tab");
+      await expect(button).toBeFocused();await page.keyboard.press("Enter");
+    };
+    // By mouse: the row's menu, Move up; the list shows the move in the frames it did.
+    const row=relayRow(page,"Move three");await row.hover();await row.locator(".thread-menu summary").click();
+    await framesUntil(page,{order:"Move one,Move three,Move two"},"click");
+    await row.getByRole("button",{name:"Move up",exact:true}).click();
+    const moveFrames=await drawnAfter(page);console.log("frames from Move up to the move:",moveFrames);
+    expect(moveFrames,"frames from Move up to the move").not.toBeNull();expect(moveFrames).toBeLessThanOrEqual(1);
+    await expect.poll(()=>relayGroups(page)).toEqual([["Active",["Move one","Move three","Move two"]]]);
+    // A Pin, and its Undo from the toast: the thread goes back to the place it held.
+    const first=relayRow(page,"Move three");await first.hover();await first.locator(".thread-menu summary").click();
+    await first.getByRole("button",{name:"Pin",exact:true}).click();
+    await expect.poll(()=>relayGroups(page)).toEqual([["Pinned",["Move three"]],["Active",["Move one","Move two"]]]);
+    await expect(undo.locator("span").first()).toHaveText("Thread pinned");
+    await undo.getByRole("button",{name:"Undo",exact:true}).click();
+    await expect.poll(()=>relayGroups(page)).toEqual([["Active",["Move one","Move three","Move two"]]]);
+    // By keyboard: Move up on Move two, then a Pin of it and Undo recent thread action (Ctrl+Z).
+    await fromKeyboard("Move two","Move up");
+    await expect.poll(()=>relayGroups(page)).toEqual([["Active",["Move one","Move two","Move three"]]]);
+    await fromKeyboard("Move two","Pin");
+    await expect.poll(()=>relayGroups(page)).toEqual([["Pinned",["Move two"]],["Active",["Move one","Move three"]]]);
+    await expect(undo.locator("span").first()).toHaveText("Thread pinned");
+    await page.keyboard.press("Control+z");
+    await expect.poll(()=>relayGroups(page)).toEqual([["Active",["Move one","Move two","Move three"]]]);
+    await appStays(page);
+  }finally{await harness.close()}
+});
+
+test("a first Snooze right after the app opens takes its wake time from the dialog, by mouse and by keyboard",async({page})=>{
+  test.setTimeout(60_000);
+  const names=["Snooze one","Snooze two"];
+  const {harness,settled}=await openRelayThreads(page,names.map(name=>({name,user:"Work on "+name.toLowerCase(),reply:"Done with "+name.toLowerCase()+"."})));
+  try{
+    await settled();
+    const dialog=page.getByRole("dialog",{name:/^Snooze/}),wakes=name=>relayRow(page,name).locator(".thread-main>div>span");
+    // By mouse: the row's menu, Snooze…, 2 hours, Snooze: the thread goes to Snoozed and says when it wakes, as the dialog said.
+    const row=relayRow(page,"Snooze one");await row.hover();await row.locator(".thread-menu summary").click();
+    await row.getByRole("button",{name:"Snooze…",exact:true}).click();
+    await expect(dialog).toBeVisible();await expect(dialog.getByLabel("Snooze duration")).toBeFocused();
+    const hint=dialog.locator(".snooze-hint"),wakeSaid=async()=>{await expect(hint).toHaveText(/^Wakes .+\.$/);return (await hint.textContent()).replace(/\.$/,"")};
+    await dialog.getByLabel("Snooze duration").fill("2");await expect(dialog.getByLabel("Snooze duration")).toHaveValue("2");const said=await wakeSaid();
+    await dialog.getByRole("button",{name:"Snooze",exact:true}).click();
+    await expect(dialog).toHaveCount(0);
+    await expect.poll(()=>relayGroups(page)).toEqual([["Active",["Snooze two"]],["Snoozed",["Snooze one"]]]);
+    await expect(wakes("Snooze one")).toHaveText(said);
+    // By keyboard: Tab from the row to its menu button, Enter, Tab to Snooze…, Enter, a duration of 3 hours typed, Enter.
+    const second=relayRow(page,"Snooze two"),menu=second.locator(".thread-menu summary");
+    await second.locator(".thread-main").focus();await page.keyboard.press("Tab");await expect(menu).toBeFocused();
+    await page.keyboard.press("Enter");await expect(second.locator(".thread-menu")).toHaveAttribute("open","");
+    await page.keyboard.press("Tab");await page.keyboard.press("Tab");await expect(second.getByRole("button",{name:"Snooze…",exact:true})).toBeFocused();
+    await page.keyboard.press("Enter");await expect(dialog.getByLabel("Snooze duration")).toBeFocused();
+    await page.keyboard.press("Control+a");await page.keyboard.type("3");await expect(dialog.getByLabel("Snooze duration")).toHaveValue("3");const saidAgain=await wakeSaid();
+    await page.keyboard.press("Enter");
+    await expect(dialog).toHaveCount(0);
+    await expect.poll(()=>relayGroups(page)).toEqual([["Snoozed",["Snooze one","Snooze two"]]]);
+    await expect(wakes("Snooze two")).toHaveText(saidAgain);
+    await appStays(page);
+  }finally{await harness.close()}
+});
+
+test("a first /goal right after the app opens sets the thread's goal, by keyboard and by mouse",async({page})=>{
+  test.setTimeout(60_000);
+  const {harness,settled}=await openRelayThreads(page,[{name:"Goal after open",user:"Start the work",reply:"Started the work."}]);
+  try{
+    await settled();
+    await openRelayThread(page,"Goal after open","Started the work.");
+    const composer=page.getByTestId("composer"),panel=page.getByTestId("goal-panel"),objective=panel.getByLabel("Objective",{exact:true}),status=panel.locator(".goal-status");
+    // By keyboard: /goal with an objective, Enter; the Goal panel opens on the goal set.
+    await composer.click();await page.keyboard.type("/goal Make the login tests pass",{delay:15});await page.keyboard.press("Enter");
+    await expect(objective).toHaveValue("Make the login tests pass");await expect(status).toHaveText("active");await expect(composer).toHaveValue("");
+    // By mouse: /goal pause with Send pauses it, the objective kept.
+    await composer.fill("/goal pause");await page.getByTestId("send").click();
+    await expect(status).toHaveText("paused");await expect(objective).toHaveValue("Make the login tests pass");await expect(composer).toHaveValue("");
+    await appStays(page);
+  }finally{await harness.close()}
+});
+
+// The Cite button, the find bar and the threads' searches come in one script (idle-parts.js). What is done before it has come waits
+// for it: text selected in a reply gets its Cite once it is in, a sidebar search filters the list then, and a Ctrl+F opens the find
+// bar then, with the keyboard in its field.
+test("a selection, a search and a Ctrl+F made before the parts loaded at idle have come wait for them and draw once they are in",async({page})=>{
+  test.setTimeout(60_000);
+  const held=[];
+  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>{held.push(route)});
+  const {harness}=await openRelayThreads(page,[{name:"Quill release",user:"Plan the release",reply:"The release plan is ready."},{name:"Beta notes",user:"Write the notes",reply:"The notes are written."}]);
+  const release=async()=>{for(const route of held.splice(0))await route.continue()};
+  try{
+    await expect.poll(()=>held.length,{message:"the parts asked for at idle"}).toBe(1);
+    await openRelayThread(page,"Quill release","The release plan is ready.");
+    const cite=page.getByTestId("assistant-selection-cite");
+    await page.locator(".assistant-message-text").last().locator("p").first().click({clickCount:3});
+    await page.waitForTimeout(500);await expect(cite).toHaveCount(0);
+    await release();
+    await expect(cite).toBeVisible();
+    await page.reload();
+    await expect.poll(()=>held.length,{message:"the parts asked for at idle again"}).toBe(1);
+    await openRelayThread(page,"Quill release","The release plan is ready.");
+    const search=page.getByRole("textbox",{name:"Search threads"}),beta=relayRow(page,"Beta notes"),bar=page.getByTestId("thread-find-bar");
+    await search.click();await page.keyboard.type("Q");
+    await page.waitForTimeout(500);await expect(beta).toBeVisible();
+    await page.keyboard.press("Control+f");
+    await page.waitForTimeout(500);await expect(bar).toHaveCount(0);
+    await release();
+    await expect(beta).toHaveCount(0);await expect(relayRow(page,"Quill release")).toBeVisible();
+    await expect(bar).toBeVisible();await expect(page.getByTestId("thread-find-input")).toBeFocused();
+    await appStays(page);
+  }finally{await release().catch(()=>{});await harness.close()}
+});
+
+// When that script cannot load, each part says so where it would have drawn or answered, and the rest of the app stays: the end of the
+// conversation and the find bar's place say the part could not be shown, with Reload, and the sidebar's search that it could not search.
+test("Cite, a find and a search whose script cannot load say so, and the app stays",async({page})=>{
+  test.setTimeout(60_000);
+  let refused=0;
+  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const {harness}=await openRelayThreads(page,[{name:"Quill release",user:"Plan the release",reply:"The release plan is ready."},{name:"Beta notes",user:"Write the notes",reply:"The notes are written."}]);
+  try{
+    await expect.poll(()=>refused,{message:"the parts asked for at idle"}).toBeGreaterThan(0);
+    await openRelayThread(page,"Quill release","The release plan is ready.");
+    const failed=page.locator(".conversation-history .lazy-slot-error");
+    await expect(failed).toContainText("This part of Trebell could not be shown: Part of Trebell could not load. Reload Trebell to get it back.");
+    await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
+    await page.keyboard.press("Control+f");
+    const findFailed=page.locator(".chat-workspace > .lazy-slot-error");
+    await expect(findFailed).toContainText("This part of Trebell could not be shown: Part of Trebell could not load. Reload Trebell to get it back.");
+    await page.getByRole("textbox",{name:"Search threads"}).fill("Q");
+    await expect(page.locator(".sidebar .sidebar-action-error")).toHaveText("Could not search threads: Part of Trebell could not load. Reload Trebell to get it back.");
+    await expect(relayRow(page,"Beta notes")).toBeVisible();
+    await appStays(page);
+    await page.screenshot({animations:"disabled",path:auditDir+"idle-parts-cannot-load-dark-1280x800.png"});
+  }finally{await harness.close()}
 });

@@ -3,13 +3,13 @@
 // its section (and what App does the same way on its own: waking a snoozed thread, settling a merged one). Drawing the first screen
 // changes no thread, so App loads this module at idle after the first paint (B11), and an action made before then waits for it, App's
 // own wake and settle at startup among them. Each function takes what it reads of App's render as deps, as App's own functions read it.
-import { bulkActionFailure, movedSectionRanks, orderedSectionWithMove, sectionOrderWrites, threadMoveTarget, threadOrderGroup, threadPlacement, undoOrder } from "./thread-order.js";
+import { bulkActionFailure, movedSectionRanks, orderedSectionWithMove, sectionOrderWrites, threadMoveTarget, threadOrderGroup, threadPlacement, undoOrder } from "./thread-moves.js";
 import { loadThreadListPages, threadSectionOrderParams } from "./thread-list-query.js";
 import { threadTitle } from "./thread-catalog.js";
 
 function titleOf(thread){return threadTitle(thread)}
 
-// Where an undo puts the thread back: its section, and its place there only if it held one a person gave it (thread-order.js).
+// Where an undo puts the thread back: its section, and its place there only if it held one a person gave it (thread-moves.js).
 function captureThreadPlacement({threads,threadMeta},thread){
   return {section:thread.section||null,...threadPlacement(threads,thread,threadMeta),snoozedUntil:threadMeta[thread.id]?.snoozedUntil??null};
 }
@@ -89,7 +89,7 @@ export async function reversibleThreadAction(deps,thread,action,{snoozeUntil=nul
   }else return null;
   const result={label,undo,threadId:thread.id,title:titleOf(thread),anchorThreadId:snapshot.anchorThreadId,beforeThreadId:snapshot.beforeThreadId};if(offerUndo&&undo)offerThreadUndo(label,()=>undoThreadActions([result]));return result;
 }
-// An undo of several threads puts each back after the thread it goes before, when that one is put back too (thread-order.js). It
+// An undo of several threads puts each back after the thread it goes before, when that one is put back too (thread-moves.js). It
 // tries every thread, as the action did, and the error names the ones the harness would not put back, each with its reason
 // ("Could not put back “X”: …"). The verb is the Undo's for every action: an Un-settle's Undo toast reads "Thread restored", so
 // "restore" would name the opposite of what failed there.

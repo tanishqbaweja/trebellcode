@@ -11,7 +11,6 @@ import { compactDateTime, fullDateTime, isoDateTime } from "./time-format.js";
 import { CodexRpcClient } from "./rpc.js";
 import { api, wsUrl } from "./api.js";
 import ThreadSidebar,{ ignorePressRest } from "./components/ThreadSidebar.jsx";
-import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
 import ChatMarkdown,{ StreamingMarkdown } from "./components/LazyChatMarkdown.jsx";
 import RightPanel from "./components/RightPanel.jsx";
 import { useBrowserRecording } from "./browser-recording.js";
@@ -32,7 +31,6 @@ import { answeringClick, approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
 import { isListedThread, prependThread } from "./thread-list-state.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
-import { matchingMessageExcerpt, matchingPullRequestExcerpt, sidebarSearchMatches } from "./thread-message-search.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
 import { THREAD_SCROLL_END_THRESHOLD, captureConversationPosition, captureHistoryPrependAnchor, captureThreadScrollPosition, conversationWelcome, historyAnchorDisturbed, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
 import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
@@ -113,15 +111,16 @@ const OnboardingModal=lazy(()=>import("./components/OnboardingModal.jsx"));
 // paint, so it loads at idle after it instead of with the app (B11). An action that needs it before then waits for that load. A load
 // that fails rejects, so the action fails and says so rather than waiting; the browser keeps a module that failed, so a reload brings
 // it back.
+const loadFailed=error=>Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
 let sharedToolCatalogLoad=null;
 const loadSharedToolCatalog=()=>sharedToolCatalogLoad||=import("../../src/shared-tool-catalog.mjs").catch(error=>{
-  sharedToolCatalogLoad=null;throw Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+  sharedToolCatalogLoad=null;throw loadFailed(error);
 });
 // The app's question dialogs (ask-dialog.js) load the same way: nothing on the first screen asks anything. Every question is awaited
 // already, so one asked before the load waits for it, and once loaded the dialog opens before the next click or key is handled.
 let askDialogLoad=null;
 const loadAskDialog=()=>askDialogLoad||=import("./ask-dialog.js").catch(error=>{
-  askDialogLoad=null;throw Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+  askDialogLoad=null;throw loadFailed(error);
 });
 const askConfirm=(...args)=>loadAskDialog().then(dialog=>dialog.askConfirm(...args));
 const askText=(...args)=>loadAskDialog().then(dialog=>dialog.askText(...args));
@@ -133,15 +132,25 @@ const askText=(...args)=>loadAskDialog().then(dialog=>dialog.askText(...args));
 // load it fails and says so.
 let turnSupport=null,turnSupportLoad=null,threadActions=null,threadActionsLoad=null;
 const loadTurnSupport=()=>turnSupportLoad||=import("./turn-support.js").then(module=>turnSupport=module,error=>{
-  turnSupportLoad=null;throw Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+  turnSupportLoad=null;throw loadFailed(error);
 });
 const loadThreadActions=()=>threadActionsLoad||=import("./thread-actions.js").then(module=>threadActions=module,error=>{
-  threadActionsLoad=null;throw Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+  threadActionsLoad=null;throw loadFailed(error);
 });
+// And what App draws or runs only once the person does something (idle-parts.js: the Cite button of text selected in a reply, the
+// find bar of Ctrl+F, and what the sidebar's and the palette's searches find in the threads), in one chunk. Once it is in (idleParts)
+// each part draws or runs at once, as before: lazy() is handed the loaded part itself, which it takes without suspending. What comes
+// before then waits for it; a part drawn before then (the Cite button, with the conversation) waits for the idle load.
+let idleParts=null,idlePartsLoad=null,reachIdle;const idleReached=new Promise(resolve=>reachIdle=resolve);
+const loadIdleParts=()=>idlePartsLoad||=import("./idle-parts.js").then(module=>idleParts=module,error=>{
+  idlePartsLoad=null;throw loadFailed(error);
+});
+const idlePart=name=>lazy(()=>idleParts?{then:resolve=>resolve({default:idleParts[name]})}:idleReached.then(loadIdleParts).then(parts=>({default:parts[name]})));
+const AssistantSelectionToolbar=idlePart("AssistantSelectionToolbar"),ThreadFindBar=idlePart("ThreadFindBar");
 // A send's context packet comes only from turn-support.js (prepareTurnContext), so a send with one has that module; one without
 // carries no repository context.
 function repositoryContextEntries(packet,options){return packet?turnSupport.repositoryContextEntries(packet,options):{}}
-if(typeof window!=="undefined")requestAnimationFrame(()=>setTimeout(()=>(window.requestIdleCallback||(callback=>setTimeout(callback,200)))(()=>{loadSharedToolCatalog().catch(()=>{});loadAskDialog().catch(()=>{});loadTurnSupport().catch(()=>{});loadThreadActions().catch(()=>{})},{timeout:2000})));
+if(typeof window!=="undefined")requestAnimationFrame(()=>setTimeout(()=>(window.requestIdleCallback||(callback=>setTimeout(callback,200)))(()=>{loadSharedToolCatalog().catch(()=>{});loadAskDialog().catch(()=>{});loadTurnSupport().catch(()=>{});loadThreadActions().catch(()=>{});reachIdle();loadIdleParts().catch(()=>{})},{timeout:2000})));
 
 // The command palette as it first appears while its code loads (on the first open only): its search box takes focus and the keys
 // typed straight after Ctrl+K, which would otherwise go into the composer it was opened from. seed hands the palette what was typed,
@@ -502,25 +511,6 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,threadI
   return <div className="agent-block">{events.length>0&&<TurnActivityCard live threadId={threadId} turnId={turnId} rows={events} defaultOpen onToggleLayout={onToggleLayout} onInspectChanges={canInspectChanges?openWorkspace:null} commandOutputs={commandOutputs} mcpProgress={mcpProgress}/>}{assistantText&&<div className="assistant-answer chat-markdown"><StreamingMarkdown text={assistantText}/></div>}</div>;
 }));
 
-// covered: another thread's opening state is up. The bar belongs to the thread being left, so it hides without closing (a failed open
-// brings it back with its query) and cannot be used meanwhile. Escape closes it from its field and from its buttons alike.
-// Previous and Next match only say they are off (aria-disabled), at the first or the last match and while more matches load, so the
-// keyboard stays on the one in use: a press there does nothing (stepThreadFind), Space never types into the field, and Escape from
-// it closes the bar. One that is off is out of Tab's order, as a disabled button is, so Tab from the field reaches one that steps.
-function ThreadFindBar({state,covered=false,inputRef,barRef,onQuery,onPrevious,onNext,onClose}){
-  if(!state.open)return null;
-  const previousOff=state.loading||state.index<=0,nextOff=state.loading||!state.results.length||(state.index>=state.results.length-1&&!state.nextCursor);
-  const current=state.index>=0?state.results[state.index]:null;
-  const range=current?.snippetMatchRange||{};const start=Math.max(0,Number(range.start)||0),end=Math.max(start,Number(range.end)||0);
-  const snippet=String(current?.snippet||"");
-  return <div className={"thread-find-bar"+(covered?" opening-covered":"")} data-testid="thread-find-bar" ref={barRef} inert={covered} onKeyDown={event=>{if(event.key==="Escape"&&!event.defaultPrevented){event.preventDefault();onClose()}}}>
-    <Search size={13}/><input ref={inputRef} data-testid="thread-find-input" value={state.query} onChange={event=>onQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();event.shiftKey?onPrevious():onNext()}}} placeholder="Find in this thread"/>
-    <span className="thread-find-count">{state.loading?"Searching…":state.error?"Error":state.results.length?`${state.index+1} / ${state.results.length}${state.nextCursor?"+":""}`:state.query.trim().length>=2?"No matches":""}</span>
-    <button type="button" onClick={onPrevious} aria-disabled={previousOff} tabIndex={previousOff?-1:undefined} aria-label="Previous match">↑</button><button type="button" onClick={onNext} aria-disabled={nextOff} tabIndex={nextOff?-1:undefined} aria-label="Next match">↓</button><button type="button" onClick={onClose} aria-label="Close find">×</button>
-    {(current||state.error)&&<div className="thread-find-snippet">{state.error?state.error:<>{snippet.slice(0,start)}<mark>{snippet.slice(start,end)}</mark>{snippet.slice(end)}</>}</div>}
-  </div>;
-}
-
 function TurnOutcomePill({label,tone}){
   return <span className={"turn-outcome tone-"+(tone||"ok")} data-testid="turn-outcome">{tone==="err"?<X size={11} aria-hidden="true"/>:tone==="warn"?<CircleStop size={11} aria-hidden="true"/>:<Check size={11} aria-hidden="true"/>}{label}</span>;
 }
@@ -648,7 +638,7 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
   // A page that did not load says so under the button pressed, which stays there to try again, with the keyboard still on it.
   return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" aria-disabled={historyBusy||undefined} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button>{historyError?.at==="top"&&<p className="history-page-error" role="alert">{historyError.text}</p>}</div>}{renderTrailers(trailers.after.get(""))}{virtualized
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk||selectedChunks.includes(chunk.key)} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
-    :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
+    :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<LazySlot><AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></LazySlot></div>;
 });
 // threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
 // A card answers once, and only to a click aimed at it: the second click of a double click (its click count is 2, or it lands where
@@ -2514,6 +2504,7 @@ export default function App(){
   }
   async function searchThreadMessages(queryText){
     const needle=String(queryText||"").trim();if(needle.length<2||!rpc||rpcStatus!=="connected")return{matches:[],warning:""};
+    const {matchingMessageExcerpt,matchingPullRequestExcerpt}=idleParts||await loadIdleParts();
     const candidates=threads.slice(0,50);const cache=threadMessageSearchCacheRef.current;let cursor=0;
     const results=[];const matched=new Set();let nativeError=null;const readErrors=[];
     for(const thread of candidates){
@@ -2837,10 +2828,12 @@ export default function App(){
   },[section,rightPanelOpen,rightPanelTab]);
 
   useEffect(()=>{
-    if(!query.trim()){setSearchResults(null);setThreadSearchError("");return} const titleMatches=sidebarSearchMatches(threads,query.toLowerCase(),{threadMeta,projects:projectRecords});
+    if(!query.trim()){setSearchResults(null);setThreadSearchError("");return}
+    // A search typed before its code has come (idleParts) runs once it is in, or says it could not load.
+    let cancelled=false,timer=0;const search=({sidebarSearchMatches})=>{const titleMatches=sidebarSearchMatches(threads,query.toLowerCase(),{threadMeta,projects:projectRecords});
     setThreadSearchError("");
     if(!rpc||rpcStatus!=="connected"||query.length<2){setSearchResults(titleMatches);return}
-    let cancelled=false; const timer=setTimeout(async()=>{
+    timer=setTimeout(async()=>{
       const found=new Map(titleMatches.map(t=>[t.id,t]));
       try{
         const outcome=await searchThreadMessages(query);
@@ -2853,7 +2846,9 @@ export default function App(){
       }catch(error){
         if(!cancelled){setSearchResults(threadsInListOrder([...found.values()],threads));setThreadSearchError("Could not search thread messages: "+(error?.message||String(error)))}
       }
-    },250);return()=>{cancelled=true;clearTimeout(timer)}
+    },250)};
+    if(idleParts)search(idleParts);else loadIdleParts().then(module=>cancelled||search(module),error=>cancelled||setThreadSearchError("Could not search threads: "+error.message));
+    return()=>{cancelled=true;clearTimeout(timer)}
   },[query,threads,threadMeta,projectRecords,rpc,rpcStatus,agentRuntime,runtimeCapabilities.threadSearch]);
 
   // label: what could not be done, said before the error's own words; "" for an error that says it itself (a thread's Undo).
@@ -3978,7 +3973,10 @@ export default function App(){
   }
   function openThreadFind(){
     if(!runtimeCapabilities.threadSearch||!activeThreadRef.current?.id)return;
-    setThreadFind(current=>({...current,open:true,error:""}));
+    // The bar opens with its code in: before that has come (idleParts) it opens once it is, so the bar, its field's focus and the room
+    // the conversation keeps for it come together, as they do once it has.
+    const open=()=>setThreadFind(current=>({...current,open:true,error:""}));
+    if(idleParts)open();else loadIdleParts().then(open,open);
   }
   function closeThreadFind(){
     threadFindSeqRef.current++;
@@ -5626,7 +5624,7 @@ export default function App(){
             </div>
           </header>
 
-          <ThreadFindBar state={threadFind} covered={openingShown} inputRef={threadFindInputRef} barRef={threadFindBarRef} onQuery={query=>setThreadFind(current=>({...current,query,error:""}))} onPrevious={()=>stepThreadFind(-1)} onNext={()=>stepThreadFind(1)} onClose={closeThreadFind}/>
+          {threadFind.open&&<LazySlot><ThreadFindBar state={threadFind} covered={openingShown} inputRef={threadFindInputRef} barRef={threadFindBarRef} onQuery={query=>setThreadFind(current=>({...current,query,error:""}))} onPrevious={()=>stepThreadFind(-1)} onNext={()=>stepThreadFind(1)} onClose={closeThreadFind}/></LazySlot>}
 
           {!openingOverPage&&<div className={"conversation-scroll"+(openingShown?" opening-covered":"")} ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className={"conversation-column"+(agentBlockShown?" with-agent-block":"")}>
