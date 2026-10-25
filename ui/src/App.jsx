@@ -1543,8 +1543,12 @@ export default function App(){
   },[browserNavigated]);
   useEffect(()=>{try{localStorage.setItem("trebell-layout-v1",JSON.stringify(layoutPrefs))}catch{}},[layoutPrefs]);
   const [viewportWidth,setViewportWidth]=useState(()=>typeof window!=="undefined"?window.innerWidth:1600);
+  // The terminal drawer's tallest in this window, the window less 260px (190px to 620px), which its stylesheet caps it at too
+  // (t3-workspace.css). It is kept rather than the window's height, so App draws again only when it changes.
+  const tallestTerminal=()=>Math.max(LAYOUT_LIMITS.terminalHeight[0],Math.min(LAYOUT_LIMITS.terminalHeight[1],window.innerHeight-260));
+  const [terminalMaximum,setTerminalMaximum]=useState(()=>typeof window!=="undefined"?tallestTerminal():LAYOUT_LIMITS.terminalHeight[1]);
   useEffect(()=>{
-    let frame=0;const resize=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>setViewportWidth(window.innerWidth))};
+    let frame=0;const resize=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{setViewportWidth(window.innerWidth);setTerminalMaximum(tallestTerminal())})};
     window.addEventListener("resize",resize);return()=>{cancelAnimationFrame(frame);window.removeEventListener("resize",resize)};
   },[]);
   // A browser window too narrow for the sidebar beside a usable main column collapses the sidebar, as Ctrl+B does (the desktop
@@ -1563,13 +1567,15 @@ export default function App(){
   const sidebarColumnWidth=!sidebarOpen?0:narrowDrawer?196:mediumWindow?224:layoutPrefs.sidebarWidth;
   const rightPanelMaximum=Math.max(LAYOUT_LIMITS.rightPanelWidth[0],Math.min(LAYOUT_LIMITS.rightPanelWidth[1],viewportWidth-sidebarColumnWidth-400));
   const rightPanelWidth=Math.min(layoutPrefs.rightPanelWidth,rightPanelMaximum);
+  // The terminal drawer likewise takes its stored height up to its tallest, and the composer and the conversation sit above that.
+  const terminalHeight=Math.min(layoutPrefs.terminalHeight,terminalMaximum);
   // The size each pane shows, which its handle says and its keys and a pull start from.
-  const layoutShown={...layoutPrefs,rightPanelWidth};
+  const layoutShown={...layoutPrefs,rightPanelWidth,terminalHeight};
   // The largest size a pane may take in this window; the pointer and keyboard resizers share these limits.
   function layoutMaximum(kind){
     if(kind==="sidebar")return Math.max(210,Math.min(420,window.innerWidth-620));
     if(kind==="right")return rightPanelMaximum;
-    return Math.max(190,Math.min(620,window.innerHeight-260));
+    return terminalMaximum;
   }
   // Arrow keys move a separator (Shift for bigger steps): the sidebar grows rightward, the inspector leftward and the terminal
   // upward; Home and End jump to the smallest and largest size. A key that leaves the pane as it shows (the grow key or End at its
@@ -5602,7 +5608,7 @@ export default function App(){
   const layoutStyle={
     "--sidebar-width":layoutPrefs.sidebarWidth+"px",
     "--right-panel-width":rightPanelWidth+"px",
-    "--terminal-height":layoutPrefs.terminalHeight+"px",
+    "--terminal-height":terminalHeight+"px",
   };
   // What the chat workspace holds, as classes its stylesheet reads (shell.css) instead of a :has() over its children: Chrome restyled
   // the whole workspace, the conversation with it, on every key typed under such a rule, as React rewrites the composer's text each key.

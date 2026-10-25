@@ -2782,3 +2782,171 @@ for(const mode of ["dark","light"])test(`a key or a pull that leaves the docked 
     }
   }finally{await harness.close()}
 });
+
+// The terminal drawer has one rule for its height, as the docked inspector has for its width: it shows the height set up to the
+// tallest the window lets it (the window less 260px, from 190px to 620px), which its handle says, its keys and a pull start from and
+// stop at, the stylesheet caps it at, and the composer and the conversation sit above. The stylesheet capped the drawer at the window
+// less 220px while the keys and a pull stopped at the window less 260px, the composer sat above the height set, uncapped, the handle
+// said the height set, and App drew it again only when the window's width changed: so a drawer set to 620px in a 900px window showed
+// 580px at 800px, its handle saying 620 of 620 and the composer 52px above it (12px elsewhere), up under the header, and ArrowUp, the
+// grow key, or a 5px pull up took it down to 540px and stored that, so the 900px window showed 540px (UI lane D, round 10). So in a
+// window 900 and then 800px tall, 1280, 1120, 1100, 900 and 700px wide, the drawer, its handle and the composer agree, the grow keys,
+// End and pulls up that leave the drawer as tall as it shows keep the height set for the taller window, and ArrowDown, Home and a
+// pull down store the height they leave, from which ArrowUp and a pull up raise it.
+for(const mode of ["dark","light"])test(`the terminal drawer, its resize handle and the composer above it agree on its height, and a key or a pull that leaves it as tall as it shows keeps the height set for a taller window, 1280 to 700px wide and 900 and 800px tall, in ${mode} mode`,async({page})=>{
+  test.setTimeout(150_000);
+  const project={id:"terminal-kept-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
+  const threads=["Repo task one","Repo task two"].map((title,index)=>({id:"terminal-kept-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const harness=await startHarness(threads);
+  try{
+    await page.setViewportSize({width:1280,height:900});
+    await openApp(page,{harness,threads,meta:Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}])),project,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),drawer=page.getByTestId("drawer"),handle=page.getByTestId("terminal-resizer");
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    await page.getByTestId("terminal-toggle").click();await expect(drawer).toBeVisible();
+    // The drawer's height, its handle's value and maximum, the composer's gap above the drawer, and whether the composer is under the
+    // header.
+    const read=()=>page.evaluate(()=>{
+      const box=selector=>document.querySelector(selector).getBoundingClientRect(),drawer=box("[data-testid=drawer]"),composer=box(".chat-workspace .composer-wrap"),header=box(".chat-workspace .workspace-header"),node=document.querySelector("[data-testid=terminal-resizer]");
+      return {height:Math.round(drawer.height),now:Number(node.getAttribute("aria-valuenow")),max:Number(node.getAttribute("aria-valuemax")),gap:Math.round(drawer.top-composer.bottom),under:composer.top>=header.bottom-0.5};
+    });
+    // The window set to width by height, once its layout is the same two frames running.
+    const settled=async(width,height)=>{
+      await page.setViewportSize({width,height});let state=null;
+      await expect.poll(async()=>{await settle(page);const next=await read(),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same},{message:`the layout settles at ${width} by ${height}px`,intervals:[50]}).toBe(true);
+      return state;
+    };
+    // The keyboard on the drawer's handle, as Shift+Tab from its Close terminal brings it there, and a pull on the handle, which takes
+    // it, of each dy px in turn.
+    const toHandle=async()=>{if(!(await handle.evaluate(node=>node===document.activeElement))){await drawer.getByRole("button",{name:"Close terminal",exact:true}).focus();await page.keyboard.press("Shift+Tab")}await expect(handle).toBeFocused()};
+    const pull=async(...moves)=>{
+      const grip=await handle.boundingBox(),x=grip.x+300;let y=grip.y+grip.height/2;
+      await page.mouse.move(x,y);await page.mouse.down();await expect(page.locator("html"),"the pull takes the handle").toHaveClass(/layout-resizing/);
+      for(const dy of moves){y+=dy;await page.mouse.move(x,y,{steps:6})}
+      await page.mouse.up();
+    };
+    const keys=(...names)=>async()=>{for(const name of names)await page.keyboard.press(name)};
+    // The drawer as the window shows it, want px tall: its handle saying so with a maximum no lower, and the composer 12px above it,
+    // under the header.
+    const shows=(where,state,want)=>{
+      expect.soft([state.height,state.now],`the drawer's height and its handle's value ${where}`).toEqual([want,want]);
+      expect.soft(state.max,`the handle's maximum ${where}`).toBeGreaterThanOrEqual(state.height);
+      expect.soft([state.gap,state.under],`the composer's gap above the drawer, and the composer under the header, ${where}`).toEqual([12,true]);
+    };
+    shows("as it opens at 1280 by 900px",await settled(1280,900),330);
+    // The drawer set as tall as it goes (End) in the 900px window: 620px.
+    const tallest=async()=>{await settled(1280,900);await toHandle();await page.keyboard.press("End");await expect.poll(async()=>(await read()).height,{message:"End at 1280 by 900px"}).toBe(620)};
+    // A press or a pull in the 800px window, width px wide, where the drawer set to 620px shows as tall as it goes there, 540px: it
+    // leaves the drawer as tall as it shows, and the 900px window shows the 620px set again.
+    const kept=async(how,act,{width=1280,shot}={})=>{
+      await tallest();
+      const where=`at ${width} by 800px with the drawer set to 620px at 900px`,was=await settled(width,800);
+      shows(where,was,540);expect.soft(was.max,`the handle's maximum ${where}`).toBe(540);
+      await toHandle();await act();
+      await expect.soft.poll(async()=>{const now=await read();return [now.height,now.now]},{message:`${how} ${where} leaves the drawer as tall as it shows`,timeout:2000}).toEqual([was.height,was.height]);
+      shows(`after ${how} ${where}`,await read(),540);
+      if(shot)await page.screenshot({path:join(shotsDir,`terminal-kept-height-${mode}-${width}x800.png`),animations:"disabled"});
+      expect.soft((await settled(1280,900)).height,`back at 1280 by 900px after ${how} ${where}, the drawer is the 620px it was set to`).toBe(620);
+    };
+    for(const [how,act,shot] of [["ArrowUp, the grow key,",keys("ArrowUp"),true],["Shift+ArrowUp",keys("Shift+ArrowUp")],["End",keys("End")],["a 5px pull up",()=>pull(-5)],["a 40px pull up",()=>pull(-40)],["a pull 40px down and back up",()=>pull(40,-40)]])await kept(how,act,{shot});
+    for(const width of [1120,1100,900,700])await kept("ArrowUp, the grow key,",keys("ArrowUp"),{width,shot:width===700});
+    await kept("a 5px pull up",()=>pull(-5),{width:900});
+    // ArrowDown, Shift+ArrowDown, Home and a pull down in the 800px window store the height they leave, which the 900px window then
+    // shows, and from there ArrowUp and a pull up raise the drawer.
+    for(const [how,act,want] of [["ArrowDown",keys("ArrowDown"),524],["Shift+ArrowDown",keys("Shift+ArrowDown"),476],["Home",keys("Home"),190],["a 40px pull down",()=>pull(40),500],["ArrowDown and then ArrowUp",keys("ArrowDown","ArrowUp"),540],["ArrowDown twice and then a 5px pull up",async()=>{await keys("ArrowDown","ArrowDown")();await pull(-5)},513]]){
+      await tallest();await settled(1280,800);await toHandle();await act();
+      await expect.soft.poll(async()=>(await read()).height,{message:`${how} at 1280 by 800px`}).toBe(want);
+      shows(`after ${how} at 1280 by 800px`,await read(),want);
+      expect.soft((await settled(1280,900)).height,`back at 1280 by 900px after ${how} at 800px`).toBe(want);
+    }
+  }finally{await harness.close()}
+});
+
+// The same zoomed in, as Ctrl+= zooms the window, at 110% to 175% (UI lane D, round 10): at each zoom the inspector set to its widest
+// at 1280 CSS pixels comes back so after the grow key and a 5px pull to the left at 1100 and at the first docked width over 900 CSS
+// pixels (900.x, where it shows its 340px minimum: one grow key there stored 340px, which no wider window then undid), and the drawer
+// set to its tallest 900 CSS pixels tall comes back so after the grow key and a 5px pull up 800 tall; and in the 1280 by 800px window
+// zoomed in, a fraction of a CSS pixel tall, the drawer, its handle and the composer agree to the pixel.
+for(const mode of ["dark","light"])test(`zoomed in from 110% to 175%, a key or a pull that leaves the docked inspector or the terminal drawer as it shows keeps its size for a larger window, and the drawer, its handle and the composer agree, in ${mode} mode`,async({playwright,baseURL,proxy,headless})=>{
+  test.setTimeout(300_000);
+  const project={id:"kept-zoom-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
+  const threads=["Repo task one","Repo task two"].map((title,index)=>({id:"kept-zoom-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const dir=await mkdtemp(join(tmpdir(),"trebell-kept-")),extension=join(dir,"extension");mkdirSync(extension);
+  for(const [name,text] of Object.entries(ZOOM_EXTENSION))writeFileSync(join(extension,name),text);
+  const harness=await startHarness(threads);let context=null;
+  try{
+    context=await playwright.chromium.launchPersistentContext(join(dir,"profile"),{channel:"chromium",headless,baseURL,proxy,viewport:{width:1280,height:800},args:["--disable-extensions-except="+extension,"--load-extension="+extension]});
+    const zoom=context.serviceWorkers()[0]||await context.waitForEvent("serviceworker");
+    const page=context.pages()[0]||await context.newPage();
+    await openApp(page,{harness,threads,meta:Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}])),project,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),toggle=page.getByTestId("right-panel-toggle"),panelHandle=page.getByTestId("right-panel-resizer"),drawer=page.getByTestId("drawer"),drawerHandle=page.getByTestId("terminal-resizer");
+    if(!(await right.isVisible())){await toggle.click();await expect(right).toBeVisible()}
+    await page.getByTestId("terminal-toggle").click();await expect(drawer).toBeVisible();
+    // The window's width and height in CSS pixels, the inspector's width and its handle's value, the drawer's height and its handle's
+    // value and maximum, and the composer's gap above the drawer.
+    const read=()=>page.evaluate(()=>{
+      const box=selector=>document.querySelector(selector).getBoundingClientRect(),value=(id,name)=>Number(document.querySelector(`[data-testid=${id}]`).getAttribute("aria-value"+name)),drawer=box("[data-testid=drawer]");
+      return {width:+document.documentElement.getBoundingClientRect().width.toFixed(2),height:innerHeight,panel:Math.round(box("[data-testid=right-panel]").width),panelNow:value("right-panel-resizer","now"),drawer:+drawer.height.toFixed(2),drawerNow:value("terminal-resizer","now"),drawerMax:value("terminal-resizer","max"),gap:+(drawer.top-box(".chat-workspace .composer-wrap").bottom).toFixed(2)};
+    });
+    // The window set to width by height px, once its layout is the same two frames running at that size over the zoom.
+    let level=1;
+    const settled=async(width,height)=>{
+      await page.setViewportSize({width,height});let state=null;
+      await expect.poll(async()=>{await settle(page);const next=await read(),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same&&Math.abs(next.width-width/level)<0.05&&next.height===Math.round(height/level)},{message:`the layout settles at ${width} by ${height}px zoomed to ${Math.round(level*100)}%`,intervals:[50]}).toBe(true);
+      return state;
+    };
+    // The window width by height CSS pixels at the zoom.
+    const css=(width,height)=>settled(Math.round(width*level),Math.round(height*level));
+    // The keyboard on a handle (Shift+Tab from the inspector's first tab, or from the drawer's Close terminal), and a pull on a handle,
+    // which takes it, of dx and dy px.
+    const toHandle=async handle=>{
+      if(await handle.evaluate(node=>node===document.activeElement))return;
+      await (handle===panelHandle?right.locator(".context-panel-tab").first():drawer.getByRole("button",{name:"Close terminal",exact:true})).focus();
+      await page.keyboard.press("Shift+Tab");await expect(handle).toBeFocused();
+    };
+    const pull=async(handle,dx,dy)=>{
+      const grip=await handle.boundingBox(),x=grip.x+(handle===panelHandle?grip.width/2:300),y=grip.y+(handle===panelHandle?300:grip.height/2);
+      await page.mouse.move(x,y);await page.mouse.down();await expect(page.locator("html"),"the pull takes the handle").toHaveClass(/layout-resizing/);
+      await page.mouse.move(x+dx,y+dy,{steps:6});await page.mouse.up();
+    };
+    for(const next of [1.1,1.25,1.5,1.75]){
+      // The window at 1280 by 800 CSS pixels, then zoomed in a step, as Ctrl+= zooms it.
+      await page.setViewportSize({width:Math.round(1280*next),height:Math.round(800*next)});
+      await zoom.evaluate(factor=>self.zoomTo(factor),next);level=next;
+      await expect.poll(()=>page.evaluate(()=>devicePixelRatio),{message:`the window zooms to ${Math.round(level*100)}%`}).toBeCloseTo(level,3);
+      const zoomed=`zoomed to ${Math.round(level*100)}%`,docked=Math.floor(900*level)+1;
+      // The inspector set to its widest at 1280 CSS pixels (622px), and a key or a pull at 1100 (476px) or in the docked inspector's
+      // narrowest window (340px) that leaves it so.
+      for(const [at,shows,how,act] of [[1100,476,"ArrowLeft, the grow key,",()=>page.keyboard.press("ArrowLeft")],[1100,476,"a 5px pull to the left",()=>pull(panelHandle,-5,0)],[docked/level,340,"ArrowLeft, the grow key,",()=>page.keyboard.press("ArrowLeft")]]){
+        await css(1280,800);await toHandle(panelHandle);await page.keyboard.press("End");
+        await expect.poll(async()=>(await read()).panel,{message:`End at 1280 CSS pixels ${zoomed}`}).toBe(622);
+        const where=`at ${+at.toFixed(2)} CSS pixels ${zoomed} with the inspector set to 622px at 1280`,was=at===1100?await css(1100,800):await settled(docked,Math.round(800*level));
+        expect.soft([was.panel,was.panelNow],`the inspector and its handle's value ${where}`).toEqual([shows,shows]);
+        await toHandle(panelHandle);await act();
+        await expect.soft.poll(async()=>{const now=await read();return [now.panel,now.panelNow]},{message:`${how} ${where} leaves the inspector as wide as it shows`,timeout:2000}).toEqual([shows,shows]);
+        expect.soft((await css(1280,800)).panel,`back at 1280 CSS pixels after ${how} ${where}, the inspector is the 622px it was set to`).toBe(622);
+      }
+      // The drawer set to its tallest 900 CSS pixels tall (620px), and a key or a pull 800 tall (540px) that leaves it so.
+      for(const [how,act] of [["ArrowUp, the grow key,",()=>page.keyboard.press("ArrowUp")],["a 5px pull up",()=>pull(drawerHandle,0,-5)]]){
+        await css(1280,900);await toHandle(drawerHandle);await page.keyboard.press("End");
+        await expect.poll(async()=>Math.round((await read()).drawer),{message:`End 900 CSS pixels tall ${zoomed}`}).toBe(620);
+        const where=`800 CSS pixels tall ${zoomed} with the drawer set to 620px 900 tall`,was=await css(1280,800),shown=Math.round(was.drawer);
+        expect.soft([shown,was.drawerNow,was.drawerMax,Math.round(was.gap)],`the drawer, its handle's value and maximum and the composer's gap above it ${where}`).toEqual([540,540,540,12]);
+        await toHandle(drawerHandle);await act();
+        await expect.soft.poll(async()=>{const now=await read();return [Math.round(now.drawer),now.drawerNow]},{message:`${how} ${where} leaves the drawer as tall as it shows`,timeout:2000}).toEqual([shown,shown]);
+        expect.soft(Math.round((await css(1280,900)).drawer),`back 900 CSS pixels tall after ${how} ${where}, the drawer is the 620px it was set to`).toBe(620);
+      }
+      // The 1280 by 800px window zoomed in, a fraction of a CSS pixel tall, with the drawer set to 620px: the drawer as tall as the
+      // window less 260px, its handle saying so, and the composer 12px above it, each to the pixel; the grow key leaves it so.
+      const fraction=await settled(1280,800),where=`in the 1280 by 800px window ${zoomed} (${(800/level).toFixed(2)} CSS pixels tall)`;
+      expect.soft(Math.abs(fraction.drawer-fraction.drawerNow),`the drawer's height against its handle's value ${where}: ${fraction.drawer} and ${fraction.drawerNow}`).toBeLessThanOrEqual(1);
+      expect.soft(fraction.drawerMax,`the handle's maximum ${where}`).toBeGreaterThanOrEqual(fraction.drawer-1);
+      expect.soft(Math.abs(fraction.gap-12),`the composer's gap above the drawer ${where}: ${fraction.gap}px`).toBeLessThanOrEqual(1);
+      await toHandle(drawerHandle);await page.keyboard.press("ArrowUp");
+      await expect.soft.poll(async()=>(await read()).drawerNow,{message:`ArrowUp ${where} leaves the drawer as tall as it shows`,timeout:2000}).toBe(fraction.drawerNow);
+      if(level===1.25)await page.screenshot({path:join(shotsDir,`terminal-kept-height-zoom-125-${mode}-1280x800.png`),animations:"disabled"});
+    }
+  }finally{await context?.close();await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
+});

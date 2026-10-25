@@ -210,8 +210,8 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .command-palette-error{b
 .main-frame.terminal-open .composer-wrap{bottom:calc(var(--terminal-height,330px) + 16px)}
 .main-frame.terminal-open .conversation-scroll{bottom:calc(var(--terminal-height,330px) + 130px)}
 
-/* bottom terminal */
-.terminal-drawer{position:absolute;left:0;right:0;bottom:0;height:var(--terminal-height,330px);min-height:190px;max-height:calc(100vh - 220px);z-index:10;border-top:1px solid var(--t3-border);background:#0b0d0f;display:grid;grid-template-rows:34px minmax(0,1fr);animation:trebell-terminal-in var(--panel-animation-ms) ease both}
+/* bottom terminal: no taller than the window less 260px, App's tallest for it (layoutMaximum), which the composer sits above */
+.terminal-drawer{position:absolute;left:0;right:0;bottom:0;height:var(--terminal-height,330px);min-height:190px;max-height:calc(100vh - 260px);z-index:10;border-top:1px solid var(--t3-border);background:#0b0d0f;display:grid;grid-template-rows:34px minmax(0,1fr);animation:trebell-terminal-in var(--panel-animation-ms) ease both}
 @keyframes trebell-terminal-in{from{transform:translateY(10px);opacity:.82}to{transform:translateY(0);opacity:1}}
 .terminal-drawer-head{height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 12px;border-bottom:1px solid #1f2226;color:#81878e;font-size:9px}
 .terminal-drawer-head>span{display:flex;align-items:center;gap:6px}
