@@ -366,8 +366,10 @@ async function localFileHead(absolute,size,maxBytes){
   try{
     const head=Buffer.alloc(Math.min(size,maxBytes)),{bytesRead}=await handle.read(head,0,head.length,0);
     if(size>LINE_COUNT_MAX_BYTES)return {head:head.subarray(0,bytesRead)};
-    const chunk=Buffer.alloc(1024*1024);let breaks=0,last=10;
-    for(let position=0,read;(read=(await handle.read(chunk,0,chunk.length,position)).bytesRead)>0;position+=read){
+    // Only the size the read reports is counted: a file a running process still writes (a log) would otherwise add lines the
+    // size does not hold, and a writer faster than the read would keep the count going.
+    const chunk=Buffer.alloc(Math.min(size,1024*1024));let breaks=0,last=10;
+    for(let position=0,read;position<size&&(read=(await handle.read(chunk,0,Math.min(chunk.length,size-position),position)).bytesRead)>0;position+=read){
       for(let at=chunk.indexOf(10);at>=0&&at<read;at=chunk.indexOf(10,at+1))breaks++;
       last=chunk[read-1];
     }

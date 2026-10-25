@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import fsPromises, { copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { appendFileSync, existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
@@ -132,6 +133,24 @@ test("a model's read of a text file over its limit gets the file's first bytes, 
     await assert.rejects(()=>environmentWorkspaceFile(binary,100,{truncate:true}),/too large to preview/i,"a binary file keeps the refusal, having no lines to read on by");
     assert.equal((await environmentWorkspaceFile(path,320,{truncate:true})).content,FORTY_LINES_TEXT,"a file within the limit is read whole");
   }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+test("a model's read of a text file that grows while it is read counts the lines of the size it reports, and stops there",async()=>{
+  // A log a running process still writes: lines appended once the count has begun are not counted, so the line count agrees
+  // with the size the read gives, and a writer faster than the read cannot keep the count going.
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-grow-")),original=fsPromises.open;let reads=0;
+  try{
+    const path=join(dir,"server.log");await writeFile(path,FORTY_LINES_TEXT,"utf8");
+    fsPromises.open=async(...args)=>{
+      const handle=await original(...args),read=handle.read.bind(handle);
+      handle.read=(...readArgs)=>{if(++reads===2)appendFileSync(path,"request served\n".repeat(1000));return read(...readArgs)};
+      return handle;
+    };
+    syncBuiltinESMExports();
+    const head=await environmentWorkspaceFile(path,100,{truncate:true});
+    assert.equal(head.size,320);assert.equal(head.totalLines,40);assert.match(head.message,/^The file is 320 bytes, 40 lines;/);
+    assert.equal(head.content,FORTY_LINES.slice(0,12).join("\n")+"\n");
+  }finally{fsPromises.open=original;syncBuiltinESMExports();await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
 test("a model's read of a remote text file over its limit streams only the first bytes and counts the lines in the environment",async()=>{
