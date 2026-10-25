@@ -2454,6 +2454,42 @@ test("letters typed before and after the word a file is picked on from the @ men
   }finally{await harness.close()}
 });
 
+// A file picked from the @ menu with the caret inside its word (ArrowLeft or a click put it there) while the import is slow: the caret
+// goes after the word at the pick, so the letters typed straight on go after it, and once the file is in it goes on the whole word with
+// them after it. They went into the word at the caret the pick left there ('Check @lonowg'), and the file was never put on it (round 9).
+test("letters typed straight on after a file is picked from the @ menu with the caret inside its word go after the word while it imports and after the file once it is in, by Enter, Tab or a click",async({page})=>{
+  test.setTimeout(180_000);
+  const harness=await openComposerApp(page);
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip"),imports=await holdMentionImports(page);
+    const rounds=[["dark",900,"ArrowLeft","Enter"],["dark",900,"a click","a click"],["light",900,"ArrowLeft","Tab"],["light",900,"a click","Enter"],["dark",300,"ArrowLeft","Tab"],["dark",300,"a click","Enter"],["light",300,"ArrowLeft","a click"]];
+    for(const [index,[mode,ms,move,pick]] of rounds.entries()){
+      await switchMode(page,mode);
+      const where=` in ${mode}, the import ${ms} ms slow, the caret put inside '@log' by ${move} and login.js picked by ${pick}`;
+      // At 900 ms every letter is typed while the file imports; at 300 ms it comes in between them.
+      let release=null;imports.hold=ms;imports.held=ms===900?new Promise(done=>{release=done}):null;
+      await typeMention(page);
+      const answered=mentionSearched(page,"lo");if(move==="ArrowLeft")await page.keyboard.press("ArrowLeft");else await clickInDraft(page,9,2);
+      await (await answered).finished();await painted(page);
+      await expect.poll(()=>composer.evaluate(node=>node.selectionStart),"the caret"+where).toBe(9);await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      await pickLogin(page,pick);await page.waitForTimeout(120);await page.keyboard.type("now",{delay:60});
+      if(release){
+        await expect.soft(composer,"the draft while the file imports"+where).toHaveValue("Check @lognow");
+        expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret while the file imports"+where).toEqual([13,13]);
+        if(index<4)await page.screenshot({animations:"disabled",path:auditDir+`mention-picked-inside-the-word-typed-while-it-imports-${mode}-1280x800.png`});
+        await expect(context).toHaveCount(0);release();
+      }
+      await expect(context).toHaveCount(1);
+      await expect.soft(composer,"the draft once the file is in"+where).toHaveValue("Check @src/login.js now");
+      expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret once the file is in"+where).toEqual([23,23]);
+      await page.keyboard.type("!",{delay:20});await expect.soft(composer,"the draft typed on"+where).toHaveValue("Check @src/login.js now!");
+      if(index<4)await page.screenshot({animations:"disabled",path:auditDir+`mention-picked-inside-the-word-after-the-file-is-in-${mode}-1280x800.png`});
+      await context.locator("button").click();await expect(context).toHaveCount(0);
+    }
+  }finally{await harness.close()}
+});
+
 test("Enter on a draft over the 120,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);

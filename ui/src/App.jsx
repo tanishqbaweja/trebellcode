@@ -847,14 +847,16 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   }
   // The composer takes keys while the picked file imports, so the pick goes into the draft as it is once the file is in: on its word
   // where that is then, what was typed meanwhile kept and the caret in it (a word edited or erased meanwhile gets nothing, and its chip
-  // goes again unless the file was on the draft before), and a send waits for the file (mentionBusy). The draft and the caret go in at
-  // once, so the next key lands after them, and the keyboard comes back unless another field has it meanwhile. A page opened meanwhile
-  // (Settings, History) took this composer away with the chat: the pick goes into the composer drawn again, whose caret is set with it
-  // (the one it had would open the @ menu over the draft), or into App's draft as it is then while the page is up. The draft as it was
-  // at the pick went in over what was typed since.
+  // goes again unless the file was on the draft before). A caret inside the word goes after it at the pick, so what is typed on keeps the
+  // word whole, and a send waits for the file (mentionBusy). The draft and the caret go in at once, so the next key lands after them,
+  // and the keyboard comes back unless another field has it meanwhile. A page opened meanwhile (Settings, History) took this composer
+  // away with the chat: the pick goes into the composer drawn again, whose caret is set with it (the one it had would open the @ menu
+  // over the draft), or into App's draft as it is then while the page is up. The draft as it was at the pick went in over what was
+  // typed since.
   async function chooseMention(item){
     if(!activeMention||!item||mentionBusy)return;
     const from=prompt,mention=activeMention,focused=document.activeElement,label=item.relativePath||item.name||item.path,had=attachments;setMentionBusy(label);
+    if(caret<mention.end){composerRef.current?.setSelectionRange(mention.end,mention.end);setCaret(mention.end)}
     let attached=null,at=null;
     try{
       attached=await onFileMentionAttach?.(item);const shown=shownComposer,node=shown?.composerRef.current;if(!attached)return;
