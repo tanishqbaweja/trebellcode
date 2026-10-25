@@ -655,7 +655,8 @@ export class NativeAgentSession{
           id:String(call.id||"")+":workspace-fallback",namespace:"trebell_workspace",name:"read_file",signal:call.signal||null,
           arguments:{path:String(call.arguments?.path||""),max_bytes:256*1024},
         });
-        if(fallback?.success!==false&&typeof fallback?.content==="string"){
+        // A read cut at its limit holds only the file's first lines, so it cannot stand in for the lines read_source was asked for.
+        if(fallback?.success!==false&&typeof fallback?.content==="string"&&fallback?.truncated!==true){
           output=workspaceReadAsSource(fallback,call.arguments||{});
           this.onEvent?.({name:"native.tool.read_fallback",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{from:"trebell_repo/read_source",to:"trebell_workspace/read_file",reason:"not_indexed"}});
         }

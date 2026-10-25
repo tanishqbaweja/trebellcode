@@ -111,6 +111,44 @@ test("remote workspace tree, search, read, diff and write stay inside the select
   await assert.rejects(()=>environmentWorkspaceFile("/srv/app/large.txt",512000,{...options,root:"/srv/app"}),/too large/i);
 });
 
+// A model's read (truncate) of a text file over its limit: the first bytes, cut after a line break near the limit or else before
+// the character the limit would split, with the file's size and line count; every other reader keeps the refusal.
+const FORTY_LINES=Array.from({length:40},(_,index)=>`line ${String(index+1).padStart(2,"0")}`),FORTY_LINES_TEXT=FORTY_LINES.join("\n")+"\n";
+test("a model's read of a text file over its limit gets the file's first bytes, cut at a line or a character, with its size and line count",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-head-"));
+  try{
+    const path=join(dir,"notes.txt");await writeFile(path,FORTY_LINES_TEXT,"utf8");
+    await assert.rejects(()=>environmentWorkspaceFile(path,100),/too large to preview/i,"a reader that needs the whole file keeps the refusal");
+    // 100 bytes hold 12 whole 8-byte lines and 4 bytes of line 13: the cut is after line 12, as that break is near the limit.
+    const head=await environmentWorkspaceFile(path,100,{truncate:true});
+    assert.equal(head.content,FORTY_LINES.slice(0,12).join("\n")+"\n");
+    assert.equal(head.truncated,true);assert.equal(head.size,320);assert.equal(head.totalLines,40);
+    assert.match(head.message,/lines 1-12\b/);assert.match(head.message,/from line 13\b/);
+    const wide=join(dir,"wide.txt");await writeFile(wide,"€".repeat(50),"utf8");
+    const cut=await environmentWorkspaceFile(wide,10,{truncate:true});
+    assert.equal(cut.content,"€€€","a line longer than the limit is cut before the character the limit would split");
+    assert.equal(cut.size,150);assert.equal(cut.totalLines,1);assert.match(cut.message,/inside line 1\b/);
+    const binary=join(dir,"data.bin");await writeFile(binary,Buffer.concat([Buffer.from("PK"),Buffer.alloc(200)]));
+    await assert.rejects(()=>environmentWorkspaceFile(binary,100,{truncate:true}),/too large to preview/i,"a binary file keeps the refusal, having no lines to read on by");
+    assert.equal((await environmentWorkspaceFile(path,320,{truncate:true})).content,FORTY_LINES_TEXT,"a file within the limit is read whole");
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+test("a model's read of a remote text file over its limit streams only the first bytes and counts the lines in the environment",async()=>{
+  const bytes=Buffer.from(FORTY_LINES_TEXT),calls=[];
+  const environments={
+    get:id=>id==="ssh-a"?{id:"ssh-a",name:"Build box",type:"ssh",cwd:"/srv/app"}:null,
+    attachmentInfo:async(_id,path)=>({path,size:bytes.length,environmentId:"ssh-a"}),
+    streamFile:(_id,path,range)=>{calls.push(["stream",path,range]);const child=new EventEmitter();child.stdout=Readable.from([bytes.subarray(range.start,range.start+range.length)]);child.stdout.once("end",()=>setImmediate(()=>child.emit("close",0)));return child},
+    executeArgv:async(_id,options)=>{calls.push(["exec",options.command,options.args]);return {exitCode:0,stdout:"      40\n1\n",stderr:""}},
+  };
+  const head=await environmentWorkspaceFile("/srv/app/notes.txt",100,{root:"/srv/app",environments,environmentId:"ssh-a",truncate:true});
+  assert.equal(head.content,FORTY_LINES.slice(0,12).join("\n")+"\n");assert.equal(head.truncated,true);assert.equal(head.size,320);assert.equal(head.totalLines,40);assert.equal(head.environmentId,"ssh-a");
+  assert.deepEqual(calls[0],["stream","/srv/app/notes.txt",{start:0,length:100}],"only the first bytes leave the environment");
+  assert.equal(calls.some(([kind,command])=>kind==="exec"&&command==="cat"),false);
+  await assert.rejects(()=>environmentWorkspaceFile("/srv/app/notes.txt",100,{root:"/srv/app",environments,environmentId:"ssh-a"}),/too large to preview/i);
+});
+
 // A remote environment holding `files` (path: bytes), streamed as its cat would stream them.
 function remoteFiles(files){
   return {

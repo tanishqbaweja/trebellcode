@@ -302,7 +302,9 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
         if(args.as_image===true)return await workspaceImage(located,{environments,environmentId});
         const imageMimeType=imageMimeFromPath(located.path);
         if(imageMimeType)return {success:true,path:located.path,mimeType:imageMimeType,imageModeRequired:true,message:"Raster image text decoding was skipped to avoid binary data in model context. Re-read this path with as_image=true to inspect its pixels."};
-        return await environmentWorkspaceFile(located.path,boundedInteger(args.max_bytes,DEFAULT_READ_BYTES,1,1024*1024),{root,environments,environmentId});
+        // A file over max_bytes gives the model its first max_bytes, marked truncated, to read on from. A recovery read may write the
+        // text it gets back, so it needs the whole file or a refusal; its id names it, whichever executor sent it.
+        return await environmentWorkspaceFile(located.path,boundedInteger(args.max_bytes,DEFAULT_READ_BYTES,1,1024*1024),{root,environments,environmentId,truncate:!/^native-recovery-/.test(String(call.id||""))});
       }
       if(name==="write_file"){
         if(internalRecovery&&args._trebell_internal_binary===true){const located=await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:false});return await writeWorkspaceBinary(located,args.content_base64,{environments,environmentId})}

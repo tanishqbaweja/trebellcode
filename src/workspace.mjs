@@ -343,21 +343,76 @@ export async function environmentWorkspaceDiff(root,{environments=null,environme
   return {cwd,isGit:true,status:status.stdout||"",diff:remoteDiffText(diff.stdout||"",status.stdout||""),stderr:[diff.stderr,status.stderr].filter(Boolean).join("\n"),environmentId};
 }
 
-export async function workspaceFile(filePath, maxBytes = 512_000) {
+// A model's read of a text file over its limit (truncate) gets the file's first maxBytes instead of a refusal: cut after the last
+// line break in their last quarter, or else before the UTF-8 character the limit would split, with the file's size and line count,
+// so the model can read on by line range or another tool. A head holding a NUL byte keeps the refusal (a binary file has no lines
+// to read on by), and a file over LINE_COUNT_MAX_BYTES is not read through to count its lines. Every other reader (an edit, a
+// recovery snapshot, a preview) needs the file whole, so it is refused as before.
+const LINE_COUNT_MAX_BYTES=64*1024*1024;
+const tooLargeToPreview=size=>new Error(`File is too large to preview (${Math.ceil(size/1024)} KB)`);
+function fileHead({path,name,size,head,totalLines=null,environmentId=null}){
+  if(head.includes(0))throw tooLargeToPreview(size);
+  const lastBreak=head.lastIndexOf(10);let end=lastBreak>=0&&lastBreak+1>=head.length*.75?lastBreak+1:head.length;
+  if(end===head.length&&end>0){let lead=end-1;while(lead>0&&(head[lead]&0xc0)===0x80)lead--;if(lead+(head[lead]>=0xf0?4:head[lead]>=0xe0?3:head[lead]>=0xc0?2:1)>end)end=lead}
+  let breaks=0;for(let at=head.indexOf(10);at>=0&&at<end;at=head.indexOf(10,at+1))breaks++;
+  const whole=end>0&&head[end-1]===10,shownLines=breaks+(whole?0:1),lines=totalLines==null?"":`, ${totalLines} line${totalLines===1?"":"s"}`;
+  const message=whole
+    ?`The file is ${size} bytes${lines}; this read holds ${shownLines===1?"line 1":`lines 1-${shownLines}`} (${end} bytes). Read on from line ${shownLines+1} by line range or with a terminal command.`
+    :`The file is ${size} bytes${lines}; this read holds its first ${end} bytes, which end inside line ${shownLines}. Read on from line ${shownLines} by line range or with a terminal command.`;
+  return {path,name,size,truncated:true,...(totalLines==null?{}:{totalLines}),message,content:head.subarray(0,end).toString("utf8"),...(environmentId?{environmentId}:{})};
+}
+async function localFileHead(absolute,size,maxBytes){
+  const handle=await open(absolute,"r");
+  try{
+    const head=Buffer.alloc(Math.min(size,maxBytes)),{bytesRead}=await handle.read(head,0,head.length,0);
+    if(size>LINE_COUNT_MAX_BYTES)return {head:head.subarray(0,bytesRead)};
+    const chunk=Buffer.alloc(1024*1024);let breaks=0,last=10;
+    for(let position=0,read;(read=(await handle.read(chunk,0,chunk.length,position)).bytesRead)>0;position+=read){
+      for(let at=chunk.indexOf(10);at>=0&&at<read;at=chunk.indexOf(10,at+1))breaks++;
+      last=chunk[read-1];
+    }
+    return {head:head.subarray(0,bytesRead),totalLines:breaks+(last===10?0:1)};
+  }finally{await handle.close()}
+}
+// A remote file's first bytes are streamed (never the whole file), and its lines are counted in its environment: wc -l counts the
+// line breaks, and the second count is 1 when the file ends with one.
+async function remoteFileHead(environments,environmentId,absolute,size,maxBytes){
+  if(typeof environments.streamFile!=="function")throw tooLargeToPreview(size);
+  const child=environments.streamFile(environmentId,absolute,{start:0,length:maxBytes}),chunks=[];let count=0;
+  const closed=new Promise((resolveClose,reject)=>{child.once("error",reject);child.once("close",code=>code===0?resolveClose():reject(new Error("Could not read remote file")))});
+  closed.catch(()=>{});
+  try{
+    for await(const chunk of child.stdout){const part=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);chunks.push(part);count+=part.length}
+    await closed;
+  }catch(error){child.kill?.();throw error}
+  const head=Buffer.concat(chunks,count).subarray(0,maxBytes);
+  if(size>LINE_COUNT_MAX_BYTES)return {head};
+  const counted=typeof environments.executeArgv==="function"?await environments.executeArgv(environmentId,{command:"sh",args:["-c","wc -l < \"$1\"; tail -c 1 \"$1\" | wc -l","sh",absolute],cwd:"",timeoutMs:20000}).catch(()=>null):null;
+  const [breaks,ends]=(counted?.exitCode===0?String(counted.stdout||""):"").trim().split(/\s+/).map(Number);
+  return Number.isSafeInteger(breaks)&&(ends===0||ends===1)?{head,totalLines:breaks+(ends?0:1)}:{head};
+}
+
+export async function workspaceFile(filePath, maxBytes = 512_000, { truncate = false } = {}) {
   const absolute = resolve(filePath);
   const info = await stat(absolute);
   if (!info.isFile()) throw new Error("Not a file");
-  if (info.size > maxBytes) throw new Error(`File is too large to preview (${Math.ceil(info.size/1024)} KB)`);
+  if (info.size > maxBytes) {
+    if (!truncate) throw tooLargeToPreview(info.size);
+    return fileHead({ path: absolute, name: basename(absolute), size: info.size, ...await localFileHead(absolute, info.size, maxBytes) });
+  }
   const content = await readFile(absolute, "utf8");
   return { path: absolute, name: basename(absolute), content, size: info.size };
 }
 
-export async function environmentWorkspaceFile(filePath,maxBytes=512_000,{root=null,environments=null,environmentId=null}={}){
+export async function environmentWorkspaceFile(filePath,maxBytes=512_000,{root=null,environments=null,environmentId=null,truncate=false}={}){
   const profile=remoteProfile(environments,environmentId);
-  if(!profile)return workspaceFile(filePath,maxBytes);
+  if(!profile)return workspaceFile(filePath,maxBytes,{truncate});
   const {absolute}=remotePath(root||profile.cwd||"/",filePath);
   const info=await environments.attachmentInfo(environmentId,absolute);
-  if(info.size>maxBytes)throw new Error("File is too large to preview ("+Math.ceil(info.size/1024)+" KB)");
+  if(info.size>maxBytes){
+    if(!truncate)throw tooLargeToPreview(info.size);
+    return fileHead({path:absolute,name:posix.basename(absolute),size:info.size,environmentId,...await remoteFileHead(environments,environmentId,absolute,info.size,maxBytes)});
+  }
   const result=await environments.executeArgv(environmentId,{command:"cat",args:[absolute],cwd:"",timeoutMs:12000});
   if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote file");
   return {path:absolute,name:posix.basename(absolute),content:result.stdout,size:info.size,environmentId};

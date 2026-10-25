@@ -619,6 +619,27 @@ test("Native session does not use an unexposed workspace reader as an internal s
   assert.equal(executions.length,1);assert.equal(executions[0].namespace,"trebell_repo");
 });
 
+test("Native session does not take a workspace read cut at its limit for the source lines of an unindexed file",async()=>{
+  const requests=[],executions=[];let turn=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model",
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"read_source"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+    providerTurn:async request=>{requests.push(structuredClone(request));turn++;return turn===1
+      ?{id:"r1",text:"",toolCalls:[{id:"log-read",namespace:"trebell_repo",name:"read_source",arguments:'{"path":"logs/run.log","startLine":9000,"maxLines":5}'}],usage:{}}
+      :{id:"r2",text:"done",toolCalls:[],usage:{}}},
+    executeTool:async call=>{
+      executions.push(call.namespace+"/"+call.name);
+      if(call.namespace==="trebell_repo")return {success:false,error:"Context file is not indexed and is too large to read as text: logs/run.log"};
+      if(call.namespace==="trebell_workspace"&&call.name==="read_file")return {path:"/repo/logs/run.log",name:"run.log",size:2_000_000,truncated:true,totalLines:20_000,message:"The file is 2000000 bytes, 20000 lines; this read holds lines 1-2 (12 bytes).",content:"first\nlines\n"};
+      throw new Error("unexpected tool");
+    },
+  });
+  await session.start({model:"model"});await session.prompt([{type:"text",text:"read the run log"}],{toolAllowlist:["trebell_repo/read_source","trebell_workspace/read_file"]});
+  const observation=requests[1].messages.at(-1);assert.equal(observation.role,"tool");
+  assert.match(observation.content,/too large to read as text/,"the model is told why read_source could not read it");
+  assert.doesNotMatch(observation.content,/Source range starts after the end/,"the first lines of a cut read are not the whole file's lines");
+});
+
 test("Native session keeps large tool output outside hot provider history behind a persistent handle",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-output-session-"));const requests=[],updates=[];
   try{

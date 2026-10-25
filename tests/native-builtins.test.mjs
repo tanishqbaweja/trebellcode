@@ -65,7 +65,12 @@ test("Native internal recovery snapshots cover deliverables beyond the model-fac
   const root=await workspace(),large=Buffer.alloc(3*1024*1024+17,0x61),replacement=Buffer.alloc(3*1024*1024+5,0x62);
   try{
     const path=join(root,"src","large.json");await writeFile(path,large);const execute=createNativeBuiltins({root});
-    await assert.rejects(execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/large.json",max_bytes:1024*1024}}),/too large to preview/i);
+    // The model's read gets the first max_bytes with the file's size, so it can read on; a recovery read never takes that cut
+    // text for the whole file, flagged or (the loop driven without an internal executor) by its id alone.
+    const head=await execute({id:"call_read",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/large.json",max_bytes:1024*1024}});
+    assert.equal(head.truncated,true);assert.equal(head.size,large.length);assert.equal(head.content,"a".repeat(1024*1024));assert.equal(head.totalLines,1);assert.match(head.message,/inside line 1\b/);
+    await assert.rejects(execute({_trebellInternalRecovery:true,id:"native-recovery-snapshot-large:text",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/large.json",max_bytes:1024*1024}}),/too large to preview/i);
+    await assert.rejects(execute({id:"native-recovery-restore-check-1-1",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/large.json",max_bytes:1024*1024}}),/too large to preview/i);
     await assert.rejects(execute({namespace:"trebell_workspace",name:"write_file",arguments:{path:"src/large.json",content:replacement.toString("utf8")}}),/2 MB Native edit limit/);
     const snapshot=await execute({_trebellInternalRecovery:true,id:"native-recovery-snapshot-large",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/large.json",max_bytes:32*1024*1024,_trebell_internal_binary:true}});
     assert.equal(snapshot.binary,true);assert.equal(snapshot.size,large.length);assert.equal(Buffer.from(snapshot.contentBase64,"base64").equals(large),true);
