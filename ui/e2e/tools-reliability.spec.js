@@ -187,16 +187,17 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
 // they wait, until `releaseShare()`, or until `refuseShare(reason)` refuses them with reason. One answered after its connection
 // closed is done all the same, as Codex finishes what it was asked, but its answer is lost. The plugin catalog is
 // `control.marketplaces`: a plugin shared, installed or uninstalled and a marketplace upgraded or removed change it once answered,
-// and wait while `holdShare` is set as well; a plugin search lists the catalog's plugins whose name has the term in it, and a
-// plugin's read describes it, both waiting while `holdReads` is set, until `releaseReads()` (or `refuseReads(reason)`). The
-// effective configuration is `control.config`. `control.listReads` counts the catalog's reads. The Windows sandbox's readiness is
+// and wait while `holdShare` is set as well; a plugin search lists the catalog's plugins whose name has the term in it,
+// `control.searchPage` at a time when set, with a cursor to the next page while more match, and a plugin's read describes it, both
+// waiting while `holdReads` is set, until `releaseReads()` (or `refuseReads(reason)`). The effective configuration is
+// `control.config`. `control.listReads` counts the catalog's reads. The Windows sandbox's readiness is
 // `control.sandbox`, and a setup started answers that it started (`control.setups` lists them); the agent configuration found is
 // `control.migrationItems`, and an import of it answers with its id (`control.imports` lists them; Codex's import history, the imports
 // done, is `control.histories`). `notify(method,params)` sends a
 // notification on the app's connections, as Codex says a setup or an import is done. `drop()` closes the app's connections while
 // the fixture keeps listening, so the app connects again.
 async function startHeldMcpFixture({threads=[]}={}){
-  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[],holdShare:false,heldShare:[],holdReads:false,heldReads:[],marketplaces:[],config:{},listReads:0,sandbox:"ready",setups:[],migrationItems:[],imports:[],histories:[]};
+  const control={mcp:"servers",lists:"full",hold:true,held:[],holdInit:false,heldInit:[],skills:"empty",skillsByCwd:{},holdSkills:false,heldSkills:[],skillReads:0,skillCwds:[],shared:[],holdShare:false,heldShare:[],holdReads:false,heldReads:[],searchPage:0,marketplaces:[],config:{},listReads:0,sandbox:"ready",setups:[],migrationItems:[],imports:[],histories:[]};
   const server={name:"docs-server",runtimeStatus:"connected",authStatus:"unsupported",tools:{},resources:[]};
   const skill={name:"release-notes",description:"Draft release notes from merged pull requests",path:"/home/test/.codex/skills/release-notes/SKILL.md",scope:"user",enabled:true,interface:{displayName:"Release notes"}};
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
@@ -241,8 +242,9 @@ async function startHeldMcpFixture({threads=[]}={}){
         return;
       }
       if(["plugin/search","plugin/read"].includes(message.method)){
-        const {searchTerm,pluginName}=message.params||{},listed=control.marketplaces.flatMap(market=>(market.plugins||[]).map(plugin=>({market,plugin}))),read=listed.find(({plugin})=>plugin.name===pluginName);
-        const answer=reason=>reason?send({error:{code:-32000,message:reason}}):send({result:message.method==="plugin/search"?{data:listed.filter(({plugin})=>plugin.name.includes(searchTerm)).map(({market,plugin})=>({marketplaceName:market.name,marketplacePath:market.path,plugin})),nextCursor:null}
+        const {searchTerm,pluginName,cursor}=message.params||{},listed=control.marketplaces.flatMap(market=>(market.plugins||[]).map(plugin=>({market,plugin}))),read=listed.find(({plugin})=>plugin.name===pluginName);
+        const found=listed.filter(({plugin})=>plugin.name.includes(searchTerm)).map(({market,plugin})=>({marketplaceName:market.name,marketplacePath:market.path,plugin})),from=Number(cursor)||0,to=control.searchPage?from+control.searchPage:found.length;
+        const answer=reason=>reason?send({error:{code:-32000,message:reason}}):send({result:message.method==="plugin/search"?{data:found.slice(from,to),nextCursor:to<found.length?String(to):null}
           :{plugin:read?{summary:read.plugin,marketplaceName:read.market.name,description:"What "+(read.plugin.interface?.displayName||read.plugin.name)+" does, as Codex describes it.",skills:[],hooks:[],apps:[],mcpServers:[],scheduledTasks:[]}:null}});
         if(control.holdReads)control.heldReads.push(answer);else answer();
         return;
@@ -1526,6 +1528,75 @@ test("Tools shows a plugin's details, a plugin search's results or a history sca
     await expect(scan).toBeEnabled();
     await shootTools(page,"tools-history-scan-failed-while-away",history);
   }finally{fixture.releaseReads();for(const route of heldScans.splice(0))await answer(route,{sessions:[]}).catch(()=>{});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// The catalog with two more plugins a search for "lane" finds: Lane G Notes, installed, and Lane G Tasks.
+const moreCatalog=()=>catalog().map(market=>({...market,plugins:[...market.plugins,
+  {id:"lane-g-notes@lane-g-market",name:"lane-g-notes",version:"1.0.0",installed:true,availability:"available",interface:{displayName:"Lane G Notes"}},
+  {id:"lane-g-tasks@lane-g-market",name:"lane-g-tasks",version:"1.0.0",installed:false,availability:"available",interface:{displayName:"Lane G Tasks"}}]}));
+// Codex's held answer (one with text in it), released while Tools is not shown, and read by the page before the person comes back.
+const answeredAway=async(page,fixture,frames,text)=>{
+  const count=()=>frames.filter(frame=>frame.includes(text)).length,before=count();
+  fixture.releaseReads();await expect.poll(count).toBeGreaterThan(before);await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,0)));
+};
+
+// A plugin search's Load more that Codex answers once the person is back on Tools from Settings (by the mouse or the keys) or Usage
+// shows, on the page drawn again, the results the person had with Load more saying Loading…, marked busy, and the results' actions
+// waiting, and all the results once Codex answers, as the page that stays does; answered while Settings shows, they all show on
+// the page drawn after. The results and their next page were the page's that pressed Load more: the page drawn again listed the
+// catalog under the search, with every action grey and nothing saying Loading….
+test("Tools drawn again while a plugin search's Load more is on its way shows the results so far with Loading… on Load more, and all of them once Codex answers",async({page})=>{
+  test.setTimeout(120_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=moreCatalog();fixture.control.searchPage=2;
+  const frames=[];page.on("websocket",socket=>socket.on("framereceived",frame=>frames.push(String(frame.payload))));
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),plugins=toolsCard(page,"Plugins"),box=plugins.getByPlaceholder("Search plugins"),results=plugins.locator(".plugin-search-results>div strong");
+    const more=plugins.getByRole("button",{name:"Load more",exact:true}),loading=plugins.getByRole("button",{name:"Loading…",exact:true}),listed=plugins.locator(".capability-list:not(.plugin-search-results)>div");
+    const first=["Lane G Local","Lane G Notes"],all=[...first,"Lane G Tasks"];
+    const usage=async()=>{await page.getByRole("button",{name:"Usage",exact:true}).click();await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible()};
+    // A search for "lane", answered at once with its first page, then Load more pressed (press) while Codex holds it.
+    const loadMore=async press=>{
+      fixture.control.holdReads=false;await box.fill("");await box.fill("lane");await box.press("Enter");await expect(results).toHaveText(first);await expect(more).toBeEnabled();
+      fixture.control.holdReads=true;await press();await expect.poll(()=>fixture.control.heldReads.length).toBe(1);await expect(loading).toHaveAttribute("aria-busy","true");
+    };
+    // The page drawn again (way) while Codex holds Load more, and once it answers.
+    const drawnAgain=async(way,shot)=>{
+      await expect.soft(box,"the page drawn again "+way+" shows the search in the box").toHaveValue("lane");
+      await expect.soft(results,"with the results the person had").toHaveText(first);
+      await expect.soft(loading,"and Load more saying Loading…, marked busy").toHaveAttribute("aria-busy","true");
+      await expect.soft(listed,"in place of the catalog").toHaveCount(0);
+      await expect.soft(plugins.locator(".plugin-search-results").getByRole("button",{name:"Details",exact:true}).first(),"the results' actions waiting").toBeDisabled();
+      if(shot)await shootTools(page,shot,plugins);
+      fixture.releaseReads();
+      await expect.soft(results,"once Codex answers, all the results").toHaveText(all);
+      await expect(more).toHaveCount(0);await expect.soft(box,"with the search in the box").toHaveValue("lane");
+    };
+    await wheelTo(page,plugins);
+    // Load more clicked, then Settings and back with the mouse.
+    await loadMore(()=>more.click());
+    await ways.mouse();await wheelTo(page,plugins);
+    await drawnAgain("back from Settings","tools-drawn-again-plugin-load-more");
+    // Load more pressed with the keys, then Settings and back with the keys.
+    await loadMore(async()=>{await more.focus();await page.keyboard.press("Enter")});
+    await ways.keys();await wheelTo(page,plugins);
+    await drawnAgain("back from Settings with the keys");
+    // Load more double clicked, which sends one, then Usage and back.
+    await loadMore(()=>more.dblclick());
+    await usage();await ways.from();await wheelTo(page,plugins);
+    await drawnAgain("back from Usage");
+    // Load more clicked, then Settings, where Codex answers: the page drawn after shows all the results.
+    await loadMore(()=>more.click());
+    await ways.to();await answeredAway(page,fixture,frames,"\"marketplacePath\"");
+    await ways.from();await wheelTo(page,plugins);
+    await expect.soft(results,"the results Load more found while Settings showed, on the page drawn after").toHaveText(all);
+    await expect.soft(box,"with the search in the box").toHaveValue("lane");
+    await expect(more).toHaveCount(0);
+    await shootTools(page,"tools-plugin-load-more-landed-while-away",plugins);
+  }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
 // A history import says what it did once Conversation history is scanned again: the scan cleared the line as it started, so the

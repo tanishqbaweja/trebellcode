@@ -38,12 +38,14 @@ const shareDone={};
 // elevation prompt, and a second import, and passed over the first one's end. And what a history import did (told), which the next
 // page drawn says once it has scanned the history again: the page drawn after showed only Scan history.
 let said={},setup={},importing={},told=null;
-// The search on its way (searching: its term and scope), so a page drawn while it runs shows it in its box and select, beside
-// Searching… and where its answer or refusal is said: the box was empty there, and the answer then put the search back over what
-// the person had typed. And what Codex answers while no page is shown (kept): a plugin's details, a search's results, or a history
-// scan's conversations or why it failed, which the next page drawn shows, as it says the lines (said); they went nowhere, so the
-// page drawn after offered Details with nothing shown, the catalog under an empty box, or Scan history alone. A search that ends
-// with no page shown keeps its term and scope for that page.
+// The search on its way (searching: its term and scope, and for a Load more the results it adds to and their next page), so a page
+// drawn while it runs shows it in its box and select, beside Searching… or over the results with Load more saying Loading…, and
+// where its answer or refusal is said: the box was empty there, and the answer then put the search back over what the person had
+// typed; drawn while Load more ran, the page listed the catalog under the search, with nothing saying Loading…. And what Codex
+// answers while no page is shown (kept): a plugin's details, a search's results, or a history scan's conversations or why it
+// failed, which the next page drawn shows, as it says the lines (said); they went nowhere, so the page drawn after offered Details
+// with nothing shown, the catalog under an empty box, or Scan history alone. A search that ends with no page shown keeps what it
+// was sent from for that page.
 let searching=null,kept=[];
 window.addEventListener("trebell:windows-sandbox-setup",event=>{setup={};if(!shown)said={...said,"windowsSandbox/setupStart":event.detail?.success?null:failureText("Windows sandbox setup failed",event.detail?.error)}});
 
@@ -173,9 +175,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [skillMessage,setSkillMessage]=useState("");
   const [pluginSearchTerm,setPluginSearchTerm]=useState(()=>searching?.[0]||"");
   const [pluginSearchScope,setPluginSearchScope]=useState(()=>searching?.[1]||"global");
-  const [pluginSearchResults,setPluginSearchResults]=useState([]);
-  const [pluginSearchCursor,setPluginSearchCursor]=useState(null);
-  const [pluginSearchRan,setPluginSearchRan]=useState(false);
+  const [pluginSearchResults,setPluginSearchResults]=useState(()=>searching?.[2]||[]);
+  const [pluginSearchCursor,setPluginSearchCursor]=useState(()=>searching?.[3]||null);
+  const [pluginSearchRan,setPluginSearchRan]=useState(()=>!!searching?.[2]);
   const [pluginDetail,setPluginDetail]=useState(null);
   const [pluginSkillDetail,setPluginSkillDetail]=useState(null);
   const [pluginMessage,setPluginMessage]=useState("");
@@ -429,7 +431,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   // listed, and Loading… turned back into Details.
   async function searchPlugins({append=false}={}){
     const searchTerm=pluginSearchTerm.trim();if(!rpc||searchTerm.length<2)return;
-    searching=[pluginSearchTerm,pluginSearchScope];setBusy(append?"plugin:more":"plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
+    searching=[pluginSearchTerm,pluginSearchScope,...append?[pluginSearchResults,pluginSearchCursor]:[]];setBusy(append?"plugin:more":"plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
     try{
       const result=await request("plugin/search",{searchTerm,scope:pluginSearchScope,cwds:projectPath?[projectPath]:null,cursor:append?pluginSearchCursor:null,limit:20});
       const results=append?[...pluginSearchResults,...(result?.data||[])]:result?.data||[],cursor=result?.nextCursor||null;land(to=>to.showSearch(results,cursor));
