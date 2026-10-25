@@ -2798,6 +2798,45 @@ test("a second @ word typed while a file picked from the @ menu imports keeps it
   }finally{await harness.close()}
 });
 
+// Escape on the dimmed menu of a second @ word typed while the file picked from the @ menu imports closes it for the draft as it stands,
+// as on any @ menu: once the first file is in, the menu stays shut on '@logout', in the composer and in the one drawn again back from
+// Settings, opened meanwhile, where a click after '@logout' searches for it again, and Enter sends the message with login.js only,
+// '@logout' as typed. The landing put its own dismissal, of login.js's word, in place of Escape's, and with the menu's files kept for
+// '@logout' the menu came back on by itself, so Enter picked logout.js instead of sending (round 10 repair).
+for(const away of [false,true])test(`Escape on the menu of a second @ word typed while a file picked from the @ menu imports keeps it shut once that file is in${away?", back from Settings opened meanwhile,":""} and Enter sends the message with the first file only`,async({page})=>{
+  test.setTimeout(120_000);
+  const [mode,width,reply]=away?["light",900,"Checked login.js back from Settings, '@logout' as typed."]:["dark",1280,"Checked login.js, '@logout' as typed."];
+  const harness=await openComposerApp(page,{replies:[{text:reply}]});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip"),users=page.locator(".user-bubble");
+    const files=users.last().locator(".user-attachments > span"),imports=await holdMentionImports(page),where=` in ${mode} at ${width}`;
+    await switchMode(page,mode);await page.setViewportSize({width,height:800});
+    let release=null;imports.held=new Promise(done=>{release=done});
+    await typeMention(page);await pickLogin(page,"Enter");
+    // ' and @logout' typed straight on, its search answered while login.js imports, and Escape on its menu, which offers logout.js.
+    const answered=mentionSearched(page,"logout");await page.keyboard.type(" and @logout",{delay:40});await (await answered).finished();await painted(page);
+    await expect(menu.locator("button.active strong")).toHaveText("logout.js");
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await expect(composer).toHaveValue("Check @log and @logout");
+    if(away){await page.keyboard.press("Control+Comma");await expect(page.getByRole("heading",{name:"Settings",exact:true,level:1})).toBeVisible();await expect(composer).toHaveCount(0)}
+    // login.js in, and back from Settings the thread opened again from its row, with a click after '@logout' answered by its search.
+    const landed=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/attachments/import");release();await (await landed).finished();await painted(page);
+    if(away){
+      await threadRow(page,"Composer thread").locator(".thread-main").click();await expect(composer).toBeEnabled();await painted(page);
+      const searched=mentionSearched(page,"logout");await clickInDraft(page,31,1);await (await searched).finished();await painted(page);
+    }
+    await expect(context).toHaveCount(1);await expect(composer,"the draft once login.js is in"+where).toHaveValue("Check @src/login.js and @logout");
+    await expect.soft(menu,"the @ menu once login.js is in"+where).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+`mention-second-word-menu-shut-after-escape${away?"-back-from-settings":""}-${mode}-${width}x800.png`});
+    // Enter sends the message as typed, with login.js only.
+    await page.keyboard.press("Enter");
+    await expect(page.getByText(reply,{exact:true})).toBeVisible({timeout:15_000});
+    await expect(users.last().locator("p")).toHaveText("Check @src/login.js and @logout");await expect(files).toHaveText(["login.js"]);
+    await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page","Check @src/login.js and @logout"]);
+  }finally{await harness.close()}
+});
+
 test("Enter on a draft over the 120,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);

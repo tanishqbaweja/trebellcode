@@ -884,12 +884,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // goes again unless the file was on the draft before). A caret inside the word goes after it at the pick, so what is typed on keeps the
   // word whole, and while the word is there a send waits for the file (mentionWaits). The draft and the caret go in at once, so the next
   // key lands after them, with the @ menu shut on the file's word until the draft changes (menuDismissed), while the menu of another @
-  // word typed meanwhile with the caret in it keeps its files (emptied, it stayed gone, as nothing searched for that word again), and
-  // the keyboard comes back unless another field has it meanwhile. A page opened meanwhile (Settings, History) took this composer away
-  // with the chat: the pick goes into the composer drawn again, whose caret is set with it (the one it had would open the @ menu over
-  // the draft), or into App's draft as it is then while the page is up. The draft as it was at the pick went in over what was typed
-  // since. mentionBusy, App's (so the composer drawn again knows it): the file's name and path, and the draft and the word it was
-  // picked on.
+  // word typed meanwhile with the caret in it keeps its files (emptied, it stayed gone, as nothing searched for that word again), or
+  // stays shut when Escape closed it meanwhile, and the keyboard comes back unless another field has it meanwhile. A page opened
+  // meanwhile (Settings, History) took this composer away with the chat: the pick goes into the composer drawn again, whose caret is set
+  // with it (the one it had would open the @ menu over the draft), or into App's draft as it is then while the page is up. The draft as
+  // it was at the pick went in over what was typed since. mentionBusy, App's (so the composer drawn again knows it): the file's name and
+  // path, and the draft and the word it was picked on.
   async function chooseMention(item){
     if(!activeMention||!item||mentionBusy)return;
     const from=prompt,mention=activeMention,focused=document.activeElement,label=item.relativePath||item.name||item.path,had=attachments;
@@ -898,10 +898,13 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     let attached=null,at=null;
     try{
       attached=await onFileMentionAttach?.(item);const shown=shownComposer,node=shown?.composerRef.current;if(!attached)return;
-      if(!node){let text;flushSync(()=>{onPromptEdit?.();setPrompt(current=>(at=movedFileMention(from,mention,current,current.length))?text=applyFileMention(current,at,label).text:current)});if(at)setMenuDismissed({text,start:at.start});return}
+      // The dismissal goes in with the draft, in the same update, which carries Escape's over (every: it closed the menu on the draft as
+      // it stood): once the draft has changed App ends a dismissal that is not the draft's. With the page up, the dismissal's update
+      // reads what the draft's found (at, was, text), as App reads the draft's state first.
+      if(!node){let text,was;flushSync(()=>{onPromptEdit?.();setPrompt(current=>(at=movedFileMention(from,mention,current,current.length))?(was=current,text=applyFileMention(current,at,label).text):current);setMenuDismissed(dismissed=>at?{text,start:at.start,every:dismissed===was}:dismissed)});return}
       const now=node.value,caret=node.selectionEnd;at=movedFileMention(from,mention,now,caret);if(!at)return;
       const next=applyFileMention(now,at,label,caret),active=document.activeElement;
-      flushSync(()=>{onPromptEdit?.();setPrompt(next.text);setMenuDismissed({text:next.text,start:at.start});shown.setCaret(next.caret)});
+      flushSync(()=>{onPromptEdit?.();setPrompt(next.text);setMenuDismissed(dismissed=>({text:next.text,start:at.start,every:dismissed===now}));shown.setCaret(next.caret)});
       if(!active||active===document.body||active===focused)node.focus();node.setSelectionRange(next.caret,next.caret);
     }finally{if(attached&&!at&&!had.includes(attached))onRemoveContext?.(attached);setMentionBusy(null)}
   }
@@ -985,8 +988,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // the @ menu open on a word that names a file picked from it that is on the draft (its chip's path), also once the draft has
   // changed: an edit that put the caret right after the file again ('x' typed and erased, the space the pick added erased), a click
   // or a double click on it opened the menu offering the file again, and Enter imported it a second time instead of sending.
+  // Escape's dismissal of the draft as it stood (another @ word's menu closed while a picked file imports) lasts once the file is in
+  // (every), with the pick's own: the menu came back on that word, and Enter picked its file instead of sending it as typed.
   const slashMenuOpen=slashOpen&&!/\s/.test(prompt)&&slashItems.length>0&&menuDismissed!==prompt;
-  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&menuDismissed.start===activeMention.start)&&!(contextChips||[]).some(chip=>chip.kind==="file"&&"@"+chip.detail===prompt.slice(activeMention.start,activeMention.end));
+  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&(menuDismissed.every||menuDismissed.start===activeMention.start))&&!(contextChips||[]).some(chip=>chip.kind==="file"&&"@"+chip.detail===prompt.slice(activeMention.start,activeMention.end));
   const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0;
   useEffect(()=>{setSlashIndex(0)},[slashQuery]);
   // Keyboard choices stay in view in short windows, where the menus scroll.
@@ -1235,10 +1240,11 @@ export default function App(){
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSectionState]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [uploadingFiles,setUploadingFiles]=useState([]); const [contextChips,setContextChips]=useState([]);
   // The draft Escape closed the composer's / or @ menu on, or the draft a file picked from the @ menu went into and where the file's
-  // word starts in it ({text,start}), kept with the draft: the composer drawn again (back from Settings or History) keeps the menu shut
-  // over it, and the next change to the draft, other than the pick's own, ends it. Only a dismissal is cleared: a set state of null
-  // over null, made right after a render of App as each typed key is, still calls the whole of App again before React finds that
-  // nothing changed.
+  // word starts in it ({text,start}, every when Escape had closed the menu on the draft the file went into), kept with the draft: the
+  // composer drawn again (back from Settings or History) keeps the menu shut over it, and the next change to the draft, other than the
+  // pick's own, ends it. It is declared after the draft, so a pick that updates both reads the draft's update first (chooseMention).
+  // Only a dismissal is cleared: a set state of null over null, made right after a render of App as each typed key is, still calls the
+  // whole of App again before React finds that nothing changed.
   const [composerMenuDismissed,setComposerMenuDismissed]=useState(null);useEffect(()=>{if(composerMenuDismissed!==null&&composerMenuDismissed.text!==prompt)setComposerMenuDismissed(null)},[prompt]);
   // The file picked from the composer's @ menu while it imports ({label: its name in the draft, name, from: the draft it was picked
   // in, mention: its word there}), which a send waits for as for an upload while its word is in the draft, also in the composer drawn
