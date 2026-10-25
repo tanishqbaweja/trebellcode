@@ -1916,7 +1916,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // A Native thread without a model (e.g. one migrated off a retired provider) would fail its queued turn and lose
       // the submission with its attachments and tool scope: keep it queued until the user continues with a model.
       if(thread.runtime==="native"&&!migrateRetiredNativeThread(thread).thread?.model)throw Object.assign(new Error("Choose a model for this thread before its queued follow-up can run."),{code:-32602});
-      const submission=queue[index],started=await request(context,"turn/start",{threadId:params.threadId,input:submission.input,...(Array.isArray(submission.dynamicToolNamespaces)&&submission.dynamicToolNamespaces.length?{dynamicToolNamespaces:submission.dynamicToolNamespaces}:{})});
+      const submission=queue[index],started=await request(context,"turn/start",{threadId:params.threadId,input:submission.input,...(submission.clientUserMessageId?{clientUserMessageId:submission.clientUserMessageId}:{}),...(Array.isArray(submission.dynamicToolNamespaces)&&submission.dynamicToolNamespaces.length?{dynamicToolNamespaces:submission.dynamicToolNamespaces}:{})});
       const next=queue.filter((_,itemIndex)=>itemIndex!==index);saveAgentQueue(state,params.threadId,next);emit("thread/queue/changed",{threadId:params.threadId});return {turn:started.turn};
     }
     if(method==="thread/backgroundTerminals/list"){
@@ -2014,6 +2014,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(!thread.name&&!thread.preview){const stored=turn?.items?.find(item=>item?.type==="userMessage")?.content?.[0]?.text||"",preview=agentThreadTitleSeed(params.input||[],stored);if(preview)threadStore.update(thread.id,{preview})}
       session.__usage=null;
       emit("turn/started",{threadId:thread.id,turn});
+      // A follow-up the queue starts tells its message as Codex does, under the client id it was queued with, so the window shows it
+      // above its answer as it shows one it sent itself.
+      const asked=params.clientUserMessageId?turn.items?.find(item=>item?.type==="userMessage"):null;if(asked)emit("item/completed",{threadId:thread.id,turnId:turn.id,item:{...asked,clientId:String(params.clientUserMessageId)},completedAtMs:Date.now()});
       // A fresh session that took over a lost conversation is handed the thread's earlier messages (the turn's own goes as the request).
       const input=params.input||[],durable=await withDurableContext(thread.id,params.additionalContext||{},textOfInput(input)),pending=pendingHistoryHandoff(thread.id,turn.id,{excludeTurnId:turn.id});
       const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context});

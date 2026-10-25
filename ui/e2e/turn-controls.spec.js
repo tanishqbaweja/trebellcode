@@ -824,6 +824,7 @@ for(const kind of ["Trebell","Codex"]){
       await expect(files("Queued beta"),"the message the queue started names its file").toHaveText(["notes.txt"]);
       expect(sentFiles(askedFor(kind==="Trebell"?"turn/start":"thread/queue/add","Queued beta")),"what Codex was asked for the follow-up the queue started").toEqual(["file notes.txt"]);
       await expect(page.locator(".queued-message")).toHaveCount(0);await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+      await expect(page.locator(".user-bubble").filter({hasText:"Queued beta"}),"the message the queue started shows once").toHaveCount(1);
       await expect(files("Queued alpha")).toHaveText(["screenshot.png"]);await expect(files("Main task")).toHaveCount(0);
       await page.locator(".user-bubble").filter({hasText:"Queued alpha"}).scrollIntoViewIfNeeded();await shoot(page,"follow-up-files-"+kind.toLowerCase()+"-queue");
     }finally{await codex.close()}
@@ -860,6 +861,51 @@ for(const kind of ["Trebell","Codex"]){
     }finally{await codex.close()}
   });
 }
+
+// A follow-up Trebell Native's queue starts as the turn ends shows its message above its answer, with the file picked for it from the
+// @ menu, as one Send now starts does, each once, and so again after a reload. The relay started it and it was answered, but its
+// message showed only after a reload (round 10): the window shows such a message from the one Codex sends as its queue starts it.
+test("a follow-up Trebell Native's queue starts as the turn ends shows its message above its answer, with its file, once, as one sent now does, and after a reload",async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:800});
+  await keepSettings(page);
+  const fixture=await startStreamingFixture(page,{threads:[{name:"Native follow-ups",preview:"Queue"}]}),holds=[gate(),gate(),gate()],streamed=[gate(),gate(),gate()];
+  const file=join(fixture.repo,"session.js");
+  await page.route(/\/api\/workspace\/search(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[{path:file,name:"session.js",relativePath:"session.js"}]})}));
+  const held=(index,text)=>async(request,hook)=>{hook({type:"text",delta:"Working on it. "});streamed[index].open();await Promise.race([holds[index].promise,untilAborted(request.signal)]);return reply(request,text)};
+  answerBy(fixture,[["Main task",held(0,"Main task done.")],["Second task",held(1,"Second task done.")],["Plain follow-up",request=>reply(request,"Plain follow-up answered.")],["Check @session.js",request=>reply(request,"Mention follow-up answered.")],["Sent now follow-up",held(2,"Sent now answered.")]]);
+  const queue=page.locator(".queued-message p"),users=page.locator(".user-row .user-bubble > p"),rows=page.locator(".user-row .user-bubble > p, .history-assistant .assistant-message-text");
+  const files=text=>page.locator(".user-bubble").filter({hasText:text}).locator(".user-attachments > span"),menu=page.getByTestId("file-mention-menu");
+  try{
+    await fixture.open("Native follow-ups");
+    await sendTyped(page,"Main task with a queue.");await streamed[0].promise;await expect(stop(page)).toBeVisible();
+    // While the turn runs, a plain follow-up is queued by Send, and one with session.js picked from the @ menu by Enter.
+    await typeInComposer(page,"Plain follow-up");await page.getByTestId("send").click();await expect(queue).toHaveText(["Plain follow-up"]);
+    await typeInComposer(page,"Check @sess");await expect(menu.locator("button.active strong")).toHaveText("session.js");
+    await page.keyboard.press("Enter");await expect(page.getByTestId("context-chip")).toHaveCount(1,{timeout:10_000});await expect(composer(page)).toHaveValue(/^Check @session\.js ?$/);
+    await page.keyboard.press("Enter");await expect(queue).toHaveText(["Plain follow-up","Check @session.js"]);
+    // The turn ends, and the queue starts the follow-ups one after the other: each message shows above its answer, the file under it.
+    holds[0].open();
+    await expect(page.getByText("Mention follow-up answered.",{exact:true})).toBeVisible({timeout:20_000});await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+    await expect.soft(rows,"the conversation once the queue has started both follow-ups").toHaveText(["Main task with a queue.","Main task done.","Plain follow-up","Plain follow-up answered.","Check @session.js","Mention follow-up answered."]);
+    await expect.soft(files("Check @session.js"),"the file under the message the queue started").toHaveText(["session.js"]);
+    await shoot(page,"native-queue-started-follow-ups");
+    // A follow-up a Stop held, sent by Send now: its message shows while its turn runs, and once, above its answer.
+    await sendTyped(page,"Second task with a queue.");await streamed[1].promise;await expect(stop(page)).toBeVisible();
+    await sendTyped(page,"Sent now follow-up");await expect(queue).toHaveText(["Sent now follow-up"]);
+    await stop(page).click();await expect(page.getByTestId("turn-outcome").last()).toHaveText(/^stopped/,{timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    await page.locator(".queued-message").filter({hasText:"Sent now follow-up"}).getByRole("button",{name:"Send now"}).click();
+    await expect(users.filter({hasText:"Sent now follow-up"}),"the message Send now started, while its turn runs").toBeVisible({timeout:10_000});await expect(stop(page)).toBeVisible();
+    holds[2].open();
+    await expect(page.getByText("Sent now answered.",{exact:true})).toBeVisible({timeout:20_000});await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+    await expect.poll(()=>rows.allInnerTexts().then(texts=>texts.slice(-2).map(text=>text.trim())),{message:"the message Send now started, above its answer"}).toEqual(["Sent now follow-up","Sent now answered."]);
+    const sent=["Main task with a queue.","Plain follow-up","Check @session.js","Second task with a queue.","Sent now follow-up"];
+    await expect.soft(users,"each message once").toHaveText(sent);
+    // Opened again after a reload, the thread shows each message once, the file under its own.
+    await page.reload();await fixture.open("Native follow-ups");
+    await expect(users,"each message once after a reload").toHaveText(sent);await expect(files("Check @session.js"),"the file after a reload").toHaveText(["session.js"]);
+  }finally{holds.forEach(item=>item.open());await fixture.close()}
+});
 
 // With Follow-up behavior set to steer, a message sent while a turn runs is steered into it with its pasted screenshot: the message
 // names its file under it, and the steer asks Codex with the file.

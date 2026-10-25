@@ -4687,7 +4687,8 @@ export default function App(){
       if(running)return;
       const result=await rpc.request("thread/queue/start",{threadId:activeThread.id,queuedSubmissionId:item.id});const turnId=result?.turn?.id||null;
       setRunning(Boolean(turnId));setActiveTurnId(turnId);setQueued(prev=>prev.filter(q=>q.id!==item.id));queueKeysDone(item.id);
-      if(turnId){followConversationEnd();setMessages(prev=>[...prev,{id:item.clientUserMessageId||("queue-start-"+item.id),role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId}])}return;
+      // The harness may tell the message before it answers (the agent relay does, item/completed): it shows once.
+      if(turnId){followConversationEnd();const id=item.clientUserMessageId||("queue-start-"+item.id);setMessages(prev=>prev.some(message=>message.id===id)?prev:[...prev,{id,role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId}])}return;
     }
     // From the press on it is on its way (localQueueStartRef), until what became of it is written: its files are checked and its
     // dispatch mark is written before its card says so, and a Remove, an Edit or a second Send now meanwhile would drop a follow-up

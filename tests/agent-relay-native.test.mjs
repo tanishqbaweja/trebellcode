@@ -684,6 +684,16 @@ test("Trebell Native durable queue edits, reorders and auto-starts after a succe
     const final=threadStore.get(thread.id);assert.equal(final.turns.length,3);assert.ok(final.turns.every(turn=>turn.status==="completed"));assert.deepEqual(final.providerMeta.dynamicToolNamespaces,["trebell_browser"]);assert.equal((state.threadMeta(thread.id)?.queuedSubmissions||[]).length,0);assert.equal(prompts.length,3);
     assert.match(prompts[0],/INITIAL TURN/);assert.match(prompts[1],/SECOND QUEUED/);assert.match(prompts[2],/FIRST QUEUED EDITED/);
     assert.equal((await rpc.request("thread/queue/list",{threadId:thread.id,limit:10})).data.length,0);
+    // Each follow-up the queue started tells its message as Codex does, by the client id it was queued with, right after its turn
+    // started and before its answer, so the window shows it above the answer; the turn sent with turn/start tells none.
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===final.turns[2].id);
+    const told=turn=>rpc.notifications.filter(message=>(message.params?.turnId||message.params?.turn?.id)===turn.id).map(message=>message.method+(message.params?.item?.type?" "+message.params.item.type:""));
+    for(const [turn,clientId,text] of [[final.turns[1],"client-q2","SECOND QUEUED"],[final.turns[2],"client-q1","FIRST QUEUED EDITED"]]){
+      assert.deepEqual(told(turn).slice(0,2),["turn/started","item/completed userMessage"]);
+      const asked=rpc.notifications.find(message=>message.method==="item/completed"&&message.params?.turnId===turn.id&&message.params.item?.type==="userMessage").params.item;
+      assert.equal(asked.clientId,clientId);assert.equal(asked.id,turn.items[0].id);assert.equal(asked.content[0].text,text);
+    }
+    assert.equal(told(final.turns[0]).includes("item/completed userMessage"),false);
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
