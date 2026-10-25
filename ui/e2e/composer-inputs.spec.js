@@ -2490,6 +2490,84 @@ test("letters typed straight on after a file is picked from the @ menu with the 
   }finally{await harness.close()}
 });
 
+// A file picked from the @ menu on a word a space follows, the caret put in the word (Home and ArrowRight) or at its end (End and
+// ArrowLeft), leaves the menu shut over the file then on the word, the caret right after it, so the next Enter sends the message with
+// the file. The composer searched for the word at the caret, the file's own path, and opened the menu on it again, and that Enter
+// attached the file a second time instead of sending (round 9). A move of the caret alone leaves the menu shut there, also a click in
+// the composer drawn again back from Settings, opened while the file imported, while an edit of the word opens it again, and so does
+// another @ word of the draft.
+test("a file picked from the @ menu on a word a space follows leaves the menu shut, so the next Enter sends the message with the file, by Enter, Tab or a click, also back from Settings, and an edit of the word or another @ word opens it again",async({page})=>{
+  test.setTimeout(180_000);
+  const replies=["Checked the login file.","Checked the login file again.","Checked it once more.","Checked it a last time.","Checked it back from Settings.","Checked the two words."];
+  const harness=await openComposerApp(page,{replies:replies.map(text=>({text}))});
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip"),users=page.locator(".user-bubble");
+    const files=users.last().locator(".user-attachments > span"),held=await holdMentionImports(page);let imports=0;
+    page.on("request",request=>{if(new URL(request.url()).pathname==="/api/attachments/import")imports++});
+    // The draft typed into the emptied composer and the caret put after '@'+q by from and steps arrow keys, the menu offering login.js.
+    const typeAndPlace=async(draft,from,steps,q)=>{
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type(draft,{delay:20});
+      const answered=mentionSearched(page,q);await page.keyboard.press(from);for(let key=0;key<steps;key++)await page.keyboard.press(from==="Home"?"ArrowRight":"ArrowLeft");
+      await (await answered).finished();await painted(page);await expect(menu.locator("button.active strong")).toHaveText("login.js");
+    };
+    // The composer's search for the word at the caret, the file's path, answered and drawn after what moved: the menu stays shut.
+    const stays=async(what,move)=>{const answered=mentionSearched(page,"src/login.js");await move();await (await answered).finished();await painted(page);await expect.soft(menu,what).toHaveCount(0)};
+    for(const [index,[mode,width,draft,from,steps,q,pick]] of [
+      ["dark",1280,"Check @logfile now","Home",9,"lo","Enter"],
+      ["light",900,"Check @logfile now","Home",9,"lo","Tab"],
+      ["dark",1280,"Check @log now","End",4,"log","a click"],
+      ["light",900,"Check @log now","End",4,"log","Enter"],
+    ].entries()){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      const where=` in ${mode} at ${width}, login.js picked by ${pick} on '${draft}' with the caret put after '@${q}' by ${from} and the arrow keys`,before=imports;
+      await typeAndPlace(draft,from,steps,q);
+      await stays("the @ menu once the file is in"+where,async()=>{await pickLogin(page,pick);await expect(context).toHaveCount(1)});
+      await expect.soft(composer,"the draft once the file is in"+where).toHaveValue("Check @src/login.js now");
+      expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret after the file"+where).toEqual([19,19]);
+      await expect.soft(composer,"the keyboard in the composer"+where).toBeFocused();
+      if(index<2)await page.screenshot({animations:"disabled",path:auditDir+`mention-menu-shut-after-a-pick-before-a-space-${mode}-${width}x800.png`});
+      if(index===0){
+        // The caret moved past the space and back: still shut. A letter of the word erased: the menu offers login.js again, and its pick
+        // puts the file back whole, the menu shut again.
+        await stays("the @ menu after ArrowRight and ArrowLeft"+where,async()=>{await page.keyboard.press("ArrowRight");await page.keyboard.press("ArrowLeft")});
+        await page.keyboard.press("Backspace");await expect(composer).toHaveValue("Check @src/login.j now");await expect(menu.locator("button.active strong")).toHaveText("login.js");
+        await stays("the @ menu once the file is in again"+where,()=>page.keyboard.press("Enter"));await expect(composer).toHaveValue("Check @src/login.js now");
+      }
+      // Enter sends the message as it reads, with the file, imported once for each pick.
+      await page.keyboard.press("Enter");
+      await expect(page.getByText(replies[index],{exact:true})).toBeVisible({timeout:15_000});
+      await expect(users.last().locator("p")).toHaveText("Check @src/login.js now");await expect(files).toHaveText(["login.js"]);
+      await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);expect.soft(imports-before,"the files imported"+where).toBe(index===0?2:1);
+    }
+    // Settings opened by Ctrl+, while the file imports, the file in while it is up, and the thread opened again from its row: a click
+    // right after the file, in the composer drawn again, leaves the menu shut too, and Enter sends the message with the file.
+    await switchMode(page,"light");await page.setViewportSize({width:1280,height:800});let release=null,before=imports;held.held=new Promise(done=>{release=done});
+    await typeAndPlace("Check @log now","End",4,"log");await pickLogin(page,"Enter");
+    await page.keyboard.press("Control+Comma");await expect(page.getByRole("heading",{name:"Settings",exact:true,level:1})).toBeVisible();await expect(composer).toHaveCount(0);
+    const landed=page.waitForResponse(response=>new URL(response.url()).pathname==="/api/attachments/import");release();await (await landed).finished();await painted(page);held.held=null;
+    await threadRow(page,"Composer thread").locator(".thread-main").click();await expect(composer).toBeEnabled();await painted(page);
+    await expect(composer).toHaveValue("Check @src/login.js now");await expect(context).toHaveCount(1);
+    await stays("the @ menu after a click right after the file, back from Settings",()=>clickInDraft(page,19,1));
+    expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret clicked right after the file").toEqual([19,19]);
+    await page.screenshot({animations:"disabled",path:auditDir+"mention-menu-shut-after-a-pick-back-from-settings-light-1280x800.png"});
+    await page.keyboard.press("Enter");
+    await expect(page.getByText(replies[4],{exact:true})).toBeVisible({timeout:15_000});
+    await expect(users.last().locator("p")).toHaveText("Check @src/login.js now");await expect(files).toHaveText(["login.js"]);expect.soft(imports-before,"the files imported back from Settings").toBe(1);
+    // Another @ word of the draft opens the menu as before: the pick keeps it shut on its own word only.
+    await switchMode(page,"dark");before=imports;
+    await typeAndPlace("Check @log now and @logout","Home",10,"log");
+    await stays("the @ menu once the file is in, another @ word after it",()=>pickLogin(page,"Enter"));await expect(composer).toHaveValue("Check @src/login.js now and @logout");
+    const answered=mentionSearched(page,"logout");await page.keyboard.press("End");await (await answered).finished();
+    await expect(menu.locator("button.active strong"),"the @ menu on the other @ word").toHaveText("logout.js");
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await page.keyboard.press("Enter");
+    await expect(page.getByText(replies[5],{exact:true})).toBeVisible({timeout:15_000});
+    await expect(users.last().locator("p")).toHaveText("Check @src/login.js now and @logout");await expect(files).toHaveText(["login.js"]);expect.soft(imports-before,"the files imported with two @ words").toBe(1);
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page",...Array(5).fill("Check @src/login.js now"),"Check @src/login.js now and @logout"]);
+  }finally{await harness.close()}
+});
+
 test("Enter on a draft over the 120,000-character limit does what the disabled Send does: nothing, with no failed card; Send's title says why",async({page})=>{
   test.setTimeout(90_000);
   const harness=await openComposerApp(page);

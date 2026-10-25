@@ -876,10 +876,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // where that is then, what was typed meanwhile kept and the caret in it (a word edited or erased meanwhile gets nothing, and its chip
   // goes again unless the file was on the draft before). A caret inside the word goes after it at the pick, so what is typed on keeps the
   // word whole, and a send waits for the file (mentionBusy). The draft and the caret go in at once, so the next key lands after them,
-  // and the keyboard comes back unless another field has it meanwhile. A page opened meanwhile (Settings, History) took this composer
-  // away with the chat: the pick goes into the composer drawn again, whose caret is set with it (the one it had would open the @ menu
-  // over the draft), or into App's draft as it is then while the page is up. The draft as it was at the pick went in over what was
-  // typed since.
+  // with the @ menu shut on the file's word until the draft changes (menuDismissed), and the keyboard comes back unless another field
+  // has it meanwhile. A page opened meanwhile (Settings, History) took this composer away with the chat: the pick goes into the
+  // composer drawn again, whose caret is set with it (the one it had would open the @ menu over the draft), or into App's draft as it
+  // is then while the page is up. The draft as it was at the pick went in over what was typed since.
   async function chooseMention(item){
     if(!activeMention||!item||mentionBusy)return;
     const from=prompt,mention=activeMention,focused=document.activeElement,label=item.relativePath||item.name||item.path,had=attachments;setMentionBusy(label);
@@ -887,10 +887,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     let attached=null,at=null;
     try{
       attached=await onFileMentionAttach?.(item);const shown=shownComposer,node=shown?.composerRef.current;if(!attached)return;
-      if(!node){flushSync(()=>{onPromptEdit?.();setPrompt(current=>(at=movedFileMention(from,mention,current,current.length))?applyFileMention(current,at,label).text:current)});return}
+      if(!node){let text;flushSync(()=>{onPromptEdit?.();setPrompt(current=>(at=movedFileMention(from,mention,current,current.length))?text=applyFileMention(current,at,label).text:current)});if(at)setMenuDismissed({text,start:at.start});return}
       const now=node.value,caret=node.selectionEnd;at=movedFileMention(from,mention,now,caret);if(!at)return;
       const next=applyFileMention(now,at,label,caret),active=document.activeElement;
-      flushSync(()=>{onPromptEdit?.();setPrompt(next.text);shown.setMentionItems([]);shown.setCaret(next.caret)});
+      flushSync(()=>{onPromptEdit?.();setPrompt(next.text);setMenuDismissed({text:next.text,start:at.start});shown.setMentionItems([]);shown.setCaret(next.caret)});
       if(!active||active===document.body||active===focused)node.focus();node.setSelectionRange(next.caret,next.caret);
     }finally{if(attached&&!at&&!had.includes(attached))onRemoveContext?.(attached);setMentionBusy("")}
   }
@@ -966,10 +966,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // any edit in the composer itself, also one that leaves its text as it was (a / typed or pasted over the / selected), for which
   // React calls no onChange: the textarea's onInput ends the dismissal too. Escape closes the @ menu the same way: a move of the caret
   // alone (an arrow key, Home or End, a click) leaves it shut, where it searched for the word at the caret again and opened over the
-  // draft, and Enter then attached a file instead of sending. App keeps the draft dismissed (menuDismissed) with the draft, so the
-  // composer drawn again (back from Settings or History) keeps the menu shut over it.
+  // draft, and Enter then attached a file instead of sending. A file picked from the @ menu shuts it the same way on the word the file
+  // went on: the caret right after the file, before a space, searched for the file's path and opened the menu offering it again, and
+  // Enter attached it a second time instead of sending. Another @ word of the draft opens it as before. App keeps the draft dismissed
+  // (menuDismissed) with the draft, so the composer drawn again (back from Settings or History) keeps the menu shut over it.
   const slashMenuOpen=slashOpen&&!/\s/.test(prompt)&&slashItems.length>0&&menuDismissed!==prompt;
-  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt;
+  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&menuDismissed.start===activeMention.start);
   const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0;
   useEffect(()=>{setSlashIndex(0)},[slashQuery]);
   // Keyboard choices stay in view in short windows, where the menus scroll.
@@ -1215,11 +1217,12 @@ export default function App(){
   const queueNowRef=useRef(null);queueNowRef.current={queued,threadMeta};
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSectionState]=useState("chat"); const [settingsEntry,setSettingsEntry]=useState(null); const [settingsSectionLabel,setSettingsSectionLabel]=useState("");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [uploadingFiles,setUploadingFiles]=useState([]); const [contextChips,setContextChips]=useState([]);
-  // The draft Escape closed the composer's / or @ menu on, kept with the draft: the composer drawn again (back from Settings or
-  // History) keeps the menu shut over it, and the next change to the draft ends it. Only a dismissal is cleared: a set state of null
+  // The draft Escape closed the composer's / or @ menu on, or the draft a file picked from the @ menu went into and where the file's
+  // word starts in it ({text,start}), kept with the draft: the composer drawn again (back from Settings or History) keeps the menu shut
+  // over it, and the next change to the draft, other than the pick's own, ends it. Only a dismissal is cleared: a set state of null
   // over null, made right after a render of App as each typed key is, still calls the whole of App again before React finds that
   // nothing changed.
-  const [composerMenuDismissed,setComposerMenuDismissed]=useState(null);useEffect(()=>{if(composerMenuDismissed!==null)setComposerMenuDismissed(null)},[prompt]);
+  const [composerMenuDismissed,setComposerMenuDismissed]=useState(null);useEffect(()=>{if(composerMenuDismissed!==null&&composerMenuDismissed.text!==prompt)setComposerMenuDismissed(null)},[prompt]);
   // The file picked from the composer's @ menu while it imports (its name in the draft), which a send waits for as for an upload, also
   // in the composer drawn again meanwhile.
   const [composerMentionBusy,setComposerMentionBusy]=useState("");
