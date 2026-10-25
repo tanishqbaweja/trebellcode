@@ -1521,14 +1521,16 @@ export default function App(){
   // The docked inspector (wider than 900px) never pushes the main column under 400px or past the window edge: it takes the stored
   // width when the window has room and shrinks toward its 340px minimum when it does not. The stored preference stays for wider
   // windows. The sidebar column follows the shell's own breakpoints (t3-workspace.css: 196px up to 900px wide, where the inspector
-  // is the overlay drawer, and 224px up to 1120px), tested as the stylesheets test them.
+  // is the overlay drawer, and 224px up to 1120px), tested as the stylesheets test them. Its handle's keys and a pull stop at the
+  // same widest width, so they never narrow it (they stopped at the window less the sidebar's stored width and 480px, short of it).
   const narrowDrawer=useMediaQuery("(max-width:900px)"),mediumWindow=useMediaQuery("(max-width:1120px)");
   const sidebarColumnWidth=!sidebarOpen?0:narrowDrawer?196:mediumWindow?224:layoutPrefs.sidebarWidth;
-  const rightPanelWidth=Math.max(LAYOUT_LIMITS.rightPanelWidth[0],Math.min(layoutPrefs.rightPanelWidth,viewportWidth-sidebarColumnWidth-400));
+  const rightPanelMaximum=Math.max(LAYOUT_LIMITS.rightPanelWidth[0],Math.min(LAYOUT_LIMITS.rightPanelWidth[1],viewportWidth-sidebarColumnWidth-400));
+  const rightPanelWidth=Math.min(layoutPrefs.rightPanelWidth,rightPanelMaximum);
   // The largest size a pane may take in this window; the pointer and keyboard resizers share these limits.
   function layoutMaximum(kind){
     if(kind==="sidebar")return Math.max(210,Math.min(420,window.innerWidth-620));
-    if(kind==="right")return Math.max(340,Math.min(820,window.innerWidth-(sidebarOpen?layoutPrefs.sidebarWidth:0)-480));
+    if(kind==="right")return rightPanelMaximum;
     return Math.max(190,Math.min(620,window.innerHeight-260));
   }
   // Arrow keys move a separator (Shift for bigger steps): the sidebar grows rightward, the inspector leftward and the terminal
@@ -1556,8 +1558,7 @@ export default function App(){
         const maxByViewport=Math.max(210,Math.min(420,window.innerWidth-620));
         setLayoutPrefs(prev=>({...prev,sidebarWidth:Math.min(maxByViewport,clampLayoutValue("sidebarWidth",start.sidebarWidth+(moveEvent.clientX-startX)))}));
       }else if(kind==="right"){
-        const maxByViewport=Math.max(340,Math.min(820,window.innerWidth-(sidebarOpen?layoutPrefs.sidebarWidth:0)-480));
-        setLayoutPrefs(prev=>({...prev,rightPanelWidth:Math.min(maxByViewport,clampLayoutValue("rightPanelWidth",start.rightPanelWidth-(moveEvent.clientX-startX)))}));
+        setLayoutPrefs(prev=>({...prev,rightPanelWidth:Math.min(rightPanelMaximum,clampLayoutValue("rightPanelWidth",start.rightPanelWidth-(moveEvent.clientX-startX)))}));
       }else if(kind==="terminal"){
         const maxByViewport=Math.max(190,Math.min(620,window.innerHeight-260));
         setLayoutPrefs(prev=>({...prev,terminalHeight:Math.min(maxByViewport,clampLayoutValue("terminalHeight",start.terminalHeight-(moveEvent.clientY-startY)))}));

@@ -2586,3 +2586,112 @@ for(const mode of ["dark","light"])test(`the overlay drawer opened as the window
     await page.keyboard.press(process.platform==="darwin"?"Meta+Alt+B":"Control+Alt+B");await opened("by Ctrl+Alt+B");
   }finally{await harness.close()}
 });
+
+// The docked inspector's resize handle takes the inspector as wide as the window lets it show, and its grow key and a pull to widen
+// never narrow it. App laid the inspector out up to the window less the sidebar's column as the shell lays it out (224px up to 1120px
+// wide) and 400px for the conversation, but stopped its keys and a pull at the window less the width the person gave the sidebar
+// (258px) and 480px: in a 1100px window an inspector set to 404px showed 404px beside a handle whose maximum was 362px, so ArrowLeft,
+// the grow key, and a 5px pull to the left narrowed it to 362px and widened the conversation, and one widened in a wider window showed
+// 476px at 1100px and 622px at 1280px and went to 362px and 542px (UI lane D, round 9). So in 1100, 1280 and 1600px windows, with the
+// inspector set wider than the window lets it show (in a wider window, or before the sidebar is collapsed or widened) and as wide as
+// it shows, the handle on its edge says its width and a maximum no narrower, the inspector set wider shows at that maximum, ArrowLeft
+// and pulls to the left widen it up to there and never narrow it, ArrowRight, Home and End take it where they say, End and a long pull
+// reach the maximum, and the conversation beside it at its widest keeps 400px.
+for(const mode of ["dark","light"])test(`the docked inspector's resize handle reaches as wide as the inspector shows, and its grow key and a pull to widen never narrow it, at 1100, 1280 and 1600px, in ${mode} mode`,async({page})=>{
+  test.setTimeout(150_000);
+  const project={id:"inspector-width-project",name:"Lane D Repository",path:process.cwd(),environmentId:null,branch:"main"};
+  const threads=["Repo task one","Repo task two"].map((title,index)=>({id:"inspector-width-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const harness=await startHarness(threads);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads,meta:Object.fromEntries(threads.map(thread=>[thread.id,{projectless:false,environmentId:null}])),project,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),toggle=page.getByTestId("right-panel-toggle"),handle=page.getByTestId("right-panel-resizer");
+    if(!(await right.isVisible())){await toggle.click();await expect(right).toBeVisible()}
+    // The inspector's width, the handle's value and maximum, the sidebar's and the conversation's widths, and whether the handle is on
+    // the inspector's edge and the inspector inside the window.
+    const read=()=>page.evaluate(()=>{
+      const box=node=>node?.getBoundingClientRect(),panel=box(document.querySelector("[data-testid=right-panel]")),node=document.querySelector("[data-testid=right-panel-resizer]"),grip=box(node),sidebar=box(document.querySelector(".app-shell:not(.sidebar-collapsed)>.sidebar"));
+      return {width:Math.round(panel.width),now:Number(node.getAttribute("aria-valuenow")),max:Number(node.getAttribute("aria-valuemax")),sidebar:Math.round(sidebar?.width||0),column:Math.round(box(document.querySelector(".chat-workspace")).width),onEdge:Math.abs(grip.left+grip.width/2-panel.left)<=1.5,inside:panel.right<=innerWidth+0.5};
+    });
+    // The window set to width, once its layout is the same two frames running.
+    const settled=async width=>{
+      await page.setViewportSize({width,height:800});let state=null;
+      await expect.poll(async()=>{await settle(page);const next=await read(),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same},{message:`the layout settles at ${width}px`,intervals:[50]}).toBe(true);
+      return state;
+    };
+    // The keyboard on the handle, as Shift+Tab from the inspector's first tab brings it there, and a pull of dx px on the handle.
+    const toHandle=async()=>{if(!(await handle.evaluate(node=>node===document.activeElement))){await right.locator(".context-panel-tab").first().focus();await page.keyboard.press("Shift+Tab")}await expect(handle).toBeFocused()};
+    const pull=async dx=>{const grip=await handle.boundingBox(),x=grip.x+grip.width/2,y=grip.y+300;await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(Math.max(2,x+dx),y,{steps:6});await page.mouse.up()};
+    // The width a key or a pull leaves, from the inspector as it was: wider by n up to the handle's maximum and never narrower, or
+    // narrower by n down to 340px.
+    const wider=n=>was=>Math.max(was.width,Math.min(was.width+n,was.max)),narrower=n=>was=>Math.max(340,was.width-n);
+    // A key or a pull on the handle: the width it leaves the inspector, the handle on its edge saying it, and the conversation giving
+    // or taking what the inspector takes or gives.
+    const moves=async(where,how,act,to)=>{
+      const was=await read(),want=to(was);await act();
+      await expect.soft.poll(async()=>{const now=await read();return [now.width,now.now,now.onEdge]},{message:`${how} ${where}, from ${was.width}px with the handle's maximum at ${was.max}px`,timeout:2000}).toEqual([want,want,true]);
+      const now=await read();
+      expect.soft(Math.abs(now.column+now.width-was.column-was.width),`the conversation gives or takes what the inspector takes or gives at ${how} ${where}`).toBeLessThanOrEqual(1);
+      return now;
+    };
+    // The inspector as the window shows it: the handle on its edge saying its width, with a maximum no narrower, and, set wider than
+    // the window lets it show, at that maximum.
+    const shows=(where,state,setWider)=>{
+      expect.soft([state.now,state.onEdge,state.inside],`the handle on the inspector's edge says its width ${where}, the inspector inside the window`).toEqual([state.width,true,true]);
+      expect.soft(state.max,`the handle's maximum ${where} is no narrower than the ${state.width}px inspector`).toBeGreaterThanOrEqual(state.width);
+      if(setWider)expect.soft(state.width,`the inspector set wider than the window lets it show ${where} shows at the handle's maximum`).toBe(state.max);
+    };
+    // The keys and pulls a person widens and narrows the inspector with, the grow key or a pull first, and the conversation's width
+    // beside it at its widest.
+    const exercise=async(where,shot,pullFirst)=>{
+      await toHandle();
+      const key=()=>moves(where,"ArrowLeft, the grow key,",()=>page.keyboard.press("ArrowLeft"),wider(16)),small=()=>moves(where,"a 5px pull to the left",()=>pull(-5),wider(5));
+      if(pullFirst){await small();await key()}else{await key();await small()}
+      await moves(where,"a 40px pull to the left",()=>pull(-40),wider(40));
+      await toHandle();
+      const widest=await moves(where,"End",()=>page.keyboard.press("End"),was=>was.max);
+      if(widest.max<820)expect.soft(widest.column,`the conversation beside the inspector at its widest ${where}`).toBe(400);
+      else expect.soft(widest.column,`the conversation beside the inspector at its widest, 820px, ${where}`).toBeGreaterThanOrEqual(400);
+      await moves(where,"ArrowLeft at the inspector's widest",()=>page.keyboard.press("ArrowLeft"),wider(16));
+      await moves(where,"Shift+ArrowLeft at the inspector's widest",()=>page.keyboard.press("Shift+ArrowLeft"),wider(64));
+      await moves(where,"a 40px pull to the left at the inspector's widest",()=>pull(-40),wider(40));
+      if(shot)await page.screenshot({path:join(shotsDir,`inspector-handle-widest-${mode}-${shot}.png`),animations:"disabled"});
+      await toHandle();
+      await moves(where,"ArrowRight",()=>page.keyboard.press("ArrowRight"),narrower(16));
+      await moves(where,"Shift+ArrowRight",()=>page.keyboard.press("Shift+ArrowRight"),narrower(64));
+      await moves(where,"Home",()=>page.keyboard.press("Home"),()=>340);
+      await moves(where,"Shift+ArrowLeft from the inspector's narrowest",()=>page.keyboard.press("Shift+ArrowLeft"),wider(64));
+      await moves(where,"a pull to the window's left edge",()=>pull(-2000),was=>was.max);
+      await moves(where,"a 40px pull to the right",()=>pull(40),narrower(40));
+    };
+    // The inspector at its widest in a 1600px window (End), wider than a narrower window lets it show.
+    const widestAt1600=async()=>{await settled(1600);await toHandle();await page.keyboard.press("End");await expect.poll(async()=>(await read()).width).toBe(820)};
+    // At 1100px, set to 404px at 1280px with the keys (Home, ArrowLeft, Shift+ArrowLeft, ArrowRight), the grow key first and then,
+    // set so again, a pull.
+    const at404=async()=>{await settled(1280);await toHandle();for(const key of ["Home","ArrowLeft","Shift+ArrowLeft","ArrowRight"])await page.keyboard.press(key);await expect.poll(async()=>(await read()).width).toBe(404);return settled(1100)};
+    let where="at 1100px with the inspector set to 404px at 1280px";
+    shows(where,await at404(),false);await exercise(where,"1100-404",false);
+    where="at 1100px with the inspector set to 404px at 1280px again";
+    shows(where,await at404(),false);await exercise(where,null,true);
+    // At 1100px, set to its widest at 1600px, with the sidebar open and then collapsed.
+    await widestAt1600();where="at 1100px with the inspector set to its widest at 1600px";
+    shows(where,await settled(1100),true);await exercise(where,"1100",true);
+    await widestAt1600();await settled(1100);
+    await page.getByRole("button",{name:"Collapse sidebar"}).click();await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
+    where="at 1100px with the sidebar collapsed and the inspector set to its widest at 1600px";
+    shows(where,await settled(1100),true);await exercise(where,"1100-sidebar-collapsed",false);
+    await page.getByRole("button",{name:"Open sidebar"}).first().click();await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
+    // At 1280px, set to its widest at 1600px.
+    await widestAt1600();where="at 1280px with the inspector set to its widest at 1600px";
+    shows(where,await settled(1280),true);await exercise(where,"1280",true);
+    // At 1600px at its widest, and then with the sidebar widened to its widest (End on its handle, Tab from its last control).
+    await widestAt1600();where="at 1600px with the inspector at its widest";
+    shows(where,await settled(1600),false);await exercise(where,"1600",false);
+    await widestAt1600();await page.locator(".sidebar-provider").focus();await page.keyboard.press("Tab");
+    await expect(page.getByTestId("sidebar-resizer")).toBeFocused();await page.keyboard.press("End");
+    await expect.poll(async()=>(await read()).sidebar).toBe(420);
+    where="at 1600px with the inspector at its widest and then the sidebar widened to its widest";
+    shows(where,await settled(1600),true);await exercise(where,"1600-sidebar-widest",true);
+  }finally{await harness.close()}
+});
