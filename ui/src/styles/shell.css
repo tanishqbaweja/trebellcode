@@ -916,3 +916,5 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .lazy-slot-error>span{flex:1;min-width:0}
 .lazy-slot-error>button{flex:none}
 .app-shell>.lazy-slot-error{position:fixed;z-index:170;left:50%;bottom:24px;margin:0;translate:-50% 0;width:max-content;max-width:min(560px,calc(100vw - 32px));box-shadow:var(--shadow)}
+/* The Cite button's, where the button would come: above the text selected in a reply, as Cite is (App.jsx CiteUnavailable). */
+.lazy-slot-error.cite-unavailable{position:fixed;z-index:120;transform:translate(-50%,-100%);width:max-content;margin:0;padding:2px 2px 2px 11px;box-shadow:var(--shadow);animation:tb-cite-in .14s var(--ease-out)}

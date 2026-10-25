@@ -809,9 +809,77 @@ test("a selection, a search and a Ctrl+F made before the parts loaded at idle ha
   }finally{await release().catch(()=>{});await harness.close()}
 });
 
-// When that script cannot load, each part says so where it would have drawn or answered, and the rest of the app stays: the end of the
-// conversation and the find bar's place say the part could not be shown, with Reload, and the sidebar's search that it could not search.
-test("Cite, a find and a search whose script cannot load say so, and the app stays",async({page})=>{
+// A Ctrl+F made before that script has come opens the find bar of the thread it was pressed on, and only there: a new task (Ctrl+N)
+// or another thread (its row clicked) shown by the time the script comes gets no bar, and the keyboard stays in its composer, where
+// what is typed goes. A script that cannot load then says nothing there either. findBeforeTheParts holds the script, opens Quill
+// release and presses Ctrl+F there; settle lets the script come (or fail), then waits as long again as the bar takes to come once
+// it is in, and checks there is no bar, nothing in its place, and the keyboard still in the composer.
+async function findBeforeTheParts(page){
+  const held=[];let refuse=false;
+  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>refuse?route.abort("failed"):held.push(route));
+  const {harness}=await openRelayThreads(page,[{name:"Quill release",user:"Plan the release",reply:"The release plan is ready."},{name:"Beta notes",user:"Write the notes",reply:"The notes are written."}]);
+  const composer=page.getByTestId("composer"),bar=page.getByTestId("thread-find-bar"),title=page.locator(".thread-title-button strong");
+  try{
+    await expect.poll(()=>held.length,{message:"the parts asked for at idle"}).toBe(1);
+    await openRelayThread(page,"Quill release","The release plan is ready.");
+    await page.keyboard.press("Control+f");
+    await page.waitForTimeout(300);await expect(bar).toHaveCount(0);
+  }catch(error){await harness.close();throw error}
+  return {
+    composer,title,
+    async settle(outcome="loads"){
+      const settled=page.waitForEvent(outcome==="loads"?"requestfinished":"requestfailed",request=>/\/assets\/idle-parts-[^/]*\.js$/.test(request.url()));
+      refuse=outcome!=="loads";for(const route of held.splice(0))await (refuse?route.abort("failed"):route.continue());
+      await settled;
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));await page.waitForTimeout(400);
+      await expect(bar).toHaveCount(0);await expect(page.locator(".chat-workspace > .lazy-slot-error")).toHaveCount(0);
+      await expect(composer).toBeFocused();
+    },
+    async close(){for(const route of held.splice(0))await route.continue().catch(()=>{});await harness.close()},
+  };
+}
+test("a Ctrl+F made before the parts loaded at idle have come opens no find bar on the new task Ctrl+N shows meanwhile, and the keyboard stays in its composer",async({page})=>{
+  test.setTimeout(60_000);
+  const find=await findBeforeTheParts(page);
+  try{
+    await page.keyboard.press("Control+n");
+    await expect(find.title).toHaveText("New Trebell task");await expect(find.composer).toBeFocused();
+    await find.settle();
+    await page.keyboard.type("Plan the next release",{delay:15});await expect(find.composer).toHaveValue("Plan the next release");
+    await appStays(page);
+    await page.screenshot({animations:"disabled",path:auditDir+"find-before-load-then-new-task-dark-1280x800.png"});
+  }finally{await find.close()}
+});
+test("a Ctrl+F made before the parts loaded at idle have come opens no find bar on another thread whose row is clicked meanwhile, and the keyboard stays in its composer",async({page})=>{
+  test.setTimeout(60_000);
+  const find=await findBeforeTheParts(page);
+  try{
+    await relayRow(page,"Beta notes").locator(".thread-main").click();
+    await expect(page.locator(".assistant-message-text").last()).toContainText("The notes are written.");await expect(find.title).toHaveText("Beta notes");
+    await find.composer.click();await expect(find.composer).toBeFocused();
+    await find.settle();
+    await page.keyboard.type("Add the dates",{delay:15});await expect(find.composer).toHaveValue("Add the dates");
+    await appStays(page);
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await page.screenshot({animations:"disabled",path:auditDir+"find-before-load-then-other-thread-light-1280x800.png"});
+  }finally{await find.close()}
+});
+test("a Ctrl+F whose parts then cannot load says nothing on the new task Ctrl+N shows meanwhile, and the keyboard stays in its composer",async({page})=>{
+  test.setTimeout(60_000);
+  const find=await findBeforeTheParts(page);
+  try{
+    await page.keyboard.press("Control+n");
+    await expect(find.title).toHaveText("New Trebell task");await expect(find.composer).toBeFocused();
+    await find.settle("fails");
+    await expect(page.getByTestId("app-action-error")).toHaveCount(0);
+    await appStays(page);
+  }finally{await find.close()}
+});
+
+// When that script cannot load, each part says so where it is used, and the rest of the app stays. A Ctrl+F says why in the line the
+// app's actions say their errors in and opens nothing over the conversation, whose first message stays in view, with the keyboard
+// still in the composer; the sidebar's search says it could not search.
+test("a Ctrl+F whose find bar cannot load says why, opens nothing over the conversation and leaves the keyboard in the composer, and a search says it could not search",async({page})=>{
   test.setTimeout(60_000);
   let refused=0;
   await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
@@ -819,16 +887,74 @@ test("Cite, a find and a search whose script cannot load say so, and the app sta
   try{
     await expect.poll(()=>refused,{message:"the parts asked for at idle"}).toBeGreaterThan(0);
     await openRelayThread(page,"Quill release","The release plan is ready.");
-    const failed=page.locator(".conversation-history .lazy-slot-error");
-    await expect(failed).toContainText("This part of Trebell could not be shown: Part of Trebell could not load. Reload Trebell to get it back.");
-    await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
-    await page.keyboard.press("Control+f");
-    const findFailed=page.locator(".chat-workspace > .lazy-slot-error");
-    await expect(findFailed).toContainText("This part of Trebell could not be shown: Part of Trebell could not load. Reload Trebell to get it back.");
+    const composer=page.getByTestId("composer"),said=page.getByTestId("app-action-error");
+    await composer.click();await page.keyboard.press("Control+f");
+    await expect(said).toHaveText("Could not open find in this thread: Part of Trebell could not load. Reload Trebell to get it back.");
+    await expect(page.getByTestId("thread-find-bar")).toHaveCount(0);await expect(page.locator(".chat-workspace > .lazy-slot-error")).toHaveCount(0);
+    await expect(composer).toBeFocused();await expect(page.locator(".user-bubble").first()).toBeVisible();
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      await page.screenshot({animations:"disabled",path:auditDir+`find-cannot-load-${mode}-1280x800.png`});
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    await page.keyboard.type("Plan the notes",{delay:15});await expect(composer).toHaveValue("Plan the notes");
     await page.getByRole("textbox",{name:"Search threads"}).fill("Q");
     await expect(page.locator(".sidebar .sidebar-action-error")).toHaveText("Could not search threads: Part of Trebell could not load. Reload Trebell to get it back.");
     await expect(relayRow(page,"Beta notes")).toBeVisible();
     await appStays(page);
     await page.screenshot({animations:"disabled",path:auditDir+"idle-parts-cannot-load-dark-1280x800.png"});
+  }finally{await harness.close()}
+});
+
+// Nor does Cite's: the end of a conversation says nothing (no reply reads as failed to show, and nothing there is announced or in
+// Tab's order). Text selected in a reply says it, where Cite would come and for as long as the selection lasts, with Reload.
+test("a Cite whose script cannot load says so only where its button would come, above text selected in a reply, by mouse and by keyboard",async({page})=>{
+  test.setTimeout(60_000);
+  let refused=0;
+  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const {harness}=await openRelayThreads(page,[{name:"Quill release",user:"Plan the release",reply:"The release plan is ready."},{name:"Beta notes",user:"Write the notes",reply:"The notes are written."}]);
+  try{
+    await expect.poll(()=>refused,{message:"the parts asked for at idle"}).toBeGreaterThan(0);
+    await openRelayThread(page,"Quill release","The release plan is ready.");
+    const history=page.locator(".conversation-history"),notice=page.locator(".cite-unavailable"),reload=notice.getByRole("button",{name:"Reload",exact:true});
+    const reply=()=>page.locator(".assistant-message-text").last().locator("p").first();
+    // By mouse: a triple-click selects the reply, and the notice comes where Cite would, centred above the selection.
+    await reply().click({clickCount:3});
+    await expect(notice).toBeVisible();await expect(notice).toHaveText(/^Cite could not load\.\s*Reload$/);await expect(notice).toHaveAttribute("role","alert");
+    const place=await page.evaluate(()=>{
+      const range=getSelection().getRangeAt(0).getBoundingClientRect(),box=document.querySelector(".cite-unavailable").getBoundingClientRect();
+      return {offCentre:Math.abs((box.left+box.right)/2-(range.left+range.right)/2),gap:range.top-box.bottom,inWindow:box.left>=0&&box.right<=innerWidth};
+    });
+    expect(place.offCentre,"how far the notice is off the selection's centre").toBeLessThan(2);
+    expect(place.gap,"the gap from the notice down to the selection").toBeGreaterThanOrEqual(0);expect(place.gap).toBeLessThanOrEqual(12);expect(place.inWindow).toBe(true);
+    await expect(history.locator(".lazy-slot-error")).toHaveCount(1);await expect(history.getByRole("alert")).toHaveCount(1);
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      await page.screenshot({animations:"disabled",path:auditDir+`cite-cannot-load-selected-${mode}-1280x800.png`});
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    // A click beside the reply takes the selection, and the notice with it: the end of the conversation says nothing.
+    await page.locator(".conversation-column").click({position:{x:5,y:5}});
+    await expect(notice).toHaveCount(0);
+    await expect(history.locator(".lazy-slot-error")).toHaveCount(0);await expect(history.getByRole("alert")).toHaveCount(0);await expect(history.getByRole("button",{name:"Reload"})).toHaveCount(0);
+    // Nor does another thread's.
+    await openRelayThread(page,"Beta notes","The notes are written.");
+    await page.waitForTimeout(300);
+    await expect(history.locator(".lazy-slot-error")).toHaveCount(0);await expect(history.getByRole("alert")).toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:auditDir+"cite-cannot-load-unselected-dark-1280x800.png"});
+    // By keyboard: Tab from a selection reaches Reload, as it reaches Cite, and Escape takes the notice away.
+    await reply().click({clickCount:3});await expect(notice).toBeVisible();
+    await page.keyboard.press("Tab");await expect(reload).toBeFocused();
+    await page.keyboard.press("Escape");await expect(notice).toHaveCount(0);
+    // Reload loads Trebell again, from the keyboard and with a click.
+    await reply().click({clickCount:3});await expect(notice).toBeVisible();
+    await page.keyboard.press("Tab");await expect(reload).toBeFocused();
+    await Promise.all([page.waitForEvent("load"),page.keyboard.press("Enter")]);
+    await expect(page.locator(".thread-row")).toHaveCount(2,{timeout:10_000});
+    await openRelayThread(page,"Quill release","The release plan is ready.");
+    await reply().click({clickCount:3});await expect(notice).toBeVisible();
+    await Promise.all([page.waitForEvent("load"),reload.click()]);
+    await expect(page.locator(".thread-row")).toHaveCount(2,{timeout:10_000});
+    await appStays(page);
   }finally{await harness.close()}
 });

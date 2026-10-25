@@ -246,14 +246,41 @@ const LOADED_BROWSER_ENTRY_ID=BROWSER_NAVIGATION?window.history.state?.trebellNa
 
 // A part loaded with lazy() whose code could not load (the UI was rebuilt or updated under an open page, or the link to a remote
 // Trebell server dropped), or that failed as it drew, says so in its place: without a boundary React takes the whole app off the
-// screen with it. The browser keeps a module that failed to load as failed, so a reload is what loads it again.
+// screen with it. The browser keeps a module that failed to load as failed, so a reload is what loads it again. failed: what shows
+// instead, for a part that has no place until the person uses it (the Cite button).
 class LazySlot extends React.Component{
   state={error:null};
   static getDerivedStateFromError(error){return {error}}
   render(){
     const {error}=this.state;
-    return error?<div className="lazy-slot-error" role="alert"><span>This part of Trebell could not be shown: {error.message||String(error)}</span><button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>:<Suspense fallback={this.props.fallback??null}>{this.props.children}</Suspense>;
+    return error?this.props.failed?this.props.failed(error):<div className="lazy-slot-error" role="alert"><span>This part of Trebell could not be shown: {error.message||String(error)}</span><button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>:<Suspense fallback={this.props.fallback??null}>{this.props.children}</Suspense>;
   }
+}
+// The Cite button's code (idle-parts.js) that could not load says so only where the button would come, above text selected in a
+// reply (AssistantSelectionToolbar's rule), for as long as that selection lasts, with Reload. The end of the conversation, where
+// the button's slot is, says nothing: no reply reads as failed to show, and nothing there is announced or in Tab's order.
+function CiteUnavailable({containerRef}){
+  const [at,setAt]=useState(null);
+  useEffect(()=>{
+    const container=containerRef.current,host=container?.closest(".conversation-scroll");if(!container)return;
+    let frame=0;const clear=()=>{cancelAnimationFrame(frame);setAt(null)};
+    const update=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{
+      const selection=window.getSelection(),range=selection?.rangeCount&&!selection.isCollapsed&&selection.toString().trim()?selection.getRangeAt(0):null;
+      const node=range?.startContainer,source=(node?.nodeType===Node.ELEMENT_NODE?node:node?.parentElement)?.closest("[data-assistant-citation-source]");
+      if(!source||!container.contains(source)){setAt(null);return}
+      const beyond=range.cloneRange();beyond.setStart(source,source.childNodes.length);
+      const rect=range.getBoundingClientRect(),view=(host||container).getBoundingClientRect();
+      setAt(beyond.toString().trim()||!(rect.width||rect.height)?null:{x:Math.max(112,Math.min(window.innerWidth-112,rect.left+rect.width/2)),y:Math.max(Math.max(0,view.top)+44,Math.min(Math.min(window.innerHeight,view.bottom)-8,rect.top-7))});
+    })};
+    const onKey=event=>{if(event.key==="Escape")clear()};
+    document.addEventListener("selectionchange",update);container.addEventListener("pointerup",update);document.addEventListener("keydown",onKey,true);
+    host?.addEventListener("scroll",clear,{passive:true});window.addEventListener("resize",clear);update();
+    return()=>{
+      cancelAnimationFrame(frame);document.removeEventListener("selectionchange",update);container.removeEventListener("pointerup",update);document.removeEventListener("keydown",onKey,true);
+      host?.removeEventListener("scroll",clear);window.removeEventListener("resize",clear);
+    };
+  },[containerRef]);
+  return at&&<div className="lazy-slot-error cite-unavailable" role="alert" style={{left:at.x,top:at.y}} onPointerDown={event=>event.preventDefault()}><span>Cite could not load.</span><button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>;
 }
 function DeferredSurface({children,label="Loading…",compact=false}){
   return <LazySlot fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</LazySlot>;
@@ -638,7 +665,7 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
   // A page that did not load says so under the button pressed, which stays there to try again, with the keyboard still on it.
   return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" aria-disabled={historyBusy||undefined} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button>{historyError?.at==="top"&&<p className="history-page-error" role="alert">{historyError.text}</p>}</div>}{renderTrailers(trailers.after.get(""))}{virtualized
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk||selectedChunks.includes(chunk.key)} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
-    :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<LazySlot><AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></LazySlot></div>;
+    :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<LazySlot failed={()=><CiteUnavailable containerRef={historyRef}/>}><AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></LazySlot></div>;
 });
 // threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
 // A card answers once, and only to a click aimed at it: the second click of a double click (its click count is 2, or it lands where
@@ -3978,11 +4005,13 @@ export default function App(){
     setHistoryPage(current=>current.threadId===threadId?{...current,detached:{ids:found.map(message=>String(message.id)),turnIds:turnId?[turnId]:[],cursor:earlierCursor,missing},error:null}:current);
   }
   function openThreadFind(){
-    if(!runtimeCapabilities.threadSearch||!activeThreadRef.current?.id)return;
+    const threadId=activeThreadRef.current?.id;if(!runtimeCapabilities.threadSearch||!threadId)return;
     // The bar opens with its code in: before that has come (idleParts) it opens once it is, so the bar, its field's focus and the room
-    // the conversation keeps for it come together, as they do once it has.
-    const open=()=>setThreadFind(current=>({...current,open:true,error:""}));
-    if(idleParts)open();else loadIdleParts().then(open,open);
+    // the conversation keeps for it come together, as they do once it has. It opens only on the thread it was asked on: a thread or a
+    // new task asked for meanwhile (openSeqRef), or another thread shown, keeps the keyboard where the person has it. Code that cannot
+    // load opens nothing over the conversation: the action errors say why.
+    const open=()=>setThreadFind(current=>({...current,open:true,error:""})),seq=openSeqRef.current,asked=()=>openSeqRef.current===seq&&activeThreadRef.current?.id===threadId;
+    if(idleParts)open();else loadIdleParts().then(()=>asked()&&open(),error=>asked()&&showActionError(error,"Could not open find in this thread"));
   }
   function closeThreadFind(){
     threadFindSeqRef.current++;
