@@ -19,3 +19,7 @@ export function askTerminalKeyboard(at=presses){asked=Math.max(asked,at);askedAt
 export function terminalDrawerOpened(node){if(node&&askedAt!==presses)asked=presses}
 // Whether the keyboard asked for can still go into the drawer: nothing was pressed outside it since.
 export const terminalKeyboardAsked=()=>presses===asked;
+// The terminal App last asked the drawer to show (trebell:terminal-refresh), until the drawer takes it: the drawer's code loads as it
+// first opens, after the ask of the action's run that opened it, and the drawer showed the newest terminal instead.
+let shown=null;if(typeof window!=="undefined")window.addEventListener("trebell:terminal-refresh",event=>{shown=event.detail});
+export const takeAskedTerminal=()=>{const id=shown;shown=null;return id};

@@ -2,7 +2,7 @@ import React,{useEffect,useLayoutEffect,useRef,useState} from "react";
 import { Columns2, Plus, Rows2, SquareTerminal, X, Paperclip } from "lucide-react";
 import { api,wsUrl } from "../api.js";
 import { createTerminalScreen,TERMINAL_SCROLLBACK_CHARS,TERMINAL_SCROLLBACK_LINES } from "../terminal-screen.js";
-import { terminalKeyboardAsked } from "../terminal-keyboard.js";
+import { takeAskedTerminal,terminalKeyboardAsked } from "../terminal-keyboard.js";
 import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 const MAX_SPLIT_PANES=4;
@@ -67,6 +67,14 @@ function clearOfFades(list,node){
 // click, Enter held) does nothing. A tab picked at an edge of the row is scrolled in clear of the fade, which can move the close button
 // of the tab before it, or its own, under the pointer, and the command line takes the keyboard.
 function pressOnce(event){if(event.target.closest(".terminal-tab-select"))ignorePressRest(!event.detail)}
+// The panes with a terminal shown: one in a pane already stays where it is, and another takes the place of the pane shown (shownId),
+// or of the last pane.
+const showInPanes=(panes,id,shownId)=>{
+  if(panes.includes(id))return panes;
+  if(!panes.length)return [id];
+  const replace=panes.includes(shownId)?panes.indexOf(shownId):panes.length-1;
+  return panes.map((paneId,index)=>index===replace?id:paneId);
+};
 
 export default function TerminalPanel({projectPath,environmentId=null,environmentName="Local machine",onAttachExcerpt}){
   const [sessions,setSessions]=useState([]);
@@ -95,21 +103,25 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   const inputRefs=useRef(new Map());
   const environmentQuery=()=>"?"+new URLSearchParams({environmentId:environmentId||""}).toString();
 
+  // Only the answer to the latest listing is shown: a drawer opening lists its terminals while the run of an action that runs already
+  // asks for its own, and the opening's answer, when it came second, showed the newest terminal instead.
+  const listings=useRef(0);
   async function refresh(preferredId=null){
-    let data;
-    try{data=await api("/api/terminal/sessions"+environmentQuery());setError("")}
-    catch(cause){setError(cause?.message||String(cause)||"Could not load terminal sessions.");setListed(true);return sessions}
+    const listing=++listings.current;let data;
+    try{data=await api("/api/terminal/sessions"+environmentQuery());if(listing!==listings.current)return sessions;setError("")}
+    catch(cause){if(listing===listings.current){setError(cause?.message||String(cause)||"Could not load terminal sessions.");setListed(true)}return sessions}
     // Listed in the same render as the sessions it shows.
     const list=data?.sessions||[];setSessions(list);setListed(true);
-    // With nothing selected yet the newest live terminal is shown instead of the oldest entry (often stopped history): the
-    // worktree-setup and project-action terminals open this drawer, and their refresh event can fire before it has mounted.
+    // With nothing asked for or selected yet the newest live terminal is shown instead of the oldest entry (often stopped history).
+    // The worktree-setup and project-action terminals open this drawer, and their ask can come before it has mounted: it is taken
+    // here then (terminal-keyboard.js).
     const newestLive=list.filter(session=>session.running).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))[0];
-    const target=preferredId||(activeId&&list.some(session=>session.id===activeId)?activeId:null)||newestLive?.id||list[0]?.id||null;
+    const known=id=>list.some(session=>session.id===id)?id:null;
+    const target=known(preferredId||takeAskedTerminal())||known(activeId)||newestLive?.id||list[0]?.id||null;
+    // The terminal asked for (an action's run, a worktree's setup, a sign in) takes the place of the pane shown, as a tab picked does:
+    // the drawer marked its tab current and went on showing the terminal it showed before.
     setActiveId(target);
-    setPaneIds(current=>{
-      const valid=current.filter(id=>list.some(session=>session.id===id));
-      return valid.length?valid:(target?[target]:[]);
-    });
+    setPaneIds(current=>{const valid=current.filter(id=>list.some(session=>session.id===id));return target?showInPanes(valid,target,activeId):valid});
     return list;
   }
 
@@ -243,15 +255,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     if(id===activeId)setActiveId(remainingPanes[0]||remainingSessions[0]?.id||null);
     return true;
   }
-  function selectSession(id){
-    setActiveId(id);setFocusTick(value=>value+1);
-    setPaneIds(current=>{
-      if(current.includes(id))return current;
-      if(!current.length)return[id];
-      const replace=current.includes(activeId)?current.indexOf(activeId):current.length-1;
-      return current.map((paneId,index)=>index===replace?id:paneId);
-    });
-  }
+  function selectSession(id){setActiveId(id);setFocusTick(value=>value+1);setPaneIds(current=>showInPanes(current,id,activeId))}
   function write(id,data){
     const socket=sockets.current.get(id);
     if(socket?.readyState!==WebSocket.OPEN){setError(RECONNECTING);return false}
@@ -283,7 +287,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   }
 
   useEffect(()=>{
-    const refreshExternal=event=>refresh(event.detail||null).then(()=>setFocusTick(value=>value+1));
+    const refreshExternal=event=>{takeAskedTerminal();refresh(event.detail||null).then(()=>setFocusTick(value=>value+1))};
     const createNew=()=>create();
     const closeActive=()=>{if(activeId)close(activeId)};
     const splitPane=event=>split(event.detail?.direction==="vertical"?"vertical":"horizontal");

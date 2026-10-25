@@ -65,9 +65,10 @@ test("the header's action button shows its action running, shows its terminal on
 });
 
 // The server side of action runs for the tests below, scripted as above: each run answers after latencyMs (a real run answered in
-// 450-1275 ms on a loaded host) with a terminal of its own, the terminal list holds every terminal started, and a watch socket says
-// whether its terminal runs. With held, a run answers only once answer() is called, and the list holds its terminal from its answer
-// on, as the server lists a run once it has started it. Proof screenshots go to TREBELL_PROOF_SHOTS when it is set.
+// 450-1275 ms on a loaded host) with a terminal of its own, the terminal list holds every terminal started (the drawer's New and
+// splits too, in the order they started), a watch socket says whether its terminal runs, and the project's running action is told as
+// the project opens. With held, a run answers only once answer() is called, and the list holds its terminal from its answer on, as
+// the server lists a run once it has started it. Proof screenshots go to TREBELL_PROOF_SHOTS when it is set.
 const proofShots=process.env.TREBELL_PROOF_SHOTS?String(process.env.TREBELL_PROOF_SHOTS).replace(/[\\/]*$/,"/"):auditDir+"proof-";
 if(process.env.TREBELL_PROOF_SHOTS)mkdirSync(proofShots,{recursive:true});
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -76,11 +77,11 @@ async function scriptedActions(page,request,{latencyMs=500,held=false}={}){
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai"}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"Action Workspace",activate:true,scripts:[devServer],preferredScriptId:devServer.id}});
-  const started=[],sockets=new Map();
+  const started=[],shells=[],sockets=new Map();
   let answer=()=>{};const answering=held?new Promise(resolve=>answer=resolve):null;
-  const session=run=>({id:run.id,name:devServer.name,cwd:boot.cwd,environmentId:null,environmentName:"Local machine",environmentType:"local",cols:120,rows:32,running:run.running,exitCode:run.running?null:1,createdAt:Date.now(),updatedAt:Date.now(),buffer:""});
+  const session=run=>({id:run.id,name:run.name||devServer.name,cwd:boot.cwd,environmentId:null,environmentName:"Local machine",environmentType:"local",cols:120,rows:32,running:run.running,exitCode:run.running?null:1,createdAt:run.createdAt,updatedAt:Date.now(),buffer:""});
   await page.route(/\/api\/project-script\/run$/,async route=>{
-    const run={id:"action-run-"+(started.length+1),running:true};
+    const run={id:"action-run-"+(started.length+1),running:true,createdAt:Date.now()};
     if(answering){await answering;started.push(run)}else{started.push(run);await delay(latencyMs)}
     return json(route,{ok:true,script:devServer,session:session(run),previewUrl:null});
   });
@@ -89,13 +90,19 @@ async function scriptedActions(page,request,{latencyMs=500,held=false}={}){
     if(run){run.running=false;for(const ws of sockets.get(run.id)||[])ws.send(JSON.stringify({type:"exit",exitCode:1,signal:null}))}
     return json(route,{ok:true,session:run?session(run):null});
   });
-  await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>route.request().method()==="GET"?json(route,{sessions:started.map(session)}):route.fallback());
-  await page.route(/\/api\/project-script\/runs(?:\?.*)?$/,route=>json(route,{runs:{}}));
+  await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>{
+    const method=route.request().method();
+    if(method==="GET")return json(route,{sessions:[...started,...shells].sort((a,b)=>a.createdAt-b.createdAt).map(session)});
+    if(method!=="POST")return route.fallback();
+    const shell={id:"terminal-"+(shells.length+1),name:route.request().postDataJSON()?.name||"Terminal",running:true,createdAt:Date.now()};shells.push(shell);
+    return json(route,{session:session(shell)});
+  });
+  await page.route(/\/api\/project-script\/runs(?:\?.*)?$/,route=>json(route,{runs:Object.fromEntries(started.filter(run=>run.running).map(run=>[devServer.id,run.id]))}));
   await page.routeWebSocket(/\/api\/terminal\/ws\?/,ws=>{
-    const url=new URL(ws.url()),id=url.searchParams.get("session"),run=started.find(item=>item.id===id);
+    const url=new URL(ws.url()),id=url.searchParams.get("session"),run=[...started,...shells].find(item=>item.id===id);
     if(!sockets.has(id))sockets.set(id,new Set());sockets.get(id).add(ws);ws.onClose(()=>sockets.get(id)?.delete(ws));
     if(url.searchParams.get("watch")==="1"){ws.send(JSON.stringify({type:"state",running:Boolean(run?.running),exitCode:null}));return}
-    ws.send(JSON.stringify({type:"snapshot",session:{...(run?session(run):{id}),buffer:"DEV SERVER READY on 127.0.0.1:4173\r\n"}}));
+    ws.send(JSON.stringify({type:"snapshot",session:{...(run?session(run):{id}),buffer:shells.includes(run)?"C:\\Action Workspace>":"DEV SERVER READY on 127.0.0.1:4173\r\n"}}));
   });
   return {started,answer:()=>answer(),cleanup:()=>request.post("/api/projects",{data:{path:boot.cwd,scripts:[],preferredScriptId:null}})};
 }
@@ -198,5 +205,113 @@ for(const [way,slug] of [["Toggle terminal","toggle"],["Ctrl+`","focus-terminal"
     await expect(commandLine,"the action's terminal takes the keyboard ("+way+")").toBeFocused();
     await page.screenshot({animations:"disabled",path:proofShots+"I1-ask-while-starting-"+slug+"-dark-1280.png"});
     expect(started.length,"one run of the action").toBe(1);
+  }finally{await cleanup()}
+});
+
+// What the drawer shows after the header's action is pressed: the action's tab current and running (no exit mark), and its terminal
+// in the pane marked shown, with a live command line that takes the keyboard. pane(name) is the pane whose head names that terminal.
+function actionTerminal(page){
+  const drawer=page.getByTestId("drawer"),current=drawer.locator(".terminal-tab.active"),panes=drawer.locator(".terminal-pane");
+  const pane=name=>panes.filter({has:page.locator(".terminal-pane-head",{hasText:name})});
+  const showsRun=async(when,count=1)=>{
+    await expect(current.locator("bdi"),when+": the action's tab is current").toHaveText("Dev server");
+    await expect(current.locator("em"),when+": the tab marked current is the running one").toHaveCount(0);
+    await expect(panes,when+": the panes shown").toHaveCount(count);
+    await expect(pane("Dev server"),when+": the action's terminal is shown").toHaveCount(1);
+    const input=pane("Dev server").locator(".terminal-command-line input");
+    await expect(input,when+": the terminal shown is the run's, with a live command line, not a stopped run's").toBeEnabled();
+    await expect(input).toHaveAttribute("placeholder","Type a command…");
+    await expect(pane("Dev server"),when+": it is the pane marked shown").toHaveClass(/\bactive\b/);
+    await expect(input,when+": its command line takes the keyboard").toBeFocused();
+  };
+  return {drawer,current,panes,pane,showsRun};
+}
+
+// The header's action run with the drawer open on another terminal: the action's last run, stopped (its terminal stays listed, with
+// its exit), a terminal started with the drawer's New, or a split of two others. The run's own terminal shows under its tab, marked
+// current. The drawer marked the run's tab current but went on showing the terminal shown before: the stopped run's, its command
+// line off ("Stopped terminal history"), or New's, so the button seemed to do nothing.
+for(const [way,mode] of [["mouse","dark"],["keyboard","light"]])test(`a run of the header's action shows its own terminal in the drawer open on another one, a stopped run's, New's or a split's (${way}, ${mode})`,async({page,request})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const {started,cleanup}=await scriptedActions(page,request,{latencyMs:50});
+  try{
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    if(mode==="light"){await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+    const {button,stop}=headerAction(page),{drawer,current,panes,pane,showsRun}=actionTerminal(page);
+    // Pressed as a person does: a click (a double click on the running action), or Enter on the button reached with the keyboard.
+    const press=async({double=false}={})=>{if(way==="keyboard"){await button.focus();await page.keyboard.press("Enter")}else if(double)await button.dblclick();else await button.click()};
+    const pressStop=async()=>{if(way==="keyboard"){await stop.focus();await page.keyboard.press("Enter")}else await stop.click();await expect(button).not.toHaveAttribute("data-running")};
+    await press();
+    await expect(button).toHaveAttribute("data-running","true");
+    await showsRun("the first run, which opens the drawer");
+    // Stopped, the run's terminal stays shown, with its exit, and the action is run again from there.
+    await pressStop();
+    await expect(current.locator("em"),"the stopped run's tab keeps its exit").toHaveText("1");
+    await expect(panes.locator(".terminal-command-line input")).toHaveAttribute("placeholder","Stopped terminal history");
+    await press();
+    await expect(button).toHaveAttribute("data-running","true");
+    await showsRun("run again with the drawer on the stopped run");
+    await expect(drawer.locator(".terminal-tab"),"the stopped run's tab stays beside it").toHaveCount(2);
+    await page.screenshot({animations:"disabled",path:proofShots+`CR9-1-rerun-drawer-${way}-${mode}-1280.png`});
+    // A terminal started with New is shown; the action's button pressed while it runs shows the action's terminal and starts nothing.
+    await drawer.locator(".terminal-new").click();
+    await expect(pane("Terminal 1")).toHaveClass(/\bactive\b/);await expect(pane("Terminal 1").locator(".terminal-screen")).toContainText("Action Workspace>");
+    await press({double:true});
+    await showsRun("pressed while it runs, with New's terminal shown");
+    expect(started.length,"no run started").toBe(2);
+    await page.screenshot({animations:"disabled",path:proofShots+`CR9-1-running-over-new-${way}-${mode}-1280.png`});
+    // A split of two other terminals: the action's terminal takes the place of the pane shown, and the other pane stays.
+    await drawer.getByTitle("Split horizontally").click();
+    await expect(panes).toHaveCount(2);await expect(pane("Terminal 2")).toHaveClass(/\bactive\b/);
+    await pane("Dev server").locator(".terminal-screen").click();
+    await drawer.locator(".terminal-tab-select").filter({hasText:"Terminal 1"}).click();
+    await expect(pane("Terminal 1")).toHaveClass(/\bactive\b/);await expect(pane("Dev server")).toHaveCount(0);
+    await press();
+    await showsRun("pressed while it runs, with a split of two other terminals shown",2);
+    await expect(pane("Terminal 2"),"the other pane stays").toHaveCount(1);
+    // Stopped and run again there: the new run takes the stopped run's pane.
+    await pressStop();
+    await press();
+    await expect(button).toHaveAttribute("data-running","true");
+    await showsRun("run again with a split on the stopped run",2);
+    await expect(pane("Terminal 2")).toHaveCount(1);
+    await page.screenshot({animations:"disabled",path:proofShots+`CR9-1-rerun-split-${way}-${mode}-1280.png`});
+    expect(started.length,"a run for each press while it was stopped").toBe(3);
+  }finally{await cleanup()}
+});
+
+// The header's action, running, pressed with the drawer closed while a terminal started after it (New's) runs too: the drawer opens
+// on the action's terminal, also on its first opening after the page is loaded again, in a window as narrow as 956 px. It opened on
+// the newest running terminal, or marked the action's tab current over that terminal's pane.
+test("the running header's action pressed with the drawer closed opens it on the action's terminal, not on a newer one, also after the page is loaded again",async({page,request})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:956,height:800});
+  const {started,cleanup}=await scriptedActions(page,request,{latencyMs:50});
+  try{
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const {button}=headerAction(page),{drawer,pane,showsRun}=actionTerminal(page),toggle=page.getByTestId("terminal-toggle");
+    await button.click();
+    await expect(button).toHaveAttribute("data-running","true");
+    await expect(pane("Dev server").locator(".terminal-command-line input")).toBeEnabled();
+    await drawer.locator(".terminal-new").click();
+    await expect(pane("Terminal 1")).toHaveClass(/\bactive\b/);
+    await toggle.click();await expect(drawer).toHaveCount(0);
+    await button.click();
+    await showsRun("pressed with the drawer closed");
+    await toggle.click();await expect(drawer).toHaveCount(0);
+    // Loaded again, the page tells the action running, and the drawer's first opening (its code loads then) shows its terminal.
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await expect(button).toHaveAttribute("data-running","true");await expect(drawer).toHaveCount(0);
+    await button.focus();await page.keyboard.press("Enter");
+    await showsRun("pressed after the page is loaded again");
+    expect(started.length,"one run").toBe(1);
+    for(const mode of ["dark","light"]){
+      if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+      await page.screenshot({animations:"disabled",path:proofShots+`CR9-1-reload-running-${mode}-956.png`});
+    }
   }finally{await cleanup()}
 });
