@@ -1,19 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync, readdirSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import * as gitService from "../src/git-service.mjs";
 import { sourceControlGitAction, withSourceControlExecutor } from "../src/source-control-service.mjs";
 
-const { createWorktree, git } = gitService;
+const { createWorktree, git, removeWorktree } = gitService;
 // git commands take seconds each on a host that benchmarks load (git-service.test.mjs), so the bound is a generous one for a stuck test.
 const UNDER_LOAD={timeout:300_000};
+// The race test's 96 adds, each with git's status read twice, the turn's key and a submodule update, take 31 to 36 s alone, so the load
+// that ran tests of 3 to 25 s past bounds of 20 and 30 s would bring them near 300 s. Without the submodule updates they take 16 s but
+// caught the race on the code before the turns in 1 run of 3, where with them every run failed, so the bound grows instead.
+const MANY_ADDS={timeout:900_000};
 const RETRY={recursive:true,force:true,maxRetries:30,retryDelay:100};
 const samePath=path=>{const value=resolve(path);return process.platform==="win32"?value.toLowerCase():value};
 const gate=()=>{let open=()=>{};const promise=new Promise(resolve=>{open=resolve});return {promise,open}};
 // Lets every chain of promises that can go on do so (in-memory work only: no timers, no I/O), until check holds when one is given.
 async function settled(check=null,message=""){for(let i=0;i<50&&!check?.();i++)await new Promise(resolve=>setImmediate(resolve));if(check)assert.ok(check(),message)}
+// Waits for check to hold, for as long as git may take on a loaded host.
+async function waitFor(check,message,ms=120_000){const end=Date.now()+ms;while(!check()&&Date.now()<end)await new Promise(resolve=>setTimeout(resolve,20));assert.ok(check(),message)}
+// What promise gives, or late when it gives nothing within ms.
+async function within(promise,ms,late){let timer;try{return await Promise.race([promise,new Promise(resolve=>{timer=setTimeout(()=>resolve(late),ms)})])}finally{clearTimeout(timer)}}
 async function committedRepository(repo){
   await mkdir(repo,{recursive:true});await git(repo,["init"]);await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);
   await writeFile(join(repo,"README.md"),"seed\n");await git(repo,["add","README.md"]);await git(repo,["commit","-m","seed"]);
@@ -25,7 +34,7 @@ const listedWorktrees=async repo=>(await git(repo,["worktree","list","--porcelai
 // written failed with "failed to read .git/worktrees/<the other>/commondir", and that model never started. Before the turns, rounds
 // of 24 adds at once failed so in every run of this test (rounds of 16 in half of them); the race is one of timing, so a run without
 // a failure proves nothing.
-test("worktrees made at once in one repository, as a multi-model send makes them, are all made and git lists every one",UNDER_LOAD,async()=>{
+test("worktrees made at once in one repository, as a multi-model send makes them, are all made and git lists every one",MANY_ADDS,async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-worktree-turns-")),repo=join(root,"repo");
   try{
     await committedRepository(repo);const made=[];
@@ -37,6 +46,94 @@ test("worktrees made at once in one repository, as a multi-model send makes them
       assert.deepEqual(made.filter(path=>!listed.includes(samePath(path))),[],`round ${round}: git lists every worktree made`);
       assert.equal(listed.length,1+made.length,`round ${round}: the repository and its ${made.length} worktrees`);
     }
+  }finally{await rm(root,RETRY)}
+});
+
+// An add's turn holds only git's bookkeeping: its checkout, 6.4 s of a 6.6 s add in a repository of 6,000 files, and its
+// post-checkout hook run after the turn, beside the next model's add. With whole adds in turns, the third model of a send waited for
+// the checkouts of the two before it. Here model A's checkout is held, by a filter that waits as a slow LFS smudge would.
+test("a model's checkout runs after its add's turn, so the next model's worktree is made while it is held",UNDER_LOAD,async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-worktree-checkout-turn-")),repo=join(root,"repo"),gates=join(root,"gates");
+  const first=join(root,"repo-trebell-model-a"),second=join(root,"repo-trebell-model-b"),open=tree=>writeFile(join(gates,basename(tree)),"");
+  let firstAdd=null,secondAdd=null,firstMade=false;
+  try{
+    await committedRepository(repo);await mkdir(gates);
+    await writeFile(join(repo,".gitattributes"),"held.txt filter=hold\n");await writeFile(join(repo,"held.txt"),"held\n");
+    await git(repo,["add",".gitattributes","held.txt"]);await git(repo,["commit","-m","held"]);
+    // held.txt checks out through a filter that waits for its worktree's gate (git runs it in the worktree's folder).
+    await git(repo,["config","filter.hold.smudge",`while [ ! -e "${gates.replace(/\\/g,"/")}/$(basename "$PWD")" ]; do sleep 0.05; done; cat`]);
+    await open(second);
+    firstAdd=createWorktree(repo,{branch:"trebell/model-a",path:first,submodules:"none"});firstAdd.then(()=>{firstMade=true},()=>{});
+    await waitFor(()=>existsSync(join(first,".git")),"model A's worktree is added, its checkout held");
+    secondAdd=createWorktree(repo,{branch:"trebell/model-b",path:second,submodules:"none"});
+    assert.equal(await within(secondAdd.then(()=>"made"),120_000,"waiting"),"made","model B's worktree is made while model A's checkout is held");
+    assert.equal(firstMade,false,"model A's checkout is still held");
+    await open(first);await firstAdd;
+    for(const tree of [first,second])assert.equal(await readFile(join(tree,"held.txt"),"utf8"),"held\n",tree+" is checked out");
+    assert.deepEqual((await listedWorktrees(repo)).slice(1).sort(),[first,second].map(samePath).sort());
+  }finally{await open(first).catch(()=>{});await Promise.allSettled([firstAdd,secondAdd]);await rm(root,RETRY)}
+});
+
+// A remove's turn holds only git's bookkeeping too: the files of the work tree, 5 to 6 s to delete in a repository of 6,000 files and
+// more with a node_modules, are deleted after it, so the repository's next add or remove does not wait for them (a send's add waited
+// for a cleanup's remove).
+test("a removed worktree's files are deleted after its turn, while the repository's next add or remove goes",UNDER_LOAD,async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-worktree-remove-turn-")),repo=join(root,"repo"),tree=join(root,"repo-trebell-model-a");
+  try{
+    await committedRepository(repo);await writeFile(join(repo,".gitignore"),"node_modules/\n");await git(repo,["add",".gitignore"]);await git(repo,["commit","-m","ignore"]);
+    await createWorktree(repo,{branch:"trebell/model-a",path:tree,submodules:"none"});
+    await mkdir(join(tree,"node_modules","package"),{recursive:true});
+    for(let i=0;i<200;i++)await writeFile(join(tree,"node_modules","package",`file-${i}.js`),"module.exports=1;\n");
+    // The worktree's files still on disk, where it was or set aside beside it.
+    const filesLeft=()=>readdirSync(root).filter(name=>name!=="repo").reduce((sum,name)=>{try{return sum+readdirSync(join(root,name),{recursive:true}).length}catch{return sum}},0);
+    const key=await gitService.worktreeTurnKey(repo);
+    const removed=removeWorktree(repo,tree);
+    await waitFor(()=>!existsSync(join(tree,"README.md")),"the remove has begun");await new Promise(resolve=>setImmediate(resolve));
+    const left=await gitService.worktreeTurn(key,()=>filesLeft());
+    assert.ok(left>0,`the worktree's files are deleted after its turn: ${left} were left as the repository's next turn began`);
+    await removed;
+    assert.equal(filesLeft(),0,"every file of the worktree is deleted");assert.deepEqual(await listedWorktrees(repo),[samePath(repo)]);
+  }finally{await rm(root,RETRY)}
+});
+
+// A remove git would refuse goes to git with its work tree where it was, so git refuses it as before and deletes nothing: one with a file
+// untracked, a locked one, one with a submodule checked out (unless forced), and the repository's own folder. Forced, they go.
+test("a remove git refuses leaves the worktree where it was, and a forced one removes it",UNDER_LOAD,async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-worktree-remove-refused-")),repo=join(root,"repo"),library=join(root,"library");
+  const untracked=join(root,"repo-untracked"),locked=join(root,"repo-locked"),withSubmodule=join(root,"repo-submodule");
+  try{
+    await committedRepository(library);await committedRepository(repo);
+    await git(repo,["-c","protocol.file.allow=always","submodule","add",library,"library"]);await git(repo,["commit","-m","library"]);
+    await createWorktree(repo,{branch:"untracked",path:untracked,submodules:"none"});await writeFile(join(untracked,"notes.txt"),"draft\n");
+    await createWorktree(repo,{branch:"locked",path:locked,submodules:"none"});await git(repo,["worktree","lock",locked]);
+    // The submodule update a worktree-create runs, with the file protocol a local submodule needs.
+    await createWorktree(repo,{branch:"submodule",path:withSubmodule,submodules:"none"});await git(withSubmodule,["-c","protocol.file.allow=always","submodule","update","--init","--recursive"]);
+    assert.ok(existsSync(join(withSubmodule,"library","README.md")),"the submodule is checked out");
+    await assert.rejects(removeWorktree(repo,untracked),/contains modified or untracked files/);
+    await assert.rejects(removeWorktree(repo,locked,{force:true}),/cannot remove a locked working tree/);
+    await assert.rejects(removeWorktree(repo,withSubmodule),/working trees containing submodules cannot be moved or removed/);
+    await assert.rejects(removeWorktree(repo,repo,{force:true}),/is a main working tree/);
+    assert.equal(await readFile(join(untracked,"notes.txt"),"utf8"),"draft\n");
+    for(const tree of [untracked,locked,withSubmodule,repo])assert.ok(existsSync(join(tree,"README.md")),tree+" is where it was");
+    assert.ok(existsSync(join(withSubmodule,"library","README.md")),"its submodule too");
+    assert.equal((await listedWorktrees(repo)).length,4,"git lists the repository and its three worktrees still");
+    await removeWorktree(repo,untracked,{force:true});await git(repo,["worktree","unlock",locked]);await removeWorktree(repo,locked);await removeWorktree(repo,withSubmodule,{force:true});
+    assert.deepEqual(await listedWorktrees(repo),[samePath(repo)]);assert.deepEqual(readdirSync(root).sort(),["library","repo"],"nothing of the worktrees is left");
+  }finally{await rm(root,RETRY)}
+});
+
+// A removed worktree's files are deleted without following a junction or a link out of it: git worktree remove (2.50.1.windows.1)
+// emptied the folder that a junction in an ignored node_modules pointed to.
+test("removing a worktree leaves what a junction or a link in it points to",UNDER_LOAD,async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-worktree-remove-link-")),repo=join(root,"repo"),tree=join(root,"repo-trebell-model-a"),shared=join(root,"shared");
+  try{
+    await committedRepository(repo);await writeFile(join(repo,".gitignore"),"node_modules/\n");await git(repo,["add",".gitignore"]);await git(repo,["commit","-m","ignore"]);
+    await createWorktree(repo,{branch:"trebell/model-a",path:tree,submodules:"none"});
+    await mkdir(shared);await writeFile(join(shared,"keep.txt"),"keep\n");
+    await mkdir(join(tree,"node_modules"));await symlink(shared,join(tree,"node_modules","shared"),process.platform==="win32"?"junction":"dir");
+    await removeWorktree(repo,tree);
+    assert.equal(existsSync(tree),false,"the worktree is removed");assert.deepEqual(await listedWorktrees(repo),[samePath(repo)]);
+    assert.equal(await readFile(join(shared,"keep.txt"),"utf8").catch(()=>null),"keep\n","what the junction pointed to is still there");
   }finally{await rm(root,RETRY)}
 });
 

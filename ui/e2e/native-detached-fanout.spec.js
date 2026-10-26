@@ -16,6 +16,10 @@ import { TrebellStateStore } from "../../src/trebell-state.mjs";
 import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 
 const execFileAsync=promisify(execFile),auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+// A send's worktrees are made as the server makes them (createWorktree): git's status read twice, the turn's key and the add, 0.45 s
+// for two models where the one git worktree add each took 0.2 s alone, so on a host loaded as for the whole suite they get 30 s, not
+// the 10 s that fitted the one add, and the waits and tests that hold them grow by as much.
+const WORKTREES_MADE={timeout:30_000};
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 async function git(cwd,args){return execFileAsync("git",args,{cwd,windowsHide:true,encoding:"utf8"})}
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
@@ -58,13 +62,13 @@ async function startNativeFanout(page,{models}){
 }
 
 test("Trebell Native multi-model fan-out launches real isolated worktrees and provider turns",async({page})=>{
-  test.setTimeout(55_000);
+  test.setTimeout(75_000);
   const fanout=await startNativeFanout(page,{models:["model-a","model-b"]}),{threadStore,providerCalls,worktrees}=fanout;
   try{
     await page.goto("/");await expect(page.locator(".branch-control")).toContainText(fanout.baseBranch,{timeout:10_000});
     const picker=page.getByTestId("model-picker");await picker.click();const menu=page.locator(".model-picker-menu");await expect(menu).toContainText("Shift-click to select multiple models");await menu.getByRole("button",{name:/Model B/}).click({modifiers:["Shift"]});await expect(picker).toContainText("2 models");
     const composer=page.getByTestId("composer");await composer.fill("Run this task with both Native models");await page.getByTestId("send").click();
-    await expect.poll(()=>worktrees.length,{timeout:10_000}).toBe(2);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(2);expect(new Set(providerCalls.map(call=>call.model))).toEqual(new Set(["model-a","model-b"]));expect(providerCalls.every(call=>call.provider==="agentrouter")).toBe(true);
+    await expect.poll(()=>worktrees.length,WORKTREES_MADE).toBe(2);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(2);expect(new Set(providerCalls.map(call=>call.model))).toEqual(new Set(["model-a","model-b"]));expect(providerCalls.every(call=>call.provider==="agentrouter")).toBe(true);
     const threads=threadStore.list("native");expect(threads).toHaveLength(2);expect(new Set(threads.map(thread=>thread.cwd)).size).toBe(2);expect(threads.every(thread=>worktrees.includes(thread.cwd))).toBe(true);for(const path of worktrees)await expect.poll(async()=>{try{await stat(path);return true}catch{return false}}).toBe(true);
     await expect(page.locator(".thread-row")).toHaveCount(2);await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".app-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({animations:"disabled",path:auditDir+"native-multimodel-fanout-1280x800.png",fullPage:true});
   }finally{await fanout.close()}
@@ -93,14 +97,14 @@ async function shootModes(page,name){
 // sent with Enter or Send does as its send starts. The text stayed there, and a second Enter launched the same fan-out again, with as
 // many more worktrees and model runs.
 test("a multi-model fan-out sent with Control+Enter launches once and leaves the composer empty",async({page})=>{
-  test.setTimeout(60_000);
+  test.setTimeout(80_000);
   const fanout=await startNativeFanout(page,{models:["model-a","model-b"]}),{threadStore,providerCalls,worktrees}=fanout,task="Run this task in the background with both Native models";
   try{
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");await expect(page.locator(".branch-control")).toContainText(fanout.baseBranch,{timeout:10_000});
     const composer=await pickBothModels(page);
     await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
-    await expect.poll(()=>worktrees.length,{timeout:10_000}).toBe(2);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(2);
+    await expect.poll(()=>worktrees.length,WORKTREES_MADE).toBe(2);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(2);
     expect(new Set(providerCalls.map(call=>call.model))).toEqual(new Set(["model-a","model-b"]));await expect(page.locator(".thread-row")).toHaveCount(2);
     // Soft, so that the old build also shows what the second Enter does.
     await expect.soft(composer,"the composer once the fan-out has launched").toHaveValue("");
@@ -115,7 +119,7 @@ test("a multi-model fan-out sent with Control+Enter launches once and leaves the
 // What the person types on while a Control+Enter fan-out checks its files stays in the composer once the fan-out has launched, without
 // the text the fan-out sent, and is the next message. The fan-out goes with what the composer held as it was sent and its file.
 test("text typed on while a Control+Enter fan-out checks its files stays in the composer, without the text sent, for the next message",async({page})=>{
-  test.setTimeout(60_000);
+  test.setTimeout(100_000);
   const fanout=await startNativeFanout(page,{models:["model-a","model-b"]}),{threadStore,providerCalls,worktrees}=fanout;
   const task="Look at the notes with both Native models",next="Then check the signup page",note="fanout-notes.txt";
   // The fan-out's own check of the composer's files waits for the gate armed before it; the launches' checks go on.
@@ -134,14 +138,14 @@ test("text typed on while a Control+Enter fan-out checks its files stays in the 
     expect(worktrees.length,"no worktree before the check has answered").toBe(0);
     await shootModes(page,"ctrl-enter-typed-on-while-files-checked");
     gate.open();
-    await expect.poll(()=>worktrees.length,{timeout:10_000}).toBe(2);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(2);
+    await expect.poll(()=>worktrees.length,WORKTREES_MADE).toBe(2);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(2);
     await expect(composer,"what was typed on, without the text sent").toHaveValue(next);await expect(chips).toHaveCount(0);
     await shootModes(page,"ctrl-enter-typed-on-launched");
     const sent=sentMessages(threadStore);expect(sent.map(message=>message.text),"what each model was sent").toEqual([task,task]);
     for(const message of sent)expect(message.files,"the file went to each model").toEqual([expect.stringMatching(/fanout-notes\.txt$/)]);
     // Control+Enter again sends what was typed on as a fan-out of its own.
     await composer.click();await page.keyboard.press("Control+Enter");
-    await expect.poll(()=>worktrees.length,{timeout:10_000}).toBe(4);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(4);
+    await expect.poll(()=>worktrees.length,WORKTREES_MADE).toBe(4);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(4);
     await expect(composer).toHaveValue("");await expect(page.locator(".thread-row")).toHaveCount(4);
     expect(sentMessages(threadStore).map(message=>message.text).sort(),"what each model was sent").toEqual([next,next,task,task].sort());
   }finally{gate.open();await fanout.close()}
@@ -150,7 +154,7 @@ test("text typed on while a Control+Enter fan-out checks its files stays in the 
 // The fan-out's threads each run on their own model. Opened, one shows that model in its picker, not the composer's pick of several,
 // and a follow-up sent there goes to it: the follow-up went to the first model picked, which the relay then made the thread's model.
 test("a follow-up in a Native fan-out thread goes to that thread's own model, the one its picker shows",async({page})=>{
-  test.setTimeout(90_000);
+  test.setTimeout(110_000);
   const fanout=await startNativeFanout(page,{models:["model-a","model-b","model-c"]}),{threadStore,providerCalls}=fanout;
   try{
     await page.setViewportSize({width:1280,height:800});
@@ -159,7 +163,7 @@ test("a follow-up in a Native fan-out thread goes to that thread's own model, th
     await picker.click();await menu.getByRole("button",{name:/Model B/}).click({modifiers:["Shift"]});await menu.getByRole("button",{name:/Model C/}).click({modifiers:["Shift"]});
     await expect(picker).toContainText("3 models");await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
     await composer.click();await page.keyboard.type("Add a health check endpoint",{delay:5});await page.keyboard.press("Enter");
-    await expect.poll(()=>providerCalls.length,{timeout:20_000}).toBe(3);await expect(page.locator(".thread-row")).toHaveCount(3);
+    await expect.poll(()=>providerCalls.length,{timeout:WORKTREES_MADE.timeout+10_000}).toBe(3);await expect(page.locator(".thread-row")).toHaveCount(3);
     // Each worktree, and so each thread's folder, is named after its model (prepareDetachedWorktree).
     const threadOf=model=>threadStore.list("native").find(thread=>thread.cwd.includes("-"+model+"-"));
     for(const model of ["model-c","model-b"]){
@@ -211,7 +215,7 @@ test("a Native thread reopened after a restart keeps its own model in the picker
 // event's data. The run's error row says what failed for that model and where its draft went, and the started row names the model
 // that runs and its thread; each opens by a click and from the keyboard, and fits a narrow window.
 test("a multi-model run with a model that cannot start opens its rows to what failed for that model and where its draft went",async({page})=>{
-  test.setTimeout(55_000);
+  test.setTimeout(75_000);
   const root=await mkdtemp(join(tmpdir(),"trebell-native-fanout-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   await git(repo,["init"]);await git(repo,["config","user.email","trebell-test@example.invalid"]);await git(repo,["config","user.name","Trebell Test"]);await writeFile(join(repo,"README.md"),"seed\n","utf8");await git(repo,["add","README.md"]);await git(repo,["commit","-m","seed"]);const baseBranch=(await git(repo,["branch","--show-current"])).stdout.trim();
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
@@ -241,7 +245,7 @@ test("a multi-model run with a model that cannot start opens its rows to what fa
     const draft="Run this task with both Native models";
     await page.getByTestId("composer").fill(draft);await page.getByTestId("send").click();
     const failedRow=page.locator(".tool-event").filter({hasText:"1/2 model runs failed"}),startedRow=page.locator(".tool-event").filter({hasText:"Started 1/2 model"});
-    await expect(failedRow.locator("summary")).toContainText("1/2 model runs failed · 1 failed draft was stashed for retry",{timeout:15_000});
+    await expect(failedRow.locator("summary")).toContainText("1/2 model runs failed · 1 failed draft was stashed for retry",{timeout:WORKTREES_MADE.timeout+5_000});
     expect(stashes.map(stash=>stash.text)).toEqual(["[model-b] "+draft]);
     // The error row opens to what failed for model B and where its draft went, by a click and from the keyboard.
     const failedBody=failedRow.locator(".tool-event-body"),detail=["Could not start the background task: Deliberate worktree failure","Model: model-b","The draft was saved to Trebell stash, marked [model-b]."].join("\n");
