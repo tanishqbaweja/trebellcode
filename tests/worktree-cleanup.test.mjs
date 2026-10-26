@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
@@ -27,6 +28,19 @@ test("unchanged managed worktree cleans and restores on demand",{timeout:120_000
     assert.equal(cleaned.removed,1);assert.equal((await gitInfo(f.worktree)).isGit,false);
     const persisted=f.state.projects().find(item=>item.path===f.worktree);assert.ok(persisted.managedWorktree.cleanedAt);assert.equal(persisted.managedWorktree.cleanupReason,"unchanged");
     const restored=await service.ensure(f.worktree);assert.equal(restored.restored,true);assert.equal((await gitInfo(f.worktree)).branch,f.branch);assert.equal(f.state.projects().find(item=>item.path===f.worktree).managedWorktree.cleanedAt,null);
+  }finally{await rm(f.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
+// The sweep runs at startup and hourly, its remove not forced: an ignored node_modules stops no remove, and git for Windows went into a
+// junction there and emptied the folder it points to. The junction's target is in the fixture's own folder.
+test("the sweep removes an unchanged managed worktree and leaves the folder a junction in its ignored node_modules points to",{timeout:120_000},async()=>{
+  const f=await fixture("junction"),shared=join(f.home,"shared");
+  try{
+    await writeFile(join(f.root,".git","info","exclude"),"node_modules/\n");await mkdir(join(shared,"pkg"),{recursive:true});await writeFile(join(shared,"pkg","index.js"),"keep\n");
+    await mkdir(join(f.worktree,"node_modules"));await symlink(shared,join(f.worktree,"node_modules","pkg-linked"),"junction");
+    const cleaned=await new WorktreeCleanupService({state:f.state}).sweep();
+    assert.equal(cleaned.removed,1,JSON.stringify(cleaned.results));assert.equal(existsSync(f.worktree),false,"the worktree is gone");
+    assert.deepEqual(readdirSync(shared),["pkg"]);assert.equal(readFileSync(join(shared,"pkg","index.js"),"utf8"),"keep\n","the linked folder is as it was");
   }finally{await rm(f.home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 

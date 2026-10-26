@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, readlink, realpath, rmdir, stat, symlink } from "node:fs/promises";
 import { homedir } from "node:os";
 
 const execFileAsync=promisify(execFile);
@@ -500,12 +500,85 @@ export async function restoreWorktree(cwd,{branch,path,submodules="recursive"}){
   const submoduleArgs=worktreeSubmoduleArgs(submodules);if(submoduleArgs)await git(dest,submoduleArgs,{timeout:10*60_000,maxBuffer:16*1024*1024});
   return {worktree:dest,submodules,info:await gitInfo(info.root,{fresh:true})};
 }
+// The links in a tree to a folder, found without going into any: each whose target is a path on a drive (a junction's always is,
+// and Node's lstat tells a junction from a directory symbolic link no more than readdir does; a relative or \\server one is a symbolic
+// link) and is a folder or is not there (git takes a junction to nothing for a folder too). Eight folders are read at a time.
+async function treeFolderLinks(tree){
+  const found=[],dirs=[tree];let next=0;
+  const walk=async()=>{while(next<dirs.length){
+    const dir=dirs[next++];let entries=[];try{entries=await readdir(dir,{withFileTypes:true})}catch{}
+    for(const entry of entries){
+      const path=join(dir,entry.name);if(entry.isDirectory()){dirs.push(path);continue}if(!entry.isSymbolicLink())continue;
+      // readdir calls any reparse point a link on Windows: a OneDrive placeholder folder, say, is a folder to lstat.
+      const info=await lstat(path).catch(()=>null);if(info?.isDirectory()){dirs.push(path);continue}
+      const target=info?.isSymbolicLink()&&await readlink(path).catch(()=>null);if(!target||!/^[A-Za-z]:[\\/]/.test(target))continue;
+      const into=await stat(path).catch(()=>null);if(!into||into.isDirectory())found.push({path,target,live:Boolean(into)});
+    }
+  }};
+  await Promise.all(Array.from({length:8},walk));
+  return found;
+}
+// git's refusals before it deletes anything (builtin/worktree.c remove_worktree), checked as git checks them on the tree with its links,
+// each in git's words: a lock (forced or not: Trebell never forces twice), then unless forced a submodule checked out (its git dir in
+// the worktree's admin folder, modules/, or a .git of its own at a submodule the worktree's index names) and the changes git status
+// shows, run as git runs it (GIT_DIR=<worktree>/.git and GIT_WORK_TREE=<worktree>, in the worktree).
+async function worktreeRemoveRefusal(tree,dest,{force,gitFn}){
+  const named=await readFile(join(tree,".git"),"utf8").catch(()=>""),admin=named.startsWith("gitdir: ")?resolve(tree,named.slice(8).replace(/[\r\n]+$/,"")):null;
+  const lock=admin&&await readFile(join(admin,"locked"),"utf8").catch(()=>null);
+  if(lock!=null)return lock.trim()?`fatal: cannot remove a locked working tree, lock reason: ${lock.trim()}\nuse 'remove -f -f' to override or unlock first`:"fatal: cannot remove a locked working tree;\nuse 'remove -f -f' to override or unlock first";
+  if(force)return null;
+  const own=["--git-dir="+join(tree,".git"),"--work-tree="+tree],submodules="fatal: working trees containing submodules cannot be moved or removed";
+  if(admin&&(await stat(join(admin,"modules")).catch(()=>null))?.isDirectory())return submodules;
+  const index=await gitFn(tree,[...own,"ls-files","--stage","-z"],{allowFailure:true,maxBuffer:256*1024*1024});if(!index.ok)return index.stderr||index.stdout;
+  for(const entry of index.stdout.split("\0"))if(entry.startsWith("160000 ")&&(await gitFn(tree,["rev-parse","--resolve-git-dir",join(tree,entry.slice(entry.indexOf("\t")+1),".git")],{allowFailure:true})).ok)return submodules;
+  const status=await gitFn(tree,[...own,"status","--porcelain","--ignore-submodules=none"],{allowFailure:true});
+  if(status.stdout)return `fatal: '${dest}' contains modified or untracked files, use --force to delete it`;
+  return status.ok?null:`${status.stderr}fatal: failed to run 'git status' on '${dest}', code ${status.code}`;
+}
+// rmdir takes a link to a folder out as a link, never what it points to. One to a folder that cannot be taken out (another program
+// holding it, say) would be gone into, so those already out go back and nothing is removed; one to nothing can stay.
+async function takeLinksOut(found){
+  const taken=[];
+  for(const link of found){
+    try{await rmdir(link.path);taken.push(link)}
+    catch(error){if(link.live&&await lstat(link.path).then(()=>true,()=>false)){await putLinksBack(taken);return {taken:[],failure:`Could not take the link ${link.path} out of the worktree before removing it: ${error.message}`}}}
+  }
+  return {taken};
+}
+// Each link back where it was, to the same target, as a junction: every link taken out may be one, and a junction needs no developer
+// mode (an absolute directory symbolic link comes back as a junction to the same folder). The ones that cannot go back, in words.
+const putLinksBack=links=>Promise.all(links.map(link=>symlink(link.target,link.path,"junction").then(()=>null,error=>`Could not put back the link ${link.path}: ${error.message}`))).then(lost=>lost.filter(Boolean));
+// git for Windows deletes a worktree it removes by walking its folders, and it takes a junction (what mklink /J, npm link, pnpm and
+// yarn make for a folder) for a folder: it went into one and deleted what its target held before the junction, a node_modules linked
+// to another checkout's or a linked library's source, forced or not (an ignored node_modules stops no remove). One whose target was
+// gone, or that its walk reached after deleting its target in the same tree, made it fail ("Directory not empty") once it had deleted
+// the rest and the worktree's admin entry. A symbolic link it deletes as a link, as POSIX git deletes every link. So on Windows a
+// remove takes the links to a folder out of the tree (treeFolderLinks) before git deletes the rest, once git's own refusals have been
+// checked on the tree as it is (worktreeRemoveRefusal). A tree without such a link, a folder with no .git file in it (the main
+// worktree, a plain folder: git refuses those before it deletes anything) and git elsewhere remove as before. The walk runs in the
+// repository's turn, as git's deletion does, so no add or remove in the repository comes between them: in a tree of 24,739 files in
+// 2,460 folders (a copy of this repository's node_modules) it took 0.3 s, where git's remove of the tree took 7 to 16 s. dest is as git
+// is given it (relative to root), gitFn runs git, and the outcome is a result ({ok, stdout, stderr, code}), git's refusals in its words.
+export async function removeWorktreeKeepingLinks(root,dest,{force=false,gitFn=git}={}){
+  const remove=args=>gitFn(root,["worktree","remove",...args,dest],{allowFailure:true}),asked=force?["--force"]:[];
+  if(process.platform!=="win32"||!root)return remove(asked);
+  const tree=await realpath(resolve(root,dest)).catch(()=>null),dotGit=tree&&await stat(join(tree,".git")).then(info=>info.isDirectory()?"folder":"file",error=>error?.code==="ENOENT"?"none":"file");
+  if(dotGit!=="file")return remove(asked);
+  const found=await treeFolderLinks(tree);if(!found.length)return remove(asked);
+  const refused=await worktreeRemoveRefusal(tree,dest,{force,gitFn});if(refused)return {ok:false,stdout:"",stderr:refused,code:128};
+  const {taken,failure}=await takeLinksOut(found);if(failure)return {ok:false,stdout:"",stderr:failure,code:1};
+  if(!taken.length)return remove(asked);
+  // Forced: git's checks have passed on the tree as it was, and without its links one git tracks would read as deleted.
+  const result=await remove(["--force"]);
+  // git refuses with 128 before it deletes anything (a lock taken meanwhile, a .git it cannot read); once it has begun it ends with
+  // 255, the admin entry deleted too, and the links stay out of what is left.
+  if(!result.ok&&result.code===128&&existsSync(join(tree,".git"))){const lost=await putLinksBack(taken);if(lost.length)return {...result,stderr:[String(result.stderr).trimEnd(),...lost].join("\n")}}
+  return result;
+}
 export async function removeWorktree(cwd,path,{force=false}={}){
   const info=await gitInfo(cwd);
-  const args=["worktree","remove"];
-  if(force) args.push("--force");
-  args.push(resolve(path));
-  await inWorktreeTurn(info.root||resolve(cwd),()=>git(info.root,args,{timeout:180000}));
+  const result=await inWorktreeTurn(info.root||resolve(cwd),()=>removeWorktreeKeepingLinks(info.root,resolve(path),{force,gitFn:(dir,args,options)=>git(dir,args,{timeout:180000,...options})}));
+  if(!result.ok)throw new Error(gitReason(result.stderr||result.stdout));
   return gitInfo(info.root,{fresh:true});
 }
 export async function sourceControlDiagnostics(cwd){

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,6 +31,7 @@ import {
   checkoutPullRequest,
 } from "../src/source-control-service.mjs";
 import { git } from "../src/git-service.mjs";
+import { createNativeSourceControlExecutor } from "../src/native-source-control.mjs";
 import { withGermanColoredGit } from "./fixtures/git-catalog.mjs";
 
 test("source control provider detection covers supported forges",()=>{
@@ -817,4 +819,52 @@ test("GitHub stack rebase cascades in a temporary worktree with force-with-lease
   assert.equal(pushes[0].args.includes("--force-with-lease=refs/heads/layer-one:old1"),true);
   assert.equal(pushes[1].args.includes("--force-with-lease=refs/heads/layer-two:old2"),true);
   assert.equal(calls.some(call=>call.command==="git"&&call.args[0]==="worktree"&&call.args[1]==="remove"),true);
+});
+
+// git for Windows went into a junction in a worktree it removed and emptied the folder the junction points to. Source control's removes
+// whose git runs on this machine (no executor, or a local one: a delegation in a named local environment removes its worktree so) keep
+// it, and keep git's refusals. Everything here is in a folder the test makes under the OS temp folder, the junctions' targets too.
+async function repositoryWithOutside(name){
+  const root=await mkdtemp(join(tmpdir(),`trebell-source-control-${name}-`)),repo=join(root,"repo"),outside=join(root,"outside");
+  await git(root,["init","repo"]);await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);
+  await writeFile(join(repo,".gitignore"),"node_modules/\n");await writeFile(join(repo,"README.md"),"seed\n");await git(repo,["add","."]);await git(repo,["commit","-m","seed"]);
+  await mkdir(outside);await writeFile(join(outside,"keep.txt"),"keep\n");
+  return {root,repo,outside,main:(await git(repo,["branch","--show-current"])).stdout.trim()};
+}
+const outsideWhole=f=>{assert.deepEqual(readdirSync(f.outside),["keep.txt"],"the folder outside the worktree holds what it held");assert.equal(readFileSync(join(f.outside,"keep.txt"),"utf8"),"keep\n")};
+test("a worktree remove through source control with git on this machine leaves the folder a junction in the worktree points to",{timeout:300_000},async()=>{
+  const f=await repositoryWithOutside("remove");
+  try{
+    for(const [name,executor] of [["the local executor",createNativeSourceControlExecutor()],["no executor",null]]){
+      const tree=join(f.root,"repo-tree"),shared=join(tree,"node_modules","shared");
+      await git(f.repo,["worktree","add","-b","tree-"+(executor?"local":"none"),tree]);await mkdir(join(tree,"node_modules"));await symlink(f.outside,shared,"junction");await writeFile(join(tree,"notes.txt"),"draft\n");
+      await assert.rejects(withSourceControlExecutor(executor,()=>sourceControlGitAction(f.repo,{action:"worktree-remove",path:tree})),{message:`fatal: '${tree}' contains modified or untracked files, use --force to delete it`},name);
+      assert.equal(lstatSync(shared).isSymbolicLink(),true,name+": the junction is still in the worktree");assert.equal(readFileSync(join(shared,"keep.txt"),"utf8"),"keep\n");
+      await withSourceControlExecutor(executor,()=>sourceControlGitAction(f.repo,{action:"worktree-remove",path:tree,force:true}));
+      assert.equal(existsSync(tree),false,name+": the worktree is gone");outsideWhole(f);
+    }
+  }finally{await rm(f.root,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
+});
+
+// A revert's temporary worktree is checked out with the repository's hooks, and a post-checkout hook may link node_modules in each new
+// worktree as a setup does. Here git and the hook are real; only gh answers from the test.
+test("a revert's temporary worktree, removed with git on this machine, leaves the folder a junction its checkout made points to",{timeout:300_000},async()=>{
+  const f=await repositoryWithOutside("revert"),origin=join(f.root,"origin.git"),hooks=join(f.root,"hooks"),marker=join(f.root,"hook-linked"),slashes=path=>path.replace(/\\/g,"/");
+  try{
+    await git(f.root,["init","--bare","origin.git"]);await git(f.repo,["remote","add","origin",origin]);
+    await git(f.repo,["checkout","-b","feature"]);await writeFile(join(f.repo,"feature.txt"),"feature\n");await git(f.repo,["add","feature.txt"]);await git(f.repo,["commit","-m","Feature"]);
+    await git(f.repo,["checkout",f.main]);await git(f.repo,["merge","--no-ff","feature","-m","Merge feature"]);await git(f.repo,["push","origin",f.main]);
+    const merge=(await git(f.repo,["rev-parse","HEAD"])).stdout.trim();
+    await mkdir(hooks);await writeFile(join(hooks,"post-checkout"),`#!/bin/sh\nmkdir -p node_modules && "${slashes(process.execPath)}" -e "require('fs').symlinkSync(process.argv[1],'node_modules/shared','junction')" "${slashes(f.outside)}" && echo "$PWD" >> "${slashes(marker)}"\n`,{mode:0o755});
+    await git(f.repo,["config","core.hooksPath",slashes(hooks)]);
+    const local=createNativeSourceControlExecutor(),executor={...local,run:async(command,args,options)=>{
+      if(command!=="gh")return local.run(command,args,options);
+      if(args[0]==="pr"&&args[1]==="view")return {ok:true,code:0,stdout:JSON.stringify({number:7,title:"Feature",state:"MERGED",mergedAt:"2026-10-20T10:00:00Z",mergeCommit:{oid:merge},baseRefName:f.main}),stderr:""};
+      if(args[0]==="pr"&&args[1]==="create")return {ok:true,code:0,stdout:"https://github.com/acme/widget/pull/8\n",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected gh "+args.join(" ")};
+    }};
+    const result=await withSourceControlExecutor(executor,()=>revertPullRequest(f.repo,7,{provider:"github"}));
+    assert.equal(result.url,"https://github.com/acme/widget/pull/8");assert.match(readFileSync(marker,"utf8"),/\.trebell-revert-7-/,"the hook linked node_modules in the revert's worktree");
+    assert.deepEqual(readdirSync(f.root).filter(name=>name.includes(".trebell-revert-")),[],"the revert's worktree is gone");outsideWhole(f);
+  }finally{await rm(f.root,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });

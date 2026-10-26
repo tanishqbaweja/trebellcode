@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
-import { gitEnvironment, gitInfo as localGitInfo, gitReason, worktreeTurn, worktreeTurnKey } from "./git-service.mjs";
+import { gitEnvironment, gitInfo as localGitInfo, gitReason, removeWorktreeKeepingLinks, worktreeTurn, worktreeTurnKey } from "./git-service.mjs";
 
 const execFileAsync=promisify(execFile);
 const executionContext=new AsyncLocalStorage();
@@ -248,6 +248,13 @@ function inWorktreeTurn(root,task){
   const executor=currentExecutor();
   return worktreeTurnKey(root,{gitFn:(cwd,args,options)=>run("git",args,{cwd,...options}),remote:Boolean(executor&&!executor.local)}).then(key=>worktreeTurn(key,task));
 }
+// A worktree remove whose git runs on this machine leaves what the worktree's junctions point to, as the Git panel's does (git-service
+// removeWorktreeKeepingLinks); another host's git (POSIX git deletes a link as a link) removes it as it is. A result, as run gives one.
+function removeWorktreeHere(root,path,{force=false,timeout=120000}={}){
+  const executor=currentExecutor(),gitFn=(cwd,args,options={})=>run("git",args,{cwd,timeout,...options});
+  if(executor&&!executor.local)return gitFn(root,["worktree","remove",...(force?["--force"]:[]),path],{allowFailure:true});
+  return removeWorktreeKeepingLinks(root,path,{force,gitFn});
+}
 export async function sourceControlGitAction(cwd,{action,name=null,message=null,setUpstream=false,startPoint=null,path=null,force=false}={}){
   const base=String(cwd||"").trim();
   if(!base)throw new Error("Repository path is required");
@@ -318,8 +325,7 @@ export async function sourceControlGitAction(cwd,{action,name=null,message=null,
     result=await inWorktreeTurn(root,()=>run("git",args,{cwd:root,allowFailure:true,timeout:120000}));
   }else if(action==="worktree-remove"){
     const target=String(path||"").trim();if(!target)throw new Error("Worktree path is required");
-    const args=["worktree","remove"];if(force)args.push("--force");args.push(target);
-    result=await inWorktreeTurn(root,()=>run("git",args,{cwd:root,allowFailure:true,timeout:120000}));
+    result=await inWorktreeTurn(root,()=>removeWorktreeHere(root,target,{force}));
   }else{
     throw new Error("Unsupported source-control Git action");
   }
@@ -1022,7 +1028,7 @@ export async function revertPullRequest(cwd,number,{provider=null}={}){
     createdUrl=(created.stdout.match(/https?:\/\/\S+/)||[])[0]||created.stdout.trim()||null;
     return {ok:true,provider:"github",url:createdUrl,branch,revertedPullRequest:Number(number),mergeSha};
   }finally{
-    if(worktreeAdded)await inWorktreeTurn(ctx.info.root,()=>run("git",["worktree","remove","--force",worktree],{cwd:ctx.info.root,allowFailure:true,timeout:120000})).catch(()=>{});
+    if(worktreeAdded)await inWorktreeTurn(ctx.info.root,()=>removeWorktreeHere(ctx.info.root,worktree,{force:true})).catch(()=>{});
     await run("git",["branch","-D",branch],{cwd:ctx.info.root,allowFailure:true}).catch(()=>{});
     if(pushed&&!createdUrl)await run("git",["push","origin","--delete",branch],{cwd:ctx.info.root,allowFailure:true,timeout:120000}).catch(()=>{});
   }
@@ -1113,7 +1119,7 @@ export async function rebasePullRequestStack(cwd,number,{provider=null}={}){
     }
     return {ok:true,provider:"github",stack,updated};
   }finally{
-    if(worktreeAdded){await run("git",["rebase","--abort"],{cwd:worktree,allowFailure:true}).catch(()=>{});await inWorktreeTurn(root,()=>run("git",["worktree","remove","--force",worktree],{cwd:root,allowFailure:true,timeout:120000})).catch(()=>{})}
+    if(worktreeAdded){await run("git",["rebase","--abort"],{cwd:worktree,allowFailure:true}).catch(()=>{});await inWorktreeTurn(root,()=>removeWorktreeHere(root,worktree,{force:true})).catch(()=>{})}
   }
 }
 
