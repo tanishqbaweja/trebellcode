@@ -61,13 +61,23 @@ export async function readCursorUsageLimits({environment={},platform=process.pla
   return result.ok?cursorUsageResponseToLimits(result.data,at):unavailable("probeFailed","Cursor could not read usage limits.",at);
 }
 
+// An ISO 8601 date-time with its zone as a time, else NaN. A calendar date that does not exist (February 30) is no time, though
+// Date would roll it over into March (T3 parsePeriodBoundary).
+function periodBoundary(value){
+  if(typeof value!=="string"||!/^(?:\d{4}|[+-]\d{6})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?|24:00(?::00(?:\.0+)?)?)(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value))return NaN;
+  const date=value.slice(0,value.indexOf("T")),day=new Date(date+"T00:00:00.000Z");
+  return day.getUTCMonth()+1===Number(date.slice(-5,-3))&&day.getUTCDate()===Number(date.slice(-2))?Date.parse(value):NaN;
+}
+
 export function grokUsageResponseToLimits(response,at=checkedAt()){
-  const usedPercent=clampPercent(response?.config?.creditUsagePercent);
-  // xAI leaves the percentage out until something is metered: a successful read is an account with no usage yet (T3).
-  if(usedPercent==null)return available([],at);
-  const rawType=String(response?.config?.currentPeriod?.type||"").replace(/^USAGE_PERIOD_TYPE_/,"");
+  const period=response?.config?.currentPeriod,rawType=String(period?.type||"").replace(/^USAGE_PERIOD_TYPE_/,"");
   const kind=rawType==="WEEKLY"?"weekly":rawType==="MONTHLY"?"monthly":"other";
-  const resetsAt=resetIso(response?.config?.currentPeriod?.end);
+  // xAI leaves the percentage out until something is metered: a weekly or monthly period whose start comes before its end is that
+  // period with nothing used yet, at 0% (T3 79f2bae6a); without one, a successful read is an account with no window to show.
+  const unused=response?.config?.creditUsagePercent===undefined&&kind!=="other"&&periodBoundary(period?.start)<periodBoundary(period?.end);
+  const usedPercent=unused?0:clampPercent(response?.config?.creditUsagePercent);
+  if(usedPercent==null)return available([],at);
+  const resetsAt=resetIso(period?.end);
   return available([{id:"subscription",kind,label:kind==="weekly"?"Weekly":kind==="monthly"?"Monthly":"Subscription",usedPercent,...(resetsAt?{resetsAt}:{})}],at);
 }
 
