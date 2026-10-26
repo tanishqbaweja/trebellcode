@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import * as gitService from "../src/git-service.mjs";
 import { sourceControlGitAction, withSourceControlExecutor } from "../src/source-control-service.mjs";
 
@@ -78,21 +78,29 @@ test("a model's checkout runs after its add's turn, so the next model's worktree
 
 // An add's turn lasts until git has written the new worktree's HEAD: the next add reads every worktree's HEAD to refuse a branch one has
 // checked out ("already used by worktree"), and one that went on before that HEAD was written made a second worktree on the branch.
-// With reftable refs the HEAD file is a stub until git commits the worktree's refs. Here model A's add is held in git's own transaction
-// that sets its HEAD, by a reference-transaction hook that waits on a gate and leaves a mark, while an add of the same branch at another
-// path waits for its turn.
-for(const format of ["files","reftable"])test(`the next add waits for the new worktree's HEAD, so git refuses an add of the branch it checks out (${format} refs)`,UNDER_LOAD,async t=>{
-  const root=await mkdtemp(join(tmpdir(),"trebell-worktree-head-turn-")),repo=join(root,"repo"),hooks=join(root,"hooks"),marks=join(root,"marks");
+// With reftable refs the HEAD file is a stub until git commits the worktree's refs, and git 2.43 and older write a placeholder HEAD of
+// zeros before the real one, which the third case's hook writes as they do. Here model A's add is held in git's own transaction that
+// sets its HEAD, by a reference-transaction hook that waits on a gate and leaves a mark, while an add of the same branch at another path
+// waits for its turn. git runs that hook for the update of a symbolic ref, as that HEAD is, only from 2.46 (2.45 sets it outside any
+// transaction), so the hook is first tried on a git symbolic-ref of HEAD.
+for(const {format,placeholder=false} of [{format:"files"},{format:"reftable"},{format:"files",placeholder:true}])test(`the next add waits for the new worktree's HEAD, so git refuses an add of the branch it checks out (${format} refs${placeholder?", a placeholder HEAD of zeros first, as git 2.43 and older write":""})`,UNDER_LOAD,async t=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-worktree-head-turn-")),repo=join(root,"repo"),hooks=join(root,"hooks"),marks=join(root,"marks"),probe=join(root,"format-probe");
   const first=join(root,"repo-a"),second=join(root,"repo-b"),gateFile=join(marks,"gate"),heldFile=join(marks,"held"),slashes=path=>path.replace(/\\/g,"/");
   const held=()=>existsSync(heldFile)?readFileSync(heldFile,"utf8").split("\n").filter(Boolean).length:0,secondAdmin=()=>existsSync(join(repo,".git","worktrees","repo-b"));
+  // The placeholder goes where model A's HEAD will be, which git (files refs) writes from HEAD.lock only once the transaction commits.
+  const firstAdmin=slashes(join(repo,".git","worktrees","repo-a")),writePlaceholder=placeholder?`[ -d "${firstAdmin}" ] && [ ! -e "${firstAdmin}/HEAD" ] && echo ${"0".repeat(40)} > "${firstAdmin}/HEAD"; `:"";
   let firstAdd=null,secondAdd=null;
   try{
-    if(!(await git(root,["init","--ref-format="+format,"format-probe"],{allowFailure:true})).ok)return t.skip("this git has no --ref-format (git 2.45 and later have)");
-    await committedRepository(repo,["--ref-format="+format]);await git(repo,["branch","shared"]);await mkdir(hooks);await mkdir(marks);
-    await writeFile(join(hooks,"reference-transaction"),`#!/bin/sh\ninput=$(cat)\ncase "$1:$input" in\n  prepared:*" HEAD") echo held >> "${slashes(heldFile)}"; while [ -e "${slashes(gateFile)}" ]; do sleep 0.05; done ;;\nesac\nexit 0\n`,{mode:0o755});
+    if(!(await git(root,["init","--ref-format="+format,probe],{allowFailure:true})).ok)return t.skip("this git has no --ref-format (git 2.45 and later have)");
+    await mkdir(hooks);await mkdir(marks);
+    await writeFile(join(hooks,"reference-transaction"),`#!/bin/sh\ninput=$(cat)\ncase "$1:$input" in\n  prepared:*" HEAD") ${writePlaceholder}echo held >> "${slashes(heldFile)}"; while [ -e "${slashes(gateFile)}" ]; do sleep 0.05; done ;;\nesac\nexit 0\n`,{mode:0o755});
+    await git(probe,["config","core.hooksPath",slashes(hooks)]);await git(probe,["symbolic-ref","HEAD","refs/heads/probe"]);
+    if(!held())return t.skip("this git runs no reference-transaction hook for a symbolic ref's update, as for the HEAD a worktree add sets (git 2.46 and later do)");
+    await rm(heldFile);await committedRepository(repo,["--ref-format="+format]);await git(repo,["branch","shared"]);
     await writeFile(gateFile,"");await git(repo,["config","core.hooksPath",slashes(hooks)]);
     const started=Date.now();firstAdd=restoreWorktree(repo,{branch:"shared",path:first,submodules:"none"});firstAdd.catch(()=>{});
     await waitFor(()=>held()===1,"model A's add is held in the transaction that sets its HEAD");
+    if(placeholder)assert.equal(readFileSync(join(firstAdmin,"HEAD"),"utf8").trim(),"0".repeat(40),"model A's HEAD is the placeholder while it is held");
     // Let go, model B's add would reach its own HEAD about as soon as model A's did: it has three times as long (5 s at least).
     const bound=Math.max(5_000,3*(Date.now()-started));
     secondAdd=restoreWorktree(repo,{branch:"shared",path:second,submodules:"none"});secondAdd.catch(()=>{});
@@ -102,6 +110,35 @@ for(const format of ["files","reftable"])test(`the next add waits for the new wo
     await assert.rejects(secondAdd,/'shared' is already (used by worktree|checked out) at /);await firstAdd;
     assert.deepEqual((await listedWorktrees(repo)).slice(1),[samePath(first)],"one worktree on the branch");assert.equal(existsSync(second),false,"nothing of model B's worktree");
   }finally{await rm(gateFile,{force:true});await Promise.allSettled([firstAdd,secondAdd]);await rm(root,RETRY)}
+});
+
+// What ends an add's turn (worktreeHeadWritten), on admin folders written by hand as each git writes them, so it is checked whatever
+// git this is (the hook above needs 2.46): git 2.43 and older write a placeholder HEAD of zeros, then commondir, and the real HEAD from a
+// git symbolic-ref they run after it; a reftable worktree's HEAD file is a stub, and its HEAD is in once reftable/tables.list is written.
+test("an add's turn ends only once the new worktree's HEAD names its branch or commit, however git wrote it",async()=>{
+  const {worktreeHeadWritten}=gitService;assert.equal(typeof worktreeHeadWritten,"function","what ends an add's turn can be read");
+  const root=await mkdtemp(join(tmpdir(),"trebell-worktree-head-written-")),dest=join(root,"repo-a"),admin=join(root,"repo",".git","worktrees","repo-a");
+  // The admin folder with only these files in it (a name ending in / is a folder): is its HEAD written?
+  const written=async files=>{
+    await rm(admin,RETRY);await mkdir(admin,{recursive:true});
+    for(const [name,text] of Object.entries(files)){const path=join(admin,name);if(name.endsWith("/"))await mkdir(path,{recursive:true});else{await mkdir(dirname(path),{recursive:true});await writeFile(path,text)}}
+    return worktreeHeadWritten(dest);
+  };
+  const common={commondir:"../..\n"},branch="ref: refs/heads/trebell/model-a\n";
+  try{
+    await mkdir(dest);assert.equal(await written({...common,HEAD:branch}),false,"no .git file in the worktree yet");
+    await writeFile(join(dest,".git"),`gitdir: ${admin}\n`);
+    assert.equal(await written({...common,HEAD:branch}),true,"the branch's HEAD");
+    assert.equal(await written({...common,HEAD:"5f3c1e2d4b6a7980a1b2c3d4e5f60718293a4b5c\n"}),true,"a HEAD at a commit");
+    assert.equal(await written({...common,HEAD:"0".repeat(40)+"\n"}),false,"the placeholder HEAD of git 2.43 and older, which another add reads as detached");
+    assert.equal(await written({...common,HEAD:"0".repeat(64)+"\n"}),false,"that placeholder in a SHA-256 repository");
+    assert.equal(await written({...common,HEAD:""}),false,"a HEAD git has created but not yet written");
+    assert.equal(await written({...common}),false,"no HEAD yet");
+    assert.equal(await written({HEAD:branch}),false,"no commondir yet");
+    assert.equal(await written({commondir:"",HEAD:branch}),false,"a commondir git has created but not yet written");
+    assert.equal(await written({...common,"reftable/":"",HEAD:"ref: refs/heads/.invalid\n"}),false,"a reftable worktree's stub HEAD, before its HEAD is committed");
+    assert.equal(await written({...common,"reftable/tables.list":"0x000000000001-0x000000000001-0a1b2c3d.ref\n",HEAD:"ref: refs/heads/.invalid\n"}),true,"a reftable worktree whose HEAD is committed");
+  }finally{await rm(root,RETRY)}
 });
 
 // A remove git refuses deletes nothing: one with a file untracked, a locked one, one with a submodule checked out (unless forced), and the

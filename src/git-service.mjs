@@ -427,7 +427,11 @@ export function worktreeSubmoduleArgs(mode="recursive"){
 // (addWorktreeInTurn): in a repository of 6,000 files an add took 6.6 s, 6.4 s of it the checkout, so with whole adds in turns the
 // third model of a send waited for two checkouts (its worktree made after 20 s, where three made at once took 13.5 s each). A remove,
 // here or in a remote environment, and an add in a remote environment or through source control hold the turn for the whole git
-// command. The submodule update after an add, which can take minutes, waits for no turn.
+// command, so an add waits while git deletes a removed worktree's whole tree, ignored files such as node_modules among them: in a
+// repository of 6,000 files, an add asked 0.3 s into a cleanup's remove was made after 15.4 to 18.5 s, against 10.9 to 11.6 s without
+// turns. A remove that set the tree aside to delete it after its turn lost changes git keeps: its own check found none, through a git
+// status that read another work tree, one the worktree's config named. Any check before git's remove must run as git runs it, with
+// GIT_DIR=<worktree>/.git and GIT_WORK_TREE=<worktree>. The submodule update after an add, which can take minutes, waits for no turn.
 const worktreeTurns=new Map();
 export function worktreeTurn(key,task){
   const turn=(worktreeTurns.get(key)||Promise.resolve()).then(()=>task()),done=turn.then(()=>{},()=>{});
@@ -446,22 +450,26 @@ const inWorktreeTurn=async(root,task)=>worktreeTurn(await worktreeTurnKey(root),
 // The admin folder git names in a linked worktree's .git file ("gitdir: <folder>"), which it writes in full before the checkout.
 const LINKED_GIT_FILE=/^gitdir: (.+)\r?\n/;
 const namedAdminFolder=async tree=>LINKED_GIT_FILE.exec(await readFile(join(tree,".git"),"utf8").catch(()=>""))?.[1]?.trim()||null;
-// An add's turn ends once git has written the new worktree's admin folder up to its HEAD, or when git ends before that: the commondir
-// another add or remove reads, and the HEAD another add reads to refuse a branch a worktree has checked out. With reftable refs the HEAD
-// file is a stub, written after the admin folder's reftable folder, and the worktree's HEAD is in once git has written
-// reftable/tables.list. The checkout and the post-checkout hook that follow, all of git's own add, run after the turn, beside the next
-// add, and so does git's deletion of the new worktree when its checkout fails: another add or remove that reads its admin folder as it
-// goes could fail on it, in a window of microseconds that no run has made fail.
+// Whether git has written the admin folder that the linked worktree at dest names up to the worktree's HEAD: the commondir another add
+// or remove reads, and the HEAD another add reads to refuse a branch a worktree has checked out. From 2.44 git writes that HEAD once, in
+// full, after commondir. git 2.43 and older (macOS's own git, Ubuntu 24.04's, Debian 12's) write a placeholder HEAD of zeros before
+// commondir, and the real one from a git symbolic-ref (update-ref for a commit) they run after it: another add reads the placeholder as
+// a detached HEAD and checks out the same branch beside it. With reftable refs (2.45 and later) the HEAD file is a stub, written after
+// the admin folder's reftable folder (so that folder is looked for once HEAD is read), and the worktree's HEAD is in once git has
+// written reftable/tables.list.
+export async function worktreeHeadWritten(dest){
+  const named=await namedAdminFolder(dest);if(!named)return false;
+  const admin=resolve(dest,named),[common,head]=await Promise.all([stat(join(admin,"commondir")).catch(()=>null),readFile(join(admin,"HEAD"),"utf8").catch(()=>"")]);
+  if(!(common?.size>0)||/^0*\s*$/.test(head))return false;
+  return !await stat(join(admin,"reftable")).catch(()=>null)||Boolean(await stat(join(admin,"reftable","tables.list")).catch(()=>null));
+}
+// An add's turn ends once worktreeHeadWritten holds, or when git ends before that. The checkout and the post-checkout hook that follow,
+// all of git's own add, run after the turn, beside the next add, and so does git's deletion of the new worktree when its checkout
+// fails: another add or remove that reads its admin folder as it goes could fail on it, in a window of microseconds that no run has
+// made fail.
 async function worktreeAdminWritten(dest,ended){
   let over=false;ended.then(()=>{over=true});
-  while(!over){
-    const named=await namedAdminFolder(dest);
-    if(named){
-      const admin=resolve(dest,named),[common,head]=await Promise.all(["commondir","HEAD"].map(name=>stat(join(admin,name)).catch(()=>null)));
-      if(common?.size>0&&head&&(!await stat(join(admin,"reftable")).catch(()=>null)||await stat(join(admin,"reftable","tables.list")).catch(()=>null)))return;
-    }
-    await new Promise(next=>setTimeout(next,10));
-  }
+  while(!over&&!await worktreeHeadWritten(dest))await new Promise(next=>setTimeout(next,10));
 }
 async function addWorktreeInTurn(root,dest,args){
   let added;
