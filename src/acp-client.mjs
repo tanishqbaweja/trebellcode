@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
-import readline from "node:readline";
 import spawn from "cross-spawn";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { createRunTemp } from "./acp-runtime-temp.mjs";
+import { readNdjsonLines } from "./ndjson-lines.mjs";
 
 const DEFAULT_TIMEOUT_MS=180_000;
 export const ACP_STDERR_TAIL_MAX_CHARS=4096;
@@ -94,8 +94,7 @@ export class AcpClient extends EventEmitter{
         :spawn(this.command,this.args,{cwd:this.cwd,env:this.env,windowsHide:true,stdio:["pipe","pipe","pipe"]});
     }catch(error){await this.#removeRunTemp();throw processError(this.command,error)}
     this.child=child;
-    this.stdoutReader=readline.createInterface({input:child.stdout,crlfDelay:Infinity});
-    this.stdoutReader.on("line",line=>this.#handleLine(line));
+    this.stdoutReader=readNdjsonLines(child.stdout,line=>this.#handleLine(line));
     child.stderr?.on("data",chunk=>{
       const text=String(chunk);
       this.stderrTail=appendAcpStderrTail(this.stderrTail,text);

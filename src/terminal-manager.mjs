@@ -1,12 +1,12 @@
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import readline from "node:readline";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { constants, setPriority } from "node:os";
 import { dirname, join } from "node:path";
 import { WebSocketServer } from "ws";
+import { readNdjsonLines } from "./ndjson-lines.mjs";
 import { trebellHome } from "./paths.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 
@@ -87,7 +87,8 @@ export class TerminalManager extends EventEmitter{
     // console window: its shells run in pseudo-consoles, what it runs itself is hidden, and it closes a console without node-pty's
     // kill, whose console-list agent would get one.
     this.child=spawn(process.execPath,[workerPath],{env:childEnv,stdio:["pipe","pipe","pipe"],windowsHide:true,detached:process.platform==="win32"});
-    readline.createInterface({input:this.child.stdout,crlfDelay:Infinity}).on("line",line=>{
+    // Its messages are JSON lines split on "\n" alone: readline also split one at a U+2028 or U+2029 in a terminal's output.
+    readNdjsonLines(this.child.stdout,line=>{
       let msg; try{msg=JSON.parse(line)}catch{return}
       if(msg.type==="response"){
         const pending=this.pending.get(msg.rid); if(!pending) return; this.pending.delete(msg.rid);

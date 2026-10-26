@@ -1,7 +1,7 @@
 import pty from "node-pty";
-import readline from "node:readline";
 import { spawn } from "node:child_process";
 import { constants, setPriority } from "node:os";
+import { readNdjsonLines } from "./ndjson-lines.mjs";
 import { listWindowsProcesses, processTree, treeLeft } from "./windows-process-tree.mjs";
 
 const sessions=new Map();
@@ -120,6 +120,8 @@ function ownerGone(){
   sessions.clear();
   Promise.race([Promise.all(ended),new Promise(resolve=>setTimeout(resolve,process.platform==="win32"?12000:2000))]).then(()=>process.exit(0));
 }
-readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{
+// The server's messages are JSON lines split on "\n" alone: readline also split one at a U+2028 or U+2029 in a person's input, and
+// the input went nowhere. Its end, or a failure or close of the pipe, is the server gone.
+readNdjsonLines(process.stdin,line=>{
   try{handle(JSON.parse(line));}catch(error){send({type:"workerError",error:String(error)})}
-}).on("close",ownerGone);
+},{onEnd:ownerGone});
