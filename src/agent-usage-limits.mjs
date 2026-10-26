@@ -54,8 +54,9 @@ export async function readCursorUsageLimits({environment={},platform=process.pla
   }
   if(!token)return unavailable("unsupported",null,at);
   const endpoint=String(environment.CURSOR_API_ENDPOINT||"https://api2.cursor.sh").trim().replace(/\/$/,"");
+  // Trebell asks as itself: no client-type header that would pass it off as the Cursor CLI. A refusal is not asked again.
   const result=await fetchJson(fetchImpl,endpoint+"/aiserver.v1.DashboardService/GetCurrentPeriodUsage",{
-    method:"POST",token,headers:{"content-type":"application/json","connect-protocol-version":"1","x-cursor-client-type":"cli"},body:{},
+    method:"POST",token,headers:{"content-type":"application/json","connect-protocol-version":"1"},body:{},
   });
   return result.ok?cursorUsageResponseToLimits(result.data,at):unavailable("probeFailed","Cursor could not read usage limits.",at);
 }
