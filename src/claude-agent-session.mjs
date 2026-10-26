@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
 import { fileUriPath } from "./file-uri.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
@@ -141,22 +142,37 @@ export function claudeSessionPermissionUpdates(toolName,suggestions){
   const updates=(Array.isArray(suggestions)?suggestions:[]).map(suggestion=>({...suggestion,destination:"session"}));
   return updates.length?updates:[{type:"addRules",rules:[{toolName}],behavior:"allow",destination:"session"}];
 }
+// Claude Code's own text for a request (its prompt sentence, subtitle, reason or ask rule) can carry its renderer's terminal escapes.
+function plainText(value){return typeof value==="string"?stripVTControlCharacters(value).trim():""}
 // The approval prompt as T3 Code's ClaudeAdapter builds it: the CLI's own prompt sentence, else the tool with its command, path
-// or input, so the person sees what they approve.
+// or input, so the person sees what they approve, then why Claude Code asks (its decisionReason) when the sentence does not say it.
 export function claudePermissionPrompt(toolName,input,options={}){
-  const own=[options?.title,options?.description,options?.decisionReason].find(value=>typeof value==="string"&&value.trim())?.trim()||null;
+  const reason=plainText(options?.decisionReason).slice(0,400),own=plainText(options?.title)||plainText(options?.description)||reason||null;
   const name=String(toolName||"Tool"),field=keys=>{for(const key of keys){const value=input?.[key];if(typeof value==="string"&&value.trim())return value.trim()}return null};
   const target=field(["command","cmd","script"])??field(["file_path","path","filename","fileName"]);
+  let prompt=own;
   // The command or path itself is always shown (T3 summarizeClaudeToolRequest): Claude Code's sentence for a shell command can be
   // the model's own description of it ("Run node one-liner printing trebell-tour"), which follows it when it adds something.
   if(target!=null){
     const action=`${name}: ${target.slice(0,400)}`;
-    return !own?action:own.includes(target)?own:`${action} — ${own}`;
+    prompt=!own?action:own.includes(target)?own:`${action} — ${own}`;
+  }else if(!own){
+    let serialized="";try{serialized=JSON.stringify(input??{})??""}catch{serialized=""}
+    prompt=serialized.length<=400?`${name}: ${serialized}`:`${name}: ${serialized.slice(0,397)}...`;
   }
-  if(own)return own;
-  let serialized="";try{serialized=JSON.stringify(input??{})??""}catch{serialized=""}
-  return serialized.length<=400?`${name}: ${serialized}`:`${name}: ${serialized.slice(0,397)}...`;
+  return reason&&!prompt.includes(reason)?`${prompt} (${reason})`:prompt;
 }
+// Every request Claude Code forwards in Full access is one it does not approve itself: an ask rule, its own safety checks (an rm of a
+// critical path, a read outside the folder), or, once an administrator turned bypass off, any request of the lower mode it runs in.
+// The card says so, and names the person's ask rule when one matched.
+function claudeAskLead({fullAccess,rule}){
+  const ruleText=plainText(permissionRuleText(rule)||"");
+  if(fullAccess)return ruleText?`Claude Code asks even in Full access, as its ask rule ${ruleText} says`:"Claude Code asks even in Full access";
+  return ruleText?`Claude Code asks, as its ask rule ${ruleText} says`:null;
+}
+// A request Claude Code wants decided once (a standing grant would allow more than it asks, or no stray key may approve it) offers
+// no session choice: the card's own buttons, as the default card words them.
+const CLAUDE_ONCE_OPTIONS=Object.freeze([{decision:"decline",label:"Deny"},{decision:"accept",label:"Allow once"}]);
 function permissionRuleText(rule){
   const name=String(rule?.toolName||"").trim();if(!name)return null;
   const content=typeof rule?.ruleContent==="string"?rule.ruleContent:"";
@@ -726,21 +742,32 @@ export class ClaudeAgentSession{
       return {behavior:"deny",message:CLAUDE_PLAN_CAPTURED,toolUseID};
     }
     const policyKind=editTool(toolName)?"edit":readOnlyTool(toolName)?"read":toolKind(toolName),disposition=permissionDisposition(this.permissionMode,policyKind,{action:toolName,rawInput:input,workspace:this.cwd});
-    if(disposition==="allow")return {behavior:"allow",updatedInput:input,toolUseID};
     if(disposition==="deny")return {behavior:"deny",message:"Trebell read-only mode denied this tool.",toolUseID};
+    // What Claude Code forwards in Full access, in Plan mode (whatever plan mode does not allow) or for an ask rule in any mode (the
+    // SDK's matchedAskRule: the person's own wish to be asked) is the person's to decide, as T3 Code's requiresClaudeApproval: askUser
+    // keeps the relay from accepting it for Trebell's policy.
+    const fullAccess=this.permissionMode==="full",rule=options?.matchedAskRule&&typeof options.matchedAskRule==="object"?options.matchedAskRule:null;
+    const askUser=fullAccess||this.collaborationMode==="plan"||Boolean(rule);
+    if(disposition==="allow"&&!askUser)return {behavior:"allow",updatedInput:input,toolUseID};
+    const once=options?.suppressAlwaysAllowRule===true||options?.defaultToNo===true;
     const choices=[
       {optionId:"allow_once",name:"Allow once",kind:"allow_once"},
-      {optionId:"allow_always",name:"Allow for this session",kind:"allow_always"},
+      ...(once?[]:[{optionId:"allow_always",name:"Allow for this session",kind:"allow_always"}]),
       {optionId:"reject_once",name:"Reject",kind:"reject_once"},
     ];
+    const prompt=claudePermissionPrompt(toolName,input,options),lead=claudeAskLead({fullAccess,rule});
     let decision="decline";
     try{
       decision=await untilAborted(this.onPermission?.({
         method:"claude/canUseTool",
-        params:{toolCall:{title:options?.title||options?.displayName||toolName,toolCallId:toolUseID,rawInput:input,kind:toolKind(toolName)},toolName,input,prompt:claudePermissionPrompt(toolName,input,options)},
+        params:{toolCall:{title:plainText(options?.title)||plainText(options?.displayName)||toolName,toolCallId:toolUseID,rawInput:input,kind:toolKind(toolName)},toolName,input,prompt:lead?`${lead}: ${prompt}`:prompt},
         options:choices,
+        ...(askUser?{askUser:true}:{}),
+        ...(once?{approvalOptions:CLAUDE_ONCE_OPTIONS.map(option=>({...option}))}:{}),
       }),options?.signal,"cancel")||"decline";
     }catch{decision="decline"}
+    // A request decided once is never granted for the session, whatever the answer asks.
+    if(once&&decision==="acceptForSession")decision="accept";
     if(decision==="acceptForSession"){
       const updates=claudeSessionPermissionUpdates(toolName,options?.suggestions);
       // The rules also hold for every later process of this thread (after Stop, a model change or idle release).
