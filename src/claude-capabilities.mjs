@@ -1,3 +1,4 @@
+import { hasClaudeManagedMcpConfig } from "./claude-managed-mcp.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
 // The Claude Agent SDK loads with the first probe that needs it, not with the server (budget B25).
@@ -17,8 +18,9 @@ function withTimeout(promise,ms,message){
 }
 
 // The probe keeps the filesystem setting sources (workspace commands and agents) but runs no hooks, starts no MCP server and
-// skips IDE discovery: it is a noninteractive health check.
-export function claudeCapabilitiesProbeOptions({command,cwd=null,env={},spawnProcess=null,abortController}={}){
+// skips IDE discovery: it is a noninteractive health check. Next to an administrator's managed-mcp.json (managedMcpConfig), which
+// already allows only the managed servers, Claude Code exits at startup on --strict-mcp-config, so that flag goes, and only that.
+export function claudeCapabilitiesProbeOptions({command,cwd=null,env={},spawnProcess=null,abortController,managedMcpConfig=false}={}){
   const environment={...env,ENABLE_CLAUDEAI_MCP_SERVERS:"false",CLAUDE_CODE_AUTO_CONNECT_IDE:"0",CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL:"1"};
   delete environment.FORCE_CODE_TERMINAL;
   return {
@@ -30,7 +32,7 @@ export function claudeCapabilitiesProbeOptions({command,cwd=null,env={},spawnPro
     settings:{disableAllHooks:true},
     allowedTools:[],
     mcpServers:{},
-    strictMcpConfig:true,
+    ...(managedMcpConfig?{}:{strictMcpConfig:true}),
     env:environment,
     ...(cwd?{cwd}:{}),
     stderr:()=>{},
@@ -38,15 +40,18 @@ export function claudeCapabilitiesProbeOptions({command,cwd=null,env={},spawnPro
   };
 }
 
-export async function probeClaudeCapabilities({command,cwd=null,env={},spawnProcess=null,includeUsage=true,query=null,timeoutMs=CLAUDE_CAPABILITIES_TIMEOUT_MS}={}){
+// managedMcpExists: the managed-mcp.json check's exists(path), for tests. A Claude Code started elsewhere (spawnProcess) reads its own
+// machine's managed file, which this check cannot see, so it keeps the flag.
+export async function probeClaudeCapabilities({command,cwd=null,env={},spawnProcess=null,includeUsage=true,query=null,timeoutMs=CLAUDE_CAPABILITIES_TIMEOUT_MS,managedMcpExists=undefined}={}){
   const startQuery=query||(await loadClaudeAgentSdk()).query;
+  const managedMcpConfig=!spawnProcess&&await hasClaudeManagedMcpConfig({exists:managedMcpExists});
   const abortController=new AbortController();
   const prompt=(async function*(){
     await new Promise(resolve=>{if(abortController.signal.aborted)resolve();else abortController.signal.addEventListener("abort",()=>resolve(),{once:true})});
   })();
   let runtime=null;
   try{
-    runtime=startQuery({prompt,options:claudeCapabilitiesProbeOptions({command,cwd,env,spawnProcess,abortController})});
+    runtime=startQuery({prompt,options:claudeCapabilitiesProbeOptions({command,cwd,env,spawnProcess,abortController,managedMcpConfig})});
     const init=await withTimeout(runtime.initializationResult(),timeoutMs,"Claude Code did not report its capabilities in time.");
     // Usage has its own deadline so a slow optional read cannot discard the initialization answer. skipBehaviors skips the
     // local transcript scan: only the plan rate limits are read.

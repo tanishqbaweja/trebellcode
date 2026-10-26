@@ -215,7 +215,7 @@ test("Claude adapter runs one tool-less turn without hooks, MCP servers or a sav
     yield {type:"result",subtype:"success",is_error:false,result:"fix: tighten harness text"};
   })()};
   const manager=fakeRuntimeManager("claude");
-  const result=await generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",cwd:"H:\\repo",environmentId:null,models:["gpt-5.6-sol","opus"],version:"9.9.9",deps:{claudeQuery}});
+  const result=await generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",cwd:"H:\\repo",environmentId:null,models:["gpt-5.6-sol","opus"],version:"9.9.9",deps:{claudeQuery,claudeManagedMcpExists:()=>false}});
   assert.deepEqual(result,{text:"fix: tighten harness text",model:"claude-opus-4-8",runtime:"claude",name:"Claude Code"});
   const {prompt,options}=seen[0];
   assert.equal(prompt,"PROMPT");assert.equal(options.cwd,"H:\\repo");assert.equal(options.model,"opus");

@@ -20,7 +20,7 @@ function fakeQuery({init={models:[{value:"default",displayName:"Default"}],comma
 test("Claude capability probe reads the initialize answer and plan usage without sending a prompt",async()=>{
   const usage={rate_limits_available:true,rate_limits:{five_hour:{utilization:12,resets_at:"2026-10-09T22:59:59Z"}}};
   const {query,calls}=fakeQuery({usage});
-  const probe=await probeClaudeCapabilities({command:"claude",cwd:"/repo",env:{CLAUDE_CONFIG_DIR:"/home/u/.claude",FORCE_CODE_TERMINAL:"1"},query});
+  const probe=await probeClaudeCapabilities({command:"claude",cwd:"/repo",env:{CLAUDE_CONFIG_DIR:"/home/u/.claude",FORCE_CODE_TERMINAL:"1"},query,managedMcpExists:()=>false});
   assert.deepEqual(probe.models,[{value:"default",displayName:"Default"}]);
   assert.deepEqual(probe.commands,[{name:"review"}]);assert.deepEqual(probe.agents,[{name:"Plan"}]);
   assert.deepEqual(probe.account,{email:"user@example.test"});

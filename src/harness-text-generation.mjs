@@ -6,6 +6,7 @@ import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "./acp-session-config.mjs";
 import { withProbeAdvice } from "./agent-runtime-manager.mjs";
 import { claudeExplainedApiError, claudeRejectedLimit, claudeResultFailure, claudeSignedOutMessage, claudeUsageLimitHint, claudeUsageLimited } from "./claude-agent-session.mjs";
+import { hasClaudeManagedMcpConfig } from "./claude-managed-mcp.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexApprovalResponse, isCodexApprovalRequest } from "./codex-policy-adapter.mjs";
 import { checkedOpenCodeProviders, connectedOpenCodeModels, openCodeModelPreferences, startOpenCodeServer } from "./opencode-agent-session.mjs";
@@ -141,12 +142,15 @@ async function claudeText(ctx){
   const cwd=runtimeManager.runtimeCwd?.(ctx.cwd,environmentId)||ctx.cwd,model=claudeTextModel(ctx.models),abortController=new AbortController();
   const abort=()=>abortController.abort();if(ctx.signal.aborted)abort();else ctx.signal.addEventListener("abort",abort,{once:true});
   const env={...runtimeManager.childEnv(instance),CLAUDE_AGENT_SDK_CLIENT_APP:`trebell-code/${ctx.version}`};
+  // Next to an administrator's managed-mcp.json Claude Code loads only the managed servers and exits at startup on
+  // --strict-mcp-config; a Claude Code started elsewhere reads its own machine's file, so it keeps the flag.
+  const managedMcp=!spawnProcess&&await hasClaudeManagedMcpConfig({exists:ctx.deps.claudeManagedMcpExists});ctx.check();
   const runtime=query({prompt:ctx.prompt,options:{
     cwd,...(model?{model}:{}),
     // A Windows .cmd shim cannot be spawned directly; the SDK runs a native binary or a .js entry itself.
     pathToClaudeCodeExecutable:spawnProcess?command:resolveWindowsCommandShim(command,{allowScripts:true}),
     env,
-    tools:[],mcpServers:{},strictMcpConfig:true,settingSources:["user"],settings:{disableAllHooks:true},
+    tools:[],mcpServers:{},...(managedMcp?{}:{strictMcpConfig:true}),settingSources:["user"],settings:{disableAllHooks:true},
     permissionMode:"dontAsk",canUseTool:async(_toolName,_input,options)=>({behavior:"deny",message:"Trebell Git text generation is read-only and tool-less.",toolUseID:options?.toolUseID}),
     maxTurns:1,persistSession:false,includePartialMessages:false,
     systemPrompt:{type:"preset",preset:"claude_code",append:HARNESS_TEXT_INSTRUCTIONS},
