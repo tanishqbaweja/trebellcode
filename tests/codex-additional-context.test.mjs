@@ -71,7 +71,7 @@ test("Codex additionalContext pieces stay within Codex's per-value cap in any sc
     assert.equal(joined(split,key),context[key].value,`${key}'s pieces in key order join back into the value`);
     assert.ok(pieces.every(entry=>entry.kind===context[key].kind),`${key}'s pieces keep its kind`);
     assert.ok(pieces.every(entry=>wellFormed(entry.value)),`${key} is cut on code points, never inside one`);
-    assert.deepEqual(Object.keys(split).filter(name=>name.startsWith(key+".")),pieces.map((_,index)=>`${key}.${String(index+1).padStart(2,"0")}`));
+    assert.deepEqual(Object.keys(split).filter(name=>name.startsWith(key+".")),pieces.map((_,index)=>`${key}.${String(index+1).padStart(2,"0")}-of-${String(pieces.length).padStart(2,"0")}`));
   }
   assert.ok(piecesOf(split,"trebell.repo_evidence").slice(0,-1).every(entry=>entry.value.endsWith("\n\n")),"paragraphs stay whole when they fit");
   assert.ok(piecesOf(split,"trebell.continuity").slice(0,-1).every(entry=>entry.value.endsWith("\r\n")),"lines stay whole when there is no paragraph break");
@@ -83,17 +83,38 @@ test("Codex additionalContext is left alone when every value fits, and long valu
   const fits={"trebell.runtime":{kind:"application",value:"r"},"trebell.goal":{kind:"application",value:"é".repeat(2000)}};
   assert.equal(splitCodexAdditionalContext(fits),fits,"4,000 bytes is still whole for Codex");
   const over={"trebell.goal":{kind:"application",value:"é".repeat(2000)+"!"}};
-  assert.deepEqual(Object.keys(splitCodexAdditionalContext(over)),["trebell.goal.01","trebell.goal.02"],"4,001 bytes is cut by Codex, so it is split");
+  assert.deepEqual(Object.keys(splitCodexAdditionalContext(over)),["trebell.goal.01-of-02","trebell.goal.02-of-02"],"4,001 bytes is cut by Codex, so it is split");
   const message={id:7,method:"turn/start",params:{threadId:"t",additionalContext:fits}};
   assert.equal(withCodexContextPieces(message),message);
   const read={id:8,method:"thread/read",params:{threadId:"t",additionalContext:over}};
   assert.equal(withCodexContextPieces(read),read,"only a turn's start or steer carries context to Codex");
   const steer=withCodexContextPieces({id:9,method:"turn/steer",params:{threadId:"t",expectedTurnId:"u",additionalContext:over}});
-  assert.deepEqual(Object.keys(steer.params.additionalContext),["trebell.goal.01","trebell.goal.02"]);
+  assert.deepEqual(Object.keys(steer.params.additionalContext),["trebell.goal.01-of-02","trebell.goal.02-of-02"]);
   const huge=splitCodexAdditionalContext({"trebell.repo_evidence":{kind:"application",value:("z".repeat(99)+"\n").repeat(4100)}});
-  const keys=Object.keys(huge);assert.ok(keys.length>99);assert.equal(keys[0],"trebell.repo_evidence.001");
+  const keys=Object.keys(huge);assert.equal(keys.length,103);assert.equal(keys[0],"trebell.repo_evidence.001-of-103");assert.equal(keys.at(-1),"trebell.repo_evidence.103-of-103");
   assert.deepEqual([...keys].sort(),keys,"key order is text order");
   assertCodexTakesWhole(huge,"huge context");
+});
+
+// Codex's AdditionalContextStore.merge (codex-rs core state/additional_context.rs): a turn sends, in key order, the entries that differ
+// from the thread's last turn's, and the turn's entries become the thread's.
+function codexTurn(store,context){
+  const sent=Object.keys(context).sort().filter(key=>JSON.stringify(store.get(key))!==JSON.stringify(context[key]));
+  return {sent,store:new Map(Object.entries(context))};
+}
+
+test("A long Codex context value whose pieces stay sends only the piece that changed, and one that loses a piece goes again whole",async()=>{
+  const {splitCodexAdditionalContext}=await contextModule();
+  const paragraph=(name,word="checked")=>`${name}: `+`${word} `.repeat(180).trim();
+  const goal=parts=>({"trebell.goal":{kind:"application",value:parts.join("\n\n")}});
+  const [p1,p2,p3,p4,p5]=["One","Two","Three","Four","Five"].map(name=>paragraph(name)),p5Later=paragraph("Five","updated");
+  let turn=codexTurn(new Map(),splitCodexAdditionalContext(goal([p1,p2,p3,p4,p5])));
+  assert.deepEqual(turn.sent,["trebell.goal.01-of-03","trebell.goal.02-of-03","trebell.goal.03-of-03"],"the first turn sends the whole goal");
+  turn=codexTurn(turn.store,splitCodexAdditionalContext(goal([p1,p2,p3,p4,p5Later])));
+  assert.deepEqual(turn.sent,["trebell.goal.03-of-03"],"a change in the last paragraph sends the last piece only; the others are still current");
+  const shorter=splitCodexAdditionalContext(goal([p1,p2,p3,p5Later]));turn=codexTurn(turn.store,shorter);
+  assert.deepEqual(turn.sent,["trebell.goal.01-of-02","trebell.goal.02-of-02"],"a goal that lost a piece goes again whole, so its old last piece is not taken as current");
+  assert.equal(turn.sent.map(key=>shorter[key].value).join(""),[p1,p2,p3,p5Later].join("\n\n"));
 });
 
 test("A Codex turn's long goal and the server's own delegated turn reach Codex in pieces Codex keeps whole",async()=>{

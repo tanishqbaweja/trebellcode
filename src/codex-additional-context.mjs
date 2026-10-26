@@ -1,7 +1,9 @@
 // Codex cuts the middle out of any additionalContext value over 1,000 tokens, which it counts as UTF-8 bytes divided by four, and
 // says nothing (codex-rs context-fragments additional_context.rs: MAX_ADDITIONAL_CONTEXT_VALUE_TOKENS, truncate_middle_with_token_budget,
-// in 0.155.1 and 0.162.0). So a longer value goes as pieces under numbered keys, <key>.01, <key>.02 and so on: Codex sends a turn's
-// entries in key order (its context store is a BTreeMap), so the model reads the pieces in the text's order, whole.
+// in 0.155.1 and 0.162.0). So a longer value goes as pieces under numbered keys that also say how many there are, <key>.01-of-03,
+// <key>.02-of-03 and so on. Codex sends a turn's entries in key order (it keeps them in a BTreeMap), so the model reads the pieces in
+// the text's order, whole. And it sends only the entries whose value changed since the thread's last turn (state/additional_context.rs):
+// a value that gains or loses a piece renames them all and goes again whole, so no piece of its old text is left as if still current.
 export const CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES=4000;
 // The Codex requests whose additionalContext Codex cuts that way.
 const CONTEXT_METHODS=new Set(["turn/start","turn/steer"]);
@@ -48,8 +50,8 @@ export function splitCodexAdditionalContext(additionalContext,maxBytes=CODEX_ADD
   const split={};
   for(const [key,entry] of Object.entries(additionalContext)){
     if(!long([key,entry])){split[key]=entry;continue}
-    const pieces=codexAdditionalContextPieces(entry.value,maxBytes),width=Math.max(2,String(pieces.length).length);
-    pieces.forEach((value,index)=>{split[`${key}.${String(index+1).padStart(width,"0")}`]={...entry,value}});
+    const pieces=codexAdditionalContextPieces(entry.value,maxBytes),width=Math.max(2,String(pieces.length).length),count=String(pieces.length).padStart(width,"0");
+    pieces.forEach((value,index)=>{split[`${key}.${String(index+1).padStart(width,"0")}-of-${count}`]={...entry,value}});
   }
   return split;
 }
