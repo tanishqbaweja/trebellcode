@@ -1608,11 +1608,13 @@ export default function App(){
   // The terminal drawer's tallest in this window, the window less the room above it (190px to 620px), which its stylesheet caps it at
   // too (--terminal-room, t3-workspace.css): 260px, or the room the header and the composer with a line of draft need where that is
   // more, as the composer measures it (the desktop's window bar, its controls in two rows beside the panel). It is kept rather than
-  // the window's height, so App draws again only when it changes.
-  const terminalRoomRef=useRef(260);
+  // the window's height, so App draws again only when it changes, or the room does: the stylesheet has the room App last drew with,
+  // and a room that changed with the tallest the same (620px in a tall window) left it the old one, which capped the drawer under the
+  // height its handle said once the window was made shorter.
+  const terminalRoomRef=useRef(260),[terminalRoom,setTerminalRoom]=useState(260);
   const tallestTerminal=()=>Math.max(LAYOUT_LIMITS.terminalHeight[0],Math.min(LAYOUT_LIMITS.terminalHeight[1],window.innerHeight-terminalRoomRef.current));
   const [terminalMaximum,setTerminalMaximum]=useState(()=>typeof window!=="undefined"?tallestTerminal():LAYOUT_LIMITS.terminalHeight[1]);
-  const composerRoom=useCallback(need=>{const room=Math.max(260,Math.ceil(need));if(room!==terminalRoomRef.current){terminalRoomRef.current=room;setTerminalMaximum(tallestTerminal())}},[]);
+  const composerRoom=useCallback(need=>{const room=Math.max(260,Math.ceil(need));if(room!==terminalRoomRef.current){terminalRoomRef.current=room;setTerminalRoom(room);setTerminalMaximum(tallestTerminal())}},[]);
   useEffect(()=>{
     let frame=0;const resize=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{setViewportWidth(window.innerWidth);setTerminalMaximum(tallestTerminal())})};
     window.addEventListener("resize",resize);return()=>{cancelAnimationFrame(frame);window.removeEventListener("resize",resize)};
@@ -5685,7 +5687,7 @@ export default function App(){
     "--sidebar-width":layoutPrefs.sidebarWidth+"px",
     "--right-panel-width":rightPanelWidth+"px",
     "--terminal-height":terminalHeight+"px",
-    "--terminal-room":terminalRoomRef.current+"px",
+    "--terminal-room":terminalRoom+"px",
   };
   // What the chat workspace holds, as classes its stylesheet reads (shell.css) instead of a :has() over its children: Chrome restyled
   // the whole workspace, the conversation with it, on every key typed under such a rule, as React rewrites the composer's text each key.

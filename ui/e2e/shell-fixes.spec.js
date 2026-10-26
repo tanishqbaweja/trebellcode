@@ -3230,3 +3230,78 @@ for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`with th
     await page.screenshot({path:join(shotsDir,`composer-slides-under-header-${shell}-${mode}-1280x800-inspector-draft.png`),animations:"disabled"});
   }finally{await harness.close()}
 });
+
+// The stylesheet caps the terminal drawer at the window less the room the composer needs now, the room its handle, its keys and a
+// pull stop at (UI lane D, round 12). App gave the stylesheet that room only as it drew, and a room that shrank while the drawer's
+// tallest stayed 620px drew nothing: at 1280 by 1000, with the drawer at its tallest beside the inspector at its widest and two files
+// attached, the files taken off or the inspector closed left the stylesheet the room the composer had needed, so a window then made
+// 890px tall showed the drawer at 609px under its handle's 620 of 620, the composer 23px above it (577px and 55px in the desktop app),
+// until a key typed in the composer drew App again. So in a browser and in the desktop app, the files taken off with their x, or the
+// inspector closed with its button or Ctrl+Alt+B, or narrowed with Home or a quick pull on its handle, at 1000 tall, and the window
+// then made shorter where the drawer's tallest is still 620px (890px, and 920px in the desktop app, where with its window bar the
+// composer beside the inspector at its widest still needs 281px once its files are taken off): the drawer keeps its 620px, as its
+// handle says, and the composer sits 12px above it, before and after the grow key on the handle.
+for(const [shell,mode] of [["browser","dark"],["browser","light"],["desktop","dark"],["desktop","light"]])test(`after the composer's room shrinks in a window 1000px tall, its files taken off or the inspector closed or narrowed, a shorter window shows the terminal drawer as tall as its handle says with the composer 12px above it, in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(180_000);
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads);
+  const dir=await mkdtemp(join(tmpdir(),"trebell-room-")),files=["ledger-export.csv","refunds.log"].map(name=>join(dir,name));
+  try{
+    for(const file of files)writeFileSync(file,"refund 1\n");
+    await page.setViewportSize({width:1280,height:1000});
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),panelToggle=page.getByTestId("right-panel-toggle"),panelHandle=page.getByTestId("right-panel-resizer"),drawer=page.getByTestId("drawer"),chips=page.locator(".attachment-shelf > span");
+    if(await right.isVisible()){await panelToggle.click();await expect(right).toBeHidden()}
+    const toggle=page.getByTestId("terminal-toggle");
+    if(await toggle.isVisible())await toggle.click();
+    else{await page.locator(".chat-workspace .workspace-header").getByRole("button",{name:"More actions",exact:true}).click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:"Terminal"}).click()}
+    await expect(drawer).toBeVisible();
+    // The inspector's handle given the keyboard, as Shift+Tab from its first tab brings it there.
+    const toPanelHandle=async()=>{if(!(await panelHandle.evaluate(node=>node===document.activeElement))){await right.locator(".context-panel-tab").first().focus();await page.keyboard.press("Shift+Tab")}await expect(panelHandle).toBeFocused()};
+    // Once the layout is the same two frames running: the drawer want px tall, its handle's value and maximum saying so, and the
+    // composer 12px above it, under the header.
+    const agree=async(where,want)=>{
+      let state=null;
+      await expect.poll(async()=>{await settle(page);const next=await readRoom(page),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same},{message:`the layout settles ${where}`,intervals:[50]}).toBe(true);
+      expect.soft([Math.round(state.drawer.height),state.now,state.max],`the drawer's height and its handle's value and maximum ${where}`).toEqual([want,want,want]);
+      expect.soft(Math.round(state.drawer.top-state.composer.bottom),`the composer's gap above the drawer ${where}`).toBe(12);
+      expect.soft(Math.min(state.composer.top,state.shelf?.top??Infinity),`the top of the composer and its shelf against the header's foot, at ${state.header.bottom}px, ${where}`).toBeGreaterThanOrEqual(state.header.bottom);
+    };
+    const shorter=shell==="desktop"?920:890;
+    for(const [how,act,name] of [
+      ["the files taken off with their x",async()=>{for(let left=2;left>0;left--){await page.locator(".attachment-shelf > span button").first().click();await expect(chips).toHaveCount(left-1)}},"files-off"],
+      ["the inspector closed with its button in the header",async()=>{await panelToggle.click();await expect(right).toBeHidden()},"inspector-closed"],
+      ["the inspector closed with Ctrl+Alt+B",async()=>{await right.locator(".context-panel-tab").first().focus();await page.keyboard.press(process.platform==="darwin"?"Meta+Alt+B":"Control+Alt+B");await expect(right).toBeHidden()},"inspector-closed-keys"],
+      ["the inspector set to its narrowest with Home on its handle",async()=>{await toPanelHandle();await page.keyboard.press("Home");await expect.poll(async()=>Math.round((await right.boundingBox()).width),{message:"Home takes the inspector to its narrowest"}).toBe(340)},"inspector-narrowest"],
+      // A quick pull: the handle taken, then let go 400px to the right (a pull whose last moves come after the composer's controls go
+      // back to one row draws App again on its own).
+      ["the inspector narrowed with a quick pull on its handle",async()=>{
+        const grip=await panelHandle.boundingBox(),x=grip.x+grip.width/2,y=grip.y+300;
+        await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+5,y);await expect(page.locator("html"),"the pull takes the handle").toHaveClass(/layout-resizing/);
+        await page.mouse.move(x+400,y);await page.mouse.up();
+        await expect.poll(async()=>Math.round((await right.boundingBox()).width),{message:"the pull takes the inspector to its narrowest"}).toBe(340);
+      },"inspector-pulled"],
+    ]){
+      // At 1280 by 1000 the inspector opened and set to its widest from the keyboard on its handle, where the composer's controls take
+      // two rows in the 400px main column, two files attached from Attach files, and the drawer set to its tallest with Home and End on
+      // its handle.
+      await page.setViewportSize({width:1280,height:1000});
+      if(!(await right.isVisible())){await panelToggle.click();await expect(right).toBeVisible()}
+      await toPanelHandle();await page.keyboard.press("End");
+      await expect.poll(async()=>Math.round((await right.boundingBox()).width),{message:`End takes the inspector to its widest at 1280 by 1000 before ${how}`}).toBe(1280-258-400);
+      if(!(await chips.count())){const [chooser]=await Promise.all([page.waitForEvent("filechooser"),page.getByRole("button",{name:"Attach files",exact:true}).click()]);await chooser.setFiles(files)}
+      await expect(page.locator(".attachment-shelf > span:not(.uploading)")).toHaveCount(2);
+      await focusTerminalHandle(page);await page.keyboard.press("Home");await page.keyboard.press("End");
+      await agree(`at 1280 by 1000 with the drawer at its tallest beside the inspector at its widest and two files attached, before ${how}`,620);
+      await act();
+      await agree(`at 1280 by 1000 after ${how}`,620);
+      await page.setViewportSize({width:1280,height:shorter});
+      await agree(`at 1280 by ${shorter} after ${how} at 1000 tall`,620);
+      await page.screenshot({path:join(shotsDir,`terminal-room-shrinks-${shell}-${mode}-${name}-1280x${shorter}.png`),animations:"disabled"});
+      // The grow key on the drawer's handle at its tallest leaves it so.
+      await focusTerminalHandle(page);await page.keyboard.press("ArrowUp");
+      await agree(`after ArrowUp on the drawer's handle at 1280 by ${shorter}, ${how} at 1000 tall`,620);
+    }
+  }finally{await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
+});
