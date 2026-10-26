@@ -1,12 +1,13 @@
 // A harness's status check (AgentRuntimeManager probe) as Settings, a harness switch and a chat start read it:
 // - each CLI's --version gets T3's budget (Claude Code and Codex 20 s, OpenCode 10 s, the others 6 s), and on this machine one
 //   that runs out of time or exits with an error reads installed and may start, never "not installed"; only a command that is not
-//   there does.
-// Stubbed process runners (the manager's runFn, a remote environment's executeArgv) and a script of the test's own standing in for
-// Codex's app-server: no real harness is started or signed in.
+//   there does;
+// - Grok's checks run with its updater off, and its sessions keep their environment.
+// Stubbed process runners (the manager's runFn, a remote environment's executeArgv) and scripts of the test's own standing in for
+// Grok and for Codex's app-server: no real harness is started or signed in.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -169,6 +170,46 @@ test("OpenCode gets 10 s to answer --version, in its status check and in its ins
   const plan=await fx.manager.openCodeInstallPlan({environmentId:fx.profile.id});
   assert.deepEqual([plan.installedVersion,plan.targetVersion],["1.14.25","1.14.30"]);
   assert.deepEqual(fx.asked.filter(item=>item.line==="opencode --version").map(item=>item.timeoutMs),[10_000,10_000]);
+});
+
+test("Grok's version and sign-in checks run with its updater off, and its sessions keep their environment",async t=>{
+  const fx=await localHarness(t,"grok",args=>answered(args[0]==="models"?"You are logged in with grok.com.\n":"grok 1.0.41\n"));
+  const status=await fx.manager.probe("grok");
+  assert.equal(status.authenticated,true);
+  assert.deepEqual(fx.calls.map(call=>[call.args,call.env.GROK_DISABLE_AUTOUPDATER]),[["--version","1"],["models","1"]]);
+  assert.equal(fx.manager.childEnv(fx.instance).GROK_DISABLE_AUTOUPDATER,undefined,"what sessions, Git text and the sign-in terminal run with");
+  assert.equal(fx.calls[0].env.HOME,fx.manager.childEnv(fx.instance).HOME,"the rest of the environment is the profile's");
+  // Another harness's checks get nothing of Grok's.
+  const claude=await localHarness(t,"claude",args=>answered(args[0]==="auth"?JSON.stringify({loggedIn:true}):"2.1.310 (Claude Code)\n"));
+  await claude.manager.probe("claude");
+  assert.deepEqual(claude.calls.map(call=>"GROK_DISABLE_AUTOUPDATER" in call.env),[false,false]);
+});
+
+test("Grok's model listing runs with its updater off too",async t=>{
+  const home=await tempHome(t,"grok-acp"),fixture=join(home,"grok.mjs"),log=join(home,"launches.jsonl"),windows=process.platform==="win32";
+  // Grok as far as its checks and its listing go: each launch logs its arguments and the updater switch it was given.
+  await writeFile(fixture,String.raw`
+import { appendFileSync } from "node:fs";
+import readline from "node:readline";
+const args=process.argv.slice(2),send=message=>process.stdout.write(JSON.stringify(message)+"\n");
+appendFileSync(process.env.TREBELL_STATUS_LOG,JSON.stringify({args,updater:process.env.GROK_DISABLE_AUTOUPDATER??null})+"\n");
+if(args[0]==="--version")process.stdout.write("grok 1.0.41-fixture\n");
+else if(args[0]==="models")process.stdout.write("You are logged in with grok.com.\n");
+else readline.createInterface({input:process.stdin}).on("line",line=>{const m=JSON.parse(line);
+  if(m.method==="initialize")send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentCapabilities:{},_meta:{modelState:{currentModelId:"grok-4.7",availableModels:[{modelId:"grok-4.7",name:"Grok 4.7"}]}}}});
+  else if(m.id!=null)send({jsonrpc:"2.0",id:m.id,result:{}});
+});
+`,"utf8");
+  const launcher=join(home,windows?"grok.cmd":"grok");
+  await writeFile(launcher,windows?["@echo off",`"${process.execPath}" "${fixture}" %*`,""].join("\r\n"):`#!/bin/sh\nexec "${process.execPath}" "${fixture}" "$@"\n`,"utf8");
+  if(!windows)await chmod(launcher,0o755);
+  const env={PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,COMSPEC:process.env.COMSPEC,TEMP:home,TMP:home,HOME:home,USERPROFILE:home,TREBELL_HOME:join(home,"trebell")};
+  const settings={agentRuntimeInstances:[{id:"grok-default",kind:"grok",binaryPath:launcher,environment:{TREBELL_STATUS_LOG:log}}]};
+  const manager=new AgentRuntimeManager({state:{settings:()=>settings},env});
+  const listed=await manager.models("grok");
+  assert.equal(listed.error,undefined);assert.deepEqual(listed.models,["grok-4.7"]);
+  const launches=(await readFile(log,"utf8")).trim().split("\n").map(line=>JSON.parse(line));
+  assert.deepEqual(launches.map(item=>[item.args[0]==="--version"||item.args[0]==="models"?item.args[0]:"agent stdio",item.updater]),[["--version","1"],["models","1"],["agent stdio","1"]]);
 });
 
 // The relay over its socket, as a window speaks to it: rpc requests, and a send settled as turn/completed reports it.

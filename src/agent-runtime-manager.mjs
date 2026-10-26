@@ -445,13 +445,18 @@ export class AgentRuntimeManager{
       root,
     };
   }
+  // What the harness's own short commands on this machine run with (its version and sign-in checks, its model listing, runCli):
+  // its child environment, with Grok's updater off for that one process (T3 grokProbeEnvironment), so a Settings poll neither opens
+  // npm's console windows on Windows nor replaces the Grok binary underneath. Sessions, Git text and the sign-in terminal keep
+  // childEnv, and a host's commands run with the host's own variables.
+  #probeEnv(instance){const env=this.childEnv(instance);return instance?.kind==="grok"?{...env,GROK_DISABLE_AUTOUPDATER:"1"}:env}
   async #run(instance,args,{timeoutMs=6000,cwd=null,environmentId=undefined}={}){
     const profile=this.activeEnvironment(environmentId);
     if(profile&&profile.type!=="local"&&this.environments){
       const result=await this.environments.executeArgv(profile.id,{command:this.executable(instance,{environmentId:profile.id}),args,cwd:cwd||profile.cwd||"",timeoutMs,environmentNames:this.childEnvironmentKeys(instance)});
       return {ok:result.exitCode===0,code:result.exitCode,error:result.timedOut?"probe timed out":null,stdout:result.stdout||"",stderr:result.stderr||""};
     }
-    return this.runFn(this.executable(instance),args,{env:this.childEnv(instance),cwd:cwd||process.cwd(),timeoutMs});
+    return this.runFn(this.executable(instance),args,{env:this.#probeEnv(instance),cwd:cwd||process.cwd(),timeoutMs});
   }
   // One short-lived `codex app-server` per profile answers account/read. Ready answers are reused briefly because the
   // bootstrap payload probes the active profile on every request; concurrent probes share one process.
@@ -894,7 +899,7 @@ export class AgentRuntimeManager{
   // How a short-lived listing process starts: where the profile runs, in the asking (supervised) launch mode; a local
   // Antigravity unpacks into a Trebell-owned temp folder from its own install folder, as its sessions do.
   #acpProbeOptions(instance,environmentId){
-    const spawnProcess=this.processSpawner(instance,environmentId),command=this.executable(instance,{environmentId}),env=this.childEnv(instance);
+    const spawnProcess=this.processSpawner(instance,environmentId),command=this.executable(instance,{environmentId}),env=this.#probeEnv(instance);
     const local=!spawnProcess,cwd=local?process.cwd():(this.remoteIo(null,environmentId)?.root||"/");
     return {
       command,args:instance.kind==="opencode"?["acp"]:this.acpArgs(instance,"supervised",cwd),cwd,env,spawnProcess,
