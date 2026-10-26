@@ -195,6 +195,23 @@ test("the @ menu keeps of the files found those the workspace search finds for t
   }
 });
 
+// On a word that begins with a file on the draft, typed on glued past it ('@src/login.jsnow'), the menu reads the whole word (up to its
+// end, fileMentionAt's): at a caret in the letters after the path, the part before the caret ('src/login.jsn', one ArrowRight from the
+// path, End and ArrowLeft twice, or a click after 'n') named src/login.json, which the menu offered whether or not the search had
+// answered (it finds it too), and Enter imported it over the whole word, 'now' with it (round 12 repair).
+test("on a word that begins with a file on the draft the @ menu offers of the files found only those the whole word names, at any caret in it",()=>{
+  const glued="Check @src/login.jsnow",found=[login,json];
+  for(const caret of [20,21,22]){const at=fileMentionAt(glued,caret);assert.deepEqual(offeredFileMentions(found,glued,at.start,["src/login.js"],at.query,at.end),[],String(caret))}
+  const dotted="Check @src/login.jsnow. Then",inDotted=fileMentionAt(dotted,20);
+  assert.deepEqual(offeredFileMentions(found,dotted,inDotted.start,["src/login.js"],inDotted.query,inDotted.end),[]);
+  // A word the whole of which names a file found keeps it, at its end or at a caret inside it ('@src/login.jsn' typed, '@src/login.json').
+  assert.deepEqual(offeredFileMentions(found,"Check @src/login.jsn",6,["src/login.js"],"src/login.jsn",20),[json]);
+  const longer="Check @src/login.json now";
+  for(const caret of [20,21]){const at=fileMentionAt(longer,caret);assert.deepEqual(offeredFileMentions(found,longer,at.start,["src/login.js"],at.query,at.end),[json],String(caret))}
+  // A word that begins with no file on the draft: the part before the caret, as before, a pick there replacing the whole word.
+  const at=fileMentionAt(glued,20);assert.deepEqual(offeredFileMentions(found,glued,at.start,[],at.query,at.end),[json]);
+});
+
 // A pick on a word that goes on past the picked file's path goes on the path only, what follows it kept, unless the whole word begins
 // the path of a file found for it, a longer name ('@src/login.json', '@Dockerfile.dev', '@src/login.jso' on the way to it), which the
 // pick then replaces whole: its rest stayed after the file as a word (round 11 repair, again).

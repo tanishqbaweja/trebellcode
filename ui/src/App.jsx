@@ -783,7 +783,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   useEffect(()=>{if(!submitting){setSendWaiting(false);return}const timer=setTimeout(()=>setSendWaiting(true),5000);return()=>clearTimeout(timer)},[submitting]);
   const [caret,setCaret]=useState(0);
   const [mentionItems,setMentionItems]=useState([]);
-  const [mentionIndex,setMentionIndex]=useState(0);
+  // mentionChosen: the file of the @ menu that the arrow keys highlighted, which stays highlighted while the menu offers it until a
+  // search answers (none: the first file).
+  const [mentionChosen,setMentionChosen]=useState(null);
   const [slashIndex,setSlashIndex]=useState(0);
   const composerRef=useRef(null),slashMenuRef=useRef(null),mentionMenuRef=useRef(null),modelMenuRef=useRef(null),modelButtonRef=useRef(null),wrapRef=useRef(null),shelfRef=useRef(null);
   useLayoutEffect(()=>{const shown={composerRef,setCaret};shownComposer=shown;return()=>{if(shownComposer===shown)shownComposer=null}},[]);
@@ -882,11 +884,11 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // answers, the menu offering of them meanwhile those that search finds too.
   useEffect(()=>{
     let disposed=false;const query=activeMention?.query||"";
-    if(!onFileMentionSearch||!query){setMentionItems([]);setMentionIndex(0);return}
+    if(!onFileMentionSearch||!query){setMentionItems([]);setMentionChosen(null);return}
     const timer=setTimeout(async()=>{
       try{
         const items=await onFileMentionSearch(query);if(disposed)return;
-        setMentionItems(rankFileMentions(items,query,{limit:Infinity}));setMentionIndex(0);
+        setMentionItems(rankFileMentions(items,query,{limit:Infinity}));setMentionChosen(null);
       }catch{if(!disposed)setMentionItems([])}
     },120);
     return()=>{disposed=true;clearTimeout(timer)};
@@ -961,8 +963,8 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
       if(e.key==="Enter"&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&chosen&&chosen.toLowerCase()!==prompt.trim().toLowerCase()){e.preventDefault();chooseSlash(chosen);return}
     }
     if(mentionMenuOpen){
-      if(e.key==="ArrowDown"){e.preventDefault();setMentionIndex((mentionActive+1)%mentionOffered.length);return}
-      if(e.key==="ArrowUp"){e.preventDefault();setMentionIndex((mentionActive-1+mentionOffered.length)%mentionOffered.length);return}
+      if(e.key==="ArrowDown"){e.preventDefault();setMentionChosen(mentionOffered[(mentionActive+1)%mentionOffered.length]);return}
+      if(e.key==="ArrowUp"){e.preventDefault();setMentionChosen(mentionOffered[(mentionActive-1+mentionOffered.length)%mentionOffered.length]);return}
       if((e.key==="Enter"||e.key==="Tab")&&!e.shiftKey){e.preventDefault();chooseMention(mentionOffered[mentionActive]);return}
       if(e.key==="Escape"){e.preventDefault();setMenuDismissed(prompt);return}
     }
@@ -1027,13 +1029,17 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // caret in the letters past the path the menu does not offer the file (offeredFileMentions): it kept the files of that search until
   // the search for the word as it is then answered, and Enter straight after 'now', or End, ArrowRight or a click into it, imported
   // the file again. Nor does it offer meanwhile a file found for an earlier word that the search does not find for the word as it
-  // reads (src/login.json found for the path, src/logout.js for '@src/l'), which Enter imported over the whole word, 'now' with it.
+  // reads (src/login.json found for the path, src/logout.js for '@src/l'), which Enter imported over the whole word, 'now' with it,
+  // nor one that the part before a caret in those letters names but not the whole word (src/login.json for 'src/login.jsn', one
+  // ArrowRight from the path or a click after 'n'), searched for or not. The keyboard's highlight stays on its file as the menu
+  // narrows meanwhile (mentionChosen), or goes to the first file once its file is not offered: it kept its row, and Enter or Tab
+  // straight after a letter typed imported the file that the rows above it leaving took it to.
   // Escape's dismissal of the draft as it stood (another @ word's menu closed while a picked file imports) lasts once the file is in
   // (every), with the pick's own: the menu came back on that word, and Enter picked its file instead of sending it as typed.
   const slashMenuOpen=slashOpen&&!/\s/.test(prompt)&&slashItems.length>0&&menuDismissed!==prompt;
-  const mentionOffered=useMemo(()=>activeMention?offeredFileMentions(mentionItems,prompt,activeMention.start,(contextChips||[]).filter(chip=>chip.kind==="file").map(chip=>chip.detail),activeMention.query).slice(0,8):[],[activeMention,mentionItems,prompt,contextChips]);
+  const mentionOffered=useMemo(()=>activeMention?offeredFileMentions(mentionItems,prompt,activeMention.start,(contextChips||[]).filter(chip=>chip.kind==="file").map(chip=>chip.detail),activeMention.query,activeMention.end).slice(0,8):[],[activeMention,mentionItems,prompt,contextChips]);
   const mentionMenuOpen=Boolean(activeMention&&mentionOffered.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&(menuDismissed.every||menuDismissed.start===activeMention.start))&&!(contextChips||[]).some(chip=>chip.kind==="file"&&namesFileAt(prompt,activeMention.start,chip.detail,caret));
-  const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0,mentionActive=mentionMenuOpen?Math.min(mentionIndex,mentionOffered.length-1):0;
+  const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0,mentionActive=mentionMenuOpen?Math.max(0,mentionOffered.indexOf(mentionChosen)):0;
   useEffect(()=>{setSlashIndex(0)},[slashQuery]);
   // Keyboard choices stay in view in short windows, where the menus scroll.
   useEffect(()=>{keepActiveOptionVisible(slashMenuRef.current)},[slashActive,slashMenuOpen]);
