@@ -1031,7 +1031,8 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // the file again. Nor does it offer meanwhile a file found for an earlier word that the search does not find for the word as it
   // reads (src/login.json found for the path, src/logout.js for '@src/l'), which Enter imported over the whole word, 'now' with it,
   // nor one that the part before a caret in those letters names but not the whole word (src/login.json for 'src/login.jsn', one
-  // ArrowRight from the path or a click after 'n'), searched for or not. The keyboard's highlight stays on its file as the menu
+  // ArrowRight from the path or a click after 'n'), searched for or not, but for the file whose path that part is ('on' typed after
+  // 'js', 'src/login.json|now'), which a pick puts on its path only, the rest kept. The keyboard's highlight stays on its file as the menu
   // narrows meanwhile (mentionChosen), or goes to the first file once its file is not offered: it kept its row, and Enter or Tab
   // straight after a letter typed imported the file that the rows above it leaving took it to.
   // Escape's dismissal of the draft as it stood (another @ word's menu closed while a picked file imports) lasts once the file is in

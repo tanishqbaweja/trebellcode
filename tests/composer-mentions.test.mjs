@@ -212,6 +212,24 @@ test("on a word that begins with a file on the draft the @ menu offers of the fi
   const at=fileMentionAt(glued,20);assert.deepEqual(offeredFileMentions(found,glued,at.start,[],at.query,at.end),[json]);
 });
 
+// On such a word the part before the caret can be the whole path of a longer file found, letters typed right after the picked file's
+// path ('on' after 'js' in 'Check @src/login.jsnow', '.dev' after 'Dockerfile'): a pick of that file there goes on its path only, what
+// follows it kept, so the menu offers it, where the whole word, which names no file, shut the menu and Enter sent the glued word with
+// the file picked first. Short of the path's last letter, past it, or with the path in another case, a pick would take letters of
+// 'now' into the path or put the file over the whole word: the menu stays shut (round 12 repair, again).
+test("on a word that begins with a file on the draft the @ menu offers a file found whose path the part before the caret is, which a pick puts on the path only",()=>{
+  const longer="Check @src/login.jsonnow",found=[login,json],offered=(text,caret,items=found,paths=["src/login.js"])=>{const at=fileMentionAt(text,caret);return offeredFileMentions(items,text,at.start,paths,at.query,at.end)};
+  assert.deepEqual(offered(longer,21),[json]);
+  assert.deepEqual(applyFileMention(longer,pickedFileMention(longer,fileMentionAt(longer,21),"src/login.json",found),"src/login.json",21),{text:"Check @src/login.json now",caret:22});
+  for(const caret of [20,22,24])assert.deepEqual(offered(longer,caret),[],String(caret));
+  assert.deepEqual(offered("Check @src/login.jsonow",20),[]);
+  assert.deepEqual(offered("Check @src/login.jsONnow",21),[]);
+  const docker="Check @Dockerfile.devnow",dockerfiles=[dockerfile,dockerDev];
+  assert.deepEqual(offered(docker,21,dockerfiles,["Dockerfile"]),[dockerDev]);
+  assert.equal(applyFileMention(docker,pickedFileMention(docker,fileMentionAt(docker,21),"Dockerfile.dev",dockerfiles),"Dockerfile.dev").text,"Check @Dockerfile.dev now");
+  for(const caret of [20,22])assert.deepEqual(offered(docker,caret,dockerfiles,["Dockerfile"]),[],String(caret));
+});
+
 // A pick on a word that goes on past the picked file's path goes on the path only, what follows it kept, unless the whole word begins
 // the path of a file found for it, a longer name ('@src/login.json', '@Dockerfile.dev', '@src/login.jso' on the way to it), which the
 // pick then replaces whole: its rest stayed after the file as a word (round 11 repair, again).

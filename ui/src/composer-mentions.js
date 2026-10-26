@@ -27,17 +27,19 @@ export function namesFileAt(text,start,path,caret){
 // The files the @ menu offers on the @ word from start to end (fileMentionAt's), of those found (items): those the search for the word
 // as it reads (query, its part before the caret) finds by its rule (workspace.mjs: the query's letters and digits in order in the file's
 // path, which ends with its name, or, with none of them, the query in it), but a file on the draft (paths: its chips' paths) that the
-// word begins with, which a pick there would only put in again, and on such a word only those the search finds for the whole word. The
+// word begins with, which a pick there would only put in again, and on such a word only those the search finds for the whole word, or
+// the one whose path the part before the caret is ('@src/login.json|now'), which a pick puts on its path only (pickedFileMention). The
 // files found for a word stay until the search for the word as it is then answers, so on a word typed on glued to the file
 // ('@src/login.jsnow', or End, ArrowRight or a click into 'now') the menu offered the file found for its path, and Enter imported it a
 // second time instead of sending, or a file found for an earlier word that the word no longer names (src/login.json found for the path,
 // src/logout.js for '@src/l'), which Enter imported over the whole word. The part before a caret in the letters after the path names
-// files the whole word does not ('src/login.jsn' after one ArrowRight or a click after 'n', src/login.json), and Enter imported those.
+// files the whole word does not ('src/login.jsn' after one ArrowRight or a click after 'n', src/login.json), and Enter imported those,
+// while the whole word alone shut the menu once 'on' typed after 'js' made src/login.json's path, and Enter sent the glued word instead.
 const searchText=value=>String(value||"").toLowerCase().replace(/\\/g,"/");
 export function offeredFileMentions(items,text,start,paths,query,end){
   const value=String(text||""),on=new Set((paths||[]).filter(path=>{const word=fileWord(path);return word.length>1&&value.startsWith(word,start)})),needle=searchText(on.size?value.slice(start+1,end):query),letters=needle.replace(/[^a-z0-9]/g,"");
   const finds=path=>{path=searchText(path);let at=0;for(const c of path)if(c===letters[at])at++;return letters?at===letters.length:path.includes(needle)};
-  return on.size||needle?(items||[]).filter(item=>{const path=item?.relativePath||item?.path;return !on.has(path)&&finds(path)}):items||[];
+  return on.size||needle?(items||[]).filter(item=>{const path=item?.relativePath||item?.path;return !on.has(path)&&(finds(path)||"@"+query==fileWord(path))}):items||[];
 }
 
 // The part of the @ word at mention (fileMentionAt's) that a file picked from the menu goes on, label its path: the whole word, or the

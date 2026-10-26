@@ -3051,6 +3051,78 @@ test("at a caret in the letters typed on glued to a file picked from the @ menu 
   }finally{release();await harness.close()}
 });
 
+// On a word typed on glued to a file picked from the @ menu ('Check @src/login.jsnow'), letters typed right after the file's path that
+// make the path of a longer file found ('on' after 'js', 'Check @src/login.jsonnow', or '.dev' after 'Dockerfile') have the menu offer
+// that file once the part before the caret is its whole path, the search for the word out or answered, and its pick, by Enter, Tab, a
+// click or a double click, goes on the path only, what follows it kept after a space, also in a narrow window: the menu read the whole
+// word, which names no file, so it stayed shut there, and Enter sent the glued word with the file picked first (round 12 repair,
+// again). Short of the path's last letter the menu stays shut, as a pick there would take a letter of 'now' into the path.
+test("letters typed on a word glued to a file picked from the @ menu that make a longer file's path have the menu offer that file right after its path, so Enter, Tab, a click or a double click puts it on the path only and the letters after it stay, the search for the word out or answered",async({page})=>{
+  test.setTimeout(240_000);
+  const replies=["Checked the json file after a click after 'js'.","Checked the json file after ArrowLeft.","Checked the json file after Delete.","Checked the dev Dockerfile."];
+  const harness=await openComposerApp(page,{replies:replies.map(text=>({text}))});
+  let release=()=>{};
+  try{
+    await writeLoginFiles(harness);await writeFile(join(harness.repo,"src","login.json"),"{}\n");
+    for(const name of ["Dockerfile","Dockerfile.dev"])await writeFile(join(harness.repo,name),"FROM node:22\n");
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip"),users=page.locator(".user-bubble");
+    const files=users.last().locator(".user-attachments > span"),caretAt=()=>composer.evaluate(node=>[node.selectionStart,node.selectionEnd]);let imports=0,held=null;
+    page.on("request",request=>{if(new URL(request.url()).pathname==="/api/attachments/import")imports++});
+    // The composer's searches for the word with letters typed right after the picked file's path ('src/login.jso…', 'Dockerfile.…')
+    // wait while held is set.
+    await page.route(/\/api\/workspace\/search\?/,async route=>{if(held&&/^(src\/login\.jso|Dockerfile\.)/.test(new URL(route.request().url()).searchParams.get("q")||""))await held;await route.fallback()});
+    const settled=async(q,done)=>{const answered=mentionSearched(page,q);await done();await (await answered).finished();await painted(page)};
+    // The space the pick added erased and 'now' typed on glued to the file at path, each searched for.
+    const typedOn=async path=>{await settled(path,()=>page.keyboard.press("Backspace"));await settled(path+"now",()=>page.keyboard.type("now",{delay:20}))};
+    const threeLeft=async()=>{for(let key=0;key<3;key++)await page.keyboard.press("ArrowLeft")};
+    const cases=[
+      ["dark",1280,"Check @log",0,"login.js","src/login.js","Enter","'now' typed on glued to it and a click right after 'js'",async()=>{await typedOn("src/login.js");await settled("src/login.js",()=>clickInDraft(page,19,1))},"on","src/login.json","Enter",true],
+      ["light",900,"Check @log",0,"login.js","src/login.js","Tab","'now' typed on glued to it and ArrowLeft three times",async()=>{await typedOn("src/login.js");await settled("src/login.js",threeLeft)},"on","src/login.json","Tab",false],
+      ["dark",900,"Check @log now",4,"login.js","src/login.js","a click","the space before 'now' erased by Delete",()=>page.keyboard.press("Delete"),"on","src/login.json","a click",true],
+      ["light",1280,"Check @Docker",0,"Dockerfile","Dockerfile","Enter","'now' typed on glued to it and ArrowLeft three times",async()=>{await typedOn("Dockerfile");await settled("Dockerfile",threeLeft)},".dev","Dockerfile.dev","a double click",false],
+    ];
+    for(const [index,[mode,width,draft,left,name,path,pick,how,glue,letters,longer,second,out]] of cases.entries()){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      const where=` in ${mode} at ${width}, ${name} picked by ${pick} on '${draft}', ${how}, '${letters}' typed right after its path and ${longer} picked by ${second}, the search for the word ${out?"still out":"answered"}`,before=imports;
+      const q=draft.split("@")[1].split(" ")[0],after=7+path.length,at=7+longer.length,sent=`Check @${longer} now`;
+      // The draft typed into the emptied composer, the caret put after its @ word by left ArrowLeft presses, and the menu offering the file.
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      const answered=mentionSearched(page,q);await page.keyboard.type(draft,{delay:20});for(let key=0;key<left;key++)await page.keyboard.press("ArrowLeft");
+      await (await answered).finished();await painted(page);await expect(menu.locator("button.active strong")).toHaveText(name);
+      const picked=left?mentionSearched(page,path):null;
+      if(pick==="a click")await menu.locator("button").filter({has:page.getByText(path,{exact:true})}).click({delay:80});
+      else{await page.keyboard.down(pick);await page.waitForTimeout(80);await page.keyboard.up(pick)}
+      await expect(context).toHaveCount(1);if(picked){await (await picked).finished();await painted(page)}
+      await expect(composer).toHaveValue(draft.replace("@"+q,"@"+path)+(left?"":" "));await expect(menu).toHaveCount(0);
+      // The word glued to the file and the caret right after its path: the menu shut.
+      await glue();await painted(page);await expect(composer).toHaveValue(`Check @${path}now`);expect(await caretAt()).toEqual([after,after]);await expect(menu).toHaveCount(0);
+      // The letters typed there but the last, with the searches for the word held from there (out) or each answered: the menu stays
+      // shut, the part before the caret not yet the longer file's path.
+      if(out)held=new Promise(done=>{release=done});
+      const typing=letters.slice(0,-1);if(out)await page.keyboard.type(typing,{delay:20});else await settled(path+typing,()=>page.keyboard.type(typing,{delay:20}));
+      await painted(page);await expect.soft(menu,"the @ menu short of the longer file's last letter"+where).toHaveCount(0);
+      // Its last letter: the menu offers the longer file, the part before the caret its path.
+      const last=()=>page.keyboard.type(letters.slice(-1));if(out)await last();else await settled(longer,last);
+      await painted(page);await expect(composer).toHaveValue(`Check @${longer}now`);expect.soft(await caretAt(),"the caret right after the longer file's path"+where).toEqual([at,at]);
+      await expect(menu.locator("button small"),"the @ menu right after the longer file's path"+where).toHaveText([longer]);
+      if(index%2===0)await page.screenshot({animations:"disabled",path:auditDir+`mention-menu-offers-the-longer-file-right-after-its-path-${index}-${mode}-${width}x800.png`});
+      // Its pick goes on its path only, what follows it kept after a space and the caret before it, the menu shut.
+      const file=menu.locator("button").filter({has:page.getByText(longer,{exact:true})});
+      if(second==="a click")await file.click({delay:80});else if(second==="a double click")await file.dblclick();else{await page.keyboard.down(second);await page.waitForTimeout(80);await page.keyboard.up(second)}
+      await expect(context).toHaveCount(2);release();held=null;
+      await expect.soft(composer,"the draft once the longer file is in"+where).toHaveValue(sent);
+      expect.soft(await caretAt(),"the caret once the longer file is in"+where).toEqual([at+1,at+1]);
+      await expect.soft(menu,"the @ menu once the longer file is in"+where).toHaveCount(0);
+      // Enter sends the message as it reads, with both files, each imported once.
+      await page.keyboard.press("Enter");
+      await expect(page.getByText(replies[index],{exact:true})).toBeVisible({timeout:15_000});
+      await expect(users.last().locator("p")).toHaveText(sent);await expect(files).toHaveText([name,longer.split("/").pop()]);
+      await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);expect.soft(imports-before,"the files imported"+where).toBe(2);
+    }
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page",...cases.map(row=>`Check @${row[10]} now`)]);
+  }finally{release();await harness.close()}
+});
+
 // The @ menu's keyboard highlight stays on its file as the menu narrows to the files the word as it reads names while the search for
 // it is out ('Check @log', ArrowDown twice or ArrowUp twice to src/login.json, then 'i'), or goes to the first file once its file is no
 // longer offered (ArrowDown once to src/logout.js), so Enter or Tab straight after the letter imports the file highlighted, also in a
