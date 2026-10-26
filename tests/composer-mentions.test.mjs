@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {applyFileMention,fileMentionAt,movedFileMention,namesFileAt,offeredFileMentions,pickedFileMention,rankFileMentions} from "../ui/src/composer-mentions.js";
+import {rankWorkspaceSearchItems} from "../src/workspace.mjs";
 
 test("file mention parser targets only the active @ token",()=>{
   assert.deepEqual(fileMentionAt("check @App",10),{start:6,end:10,query:"App"});
@@ -164,6 +165,34 @@ test("a file on the draft is not offered on a word that begins with its path, wh
   assert.deepEqual(offeredFileMentions([login],"Check @src/login.j now",6,["src/login.js"]),[login]);
   assert.deepEqual(offeredFileMentions(found,"Check @src/login.js and @log",24,["src/login.js"]),found);
   assert.equal(offeredFileMentions(found,glued,6,[]),found);
+});
+
+// The files found for an earlier word stay until the search for the word as it is then answers, so on a word typed on glued to a picked
+// file ('@src/login.jsnow') the menu offered a file found before that the word no longer names, src/login.json found for the file's
+// path or src/logout.js for '@src/l', and Enter imported it over the whole word: the menu offers of the files found only those the
+// search for the word as it reads (its query) finds, by the search's own rule (round 12).
+const guide={name:"login-guide.md",relativePath:"docs/login-guide.md"},dockerfile={name:"Dockerfile",relativePath:"Dockerfile"},dockerDev={name:"Dockerfile.dev",relativePath:"Dockerfile.dev"};
+test("the @ menu offers of the files found for an earlier word only those the search finds for the word as it reads",()=>{
+  const glued="Check @src/login.jsnow",found=[login,logout,json];
+  for(const query of ["src/login.jsnow","src/login.jsno"])assert.deepEqual(offeredFileMentions(found,glued,6,["src/login.js"],query),[],query);
+  assert.deepEqual(offeredFileMentions([dockerfile,dockerDev],"Check @Dockerfilenow",6,["Dockerfile"],"Dockerfilenow"),[]);
+  assert.deepEqual(offeredFileMentions([login,logout,json,guide],"Check @zzz",6,[],"zzz"),[]);
+  // A word that still names files found keeps them, in the order found: its letters and digits in order in the path, or, with none of
+  // them, the word in it.
+  assert.deepEqual(offeredFileMentions(found,"Check @src/login.jsn",6,["src/login.js"],"src/login.jsn"),[json]);
+  assert.deepEqual(offeredFileMentions([login,logout,guide],"Check @logi",6,[],"logi"),[login,guide]);
+  assert.deepEqual(offeredFileMentions([logout,guide,login],"Check @LGN",6,[],"LGN"),[guide,login]);
+  assert.deepEqual(offeredFileMentions([login,{name:"Makefile",relativePath:"Makefile"},guide],"Check @.",6,[],"."),[login,guide]);
+});
+
+// What the menu keeps is what the workspace search (workspace.mjs) finds for the word, typed on, erased back or edited, with letters,
+// digits, punctuation, a backslash or a letter of no a-z: a word with nothing typed after its @ asks for no search.
+test("the @ menu keeps of the files found those the workspace search finds for the word as it reads",()=>{
+  const entries=[login,logout,json,guide,dockerfile,dockerDev,{name:"README.md",relativePath:"README.md"},{name:"app.test.mjs",relativePath:"tests/unit/app.test.mjs"},{name:"Ünïcode.md",relativePath:"docs/Ünïcode.md"}].map(entry=>({...entry,path:"/repo/"+entry.relativePath,isFile:true}));
+  for(const query of ["l","log","logi","src/l","src/login.js","src/login.jsn","src/login.jsno","src/login.jsnow","LGN","docs/","Dockerfile","Dockerfilen","dev",".","./","-","\\","src\\lo","md.","test/u","ü","zzz"]){
+    const found=rankWorkspaceSearchItems(entries,query,{limit:500}).map(entry=>entry.relativePath).sort();
+    assert.deepEqual(offeredFileMentions(entries,"Check @"+query,6,[],query).map(entry=>entry.relativePath).sort(),found,query);
+  }
 });
 
 // A pick on a word that goes on past the picked file's path goes on the path only, what follows it kept, unless the whole word begins

@@ -878,7 +878,8 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // (erased, or the draft emptied by New task) gets no file, so nothing waits for it.
   const mentionWaits=useMemo(()=>mentionBusy?movedFileMention(mentionBusy.from,mentionBusy.mention,prompt,caret):null,[mentionBusy,prompt,caret]);
   // mentionItems: every file the search found for the word at the caret, ranked, of which the menu offers eight (mentionOffered), and
-  // which a pick reads for a longer file's name on its word (pickedFileMention).
+  // which a pick reads for a longer file's name on its word (pickedFileMention). They stay until the search for the word as it is then
+  // answers, the menu offering of them meanwhile those that search finds too.
   useEffect(()=>{
     let disposed=false;const query=activeMention?.query||"";
     if(!onFileMentionSearch||!query){setMentionItems([]);setMentionIndex(0);return}
@@ -1025,11 +1026,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // erased ('@src/login.jsnow'), the menu opened on the search for its path, and Enter imported it again over the whole word. At a
   // caret in the letters past the path the menu does not offer the file (offeredFileMentions): it kept the files of that search until
   // the search for the word as it is then answered, and Enter straight after 'now', or End, ArrowRight or a click into it, imported
-  // the file again.
+  // the file again. Nor does it offer meanwhile a file found for an earlier word that the search does not find for the word as it
+  // reads (src/login.json found for the path, src/logout.js for '@src/l'), which Enter imported over the whole word, 'now' with it.
   // Escape's dismissal of the draft as it stood (another @ word's menu closed while a picked file imports) lasts once the file is in
   // (every), with the pick's own: the menu came back on that word, and Enter picked its file instead of sending it as typed.
   const slashMenuOpen=slashOpen&&!/\s/.test(prompt)&&slashItems.length>0&&menuDismissed!==prompt;
-  const mentionOffered=useMemo(()=>activeMention?offeredFileMentions(mentionItems,prompt,activeMention.start,(contextChips||[]).filter(chip=>chip.kind==="file").map(chip=>chip.detail)).slice(0,8):[],[activeMention,mentionItems,prompt,contextChips]);
+  const mentionOffered=useMemo(()=>activeMention?offeredFileMentions(mentionItems,prompt,activeMention.start,(contextChips||[]).filter(chip=>chip.kind==="file").map(chip=>chip.detail),activeMention.query).slice(0,8):[],[activeMention,mentionItems,prompt,contextChips]);
   const mentionMenuOpen=Boolean(activeMention&&mentionOffered.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&(menuDismissed.every||menuDismissed.start===activeMention.start))&&!(contextChips||[]).some(chip=>chip.kind==="file"&&namesFileAt(prompt,activeMention.start,chip.detail,caret));
   const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0,mentionActive=mentionMenuOpen?Math.min(mentionIndex,mentionOffered.length-1):0;
   useEffect(()=>{setSlashIndex(0)},[slashQuery]);
