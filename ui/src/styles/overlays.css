@@ -257,9 +257,21 @@
 .composer-wrap .model-picker-menu>p{overflow-wrap:anywhere}
 /* The keyboard choice (accent) and the pointer hover shared one tint, so two rows looked chosen at once. */
 .composer-wrap .file-mention-menu button:hover:not(.active){background:var(--bg3);color:var(--tx0)}
-/* The menu lists at most 8 files (43px rows) but the legacy 320px cap showed 7.4 of them, so ArrowUp from the first
-   row wrapped the keyboard choice onto the hidden 8th row. Room for all 8; short windows still scroll. */
-.composer-wrap .file-mention-menu{max-height:min(362px,calc(100dvh - 210px))}
+/* The @ menu lists at most 8 files (43px rows) but the legacy 320px cap showed 7.4 of them, so ArrowUp from the first
+   row wrapped the keyboard choice onto the hidden 8th row. Room for all 8; short windows still scroll.
+   It and the / menu open over the composer and take the room the header leaves there (--menu-room: 12px under the header,
+   where the toasts go, and 8px over the composer), and scroll in it. Above the terminal drawer the composer stands higher
+   the taller the drawer is (--terminal-height, --composer-height): at the drawer's tallest that room was 33px in the
+   desktop app, and the menus, as tall as their lists, went over the header and the window bar and out of the window, with
+   their first rows and the row the keys chose. Where the room is under 150px (four rows of commands) they open under the
+   composer instead, over the drawer, as tall as it leaves them (--menu-down: no CSS condition compares two lengths, so the
+   room's shortfall, times a large number and cut at the whole way down, is 0 or that way). The room App gives the composer
+   above the drawer is read down to its status line, so a menu under it takes none of the drawer's (App.jsx, onRoom). */
+.chat-workspace .composer-wrap{--menu-room:calc(100vh - 24px - var(--composer-height,115px) - var(--tb-toast-top));--menu-space:var(--menu-room)}
+.main-frame.terminal-open .chat-workspace .composer-wrap{--menu-room:calc(100vh - var(--terminal-height,330px) - 20px - var(--composer-height,115px) - var(--tb-toast-top));--menu-down:max(0px,(150px - var(--menu-room))*1000000);--menu-space:max(var(--menu-room),min(var(--menu-down),var(--terminal-height,330px) - 8px))}
+.chat-workspace .composer-wrap .slash-menu{max-height:min(280px,var(--menu-space))}
+.chat-workspace .composer-wrap .file-mention-menu{max-height:min(362px,var(--menu-space))}
+.main-frame.terminal-open .chat-workspace .composer-wrap>:is(.slash-menu,.file-mention-menu){translate:0 min(var(--menu-down),100% + var(--composer-height,115px) + 14px)}
 /* Thread row "…" menu. Absolutely positioned inside the scrolling thread list, it was clipped by that list: on the last
    rows only "Pin" showed and Archive/Delete could not be reached. Fixed and anchored to its button, it escapes the list's
    clip (the sidebar's container-type makes the sidebar its containing block), follows the button while the list

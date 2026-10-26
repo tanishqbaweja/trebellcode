@@ -3305,3 +3305,138 @@ for(const [shell,mode] of [["browser","dark"],["browser","light"],["desktop","da
     }
   }finally{await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
+
+// The composer's / and @ menus open from its top, up over the conversation, as tall as their lists (280px of commands, eight files of
+// 43px rows) wherever the composer stands, and above the terminal drawer it stands higher the taller the drawer is (UI lane C, round
+// 12). At the drawer's tallest, the window less 260px, a composer with a line of draft has its top 133px down at 1280 by 800, so the
+// / menu ran from 154px over the window's top to 126px down and the @ menu with eight files from 232px over it, over the desktop
+// app's window bar and the header's title, with the first commands and the first file, which Enter or Tab picks, out of view, and the
+// keys choosing rows out of the window; at the 330px the drawer opens at, the / menu reached 29px into the header in the desktop app.
+// So in the desktop app and in a browser, dark and light, at 1280 by 800 and zoomed to 125%, with the drawer closed, as it opens, at
+// its shortest (Home on its handle), at its tallest (End) and 64px under it (Shift+ArrowDown): each menu typed open shows under the
+// header and in the window, clear of the composer, with its first entry in view, and so is each entry ArrowUp and ArrowDown choose,
+// where a press at its middle lands on it; the command the keys chose goes into the draft with Tab, and one pressed with the mouse
+// too; with the drawer closed the menus open over the composer as tall as before; the / menu open at the drawer's tallest stays so
+// while the drawer is pulled shorter by its handle; the @ menu open under the composer while its word takes the draft to a second
+// line leaves the drawer at its tallest (read with the menu hanging below the composer, the room the composer needs took the drawer
+// down by the menu's height); and so in the desktop app's smallest window, 1180 by 720, and in a browser 700px wide.
+const ledgerFiles=Array.from({length:10},(_,index)=>({name:`ledger-export-${index+1}.js`,path:join(process.cwd(),"src","ledger",`ledger-export-${index+1}.js`),relativePath:`src/ledger/ledger-export-${index+1}.js`,type:"file"}));
+async function composerMenusInWindow(page,{shell,mode,zoomTo=null}){
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads);
+  try{
+    // The workspace's search answers ten files for the word after the @, of which the menu offers eight.
+    await page.route(/\/api\/workspace\/search\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:ledgerFiles})}));
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    // Zoomed once the app is up, as a person zooms it (zoomed while it starts, its resize came before App listened for it).
+    if(zoomTo)await zoomTo();
+    const right=page.getByTestId("right-panel"),drawer=page.getByTestId("drawer"),handle=page.getByTestId("terminal-resizer"),composer=page.getByTestId("composer");
+    const slash=page.locator(".chat-workspace .composer-wrap .slash-menu"),mention=page.getByTestId("file-mention-menu"),tag=`${shell}-${mode}${zoomTo?"-zoom-125":""}`;
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    // A menu as it is drawn: its box and what of its list it shows and holds, the header's foot, the composer, the window's height,
+    // and its first entry and the one the keys chose, each with whether a press at its middle lands on it.
+    const read=menu=>menu.evaluate(node=>{
+      const entry=item=>{const rect=item.getBoundingClientRect(),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);return {name:item.querySelector("strong").textContent,top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2),pressed:Boolean(hit&&item.contains(hit))}};
+      const rect=node.getBoundingClientRect(),wrap=node.closest(".composer-wrap").getBoundingClientRect(),items=[...node.querySelectorAll("button")];
+      return {top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2),height:+rect.height.toFixed(2),shows:node.clientHeight,holds:node.scrollHeight,header:+document.querySelector(".chat-workspace .workspace-header").getBoundingClientRect().bottom.toFixed(2),composer:{top:+wrap.top.toFixed(2),bottom:+wrap.bottom.toFixed(2)},window:innerHeight,first:entry(items[0]),chosen:entry(node.querySelector("button.active"))};
+    });
+    const settled=async(menu,where)=>{let state=null;await expect.poll(async()=>{await settle(page);const next=await read(menu),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same},{message:`the ${where} settles`,intervals:[50]}).toBe(true);return state};
+    // The menu under the header and in the window, clear of the composer, and the entry the keys chose (and its first one, as it
+    // opens) in view in it, where a press at its middle lands on it.
+    const shown=(state,where,first=false)=>{
+      expect.soft(state.top,`the top of the ${where}, against the header's foot at ${state.header}px`).toBeGreaterThanOrEqual(state.header);
+      expect.soft(state.bottom,`the foot of the ${where}, against the window's foot at ${state.window}px`).toBeLessThanOrEqual(state.window);
+      expect.soft(state.bottom<=state.composer.top||state.top>=state.composer.bottom,`the ${where}, from ${state.top} to ${state.bottom}px, clear of the composer from ${state.composer.top} to ${state.composer.bottom}px`).toBe(true);
+      for(const [which,entry] of [...(first?[["its first entry",state.first]]:[]),["the entry the keys chose",state.chosen]])
+        expect.soft(entry.top>=state.top-0.5&&entry.bottom<=state.bottom+0.5&&entry.pressed,`${which} in the ${where}, ${entry.name} from ${entry.top} to ${entry.bottom}px, in view in the menu from ${state.top} to ${state.bottom}px, where a press at its middle lands on it`).toBe(true);
+    };
+    const clear=async()=>{await composer.click();await page.keyboard.press("Control+a");await page.keyboard.press("Delete");await expect(composer).toHaveValue("")};
+    // The / menu typed open, ArrowUp from its first command, which wraps to its last, and ArrowDown on round from the first; Tab then
+    // puts the command the keys chose into the draft. Typed open again, a press at the middle of its third command puts that one in.
+    const slashMenu=async(where,{closed=false,shot=""}={})=>{
+      await composer.click();await page.keyboard.type("/",{delay:5});await expect(slash).toBeVisible();
+      const opened=await settled(slash,`/ menu ${where}`);shown(opened,`/ menu ${where}`,true);
+      if(closed)expect.soft([opened.height,opened.bottom<opened.composer.top],`the / menu ${where}: as tall as before, over the composer`).toEqual([280,true]);
+      if(shot)await page.screenshot({path:join(shotsDir,`composer-menus-${tag}-slash-${shot}.png`),animations:"disabled"});
+      let state=opened;
+      for(const key of ["ArrowUp","ArrowDown","ArrowDown","ArrowDown","ArrowDown","ArrowDown"]){await page.keyboard.press(key);state=await settled(slash,`/ menu ${where} after ${key}`);shown(state,`/ menu ${where} after ${key}`)}
+      await page.keyboard.press("Tab");await expect.soft(composer,`Tab on ${state.chosen.name} in the / menu ${where}`).toHaveValue(state.chosen.name+" ");
+      await clear();await page.keyboard.type("/",{delay:5});await expect(slash).toBeVisible();await settled(slash,`/ menu ${where} typed open again`);
+      const third=slash.locator("button").nth(2),name=await third.locator("strong").textContent(),box=await third.boundingBox(),inWindow=box.y>=opened.header&&box.y+box.height<=opened.window;
+      expect.soft(inWindow,`the third command, ${name}, from ${box.y} to ${box.y+box.height}px, in the window under the header ${where}`).toBe(true);
+      if(inWindow){await page.mouse.click(box.x+box.width/2,box.y+box.height/2);await expect.soft(composer,`a press on ${name} in the / menu ${where}`).toHaveValue(name+" ")}
+      await clear();
+    };
+    // The @ menu typed open over the eight files and ArrowDown through them and round to the first again.
+    const mentionMenu=async(where,{closed=false,shot=""}={})=>{
+      await composer.click();await page.keyboard.type("Check @ledger",{delay:5});await expect(mention.locator("button")).toHaveCount(8);
+      const opened=await settled(mention,`@ menu ${where}`);shown(opened,`@ menu ${where}`,true);
+      if(closed)expect.soft([opened.shows>=opened.holds,opened.bottom<opened.composer.top],`the @ menu ${where}: its eight files shown whole as before, over the composer`).toEqual([true,true]);
+      if(shot)await page.screenshot({path:join(shotsDir,`composer-menus-${tag}-mention-${shot}.png`),animations:"disabled"});
+      for(let step=1;step<=8;step++){await page.keyboard.press("ArrowDown");shown(await settled(mention,`@ menu ${where} after ArrowDown ${step}`),`@ menu ${where} after ArrowDown ${step}`)}
+      await page.keyboard.press("Escape");await expect(mention).toHaveCount(0);await clear();
+    };
+    const drawerAt=(want,where)=>expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:`the drawer ${where}`}).toBe(want);
+    await slashMenu("with the drawer closed",{closed:true,shot:"closed"});await mentionMenu("with the drawer closed",{closed:true,shot:"closed"});
+    const toggle=page.getByTestId("terminal-toggle");
+    if(await toggle.isVisible())await toggle.click();
+    else{await page.locator(".chat-workspace .workspace-header").getByRole("button",{name:"More actions",exact:true}).click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:"Terminal"}).click()}
+    await expect(drawer).toBeVisible();await drawerAt(330,"as it opens");
+    const tallest=Number(await handle.getAttribute("aria-valuemax"));
+    for(const [key,want,where,shot] of [[null,330,"as the drawer opens, 330px","330"],["Home",190,"with the drawer at its shortest, 190px",""],["End",tallest,`with the drawer at its tallest, ${tallest}px`,"tallest"],["Shift+ArrowDown",tallest-64,`with the drawer 64px under its tallest, ${tallest-64}px`,""]]){
+      if(key){await focusTerminalHandle(page);await page.keyboard.press(key);await drawerAt(want,where)}
+      await slashMenu(where,{shot});await mentionMenu(where,{shot});
+    }
+    // The / menu open at the drawer's tallest, and the drawer pulled 300px shorter by its handle, taken at its left end, beside the menu.
+    await focusTerminalHandle(page);await page.keyboard.press("End");await drawerAt(tallest,"at its tallest again");
+    await composer.click();await page.keyboard.type("/",{delay:5});await expect(slash).toBeVisible();
+    shown(await settled(slash,"/ menu at the drawer's tallest before a pull"),"/ menu at the drawer's tallest before a pull",true);
+    const grip=await handle.boundingBox(),x=grip.x+12,y=grip.y+grip.height/2,pulled=Math.max(190,tallest-300);
+    await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x,y+150,{steps:4});await page.mouse.move(x,y+300,{steps:4});await page.mouse.up();
+    await drawerAt(pulled,"pulled 300px shorter by its handle");await expect(slash).toBeVisible();
+    shown(await settled(slash,`/ menu with the drawer pulled to ${pulled}px`),`/ menu with the drawer pulled to ${pulled}px`,true);
+    await page.keyboard.press("ArrowDown");shown(await settled(slash,`/ menu with the drawer pulled to ${pulled}px after ArrowDown`),`/ menu with the drawer pulled to ${pulled}px after ArrowDown`);
+    await page.keyboard.press("Escape");await expect(slash).toHaveCount(0);await clear();
+    // The @ menu open under the composer at the drawer's tallest while its word, typed on, takes the draft to a second line: the
+    // drawer stays at its tallest, the composer 12px over it, and the menu in the window under the header.
+    await focusTerminalHandle(page);await page.keyboard.press("End");await drawerAt(tallest,"at its tallest once more");
+    await composer.click();await page.keyboard.type("Check @ledger",{delay:5});await expect(mention.locator("button")).toHaveCount(8);
+    const line=await composer.evaluate(node=>node.scrollHeight);
+    for(let chunk=0;chunk<40&&await composer.evaluate((node,line)=>node.scrollHeight<=line,line);chunk++)await page.keyboard.type("-export",{delay:5});
+    await expect(mention.locator("button")).toHaveCount(8);
+    const grown=await settled(mention,"@ menu at the drawer's tallest as its word takes the draft to a second line"),room=await readRoom(page);
+    shown(grown,"@ menu at the drawer's tallest as its word takes the draft to a second line",true);
+    expect.soft([room.now,Math.round(room.drawer.top-room.composer.bottom)],`the drawer's height and the composer's gap over it as the @ word takes the draft to a second line, against the drawer's tallest, ${tallest}px`).toEqual([tallest,12]);
+    await page.keyboard.press("Escape");await expect(mention).toHaveCount(0);await clear();
+    // A smaller window with the drawer at its tallest: the desktop app's smallest, 1180 by 720, or a browser 700px wide, where the
+    // composer's controls take two rows.
+    if(!zoomTo){
+      const [width,height]=shell==="desktop"?[1180,720]:[700,800];
+      await page.setViewportSize({width,height});
+      await focusTerminalHandle(page);await page.keyboard.press("End");
+      const most=Number(await handle.getAttribute("aria-valuemax")),where=`with the drawer at its tallest at ${width} by ${height}, ${most}px`;await drawerAt(most,where);
+      await slashMenu(where);await mentionMenu(where);
+    }
+  }finally{await harness.close()}
+}
+for(const [shell,mode] of [["desktop","dark"],["desktop","light"],["browser","dark"],["browser","light"]])test(`the composer's / and @ menus open in the window under the header, their first entry and the one the keys choose in view, with the terminal drawer closed, as it opens, at its shortest, at its tallest and 64px under it, at 1280 by 800 in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(180_000);
+  await page.setViewportSize({width:1280,height:800});
+  await composerMenusInWindow(page,{shell,mode});
+});
+// The same in a 1280 by 800px window zoomed to 125%, as Ctrl+= zooms it (1024 by 640 CSS pixels, where the drawer's tallest is 380px).
+for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`zoomed to 125%, the composer's / and @ menus open in the window under the header, their first entry and the one the keys choose in view, with the terminal drawer closed, as it opens, at its shortest, at its tallest and 64px under it, in the ${shell} shell in ${mode} mode`,async({playwright,baseURL,proxy,headless})=>{
+  test.setTimeout(240_000);
+  const dir=await mkdtemp(join(tmpdir(),"trebell-menus-")),extension=join(dir,"extension");mkdirSync(extension);
+  for(const [name,text] of Object.entries(ZOOM_EXTENSION))writeFileSync(join(extension,name),text);
+  let context=null;
+  try{
+    context=await playwright.chromium.launchPersistentContext(join(dir,"profile"),{channel:"chromium",headless,baseURL,proxy,viewport:{width:1280,height:800},args:["--disable-extensions-except="+extension,"--load-extension="+extension]});
+    const zoom=context.serviceWorkers()[0]||await context.waitForEvent("serviceworker"),page=context.pages()[0]||await context.newPage();
+    await composerMenusInWindow(page,{shell,mode,zoomTo:async()=>{
+      await zoom.evaluate(factor=>self.zoomTo(factor),1.25);await expect.poll(()=>page.evaluate(()=>devicePixelRatio),{message:"the window zooms to 125%"}).toBeCloseTo(1.25,3);
+      await expect.poll(()=>page.evaluate(()=>innerHeight),{message:"the window is 640 CSS pixels tall at 125%"}).toBe(640);await settle(page);
+    }});
+  }finally{await context?.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
+});
