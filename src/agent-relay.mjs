@@ -2206,7 +2206,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
             question:String(question.question||question.header||"Provide input"),
             required:true,
             allowMultiple:Boolean(question.multiSelect||question.allowMultiple),
-            options:(question.options||[]).map(option=>typeof option==="string"?{label:option,description:""}:{label:String(option.label||option.value||""),description:String(option.description||"")}),
+            // A question only its own choices answer (Antigravity's) says so, and a choice with a value (its option id) answers with it;
+            // without the flag the person's own words answer too.
+            ...(question.allowCustomAnswer===false?{allowCustomAnswer:false}:{}),
+            options:(question.options||[]).map(option=>typeof option==="string"?{label:option,description:""}:{label:String(option.label||option.value||""),description:String(option.description||""),...(option.value!=null&&String(option.value)!==""?{value:String(option.value)}:{})}),
           }));
           if(!questions.length)return {};
           const result=await context.serverRequest("item/tool/requestUserInput",{threadId:thread.id,questions});

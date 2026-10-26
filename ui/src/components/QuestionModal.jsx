@@ -68,6 +68,10 @@ function attachmentParts(path){
 // (answeringClick), as Submit and Cancel do.
 function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
 
+// A choice answers with its value where the agent gives one (Antigravity's option id), so two choices of one name stay apart, and with
+// its name otherwise.
+function choiceValue(option){return String(option?.value||option?.label||"")}
+
 // threadLabel names the task that asked when it is not the open thread; waiting counts the questions after this one.
 export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit,onCancel,pickFiles}){
   const questions=request?.params?.questions||[];
@@ -114,16 +118,16 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
     finally{setBusy("")}
   }
   cancelRef.current=cancel;
-  function chooseOption(q,label){
+  function chooseOption(q,choice){
     setAnswers(prev=>{
       const current=prev[q.id]||[];
-      if(q.allowMultiple){const selected=current.includes(label)?current.filter(value=>value!==label):[...current,label];return {...prev,[q.id]:selected}}
-      return {...prev,[q.id]:[label]};
+      if(q.allowMultiple){const selected=current.includes(choice)?current.filter(value=>value!==choice):[...current,choice];return {...prev,[q.id]:selected}}
+      return {...prev,[q.id]:[choice]};
     });
   }
   function setCustom(q,value){
     setAnswers(prev=>{
-      const current=(prev[q.id]||[]).filter(answer=>q.options?.some(option=>option.label===answer));
+      const current=(prev[q.id]||[]).filter(answer=>q.options?.some(option=>choiceValue(option)===answer));
       return {...prev,[q.id]:value?[...current,value]:current};
     });
   }
@@ -131,9 +135,12 @@ export default function QuestionModal({request,threadLabel="",waiting=0,onSubmit
     <div className="modal-head"><div><span className="modal-head-icon"><HelpCircle size={16}/></span><strong id="question-modal-title">Agent needs input</strong></div><button className="modal-close" onClick={cancel} disabled={Boolean(busy)} aria-label="Close question" title="Close question"><X size={16}/></button></div>
     {threadLabel&&<p className="question-thread" data-testid="question-thread">Waiting in {threadLabel}</p>}
     {questions.map(q=><div className="question-block" key={q.id}><label>{q.header&&<small>{q.header}</small>}<strong>{q.question}</strong></label>
-      {q.options?.length>0&&<div className={"question-options"+(q.allowMultiple?" multiple":"")}>{q.options.map(opt=><button className={answers[q.id]?.includes(opt.label)?"active":""} aria-pressed={Boolean(answers[q.id]?.includes(opt.label))} key={opt.label} onClick={()=>chooseOption(q,opt.label)}>{opt.label}{opt.description&&<span>{opt.description}</span>}</button>)}</div>}
-      <input className="tb-input" placeholder="Custom answer…" value={answers[q.id]?.find(a=>!q.options?.some(o=>o.label===a))||""} onChange={e=>setCustom(q,e.target.value)}/>
+      {q.options?.length>0&&<div className={"question-options"+(q.allowMultiple?" multiple":"")}>{q.options.map(opt=><button className={answers[q.id]?.includes(choiceValue(opt))?"active":""} aria-pressed={Boolean(answers[q.id]?.includes(choiceValue(opt)))} key={choiceValue(opt)} onClick={()=>chooseOption(q,choiceValue(opt))}>{opt.label}{opt.description&&<span>{opt.description}</span>}</button>)}</div>}
+      {/* A question only its own choices answer (allowCustomAnswer false) takes no words or files of the person's own. */}
+      {(q.allowCustomAnswer!==false||!q.options?.length)&&<>
+      <input className="tb-input" placeholder="Custom answer…" value={answers[q.id]?.find(a=>!q.options?.some(o=>choiceValue(o)===a))||""} onChange={e=>setCustom(q,e.target.value)}/>
       <div className="question-files">{(filesByQuestion[q.id]||[]).map(path=>{const [stem,ext]=attachmentParts(path);return <span key={path} title={path}><Paperclip size={11}/><em>{stem}</em>{ext&&<em className="question-file-ext">{ext}</em>}<button type="button" title="Remove attachment" onClick={event=>answeringClick(event)&&setFilesByQuestion(prev=>({...prev,[q.id]:(prev[q.id]||[]).filter(item=>item!==path)}))}><X size={11}/></button></span>})}<button type="button" className="tb-btn tb-btn--sm question-attach" onClick={()=>attach(q.id)} disabled={busy===q.id||fileCount>=100}><Paperclip size={13}/> {busy===q.id?"Choosing…":"Attach files"}</button></div>
+      </>}
     </div>)}
     {attachError&&<div className="inline-error" role="alert">{attachError}</div>}
     {submitError&&<div className="inline-error" role="alert">{submitError}</div>}

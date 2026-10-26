@@ -729,14 +729,17 @@ export class AcpAgentSession{
     return optionId?selected(optionId):CANCELLED_OUTCOME;
   }
 
+  // Only one of the offered choices answers Antigravity (T3 extractAntigravityUserInputQuestion), so the question takes no words of
+  // the person's own, and each choice carries its option id as its value, so two choices of one name stay apart. An id offered twice
+  // is one choice.
   async #antigravityQuestion(params,options){
-    const choices=options.filter(option=>text(option?.optionId));
+    const ids=new Set(),choices=options.filter(option=>{const id=text(option?.optionId);if(!id||ids.has(id))return false;ids.add(id);return true});
     if(!choices.length)return CANCELLED_OUTCOME;
     const id=text(params.toolCall.toolCallId),label=option=>text(option.name)||text(option.optionId);
-    const answers=await this.#ask([{id,header:"Question",question:text(params.toolCall.title)||"Choose an option.",multiSelect:false,options:choices.map(option=>({label:label(option),description:""}))}]);
+    const answers=await this.#ask([{id,header:"Question",question:text(params.toolCall.title)||"Choose an option.",multiSelect:false,allowCustomAnswer:false,options:choices.map(option=>({value:text(option.optionId),label:label(option),description:""}))}]);
     const value=answers?.[id]?.[0];
     if(!value)return CANCELLED_OUTCOME;
-    const exact=choices.find(option=>option.optionId===value);if(exact)return selected(exact.optionId);
+    const exact=choices.find(option=>text(option.optionId)===value);if(exact)return selected(exact.optionId);
     const labelled=choices.filter(option=>label(option)===value);
     return labelled.length===1?selected(labelled[0].optionId):CANCELLED_OUTCOME;
   }
