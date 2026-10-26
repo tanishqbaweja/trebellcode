@@ -137,6 +137,22 @@ test("a draft names a picked file from its @, a path with a space in it too, up 
   assert.equal(namesFileAt("Check @src/login.js",6,""),false);
 });
 
+// A word that goes on past the path of a picked file, the space after it erased ('@src/login.jsnow'), names the file at a caret in the
+// path or right after it, so the menu stays shut there, while a caret in the letters after it or a path edited does not; the pick on
+// such a word goes on the path only, the letters after it kept after a space (round 11 repair).
+test("a word that goes on past a picked file's path names the file at a caret in the path or right after it",()=>{
+  const glued="Check @src/login.jsnow";
+  assert.equal(namesFileAt(glued,6,"src/login.js"),false);
+  assert.equal(namesFileAt(glued,fileMentionAt(glued,19).start,"src/login.js",19),true);
+  assert.equal(namesFileAt(glued,fileMentionAt(glued,11).start,"src/login.js",11),true);
+  assert.equal(namesFileAt("Check @src/login.js.now",6,"src/login.js",20),true);
+  assert.equal(namesFileAt("Check @docs/Release Notes.mdplease",6,"docs/Release Notes.md",15),true);
+  assert.equal(namesFileAt(glued,6,"src/login.js",21),false);
+  assert.equal(namesFileAt("Check @src/login.j now",6,"src/login.js",18),false);
+  assert.equal(namesFileAt("Check @src/login.jsx now",6,"src/login.js",20),false);
+  assert.deepEqual(applyFileMention(glued,{start:6,end:19,query:"src/login.js"},"src/login.js",19),{text:"Check @src/login.js now",caret:20});
+});
+
 test("file mention ranking prefers exact and prefix filename matches",()=>{
   const items=[
     {name:"Other.jsx",relativePath:"ui/AppHelper/Other.jsx"},

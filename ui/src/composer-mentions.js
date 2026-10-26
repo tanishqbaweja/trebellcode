@@ -13,12 +13,13 @@ export function fileMentionAt(text,caret){
 
 // Whether text names the file at path from its @ at start as a pick puts it there (its spaces kept, one each), up to whitespace or the
 // end but for the punctuation that ends a word: the path of a file with a space in its name goes on past the @ word at a caret in its
-// first part, which ends at the space ('@docs/Release' of '@docs/Release Notes.md').
-export function namesFileAt(text,start,path){
+// first part, which ends at the space ('@docs/Release' of '@docs/Release Notes.md'). A word that goes on past the path, the space after
+// it erased ('@src/login.jsnow'), names it at a caret in the path or right after it.
+export function namesFileAt(text,start,path,caret){
   const value=String(text||""),word="@"+String(path||"").trim().replace(/\s+/g," ");let end=start+word.length;
   if(word.length<2||!value.startsWith(word,start))return false;
   while(end<value.length&&WORD_END.includes(value[end]))end++;
-  return end===value.length||/\s/.test(value[end]);
+  return end===value.length||/\s/.test(value[end])||caret<=end;
 }
 
 // caret: where the person's caret is in text, which stays before the word, moves with what follows it, and goes after the file in it.

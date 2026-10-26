@@ -895,10 +895,11 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // meanwhile (Settings, History) took this composer away with the chat: the pick goes into the composer drawn again, whose caret is set
   // with it (the one it had would open the @ menu over the draft), or into App's draft as it is then while the page is up. The draft as
   // it was at the pick went in over what was typed since. mentionBusy, App's (so the composer drawn again knows it): the file's name and
-  // path, and the draft and the word it was picked on.
+  // path, and the draft and the word it was picked on. A word typed on glued to the picked file's path ('@src/login.jsnow') takes the
+  // file on the path only, so what follows it stays, after a space, where the pick put the file over the whole word.
   async function chooseMention(item){
     if(!activeMention||!item||mentionBusy)return;
-    const from=prompt,mention=activeMention,focused=document.activeElement,label=item.relativePath||item.name||item.path,had=attachments;
+    const from=prompt,label=item.relativePath||item.name||item.path,mention=prompt.startsWith("@"+label,activeMention.start)?{...activeMention,end:activeMention.start+label.length+1}:activeMention,focused=document.activeElement,had=attachments;
     setMentionBusy({label,name:item.name||String(item.path||"").split(/[\\/]/).pop()||label,from,mention});
     if(caret<mention.end){composerRef.current?.setSelectionRange(mention.end,mention.end);setCaret(mention.end)}
     let attached=null,at=null;
@@ -995,10 +996,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // changed: an edit that put the caret right after the file again ('x' typed and erased, the space the pick added erased), a click
   // or a double click on it opened the menu offering the file again, and Enter imported it a second time instead of sending. The path
   // is read from the word's @ on (namesFileAt), as the @ word at a caret in the first part of a path with a space ends at the space.
+  // A word that goes on past the path names the file too at a caret in the path or right after it: with the space after the file
+  // erased ('@src/login.jsnow'), the menu opened on the search for its path, and Enter imported it again over the whole word.
   // Escape's dismissal of the draft as it stood (another @ word's menu closed while a picked file imports) lasts once the file is in
   // (every), with the pick's own: the menu came back on that word, and Enter picked its file instead of sending it as typed.
   const slashMenuOpen=slashOpen&&!/\s/.test(prompt)&&slashItems.length>0&&menuDismissed!==prompt;
-  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&(menuDismissed.every||menuDismissed.start===activeMention.start))&&!(contextChips||[]).some(chip=>chip.kind==="file"&&namesFileAt(prompt,activeMention.start,chip.detail));
+  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&(menuDismissed.every||menuDismissed.start===activeMention.start))&&!(contextChips||[]).some(chip=>chip.kind==="file"&&namesFileAt(prompt,activeMention.start,chip.detail,caret));
   const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0;
   useEffect(()=>{setSlashIndex(0)},[slashQuery]);
   // Keyboard choices stay in view in short windows, where the menus scroll.
