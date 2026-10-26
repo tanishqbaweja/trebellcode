@@ -161,7 +161,8 @@ export class AcpClient extends EventEmitter{
   setConfigOption(sessionId,configId,value){return this.request("session/set_config_option",{sessionId,configId,value})}
   prompt(sessionId,prompt,{messageId=null,meta=null}={}){return this.request("session/prompt",{sessionId,prompt,...(messageId?{messageId}:{}),...(meta?{_meta:meta}:{})},Infinity)}
   cancel(sessionId,meta=null){this.notify("session/cancel",{sessionId,...(meta?{_meta:meta}:{})})}
-  authenticate(methodId){return this.request("authenticate",{methodId},120_000)}
+  // A sign-in can wait on the person (a browser login), so its wait is the caller's to set; two minutes unless set.
+  authenticate(methodId,{timeoutMs=120_000}={}){return this.request("authenticate",{methodId},timeoutMs)}
   logout(){return this.request("logout",{})}
 
   async stop(){
