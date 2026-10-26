@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -139,6 +139,32 @@ test("an add's turn ends only once the new worktree's HEAD names its branch or c
     assert.equal(await written({...common,"reftable/":"",HEAD:"ref: refs/heads/.invalid\n"}),false,"a reftable worktree's stub HEAD, before its HEAD is committed");
     assert.equal(await written({...common,"reftable/tables.list":"0x000000000001-0x000000000001-0a1b2c3d.ref\n",HEAD:"ref: refs/heads/.invalid\n"}),true,"a reftable worktree whose HEAD is committed");
   }finally{await rm(root,RETRY)}
+});
+
+// git for Windows before 2.48 cannot rename a file over one another handle holds open: it tries again after 0, 1, 10, 20 and 40 ms,
+// about 0.1 s, then gives up. git 2.43 and older rename the new worktree's HEAD.lock over the placeholder while the add's turn reads
+// that HEAD, so a read that kept HEAD open from one turn of the server's event loop to the next held it through any stall of the loop
+// between them, a synchronous save of the server's state say, and git's write of HEAD could fail, and the add with it. Here every turn
+// of the loop stalls for such a rename, of another placeholder over HEAD, while the turn's check reads HEAD.
+test("an add's turn reads the new worktree's HEAD without holding it open through a stall of the server, so git 2.43 and older can rename the real HEAD over the placeholder then (Windows)",async t=>{
+  const {worktreeHeadWritten}=gitService;assert.equal(typeof worktreeHeadWritten,"function","what ends an add's turn can be read");
+  const root=await mkdtemp(join(tmpdir(),"trebell-worktree-head-held-")),dest=join(root,"repo-a"),admin=join(root,"repo",".git","worktrees","repo-a");
+  const head=join(admin,"HEAD"),lock=join(admin,"HEAD.lock"),placeholder="0".repeat(40)+"\n",sleeper=new Int32Array(new SharedArrayBuffer(4));
+  // git's rename of HEAD.lock over HEAD with its tries (compat/mingw.c), the loop stalled throughout: the error it gives up on, or null.
+  const gitRename=(text,delays=[0,1,10,20,40])=>{writeFileSync(lock,text);for(let tried=0;;tried++){try{renameSync(lock,head);return null}catch(error){if(tried>=delays.length)return error.code;Atomics.wait(sleeper,0,0,delays[tried])}}};
+  const refused=[];let stalls=0,checking=true;
+  const stall=()=>{if(!checking)return;stalls++;const code=gitRename(placeholder);if(code)refused.push(code);setImmediate(stall)};
+  try{
+    await mkdir(dest);await mkdir(admin,{recursive:true});await writeFile(join(dest,".git"),`gitdir: ${admin}\n`);await writeFile(join(admin,"commondir"),"../..\n");await writeFile(head,placeholder);
+    // node's rename plays that git only where it cannot replace a file another handle holds open either, as on Windows (MoveFileExW).
+    const held=openSync(head,"r");let replaced;try{replaced=gitRename(placeholder,[])===null}finally{closeSync(held)}
+    if(replaced)return t.skip("a rename here replaces a file another handle holds open, as git for Windows 2.48 and later and POSIX systems do, so it cannot play an older git for Windows");
+    setImmediate(stall);
+    for(let check=1;check<=5;check++)assert.equal(await worktreeHeadWritten(dest),false,"the placeholder is not the worktree's HEAD");
+    checking=false;assert.ok(stalls>=5,`the loop stalled while HEAD was read (${stalls} stalls)`);
+    assert.equal(refused.length,0,`git's rename over HEAD failed (${[...new Set(refused)]}) in ${refused.length} of ${stalls} stalls, HEAD held open by the check's read`);
+    assert.equal(gitRename("ref: refs/heads/trebell/model-a\n"),null,"git renames the real HEAD over the placeholder");assert.equal(await worktreeHeadWritten(dest),true,"the real HEAD ends the turn");
+  }finally{checking=false;await rm(root,RETRY)}
 });
 
 // A remove git refuses deletes nothing: one with a file untracked, a locked one, one with a submodule checked out (unless forced), and the

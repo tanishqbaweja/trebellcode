@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 
@@ -456,11 +456,15 @@ const namedAdminFolder=async tree=>LINKED_GIT_FILE.exec(await readFile(join(tree
 // commondir, and the real one from a git symbolic-ref (update-ref for a commit) they run after it: another add reads the placeholder as
 // a detached HEAD and checks out the same branch beside it. With reftable refs (2.45 and later) the HEAD file is a stub, written after
 // the admin folder's reftable folder (so that folder is looked for once HEAD is read), and the worktree's HEAD is in once git has
-// written reftable/tables.list.
+// written reftable/tables.list. HEAD is read in one synchronous call, so it is open only while it is read: an asynchronous read keeps
+// it open from one turn of the server's event loop to the next, and git for Windows before 2.48 cannot rename a file over one another
+// handle holds open, trying for about 0.1 s, so with the loop stalled that long between turns (a synchronous save of the server's
+// state, say) the rename of HEAD.lock over the placeholder that git 2.43 and older make could fail, and the add with it.
 export async function worktreeHeadWritten(dest){
   const named=await namedAdminFolder(dest);if(!named)return false;
-  const admin=resolve(dest,named),[common,head]=await Promise.all([stat(join(admin,"commondir")).catch(()=>null),readFile(join(admin,"HEAD"),"utf8").catch(()=>"")]);
-  if(!(common?.size>0)||/^0*\s*$/.test(head))return false;
+  const admin=resolve(dest,named),common=await stat(join(admin,"commondir")).catch(()=>null);if(!(common?.size>0))return false;
+  let head="";try{head=readFileSync(join(admin,"HEAD"),"utf8")}catch{}
+  if(/^0*\s*$/.test(head))return false;
   return !await stat(join(admin,"reftable")).catch(()=>null)||Boolean(await stat(join(admin,"reftable","tables.list")).catch(()=>null));
 }
 // An add's turn ends once worktreeHeadWritten holds, or when git ends before that. The checkout and the post-checkout hook that follow,
