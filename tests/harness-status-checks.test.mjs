@@ -3,7 +3,8 @@
 //   that runs out of time or exits with an error reads installed and may start, never "not installed"; only a command that is not
 //   there does;
 // - Grok's checks run with its updater off, and its sessions keep their environment;
-// - a logged-out `grok models` is read once more, as Grok refreshes an expired token in the same process.
+// - a logged-out `grok models` is read once more, as Grok refreshes an expired token in the same process;
+// - a Claude Code profile with a custom API endpoint is not called signed out.
 // Stubbed process runners (the manager's runFn, a remote environment's executeArgv) and scripts of the test's own standing in for
 // Grok and for Codex's app-server: no real harness is started or signed in.
 import test from "node:test";
@@ -233,6 +234,29 @@ test("a logged-out `grok models` is read once more, and the second answer decide
   const status=await keyed.manager.probe("grok");
   assert.deepEqual([status.available,status.authenticated],[true,true]);
   assert.deepEqual(keyed.calls.map(call=>call.args),["--version"]);
+});
+
+test("a Claude Code profile with a custom API endpoint is not called signed out; one on Anthropic's own API is",async t=>{
+  const signedOut=args=>args[0]==="auth"?{...exited(1,""),stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"})}:answered("2.1.310 (Claude Code)\n");
+  const CUSTOM="Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts.";
+  const ADVICE="Claude Code is not authenticated. Run `claude auth login` and try again.";
+  for(const [where,options,expected] of [
+    ["ANTHROPIC_BASE_URL from Trebell's own environment",{env:{ANTHROPIC_BASE_URL:"https://proxy.example"}},[true,null,CUSTOM]],
+    ["the profile's own ANTHROPIC_BASE_URL",{instance:{environment:{ANTHROPIC_BASE_URL:"http://localhost:4000/v1"}}},[true,null,CUSTOM]],
+    ["Anthropic's own API",{env:{ANTHROPIC_BASE_URL:"https://api.anthropic.com"}},[false,false,ADVICE]],
+    ["a value that is no http(s) URL",{env:{ANTHROPIC_BASE_URL:"proxy.example"}},[false,false,ADVICE]],
+    ["no endpoint",{},[false,false,ADVICE]],
+  ]){
+    const fx=await localHarness(t,"claude",signedOut,options);
+    const status=await fx.manager.probe("claude");
+    assert.deepEqual([status.available,status.authenticated,status.message],expected,where);
+    if(expected[1]===null)assert.deepEqual([status.account.type,status.account.label,status.account.loggedIn],["customEndpoint","Custom API endpoint",false],where);
+  }
+  // A profile on a host runs with the host's own variables, which this machine's ANTHROPIC_BASE_URL says nothing of.
+  const remote=remoteHarness((command,args)=>args[0]==="auth"?{exitCode:1,stdout:JSON.stringify({loggedIn:false,authMethod:"none"}),stderr:""}:{exitCode:0,stdout:"2.1.310 (Claude Code)\n",stderr:""});
+  remote.manager.env.ANTHROPIC_BASE_URL="https://proxy.example";
+  const host=await remote.manager.probe("claude");
+  assert.deepEqual([host.available,host.authenticated],[false,false]);
 });
 
 // The relay over its socket, as a window speaks to it: rpc requests, and a send settled as turn/completed reports it.

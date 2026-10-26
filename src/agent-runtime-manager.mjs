@@ -138,6 +138,11 @@ function versionCheckMessage(def,kind,command,result){
   const said=stripAnsi(String(result.stderr||result.stdout||"")).split(/\r?\n/).map(line=>line.trim()).find(Boolean);
   return `${def.name} is installed but \`${name} --version\` exited with code ${result.code}${said?": "+said:"."}`.slice(0,500);
 }
+// A Claude Code profile that runs through a router or gateway: an http(s) ANTHROPIC_BASE_URL whose host is not api.anthropic.com.
+function claudeCustomEndpoint(env={}){
+  let url=null;try{url=new URL(String(env?.ANTHROPIC_BASE_URL||"").trim())}catch{}
+  return Boolean(url&&/^https?:$/.test(url.protocol)&&url.hostname&&url.hostname!=="api.anthropic.com");
+}
 export function parseCursorAboutResult(result={}){
   const stdout=String(result.stdout||"").trim();
   const combined=stripAnsi(stdout+"\n"+String(result.stderr||""));
@@ -795,7 +800,11 @@ export class AgentRuntimeManager{
       else if(!said||auth.error||auth.code===null)authenticated=null;
       // A CLI that answers in words: its exit code says.
       else authenticated=auth.ok;
-      if(authenticated===false)message="Claude Code is not authenticated. Run `claude auth login` and try again.";
+      // A profile here that runs through a router or gateway has no Claude sign-in for `claude auth status` to find: the endpoint
+      // holds its credentials, which only a session can check (T3 skips the signed-out verdict for it).
+      const endpoint=authenticated===false&&!this.processSpawner(instance,environmentId)&&claudeCustomEndpoint(this.childEnv(instance));
+      if(endpoint){authenticated=null;account={...(account||{}),type:"customEndpoint",label:"Custom API endpoint"};message="Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts."}
+      else if(authenticated===false)message="Claude Code is not authenticated. Run `claude auth login` and try again.";
       else if(authenticated==null)message="Claude Code is installed, but Trebell could not verify its authentication status.";
     }else if(instance.kind==="cursor"){
       let about=await this.#run(instance,["about","--format","json"],{timeoutMs:8000,environmentId});
