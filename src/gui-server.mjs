@@ -60,6 +60,7 @@ import { preferredCodexDefaultModel } from "./codex-model-catalog.mjs";
 import { codexGoalRecord, codexGoalSetParams, codexGoalStatus } from "./codex-goal.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
 import { recordCodexRecoveryItemEvidence, staleCodexRecoveryState } from "./codex-recovery-evidence.mjs";
+import { withCodexContextPieces } from "./codex-additional-context.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
 import { verificationRepairAttempt, verificationRepairChainState, verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
 import { collectVerificationEvidence } from "./verification-evidence-collector.mjs";
@@ -1514,8 +1515,10 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     if(additionalContext===params.additionalContext)return message;
     return {...message,params:{...params,additionalContext}};
   }
+  // Every turn Codex starts through the relay, the window's and the server's own (verification, delegation), gets its context
+  // here, split last so that Codex, which cuts a long value's middle out, takes each value whole.
   async function transformCodexClientMessage(message){
-    return withCodexGoalContext(withCodexRepositoryTools(message));
+    return withCodexContextPieces(await withCodexGoalContext(withCodexRepositoryTools(message)));
   }
   // The Codex turns each thread runs, as the relay sees them pass (turn/started, or a turn-start's answer, until turn/completed, or a
   // read of the thread that finds it idle), and the threads whose files Edit from here is restoring: the restore refuses a thread that
