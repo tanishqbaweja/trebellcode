@@ -11,6 +11,7 @@ import { attachAgentRelay } from "../../src/agent-relay.mjs";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { ContextEngine } from "../../src/context-engine.mjs";
+import { createWorktree, removeWorktree } from "../../src/git-service.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
 import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 
@@ -22,7 +23,9 @@ const modelName=id=>"Model "+id.slice(-1).toUpperCase();
 const catalog=models=>({models,metadata:{provider:"agentrouter",models:models.map(id=>({id,name:modelName(id),provider:"agentrouter",agent:"Trebell Native"}))}});
 
 // Trebell Native on the real relay in a real Git repository, with the provider scripted: every turn answers "Completed <model>." and
-// providerCalls keeps the model and provider of each (the completion gate is answered apart). worktrees: the fan-out's own, real ones.
+// providerCalls keeps the model and provider of each (the completion gate is answered apart). worktrees: the fan-out's own, real ones,
+// made and removed as the server makes and removes them (createWorktree, removeWorktree), taking its turns in the repository: git
+// worktree add run for each model at once failed now and then under load ("failed to read .git/worktrees/<other>/commondir").
 async function startNativeFanout(page,{models}){
   const root=await mkdtemp(join(tmpdir(),"trebell-native-fanout-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   await git(repo,["init"]);await git(repo,["config","user.email","trebell-test@example.invalid"]);await git(repo,["config","user.name","Trebell Test"]);await writeFile(join(repo,"README.md"),"seed\n","utf8");await git(repo,["add","README.md"]);await git(repo,["commit","-m","seed"]);const baseBranch=(await git(repo,["branch","--show-current"])).stdout.trim();
@@ -40,7 +43,7 @@ async function startNativeFanout(page,{models}){
   await page.route(/\/api\/models$/,route=>json(route,catalog(models)));
   await page.route(/\/api\/projects(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({project:{...project,id:"project-"+worktrees.length,path:body.path,environmentId:body.environmentId||null}})})}return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})})});
   await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,cwd:repo,root:repo,branch:baseBranch,branches:[baseBranch],status:[],remotes:[],worktrees:[{path:repo,branch:baseBranch}]})}));
-  await page.route(/\/api\/git\/action$/,async route=>{const body=route.request().postDataJSON();expect(body.action).toBe("worktree-create");await git(repo,["worktree","add","-b",body.branch,body.path,"HEAD"]);worktrees.push(body.path);return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,result:{worktree:body.path,info:{root:body.path,branch:body.branch}}})})});
+  await page.route(/\/api\/git\/action$/,async route=>{const body=route.request().postDataJSON();expect(body.action).toBe("worktree-create");await createWorktree(repo,{branch:body.branch,path:body.path,baseBranch:body.baseBranch,submodules:"none"});worktrees.push(body.path);return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,result:{worktree:body.path,info:{root:body.path,branch:body.branch}}})})});
   await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();metaByThread[body.threadId]={...(metaByThread[body.threadId]||{}),...(body.patch||{})};return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(metaByThread[body.threadId])})}const id=new URL(route.request().url()).searchParams.get("threadId");return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(metaByThread[id]||{})})});
   await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().method()==="POST"?{supported:false}:{checkpoints:[]})}));
   await page.route(/\/api\/context\/packet$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"native-fanout-context",skipped:true,budget:{mode:"skip",pressure:"normal",reserveTokens:1024,maxTokens:0,maxFiles:0}})}));
@@ -50,7 +53,7 @@ async function startNativeFanout(page,{models}){
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:280,rightPanelWidth:460,terminalHeight:330})));
   return {
     repo,baseBranch,threadStore,providerCalls,worktrees,
-    async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));for(const path of [...worktrees].reverse())await git(repo,["worktree","remove","--force",path]).catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})},
+    async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));for(const path of [...worktrees].reverse())await removeWorktree(repo,path,{force:true}).catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})},
   };
 }
 
@@ -225,7 +228,7 @@ test("a multi-model run with a model that cannot start opens its rows to what fa
     await page.route(/\/api\/projects(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();return json(route,{project:{...project,id:"project-"+worktrees.length,path:body.path,environmentId:body.environmentId||null}})}return json(route,{projects:[project],project})});
     await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:true,cwd:repo,root:repo,branch:baseBranch,branches:[baseBranch],status:[],remotes:[],worktrees:[{path:repo,branch:baseBranch}]}));
     // Model B's worktree cannot be made, so it never starts.
-    await page.route(/\/api\/git\/action$/,async route=>{const body=route.request().postDataJSON();if(String(body.branch).includes("model-b"))return json(route,{error:"Deliberate worktree failure"},500);await git(repo,["worktree","add","-b",body.branch,body.path,"HEAD"]);worktrees.push(body.path);return json(route,{ok:true,result:{worktree:body.path,info:{root:body.path,branch:body.branch}}})});
+    await page.route(/\/api\/git\/action$/,async route=>{const body=route.request().postDataJSON();if(String(body.branch).includes("model-b"))return json(route,{error:"Deliberate worktree failure"},500);await createWorktree(repo,{branch:body.branch,path:body.path,baseBranch:body.baseBranch,submodules:"none"});worktrees.push(body.path);return json(route,{ok:true,result:{worktree:body.path,info:{root:body.path,branch:body.branch}}})});
     await page.route(/\/api\/stashes$/,route=>{if(route.request().method()!=="POST")return json(route,{stashes:[]});stashes.push(route.request().postDataJSON());return json(route,{stash:{id:"fanout-stash-"+stashes.length}})});
     await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();metaByThread[body.threadId]={...(metaByThread[body.threadId]||{}),...(body.patch||{})};return json(route,metaByThread[body.threadId])}const id=new URL(route.request().url()).searchParams.get("threadId");return json(route,metaByThread[id]||{})});
     await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{supported:false}:{checkpoints:[]}));
@@ -256,7 +259,7 @@ test("a multi-model run with a model that cannot start opens its rows to what fa
       await failedRow.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`native-multimodel-fanout-failed-row-opened-${mode}-${width}x800.png`});
     }
   }finally{
-    await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));for(const path of [...worktrees].reverse())await git(repo,["worktree","remove","--force",path]).catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
+    await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));for(const path of [...worktrees].reverse())await removeWorktree(repo,path,{force:true}).catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
   }
 });
 

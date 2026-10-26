@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
-import { gitEnvironment, gitInfo as localGitInfo, gitReason } from "./git-service.mjs";
+import { gitEnvironment, gitInfo as localGitInfo, gitReason, worktreeTurn, worktreeTurnKey } from "./git-service.mjs";
 
 const execFileAsync=promisify(execFile);
 const executionContext=new AsyncLocalStorage();
@@ -242,6 +242,12 @@ export async function sourceControlPullRequestTemplate(cwd,{treeish="HEAD"}={}){
 
 // A Git action git refuses fails with git's reason, without the hints it adds for a terminal (refusal), as the local ones do.
 const gitFailure=(result,fallback)=>new Error(refusal(result,fallback));
+// A worktree add or remove waits its turn in its repository's queue, as the local ones do (git-service worktreeTurn): the executor's
+// git names the repository's common git dir, and one on another host is known by its path there.
+function inWorktreeTurn(root,task){
+  const executor=currentExecutor();
+  return worktreeTurnKey(root,{gitFn:(cwd,args,options)=>run("git",args,{cwd,...options}),remote:Boolean(executor&&!executor.local)}).then(key=>worktreeTurn(key,task));
+}
 export async function sourceControlGitAction(cwd,{action,name=null,message=null,setUpstream=false,startPoint=null,path=null,force=false}={}){
   const base=String(cwd||"").trim();
   if(!base)throw new Error("Repository path is required");
@@ -309,11 +315,11 @@ export async function sourceControlGitAction(cwd,{action,name=null,message=null,
     const branch=String(name||"").trim();const target=String(path||"").trim();
     if(!branch||!target)throw new Error("Worktree branch and path are required");
     const args=["worktree","add","-b",branch,target];if(startPoint)args.push(String(startPoint));
-    result=await run("git",args,{cwd:root,allowFailure:true,timeout:120000});
+    result=await inWorktreeTurn(root,()=>run("git",args,{cwd:root,allowFailure:true,timeout:120000}));
   }else if(action==="worktree-remove"){
     const target=String(path||"").trim();if(!target)throw new Error("Worktree path is required");
     const args=["worktree","remove"];if(force)args.push("--force");args.push(target);
-    result=await run("git",args,{cwd:root,allowFailure:true,timeout:120000});
+    result=await inWorktreeTurn(root,()=>run("git",args,{cwd:root,allowFailure:true,timeout:120000}));
   }else{
     throw new Error("Unsupported source-control Git action");
   }
@@ -999,7 +1005,7 @@ export async function revertPullRequest(cwd,number,{provider=null}={}){
   try{
     const fetched=await run("git",["fetch","origin",base],{cwd:ctx.info.root,allowFailure:true,timeout:120000});
     if(!fetched.ok)throw new Error(refusal(fetched,"Could not fetch the base branch"));
-    const added=await run("git",["worktree","add","-b",branch,worktree,"origin/"+base],{cwd:ctx.info.root,allowFailure:true,timeout:120000});
+    const added=await inWorktreeTurn(ctx.info.root,()=>run("git",["worktree","add","-b",branch,worktree,"origin/"+base],{cwd:ctx.info.root,allowFailure:true,timeout:120000}));
     if(!added.ok)throw new Error(refusal(added,"Could not create the revert worktree"));worktreeAdded=true;
     const parents=await run("git",["rev-list","--parents","-n","1",mergeSha],{cwd:worktree,allowFailure:true,maxBuffer:128*1024});
     if(!parents.ok)throw new Error(refusal(parents,"Could not inspect the merge commit"));
@@ -1016,7 +1022,7 @@ export async function revertPullRequest(cwd,number,{provider=null}={}){
     createdUrl=(created.stdout.match(/https?:\/\/\S+/)||[])[0]||created.stdout.trim()||null;
     return {ok:true,provider:"github",url:createdUrl,branch,revertedPullRequest:Number(number),mergeSha};
   }finally{
-    if(worktreeAdded)await run("git",["worktree","remove","--force",worktree],{cwd:ctx.info.root,allowFailure:true,timeout:120000}).catch(()=>{});
+    if(worktreeAdded)await inWorktreeTurn(ctx.info.root,()=>run("git",["worktree","remove","--force",worktree],{cwd:ctx.info.root,allowFailure:true,timeout:120000})).catch(()=>{});
     await run("git",["branch","-D",branch],{cwd:ctx.info.root,allowFailure:true}).catch(()=>{});
     if(pushed&&!createdUrl)await run("git",["push","origin","--delete",branch],{cwd:ctx.info.root,allowFailure:true,timeout:120000}).catch(()=>{});
   }
@@ -1086,7 +1092,7 @@ export async function rebasePullRequestStack(cwd,number,{provider=null}={}){
     const baseShaResult=await run("git",["rev-parse","refs/remotes/"+remoteName+"/"+base],{cwd:root,allowFailure:true,maxBuffer:128*1024});
     if(!baseShaResult.ok)throw new Error(refusal({stderr:baseShaResult.stderr},"Could not resolve the latest stack base"));
     let newParentSha=baseShaResult.stdout.trim();
-    const added=await run("git",["worktree","add","--detach",worktree,newParentSha],{cwd:root,allowFailure:true,timeout:120000,maxBuffer:4*1024*1024});
+    const added=await inWorktreeTurn(root,()=>run("git",["worktree","add","--detach",worktree,newParentSha],{cwd:root,allowFailure:true,timeout:120000,maxBuffer:4*1024*1024}));
     if(!added.ok)throw new Error(refusal(added,"Could not create temporary stack worktree"));worktreeAdded=true;
     for(const layer of layers){
       const oldHead=String(layer.headSha||"").trim();if(!oldHead)throw new Error("GitHub did not return a head SHA for PR #"+layer.number);
@@ -1107,7 +1113,7 @@ export async function rebasePullRequestStack(cwd,number,{provider=null}={}){
     }
     return {ok:true,provider:"github",stack,updated};
   }finally{
-    if(worktreeAdded){await run("git",["rebase","--abort"],{cwd:worktree,allowFailure:true}).catch(()=>{});await run("git",["worktree","remove","--force",worktree],{cwd:root,allowFailure:true,timeout:120000}).catch(()=>{})}
+    if(worktreeAdded){await run("git",["rebase","--abort"],{cwd:worktree,allowFailure:true}).catch(()=>{});await inWorktreeTurn(root,()=>run("git",["worktree","remove","--force",worktree],{cwd:root,allowFailure:true,timeout:120000})).catch(()=>{})}
   }
 }
 

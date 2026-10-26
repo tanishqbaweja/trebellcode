@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 
 const execFileAsync=promisify(execFile);
@@ -419,6 +419,26 @@ export function worktreeSubmoduleArgs(mode="recursive"){
   if(mode==="none")return null;
   return mode==="top-level"?["submodule","update","--init"]:["submodule","update","--init","--recursive"];
 }
+// git worktree add and remove are not safe at once in one repository: each reads every worktree's admin folder (.git/worktrees/<id>),
+// and one that reads the folder of an add still writing it fails ("failed to read .git/worktrees/<id>/commondir"), as a model of a
+// multi-model send did. So the adds and removes of a repository take turns, one at a time in the order asked, a failed one letting the
+// next go, in a queue keyed by its common git dir (worktreeTurnKey), which its linked worktrees share. Repositories apart do not wait
+// for each other, and a turn holds only the git command, not the submodule update after an add, which can take minutes.
+const worktreeTurns=new Map();
+export function worktreeTurn(key,task){
+  const turn=(worktreeTurns.get(key)||Promise.resolve()).then(()=>task()),done=turn.then(()=>{},()=>{});
+  worktreeTurns.set(key,done);done.then(()=>{if(worktreeTurns.get(key)===done)worktreeTurns.delete(key)});
+  return turn;
+}
+// The common git dir of the repository at cwd as a real path (on Windows in either case), or for a repository on another host
+// (remote, its git run by gitFn there) its path there.
+export async function worktreeTurnKey(cwd,{gitFn=git,remote=false}={}){
+  const res=await gitFn(cwd,["rev-parse","--git-common-dir"],{allowFailure:true}).catch(()=>null),dir=res?.ok&&String(res.stdout).trim()||".git";
+  if(remote)return "remote:"+posix.resolve("/",String(cwd),dir);
+  const path=resolve(cwd,dir),real=await realpath(path).catch(()=>path);
+  return process.platform==="win32"?real.toLowerCase():real;
+}
+const inWorktreeTurn=async(root,task)=>worktreeTurn(await worktreeTurnKey(root),task);
 export async function createWorktree(cwd,{branch,path,baseBranch=null,submodules="recursive"}){
   const info=await gitInfo(cwd);
   if(!info.isGit) throw new Error("Workspace is not a Git repository");
@@ -427,7 +447,7 @@ export async function createWorktree(cwd,{branch,path,baseBranch=null,submodules
   if(branch){ args.push("-b",branch); }
   args.push(dest);
   if(baseBranch) args.push(baseBranch);
-  await git(info.root,args,{timeout:180000});
+  await inWorktreeTurn(info.root,()=>git(info.root,args,{timeout:180000}));
   const submoduleArgs=worktreeSubmoduleArgs(submodules);
   if(submoduleArgs)await git(dest,submoduleArgs,{timeout:10*60_000,maxBuffer:16*1024*1024});
   return {worktree:dest,submodules:submodules||"recursive",info:await gitInfo(info.root,{fresh:true})};
@@ -435,7 +455,7 @@ export async function createWorktree(cwd,{branch,path,baseBranch=null,submodules
 export async function restoreWorktree(cwd,{branch,path,submodules="recursive"}){
   const info=await gitInfo(cwd);if(!info.isGit)throw new Error("Source workspace is not a Git repository");
   const dest=resolve(path);const branchName=String(branch||"").trim();if(!branchName)throw new Error("Managed worktree branch is missing");
-  await git(info.root,["worktree","add",dest,branchName],{timeout:180000});
+  await inWorktreeTurn(info.root,()=>git(info.root,["worktree","add",dest,branchName],{timeout:180000}));
   const submoduleArgs=worktreeSubmoduleArgs(submodules);if(submoduleArgs)await git(dest,submoduleArgs,{timeout:10*60_000,maxBuffer:16*1024*1024});
   return {worktree:dest,submodules,info:await gitInfo(info.root,{fresh:true})};
 }
@@ -444,7 +464,7 @@ export async function removeWorktree(cwd,path,{force=false}={}){
   const args=["worktree","remove"];
   if(force) args.push("--force");
   args.push(resolve(path));
-  await git(info.root,args,{timeout:180000});
+  await inWorktreeTurn(info.root||resolve(cwd),()=>git(info.root,args,{timeout:180000}));
   return gitInfo(info.root,{fresh:true});
 }
 export async function sourceControlDiagnostics(cwd){

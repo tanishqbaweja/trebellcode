@@ -1,5 +1,5 @@
 import { posix, resolve } from "node:path";
-import { git, gitInfo, removeWorktree, restoreWorktree } from "./git-service.mjs";
+import { git, gitInfo, removeWorktree, restoreWorktree, worktreeTurn, worktreeTurnKey } from "./git-service.mjs";
 
 function key(path){const value=resolve(String(path||""));return process.platform==="win32"?value.toLowerCase():value}
 function remoteKey(path){const value=posix.normalize(String(path||"").replace(/\\/g,"/"));return value.length>1?value.replace(/\/$/,""):value}
@@ -49,6 +49,9 @@ export class WorktreeCleanupService{
     for(const line of worktreeRes.stdout.split(/\r?\n/)){if(line.startsWith("worktree ")){if(current)worktrees.push(current);current={path:line.slice(9)}}else if(current&&line.startsWith("HEAD "))current.head=line.slice(5);else if(current&&line.startsWith("branch "))current.branch=line.slice(7).replace(/^refs\/heads\//,"")}
     if(current)worktrees.push(current);return {isGit:true,cwd,root,branch:branchRes.stdout.trim()||null,status:statusLines.slice(1).map(line=>({code:line.slice(0,2),path:line.slice(3)})),statusHeader:statusLines[0]||"",worktrees};
   }
+  // A remote worktree add or remove waits its turn in its repository's queue, as the local ones and source control's do (git-service
+  // worktreeTurn).
+  async #remoteWorktreeTurn(project,root,task){return worktreeTurn(await worktreeTurnKey(root,{gitFn:(cwd,args,options)=>this.#remoteGit(project,cwd,args,options),remote:true}),task)}
   #ops(project){
     if(!project?.environmentId)return LOCAL_OPS;
     const profile=this.environments?.get?.(project.environmentId);
@@ -58,8 +61,8 @@ export class WorktreeCleanupService{
       key:remoteKey,
       git:(cwd,args,options={})=>this.#remoteGit(project,cwd,args,options),
       gitInfo:cwd=>this.#remoteGitInfo(project,cwd),
-      removeWorktree:async(root,path,{force=false}={})=>{const args=["worktree","remove"];if(force)args.push("--force");args.push(path);await this.#remoteGit(project,root,args,{timeoutMs:180000});return this.#remoteGitInfo(project,root)},
-      restoreWorktree:async(root,{branch,path,submodules="recursive"}={})=>{await this.#remoteGit(project,root,["worktree","add",path,branch],{timeoutMs:180000});if(submodules!=="none"){const args=["submodule","update","--init"];if(submodules!=="top-level")args.push("--recursive");await this.#remoteGit(project,path,args,{timeoutMs:300000})}return {worktree:path,submodules,info:await this.#remoteGitInfo(project,root)}},
+      removeWorktree:async(root,path,{force=false}={})=>{const args=["worktree","remove"];if(force)args.push("--force");args.push(path);await this.#remoteWorktreeTurn(project,root,()=>this.#remoteGit(project,root,args,{timeoutMs:180000}));return this.#remoteGitInfo(project,root)},
+      restoreWorktree:async(root,{branch,path,submodules="recursive"}={})=>{await this.#remoteWorktreeTurn(project,root,()=>this.#remoteGit(project,root,["worktree","add",path,branch],{timeoutMs:180000}));if(submodules!=="none"){const args=["submodule","update","--init"];if(submodules!=="top-level")args.push("--recursive");await this.#remoteGit(project,path,args,{timeoutMs:300000})}return {worktree:path,submodules,info:await this.#remoteGitInfo(project,root)}},
     };
   }
   #pathKey(path,environmentId=null){const profile=environmentId?this.environments?.get?.(environmentId):null;return environmentId&&profile?.type!=="local"?remoteKey(path):key(path)}
