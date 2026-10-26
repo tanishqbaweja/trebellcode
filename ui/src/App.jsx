@@ -20,7 +20,7 @@ import HeaderOverflowMenu from "./components/HeaderOverflowMenu.jsx";
 import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, ruleRuns, shadowedKeybindings, shortcutHint } from "./keybindings.js";
 import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, movedDuringStep, navigationKey, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
-import { applyFileMention, fileMentionAt, movedFileMention, namesFileAt, rankFileMentions } from "./composer-mentions.js";
+import { applyFileMention, fileMentionAt, movedFileMention, namesFileAt, offeredFileMentions, pickedFileMention, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
 import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId, sessionHandoffMessage, withSessionHandoff } from "./thread-history.js";
 import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain, turnTrailers } from "./turn-outcome.js";
@@ -855,13 +855,15 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // is in: while there is one, a send waits for the file, and the file shows where its chip comes, attaching. A word gone meanwhile
   // (erased, or the draft emptied by New task) gets no file, so nothing waits for it.
   const mentionWaits=useMemo(()=>mentionBusy?movedFileMention(mentionBusy.from,mentionBusy.mention,prompt,caret):null,[mentionBusy,prompt,caret]);
+  // mentionItems: every file the search found for the word at the caret, ranked, of which the menu offers eight (mentionOffered), and
+  // which a pick reads for a longer file's name on its word (pickedFileMention).
   useEffect(()=>{
     let disposed=false;const query=activeMention?.query||"";
     if(!onFileMentionSearch||!query){setMentionItems([]);setMentionIndex(0);return}
     const timer=setTimeout(async()=>{
       try{
         const items=await onFileMentionSearch(query);if(disposed)return;
-        setMentionItems(rankFileMentions(items,query,{limit:8}));setMentionIndex(0);
+        setMentionItems(rankFileMentions(items,query,{limit:Infinity}));setMentionIndex(0);
       }catch{if(!disposed)setMentionItems([])}
     },120);
     return()=>{disposed=true;clearTimeout(timer)};
@@ -896,10 +898,11 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // with it (the one it had would open the @ menu over the draft), or into App's draft as it is then while the page is up. The draft as
   // it was at the pick went in over what was typed since. mentionBusy, App's (so the composer drawn again knows it): the file's name and
   // path, and the draft and the word it was picked on. A word typed on glued to the picked file's path ('@src/login.jsnow') takes the
-  // file on the path only, so what follows it stays, after a space, where the pick put the file over the whole word.
+  // file on the path only, so what follows it stays, after a space, where the pick put the file over the whole word, while the word of a
+  // longer file's name the path begins ('@src/login.json') is replaced whole (pickedFileMention), where its rest stayed as a word.
   async function chooseMention(item){
     if(!activeMention||!item||mentionBusy)return;
-    const from=prompt,label=item.relativePath||item.name||item.path,mention=prompt.startsWith("@"+label,activeMention.start)?{...activeMention,end:activeMention.start+label.length+1}:activeMention,focused=document.activeElement,had=attachments;
+    const from=prompt,label=item.relativePath||item.name||item.path,mention=pickedFileMention(prompt,activeMention,label,mentionItems),focused=document.activeElement,had=attachments;
     setMentionBusy({label,name:item.name||String(item.path||"").split(/[\\/]/).pop()||label,from,mention});
     if(caret<mention.end){composerRef.current?.setSelectionRange(mention.end,mention.end);setCaret(mention.end)}
     let attached=null,at=null;
@@ -935,9 +938,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
       if(e.key==="Enter"&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&chosen&&chosen.toLowerCase()!==prompt.trim().toLowerCase()){e.preventDefault();chooseSlash(chosen);return}
     }
     if(mentionMenuOpen){
-      if(e.key==="ArrowDown"){e.preventDefault();setMentionIndex(index=>(index+1)%mentionItems.length);return}
-      if(e.key==="ArrowUp"){e.preventDefault();setMentionIndex(index=>(index-1+mentionItems.length)%mentionItems.length);return}
-      if((e.key==="Enter"||e.key==="Tab")&&!e.shiftKey){e.preventDefault();chooseMention(mentionItems[mentionIndex]);return}
+      if(e.key==="ArrowDown"){e.preventDefault();setMentionIndex((mentionActive+1)%mentionOffered.length);return}
+      if(e.key==="ArrowUp"){e.preventDefault();setMentionIndex((mentionActive-1+mentionOffered.length)%mentionOffered.length);return}
+      if((e.key==="Enter"||e.key==="Tab")&&!e.shiftKey){e.preventDefault();chooseMention(mentionOffered[mentionActive]);return}
       if(e.key==="Escape"){e.preventDefault();setMenuDismissed(prompt);return}
     }
     // Escape ends the edit of a queued follow-up, which stays queued as it was.
@@ -997,16 +1000,20 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // or a double click on it opened the menu offering the file again, and Enter imported it a second time instead of sending. The path
   // is read from the word's @ on (namesFileAt), as the @ word at a caret in the first part of a path with a space ends at the space.
   // A word that goes on past the path names the file too at a caret in the path or right after it: with the space after the file
-  // erased ('@src/login.jsnow'), the menu opened on the search for its path, and Enter imported it again over the whole word.
+  // erased ('@src/login.jsnow'), the menu opened on the search for its path, and Enter imported it again over the whole word. At a
+  // caret in the letters past the path the menu does not offer the file (offeredFileMentions): it kept the files of that search until
+  // the search for the word as it is then answered, and Enter straight after 'now', or End, ArrowRight or a click into it, imported
+  // the file again.
   // Escape's dismissal of the draft as it stood (another @ word's menu closed while a picked file imports) lasts once the file is in
   // (every), with the pick's own: the menu came back on that word, and Enter picked its file instead of sending it as typed.
   const slashMenuOpen=slashOpen&&!/\s/.test(prompt)&&slashItems.length>0&&menuDismissed!==prompt;
-  const mentionMenuOpen=Boolean(activeMention&&mentionItems.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&(menuDismissed.every||menuDismissed.start===activeMention.start))&&!(contextChips||[]).some(chip=>chip.kind==="file"&&namesFileAt(prompt,activeMention.start,chip.detail,caret));
-  const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0;
+  const mentionOffered=useMemo(()=>activeMention?offeredFileMentions(mentionItems,prompt,activeMention.start,(contextChips||[]).filter(chip=>chip.kind==="file").map(chip=>chip.detail)).slice(0,8):[],[activeMention,mentionItems,prompt,contextChips]);
+  const mentionMenuOpen=Boolean(activeMention&&mentionOffered.length>0)&&menuDismissed!==prompt&&!(menuDismissed?.text===prompt&&(menuDismissed.every||menuDismissed.start===activeMention.start))&&!(contextChips||[]).some(chip=>chip.kind==="file"&&namesFileAt(prompt,activeMention.start,chip.detail,caret));
+  const slashActive=slashMenuOpen?Math.min(slashIndex,slashItems.length-1):0,mentionActive=mentionMenuOpen?Math.min(mentionIndex,mentionOffered.length-1):0;
   useEffect(()=>{setSlashIndex(0)},[slashQuery]);
   // Keyboard choices stay in view in short windows, where the menus scroll.
   useEffect(()=>{keepActiveOptionVisible(slashMenuRef.current)},[slashActive,slashMenuOpen]);
-  useEffect(()=>{keepActiveOptionVisible(mentionMenuRef.current)},[mentionIndex,mentionItems,mentionMenuOpen]);
+  useEffect(()=>{keepActiveOptionVisible(mentionMenuRef.current)},[mentionActive,mentionOffered,mentionMenuOpen]);
   // Whether a menu that opens upward over the space above the composer shows (the slash commands, the file mentions, the model
   // picker): App names it in the workspace shell's class (with-composer-menu), which takes its error toast below the header meanwhile
   // (overlays.css), from the frame that draws the menu to the one that takes it away, or the composer with it.
@@ -1113,7 +1120,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     {/* A file in the @ menu takes only a press of its own, and its buttons only say they are off while the file picked imports
         (aria-disabled), so the keyboard stays in the composer: the second click of a double click, on a button turned off or on what
         is under the menu once the file is in, took the keyboard out of it, and what was typed on went nowhere. */}
-    {mentionMenuOpen&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef}>{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} aria-disabled={Boolean(mentionBusy)||undefined} onMouseDown={event=>{event.preventDefault();ignorePressRest(!event.detail);chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
+    {mentionMenuOpen&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef}>{mentionOffered.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionActive?"active":""} aria-disabled={Boolean(mentionBusy)||undefined} onMouseDown={event=>{event.preventDefault();ignorePressRest(!event.detail);chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {/* A file picked from the @ menu shows where its chip comes while it imports, attaching, as a file that uploads shows on the shelf,
         so a send that waits for it says why there too: once the caret left the file's word the menu that showed it was shut. */}
     {((contextChips||[]).length>0||mentionWaits)&&<div className="context-chip-row" data-testid="context-chips" onClick={chipPressOnce}>{(contextChips||[]).map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={[[chip.label,chip.detail].filter(Boolean).join(" · "),chip.path].filter(Boolean).join("\n")}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveContext(chip.path))} title="Remove context"><X size={10}/></button></span>)}{mentionWaits&&<span className="context-chip kind-file attaching" data-testid="mention-attaching" aria-busy="true" title={"Attaching "+mentionBusy.label+"…"}><LoaderCircle size={11} aria-hidden="true"/><strong>{mentionBusy.name}</strong><small>Attaching…</small></span>}</div>}

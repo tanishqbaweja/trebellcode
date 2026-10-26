@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {applyFileMention,fileMentionAt,movedFileMention,namesFileAt,rankFileMentions} from "../ui/src/composer-mentions.js";
+import {applyFileMention,fileMentionAt,movedFileMention,namesFileAt,offeredFileMentions,pickedFileMention,rankFileMentions} from "../ui/src/composer-mentions.js";
 
 test("file mention parser targets only the active @ token",()=>{
   assert.deepEqual(fileMentionAt("check @App",10),{start:6,end:10,query:"App"});
@@ -151,6 +151,39 @@ test("a word that goes on past a picked file's path names the file at a caret in
   assert.equal(namesFileAt("Check @src/login.j now",6,"src/login.js",18),false);
   assert.equal(namesFileAt("Check @src/login.jsx now",6,"src/login.js",20),false);
   assert.deepEqual(applyFileMention(glued,{start:6,end:19,query:"src/login.js"},"src/login.js",19),{text:"Check @src/login.js now",caret:20});
+});
+
+// The files found for a word stay until the search for the word as it is then answers, so on a word typed on glued to a picked file
+// ('@src/login.jsnow') the menu offered the file found for its path, already attached: a file on the draft is not offered on a word
+// that begins with its path, while an edited path or another @ word still offers it (round 11 repair, again).
+const login={name:"login.js",relativePath:"src/login.js"},json={name:"login.json",relativePath:"src/login.json"},logout={name:"logout.js",relativePath:"src/logout.js"};
+test("a file on the draft is not offered on a word that begins with its path, while an edited path or another @ word offers it",()=>{
+  const glued="Check @src/login.jsnow",found=[login,logout];
+  assert.deepEqual(offeredFileMentions([login],glued,6,["src/login.js"]),[]);
+  assert.deepEqual(offeredFileMentions([login,json],"Check @src/login.json",6,["src/login.js"]),[json]);
+  assert.deepEqual(offeredFileMentions([login],"Check @src/login.j now",6,["src/login.js"]),[login]);
+  assert.deepEqual(offeredFileMentions(found,"Check @src/login.js and @log",24,["src/login.js"]),found);
+  assert.equal(offeredFileMentions(found,glued,6,[]),found);
+});
+
+// A pick on a word that goes on past the picked file's path goes on the path only, what follows it kept, unless the whole word begins
+// the path of a file found for it, a longer name ('@src/login.json', '@Dockerfile.dev', '@src/login.jso' on the way to it), which the
+// pick then replaces whole: its rest stayed after the file as a word (round 11 repair, again).
+test("a pick on a word that goes on past the file's path keeps what follows only when it begins no found file's name",()=>{
+  const glued="Check @src/login.jsnow",found=[login,logout];
+  // Glued letters stay; the rest of a longer found name goes with the word, by a caret in the path or right after it.
+  assert.deepEqual(pickedFileMention(glued,fileMentionAt(glued,19),"src/login.js",found),{start:6,end:19,query:"src/login.js"});
+  const longer="Check @src/login.json now";
+  assert.deepEqual(pickedFileMention(longer,fileMentionAt(longer,19),"src/login.js",[login,json]),{start:6,end:21,query:"src/login.js"});
+  assert.deepEqual(applyFileMention(longer,pickedFileMention(longer,fileMentionAt(longer,13),"src/login.js",[login,logout,json]),"src/login.js",21),{text:"Check @src/login.js now",caret:19});
+  const docker="Check @Dockerfile.dev now",dockerfiles=[{name:"Dockerfile",relativePath:"Dockerfile"},{name:"Dockerfile.dev",relativePath:"Dockerfile.dev"}];
+  assert.deepEqual(applyFileMention(docker,pickedFileMention(docker,fileMentionAt(docker,13),"Dockerfile",dockerfiles),"Dockerfile",21),{text:"Check @Dockerfile now",caret:17});
+  assert.equal(pickedFileMention("Check @src/login.jso",fileMentionAt("Check @src/login.jso",19),"src/login.js",[login,json]).end,20);
+  // Another file picked, or the word just the path: the whole word, as before. A path with a space picked on its first part: the path.
+  assert.deepEqual(pickedFileMention(glued,fileMentionAt(glued,19),"src/logout.js",found),fileMentionAt(glued,19));
+  assert.deepEqual(pickedFileMention("Check @src/login.js now",fileMentionAt("Check @src/login.js now",13),"src/login.js",found),{start:6,end:19,query:"src/lo"});
+  const spaced="Check @docs/Release Notes.md please";
+  assert.equal(pickedFileMention(spaced,fileMentionAt(spaced,15),"docs/Release Notes.md",[{name:"Release Notes.md",relativePath:"docs/Release Notes.md"}]).end,28);
 });
 
 test("file mention ranking prefers exact and prefix filename matches",()=>{

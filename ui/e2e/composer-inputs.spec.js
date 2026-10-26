@@ -2864,6 +2864,104 @@ test("a file picked from the @ menu on a word typed on glued to the file's path 
   }finally{await harness.close()}
 });
 
+// A file picked from the @ menu is not offered again on its word typed on glued to it ('Check @src/login.jsnow') while the composer's
+// search for the word as it is then is still out (its 120 ms wait and the server's answer, held here so the window stays open): 'now'
+// typed on once the space the pick added is erased, or End, ArrowRight or a click into 'now' once the space before it is erased, also
+// in a narrow window. The menu kept the files found for the file's own path until that search answered, so it opened offering the file
+// already attached, and Enter straight after imported it a second time and sent nothing (round 11 repair).
+test("a file picked from the @ menu is not offered again on a word typed on glued to it while the search for the word is still out, so Enter straight after 'now' is typed, or after End, ArrowRight or a click into it, sends the message as typed with the file once",async({page})=>{
+  test.setTimeout(180_000);
+  const replies=["Checked it straight after the letters.","Checked it after End.","Checked it after ArrowRight.","Checked it after the click."];
+  const harness=await openComposerApp(page,{replies:replies.map(text=>({text}))});
+  let release=()=>{};
+  try{
+    await writeLoginFiles(harness);
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip"),users=page.locator(".user-bubble");
+    const files=users.last().locator(".user-attachments > span"),glued="Check @src/login.jsnow";let imports=0,held=null;
+    page.on("request",request=>{if(new URL(request.url()).pathname==="/api/attachments/import")imports++});
+    // The composer's searches for the word typed on past the file's path ('src/login.jsn', 'src/login.jsnow') wait while held is set.
+    await page.route(/\/api\/workspace\/search\?/,async route=>{if(held&&/^src\/login\.jsn/.test(new URL(route.request().url()).searchParams.get("q")||""))await held;await route.fallback()});
+    const settled=async(q,done)=>{const answered=mentionSearched(page,q);await done();await (await answered).finished();await painted(page)};
+    // The space before 'now' erased by Backspace after it, the caret right after the file and its path's search answered: the menu shut.
+    const spaceErased=async()=>{await page.keyboard.press("ArrowRight");await settled("src/login.js",()=>page.keyboard.press("Backspace"))};
+    const cases=[
+      ["dark",1280,"Check @log",0,"Enter","the space the pick added erased and 'now' typed on glued to the file",async()=>{await settled("src/login.js",()=>page.keyboard.press("Backspace"));await page.keyboard.type("now",{delay:20})}],
+      ["light",900,"Check @log now",4,"Tab","the space before 'now' erased and End",async()=>{await spaceErased();await page.keyboard.press("End")}],
+      ["dark",900,"Check @log now",4,"a click","the space before 'now' erased and ArrowRight",async()=>{await spaceErased();await page.keyboard.press("ArrowRight")}],
+      ["light",1280,"Check @log now",4,"Enter","the space before 'now' erased and a click in 'now'",async()=>{await spaceErased();await clickInDraft(page,21,1)}],
+    ];
+    for(const [index,[mode,width,draft,left,pick,how,glue]] of cases.entries()){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      const where=` in ${mode} at ${width}, login.js picked by ${pick} on '${draft}' and ${how}, the search for the word still out`,before=imports;
+      // The draft typed into the emptied composer, the caret put after '@log' by left ArrowLeft presses, and the menu offering login.js.
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      const answered=mentionSearched(page,"log");await page.keyboard.type(draft,{delay:20});for(let key=0;key<left;key++)await page.keyboard.press("ArrowLeft");
+      await (await answered).finished();await painted(page);await expect(menu.locator("button.active strong")).toHaveText("login.js");
+      const picked=left?mentionSearched(page,"src/login.js"):null;await pickLogin(page,pick);await expect(context).toHaveCount(1);
+      if(picked){await (await picked).finished();await painted(page)}
+      await expect(composer).toHaveValue(left?"Check @src/login.js now":"Check @src/login.js ");await expect(menu).toHaveCount(0);
+      // The word typed on, or the caret put in its letters, with its search held: the menu stays shut on the files of the path's search.
+      held=new Promise(done=>{release=done});
+      await glue();await painted(page);
+      await expect.soft(composer,"the draft"+where).toHaveValue(glued);
+      await expect.soft(menu,"the @ menu"+where).toHaveCount(0);await expect(context).toHaveCount(1);
+      if(index<2||index===3)await page.screenshot({animations:"disabled",path:auditDir+`mention-menu-shut-on-a-glued-word-its-search-out-${index}-${mode}-${width}x800.png`});
+      // Enter, with the search still out, sends the message as it reads, with the file, imported once.
+      await page.keyboard.press("Enter");
+      await expect(page.getByText(replies[index],{exact:true})).toBeVisible({timeout:15_000});
+      release();held=null;
+      await expect(users.last().locator("p")).toHaveText(glued);await expect(files).toHaveText(["login.js"]);
+      await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);expect.soft(imports-before,"the files imported"+where).toBe(1);
+    }
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page",...cases.map(()=>glued)]);
+  }finally{release();await harness.close()}
+});
+
+// A file picked from the @ menu on the word of a longer file's name that begins with the picked file's path ('@src/login.json' or
+// '@Dockerfile.dev', typed or its chip taken off, the shorter-named file picked to switch to it) goes on the whole word, as a pick on a
+// word does, by Enter, a click or Tab, the caret put in the word by ArrowLeft or a click, also in a narrow window: the pick went on the
+// path only, as on a word typed on glued past a path ('@src/login.jsnow'), and the rest of the other file's name stayed after it as a
+// word of its own, 'Check @src/login.js on now' or 'Check @Dockerfile .dev now' (round 11 repair).
+test("a file picked from the @ menu on the word of a longer file's name that begins with its path goes on the whole word, so switching to the shorter-named file leaves nothing of the other name, by Enter, a click or Tab, the caret put in the word by ArrowLeft or a click",async({page})=>{
+  test.setTimeout(150_000);
+  const replies=["Checked the shorter file after the arrow keys.","Checked the shorter file after the click.","Checked the Dockerfile."];
+  const harness=await openComposerApp(page,{replies:replies.map(text=>({text}))});
+  try{
+    await writeLoginFiles(harness);await writeFile(join(harness.repo,"src","login.json"),"{}\n");
+    for(const name of ["Dockerfile","Dockerfile.dev"])await writeFile(join(harness.repo,name),"FROM node:22\n");
+    const composer=page.getByTestId("composer"),menu=page.getByTestId("file-mention-menu"),context=page.getByTestId("context-chip"),users=page.locator(".user-bubble");
+    const files=users.last().locator(".user-attachments > span");let imports=0;
+    page.on("request",request=>{if(new URL(request.url()).pathname==="/api/attachments/import")imports++});
+    const settled=async(q,done)=>{const answered=mentionSearched(page,q);await done();await (await answered).finished();await painted(page)};
+    const cases=[
+      ["dark",1280,"Check @src/login.json now","End and ArrowLeft six times","src/login.js",async()=>{await page.keyboard.press("End");for(let key=0;key<6;key++)await page.keyboard.press("ArrowLeft")},["src/login.js","src/login.json"],"login.js","src/login.js","Enter","Check @src/login.js now"],
+      ["light",900,"Check @src/login.json now","a click after 'lo'","src/lo",()=>clickInDraft(page,13,1),["src/login.js","src/logout.js","src/login.json"],"login.js","src/login.js","a click","Check @src/login.js now"],
+      ["dark",900,"Check @Dockerfile.dev now","a click after 'Docker'","Docker",()=>clickInDraft(page,13,1),["Dockerfile","Dockerfile.dev"],"Dockerfile","Dockerfile","Tab","Check @Dockerfile now"],
+    ];
+    for(const [index,[mode,width,draft,how,q,place,listed,name,path,pick,sent]] of cases.entries()){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      const where=` in ${mode} at ${width}, ${name} picked by ${pick} on '${draft}', the caret put in the word by ${how}`,before=imports,after=sent.indexOf(" now");
+      // The draft typed into the emptied composer, and the caret put back in its @ word: the menu offers both files, the shorter first.
+      await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+      await page.keyboard.type(draft,{delay:20});await expect(menu).toHaveCount(0);
+      await settled(q,place);await expect(menu.locator("button small")).toHaveText(listed);await expect(menu.locator("button.active strong")).toHaveText(name);
+      if(pick==="a click")await menu.locator("button").filter({has:page.getByText(path,{exact:true})}).click({delay:80});
+      else{await page.keyboard.down(pick);await page.waitForTimeout(80);await page.keyboard.up(pick)}
+      await expect(context).toHaveCount(1);
+      await expect.soft(composer,"the draft once the file is in"+where).toHaveValue(sent);
+      expect.soft(await composer.evaluate(node=>[node.selectionStart,node.selectionEnd]),"the caret after the file"+where).toEqual([after,after]);
+      await expect.soft(menu,"the @ menu once the file is in"+where).toHaveCount(0);
+      if(index<2)await page.screenshot({animations:"disabled",path:auditDir+`mention-pick-on-a-longer-file-name-takes-the-whole-word-${mode}-${width}x800.png`});
+      // Enter sends the message as it reads, with the file picked, imported once.
+      await page.keyboard.press("Enter");
+      await expect(page.getByText(replies[index],{exact:true})).toBeVisible({timeout:15_000});
+      await expect(users.last().locator("p")).toHaveText(sent);await expect(files).toHaveText([name]);
+      await expect(composer).toHaveValue("");await expect(context).toHaveCount(0);expect.soft(imports-before,"the files imported"+where).toBe(1);
+    }
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Look at the login page",...cases.map(row=>row.at(-1))]);
+  }finally{await harness.close()}
+});
+
 // A second @ word typed while the file picked from the @ menu imports ('Check @log', login.js picked, ' and @logout' typed straight on)
 // shows its menu with its files dimmed, and Enter on it does nothing meanwhile. Once the first file is in, the second word's menu is on
 // again, so Enter, Tab, a click or a double click picks its file and the next Enter sends the message with both, also when nothing was

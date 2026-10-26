@@ -1,11 +1,13 @@
 // The punctuation that ends a word and is not part of it: a full stop, a comma, a closing bracket or quote ('@log.', '(see @log)').
 const WORD_END=".,;:!?)]}\"'`”’»…";
+// The @ word a pick puts a file in: its path after the @, its spaces kept, one each.
+const fileWord=path=>"@"+String(path||"").trim().replace(/\s+/g," ");
 export function fileMentionAt(text,caret){
   const value=String(text||"");const at=Math.max(0,Math.min(value.length,Number(caret)||0));
   const prefix=value.slice(0,at);const match=prefix.match(/(^|\s)@([^\s@]*)$/);
   if(!match)return null;
-  // The menu looks for what is typed before the caret, and a pick replaces the whole word, up to the next whitespace but for the
-  // punctuation that ends it, which stays.
+  // The menu looks for what is typed before the caret, and a pick replaces the whole word (but on a word that goes on past the picked
+  // file's path, pickedFileMention), up to the next whitespace but for the punctuation that ends it, which stays.
   const query=match[2]||"";let end=at+value.slice(at).search(/\s|$/);
   while(end>at&&WORD_END.includes(value[end-1]))end--;
   return {start:at-query.length-1,end,query};
@@ -16,10 +18,29 @@ export function fileMentionAt(text,caret){
 // first part, which ends at the space ('@docs/Release' of '@docs/Release Notes.md'). A word that goes on past the path, the space after
 // it erased ('@src/login.jsnow'), names it at a caret in the path or right after it.
 export function namesFileAt(text,start,path,caret){
-  const value=String(text||""),word="@"+String(path||"").trim().replace(/\s+/g," ");let end=start+word.length;
+  const value=String(text||""),word=fileWord(path);let end=start+word.length;
   if(word.length<2||!value.startsWith(word,start))return false;
   while(end<value.length&&WORD_END.includes(value[end]))end++;
   return end===value.length||/\s/.test(value[end])||caret<=end;
+}
+
+// The files the @ menu offers on the @ word from start, of those found (items): all but a file on the draft (paths: its chips' paths)
+// that the word begins with, which a pick there would only put in again. The files found for a word stay until the search for the word
+// as it is then answers, so on a word typed on glued to the file ('@src/login.jsnow', or End, ArrowRight or a click into 'now') the menu
+// offered the file found for its path, and Enter imported it a second time instead of sending.
+export function offeredFileMentions(items,text,start,paths){
+  const value=String(text||""),on=new Set((paths||[]).filter(path=>{const word=fileWord(path);return word.length>1&&value.startsWith(word,start)}));
+  return on.size?(items||[]).filter(item=>!on.has(item?.relativePath||item?.path)):items||[];
+}
+
+// The part of the @ word at mention (fileMentionAt's) that a file picked from the menu goes on, label its path: the whole word, or the
+// path only on a word that goes on past it ('@src/login.jsnow'), what follows it then staying after it, unless the whole word begins
+// the path of a file found for it (found), whose name it is then part of ('@src/login.json', '@Dockerfile.dev'), and which the pick
+// replaces whole. The path of a file with a space in its name goes on past the @ word at a caret in its first part: the pick goes on it.
+export function pickedFileMention(text,mention,label,found=[]){
+  const value=String(text||""),word=fileWord(label);if(!mention||word.length<2||!value.startsWith(word,mention.start))return mention;
+  const end=mention.start+word.length,whole=value.slice(mention.start+1,mention.end).toLowerCase();
+  return end<mention.end&&(found||[]).some(item=>String(item?.relativePath||item?.path||"").toLowerCase().startsWith(whole))?mention:{...mention,end};
 }
 
 // caret: where the person's caret is in text, which stays before the word, moves with what follows it, and goes after the file in it.
