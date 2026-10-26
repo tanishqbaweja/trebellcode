@@ -14,24 +14,29 @@ const MODELS={agentRuntime:"claude",ready:true,models:["default"],defaultModel:"
 
 // The Claude Agent SDK as the relay's Claude Code sessions drive it, scripted: query() returns the Query, an async iterator of the
 // CLI's messages fed by the streaming-input prompt. Claude Code reports its session (init) as it takes the first message in, and
-// turn({message,index,options,emit,signal}) runs for each user message in turn; signal aborts once the query closes.
-function scriptedClaudeSdk(turn){
+// turn({message,index,options,emit,signal}) runs for each user message in turn, a steer ("now") at once into the running turn; signal
+// aborts once the query closes. control.backgroundTasks(toolUseId,{emit}) answers a move of a foreground task to the background.
+function scriptedClaudeSdk(turn,control={}){
   const query=({prompt,options})=>{
     const items=[],waiters=[],stop=new AbortController();let done=false;
     const emit=value=>{if(done)return;const waiter=waiters.shift();if(waiter)waiter({value,done:false});else items.push(value)};
     const end=()=>{if(done)return;done=true;stop.abort();for(const waiter of waiters.splice(0))waiter({value:undefined,done:true})};
     void (async()=>{
-      let index=0;
+      let index=0,chain=Promise.resolve();
       for await(const message of prompt){
         if(index===0)emit({type:"system",subtype:"init",session_id:options.sessionId||options.resume,model:"claude-fixture",permissionMode:options.permissionMode,tools:[],mcp_servers:[],slash_commands:[],agents:[],capabilities:[]});
-        try{await turn({message,index:index++,options,emit,signal:stop.signal})}catch{end();return}
+        const position=index++,run=()=>turn({message,index:position,options,emit,signal:stop.signal});
+        (message.priority==="now"?Promise.resolve().then(run):(chain=chain.then(run))).catch(()=>end());
       }
+      await chain.catch(()=>{});
       end();
     })();
     return {
       next:()=>items.length?Promise.resolve({value:items.shift(),done:false}):done?Promise.resolve({value:undefined,done:true}):new Promise(resolve=>waiters.push(resolve)),
       return:()=>{end();return Promise.resolve({value:undefined,done:true})},[Symbol.asyncIterator](){return this},
       async interrupt(){},close(){end()},async setPermissionMode(){},initializationResult:async()=>({commands:[],agents:[],models:[]}),
+      async setMcpServers(servers){return {added:Object.keys(servers),removed:[],errors:{}}},
+      async backgroundTasks(toolUseId){return control.backgroundTasks?control.backgroundTasks(toolUseId,{emit}):true},
     };
   };
   return {query,getSessionInfo:async()=>undefined,forkSession:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
@@ -44,7 +49,7 @@ export const claudeReply=(message,text)=>[
 
 // Claude Code threads on the real relay, Claude Code itself answered as installed and signed in and its SDK scripted by turn.
 // seedThread stores a Claude thread with no turns yet, in the harness's repository and the given permission mode.
-export async function startClaudeRelay({turn}){
+export async function startClaudeRelay({turn,control={}}){
   const root=await mkdtemp(join(tmpdir(),"trebell-claude-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
   state.updateSettings({agentRuntime:"claude",agentRuntimeInstanceId:CLAUDE.id,activeEnvironmentId:null});
@@ -59,7 +64,7 @@ export async function startClaudeRelay({turn}){
     threads.push(thread);return thread;
   };
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
-  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,version:"claude-relay-fixture",claudeSdk:scriptedClaudeSdk(turn)});
+  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,version:"claude-relay-fixture",claudeSdk:scriptedClaudeSdk(turn,control)});
   const port=await freePort();await new Promise((resolve,reject)=>relayServer.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {
     repo,threadStore,threads,seedThread,wsUrl:`ws://127.0.0.1:${port}/api/agent/ws`,
@@ -68,11 +73,11 @@ export async function startClaudeRelay({turn}){
 }
 
 // The app's own API answered for a Claude Code window on the relay, every thread in one project at the harness's repository, the
-// composer in permissionMode.
-export async function routeClaudeApp(page,harness,{permissionMode="full"}={}){
+// composer in permissionMode, and a message sent while a turn runs queued or steered into it (followUpMode).
+export async function routeClaudeApp(page,harness,{permissionMode="full",followUpMode="queue"}={}){
   const repo=harness.repo,project={id:"claude-relay-project",name:"Claude Relay Project",path:repo,environmentId:null,effectiveSettings:{}};
   let uiMeta={projectless:false,environmentId:null,cwd:repo,runtime:"claude",runtimeInstanceId:CLAUDE.id,permissionMode};
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:CLAUDE.id,modelProvider:"openai",defaultPermissionMode:permissionMode,defaultWorkspaceMode:"current",followUpMode:"queue"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:CLAUDE.id,modelProvider:"openai",defaultPermissionMode:permissionMode,defaultWorkspaceMode:"current",followUpMode};
   const status={id:CLAUDE.id,kind:"claude",name:"Claude Code",available:true,installed:true,authenticated:true,version:"fixture"};
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeInstanceId:CLAUDE.id,agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:repo,platform:process.platform,version:"claude-relay-fixture",activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[project],activeProjectId:project.id,threadMeta:Object.fromEntries(harness.threads.map(thread=>[thread.id,uiMeta]))}));
