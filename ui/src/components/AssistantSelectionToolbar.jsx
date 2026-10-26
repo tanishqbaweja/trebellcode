@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from "react";
+import React,{useEffect,useRef,useState} from "react";
 import { Quote } from "lucide-react";
 
 export const MAX_ASSISTANT_CITATION_CHARS=8_000;
@@ -13,6 +13,7 @@ function citationSource(node,container){
 export default function AssistantSelectionToolbar({containerRef,onCite}){
   const [selection,setSelection]=useState(null);
   const [busy,setBusy]=useState(false);
+  const button=useRef(null);
 
   useEffect(()=>{
     const container=containerRef.current;
@@ -45,7 +46,12 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
         setSelection({messageId:start.dataset.assistantCitationSource,text,x,y});
       });
     };
-    const onKey=event=>{if(event.key==="Escape")clear()};
+    // Tab and Shift+Tab from the selection (nothing else has the keyboard) reach Cite above it, whichever reply it is in: in the page's
+    // order Cite comes after the conversation's last message. Not while Cite is off (too long, citing) or gone (Escape).
+    const onKey=event=>{
+      if(event.key==="Escape")clear();
+      else if(event.key==="Tab"&&document.activeElement?.contains(window.getSelection()?.anchorNode)){button.current?.focus();if(document.activeElement===button.current)event.preventDefault()}
+    };
     document.addEventListener("selectionchange",update);
     container.addEventListener("pointerup",update);
     document.addEventListener("keydown",onKey,true);
@@ -66,6 +72,7 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
   if(!selection)return null;
   const tooLong=selection.text.length>MAX_ASSISTANT_CITATION_CHARS;
   return <button
+    ref={button}
     type="button"
     className="assistant-selection-cite"
     data-testid="assistant-selection-cite"

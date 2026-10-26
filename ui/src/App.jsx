@@ -260,7 +260,7 @@ class LazySlot extends React.Component{
 // reply (AssistantSelectionToolbar's rule), for as long as that selection lasts, with Reload. The end of the conversation, where
 // the button's slot is, says nothing: no reply reads as failed to show, and nothing there is announced or in Tab's order.
 function CiteUnavailable({containerRef}){
-  const [at,setAt]=useState(null);
+  const [at,setAt]=useState(null),reload=useRef(null);
   useEffect(()=>{
     const container=containerRef.current,host=container?.closest(".conversation-scroll");if(!container)return;
     let frame=0;const clear=()=>{cancelAnimationFrame(frame);setAt(null)};
@@ -272,7 +272,8 @@ function CiteUnavailable({containerRef}){
       const rect=range.getBoundingClientRect(),view=(host||container).getBoundingClientRect();
       setAt(beyond.toString().trim()||!(rect.width||rect.height)?null:{x:Math.max(112,Math.min(window.innerWidth-112,rect.left+rect.width/2)),y:Math.max(Math.max(0,view.top)+44,Math.min(Math.min(window.innerHeight,view.bottom)-8,rect.top-7))});
     })};
-    const onKey=event=>{if(event.key==="Escape")clear()};
+    // Tab and Shift+Tab from the selection reach Reload, in any reply, as they reach Cite.
+    const onKey=event=>{if(event.key==="Escape")clear();else if(event.key==="Tab"&&document.activeElement?.contains(window.getSelection()?.anchorNode)){reload.current?.focus();if(document.activeElement===reload.current)event.preventDefault()}};
     document.addEventListener("selectionchange",update);container.addEventListener("pointerup",update);document.addEventListener("keydown",onKey,true);
     host?.addEventListener("scroll",clear,{passive:true});window.addEventListener("resize",clear);update();
     return()=>{
@@ -280,7 +281,7 @@ function CiteUnavailable({containerRef}){
       host?.removeEventListener("scroll",clear);window.removeEventListener("resize",clear);
     };
   },[containerRef]);
-  return at&&<div className="lazy-slot-error cite-unavailable" role="alert" style={{left:at.x,top:at.y}} onPointerDown={event=>event.preventDefault()}><span>Cite could not load.</span><button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>;
+  return at&&<div className="lazy-slot-error cite-unavailable" role="alert" style={{left:at.x,top:at.y}} onPointerDown={event=>event.preventDefault()}><span>Cite could not load.</span><button ref={reload} type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>;
 }
 function DeferredSurface({children,label="Loading…",compact=false}){
   return <LazySlot fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</LazySlot>;

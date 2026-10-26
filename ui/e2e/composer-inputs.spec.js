@@ -4223,3 +4223,81 @@ test("Cite's sentence stays while a citation file brought back by Edit from here
     expect(sentTexts(harness),"the messages the thread has").toEqual(["Explain the session handling","Run the main task",note+" Check this"]);
   }finally{openMain();await harness.close()}
 });
+
+// Cite comes after the last message in the page's order, whichever reply the selection is in, so Tab from text selected in a reply that
+// is not the last went on to the next message's Edit from here, whose Enter asked to remove the messages after it, and Shift+Tab to the
+// one before. Tab and Shift+Tab from a selection in any reply reach the Cite above it, and go on from there; with no Cite shown (after
+// Escape, or nothing selected) Tab goes where it went.
+test("Tab or Shift+Tab from text selected in any reply, not only the last, reaches the Cite above it, and Enter cites that text",async({page})=>{
+  test.setTimeout(120_000);
+  const PARAGRAPHS=["First paragraph about the session token and where it is kept.","Second paragraph about the refresh timer and when it fires."],LAST="You are welcome, ask again any time.",NOTE="Use the cited assistant text as context.";
+  const harness=await openComposerApp(page,{turns:[{user:"Explain the session handling",items:[replyItem("cite-reply-a",PARAGRAPHS.join("\n\n"))]},{user:"Thanks for that",items:[replyItem("cite-reply-b",LAST)]}]});
+  try{
+    const composer=page.getByTestId("composer"),cite=page.getByTestId("assistant-selection-cite"),citations=page.getByTestId("context-chip"),dialog=page.getByRole("dialog");
+    const replies=page.locator(".assistant-message-text"),earlier=replies.first().locator("p"),last=replies.last().locator("p");
+    const editFromHere=page.locator(".user-bubble").getByRole("button",{name:"Edit from here",exact:true});
+    // Where the keyboard is: Cite by its test id, another button by its text (and a message's by that message's).
+    const keyboardOn=()=>page.evaluate(()=>{
+      const node=document.activeElement,bubble=node?.closest(".user-bubble");
+      return !node||node===document.body?"nothing":node.dataset.testid||node.textContent.trim().slice(0,60)+(bubble?" of '"+bubble.querySelector("p").textContent+"'":"");
+    });
+    const reaches=(key,what)=>expect.poll(keyboardOn,{message:"where "+key+" from "+what+" puts the keyboard"}).toBe("assistant-selection-cite");
+    await expect(earlier).toHaveText(PARAGRAPHS);await expect(last).toHaveText([LAST]);await expect(editFromHere).toHaveCount(2);
+    // A triple-click selects a paragraph (a double click its first word), and Cite comes above it once the selection has settled.
+    const select=async(paragraph,text,word=false)=>{
+      await(word?paragraph.dblclick({position:{x:12,y:8}}):paragraph.click({clickCount:3}));await expect(cite).toBeVisible();
+      await expect.poll(()=>page.evaluate(()=>String(getSelection()).trim())).toBe(text);await frames(page);
+    };
+    // What Enter on Cite cites: the text's chip and Cite's sentence in the draft, with no question asked; the chip's x then takes both.
+    const cited=async text=>{
+      await expect(citations).toHaveCount(1);await expect(citations.first()).toContainText("Assistant excerpt");await expect(citations.first()).toContainText(text.length+" chars");
+      await expect(composer).toHaveValue(NOTE+" ");await expect(dialog).toHaveCount(0);
+      await citations.first().getByRole("button",{name:"Remove context"}).click();await expect(citations).toHaveCount(0);await expect(composer).toHaveValue("");
+    };
+    for(const [mode,width] of [["dark",1280],["light",900]]){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      // A paragraph of the earlier reply, a message below it: Tab reaches Cite and Enter cites the paragraph; so does Shift+Tab, and
+      // Tab from a word double-clicked or words dragged over there. Then the last reply's, as before.
+      await select(earlier.nth(0),PARAGRAPHS[0]);
+      await page.keyboard.press("Tab");await reaches("Tab","text selected in the earlier reply");await expect(cite).toBeFocused();
+      await page.screenshot({animations:"disabled",path:auditDir+"cite-tab-from-an-earlier-reply-"+mode+"-"+width+"x800.png"});
+      await page.keyboard.press("Enter");await cited(PARAGRAPHS[0]);
+      await select(earlier.nth(1),PARAGRAPHS[1]);
+      await page.keyboard.press("Shift+Tab");await reaches("Shift+Tab","text selected in the earlier reply");
+      await page.keyboard.press("Enter");await cited(PARAGRAPHS[1]);
+      await select(earlier.nth(1),"Second",true);
+      await page.keyboard.press("Tab");await reaches("Tab","a word double-clicked in the earlier reply");
+      await page.keyboard.press("Enter");await cited("Second");
+      const box=await earlier.nth(0).boundingBox(),y=box.y+box.height/2;
+      await page.mouse.move(box.x+2,y);await page.mouse.down();await page.mouse.move(box.x+140,y,{steps:6});await page.mouse.up();
+      await expect(cite).toBeVisible();const dragged=await page.evaluate(()=>String(getSelection()).trim());expect(dragged.length).toBeGreaterThan(5);await frames(page);
+      await page.keyboard.press("Tab");await reaches("Tab","words dragged over in the earlier reply");
+      await page.keyboard.press("Enter");await cited(dragged);
+      await select(last.nth(0),LAST);
+      await page.keyboard.press("Tab");await reaches("Tab","text selected in the last reply");
+      await page.keyboard.press("Enter");await cited(LAST);
+    }
+    await switchMode(page,"dark");await page.setViewportSize({width:1280,height:800});
+    // From Cite, Tab and Shift+Tab go on, and from what they reach go on again: neither keeps or brings the keyboard back to Cite.
+    for(const key of ["Tab","Shift+Tab"]){
+      await select(earlier.nth(0),PARAGRAPHS[0]);
+      await page.keyboard.press(key);await reaches(key,"text selected in the earlier reply");
+      for(const from of ["Cite","what it reached from Cite"]){
+        await page.keyboard.press(key);await expect.poll(keyboardOn,{message:"where "+key+" from "+from+" puts the keyboard"}).not.toMatch(/^(assistant-selection-cite|nothing)$/);
+      }
+    }
+    // With no Cite shown, Tab goes where it went: from a selection that Escape took Cite away from, to the next message's Edit from
+    // here, whose Enter asks as before (Escape keeps the messages); from a click on the question that selects nothing, to its own.
+    await select(earlier.nth(0),PARAGRAPHS[0]);
+    await page.keyboard.press("Escape");await expect(cite).toHaveCount(0);
+    await page.keyboard.press("Tab");await expect(editFromHere.nth(1)).toBeFocused();
+    await page.keyboard.press("Enter");await expect(dialog).toContainText("Edit from this message?");await expect(dialog.getByRole("button",{name:"Cancel",exact:true})).toBeFocused();
+    await page.keyboard.press("Escape");await expect(dialog).toHaveCount(0);
+    await page.locator(".user-bubble p").first().click();await expect(cite).toHaveCount(0);
+    await page.keyboard.press("Tab");await expect(editFromHere.nth(0)).toBeFocused();await expect(cite).toHaveCount(0);
+    // A click on Cite cites as before.
+    await select(earlier.nth(0),PARAGRAPHS[0]);await cite.click();await cited(PARAGRAPHS[0]);
+    await expect(page.locator(".user-bubble > p")).toHaveText(["Explain the session handling","Thanks for that"]);
+    expect(sentTexts(harness),"the messages the thread has").toEqual(["Explain the session handling","Thanks for that"]);
+  }finally{await harness.close()}
+});

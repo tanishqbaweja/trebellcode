@@ -1017,3 +1017,35 @@ test("a Cite whose script cannot load says so only where its button would come, 
     await appStays(page);
   }finally{await harness.close()}
 });
+
+// The notice comes after the conversation's last message in the page's order, as Cite does, so Tab from text selected in a reply that
+// was not the last went to the next message's Edit from here, and Shift+Tab to the one before. Both reach its Reload from any reply.
+test("the Reload of a Cite whose script cannot load is reached by Tab and Shift+Tab from text selected in any reply, not only the last",async({page})=>{
+  test.setTimeout(60_000);
+  let refused=0;
+  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const {harness}=await openRelayThreads(page,[{name:"Quill release",turns:[{user:"Plan the release",reply:"The release plan is ready."},{user:"Thanks for that",reply:"Glad to help."}]}]);
+  try{
+    await expect.poll(()=>refused,{message:"the parts asked for at idle"}).toBeGreaterThan(0);
+    await openRelayThread(page,"Quill release","Glad to help.");
+    const notice=page.locator(".cite-unavailable"),reload=notice.getByRole("button",{name:"Reload",exact:true});
+    const earlier=page.locator(".assistant-message-text").first().locator("p").first(),editFromHere=page.locator(".user-bubble").getByRole("button",{name:"Edit from here",exact:true});
+    await expect(earlier).toHaveText("The release plan is ready.");await expect(editFromHere).toHaveCount(2);
+    for(const key of ["Tab","Shift+Tab"]){
+      await earlier.click({clickCount:3});await expect(notice).toBeVisible();
+      await page.keyboard.press(key);await expect(reload,key+" from text selected in the earlier reply").toBeFocused();
+      await page.keyboard.press("Escape");await expect(notice).toHaveCount(0);
+    }
+    // With the notice away, Tab goes where it went: to the next message's Edit from here.
+    await earlier.click({clickCount:3});await expect(notice).toBeVisible();
+    await page.keyboard.press("Escape");await expect(notice).toHaveCount(0);
+    await page.keyboard.press("Tab");await expect(editFromHere.nth(1)).toBeFocused();
+    // Enter on the Reload reached so loads Trebell again.
+    await earlier.click({clickCount:3});await expect(notice).toBeVisible();
+    await page.keyboard.press("Tab");await expect(reload).toBeFocused();
+    await page.screenshot({animations:"disabled",path:auditDir+"cite-cannot-load-tab-from-an-earlier-reply-dark-1280x800.png"});
+    await Promise.all([page.waitForEvent("load"),page.keyboard.press("Enter")]);
+    await expect(page.locator(".thread-row")).toHaveCount(1,{timeout:10_000});
+    await appStays(page);
+  }finally{await harness.close()}
+});
