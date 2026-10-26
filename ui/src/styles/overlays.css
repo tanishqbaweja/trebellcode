@@ -268,22 +268,32 @@
    room's shortfall, times a large number and cut at the whole way down, is 0 or that way). The room App gives the composer
    above the drawer is read down to its status line, so a menu under it takes none of the drawer's (App.jsx, onRoom).
    The toasts that show under the header while a menu is open (with-composer-menu, below) take their band out of that room
-   (--tb-toast-band, App): a capped menu began on their line, and a toast up lay over its first rows. The model picker's menu
+   (--tb-toast-band, App): a capped menu began on their line, and a toast up lay over its first rows. Whether a menu opens
+   under the composer is read on the room without that band, so a toast only shortens a menu over the composer: read with it,
+   a toast that came or went on its own timer (a background poll's failure, 6 s, an archive's Undo, 5 s) moved the open menu
+   across the composer, over the drawer's tabs and back, under a press aimed at it. The model picker's menu
    takes the room over its button the same way (--picker-foot, how far the button stands over the composer's foot: Composer)
    and opens under its button where that room is under four rows: at the drawer's tallest it went over the window's top, with
    its search box and the rows over the checked model. A menu moved under the composer or the picker's button, over the
    drawer, shows only while the composer has the keyboard: it stayed over the drawer's tabs and screen as the person went to
    work in the terminal, and took the presses meant for them. No selector reads whether a menu moved, so its way down, cut at
-   1px and times a large number, clips all of it away or none of it (the 150px left round it keep its shadow). */
+   1px and times a large number, clips all of it away or none of it (the 150px left round it keep its shadow). A window gone
+   to the background leaves the keyboard where it was, though Chrome matches no :focus-within then: the composer marks that
+   it had the keyboard (data-kept, App), so the menu stays drawn, where it went away and came back under the press that
+   brought the window back, which then picked an entry the person could not see. */
 .chat-workspace .composer-wrap{--menu-room:calc(100vh - 24px - var(--composer-height,115px) - var(--tb-toast-top) - var(--tb-toast-band,0px));--menu-space:var(--menu-room);--picker-room:calc(var(--menu-room) + var(--composer-height,115px) - var(--picker-foot,68px));--picker-space:var(--picker-room)}
-.main-frame.terminal-open .chat-workspace .composer-wrap{--menu-room:calc(100vh - var(--terminal-height,330px) - 20px - var(--composer-height,115px) - var(--tb-toast-top) - var(--tb-toast-band,0px));--menu-down:max(0px,(150px - var(--menu-room))*1000000);--menu-space:max(var(--menu-room),min(var(--menu-down),var(--terminal-height,330px) - 8px));--picker-down:max(0px,(150px - var(--picker-room))*1000000);--picker-space:max(var(--picker-room),min(var(--picker-down),var(--terminal-height,330px) + var(--picker-foot,68px) - 34px))}
+.main-frame.terminal-open .chat-workspace .composer-wrap{--menu-room:calc(100vh - var(--terminal-height,330px) - 20px - var(--composer-height,115px) - var(--tb-toast-top) - var(--tb-toast-band,0px));--menu-down:max(0px,(150px - var(--menu-room) - var(--tb-toast-band,0px))*1000000);--menu-space:max(var(--menu-room),min(var(--menu-down),var(--terminal-height,330px) - 8px));--picker-down:max(0px,(150px - var(--picker-room) - var(--tb-toast-band,0px))*1000000);--picker-space:max(var(--picker-room),min(var(--picker-down),var(--terminal-height,330px) + var(--picker-foot,68px) - 34px))}
 .chat-workspace .composer-wrap .slash-menu{max-height:min(280px,var(--menu-space))}
 .chat-workspace .composer-wrap .file-mention-menu{max-height:min(362px,var(--menu-space))}
 .chat-workspace .composer-wrap .model-picker-menu{max-height:min(340px,var(--picker-space))}
 .main-frame.terminal-open .chat-workspace .composer-wrap>:is(.slash-menu,.file-mention-menu){translate:0 min(var(--menu-down),100% + var(--composer-height,115px) + 14px)}
 .main-frame.terminal-open .chat-workspace .composer-wrap .model-picker-menu{translate:0 min(var(--picker-down),100% + 46px)}
-.main-frame.terminal-open .chat-workspace .composer-wrap:not(:focus-within)>:is(.slash-menu,.file-mention-menu){clip-path:inset(calc(min(var(--menu-down),1px)*1000000 - 150px) -150px -150px)}
-.main-frame.terminal-open .chat-workspace .composer-wrap:not(:focus-within) .model-picker-menu{clip-path:inset(calc(min(var(--picker-down),1px)*1000000 - 150px) -150px -150px)}
+.main-frame.terminal-open .chat-workspace .composer-wrap:not(:focus-within,[data-kept])>:is(.slash-menu,.file-mention-menu){clip-path:inset(calc(min(var(--menu-down),1px)*1000000 - 150px) -150px -150px)}
+.main-frame.terminal-open .chat-workspace .composer-wrap:not(:focus-within,[data-kept]) .model-picker-menu{clip-path:inset(calc(min(var(--picker-down),1px)*1000000 - 150px) -150px -150px)}
+/* A runtime profile that is off (unavailable, signed out, switching, or all while a turn runs) passes a press to the picker's
+   menu, which keeps the keyboard where it was (App.jsx, modelMenuMouseDown): Chrome sends no mousedown for a press on a disabled
+   button and took the keyboard to the page, which hid the picker opened over the drawer from under the pointer. */
+.composer-wrap .model-runtime-profiles>button:disabled{pointer-events:none}
 /* Thread row "…" menu. Absolutely positioned inside the scrolling thread list, it was clipped by that list: on the last
    rows only "Pin" showed and Archive/Delete could not be reached. Fixed and anchored to its button, it escapes the list's
    clip (the sidebar's container-type makes the sidebar its containing block), follows the button while the list

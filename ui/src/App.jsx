@@ -1100,8 +1100,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     event.preventDefault();if(!modelOpen)setModelOpen(true);
     focusModelOption(event.key==="ArrowUp"?"last":"current");
   }
-  // A press in the menu off its options and its search box (its edge, a note) leaves the keyboard where it was, in the composer: the
-  // menu opened under its button, over the terminal drawer, shows only while the composer has it (overlays.css).
+  // A press in the menu off its options and its search box (its edge, a note, a runtime profile that is off, which passes its press
+  // here: overlays.css) leaves the keyboard where it was, in the composer: the menu opened under its button, over the terminal drawer,
+  // shows only while the composer has it (overlays.css).
   function modelMenuMouseDown(event){if(!event.target.closest("button,input"))event.preventDefault()}
   function modelMenuKeyDown(event){
     if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;
@@ -1155,7 +1156,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     :providerReady?(runtimeSwitchLabel||(!transportReady?transportMessage:running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"))
     :modelProviderRuntime?`Configure ${providerLabel} in Settings…`
     :`Configure ${agentRuntimeLabel} in Settings…`;
-  return <div ref={wrapRef} className={"composer-wrap"+(prompt.length>=LONG_DRAFT_CHARS?" long-draft":"")} onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
+  // The composer marks a keyboard it keeps while the window is in the background (data-kept: blurred with the document's focus gone,
+  // as another app, a browser tab or DevTools takes it), which a menu moved over the terminal drawer shows by, as by :focus-within,
+  // which Chrome matches in no window in the background (overlays.css). A blur in the page clears it.
+  return <div ref={wrapRef} className={"composer-wrap"+(prompt.length>=LONG_DRAFT_CHARS?" long-draft":"")} onBlur={e=>e.currentTarget.toggleAttribute("data-kept",!document.hasFocus())} onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
     {/* A command takes only a press of its own too, as a file of the @ menu does (below): the menu goes with the pick, and the second
         click of a double click landed on what was under it, over the terminal drawer (overlays.css) a tab, which took the keyboard
         out of the composer, or its close button, which ended its terminal. A press on either menu's edge leaves the keyboard in the
@@ -1380,14 +1384,13 @@ export default function App(){
   const [snoozeRequest,setSnoozeRequest]=useState(null); const [threadUndo,setThreadUndo]=useState(null); const [actionError,setActionError]=useState("");
   // The band the toasts take under the header, where they show while a composer menu is open (with-composer-menu), on the workspace
   // shell (--tb-toast-band), which the menu's room over the composer leaves them (overlays.css): the undo toast's 44px, and the error
-  // toast as tall as its lines, as it wraps in the column's width, each with 8px under it. A menu that room capped began on the toasts'
-  // line, and a toast up over it covered its first rows, the one Enter or Tab picks.
+  // toast as tall as its lines as it shows, each with 8px under it. A menu that room capped began on the toasts' line, and a toast up
+  // over it covered its first rows, the one Enter or Tab picks.
   const workspaceShellRef=useRef(null);
   useLayoutEffect(()=>{
     const shell=workspaceShellRef.current,error=actionError&&shell?.querySelector(":scope>.app-action-error-toast");if(!shell)return;
-    const band=()=>shell.style.setProperty("--tb-toast-band",(threadUndo?52:0)+(error?error.offsetHeight+8:0)+"px");band();
-    const observer=error&&typeof ResizeObserver!=="undefined"?new ResizeObserver(band):null;observer?.observe(error);
-    return()=>{observer?.disconnect();shell.style.removeProperty("--tb-toast-band")};
+    shell.style.setProperty("--tb-toast-band",(threadUndo?52:0)+(error?error.offsetHeight+8:0)+"px");
+    return()=>shell.style.removeProperty("--tb-toast-band");
   },[actionError,threadUndo]);
   const [goal,setGoal]=useState(null); const [continuity,setContinuity]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]); const [sourceSelectedPr,setSourceSelectedPr]=useState(null);
   const [worktreeSetup,setWorktreeSetup]=useState(null);
