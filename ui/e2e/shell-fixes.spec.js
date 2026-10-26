@@ -44,7 +44,7 @@ async function startHarness(threads,{respond=()=>undefined}={}){
   };
 }
 
-async function openApp(page,{harness,threads,meta,project=null,runtime="codex",settings={},layout={sidebarWidth:258,rightPanelWidth:460,terminalHeight:330},cwd=process.cwd(),settingsFailure=()=>""}){
+async function openApp(page,{harness,threads,meta,project=null,runtime="codex",settings={},layout={sidebarWidth:258,rightPanelWidth:460,terminalHeight:330},cwd=process.cwd(),settingsFailure=()=>"",models=["fixture-model"]}){
   const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   const appSettings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...(project?{activeProjectId:project.id}:{}),...settings};
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:runtime+"-default",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd,platform:process.platform,version:"shell-fixes-fixture",activeEnvironmentId:null,activeEnvironment:null}));
@@ -55,7 +55,9 @@ async function openApp(page,{harness,threads,meta,project=null,runtime="codex",s
     const failure=settingsFailure();if(failure)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:failure})});
     return json(route,Object.assign(appSettings,route.request().postDataJSON()||{}));
   });
-  await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,{models:["fixture-model"],metadata:{provider:runtime,models:[{id:"fixture-model",name:"Fixture Model",provider:runtime,agent:"Fixture"}]}}));
+  // The harness's catalog: the fixture's model, or the models a test names, each named as its id but the fixture's, which a longer
+  // catalog names its default, so the composer starts on it.
+  await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,{models,...(models.length>1?{defaultModel:"fixture-model"}:{}),metadata:{provider:runtime,models:models.map(id=>({id,name:id==="fixture-model"?"Fixture Model":id,provider:runtime,agent:"Fixture"}))}}));
   await page.route(/\/api\/thread-meta(?:\?|$)/,route=>{const id=new URL(route.request().url()).searchParams.get("threadId")||route.request().postDataJSON?.()?.threadId;return json(route,meta[id]||{projectless:!project,environmentId:null})});
   await page.route(/\/api\/checkpoints(?:\?|$)/,route=>json(route,route.request().method()==="GET"?{checkpoints:[]}:{supported:false}));
   await page.route(/\/api\/projects$/,route=>json(route,{projects:project?[project]:[],...(project?{project}:{})}));
@@ -3439,4 +3441,285 @@ for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`zoomed 
       await expect.poll(()=>page.evaluate(()=>innerHeight),{message:"the window is 640 CSS pixels tall at 125%"}).toBe(640);await settle(page);
     }});
   }finally{await context?.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
+});
+
+// Repair of UI lane C, round 12: the composer's menus against the terminal drawer's terminals, the toasts and the model picker.
+// A / or @ menu moved under the composer, over the drawer (where the room over the composer is under four rows: from about 420px at
+// 1280 by 800), opens and closes with the draft only, so it stayed there as the person went to work in the terminal: over the drawer's
+// session tabs and the top of its screen, where a press meant for a tab picked the menu's entry instead, and an @ entry imported its
+// file. And the / menu's commands choose on the press itself, with nothing to take the rest of it, so the second press of a double
+// click on one there landed on what lay under the closed menu: a tab, which took the keyboard out of the composer, or the tab's close
+// button, which ended its terminal and killed its shell without asking (the @ menu's files take the rest of their press already). So
+// in the desktop app and in a browser, at 1280 by 800, with two terminals in the drawer at its tallest: each menu typed open under the
+// composer, over the drawer, stays so with the keyboard in the composer after a press on its edge (which took the keyboard to the
+// page, and so the menu away from under the pointer), and the terminal's command line then pressed leaves the drawer's tabs and
+// screen under where the menu was answering presses at their middle and the keys going to the command line, and the menu shows
+// again, its first entry in view, once the composer has the keyboard back; a double click on a command over the other tab and over a
+// tab's close button, and a press on one over a tab, put the command in the draft and leave the tabs, the terminal shown and the
+// keyboard as they were. At the drawer's shortest the menus open over the composer, clear of the drawer, and stay so while the
+// terminal has the keyboard, as they do with the drawer closed while the sidebar has it (composer-inputs.spec.js).
+const menuTerminals=()=>["Terminal 1","Terminal 2"].map((name,index)=>({id:"menu-terminal-"+(index+1),name,cwd:process.cwd(),environmentId:null,environmentName:"Local machine",environmentType:"local",cols:120,rows:32,running:true,exitCode:null,createdAt:Date.now()-2000+index*1000,updatedAt:Date.now(),buffer:""}));
+// The server's side of the drawer's terminals: it lists them, a terminal's socket says it runs and shows what it printed, and a close
+// asks it to end that terminal (closed: the terminals asked to end).
+async function routeMenuTerminals(page,terminals){
+  const closed=[],json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>{
+    const request=route.request();
+    if(request.method()==="DELETE"){closed.push(new URL(request.url()).searchParams.get("id"));return json(route,{ok:true})}
+    return request.method()==="GET"?json(route,{sessions:terminals}):route.fallback();
+  });
+  await page.route(/\/api\/project-script\/runs(?:\?.*)?$/,route=>json(route,{runs:{}}));
+  await page.routeWebSocket(/\/api\/terminal\/ws\?/,ws=>{
+    const url=new URL(ws.url()),session=terminals.find(item=>item.id===url.searchParams.get("session"));
+    if(url.searchParams.get("watch")==="1"){ws.send(JSON.stringify({type:"state",running:true,exitCode:null}));return}
+    ws.send(JSON.stringify({type:"snapshot",session:{...session,buffer:Array.from({length:60},(_,line)=>`${session?.name} output line ${line+1}`).join("\r\n")+"\r\n"}}));
+  });
+  return closed;
+}
+// The drawer opened from the header, or from More actions where the header folds its button there.
+async function openTerminalDrawer(page){
+  const toggle=page.getByTestId("terminal-toggle");
+  if(await toggle.isVisible())await toggle.click();
+  else{await page.locator(".chat-workspace .workspace-header").getByRole("button",{name:"More actions",exact:true}).click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:"Terminal"}).click()}
+  await expect(page.getByTestId("drawer")).toBeVisible();
+}
+// A composer menu's box as it is drawn, whether it is under the composer, and its first entry, with whether a press at its middle
+// lands on it.
+const readComposerMenu=menu=>menu.evaluate(node=>{
+  const rect=node.getBoundingClientRect(),wrap=node.closest(".composer-wrap").getBoundingClientRect(),first=node.querySelector("button"),box=first.getBoundingClientRect(),hit=document.elementFromPoint(box.left+box.width/2,box.top+box.height/2);
+  return {left:+rect.left.toFixed(2),right:+rect.right.toFixed(2),top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2),under:rect.top>=wrap.bottom,first:{name:first.querySelector("strong").textContent,top:+box.top.toFixed(2),bottom:+box.bottom.toFixed(2),pressed:Boolean(hit&&first.contains(hit))}};
+});
+// The drawer's tab buttons and the terminal's screen a box lies over, each with whether a press at the middle of what of it the box
+// covers lands on it.
+const drawerUnder=(page,box)=>page.evaluate(box=>[...document.querySelectorAll("[data-testid=drawer] :is(.terminal-tab-select,.terminal-tab-close,.terminal-pane.active .terminal-screen)")].flatMap(node=>{
+  const rect=node.getBoundingClientRect(),left=Math.max(rect.left,box.left),right=Math.min(rect.right,box.right),top=Math.max(rect.top,box.top),bottom=Math.min(rect.bottom,box.bottom);
+  if(right-left<4||bottom-top<4)return [];
+  const hit=document.elementFromPoint((left+right)/2,(top+bottom)/2);
+  return [{name:node.matches(".terminal-screen")?"the terminal's screen":node.getAttribute("aria-label")||"the tab "+node.textContent.trim(),answers:Boolean(hit&&node.contains(hit))}];
+}),box);
+for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`a / or @ menu under the composer, over the terminal drawer at its tallest, shows only while the composer has the keyboard, and a press or a double click on a command over the drawer's tabs leaves them as they were, at 1280 by 800 in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(180_000);
+  await page.setViewportSize({width:1280,height:800});
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads),terminals=menuTerminals(),tag=`${shell}-${mode}`;
+  try{
+    await page.route(/\/api\/workspace\/search\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:ledgerFiles})}));
+    const closed=await routeMenuTerminals(page,terminals);
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),drawer=page.getByTestId("drawer"),handle=page.getByTestId("terminal-resizer"),composer=page.getByTestId("composer");
+    const slash=page.locator(".chat-workspace .composer-wrap .slash-menu"),mention=page.getByTestId("file-mention-menu"),tabs=drawer.locator(".terminal-tab"),shownTab=drawer.locator(".terminal-tab.active bdi"),line=drawer.locator(".terminal-pane.active .terminal-command-line input");
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    await openTerminalDrawer(page);await expect(tabs).toHaveCount(2);await expect(line).toBeEnabled();
+    const drawerAt=async(key,want,where)=>{await focusTerminalHandle(page);await page.keyboard.press(key);await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:`the drawer ${where}`}).toBe(want??Number(await handle.getAttribute("aria-valuemax")))};
+    const clear=async()=>{await composer.click();await page.keyboard.press("Control+a");await page.keyboard.press("Delete");await expect(composer).toHaveValue("")};
+    const typeOpen=async(menu,typed)=>{await composer.click();await page.keyboard.type(typed,{delay:5});await expect(menu).toBeVisible();if(menu===mention)await expect(mention.locator("button")).toHaveCount(8);await settle(page);return readComposerMenu(menu)};
+    const menus=[["/",slash,"/","slash"],["@",mention,"Check @ledger","mention"]];
+    await drawerAt("End",null,"at its tallest");
+    const tallest=Number(await handle.getAttribute("aria-valuenow"));
+    for(const [kind,menu,typed,name] of menus){
+      const open=await typeOpen(menu,typed),where=`at the drawer's tallest, ${tallest}px`;
+      expect.soft([open.under,open.first.pressed],`the ${kind} menu ${where}: under the composer, over the drawer, with its first entry, ${open.first.name}, in view`).toEqual([true,true]);
+      const covered=await drawerUnder(page,open);
+      expect(covered.map(item=>item.name),`what of the drawer the ${kind} menu ${where} lies over`).toContain("the terminal's screen");
+      expect(covered.some(item=>item.name.startsWith("the tab ")||item.name.startsWith("Close ")),`the ${kind} menu ${where} lies over a tab of the drawer: ${covered.map(item=>item.name).join(", ")}`).toBe(true);
+      // A press on the menu's edge, beside its first entry, leaves the keyboard in the composer and the menu shown.
+      await page.mouse.click(open.left+3,(open.first.top+open.first.bottom)/2);await settle(page);
+      const edge=await readComposerMenu(menu);
+      expect.soft([await composer.evaluate(node=>node===document.activeElement),edge.under,edge.first.pressed],`the keyboard in the composer, and the ${kind} menu ${where} under it with its first entry in view, after a press on the menu's edge`).toEqual([true,true,true]);
+      // The terminal's command line pressed, as a person goes to work in the terminal: what of the drawer was under the menu takes
+      // presses, and the keys go to the command line.
+      await line.click();await expect(line).toBeFocused();await settle(page);
+      expect.soft((await drawerUnder(page,open)).filter(item=>!item.answers).map(item=>item.name),`what of the drawer under where the ${kind} menu was ${where}, a press at its middle missing it, once the terminal's command line has the keyboard`).toEqual([]);
+      await page.screenshot({path:join(shotsDir,`composer-menu-terminal-${tag}-${name}-tallest-terminal.png`),animations:"disabled"});
+      await page.keyboard.type("ls",{delay:5});await expect.soft(line,`the keys typed in the terminal's command line ${where}`).toHaveValue("ls");await expect.soft(composer).toHaveValue(typed);
+      // The composer given the keyboard back: the menu shows again.
+      await composer.focus();await settle(page);
+      const again=await readComposerMenu(menu);
+      expect.soft([again.under,again.first.pressed],`the ${kind} menu ${where} once the composer has the keyboard back: under the composer, with its first entry, ${again.first.name}, in view`).toEqual([true,true]);
+      await page.screenshot({path:join(shotsDir,`composer-menu-terminal-${tag}-${name}-tallest-composer.png`),animations:"disabled"});
+      await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+      await line.fill("");await clear();
+    }
+    // A double click on a command of the / menu over the other tab and over a tab's close button, and a press on one over a tab: the
+    // command goes into the draft, and the tabs, the terminal shown and the keyboard stay as they were.
+    const overDrawer=selector=>page.evaluate(selector=>{
+      const commands=[...document.querySelectorAll(".chat-workspace .composer-wrap .slash-menu button")];
+      for(const node of document.querySelectorAll(selector)){
+        const box=node.getBoundingClientRect(),x=box.left+box.width/2,y=box.top+box.height/2;
+        const command=commands.find(item=>{const rect=item.getBoundingClientRect();return x>rect.left+2&&x<rect.right-2&&y>rect.top+2&&y<rect.bottom-2});
+        if(command)return {x,y,command:command.querySelector("strong").textContent,over:node.getAttribute("aria-label")||"the tab "+node.textContent.trim()};
+      }
+      return null;
+    },selector);
+    for(const [how,selector,twice] of [["a double click","[data-testid=drawer] .terminal-tab:not(.active) .terminal-tab-select",true],["a double click","[data-testid=drawer] .terminal-tab-close",true],["a press","[data-testid=drawer] .terminal-tab-select",false]]){
+      const count=await tabs.count(),shown=await shownTab.textContent(),ended=closed.length;
+      await typeOpen(slash,"/");
+      const target=await overDrawer(selector);
+      expect(target,`a command of the / menu over ${selector}`).not.toBeNull();
+      if(twice)await page.mouse.dblclick(target.x,target.y);else await page.mouse.click(target.x,target.y);
+      const what=`${how} on ${target.command} over ${target.over}`;
+      await expect.soft(composer,`the draft after ${what}`).toHaveValue(target.command+" ");
+      await settle(page);
+      expect.soft(await composer.evaluate(node=>node===document.activeElement),`the keyboard in the composer after ${what}`).toBe(true);
+      await expect.soft(tabs,`the drawer's tabs after ${what}`).toHaveCount(count);
+      await expect.soft(shownTab,`the terminal shown after ${what}`).toHaveText(shown);
+      expect.soft(closed.slice(ended),`the terminals ended by ${what}`).toEqual([]);
+      await clear();
+    }
+    // At the drawer's shortest the menus open over the composer, clear of the drawer, and stay so while the terminal has the keyboard.
+    await drawerAt("Home",190,"at its shortest");
+    for(const [kind,menu,typed,name] of menus){
+      const open=await typeOpen(menu,typed),where="at the drawer's shortest, 190px";
+      expect.soft([open.under,open.first.pressed],`the ${kind} menu ${where}: over the composer, with its first entry, ${open.first.name}, in view`).toEqual([false,true]);
+      await line.click();await expect(line).toBeFocused();await settle(page);
+      const kept=await readComposerMenu(menu);
+      expect.soft([kept.under,kept.first.pressed],`the ${kind} menu ${where} while the terminal's command line has the keyboard: over the composer, with its first entry, ${kept.first.name}, in view`).toEqual([false,true]);
+      await page.screenshot({path:join(shotsDir,`composer-menu-terminal-${tag}-${name}-shortest-terminal.png`),animations:"disabled"});
+      await composer.focus();await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await clear();
+    }
+  }finally{await harness.close()}
+});
+
+// Repair of UI lane C, round 12: the room the / and @ menus open in over the composer ended at the toasts' line under the header, and
+// a menu that room capped began there, so a toast up while a menu is open, which shows under the header then, lay over its first
+// rows, the one Enter or Tab picks: with the terminal drawer as it opens, 330px, where both menus are capped at 1280 by 800, a failed
+// action's toast (6 s) or an archive's undo toast (5 s) covered the first entry. The toasts' band is left out of the room while they
+// show, so the menu begins under the lowest of them, or opens under the composer, over the drawer, where what is left is under four
+// rows. So in the desktop app and in a browser, at 1280 by 800 with the drawer at 330px: each menu typed open, then Ctrl+S failing,
+// and then a thread archived from the sidebar and Ctrl+S failing again, the composer given the keyboard back, keeps both toasts
+// clear of the menu, with its first entry and the one the keys choose in view, where a press at their middle lands on them, under
+// the header and in the window.
+for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`with the terminal drawer as it opens, a failed Ctrl+S's toast and an archive's undo toast keep clear of the composer's / and @ menus, their first entry and the one the keys choose in view, at 1280 by 800 in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(180_000);
+  await page.setViewportSize({width:1280,height:800});
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads),tag=`${shell}-${mode}`,refused="Could not stash or restore draft: The stash store is read-only.";
+  try{
+    await page.route(/\/api\/workspace\/search\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:ledgerFiles})}));
+    // A stash the server refuses, as composer-inputs.spec.js scripts it: Ctrl+S then says so in the error toast.
+    await page.route(/\/api\/stashes(?:\?.*)?$/,route=>route.fulfill(route.request().method()==="POST"?{status:500,contentType:"application/json",body:JSON.stringify({error:"The stash store is read-only."})}:{status:200,contentType:"application/json",body:JSON.stringify({stashes:[]})}));
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),handle=page.getByTestId("terminal-resizer"),composer=page.getByTestId("composer"),alert=page.getByTestId("app-action-error"),undoToast=page.getByTestId("thread-undo-toast");
+    const slash=page.locator(".chat-workspace .composer-wrap .slash-menu"),mention=page.getByTestId("file-mention-menu");
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    await openTerminalDrawer(page);await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:"the drawer as it opens"}).toBe(330);
+    // The menu as it is drawn, the header's foot, the window's height, the toasts up, and the menu's first entry and the one the keys
+    // chose, each with whether a press at its middle lands on it.
+    const read=menu=>menu.evaluate(node=>{
+      const entry=item=>{const rect=item.getBoundingClientRect(),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);return {name:item.querySelector("strong").textContent,top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2),pressed:Boolean(hit&&item.contains(hit))}};
+      const box=item=>{const rect=item.getBoundingClientRect();return {left:+rect.left.toFixed(2),right:+rect.right.toFixed(2),top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2)}};
+      return {...box(node),header:+document.querySelector(".chat-workspace .workspace-header").getBoundingClientRect().bottom.toFixed(2),window:innerHeight,toasts:[...document.querySelectorAll("[data-testid=thread-undo-toast],[data-testid=app-action-error]")].map(box),first:entry(node.querySelector("button")),chosen:entry(node.querySelector("button.active"))};
+    });
+    const settled=async(menu,where)=>{let state=null;await expect.poll(async()=>{await settle(page);const next=await read(menu),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same},{message:`the ${where} settles`,intervals:[50]}).toBe(true);return state};
+    // The menu under the header and in the window, the toasts up clear of it, and its first entry and the one the keys chose in view in
+    // it, where a press at their middle lands on them.
+    const shown=(state,where,toasts)=>{
+      expect.soft(state.toasts.length,`the toasts up with the ${where}`).toBe(toasts);
+      expect.soft(state.top,`the top of the ${where}, against the header's foot at ${state.header}px`).toBeGreaterThanOrEqual(state.header);
+      expect.soft(state.bottom,`the foot of the ${where}, against the window's foot at ${state.window}px`).toBeLessThanOrEqual(state.window);
+      for(const toast of state.toasts)expect.soft(toast.bottom<=state.top||toast.top>=state.bottom||toast.right<=state.left||toast.left>=state.right,`the toast from ${toast.top} to ${toast.bottom}px clear of the ${where}, from ${state.top} to ${state.bottom}px`).toBe(true);
+      for(const [which,entry] of [["its first entry",state.first],["the entry the keys chose",state.chosen]])
+        expect.soft(entry.top>=state.top-0.5&&entry.bottom<=state.bottom+0.5&&entry.pressed,`${which} in the ${where}, ${entry.name} from ${entry.top} to ${entry.bottom}px, in view in the menu from ${state.top} to ${state.bottom}px, where a press at its middle lands on it`).toBe(true);
+    };
+    for(const [kind,menu,typed,name] of [["/",slash,"/","slash"],["@",mention,"Check @ledger","mention"]]){
+      await expect(alert).toHaveCount(0,{timeout:10_000});await expect(undoToast).toHaveCount(0,{timeout:10_000});
+      await composer.click();await page.keyboard.type(typed,{delay:5});await expect(menu).toBeVisible();if(menu===mention)await expect(mention.locator("button")).toHaveCount(8);
+      shown(await settled(menu,`${kind} menu at the drawer's 330px`),`${kind} menu at the drawer's 330px`,0);
+      // Ctrl+S, which the server refuses: its toast under the header.
+      await page.keyboard.press("Control+s");await expect(alert).toHaveText(refused);
+      shown(await settled(menu,`${kind} menu with a failed Ctrl+S's toast`),`${kind} menu with a failed Ctrl+S's toast`,1);
+      await page.screenshot({path:join(shotsDir,`composer-menu-toasts-${tag}-${name}-error.png`),animations:"disabled"});
+      for(const key of ["ArrowDown","ArrowDown","ArrowUp"]){await page.keyboard.press(key);shown(await settled(menu,`${kind} menu with a failed Ctrl+S's toast after ${key}`),`${kind} menu with a failed Ctrl+S's toast after ${key}`,1)}
+      // A thread archived from its row's menu in the sidebar, and Ctrl+S refused again: the undo toast under the header and the error
+      // toast under it, and the composer given the keyboard back.
+      const row=threadRow(page,threads[1].name);await row.hover();await row.locator(".thread-menu summary").click();await expect(row.locator(".thread-menu")).toHaveAttribute("open","");
+      await row.getByRole("button",{name:"Archive",exact:true}).click();await expect(row).toHaveCount(0);await expect(undoToast).toContainText("Thread archived");
+      await page.keyboard.press("Control+s");await expect(alert).toHaveText(refused);
+      await composer.focus();
+      shown(await settled(menu,`${kind} menu with an archive's undo toast and a failed Ctrl+S's toast`),`${kind} menu with an archive's undo toast and a failed Ctrl+S's toast`,2);
+      await page.screenshot({path:join(shotsDir,`composer-menu-toasts-${tag}-${name}-undo-error.png`),animations:"disabled"});
+      await page.keyboard.press("ArrowDown");shown(await settled(menu,`${kind} menu with both toasts after ArrowDown`),`${kind} menu with both toasts after ArrowDown`,2);
+      // The archive undone, the menu closed and the draft emptied for the next menu.
+      await undoToast.getByRole("button",{name:"Undo",exact:true}).click();await expect(undoToast).toHaveCount(0);await expect(threadRow(page,threads[1].name)).toHaveCount(1);
+      await composer.focus();await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+      await composer.click();await page.keyboard.press("Control+a");await page.keyboard.press("Delete");await expect(composer).toHaveValue("");
+    }
+  }finally{await harness.close()}
+});
+
+// Repair of UI lane C, round 12: the model picker, the composer's third menu that opens upward, sat 8px over its button as tall as
+// its list, up to 340px, wherever the composer stood, with no cap from the room over it: at the terminal drawer's tallest, the
+// composer's top 133px down at 1280 by 800 in the desktop app, a catalog of ten models or more ran from about 170px over the window's
+// top, with its search box (more than 24 models; it takes the keyboard) and the rows over the checked model, on which it opens, out of
+// the window, and at the drawer's 330px it reached over the header. It takes the room over its button under the header now, and
+// opens under its button, over the drawer, where that room is under four rows. So in the desktop app and in a browser, at 1280 by
+// 800, with 30 models, the checked one the 16th: the picker opened with the drawer closed, as it opens and at its tallest shows under
+// the header and in the window, with its search box, which has the keyboard, and the checked model in view, where a press at their
+// middle lands on them, 340px tall over its button as before with the drawer closed and under its button at the drawer's tallest,
+// where a press on its edge leaves the keyboard in its search box, and where it takes no press over the drawer while the keyboard is
+// out of the composer (as the / and @ menus there) and shows again once it is back; and a model pressed in it there is the one picked.
+const pickerModels=Array.from({length:30},(_,index)=>index===15?"fixture-model":`fixture-model-${String(index+1).padStart(2,"0")}`);
+for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`the model picker over 30 models opens in the window under the header, its search box and the checked model in view, with the terminal drawer closed, as it opens and at its tallest, at 1280 by 800 in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:800});
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads),tag=`${shell}-${mode}`;
+  try{
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode},models:pickerModels});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),handle=page.getByTestId("terminal-resizer"),picker=page.getByTestId("model-picker"),menu=page.locator(".chat-workspace .composer-wrap .model-picker-menu"),search=page.getByTestId("model-picker-search");
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    await expect(picker).toContainText("Fixture Model");
+    // The picker's menu as it is drawn: its box, the header's foot, the window's height, the picker's button, and its search box and
+    // the checked model, each with whether a press at its middle lands on it.
+    const read=()=>menu.evaluate(node=>{
+      const at=item=>{const rect=item.getBoundingClientRect(),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);return {top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2),pressed:Boolean(hit&&item.contains(hit))}};
+      const rect=node.getBoundingClientRect(),button=document.querySelector("[data-testid=model-picker]").getBoundingClientRect(),checked=node.querySelector(":scope>button.selected");
+      return {left:+rect.left.toFixed(2),right:+rect.right.toFixed(2),top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2),height:+rect.height.toFixed(2),header:+document.querySelector(".chat-workspace .workspace-header").getBoundingClientRect().bottom.toFixed(2),window:innerHeight,button:{top:+button.top.toFixed(2),bottom:+button.bottom.toFixed(2)},search:at(node.querySelector(".model-picker-search")),checked:{name:checked.querySelector("strong").textContent,...at(checked)}};
+    });
+    const settled=async where=>{let state=null;await expect.poll(async()=>{await settle(page);const next=await read(),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same},{message:`the model picker ${where} settles`,intervals:[50]}).toBe(true);return state};
+    // The picker under the header and in the window, with its search box and the checked model in view in it, where a press at their
+    // middle lands on them.
+    const open=async(where,shot)=>{
+      await picker.click();await expect(menu).toBeVisible();await expect(search).toBeFocused();
+      const state=await settled(where);
+      expect.soft(state.top,`the top of the model picker ${where}, against the header's foot at ${state.header}px`).toBeGreaterThanOrEqual(state.header);
+      expect.soft(state.bottom,`the foot of the model picker ${where}, against the window's foot at ${state.window}px`).toBeLessThanOrEqual(state.window);
+      for(const [which,item] of [["its search box",state.search],[`the checked model, ${state.checked.name}`,state.checked]])
+        expect.soft(item.top>=state.top-0.5&&item.bottom<=state.bottom+0.5&&item.pressed,`${which} in the model picker ${where}, from ${item.top} to ${item.bottom}px, in view in the menu from ${state.top} to ${state.bottom}px, where a press at its middle lands on it`).toBe(true);
+      await page.screenshot({path:join(shotsDir,`model-picker-${tag}-${shot}.png`),animations:"disabled"});
+      return state;
+    };
+    const closedDrawer=await open("with the drawer closed","closed");
+    expect.soft([closedDrawer.height,closedDrawer.bottom<=closedDrawer.button.top],"the model picker with the drawer closed: 340px tall over its button, as before").toEqual([340,true]);
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    await openTerminalDrawer(page);await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:"the drawer as it opens"}).toBe(330);
+    await open("as the drawer opens, 330px","330");
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    await focusTerminalHandle(page);await page.keyboard.press("End");
+    const tallest=Number(await handle.getAttribute("aria-valuemax"));await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:"the drawer at its tallest"}).toBe(tallest);
+    const top=await open(`with the drawer at its tallest, ${tallest}px`,"tallest");
+    expect.soft(top.top>=top.button.bottom,`the model picker with the drawer at its tallest under its button, from ${top.top}px, its button's foot at ${top.button.bottom}px`).toBe(true);
+    // A press on its edge leaves the keyboard in its search box and the picker shown. With the keyboard out of the composer (on the
+    // drawer's Create terminal) the picker over the drawer takes no press, and it shows again with the keyboard back in its search box.
+    await page.mouse.click(top.left+3,(top.checked.top+top.checked.bottom)/2);
+    await expect.soft(search,"the picker's search box after a press on the picker's edge at the drawer's tallest").toBeFocused();
+    const edge=await settled("after a press on its edge");
+    expect.soft([edge.search.pressed,edge.checked.pressed],"the picker's search box and checked model after a press on its edge, a press at their middle landing on them").toEqual([true,true]);
+    await page.getByTestId("drawer").getByRole("button",{name:"Create terminal",exact:true}).focus();
+    const away=await settled("with the keyboard out of the composer");
+    expect.soft([away.search.pressed,away.checked.pressed],"the picker's search box and checked model over the drawer with the keyboard out of the composer, a press at their middle landing on them").toEqual([false,false]);
+    await search.focus();
+    const back=await settled("with the keyboard back in its search box");
+    expect.soft([back.search.pressed,back.checked.pressed],"the picker's search box and checked model with the keyboard back in its search box, a press at their middle landing on them").toEqual([true,true]);
+    // A model in view pressed there is the one picked.
+    const pick=await menu.evaluate(node=>{
+      const box=node.getBoundingClientRect(),row=[...node.querySelectorAll(":scope>button:not(.selected)")].find(item=>{const rect=item.getBoundingClientRect();return rect.top>=Math.max(box.top+40,0)&&rect.bottom<=Math.min(box.bottom-4,innerHeight)});
+      if(!row)return null;const rect=row.getBoundingClientRect();return {name:row.querySelector("strong").textContent,x:rect.left+rect.width/2,y:rect.top+rect.height/2};
+    });
+    expect(pick,"a model in view in the model picker at the drawer's tallest").not.toBeNull();
+    await page.mouse.click(pick.x,pick.y);await expect(menu).toHaveCount(0);await expect.soft(picker,`the model picked with a press on ${pick.name}`).toContainText(pick.name);
+  }finally{await harness.close()}
 });

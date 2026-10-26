@@ -721,6 +721,9 @@ function keepActiveOptionVisible(menu){
   const top=active.offsetTop,bottom=top+active.offsetHeight;
   if(top<menu.scrollTop)menu.scrollTop=top;else if(bottom>menu.scrollTop+menu.clientHeight)menu.scrollTop=bottom-menu.clientHeight;
 }
+// How far the model picker's button stands over the composer's foot (--picker-foot, on the workspace beside the composer's height),
+// from which its menu's room over it under the header is read (overlays.css).
+function pickerFoot(wrap){const picker=wrap?.querySelector(".model-picker-wrap");if(picker)wrap.parentElement.style.setProperty("--picker-foot",wrap.getBoundingClientRect().bottom-picker.getBoundingClientRect().top+"px")}
 const SLASH_COMMANDS=[
   ["/compact","Compact conversation context"],
   ["/ps","Show agent background processes"],
@@ -826,12 +829,12 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
       shown=showing;
       cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{
         const shelved=shelf?.offsetHeight||0;resizeTextarea(draft,{min:40,max:160});
-        set("--composer-height",wrap.offsetHeight);set("--composer-chips",wrap.querySelector(":scope>.context-chip-row")?.offsetHeight||0);set("--composer-shelf",shelved);
+        set("--composer-height",wrap.offsetHeight);set("--composer-chips",wrap.querySelector(":scope>.context-chip-row")?.offsetHeight||0);set("--composer-shelf",shelved);pickerFoot(wrap);
         const foot=wrap.lastElementChild;onRoom?.((host.querySelector(".workspace-header")?.getBoundingClientRect().bottom||0)+64+wrap.offsetHeight+Math.max(0,foot.offsetTop+foot.offsetHeight-wrap.clientHeight)-draft.offsetHeight+shelved);
       });
     });
     observer.observe(wrap);observer.observe(draft);if(shelf)observer.observe(shelf);
-    return()=>{observer.disconnect();cancelAnimationFrame(frame);host.style.removeProperty("--composer-height");host.style.removeProperty("--composer-chips");host.style.removeProperty("--composer-shelf")};
+    return()=>{observer.disconnect();cancelAnimationFrame(frame);for(const name of ["--composer-height","--composer-chips","--composer-shelf","--picker-foot"])host.style.removeProperty(name)};
   },[]);
   // A chip added to a shelf of more rows than it shows brings the shelf's last row, the newest chips, into view, and so does a composer
   // drawn again with its chips (New task or the thread again after Settings, Projects or History): it opened on its oldest rows.
@@ -840,9 +843,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   useEffect(()=>{onModelPickerOpenChange?.(modelOpen)},[modelOpen,onModelPickerOpenChange]);
   useEffect(()=>{if(!modelOpen)setModelQuery("")},[modelOpen]);
   // The menu opens on the checked model, centred, even far down a long catalog (gpt-6.1-sol is 65th of OpenAI's 79); the
-  // search box keeps the focus.
+  // search box keeps the focus. Its room is read as it opens too (pickerFoot), for a picker that came after the composer last resized.
   useLayoutEffect(()=>{
-    const menu=modelOpen?modelMenuRef.current:null,selected=menu?.querySelector(":scope > button.selected");if(!selected)return;
+    const menu=modelOpen?modelMenuRef.current:null,selected=menu?.querySelector(":scope > button.selected");if(menu)pickerFoot(wrapRef.current);if(!selected)return;
     menu.scrollTop=Math.max(0,selected.offsetTop-(menu.clientHeight-selected.offsetHeight)/2);
   },[modelOpen]);
   useEffect(()=>{
@@ -1097,6 +1100,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     event.preventDefault();if(!modelOpen)setModelOpen(true);
     focusModelOption(event.key==="ArrowUp"?"last":"current");
   }
+  // A press in the menu off its options and its search box (its edge, a note) leaves the keyboard where it was, in the composer: the
+  // menu opened under its button, over the terminal drawer, shows only while the composer has it (overlays.css).
+  function modelMenuMouseDown(event){if(!event.target.closest("button,input"))event.preventDefault()}
   function modelMenuKeyDown(event){
     if(!["ArrowDown","ArrowUp","Home","End"].includes(event.key))return;
     const options=modelOptionButtons(),index=options.indexOf(document.activeElement);if(!options.length||index<0)return;
@@ -1150,11 +1156,15 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     :modelProviderRuntime?`Configure ${providerLabel} in Settings…`
     :`Configure ${agentRuntimeLabel} in Settings…`;
   return <div ref={wrapRef} className={"composer-wrap"+(prompt.length>=LONG_DRAFT_CHARS?" long-draft":"")} onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
-    {slashMenuOpen&&<div className="slash-menu" ref={slashMenuRef}>{slashItems.map(([cmd,desc],index)=><button key={cmd} type="button" className={index===slashActive?"active":undefined} onMouseDown={e=>{e.preventDefault();chooseSlash(cmd)}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
+    {/* A command takes only a press of its own too, as a file of the @ menu does (below): the menu goes with the pick, and the second
+        click of a double click landed on what was under it, over the terminal drawer (overlays.css) a tab, which took the keyboard
+        out of the composer, or its close button, which ended its terminal. A press on either menu's edge leaves the keyboard in the
+        composer too: a menu moved over the drawer shows only while the composer has it, and went from under the pointer. */}
+    {slashMenuOpen&&<div className="slash-menu" ref={slashMenuRef} onMouseDown={e=>e.preventDefault()}>{slashItems.map(([cmd,desc],index)=><button key={cmd} type="button" className={index===slashActive?"active":undefined} onMouseDown={e=>{e.preventDefault();ignorePressRest(!e.detail);chooseSlash(cmd)}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
     {/* A file in the @ menu takes only a press of its own, and its buttons only say they are off while the file picked imports
         (aria-disabled), so the keyboard stays in the composer: the second click of a double click, on a button turned off or on what
         is under the menu once the file is in, took the keyboard out of it, and what was typed on went nowhere. */}
-    {mentionMenuOpen&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef}>{mentionOffered.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionActive?"active":""} aria-disabled={Boolean(mentionBusy)||undefined} onMouseDown={event=>{event.preventDefault();ignorePressRest(!event.detail);chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
+    {mentionMenuOpen&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef} onMouseDown={e=>e.preventDefault()}>{mentionOffered.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionActive?"active":""} aria-disabled={Boolean(mentionBusy)||undefined} onMouseDown={event=>{event.preventDefault();ignorePressRest(!event.detail);chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {/* A file picked from the @ menu shows where its chip comes while it imports, attaching, as a file that uploads shows on the shelf,
         so a send that waits for it says why there too: once the caret left the file's word the menu that showed it was shut. */}
     {((contextChips||[]).length>0||mentionWaits)&&<div className="context-chip-row" data-testid="context-chips" onClick={chipPressOnce}>{(contextChips||[]).map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={[[chip.label,chip.detail].filter(Boolean).join(" · "),chip.path].filter(Boolean).join("\n")}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveContext(chip.path))} title="Remove context"><X size={10}/></button></span>)}{mentionWaits&&<span className="context-chip kind-file attaching" data-testid="mention-attaching" aria-busy="true" title={"Attaching "+mentionBusy.label+"…"}><LoaderCircle size={11} aria-hidden="true"/><strong>{mentionBusy.name}</strong><small>Attaching…</small></span>}</div>}
@@ -1172,7 +1182,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     </div><div className="composer-right">
       {setupRequired?<button className="login-btn" onClick={onConfigureProvider}>{configureLabel}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} disabled={threadSettingsWait} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
-        <div className="model-picker-wrap"><button ref={modelButtonRef} data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} onKeyDown={modelPickerKeyDown} aria-haspopup="true" aria-expanded={modelOpen&&models.length>0?"true":"false"} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError?"Models unavailable":"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu" ref={modelMenuRef} onKeyDown={modelMenuKeyDown}>{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)closeModelMenu()}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>{event.stopPropagation();if(event.key==="ArrowDown"){event.preventDefault();focusModelOption("first")}}} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
+        <div className="model-picker-wrap"><button ref={modelButtonRef} data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} onKeyDown={modelPickerKeyDown} aria-haspopup="true" aria-expanded={modelOpen&&models.length>0?"true":"false"} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError?"Models unavailable":"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu" ref={modelMenuRef} onKeyDown={modelMenuKeyDown} onMouseDown={modelMenuMouseDown}>{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)closeModelMenu()}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>{event.stopPropagation();if(event.key==="ArrowDown"){event.preventDefault();focusModelOption("first")}}} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} aria-label="Voice dictation" aria-pressed={listening} title={speechSupported?(listening?"Listening… click to stop":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button data-testid="send" className="send-btn" aria-label={sendLabel} onClick={()=>sendDraft(onSend)} disabled={sendOff} title={tooLongNote||runtimeSwitchLabel||(!transportReady?transportMessage:modelBlocker||(submitting?sendingText:uploadingFiles.length?"Waiting for attachments to upload":mentionWaits?`Waiting for ${mentionBusy.label} to attach`:sendLabel))}><Send size={16}/></button>
@@ -1368,6 +1378,17 @@ export default function App(){
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [rightPanelMaximized,setRightPanelMaximized]=useState(false); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [runtimeTransportRevision,setRuntimeTransportRevision]=useState(0);
   const [snoozeRequest,setSnoozeRequest]=useState(null); const [threadUndo,setThreadUndo]=useState(null); const [actionError,setActionError]=useState("");
+  // The band the toasts take under the header, where they show while a composer menu is open (with-composer-menu), on the workspace
+  // shell (--tb-toast-band), which the menu's room over the composer leaves them (overlays.css): the undo toast's 44px, and the error
+  // toast as tall as its lines, as it wraps in the column's width, each with 8px under it. A menu that room capped began on the toasts'
+  // line, and a toast up over it covered its first rows, the one Enter or Tab picks.
+  const workspaceShellRef=useRef(null);
+  useLayoutEffect(()=>{
+    const shell=workspaceShellRef.current,error=actionError&&shell?.querySelector(":scope>.app-action-error-toast");if(!shell)return;
+    const band=()=>shell.style.setProperty("--tb-toast-band",(threadUndo?52:0)+(error?error.offsetHeight+8:0)+"px");band();
+    const observer=error&&typeof ResizeObserver!=="undefined"?new ResizeObserver(band):null;observer?.observe(error);
+    return()=>{observer?.disconnect();shell.style.removeProperty("--tb-toast-band")};
+  },[actionError,threadUndo]);
   const [goal,setGoal]=useState(null); const [continuity,setContinuity]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]); const [sourceSelectedPr,setSourceSelectedPr]=useState(null);
   const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [threadTelemetry,setThreadTelemetry]=useState({});const threadTelemetryRef=useRef({});
@@ -5706,7 +5727,7 @@ export default function App(){
     <ThreadSidebar runtimeStarting={!runtimeKnown} connection={sidebarConnection} threadMoves={threadMoves} section={viewSection} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={headerThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} onOpenProviderSettings={openProviderSettings} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab} onOpenPalette={sidebarOpenPalette} shortcuts={sidebarShortcuts} listError={threadListError} onRetryList={sidebarRetryThreads} runningIds={runningSidebarIds} listLoaded={Boolean(bootstrap.mock)||threadListLoaded}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" {...layoutSeparatorProps("sidebar")} onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
-    <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")+workspaceHolds}>
+    <div ref={workspaceShellRef} className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")+workspaceHolds}>
       <main className={"main-frame"+(panel==="terminal"?" terminal-open":"")+(openingOverPage?" opening-over-page":"")}>
         <div className="window-bar">
           <span className="window-drag-space"/>
