@@ -1,7 +1,7 @@
 import { epochSeconds } from "./time-format.js";
 import { compactThreadSnapshot } from "../../src/thread-snapshot.mjs";
 
-const RUNTIMES=new Set(["native","codex","claude","opencode","cursor","grok","antigravity"]);
+const RUNTIMES=new Set(["native","codex","claude","opencode","cursor","grok","antigravity","muse"]);
 
 export function missingRuntimeThreadError(error){
   const detail=error?.message||String(error||"");

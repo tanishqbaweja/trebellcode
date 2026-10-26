@@ -4,7 +4,7 @@ import {harnessInventory,harnessThreadOptions,harnessTurnOptions,relayHarness,re
 import {agentPermissionModeFromStart,agentPermissionProfilePatch} from "../src/agent-relay.mjs";
 
 test("every relay harness starts its thread in the composer's access level, Auto-accept edits included",()=>{
-  for(const runtime of ["claude","opencode","cursor","grok","antigravity"]){
+  for(const runtime of ["claude","opencode","cursor","grok","antigravity","muse"]){
     assert.equal(relayHarness(runtime),true,runtime);
     const options=harnessThreadOptions(runtime,{permissionMode:"edits"});
     assert.deepEqual(options,{permissionProfile:"edits"},runtime);
@@ -39,6 +39,8 @@ test("each harness's turn carries the access level and only the composer choices
   assert.deepEqual(harnessTurnOptions("grok",choices),{permissionProfile:"edits",reasoningEffort:"high"});
   assert.deepEqual(harnessTurnOptions("cursor",choices),{permissionProfile:"edits",reasoningEffort:"high",serviceTier:"fast",modelOptions:{context:"1m",thinking:"true"}});
   assert.deepEqual(harnessTurnOptions("antigravity",choices),{permissionProfile:"edits"},"Antigravity offers no effort, speed or model settings");
+  assert.deepEqual(harnessTurnOptions("muse",{...choices,reasoningEffort:"ultra"}),{permissionProfile:"edits",reasoningEffort:"ultra"},"Muse Code takes the access level and the Thinking level");
+  assert.deepEqual(harnessTurnOptions("muse"),{permissionProfile:"supervised",reasoningEffort:null},"no choice: Muse Code's own level");
   assert.deepEqual(harnessTurnOptions("codex",choices),{});
   assert.deepEqual(harnessTurnOptions("native",choices),{});
   // Every turn carries the access level, so a mode changed between turns reaches the relay's turn/start permission patch.

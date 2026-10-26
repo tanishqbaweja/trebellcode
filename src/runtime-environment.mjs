@@ -53,6 +53,9 @@ const RUNTIME_KEYS=Object.freeze({
     "GEMINI_HOME","GOOGLE_API_KEY","GEMINI_API_KEY","GOOGLE_APPLICATION_CREDENTIALS",
     "GOOGLE_CLOUD_PROJECT","GOOGLE_CLOUD_LOCATION","CLOUDSDK_CORE_PROJECT",
   ]),
+  // Muse Code's release channel. META_API_KEY is left out, so a key in Trebell's own environment never takes the place of the
+  // person's Muse sign-in (Muse prefers the key); a profile that approves it forwards it.
+  muse:Object.freeze(["MUSE_CHANNEL"]),
 });
 
 // What a project's toolchain reads to find itself, the version picked for the project, the packages already installed and how

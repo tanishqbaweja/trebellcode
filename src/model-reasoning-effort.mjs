@@ -10,8 +10,11 @@ export function normalizeReasoningEffort(value){
 const CODEX_EFFORT=/^[a-z][a-z0-9_-]{0,31}$/;
 // OpenCode's reasoning levels are its model variants, by the names OpenCode gives them (T3 Code's "variant" option); kept verbatim.
 const OPENCODE_VARIANT=/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// Muse Code's levels are the Muse Session Protocol's, Ultra included, without None, which Meta's provider refuses.
+export const MUSE_REASONING_EFFORTS=Object.freeze(["minimal","low","medium","high","xhigh","max","ultra"]);
 export function normalizeRuntimeReasoningEffort(runtime,value){
   if(runtime==="opencode"){const variant=String(value??"").trim();return OPENCODE_VARIANT.test(variant)?variant:null}
+  if(runtime==="muse"){const effort=String(value??"").trim().toLowerCase();return MUSE_REASONING_EFFORTS.includes(effort)?effort:null}
   if(runtime!=="codex")return normalizeReasoningEffort(value);
   const effort=String(value??"").trim().toLowerCase();
   return CODEX_EFFORT.test(effort)?effort:null;

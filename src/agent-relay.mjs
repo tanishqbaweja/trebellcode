@@ -13,6 +13,7 @@ import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
 import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
+import { MuseAgentSession } from "./muse-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
 import { createNativeBuiltins, safeWorkspacePath } from "./native-builtins.mjs";
 import { nativeProjectReadNeedsNoApproval } from "./native-read-approval.mjs";
@@ -55,8 +56,9 @@ const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
 const TOOL_WRITE_MS=500;
 const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_process","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
 const RETIRED_NATIVE_TOOL_NAMESPACES=new Set(["trebell_device"]);
-// ACP harnesses and OpenCode run processes per thread; reopening one of their threads does not start them (see thread/resume).
-const LAZY_SESSION_RUNTIMES=new Set(["cursor","grok","antigravity","opencode"]);
+// ACP harnesses, OpenCode and Muse Code run processes per thread; reopening one of their threads does not start them (see
+// thread/resume).
+const LAZY_SESSION_RUNTIMES=new Set(["cursor","grok","antigravity","opencode","muse"]);
 // The tool kinds whose work ends with the call. A harness that ran any other (a command, a subagent, an MCP tool, a call of no kind)
 // may have left it running past its turn: a dev server or a watcher, or a Grok background task that answers in a wake turn of its own.
 const SETTLED_TOOL_KINDS=new Set(["read","edit","delete","move","search","fetch","switch_mode"]);
@@ -1164,6 +1166,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         :(/(?:^|\s)v?2\./i.test(String(status.version||""))
           ?new OpenCode2AgentSession({...common,version:status.version,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp})
           :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp})))
+      // Muse Code through Meta's SDK on a `muse serve` of Trebell's own, the thread's model and Thinking level resolved against the
+      // list its status check read.
+      :instance.kind==="muse"
+      ?new MuseAgentSession({...common,command:runtimeManager.executable(instance),modelCatalog:()=>runtimeManager.museModelCatalog?.(instance)||null})
       :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),argsForPermission:mode=>runtimeManager.acpArgs(instance,mode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,runTempRoot:instance.kind==="antigravity"&&!remoteIo?acpRuntimeTempRoot(runtimeManager.childEnv(instance),"antigravity"):null,attachmentsDir:instance.kind==="antigravity"&&!remoteIo?join(trebellHome(runtimeManager.env||process.env),"attachments"):null,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
     let runtime=create(),started,lost=null;
     // A Cursor thread runs in the Plan mode it last ran in until a turn names another (also after a restart).
@@ -2014,6 +2020,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         if(thread.runtime==="cursor")applyCollaborationMode(thread,session,params);
         if(params.model&&params.model!==thread.model){await session.setModel(params.model);threadStore.update(thread.id,{model:session.model||params.model})}
       }
+      // Muse Code takes the composer's Thinking level as its turn's level and the thread's model before the turn (T3); a model it
+      // refuses fails the turn with its reason and leaves the thread's model unchanged.
+      else if(session instanceof MuseAgentSession){
+        if(Object.prototype.hasOwnProperty.call(params,"reasoningEffort"))session.setReasoningEffort(params.reasoningEffort);
+        if(params.model&&params.model!==thread.model){await session.setModel(params.model);threadStore.update(thread.id,{model:session.model||params.model})}
+      }
       else if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
       if(runtime==="native"&&typeof session.setContextWindow==="function"){
         let contextWindow=null;
@@ -2062,7 +2074,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       // Claude Code and OpenCode take the message into the running turn at once (T3 Code's steerTurn): Claude Code as a "now" priority
       // user message, OpenCode as a message sent into its busy session. OpenCode in a remote environment runs over ACP, which has none.
-      const steerable=thread.runtime==="claude"?ClaudeAgentSession:thread.runtime==="opencode"&&!(sessions.get(thread.id) instanceof AcpAgentSession)?OpenCodeAgentSession:null;
+      // Muse Code takes it as turn/steer naming the running turn.
+      const steerable=thread.runtime==="claude"?ClaudeAgentSession:thread.runtime==="opencode"&&!(sessions.get(thread.id) instanceof AcpAgentSession)?OpenCodeAgentSession:thread.runtime==="muse"?MuseAgentSession:null;
       if(steerable){
         const label=runtimeHarnessLabel(thread.runtime);
         const activeTurn=[...(thread.turns||[])].reverse().find(turn=>turn?.status==="inProgress");if(!activeTurn)throw new Error(`${label} has no active turn to steer.`);
@@ -2237,7 +2250,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           return context.serverRequest("mcpServer/elicitation/request",{
             ...params,
             mode,
-            serverName:thread.runtime==="opencode"?"OpenCode":thread.runtime==="cursor"?"Cursor":thread.runtime==="grok"?"Grok Build":thread.runtime==="antigravity"?"Antigravity":"ACP agent",
+            serverName:thread.runtime==="opencode"?"OpenCode":thread.runtime==="cursor"?"Cursor":thread.runtime==="grok"?"Grok Build":thread.runtime==="antigravity"?"Antigravity":thread.runtime==="muse"?"Muse Code":"ACP agent",
             _meta:{...(params?._meta||{}),trebell_source:"acp",trebell_runtime:thread.runtime},
           },thread.id);
         },

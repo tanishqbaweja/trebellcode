@@ -350,9 +350,9 @@ const PAGE_CRUMBS=Object.freeze({
   environments:[Server,"Environments"],settings:[SettingsIcon,"Settings"],licenses:[ScrollText,"Open source licenses"],
 });
 
-const AGENT_RUNTIME_LABELS=Object.freeze({native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"});
+const AGENT_RUNTIME_LABELS=Object.freeze({native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity",muse:"Muse Code"});
 // The short harness names the sidebar chips use.
-const HISTORY_RUNTIME_LABELS=Object.freeze({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"});
+const HISTORY_RUNTIME_LABELS=Object.freeze({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity",muse:"Muse"});
 function agentRuntimeName(kind){return AGENT_RUNTIME_LABELS[kind]||String(kind||"")||"the agent harness"}
 // A model catalog belongs to its harness, and to the inference provider only when Trebell manages inference for that harness.
 function modelCatalogScope(runtime,provider){return String(runtime||"")+"\0"+(sharedRuntimeCapabilities(runtime).managedInference?String(provider||""):"")}

@@ -1,13 +1,13 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { CalendarDays, CircleAlert, Cpu, History, RefreshCw, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import { api } from "../api.js";
-import { failureText } from "../display-labels.js";
+import { agentName, failureText } from "../display-labels.js";
 import { codexRateLimitEntries,formatRateReset,microsToCurrency,rateLimitReachedLabel,rateLimitRemainingPercent } from "../usage-account.js";
 import { estimateUsageCost } from "../usage-pricing.js";
 import { askConfirm } from "../ask-dialog.js";
 
 function formatTokens(value){const n=Number(value||0);if(n>=1_000_000)return (n/1_000_000).toFixed(n>=10_000_000?1:2)+"M";if(n>=1_000)return (n/1_000).toFixed(n>=100_000?0:1)+"K";return n.toLocaleString()}
-function runtimeLabel(value){return ({native:"Trebell Native",codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"}[value]||value||"Unknown")}
+function runtimeLabel(value){return value?agentName(value):"Unknown"}
 function money(value){return Number.isFinite(value)?`$${value.toFixed(value<1?4:2)}`:"—"}
 function duration(value){const seconds=Number(value);if(!Number.isFinite(seconds)||seconds<0)return "—";if(seconds<60)return Math.round(seconds)+"s";const mins=Math.round(seconds/60);return mins<60?mins+"m":Math.floor(mins/60)+"h "+(mins%60)+"m"}
 function withoutKey(object,key){return Object.fromEntries(Object.entries(object||{}).filter(([name])=>name!==key))}

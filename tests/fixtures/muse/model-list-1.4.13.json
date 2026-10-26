@@ -1,0 +1,16 @@
+{
+  "composedWith": "Muse Code 1.4.13 (1.4.13-R6996.1): the ModelListResult and ModelCatalogEntry shapes of `muse schema generate-json-schema` (stable surface), filled with the models, efforts and prices of https://dev.meta.ai/docs/models and https://dev.meta.ai/docs/pricing-rate-limits. A Muse Code that is not signed in lists no models (live 2026-10-27: {\"providerId\":\"meta\",\"profileId\":\"tbh\",\"source\":\"bundledCatalog\",\"models\":[]}), so no signed-in model/list was recorded. The duplicate row and the local row are not Meta's; they test what Trebell leaves out.",
+  "result": {
+    "providerId": "meta",
+    "profileId": null,
+    "source": "providerCatalog",
+    "models": [
+      {"modelId":"muse-wonder-1.0","displayLabel":"Muse Wonder 1.0","providerId":"meta","profileId":null,"description":"Meta's most capable model, in preview.","contextLimit":1048576,"outputLimit":131072,"cost":{"input":"4.00","cached":"0.20","output":"20.00","currency":"USD"},"releaseDate":"2026-10-01","isActive":false,"isDefault":false,"variants":["minimal","low","medium","high","xhigh","max"],"defaultReasoningEffort":"high","reasoningEffortVariants":[{"tier":"minimal","description":"Fastest answers"},{"tier":"high","description":"Deep reasoning for most coding work"},{"tier":"max","description":"The longest reasoning Wonder offers"}]},
+      {"modelId":"muse-spark-1.3","displayLabel":"muse-spark-1.3","providerId":"meta","profileId":null,"description":null,"contextLimit":1048576,"outputLimit":65536,"cost":{"input":"1.25","cached":"0.15","output":"4.25","currency":"USD"},"releaseDate":"2026-09-15","isActive":false,"isDefault":false,"variants":["none","minimal","low","medium","high","xhigh","max"],"defaultReasoningEffort":"high"},
+      {"modelId":"muse-spark-1.2","displayLabel":"muse-spark-1.2","providerId":"meta","profileId":null,"description":null,"contextLimit":1048576,"outputLimit":65536,"cost":{"input":"1.25","cached":"0.15","output":"4.25","currency":"USD"},"releaseDate":"2026-08-01","isActive":false,"isDefault":true,"variants":"unknown"},
+      {"modelId":"muse-spark-1.3-contributor","displayLabel":"","providerId":"meta","profileId":null,"description":null,"contextLimit":1048576,"outputLimit":65536,"cost":{"input":"0.10","cached":"0.002","output":"0.20","currency":"USD"},"releaseDate":"2026-09-15","isActive":false,"isDefault":false,"variants":["low","medium","high"],"defaultReasoningEffort":"medium"},
+      {"modelId":"muse-spark-1.3","displayLabel":"Muse Spark 1.3 again","providerId":"meta","profileId":null,"description":null,"contextLimit":null,"outputLimit":null,"cost":null,"releaseDate":null,"isActive":false,"isDefault":false,"variants":["low"],"defaultReasoningEffort":"low"},
+      {"modelId":"local-coder","displayLabel":"Local coder","providerId":"local","profileId":null,"description":null,"contextLimit":null,"outputLimit":null,"cost":null,"releaseDate":null,"isActive":false,"isDefault":false,"variants":["low","high"],"defaultReasoningEffort":"low"}
+    ]
+  }
+}

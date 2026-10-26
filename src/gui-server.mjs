@@ -1698,7 +1698,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   async function selectedModels({nativeProviderCatalog=null}={}){
     const runtime=selectedAgentRuntime,provider=selectedProvider;
     const mergeCustom=catalog=>{
-      if(!["native","codex","claude","opencode","cursor","grok","antigravity"].includes(runtime))return catalog;
+      if(!["native","codex","claude","opencode","cursor","grok","antigravity","muse"].includes(runtime))return catalog;
       const custom=(state.settings().customModels||[]).filter(item=>item&&item.id&&item.runtime===runtime&&(runtime!=="native"||item.provider===provider));
       if(!custom.length)return catalog;
       const baseModels=Array.isArray(catalog.models)?catalog.models:[];const models=[...baseModels];for(const item of custom)if(!models.includes(item.id))models.push(item.id);

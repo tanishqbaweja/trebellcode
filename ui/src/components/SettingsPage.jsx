@@ -132,7 +132,7 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
     {note&&<p className={"keybinding-note "+note.kind} id={base+"-note"} role="status">{note.text}</p>}
   </div>;
 }
-const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity"];
+const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity","Muse Code"];
 // What a harness's status says of a sign-in: nothing when its version check did not answer and no sign-in was read after it (a
 // Codex answer is its account read's, whatever its --version did), or when it is a Claude Code profile's with a custom API endpoint.
 // Its row shows what was found, with no Needs setup and no Sign in.
@@ -972,8 +972,9 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     "general-notifications":Boolean(window.trebellDesktop?.notify),
     "agents-profiles":selectedAgentDefinition?selectedAgentDefinition.multipleInstances!==false:!["native","antigravity"].includes(selectedAgent),
     "agents-provider":selectedManagedInference,
-    "agents-models":["codex","claude","opencode","cursor","grok","antigravity"].includes(selectedAgent),
-    "agents-mcp":["native","claude","cursor","grok","antigravity"].includes(selectedAgent),
+    "agents-models":["codex","claude","opencode","cursor","grok","antigravity","muse"].includes(selectedAgent),
+    // Muse Code's MCP servers once its sessions take them (its mcpInjection capability).
+    "agents-mcp":["native","claude","cursor","grok","antigravity"].includes(selectedAgent)||selectedAgent==="muse"&&selectedAgentCapabilities.mcpInjection===true,
     "desktop-computer":Boolean(selectedAgentCapabilities.dynamicTools&&desktopTools.computer),
     "desktop-browser":Boolean(window.trebellDesktop?.browser?.importSources),
     "desktop-snapshot":Boolean(window.trebellDesktop?.snapshots),
@@ -1045,7 +1046,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       </div>}
       {settingsSection==="agents"&&<div className="settings-card agent-runtime-settings" {...targetProps("agents-harness")}>
         <h3><Bot size={14} aria-hidden="true"/> Agent harness{agentInfo&&agentInfoRefreshing&&<small data-testid="agent-runtime-refreshing" role="status" style={{marginLeft:8,fontSize:"0.7em",fontWeight:400,opacity:.7,display:"inline-flex",alignItems:"center",gap:4,verticalAlign:"middle"}}><RefreshCw size={10} style={reducedMotion?undefined:{animation:"trebell-spin .9s linear infinite"}}/>Refreshing…</small>}</h3>
-        <p>Choose the coding-agent runtime. Trebell Native owns its model/tool loop and calls APIs directly; Codex, Claude Code, OpenCode, Cursor, Grok and Antigravity run as their real harnesses. Saved chats stay owned by the harness that created them, and opening one switches back to that harness automatically.</p>
+        <p>Choose the coding-agent runtime. Trebell Native owns its model/tool loop and calls APIs directly; Codex, Claude Code, OpenCode, Cursor, Grok, Antigravity and Muse Code run as their real harnesses. Saved chats stay owned by the harness that created them, and opening one switches back to that harness automatically.</p>
         <div className="agent-runtime-list" aria-busy={agentInfo===null||agentInfoRefreshing?"true":"false"}>{agentInfo===null?AGENT_RUNTIME_SKELETON_ROWS.map((name,index)=><div className="agent-runtime-option agent-runtime-skeleton" key={"skeleton-"+index} data-testid="agent-runtime-skeleton" aria-hidden="true"><button type="button" disabled tabIndex={-1}><Bot size={14}/><span><strong>{name}</strong></span><em className="agent-runtime-checking">Checking…</em></button></div>):(agentInfo?.definitions||[]).map(def=>{
           const status=runtimeStatusForKind(agentInfo,def.id,{preferSelected:selectedAgent===def.id});
           const active=selectedAgent===def.id;

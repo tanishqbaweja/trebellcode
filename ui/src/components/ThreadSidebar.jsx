@@ -75,7 +75,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,runnin
   },[menuOpen]);
   const section=thread.section?.name||"Active";
   const rowRuntime=threadCatalogRuntime(thread,meta,agentRuntime),foreignRuntime=rowRuntime!==agentRuntime;
-  const rowRuntimeLabel=({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[rowRuntime]||rowRuntime);
+  const rowRuntimeLabel=({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity",muse:"Muse"}[rowRuntime]||rowRuntime);
   const linked=Array.isArray(meta?.linkedPullRequests)
     ?meta.linkedPullRequests
     :(meta?.attachments||[]).filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload||{}).filter(Boolean);
@@ -243,7 +243,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
   const managedInference=Boolean(runtimeCapabilities.managedInference);
   const providerLabel=modelProviderLabel(provider);
   // runtimeStarting: Trebell's first load has not yet said which harness runs, so no harness is named.
-  const runtimeLabel=runtimeStarting?"Starting…":{native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
+  const runtimeLabel=runtimeStarting?"Starting…":{native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity",muse:"Muse Code"}[agentRuntime]||agentRuntime;
   const toggle=useCallback(id=>{const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)},[selectedIds,setSelectedIds]);
   const firstGroupKey=groups.find(group=>group.threads.length)?.key||null;
   const renderRow=useCallback(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} running={Boolean(runningIds?.has(t.id))} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} canMoveUp={Boolean(threadMoves?.get(t.id)?.up)} canMoveDown={Boolean(threadMoves?.get(t.id)?.down)} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>,[threadMeta,activeThreadId,bulk,selectedIds,runningIds,onOpen,toggle,onThreadAction,onMove,threadMoves,runAction,agentRuntime,runtimeCapabilities]);

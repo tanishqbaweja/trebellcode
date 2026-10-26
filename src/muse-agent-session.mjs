@@ -3,6 +3,8 @@ import { acpToolFrame } from "./acp-tool-state.mjs";
 import { fileUriPath } from "./file-uri.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSdk, museServeArgs, museWorkspaceRoot } from "./muse-host.mjs";
+import { resolveMuseReasoningEffort } from "./muse-model-catalog.mjs";
+import { MUSE_REASONING_EFFORTS } from "./model-reasoning-effort.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
@@ -18,13 +20,16 @@ export const MUSE_INTERRUPT_TIMEOUT_MS=30_000;
 const MUSE_APPROVAL_MODE="promptUnmatched";
 const MUSE_PERMISSION_PROFILE=":ask-me";
 // Meta's provider refuses "none"; the rest are MSP's efforts.
-const MUSE_EFFORTS=new Set(["minimal","low","medium","high","xhigh","max","ultra"]);
+const MUSE_EFFORTS=new Set(MUSE_REASONING_EFFORTS);
+// The model choice that lets Muse pick: the catalog's default row (T3 MUSE_DEFAULT_MODEL); the word itself never goes to Muse.
+const MUSE_DEFAULT_MODEL="default";
 // Items with rows of their own elsewhere (todo lists, questions, workflows) unless they failed, and Muse's housekeeping: the user's
 // own message, the reminder children every model step runs, and compactions (group M5).
 const OWN_ROW_TOOLS=new Set(["write_todos","request_user_input","workflow"]);
 const SKIPPED_KINDS=new Set(["userMessage","reminderChild","compaction"]);
 const ACTIONS=Object.freeze({
   "session/start":"start the session","session/resume":"resume this conversation","session/setApprovalMode":"set the session's approval mode",
+  "session/setModel":"switch to the thread's model",
   "turn/start":"start the turn","turn/steer":"take the message into the running turn","turn/interrupt":"stop the turn",
   "approval/decide":"take Trebell's answer to its request","userInput/cancel":"take Trebell's answer to its question",
 });
@@ -128,13 +133,15 @@ function approvalTarget(params={}){
 }
 
 export class MuseAgentSession{
-  constructor({command="muse",cwd,env=process.env,permissionMode="supervised",onUpdate,onPermission=null,onQuestion=null,version="0.0.0",spawnFn=undefined,platform=process.platform,loadSdk=loadMuseSdk,stopTree=undefined,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,requestTimeoutMs=MUSE_REQUEST_TIMEOUT_MS,interruptTimeoutMs=MUSE_INTERRUPT_TIMEOUT_MS}={}){
+  // modelCatalog: the list Muse Code's status check read ({models, metadata, preferred}, museModelCatalog), or null, which the
+  // thread's model and Thinking level are resolved against before each turn.
+  constructor({command="muse",cwd,env=process.env,permissionMode="supervised",onUpdate,onPermission=null,onQuestion=null,version="0.0.0",modelCatalog=()=>null,spawnFn=undefined,platform=process.platform,loadSdk=loadMuseSdk,stopTree=undefined,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,requestTimeoutMs=MUSE_REQUEST_TIMEOUT_MS,interruptTimeoutMs=MUSE_INTERRUPT_TIMEOUT_MS}={}){
     this.command=command;this.cwd=resolve(cwd||process.cwd());this.env=env;this.permissionMode=normalizePermissionMode(permissionMode||"supervised");
-    this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.version=version;
+    this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.version=version;this.modelCatalog=modelCatalog;
     this.hostOptions={spawnFn,platform,stopTree,startupTimeoutMs,shutdownTimeoutMs};this.platform=platform;this.loadSdk=loadSdk;
     this.requestTimeoutMs=requestTimeoutMs;this.interruptTimeoutMs=interruptTimeoutMs;
     this.args=museServeArgs(this.permissionMode);this.host=null;this.connection=null;this.initializeResult=null;this.sessionSetup=null;
-    this.sessionId=null;this.model=null;this.reasoningEffort=null;this.turnRoot=null;
+    this.sessionId=null;this.model=null;this.wantedModel=null;this.reasoningEffort=null;this.turnRoot=null;
     this.dead=false;this.deadError=null;this.closed=false;this.activePrompt=null;
     // Approval stages and questions already answered, approvals already resolved, and the rows shown for them.
     this.decidedStages=new Set();this.resolvedApprovals=new Set();this.cancelledQuestions=new Set();this.noticeRows=new Set();
@@ -147,6 +154,25 @@ export class MuseAgentSession{
   // The launch flags are fixed for the host's lifetime, so a mode with other flags needs a new host.
   needsRelaunch(mode){return JSON.stringify(museServeArgs(mode))!==JSON.stringify(this.args)}
   setReasoningEffort(effort){const value=text(effort).trim().toLowerCase();this.reasoningEffort=MUSE_EFFORTS.has(value)?value:null;return this.reasoningEffort}
+
+  #catalog(){try{const catalog=typeof this.modelCatalog==="function"?this.modelCatalog():this.modelCatalog;return catalog&&typeof catalog==="object"?catalog:null}catch{return null}}
+  // A model id as Muse takes it: "default" is the catalog's default row, or none (Muse's own) while the list is unknown.
+  #resolveModel(model){const value=text(model).trim();return value===MUSE_DEFAULT_MODEL?this.#catalog()?.preferred||null:value||null}
+  // The thread's model (T3's session/setModel {model:{modelId, providerId:'meta'}}): sent at once while no turn runs, and otherwise
+  // before the next turn, as for a resumed session on another model. A model Muse refuses fails with its reason and leaves the
+  // session's model as it was.
+  async setModel(model){
+    const previous=this.wantedModel;this.wantedModel=this.#resolveModel(model);
+    if(this.connection&&this.sessionId&&!this.dead&&!this.activePrompt)try{await this.#applyModel()}catch(error){this.wantedModel=previous;throw error}
+    return this.model;
+  }
+  async #applyModel(){
+    const modelId=this.wantedModel;if(!modelId||modelId===this.model)return;
+    await this.#command("session/setModel",{sessionId:this.sessionId,model:{modelId,providerId:"meta"}});
+    this.model=modelId;
+  }
+  // The level the turn runs at, against the thread's model in the catalog (resolveMuseReasoningEffort).
+  #turnEffort(){return resolveMuseReasoningEffort(this.#catalog()?.metadata?.find?.(row=>row?.id===this.model)||null,this.reasoningEffort)}
 
   async start({providerSessionId=null,model=null,reasoningEffort=undefined}={}){
     if(reasoningEffort!==undefined)this.setReasoningEffort(reasoningEffort);
@@ -164,7 +190,7 @@ export class MuseAgentSession{
     try{
       const [workspaceRoot,turnRoot]=await Promise.all([museWorkspaceRoot(this.cwd,{platform:this.platform,verbatim:false}),museWorkspaceRoot(this.cwd,{platform:this.platform})]);
       this.turnRoot=turnRoot;
-      const requested=text(model).trim(),modelId=requested&&requested!=="default"?requested:null;
+      const modelId=this.#resolveModel(model);this.wantedModel=modelId;
       const sessionId=providerSessionId?text(providerSessionId):connection.mintCommandId();
       this.sessionId=sessionId;
       const result=providerSessionId?await this.#resume(sessionId):await this.#command("session/start",{sessionId,workspaceRoot,providerId:"meta",...(modelId?{modelId}:{}),approvalMode:MUSE_APPROVAL_MODE,permissionProfile:MUSE_PERMISSION_PROFILE});
@@ -226,13 +252,16 @@ export class MuseAgentSession{
     try{
       let ack;
       try{
+        // The thread's model first, when the session runs another (T3 sends session/setModel before turn/start).
+        await this.#applyModel();
+        const reasoningEffort=this.#turnEffort();
         ack=await this.#command("turn/start",{
           sessionId:this.sessionId,
           // Muse takes no system context, so Trebell's runtime notes lead the turn's input.
           input:[{type:"text",text:runtimeInstructions({harness:"Muse Code",model:this.model})},...input],
           ...(displayText?{displayText}:{}),
           // Each turn names the folder: a resumed session keeps the roots it had.
-          workspaceRoots:[this.turnRoot],ifBusy:"queue",...(this.reasoningEffort?{reasoningEffort:this.reasoningEffort}:{}),
+          workspaceRoots:[this.turnRoot],ifBusy:"queue",...(reasoningEffort?{reasoningEffort}:{}),
         },{commandId:turn.turnId,retries:true});
         if(ack?.turnId!==turn.turnId)throw new Error("Muse Code took the message into another turn than the one Trebell started.");
       }catch(error){

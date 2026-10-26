@@ -20,6 +20,7 @@ import { defaultAcpClientCapabilities } from "./acp-client.mjs";
 import { acpProbeSession, acpSessionModelCatalog, antigravityModelCatalog, antigravitySeedCatalog, cursorModelCatalog, GROK_INITIALIZE_META, grokModelCatalog, withAcpProbe } from "./acp-model-catalog.mjs";
 import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { acpCommandsFromAvailable } from "./acp-agent-session.mjs";
+import { readMuseModelCatalog } from "./muse-model-catalog.mjs";
 
 const RUNTIMES=Object.freeze({
   native:{id:"native",name:"Trebell Native",protocol:"native",command:null,multipleInstances:false,managed:true},
@@ -29,6 +30,7 @@ const RUNTIMES=Object.freeze({
   grok:{id:"grok",name:"Grok Build",protocol:"acp",command:"grok",multipleInstances:true},
   opencode:{id:"opencode",name:"OpenCode",protocol:"sdk",command:"opencode",multipleInstances:true},
   antigravity:{id:"antigravity",name:"Antigravity",protocol:"acp",command:null,multipleInstances:false,managed:true},
+  muse:{id:"muse",name:"Muse Code",protocol:"msp",command:"muse",multipleInstances:true},
 });
 
 export function runtimeCapabilities(kind){
@@ -69,6 +71,8 @@ const INSTALLABLE_PACKAGES=Object.freeze({
   // database in place.
   opencode:"opencode-ai",
 });
+// Muse Code runs where Trebell runs; a WSL or SSH environment has no Muse Code of Trebell's.
+const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Switch to the local environment to use it.";
 // A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start makes one)
 // reuses the last read of the same binary and version, and makes one only when there is none.
 const OPENCODE_CATALOG_REUSE_MS=10_000;
@@ -82,6 +86,14 @@ const RUNTIME_COMPATIBILITY=Object.freeze({
       Object.freeze({range:"<1.14.19",status:"broken"}),
       Object.freeze({range:">=3.0.0",status:"unsupported"}),
       Object.freeze({range:">=1.14.19 <3.0.0",status:"supported"}),
+    ]),
+  }),
+  // T3 Code's model manifest: Muse Code 1.4.2 and later, compared without its -R<revision> (runtimeCompatibility).
+  muse:Object.freeze({
+    recommendedRange:">=1.4.2",
+    ranges:Object.freeze([
+      Object.freeze({range:">=1.4.2",status:"supported"}),
+      Object.freeze({range:"<1.4.2",status:"unknown"}),
     ]),
   }),
 });
@@ -184,6 +196,16 @@ export function parseGrokModelsAuth(output){
   if(/not authenticated|not logged in/i.test(value))return false;
   return null;
 }
+// Muse Code's version as it names its builds, X.Y.Z-R<revision> ("Muse Code 1.4.13 (1.4.13-R6996.1)" is 1.4.13-R6996.1), else a
+// plain X.Y.Z (T3 parseMuseVersion); the shared reading stops at the -R.
+export function parseMuseVersion(output){
+  const value=stripAnsi(output);
+  return value.match(/\b\d+\.\d+\.\d+-R\d+(?:\.\d+)?\b/)?.[0]||value.match(/\b\d+\.\d+\.\d+\b/)?.[0]||null;
+}
+// Meta's own installers for Muse Code (https://dev.meta.ai/docs/muse-code): Trebell does not install it.
+export function museInstallCommand(platform=process.platform){
+  return platform==="win32"?"irm https://dev.meta.ai/install.ps1 | iex":"curl -fsSL https://dev.meta.ai/install.sh | sh";
+}
 export function parseOpenCodeAuthList(output){
   const value=stripAnsi(output);
   const credentials=Number(value.match(/(?:^|\s)(\d+)\s+credentials?\b/i)?.[1]??NaN);
@@ -240,7 +262,7 @@ export function openCodeCommandHolder(prefix,{platform=process.platform,read=pat
 }
 export function runtimeCompatibility(kind,version){
   const policy=RUNTIME_COMPATIBILITY[normalizeAgentRuntime(kind)];if(!policy)return null;
-  const parsed=parsedSemver(version);
+  const parsed=parsedSemver(normalizeAgentRuntime(kind)==="muse"?String(parseMuseVersion(version)||"").replace(/-R\d+(?:\.\d+)?$/,""):version);
   const normalized=parsed?parsed.raw:null;
   const matched=normalized?policy.ranges.find(item=>satisfiesSimpleRange(normalized,item.range)):null;
   const status=matched?.status||"unknown";
@@ -276,6 +298,12 @@ async function run(command,args=[],{env=process.env,cwd=process.cwd(),timeoutMs=
 function defaultInstance(kind){return {id:`${kind}-default`,kind,displayName:RUNTIMES[kind].name,enabled:true,binaryPath:null,homePath:null,shadowHomePath:null,serverUrl:null,autoCompactWindow:null,environment:{}}}
 
 export function runtimeExecutableCandidates(kind,{env=process.env,platform=process.platform}={}){
+  // Meta's installers put Muse Code's launcher in MUSE_INSTALL_DIR, else %LOCALAPPDATA%\Programs\muse (install.ps1) or ~/.local/bin
+  // (install.sh): the PATH entry they add reaches only programs started after the install.
+  if(kind==="muse"){
+    const folder=String(env.MUSE_INSTALL_DIR||"").trim()||(platform==="win32"?(String(env.LOCALAPPDATA||"").trim()?join(String(env.LOCALAPPDATA).trim(),"Programs","muse"):""):(String(env.HOME||"").trim()?join(String(env.HOME).trim(),".local","bin"):""));
+    return folder?[join(folder,platform==="win32"?"muse.cmd":"muse")]:[];
+  }
   if(platform!=="win32")return [];
   const user=String(env.USERPROFILE||env.HOME||"").trim(),local=String(env.LOCALAPPDATA||"").trim(),appData=String(env.APPDATA||"").trim();
   const values=[];
@@ -415,6 +443,9 @@ export class AgentRuntimeManager{
       if(layout.effectiveHomePath)env.CODEX_HOME=layout.effectiveHomePath;
     }
     if(instance?.kind==="claude"&&instance?.homePath)env.CLAUDE_CONFIG_DIR=instance.homePath;
+    // Meta's launcher would otherwise update Muse Code in the foreground, or start its updater, each time Trebell runs it (T3 Code
+    // sets it too); a profile's own value wins.
+    if(instance?.kind==="muse"&&env.MUSE_NO_AUTO_UPDATE==null)env.MUSE_NO_AUTO_UPDATE="1";
     return env;
   }
   childEnvironmentKeys(instanceOrKind=this.activeInstance()){
@@ -522,11 +553,14 @@ export class AgentRuntimeManager{
       :instance.kind==="cursor"?["login"]
       :instance.kind==="grok"?["login"]
       :instance.kind==="opencode"?["auth","login"]
+      // Muse Code's own sign-in: a code approved in the browser with a Meta account (`muse login`).
+      :instance.kind==="muse"?["login"]
       :null;
     if(!args)throw new Error((RUNTIMES[instance.kind]?.name||instance.kind)+" does not expose an interactive Trebell sign-in command.");
     // Codex signs in into its profile's home: one under a user this machine does not have is refused before the sign-in writes
     // anywhere (on an SSH or WSL host the home is the host's to expand, and the sign-in terminal runs prelude first to set it up).
     const profile=this.activeEnvironment(environmentId),remote=Boolean(profile&&profile.type!=="local");
+    if(instance.kind==="muse"&&remote)throw new Error(MUSE_LOCAL_ONLY);
     if(instance.kind==="codex"&&!remote){
       const layout=resolveCodexHomeLayout({homePath:instance.homePath,shadowHomePath:instance.shadowHomePath,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
       if(layout.error)throw new Error(layout.error);
@@ -789,6 +823,7 @@ export class AgentRuntimeManager{
       const status=codexAccountStatus(probed.result.account);
       return {id:instance.id,kind:"codex",name:def.name,available:status.ready,installed:true,authenticated:status.authenticated,protocol:"codex",version:version??probed.result.version??null,binary:this.executable(instance,{environmentId}),message:status.message,account:{type:status.authType,label:status.label},...(failure?{versionCheckFailed:true}:{})};
     }
+    if(instance.kind==="muse")return this.#museStatus(instance,{environmentId,fresh});
     const command=this.executable(instance);
     if(instance.kind==="antigravity"&&!this.activeEnvironment(environmentId)){
       try{await access(command)}catch{
@@ -882,11 +917,58 @@ export class AgentRuntimeManager{
     const compatibility=runtimeCompatibility(instance.kind,version);
     return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated!==false,installed:true,authenticated,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version,account,message,...(compatibility?{compatibility}:{})};
   }
+  // Muse Code's status check (T3 checkMuseProviderStatus): `muse --version`, then the models a short read-only host lists. The Muse
+  // Session Protocol says nothing of the sign-in and Muse lists Meta's models only once signed in, so a list with models is ready
+  // with the sign-in unknown (a turn checks it), and an empty one is not. A failed version check starts no host.
+  async #museStatus(instance,{environmentId=undefined,fresh=false}={}){
+    const def=RUNTIMES.muse,binary=this.executable(instance,{environmentId});
+    const answer=fields=>({id:instance.id,kind:"muse",name:def.name,protocol:def.protocol,managed:false,binary,authenticated:null,account:null,...fields});
+    if(this.processSpawner(instance,environmentId))return answer({available:false,installed:false,version:null,message:MUSE_LOCAL_ONLY});
+    const checked=await this.#versionCheck(instance,{environmentId,fresh}),said=(checked.stdout||"")+"\n"+(checked.stderr||"");
+    if(!checked.ok){
+      if(/ENOENT|not recognized as an internal or external command|command not found/i.test(String(checked.error||checked.stderr||"")))return answer({available:false,installed:false,version:null,message:`Muse Code (muse) was not found. Install it with ${museInstallCommand(this.platform)} (https://dev.meta.ai/docs/muse-code), then sign in with muse login.`});
+      // What Muse printed stays out of the answer, which Settings shows (T3 Code's status check leaves it out too).
+      return answer({available:false,installed:true,version:parseMuseVersion(said),message:checked.error==="probe timed out"?"Muse Code did not answer `muse --version` in time. Press Refresh to check it again.":`Muse Code is installed, but \`muse --version\` failed${Number.isInteger(checked.code)?` with exit code ${checked.code}`:""}. Check its executable path, or install Muse Code again.`});
+    }
+    const version=parseMuseVersion(said),compatibility=runtimeCompatibility("muse",version),known={installed:true,version,...(compatibility?{compatibility}:{})};
+    let catalog;
+    try{catalog=await this.#museCatalog(instance,version,{fresh})}
+    catch(error){return answer({...known,available:false,message:("Muse Code could not list its models: "+(error?.message||String(error))).slice(0,500)})}
+    if(!catalog.models.length)return answer({...known,available:false,message:"Muse Code listed no models. Sign in with muse login, then press Refresh."});
+    return answer({...known,available:true,message:"Muse Code checks its sign-in when a turn runs. Sign in with muse login if a turn says it is signed out."});
+  }
+  #museCatalogs=new Map();
+  // The models Muse Code lists (readMuseModelCatalog), read once per profile, binary and version: each read starts the 400 MB muse
+  // binary, so Settings' polls, thread starts and model lists reuse the last one (an empty list or a failure too), and a check with
+  // fresh (Settings' open and Refresh, a sign-in's follow-up, a failed turn's recheck) reads it again. Reads at once share one.
+  async #museCatalog(instance,version,{fresh=false}={}){
+    const command=this.executable(instance),key=JSON.stringify([command,binarySignature(this.#binaryPaths(instance)),version||null]);
+    const cached=this.#museCatalogs.get(instance.id),current=cached?.key===key?cached:null;
+    if(current?.pending)return await current.pending;
+    if(current&&!fresh){if(current.error)throw current.error;return current.value}
+    const pending=readMuseModelCatalog({command,env:this.childEnv(instance),cwd:process.cwd()}),entry={key,pending,value:cached?.value||null};
+    this.#museCatalogs.set(instance.id,entry);
+    try{
+      const value=await pending;
+      if(this.#museCatalogs.get(instance.id)===entry)this.#museCatalogs.set(instance.id,{key,value});
+      return value;
+    }catch(error){
+      if(this.#museCatalogs.get(instance.id)===entry)this.#museCatalogs.set(instance.id,{key,error,value:entry.value});
+      throw error;
+    }
+  }
+  // The list a Muse Code session resolves the thread's model and Thinking level against: the last one read for the profile, or null.
+  museModelCatalog(instance){return this.#museCatalogs.get(instance?.id)?.value||null}
   async models(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="native")return {models:[],metadata:[],source:"provider"};
     if(instance.kind==="codex")return {models:[],metadata:[],source:"codex"};
     const status=await this.probe(instance,{environmentId});if(!status.available)return {models:[],metadata:[],source:"unavailable",error:status.message};
+    // Muse Code's are the list its status check read (T3 builds the provider snapshot's models from it); Refresh reads it again.
+    if(instance.kind==="muse"){
+      try{const catalog=await this.#museCatalog(instance,status.version);return {models:catalog.models,metadata:catalog.metadata,preferred:catalog.preferred,source:"live"}}
+      catch(error){return {models:[],metadata:[],source:"unavailable",error:"Muse Code could not list its models: "+(error?.message||String(error))}}
+    }
     if(instance.kind==="opencode"){
       // Where the relay runs OpenCode through its SDK (the profile runs on this machine): the model list, and the commands, skills and
       // agents a new chat offers before its first message (T3 Code's provider snapshot).
@@ -1041,8 +1123,8 @@ export class AgentRuntimeManager{
       const {environment,...safe}=instance;
       return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys)};
     });
-    const installCommand=id=>id==="opencode"?"npm install -g "+INSTALLABLE_PACKAGES.opencode+" (OpenCode 1.x), or opencode upgrade for an OpenCode from its own installer":INSTALLABLE_PACKAGES[id]?"npm install -g "+INSTALLABLE_PACKAGES[id]:null;
-    const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,installCommand:installCommand(def.id),canAuthenticate:["codex","claude","cursor","grok","opencode","antigravity"].includes(def.id)}));
+    const installCommand=id=>id==="muse"?museInstallCommand(this.platform):id==="opencode"?"npm install -g "+INSTALLABLE_PACKAGES.opencode+" (OpenCode 1.x), or opencode upgrade for an OpenCode from its own installer":INSTALLABLE_PACKAGES[id]?"npm install -g "+INSTALLABLE_PACKAGES[id]:null;
+    const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,installCommand:installCommand(def.id),canAuthenticate:["codex","claude","cursor","grok","opencode","antigravity","muse"].includes(def.id)}));
     const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),capabilities:this.capabilities(active),definitions,instances:publicInstances,statuses,installs:this.installs()};
   }
 }

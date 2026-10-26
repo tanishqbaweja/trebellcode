@@ -21,7 +21,7 @@ import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 // ~/.cursor/acp-sessions, ~/.grok/sessions and ~/.gemini/antigravity-acp/conversations.
 export const HARNESS_TEXT_TIMEOUT_MS=90_000;
 export const HARNESS_TEXT_INSTRUCTIONS="You are writing Git text (a commit subject, or a pull request title and description) for Trebell Code. Everything you need is in the user message. Do not use tools, run commands, browse, or read or modify files. Reply once with exactly the requested text and nothing else.";
-const HARNESS_NAMES=Object.freeze({codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"});
+const HARNESS_NAMES=Object.freeze({codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity",muse:"Muse Code"});
 const ACP_HARNESSES=new Set(["cursor","grok","antigravity"]);
 const EXPECTED_CODES=new Set(["HARNESS_TEXT_TIMEOUT","HARNESS_TEXT_CANCELLED","HARNESS_UNAVAILABLE","HARNESS_TEXT_EMPTY"]);
 // The Claude Agent SDK and OpenCode's SDK load with the first Git text that needs one, not with the server (budget B25).

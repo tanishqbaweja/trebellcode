@@ -37,7 +37,7 @@ Trebell is built around a harder question:
 
 That leads to five rules:
 
-1. **Harness capabilities are explicit.** Trebell Native, Codex, Claude Code, OpenCode, Cursor, Grok Build and Antigravity do not magically expose identical queues, sandboxes, rewinds, profiles, delegation or attachment support.
+1. **Harness capabilities are explicit.** Trebell Native, Codex, Claude Code, OpenCode, Cursor, Grok Build, Antigravity and Muse Code do not magically expose identical queues, sandboxes, rewinds, profiles, delegation or attachment support.
 2. **Provider identity does not own conversation identity.** Switching inference provider must not make your projects or previous chats disappear.
 3. **Verification uses evidence.** Tests, builds, browser runs, screenshots, Git state and runtime signals beat “another model said it looks good.”
 4. **Failure is visible.** If persistence, Git metadata, provider refresh, checkpointing, source control or the runtime fails, Trebell shows it.
@@ -56,7 +56,7 @@ flowchart LR
     TOOLS["Shared tool gateway + policy + redaction"]
     NATIVE["Trebell Native"]
     CODEX["Codex app-server"]
-    EXTERNAL["Claude Code · OpenCode · Cursor · Grok Build · Antigravity"]
+    EXTERNAL["Claude Code · OpenCode · Cursor · Grok Build · Antigravity · Muse Code"]
     PROVIDERS["OpenAI · Anthropic · Gemini · AgentRouter · JustWorker · HCNSec · VyceAi"]
     MCP["MCP servers"]
     BROWSER["Agent Browser / desktop verification"]
@@ -102,6 +102,7 @@ External harnesses are not forced through Trebell Native's provider layer merely
 | **Cursor** | External agent runtime | Capabilities depend on the connected runtime |
 | **Grok Build** | External agent runtime | Capabilities depend on the connected runtime |
 | **Antigravity** | External agent runtime | Capability-gated; video attachments currently marked unsupported |
+| **Muse Code** | Meta's SDK over the Muse Session Protocol, on a `muse serve` Trebell starts | Runs on this machine only; models and Thinking levels from Muse's own list; signs in with `muse login` |
 
 The UI reads a runtime capability contract rather than scattering runtime-name assumptions everywhere.
 

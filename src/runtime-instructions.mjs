@@ -22,6 +22,7 @@ export function runtimeHarnessLabel(runtime){
   if(id==="cursor")return "Cursor";
   if(id==="grok")return "Grok Build";
   if(id==="antigravity")return "Antigravity";
+  if(id==="muse")return "Muse Code";
   if(id==="codex")return "Codex";
   if(id==="native")return "Trebell Native";
   return oneLine(runtime)||"external coding";

@@ -32,7 +32,7 @@ export function humanizeIdentifier(value){
 }
 
 // A coding agent by the id a runtime reports for it ("claude" in an import history entry is Claude Code).
-const AGENT_NAMES={native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"};
+const AGENT_NAMES={native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity",muse:"Muse Code"};
 export function agentName(id){const text=String(id||"").trim();return AGENT_NAMES[text.toLowerCase()]||humanizeIdentifier(text)}
 
 // MCP server sign-in states as the runtimes report them (Codex's McpAuthStatus), named for people.
