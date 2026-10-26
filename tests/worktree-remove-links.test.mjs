@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import fsPromises, { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import * as gitService from "../src/git-service.mjs";
 
 const { createWorktree, git, removeWorktree } = gitService;
@@ -124,9 +125,11 @@ for(const kind of ["updated","cloned"])test(`a remove of a worktree with a junct
   }finally{await rm(f.root,RETRY)}
 });
 
-// The junctions are taken out only once git's checks have passed, and git refuses a remove after that only if the worktree changed in
-// between (here a lock taken meanwhile): its junctions go back as they were, the same target, a junction still.
-test("a remove git refuses once the junctions are out puts them back as they were",UNDER_LOAD,async()=>{
+// On Windows the junctions are taken out only once git's checks have passed, and git refuses a remove after that only if the worktree
+// changed in between (here a lock taken meanwhile): its junctions go back as they were, the same target, a junction still. Elsewhere
+// git deletes a link as a link and nothing is taken out, so git's remove starts with the links in place.
+test("a remove git refuses once the junctions are out puts them back as they were",UNDER_LOAD,async t=>{
+  if(process.platform!=="win32")return t.skip("links are taken out of a worktree only on Windows");
   const {removeWorktreeKeepingLinks}=gitService;assert.equal(typeof removeWorktreeKeepingLinks,"function","a remove that takes the links out first");
   const f=await fixture("put-back");
   try{
@@ -137,6 +140,29 @@ test("a remove git refuses once the junctions are out puts them back as they wer
     assertJunctionInPlace(f);assert.equal(samePath(readlinkSync(nested)),samePath(f.outside));if(process.platform==="win32")assert.equal(linkKind(nested),"junction");
     assert.deepEqual((await listedWorktrees(f.repo)).slice(1),[samePath(f.tree)],"git lists the worktree still");
   }finally{await rm(f.root,RETRY)}
+});
+
+// A link that cannot be taken out (another program holding it: here rmdir refuses it) stops the remove before git starts, and the links
+// already out go back. One that cannot go back (here another program made a file in its place meanwhile) is named after the reason, as
+// after a refusal of git's, so the person knows the worktree, still there, is without it.
+test("a remove that cannot take a link out puts back those it took out and names one that cannot go back",UNDER_LOAD,async t=>{
+  if(process.platform!=="win32")return t.skip("links are taken out of a worktree only on Windows");
+  const f=await fixture("take-out"),original=fsPromises.rmdir,tried=[];
+  try{
+    await linkShared(f);await symlink(f.outside,join(f.tree,"node_modules","other"),"junction");
+    fsPromises.rmdir=async(path,...rest)=>{
+      tried.push(String(path));if(tried.length===1)return original(path,...rest);
+      await writeFile(tried[0],"made meanwhile\n");throw Object.assign(new Error(`EBUSY: resource busy or locked, rmdir '${path}'`),{code:"EBUSY",syscall:"rmdir",path:String(path)});
+    };
+    syncBuiltinESMExports();
+    const refused=await removeWorktree(f.repo,f.tree,{force:true}).then(()=>null,error=>error);
+    fsPromises.rmdir=original;syncBuiltinESMExports();
+    assert.ok(refused,"the remove is refused");assert.equal(tried.length,2,"it stops at the link it cannot take out");const [lost,held]=tried,lines=refused.message.split("\n");
+    assert.equal(lines[0],`Could not take the link ${held} out of the worktree before removing it: EBUSY: resource busy or locked, rmdir '${held}'`);
+    assert.equal(lines.length,2,refused.message);assert.ok(lines[1].startsWith(`Could not put back the link ${lost}: EEXIST: file already exists, symlink `),"the link that cannot go back is named: "+lines[1]);
+    assert.equal(readFileSync(lost,"utf8"),"made meanwhile\n");assert.equal(lstatSync(held).isSymbolicLink(),true,"the link held is in place");assert.equal(readFileSync(join(held,"keep.txt"),"utf8"),"keep\n");
+    assert.equal(readFileSync(join(f.tree,"README.md"),"utf8"),"seed\n","git's remove did not start");assert.deepEqual((await listedWorktrees(f.repo)).slice(1),[samePath(f.tree)],"git lists the worktree still");assertOutsideWhole(f);
+  }finally{fsPromises.rmdir=original;syncBuiltinESMExports();await rm(f.root,RETRY)}
 });
 
 // A worktree with no junction in it goes to git as before: one git worktree remove, with --force when forced.
@@ -151,4 +177,35 @@ test("a worktree without a junction is removed by git's one command, as before",
       assert.deepEqual(calls,[["worktree","remove",...(force?["--force"]:[]),f.tree]]);assert.equal(existsSync(f.tree),false);
     }finally{await rm(f.root,RETRY)}
   }
+});
+
+// On Windows the walk for links before a remove, in the repository's worktree turn, reads eight at a time, each a folder (its readdir)
+// or a link (its lstat, readlink and stat), and each once. Its eight walkers ended at once but the first, which read the tree one
+// folder or link at a time while the repository's next add or remove waited: 4.2 s for a pnpm-like tree of 6,003 folders and 6,100
+// junctions, which eight at a time read in 0.7 s. Here fs/promises counts the walk's calls in the worktree, each held 5 ms so that
+// the calls going at once overlap.
+test("the walk for links before a remove reads eight folders and links at a time, each once",UNDER_LOAD,async t=>{
+  if(process.platform!=="win32")return t.skip("links are taken out of a worktree only on Windows");
+  const f=await fixture("eight"),names=["readdir","lstat","readlink","stat"],originals=Object.fromEntries(names.map(name=>[name,fsPromises[name]]));
+  try{
+    // pnpm's layout: each package in node_modules/.pnpm, and a junction to it in node_modules and in a package that depends on it.
+    const pnpm=join(f.tree,"node_modules",".pnpm"),pkg=i=>join(pnpm,`p${i}@1.0.0`,"node_modules",`p${i}`);
+    for(let i=0;i<12;i++){await mkdir(join(pkg(i),"lib"),{recursive:true});await writeFile(join(pkg(i),"index.js"),"x\n")}
+    for(let i=0;i<12;i++){await symlink(pkg((i+1)%12),join(pnpm,`p${i}@1.0.0`,"node_modules",`p${(i+1)%12}`),"junction");await symlink(pkg(i),join(f.tree,"node_modules",`p${i}`),"junction")}
+    await linkShared(f);
+    const tree=samePath(realpathSync.native(f.tree)),folders=[],links=[];
+    (function list(dir){folders.push(samePath(dir));for(const entry of readdirSync(dir,{withFileTypes:true})){const path=join(dir,entry.name);if(entry.isDirectory())list(path);else if(entry.isSymbolicLink())links.push(samePath(path))}})(realpathSync.native(f.tree));
+    const calls={readdir:[],lstat:[]};let now=0,most=0;
+    for(const name of names)fsPromises[name]=async(path,...rest)=>{
+      const at=samePath(String(path));if(at!==tree&&!at.startsWith(tree+sep))return originals[name](path,...rest);
+      calls[name]?.push(at);most=Math.max(most,++now);
+      try{await new Promise(next=>setTimeout(next,5));return await originals[name](path,...rest)}finally{now--}
+    };
+    syncBuiltinESMExports();
+    await removeWorktree(f.repo,f.tree);
+    for(const name of names)fsPromises[name]=originals[name];syncBuiltinESMExports();
+    assert.equal(most,8,"eight reads at a time");
+    assert.deepEqual(calls.readdir.sort(),folders.sort(),"each folder read once");assert.deepEqual(calls.lstat.sort(),links.sort(),"each link looked at once");
+    assert.equal(existsSync(f.tree),false,"the worktree is gone");assertOutsideWhole(f);
+  }finally{for(const name of names)fsPromises[name]=originals[name];syncBuiltinESMExports();await rm(f.root,RETRY)}
 });
