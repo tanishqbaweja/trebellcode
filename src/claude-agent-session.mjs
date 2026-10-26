@@ -461,10 +461,16 @@ export class ClaudeAgentSession{
     if(!this.sdk)await this.#loadSdk();
     const key=this.#queryKey(),live=this.live;
     if(live&&!live.closed&&live.key===key){
-      // Claude can switch its own mode (EnterPlanMode, a denied ExitPlanMode): put the process back in the thread's mode.
-      if(live.permissionMode===live.openedPermissionMode)return live;
-      try{await live.query.setPermissionMode(live.openedPermissionMode);live.permissionMode=live.openedPermissionMode;return live}
-      catch{await this.#closeLive(live)}
+      // Claude can switch itself to Plan (EnterPlanMode, a denied ExitPlanMode): a process left there goes back to the mode it opened
+      // in. Only Plan is undone (T3 Code's 0b84aa3fa): another mode is Claude Code's own answer to what was asked (Manual for Auto on a
+      // model without it, or where an administrator turned bypass off), which asking again would only refuse.
+      if(live.permissionMode!=="plan"||live.openedPermissionMode==="plan")return live;
+      try{await live.query.setPermissionMode(live.openedPermissionMode);live.permissionMode=live.openedPermissionMode;return live}catch{}
+      // Full access that cannot come back (bypass turned off since the process opened) leaves Plan for Manual.
+      if(live.openedPermissionMode==="bypassPermissions"){try{await live.query.setPermissionMode("default");live.permissionMode="default";return live}catch{}}
+      // A process that cannot leave Plan is replaced, never while background work runs in it, which that would end.
+      if(live.backgroundTasks.size)throw new SessionRefusalError(CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE);
+      await this.#closeLive(live);
     }else if(live&&!live.closed){
       // Background agents and shells run inside the CLI process: a new launch policy would end them.
       if(live.backgroundTasks.size)throw new SessionRefusalError(CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE);
@@ -645,6 +651,9 @@ export class ClaudeAgentSession{
     const type=message.type,subtype=message.subtype,root=!message.parent_tool_use_id;
     if(type==="system"&&(subtype==="init"||subtype==="status")&&message.permissionMode)live.permissionMode=message.permissionMode;
     if(type==="system"&&subtype==="init"){
+      // Claude Code reports its mode at the start of every turn; the first report is the mode it opened in, which can be a fallback
+      // from the one asked for (T3 Code's 598298cc3).
+      if(!live.sawInit&&message.permissionMode)live.openedPermissionMode=message.permissionMode;
       live.sawInit=true;this.sessionId=message.session_id||this.sessionId;this.startedOnce=true;
       if(this.turn?.live===live&&!this.turn.settled)this.#delivered(this.turn);
       if(live.fork&&this.pendingFork===live.fork){
