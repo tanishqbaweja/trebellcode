@@ -38,15 +38,16 @@ const shareDone={};
 // elevation prompt, and a second import, and passed over the first one's end. And what a history import did (told), which the next
 // page drawn says once it has scanned the history again: the page drawn after showed only Scan history.
 let said={},setup={},importing={},told=null;
-// The search on its way (searching: its term and scope, and for a Load more the results it adds to and their next page), so a page
-// drawn while it runs shows it in its box and select, beside Searching… or over the results with Load more saying Loading…, and
-// where its answer or refusal is said: the box was empty there, and the answer then put the search back over what the person had
-// typed; drawn while Load more ran, the page listed the catalog under the search, with nothing saying Loading…. And the details a
-// skill is read from (reading), so a page drawn while Codex reads it shows them, with Reading… on Read skill, and the skill once it
-// is read: it showed neither. And what Codex answers while no page is shown (kept): a plugin's details, a search's results, a skill,
-// or a history scan's conversations or why it failed, which the next page drawn shows, as it says the lines (said); they went
-// nowhere, so the page drawn after offered Details with nothing shown, the catalog under an empty box, or Scan history alone. A
-// search or a skill's read that ends with no page shown keeps what it was sent from for that page.
+// The search on its way (searching: its term and scope, and the results listed under them with their next page, which a Load more
+// adds to and a search of their term again keeps), so a page drawn while it runs shows it in its box and select, beside Searching…
+// over those results or the catalog, or over the results with Load more saying Loading…, and where its answer or refusal is said:
+// the box was empty there, and the answer then put the search back over what the person had typed; drawn while Load more ran, the
+// page listed the catalog under the search, with nothing saying Loading…. And the details a skill is read from (reading), so a page
+// drawn while Codex reads it shows them, with Reading… on Read skill, and the skill once it is read: it showed neither. And what
+// Codex answers while no page is shown (kept): a plugin's details, a search's results, a skill, or a history scan's conversations or
+// why it failed, which the next page drawn shows, as it says the lines (said); they went nowhere, so the page drawn after offered
+// Details with nothing shown, the catalog under an empty box, or Scan history alone. A search or a skill's read that ends with no
+// page shown keeps what it was sent from for that page.
 let searching=null,reading=null,kept=[];
 window.addEventListener("trebell:windows-sandbox-setup",event=>{setup={};if(!shown)said={...said,"windowsSandbox/setupStart":event.detail?.success?null:failureText("Windows sandbox setup failed",event.detail?.error)}});
 
@@ -437,10 +438,12 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   }
   // A search's results, a plugin's details and a skill read from them show on the page drawn now, as busy does, or with no page
   // shown on the next one drawn (land): they went to the page that sent them, so on the page drawn again Searching… ended with the
-  // box empty and the catalog listed, Loading… turned back into Details, and the skill read showed nowhere.
+  // box empty and the catalog listed, Loading… turned back into Details, and the skill read showed nowhere. Searched again, the term
+  // its results are listed under keeps them, beside Searching… until the answer takes their place, and refused, with the line saying
+  // why and their Load more: the catalog was listed under them meanwhile, and a refusal left both lists.
   async function searchPlugins({append=false}={}){
     const searchTerm=pluginSearchTerm.trim();if(!rpc||searchTerm.length<2)return;
-    searching=[pluginSearchTerm,pluginSearchScope,...append?[pluginSearchResults,pluginSearchCursor]:[]];setBusy(append?"plugin:more":"plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
+    searching=[pluginSearchTerm,pluginSearchScope,...pluginSearchRan?[pluginSearchResults,pluginSearchCursor]:[]];setBusy(append?"plugin:more":"plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));
     try{
       const result=await request("plugin/search",{searchTerm,scope:pluginSearchScope,cwds:projectPath?[projectPath]:null,cursor:append?pluginSearchCursor:null,limit:20});
       const results=append?[...pluginSearchResults,...(result?.data||[])]:result?.data||[],cursor=result?.nextCursor||null;land(to=>to.showSearch(results,cursor,[searchTerm,pluginSearchScope]));

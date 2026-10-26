@@ -1868,6 +1868,91 @@ test("Tools keeps Reading… or Loading… in view until Codex answers, with the
   }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
+// A plugin search run again on the term its results are listed under (Enter in the box again, Search clicked or double clicked, or
+// reached with Tab at 700) shows one list, as a term searched does: those results beside Searching… until Codex answers, on the page
+// that sent it and on the page drawn again meanwhile, and refused, the results with the line saying why, their Load more adding the
+// next page of the search they are. The catalog shows only under a term not searched yet. On 4708aac5 the page that sent the search
+// listed the whole catalog under the results and their Load more while it ran, and a refusal left both lists there, Load more live.
+test("Tools Plugins shows one list while a search runs again on the term its results are under, the results beside Searching… and with the line once Codex refuses",async({page})=>{
+  test.setTimeout(150_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=moreCatalog();fixture.control.searchPage=2;
+  // The plugin searches the page sends Codex, each as its term and the page it asks for.
+  const sent=[],asked=()=>sent.map(params=>params.searchTerm+" from "+params.cursor);
+  page.on("websocket",socket=>socket.on("framesent",frame=>{try{const message=JSON.parse(String(frame.payload));if(message.method==="plugin/search")sent.push(message.params)}catch{}}));
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const ways=toolsWays(page),plugins=toolsCard(page,"Plugins"),box=plugins.getByPlaceholder("Search plugins"),results=plugins.locator(".plugin-search-results>div strong"),listed=plugins.locator(".capability-list:not(.plugin-search-results)>div");
+    const search=plugins.getByRole("button",{name:"Search",exact:true}),searching=plugins.getByRole("button",{name:"Searching…",exact:true}),more=plugins.getByRole("button",{name:"Load more",exact:true}),line=plugins.locator(".capability-error");
+    const first=["Lane G Local","Lane G Notes"],all=[...first,"Lane G Tasks"];
+    const held=async()=>{await expect.poll(()=>fixture.control.heldReads.length).toBe(1);await expect(searching).toHaveAttribute("aria-busy","true")};
+    // While the search runs again (where): the results listed under the term (shown), with no catalog under them, and the Load more
+    // of a first page waiting.
+    const during=async(where,shown)=>{
+      await expect.soft(results,"the results stay under the term searched again "+where+", beside Searching…").toHaveText(shown);
+      await expect.soft(listed,"with no catalog under them "+where).toHaveCount(0);
+      if(shown===first)await expect.soft(more,"their Load more waiting "+where+", as the page's other actions do").toBeDisabled();
+      else await expect.soft(more,"and no Load more "+where+", all of them listed").toHaveCount(0);
+    };
+    // Codex refuses it (where): the line says why beside the results, with their Load more, and no catalog.
+    const refused=async where=>{
+      fixture.refuseReads("the plugin index is rebuilding");
+      await expect(line).toHaveText(["Could not search plugins: the plugin index is rebuilding"]);await expect(search).toBeEnabled();
+      await expect.soft(results,"refused "+where+", the results stay with the line").toHaveText(first);
+      await expect.soft(listed,"with no catalog under them, refused "+where).toHaveCount(0);
+      await expect.soft(more,"and their Load more, refused "+where).toBeEnabled();
+    };
+    await wheelTo(page,plugins);
+    // 'lane' searched, answered at once: its first page with Load more, in place of the catalog.
+    await box.click();await page.keyboard.type("lane");await page.keyboard.press("Enter");
+    await expect(results).toHaveText(first);await expect(more).toBeEnabled();await expect(listed).toHaveCount(0);
+    // Enter again with the cursor still in the box while Codex holds the answer, then Codex refuses it.
+    fixture.control.holdReads=true;await page.keyboard.press("Enter");await held();
+    await expect.soft.poll(asked,"Enter again searches 'lane' again from its first page").toEqual(["lane from null","lane from null"]);
+    await during("on the page that sent it",first);
+    await shootTools(page,"tools-plugin-search-again-searching",plugins);
+    await refused("on the page that sent it");
+    await shootTools(page,"tools-plugin-search-again-refused",plugins);
+    // Load more there adds the next page of the search the results are, and the line goes.
+    await more.click();await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    await expect.soft.poll(asked,"Load more asks for the next page of 'lane'").toEqual(["lane from null","lane from null","lane from 2"]);
+    fixture.releaseReads();
+    await expect.soft(results,"Load more adds the next page to the results listed").toHaveText(all);
+    await expect(more).toHaveCount(0);await expect.soft(listed,"with no catalog under them").toHaveCount(0);await expect.soft(line,"and the line goes").toHaveCount(0);
+    // Search clicked over all three: they stay beside Searching…, and Codex's answer takes their place.
+    await search.click();await held();
+    await during("after a click on Search",all);
+    fixture.releaseReads();await expect(search).toBeEnabled();
+    await expect.soft(results,"Codex's answer takes their place").toHaveText(first);await expect.soft(listed,"with no catalog under it").toHaveCount(0);
+    // Search double clicked, which sends one search, then Settings and back with the keys: the page drawn again lists the results
+    // beside Searching… too, and refused, with the line.
+    const before=sent.length;
+    await search.dblclick();await held();
+    await ways.keys();await wheelTo(page,plugins);
+    await expect(searching).toHaveAttribute("aria-busy","true");await expect.soft(box,"the page drawn again shows the search in the box").toHaveValue("lane");
+    await during("on the page drawn again",first);
+    await shootTools(page,"tools-drawn-again-plugin-search-again-searching",plugins);
+    await refused("on the page drawn again");
+    expect.soft(sent.length-before,"a double click on Search sends one search").toBe(1);
+    // At 700, Search reached with Tab from the box and pressed with Enter: the results beside Searching…, then Codex's answer.
+    await page.setViewportSize({width:700,height:800});
+    await box.click();await page.keyboard.press("Tab");await page.keyboard.press("Tab");await expect(search).toBeFocused();
+    await page.keyboard.press("Enter");await held();
+    await during("at 700 by the keys",first);
+    fixture.releaseReads();await expect(search).toBeEnabled();
+    await expect.soft(results,"Codex's answer at 700").toHaveText(first);await expect.soft(listed,"with no catalog under it at 700").toHaveCount(0);
+    await page.setViewportSize({width:1280,height:800});
+    // A term not searched yet keeps the catalog under it while Codex searches it, and then its results take its place.
+    await box.fill("lane-g-t");await expect(listed).toHaveCount(3);await expect(results).toHaveCount(0);
+    await box.press("Enter");await held();
+    await expect.soft(listed,"a term not searched yet keeps the catalog beside Searching…").toHaveCount(3);await expect.soft(results,"with no results").toHaveCount(0);
+    fixture.releaseReads();
+    await expect.soft(results,"then its results").toHaveText(["Lane G Tasks"]);await expect.soft(listed,"in the catalog's place").toHaveCount(0);
+  }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
 // A history import says what it did once Conversation history is scanned again: the scan cleared the line as it started, so the
 // summary never showed. Import available pressed, then Settings and back while the import runs: the page drawn again has no scan to
 // draw Import available from, and says Importing… in its place, with Scan history waiting; once the import lands it says what was
