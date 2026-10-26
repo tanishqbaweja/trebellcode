@@ -53,6 +53,7 @@ import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
+import { focusBesideSelection } from "./selection-focus.js";
 import { sectionFirstThread, threadMoveAvailability, threadsInListOrder } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { startFocusPoll } from "./focus-poll.js";
@@ -258,7 +259,8 @@ class LazySlot extends React.Component{
 }
 // The Cite button's code (idle-parts.js) that could not load says so only where the button would come, above text selected in a
 // reply (AssistantSelectionToolbar's rule), for as long as that selection lasts, with Reload. The end of the conversation, where
-// the button's slot is, says nothing: no reply reads as failed to show, and nothing there is announced or in Tab's order.
+// the button's slot is, says nothing: no reply reads as failed to show, and nothing there is announced or in Tab's order. Reload,
+// like Cite, is reached from the selection, and the keys go on from it beside the selection (selection-focus.js).
 function CiteUnavailable({containerRef}){
   const [at,setAt]=useState(null),reload=useRef(null);
   useEffect(()=>{
@@ -272,8 +274,12 @@ function CiteUnavailable({containerRef}){
       const rect=range.getBoundingClientRect(),view=(host||container).getBoundingClientRect();
       setAt(beyond.toString().trim()||!(rect.width||rect.height)?null:{x:Math.max(112,Math.min(window.innerWidth-112,rect.left+rect.width/2)),y:Math.max(Math.max(0,view.top)+44,Math.min(Math.min(window.innerHeight,view.bottom)-8,rect.top-7))});
     })};
-    // Tab and Shift+Tab from the selection reach Reload, in any reply, as they reach Cite.
-    const onKey=event=>{if(event.key==="Escape")clear();else if(event.key==="Tab"&&document.activeElement?.contains(window.getSelection()?.anchorNode)){reload.current?.focus();if(document.activeElement===reload.current)event.preventDefault()}};
+    // Tab and Shift+Tab from the selection reach Reload, in any reply, and from Reload go on beside the selection, as they do for Cite.
+    const onKey=event=>{
+      if(event.key==="Escape")clear();
+      else if(event.key==="Tab"&&reload.current&&document.activeElement===reload.current){if(focusBesideSelection(reload.current,event.shiftKey))event.preventDefault()}
+      else if(event.key==="Tab"&&document.activeElement?.contains(window.getSelection()?.anchorNode)){reload.current?.focus();if(document.activeElement===reload.current)event.preventDefault()}
+    };
     document.addEventListener("selectionchange",update);container.addEventListener("pointerup",update);document.addEventListener("keydown",onKey,true);
     host?.addEventListener("scroll",clear,{passive:true});window.addEventListener("resize",clear);update();
     return()=>{
@@ -281,7 +287,7 @@ function CiteUnavailable({containerRef}){
       host?.removeEventListener("scroll",clear);window.removeEventListener("resize",clear);
     };
   },[containerRef]);
-  return at&&<div className="lazy-slot-error cite-unavailable" role="alert" style={{left:at.x,top:at.y}} onPointerDown={event=>event.preventDefault()}><span>Cite could not load.</span><button ref={reload} type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>;
+  return at&&<div className="lazy-slot-error cite-unavailable" role="alert" style={{left:at.x,top:at.y}} onPointerDown={event=>event.preventDefault()}><span>Cite could not load.</span><button ref={reload} type="button" tabIndex={-1} className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>;
 }
 function DeferredSurface({children,label="Loading…",compact=false}){
   return <LazySlot fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</LazySlot>;

@@ -1,5 +1,6 @@
 import React,{useEffect,useRef,useState} from "react";
 import { Quote } from "lucide-react";
+import { focusBesideSelection } from "../selection-focus.js";
 
 export const MAX_ASSISTANT_CITATION_CHARS=8_000;
 
@@ -46,10 +47,12 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
         setSelection({messageId:start.dataset.assistantCitationSource,text,x,y});
       });
     };
-    // Tab and Shift+Tab from the selection (nothing else has the keyboard) reach Cite above it, whichever reply it is in: in the page's
-    // order Cite comes after the conversation's last message. Not while Cite is off (too long, citing) or gone (Escape).
+    // Tab and Shift+Tab from the selection (nothing else has the keyboard) reach Cite above it, whichever reply it is in, and from Cite
+    // go on beside the selection (focusBesideSelection): in the page's order Cite comes after the conversation's last message, so it
+    // is no stop in that order. Not while Cite is off (too long, citing) or gone (Escape).
     const onKey=event=>{
       if(event.key==="Escape")clear();
+      else if(event.key==="Tab"&&button.current&&document.activeElement===button.current){if(focusBesideSelection(button.current,event.shiftKey))event.preventDefault()}
       else if(event.key==="Tab"&&document.activeElement?.contains(window.getSelection()?.anchorNode)){button.current?.focus();if(document.activeElement===button.current)event.preventDefault()}
     };
     document.addEventListener("selectionchange",update);
@@ -74,6 +77,7 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
   return <button
     ref={button}
     type="button"
+    tabIndex={-1}
     className="assistant-selection-cite"
     data-testid="assistant-selection-cite"
     style={{left:selection.x,top:selection.y}}

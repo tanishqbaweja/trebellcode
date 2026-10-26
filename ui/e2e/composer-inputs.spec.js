@@ -4301,3 +4301,56 @@ test("Tab or Shift+Tab from text selected in any reply, not only the last, reach
     expect(sentTexts(harness),"the messages the thread has").toEqual(["Explain the session handling","Thanks for that"]);
   }finally{await harness.close()}
 });
+
+// From Cite the keys go on beside the reply it cites, as if Cite stood where the selected text is: Tab to the first control after
+// the selection, the next question's Edit from here, and Shift+Tab to the last one before it, the Edit from here of the question the
+// reply answers, with the view where it was and Cite still there. Cite's place in the page's order is after the conversation's last
+// message, so from an earlier reply of a thread taller than the window Shift+Tab went down to the last question's Edit from here,
+// the view jumping to the end, which took Cite away, and Tab went on below the conversation, past every message between. Nor is Cite
+// a stop in that order any more: Tab from the last question's Edit from here reached it there, far from the text it cites.
+test("Tab and Shift+Tab from Cite go on beside the reply it cites in a thread taller than the window, with the view where it was",async({page})=>{
+  test.setTimeout(120_000);
+  const QUESTIONS=["Explain the session handling","And the refresh timer?","Where is the token kept?","What happens on sign out?","Thanks for that"];
+  const paragraphs=index=>["Reply "+(index+1)+" first paragraph, about the session token and where it is kept.","Reply "+(index+1)+" second paragraph, about the refresh timer and when it fires.","Reply "+(index+1)+" third paragraph, about what signing out clears."];
+  const harness=await openComposerApp(page,{turns:QUESTIONS.map((user,index)=>({user,items:[replyItem("cite-tall-reply-"+index,paragraphs(index).join("\n\n"))]}))});
+  try{
+    const scroller=page.locator(".conversation-scroll"),cite=page.getByTestId("assistant-selection-cite"),replies=page.locator(".assistant-message-text"),cited=replies.nth(1).locator("p");
+    const editFromHere=question=>page.locator(".user-bubble").filter({hasText:question}).getByRole("button",{name:"Edit from here",exact:true});
+    // Where the keyboard is: Cite by its test id, another button by its text (and a message's by that message's).
+    const keyboardOn=()=>page.evaluate(()=>{
+      const node=document.activeElement,bubble=node?.closest(".user-bubble");
+      return !node||node===document.body?"nothing":node.dataset.testid||node.textContent.trim().slice(0,60)+(bubble?" of '"+bubble.querySelector("p").textContent+"'":"");
+    });
+    const on=question=>"Edit from here of '"+question+"'",scrollTop=()=>scroller.evaluate(node=>Math.round(node.scrollTop));
+    await expect(replies).toHaveCount(QUESTIONS.length);await expect(cited).toHaveText(paragraphs(1));
+    // The second reply in the middle of the view, the thread going on below it, and its middle paragraph selected, Cite above it.
+    const select=async()=>{
+      await replies.nth(1).evaluate(node=>node.scrollIntoView({block:"center"}));await frames(page);
+      expect(await scroller.evaluate(node=>node.scrollHeight-node.clientHeight-node.scrollTop),"how far the thread goes on below the view").toBeGreaterThan(300);
+      for(const question of QUESTIONS.slice(1,3))await expect(editFromHere(question)).toBeInViewport({ratio:1});
+      await cited.nth(1).click({clickCount:3});await expect(cite).toBeVisible();
+      await expect.poll(()=>page.evaluate(()=>String(getSelection()).trim())).toBe(paragraphs(1)[1]);await frames(page);
+    };
+    for(const [mode,width] of [["dark",1280],["light",900]]){
+      await switchMode(page,mode);await page.setViewportSize({width,height:800});
+      for(const [key,next] of [["Tab",QUESTIONS[2]],["Shift+Tab",QUESTIONS[1]]]){
+        await select();const before=await scrollTop();
+        await page.keyboard.press(key);await expect.poll(keyboardOn,{message:"where "+key+" from the selection puts the keyboard"}).toBe("assistant-selection-cite");
+        await page.keyboard.press(key);await expect.soft.poll(keyboardOn,{message:"where "+key+" from Cite puts the keyboard, at "+mode+" "+width}).toBe(on(next));
+        await frames(page);
+        expect.soft(await scrollTop(),"where the view is after "+key+" from Cite, at "+mode+" "+width).toBe(before);
+        await expect.soft(cite,"Cite still above the selection after "+key+" from Cite, at "+mode+" "+width).toBeVisible();
+        await page.screenshot({animations:"disabled",path:auditDir+"cite-"+key.toLowerCase().replace("+","-")+"-from-cite-"+mode+"-"+width+"x800.png"});
+      }
+    }
+    await switchMode(page,"dark");await page.setViewportSize({width:1280,height:800});
+    // Tab from the last question's Edit from here, with Cite above the selection in the earlier reply, goes on below the conversation,
+    // not to that Cite: from it, Tab would go back up to the next question's Edit from here.
+    await select();
+    await editFromHere(QUESTIONS[4]).evaluate(node=>node.focus({preventScroll:true}));await expect(cite).toBeVisible();
+    await page.keyboard.press("Tab");
+    await expect.soft.poll(keyboardOn,{message:"where Tab from the last question's Edit from here puts the keyboard"}).not.toMatch(/^(assistant-selection-cite|nothing|Edit from here of .*)$/);
+    await expect(page.locator(".user-bubble > p")).toHaveText(QUESTIONS);
+    expect(sentTexts(harness),"the messages the thread has").toEqual(QUESTIONS);
+  }finally{await harness.close()}
+});

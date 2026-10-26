@@ -1049,3 +1049,49 @@ test("the Reload of a Cite whose script cannot load is reached by Tab and Shift+
     await appStays(page);
   }finally{await harness.close()}
 });
+
+// And from Reload the keys go on beside the reply, as from Cite: Tab to the next question's Edit from here, Shift+Tab to the Edit from
+// here of the question the reply answers, with the view where it was and the notice still there. From the notice's place in the
+// page's order, after the conversation's last message, Shift+Tab went down to the last question's Edit from here, the view jumping
+// there and the notice gone with it, and Tab went on below the conversation; nor is Reload a stop in that order any more.
+test("Tab and Shift+Tab from the Reload of a Cite whose script cannot load go on beside the reply, in a thread taller than the window",async({page})=>{
+  test.setTimeout(60_000);
+  let refused=0;
+  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const QUESTIONS=["Plan the release","And the beta?","Who signs it off?","When does it ship?","Thanks for that"];
+  const reply=index=>["Reply "+(index+1)+" opens with the release plan and who keeps it.","Reply "+(index+1)+" goes on with the beta and its testers.","Reply "+(index+1)+" ends with the sign-off and the ship date."];
+  const {harness}=await openRelayThreads(page,[{name:"Quill release",turns:QUESTIONS.map((user,index)=>({user,reply:reply(index).join("\n\n")}))}]);
+  try{
+    await expect.poll(()=>refused,{message:"the parts asked for at idle"}).toBeGreaterThan(0);
+    await openRelayThread(page,"Quill release",reply(4)[2]);
+    const scroller=page.locator(".conversation-scroll"),notice=page.locator(".cite-unavailable"),reload=notice.getByRole("button",{name:"Reload",exact:true});
+    const replies=page.locator(".assistant-message-text"),paragraph=replies.nth(1).locator("p").nth(1),scrollTop=()=>scroller.evaluate(node=>Math.round(node.scrollTop));
+    const editFromHere=question=>page.locator(".user-bubble").filter({hasText:question}).getByRole("button",{name:"Edit from here",exact:true});
+    await expect(replies).toHaveCount(QUESTIONS.length);
+    // The second reply in the middle of the view, the thread going on below it, and its middle paragraph selected.
+    const select=async()=>{
+      await replies.nth(1).evaluate(node=>node.scrollIntoView({block:"center"}));
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      expect(await scroller.evaluate(node=>node.scrollHeight-node.clientHeight-node.scrollTop),"how far the thread goes on below the view").toBeGreaterThan(300);
+      for(const question of QUESTIONS.slice(1,3))await expect(editFromHere(question)).toBeInViewport({ratio:1});
+      await paragraph.click({clickCount:3});await expect(notice).toBeVisible();
+    };
+    for(const [key,next] of [["Tab",QUESTIONS[2]],["Shift+Tab",QUESTIONS[1]]]){
+      await select();const before=await scrollTop();
+      await page.keyboard.press(key);await expect(reload,key+" from text selected in the earlier reply").toBeFocused();
+      await page.keyboard.press(key);await expect.soft(editFromHere(next),key+" from Reload").toBeFocused();
+      expect.soft(await scrollTop(),"where the view is after "+key+" from Reload").toBe(before);
+      await expect.soft(notice,"the notice still above the selection after "+key+" from Reload").toBeVisible();
+      if(key==="Shift+Tab")await page.screenshot({animations:"disabled",path:auditDir+"cite-cannot-load-shift-tab-from-reload-dark-1280x800.png"});
+    }
+    // Tab from the last question's Edit from here, the notice above the earlier reply's selection, goes on below the conversation.
+    const keyboardIn=()=>page.evaluate(()=>{
+      const node=document.activeElement;
+      return !node||node===document.body?"nothing":node.closest(".cite-unavailable")?"Reload":node.closest(".conversation-history")?"the conversation":"below the conversation";
+    });
+    await select();
+    await editFromHere(QUESTIONS[4]).evaluate(node=>node.focus({preventScroll:true}));await expect(notice).toBeVisible();
+    await page.keyboard.press("Tab");await expect.soft.poll(keyboardIn,{message:"where Tab from the last question's Edit from here puts the keyboard"}).toBe("below the conversation");
+    await appStays(page);
+  }finally{await harness.close()}
+});
