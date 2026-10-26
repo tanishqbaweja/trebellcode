@@ -330,12 +330,7 @@ export class AcpAgentSession{
       let setup;
       // The folder is granted before the first upload lands in it, so it must exist for the harness to accept it.
       if(this.attachmentsDir)await mkdir(this.attachmentsDir,{recursive:true}).catch(()=>{});
-      if(providerSessionId)setup=await this.#resume(client,String(providerSessionId));
-      else{
-        setup=await client.createSession({cwd:this.cwd,mcpServers:this.mcpServers,additionalDirectories:this.#additionalDirectories()});
-        this.sessionId=text(setup?.sessionId)||null;
-        if(!this.sessionId)throw new Error(`${this.label} did not create a session`);
-      }
+      setup=await this.#setUp(client,providerSessionId?String(providerSessionId):null);
       this.sessionSetup={...(setup&&typeof setup==="object"?setup:{}),sessionId:this.sessionId};
       this.grokEffort=this.runtime==="grok"?text(this.#grokModelMeta(acpConfigSelect(this.sessionSetup,"model").current).reasoningEffort).toLowerCase()||null:null;
       this.grokEffortSet=false;
@@ -347,10 +342,43 @@ export class AcpAgentSession{
     return {initialize:this.initializeResult,session:this.sessionSetup};
   }
 
+  // ACP's auth_required (-32000) from session/new, load or resume: the harness signs in once with its own advertised method, and the
+  // same setup runs once more (T3 authenticateAfterRequired). Without such a method, or still signed out after it, the start fails as
+  // it is, and the relay adds its check's advice.
+  async #setUp(client,providerSessionId){
+    const setUp=()=>providerSessionId?this.#resume(client,providerSessionId):this.#create(client);
+    try{return await setUp()}
+    catch(error){
+      const methodId=error?.code===ACP_AUTH_REQUIRED&&!client.closed?this.#signInMethod():null;
+      if(!methodId)throw error;
+      try{await client.authenticate(methodId)}
+      catch(failure){throw Object.assign(new Error(`${this.label} could not sign in with '${methodId}': ${failure?.message||failure}`),{code:failure?.code,cause:failure})}
+      return setUp();
+    }
+  }
+
+  async #create(client){
+    const setup=await client.createSession({cwd:this.cwd,mcpServers:this.mcpServers,additionalDirectories:this.#additionalDirectories()});
+    this.sessionId=text(setup?.sessionId)||null;
+    if(!this.sessionId)throw new Error(`${this.label} did not create a session`);
+    return setup;
+  }
+
+  // The method a signed-out harness signs in with, only when its initialize lists it (T3 selectAcpAgentAuthMethod and
+  // resolveGrokAuthMethodId): Grok its API key when XAI_API_KEY is set, else its cached login. Antigravity none: its sign-in is
+  // Settings' own, and the Google login it lists is the route Google's terms rule out for third-party apps. Any other harness the
+  // first method it runs itself (type agent, or none given), such as Cursor's cursor_login.
+  #signInMethod(){
+    const methods=Array.isArray(this.initializeResult?.authMethods)?this.initializeResult.authMethods:[];
+    if(this.runtime==="antigravity")return null;
+    if(this.runtime==="grok"){const id=text(this.env?.XAI_API_KEY)?"xai.api_key":"cached_token";return methods.some(method=>text(method?.id)===id)?id:null}
+    return text(methods.find(method=>text(method?.id)&&(method.type==null||method.type==="agent"))?.id)||null;
+  }
+
   // T3 keeps the id it asked for: session/load and session/resume answers carry no sessionId.
   // A conversation the harness refuses to load or resume is a lost session (HarnessSessionLostError): the relay continues the
   // thread in one fresh session with its earlier messages handed over, and the turn says so. A harness that asks to sign in
-  // (ACP auth_required, as T3 reads it) or whose process ended cannot run at all, and fails as it is.
+  // (ACP auth_required, as T3 reads it), which #setUp signs in once, or whose process ended cannot run at all, and fails as it is.
   async #resume(client,sessionId){
     const caps=this.initializeResult?.agentCapabilities||{},canLoad=caps.loadSession===true,canResume=caps.sessionCapabilities?.resume!=null;
     const method=canResume&&(RESUME_FIRST.has(this.runtime)||!canLoad)?"resume":canLoad?"load":null;
