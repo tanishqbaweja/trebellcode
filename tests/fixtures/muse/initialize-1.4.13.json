@@ -1,0 +1,4 @@
+{
+  "recordedWith": "Muse Code 1.4.13 (1.4.13-R6996.1), muse serve --trust-workspace --provider echo on Windows, 2026-10-27; museHome shortened",
+  "result": {"serverInfo":{"name":"muse","version":"1.4.13"},"userAgent":"muse-build/1.4.13 (serve; windows-x86_64; build 39490bd065c800195489caec34473582f7650b54)","museHome":"~\\.local\\share\\muse","platformFamily":"windows","platformOs":"windows","schema":{"version":1,"fingerprint":"sha256:7fddaf646dbc317e5fcac0785e135eb04df14fbb0db1863089dfd6da21730e5b"},"grantedCapabilities":["sessionMcp"],"experimentalApi":false,"sessionDurability":"durable","sandboxAvailability":"unavailable"}
+}
