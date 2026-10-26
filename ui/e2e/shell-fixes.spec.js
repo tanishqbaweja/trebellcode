@@ -2950,3 +2950,124 @@ for(const mode of ["dark","light"])test(`zoomed in from 110% to 175%, a key or a
     }
   }finally{await context?.close();await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
+
+// The composer stays between the header and the terminal drawer at every height the drawer's handle allows (UI lane C, round 11).
+// The drawer's tallest was the window less 260px whatever the composer above it needed, and the composer, which stands 12px above
+// the drawer and grows up with its draft (up to 160px of it), had no top: so with the drawer at its tallest a six-line draft took the
+// composer 53px over the header at 1280 by 800 in the desktop app (its 32px window bar above the header), where a press on the title
+// went to the draft, its controls wrapped in two rows beside the inspector at its widest took it 9px into the header with no draft,
+// and both took it past the window's top. So in the desktop app and in a browser, in a window 1280 by 800, then 1100 by 800, 600
+// tall and the desktop's smallest, 1180 by 720, beside the inspector closed and at its widest, with no draft and a six-line one, and
+// with two files attached: the drawer at its tallest and its handle agree, the composer sits 12px above it and under the header with
+// its shelf, every control of the header is drawn where it is and the title can be pressed, and a draft longer than the composer has
+// room for scrolls in it, with what was typed last in view; the grow key there leaves the drawer so, and it is as tall as it was
+// again once the files are taken off and the inspector closes.
+for(const [shell,mode] of [["desktop","dark"],["desktop","light"],["browser","dark"],["browser","light"]])test(`with the terminal drawer at its tallest the composer stays between the header and the drawer, with no draft and a six-line one, beside the inspector closed and at its widest, at 1280 and 1100 by 800, 600 tall and 1180 by 720, in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(180_000);
+  // The desktop app gives the page its bridge (here its Open-in only), and the shell its 32px window bar above the header.
+  if(shell==="desktop")await page.addInitScript(()=>Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors:[{id:"vscode",label:"Visual Studio Code"}]}),open:async()=>{}}}}));
+  const project={id:"room-project",name:"Billing reconciliation service with a very long project name",path:process.cwd(),environmentId:null,branch:"feature/reconcile-refunds-in-the-ledger-export",scripts:[{id:"dev-server",name:"Start the billing dev server",command:"npm run dev -- --port 4173"}],preferredScriptId:"dev-server"};
+  const threads=["Repo task number one","Repo task number two"].map((title,index)=>({id:"room-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+  const prs=[12345,12346].map((number,index)=>({url:"https://github.com/acme/billing/pull/"+number,number,title:"Refund fix "+index,state:"open"}));
+  const lines=["Plan for the export fix:","1. read the ledger export","2. find the double count","3. write a test for refunds","4. fix the sum","5. run the suite"];
+  const harness=await startHarness(threads);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads,meta:{[threads[0].id]:{projectless:false,environmentId:null,linkedPullRequests:prs},[threads[1].id]:{projectless:false,environmentId:null}},project,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const header=page.locator(".chat-workspace .workspace-header"),right=page.getByTestId("right-panel"),drawer=page.getByTestId("drawer"),handle=page.getByTestId("terminal-resizer"),composer=page.getByTestId("composer"),question=page.locator("dialog.inspector-text-prompt");
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    // The header, the composer and its draft, the drawer and its handle, and the header's controls a press at their middle misses (what
+    // is drawn there is not the control: the composer over it). The draft's end: how far the letters of its last line reach below
+    // what it shows (its line less the space over and under the letters, and the padding under it).
+    const read=()=>page.evaluate(()=>{
+      const box=node=>{const rect=node.getBoundingClientRect();return {top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2),height:+rect.height.toFixed(2)}};
+      const header=document.querySelector(".chat-workspace .workspace-header"),wrap=document.querySelector(".chat-workspace .composer-wrap"),draft=wrap.querySelector("textarea"),node=document.querySelector("[data-testid=terminal-resizer]"),style=getComputedStyle(draft);
+      const missed=[...header.querySelectorAll("button,select")].filter(control=>{const rect=control.getBoundingClientRect();return rect.width>0&&rect.height>0&&getComputedStyle(control).visibility!=="hidden"&&!control.contains(document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2))}).map(control=>control.getAttribute("aria-label")||control.textContent.trim());
+      const shelf=wrap.querySelector(".attachment-shelf");
+      return {header:box(header),composer:box(wrap),shelf:shelf.getClientRects().length?box(shelf):null,drawer:box(document.querySelector("[data-testid=drawer]")),now:Number(node.getAttribute("aria-valuenow")),max:Number(node.getAttribute("aria-valuemax")),missed,below:wrap.scrollHeight-wrap.clientHeight,
+        draft:{holds:draft.scrollHeight,shows:draft.clientHeight,scrolls:style.overflowY,end:Math.round(draft.scrollHeight-draft.clientHeight-draft.scrollTop-parseFloat(style.paddingBottom)-(parseFloat(style.lineHeight)-parseFloat(style.fontSize))/2)}};
+    });
+    // The drawer at its tallest and its handle agree, the composer sits 12px above it and under the header with its shelf of
+    // attachments, of which they cover no control, nothing of the composer hangs out of its box, and a draft it shows in part scrolls;
+    // read once the layout is the same two frames running.
+    const between=async where=>{
+      let state=null;
+      await expect.poll(async()=>{await settle(page);const next=await read(),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same},{message:`the layout settles ${where}`,intervals:[50]}).toBe(true);
+      expect.soft([Math.round(state.drawer.height),state.max],`the drawer's height and its handle's maximum ${where}`).toEqual([state.now,state.now]);
+      expect.soft(Math.round(state.drawer.top-state.composer.bottom),`the composer's gap above the drawer ${where}`).toBe(12);
+      expect.soft(Math.min(state.composer.top,state.shelf?.top??Infinity),`the top of the composer and its shelf against the header's foot, at ${state.header.bottom}px, ${where}`).toBeGreaterThanOrEqual(state.header.bottom);
+      expect.soft(state.missed,`the header's controls a press at their middle misses ${where}`).toEqual([]);
+      expect.soft(state.below,`what the composer holds below its box ${where}`).toBeLessThanOrEqual(1);
+      if(state.draft.holds>state.draft.shows+1)expect.soft(state.draft.scrolls,`the draft the composer shows in part ${where} scrolls`).toBe("auto");
+      return state;
+    };
+    // Six lines typed into the composer as a person types them, Shift+Enter between them: what was typed last is in view.
+    const type=async where=>{
+      await composer.click();
+      for(const [index,line] of lines.entries()){if(index)await page.keyboard.press("Shift+Enter");await page.keyboard.type(line,{delay:5})}
+      await expect(composer).toHaveValue(lines.join("\n"));
+      expect.soft((await between(where)).draft.end,`the letters of the draft's last line, where it was typed, below what it shows ${where}`).toBeLessThanOrEqual(1);
+    };
+    const clear=async()=>{await composer.click();await page.keyboard.press("Control+a");await page.keyboard.press("Delete");await expect(composer).toHaveValue("")};
+    // The title pressed at its middle as a person presses it: Trebell asks for the thread's new name, and Escape leaves it.
+    const pressTitle=async where=>{
+      const title=await header.locator(".thread-title-button").boundingBox();
+      await page.mouse.click(title.x+title.width/2,title.y+title.height/2);
+      await expect.soft(question,`a press on the title ${where} asks for the thread's new name`).toBeVisible();
+      if(await question.isVisible()){await page.keyboard.press("Escape");await expect(question).toHaveCount(0)}
+    };
+    // The drawer opened from the header (or More actions, where the header folded its button), and set to its tallest from the
+    // keyboard on its handle, as Shift+Tab from its Close terminal brings it there: the window less 260px, where the composer has room.
+    const toggle=page.getByTestId("terminal-toggle");
+    if(await toggle.isVisible())await toggle.click();
+    else{await header.getByRole("button",{name:"More actions",exact:true}).click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:"Terminal"}).click()}
+    await expect(drawer).toBeVisible();
+    const toHandle=async()=>{if(!(await handle.evaluate(node=>node===document.activeElement))){await drawer.getByRole("button",{name:"Close terminal",exact:true}).focus();await page.keyboard.press("Shift+Tab")}await expect(handle).toBeFocused()};
+    await toHandle();await page.keyboard.press("End");
+    await expect.poll(async()=>(await read()).now,{message:"End takes the drawer to its tallest at 1280 by 800"}).toBe(540);
+    await between("at 1280 by 800 with no draft");
+    await type("at 1280 by 800 with a six-line draft");
+    await pressTitle("at 1280 by 800 with a six-line draft");
+    await page.screenshot({path:join(shotsDir,`composer-under-header-${shell}-${mode}-1280x800-draft.png`),animations:"disabled"});
+    // The inspector opened and set to its widest from the keyboard on its handle (Shift+Tab from its first tab): the main column is
+    // 400px, where the composer's controls take two rows.
+    await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible();
+    await right.locator(".context-panel-tab").first().focus();await page.keyboard.press("Shift+Tab");await expect(page.getByTestId("right-panel-resizer")).toBeFocused();
+    await page.keyboard.press("End");
+    await expect.poll(async()=>Math.round((await right.boundingBox()).width),{message:"End takes the inspector to its widest at 1280 by 800"}).toBe(1280-258-400);
+    await between("at 1280 by 800 beside the inspector at its widest with the six-line draft");
+    await pressTitle("beside the inspector at its widest with the six-line draft");
+    await page.screenshot({path:join(shotsDir,`composer-under-header-${shell}-${mode}-1280x800-inspector-draft.png`),animations:"disabled"});
+    await clear();
+    await between("at 1280 by 800 beside the inspector at its widest with no draft");
+    // The grow key on the drawer's handle at its tallest leaves the drawer as tall as it shows.
+    const tallest=(await read()).now;
+    await toHandle();await page.keyboard.press("ArrowUp");
+    await expect.soft.poll(async()=>(await read()).now,{message:"ArrowUp at the drawer's tallest beside the inspector at its widest leaves it",timeout:2000}).toBe(tallest);
+    await between("after ArrowUp at the drawer's tallest beside the inspector at its widest");
+    // Two files attached from the composer's Attach files: the shelf that shows them stands on the composer, under the header too, and
+    // the drawer gives way while they are there.
+    const dir=await mkdtemp(join(tmpdir(),"trebell-room-")),files=["ledger-export.csv","refunds.log"].map(name=>join(dir,name));
+    try{
+      for(const file of files)writeFileSync(file,"refund 1\n");
+      const [chooser]=await Promise.all([page.waitForEvent("filechooser"),page.getByRole("button",{name:"Attach files",exact:true}).click()]);await chooser.setFiles(files);
+      await expect(page.locator(".attachment-shelf > span:not(.uploading)")).toHaveCount(2);
+      await between("beside the inspector at its widest with two files attached");
+      for(let left=2;left>0;left--){await page.locator(".attachment-shelf > span button").first().click();await expect(page.locator(".attachment-shelf > span")).toHaveCount(left-1)}
+      await expect.poll(async()=>(await read()).now,{message:"the drawer at its tallest beside the inspector at its widest once the files are taken off"}).toBe(tallest);
+    }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
+    for(const [width,height] of [[1100,800],[1280,600],[1180,720]]){
+      await page.setViewportSize({width,height});
+      await between(`at ${width} by ${height} beside the inspector at its widest with no draft`);
+      await type(`at ${width} by ${height} beside the inspector at its widest with a six-line draft`);
+      if(width===1180)await pressTitle(`at 1180 by 720 beside the inspector at its widest with the six-line draft`);
+      await clear();
+    }
+    // The inspector closed: the drawer is as tall as it was set at 1280 by 800.
+    await page.setViewportSize({width:1280,height:800});
+    await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden();
+    await expect.poll(async()=>(await read()).now,{message:"the drawer at 1280 by 800 once the inspector closes"}).toBe(540);
+    await between("at 1280 by 800 once the inspector closes");
+  }finally{await harness.close()}
+});

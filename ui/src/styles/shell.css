@@ -506,7 +506,11 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* ============ Composer ============ */
 .chat-workspace .composer-wrap{bottom:16px;width:min(calc(100% - 56px),820px);min-height:0;padding:0;border:1px solid var(--line2);border-radius:var(--r-l);background:var(--bg1) linear-gradient(180deg,var(--bg2),var(--bg1));box-shadow:var(--shadow);-webkit-backdrop-filter:none;backdrop-filter:none;transition:bottom var(--panel-animation-ms) ease,border-color .2s,box-shadow .2s}
 .chat-workspace .composer-wrap:focus-within{border-color:color-mix(in srgb,var(--ac) 45%,var(--line2));box-shadow:0 0 0 3.5px var(--acsoft),var(--shadow)}
-.main-frame.terminal-open .chat-workspace .composer-wrap{bottom:calc(var(--terminal-height,330px) + 12px)}
+/* Above the terminal drawer the composer and its shelf keep under the header, 12px from it: the draft gives way, down to what the
+   room leaves it, and scrolls (resizeTextarea), and the drawer's tallest leaves it a line (App's --terminal-room). */
+.main-frame.terminal-open .chat-workspace .composer-wrap{bottom:calc(var(--terminal-height,330px) + 12px);display:flex;flex-direction:column;max-height:calc(100% - var(--top) - var(--terminal-height,330px) - 24px - var(--composer-shelf,0px))}
+.main-frame.terminal-open .chat-workspace .composer-wrap>:not(textarea){flex:none}
+.main-frame.terminal-open .chat-workspace .composer-wrap>textarea{min-height:0}
 .composer-wrap textarea{display:block;width:100%;min-height:40px;max-height:160px;padding:12px 16px 4px;border:0;background:transparent;color:var(--tx0);font-size:13.5px;line-height:1.55}
 .composer-wrap textarea::placeholder{color:var(--tx3)}
 .composer-wrap textarea:disabled{cursor:not-allowed}
