@@ -807,16 +807,25 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // after the composer or the shelf resizes, so the thread's own resize observer, which keeps a thread at its end there, sees its
   // view resize in a frame of its own. Above the terminal drawer the draft takes the room left under the header (shell.css), so it is
   // sized again then, and App hears the room the header and the composer with a line of draft and its shelf need above the drawer,
-  // 12px under the header and 12px above the drawer (onRoom), which the drawer's tallest leaves them.
+  // 12px under the header and 12px above the drawer (onRoom), which the drawer's tallest leaves them. The draft is watched too: a row
+  // that grows in a composer held under the header (a chip's row, a note, the controls in another row) leaves the box as it is and
+  // squeezes the draft, and the rows are read with what of them hangs below the box once the draft has nothing left to give. A draft
+  // whose view shrinks from below while it shows its last line, where the person types, keeps its foot where it was, so that line
+  // stays in view (as typed, Chrome leaves the line's padding under it out of view): it is moved before the frame is drawn.
   useEffect(()=>{
-    const wrap=wrapRef.current,host=wrap?.parentElement,shelf=shelfRef.current;if(!host||typeof ResizeObserver==="undefined")return;
+    const wrap=wrapRef.current,host=wrap?.parentElement,shelf=shelfRef.current,draft=composerRef.current;if(!host||!draft||typeof ResizeObserver==="undefined")return;
     const set=(name,px)=>host.style.setProperty(name,px+"px");
-    let frame=0;const observer=new ResizeObserver(()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{
-      const draft=composerRef.current,shelved=shelf?.offsetHeight||0;resizeTextarea(draft,{min:40,max:160});
-      set("--composer-height",wrap.offsetHeight);set("--composer-chips",wrap.querySelector(":scope>.context-chip-row")?.offsetHeight||0);set("--composer-shelf",shelved);
-      onRoom?.((host.querySelector(".workspace-header")?.getBoundingClientRect().bottom||0)+64+wrap.offsetHeight-draft.offsetHeight+shelved);
-    })});
-    observer.observe(wrap);if(shelf)observer.observe(shelf);
+    let frame=0,shown=draft.clientHeight;const observer=new ResizeObserver(()=>{
+      const showing=draft.clientHeight;
+      if(showing&&showing<shown){const style=getComputedStyle(draft),fromEnd=Math.max(0,draft.scrollHeight-draft.scrollTop-shown);if(fromEnd<(parseFloat(style.lineHeight)||0)+(parseFloat(style.paddingBottom)||0))draft.scrollTop=draft.scrollHeight-showing-fromEnd}
+      shown=showing;
+      cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{
+        const shelved=shelf?.offsetHeight||0;resizeTextarea(draft,{min:40,max:160});
+        set("--composer-height",wrap.offsetHeight);set("--composer-chips",wrap.querySelector(":scope>.context-chip-row")?.offsetHeight||0);set("--composer-shelf",shelved);
+        onRoom?.((host.querySelector(".workspace-header")?.getBoundingClientRect().bottom||0)+64+wrap.offsetHeight+wrap.scrollHeight-wrap.clientHeight-draft.offsetHeight+shelved);
+      });
+    });
+    observer.observe(wrap);observer.observe(draft);if(shelf)observer.observe(shelf);
     return()=>{observer.disconnect();cancelAnimationFrame(frame);host.style.removeProperty("--composer-height");host.style.removeProperty("--composer-chips");host.style.removeProperty("--composer-shelf")};
   },[]);
   // A chip added to a shelf of more rows than it shows brings the shelf's last row, the newest chips, into view, and so does a composer

@@ -2962,35 +2962,80 @@ for(const mode of ["dark","light"])test(`zoomed in from 110% to 175%, a key or a
 // its shelf, every control of the header is drawn where it is and the title can be pressed, and a draft longer than the composer has
 // room for scrolls in it, with what was typed last in view; the grow key there leaves the drawer so, and it is as tall as it was
 // again once the files are taken off and the inspector closes.
+// And (repair of lane B, round 11) the rows of the composer that grow while it is held under the header take their room from the
+// drawer, not from the draft, which keeps a line: a pull request attached from the Git tab, whose chip's row stands over the draft,
+// and the note under it that dictation was refused, the microphone blocked, each squeezed the draft to its padding beside the
+// inspector at its widest in the desktop app, with the drawer left at its tallest (the composer heard its room only when its own box
+// changed size, and a box held under the header keeps its size); the note of a send the harness refused, which the send's own
+// changes to the composer brought in, takes its four lines there too. A draft given less room shows its end, where it was typed, as
+// it does while it is typed: a six-line draft typed before End on the drawer's handle, or before the inspector went to its widest,
+// was shown from its first lines, its last ones out of view.
+// The header, the composer and its draft, the drawer and its handle, and the header's controls a press at their middle misses (what is
+// drawn there is not the control: the composer over it). The draft: a line of it with its padding (line), and how far the letters of
+// its last line stand over what it shows (top) and reach under it (end), its line less the space over and under the letters, and the
+// padding under it.
+const readRoom=page=>page.evaluate(()=>{
+  const box=node=>{const rect=node.getBoundingClientRect();return {top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2),height:+rect.height.toFixed(2)}};
+  const header=document.querySelector(".chat-workspace .workspace-header"),wrap=document.querySelector(".chat-workspace .composer-wrap"),draft=wrap.querySelector("textarea"),node=document.querySelector("[data-testid=terminal-resizer]"),style=getComputedStyle(draft);
+  const missed=[...header.querySelectorAll("button,select")].filter(control=>{const rect=control.getBoundingClientRect();return rect.width>0&&rect.height>0&&getComputedStyle(control).visibility!=="hidden"&&!control.contains(document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2))}).map(control=>control.getAttribute("aria-label")||control.textContent.trim());
+  const shelf=wrap.querySelector(".attachment-shelf"),line=parseFloat(style.lineHeight),lead=(line-parseFloat(style.fontSize))/2,over=parseFloat(style.paddingTop),under=parseFloat(style.paddingBottom);
+  return {header:box(header),composer:box(wrap),shelf:shelf.getClientRects().length?box(shelf):null,drawer:box(document.querySelector("[data-testid=drawer]")),now:Number(node.getAttribute("aria-valuenow")),max:Number(node.getAttribute("aria-valuemax")),missed,below:wrap.scrollHeight-wrap.clientHeight,
+    draft:{holds:draft.scrollHeight,shows:draft.clientHeight,line:Math.floor(over+line+under),scrolls:style.overflowY,top:Math.round(draft.scrollTop-(draft.scrollHeight-under-line+lead)),end:Math.round(draft.scrollHeight-draft.clientHeight-draft.scrollTop-under-lead)}};
+});
+// The project, the two threads (the first one linked to two pull requests) and the six lines of draft of the tests below.
+const roomProject={id:"room-project",name:"Billing reconciliation service with a very long project name",path:process.cwd(),environmentId:null,branch:"feature/reconcile-refunds-in-the-ledger-export",scripts:[{id:"dev-server",name:"Start the billing dev server",command:"npm run dev -- --port 4173"}],preferredScriptId:"dev-server"};
+const roomThreads=()=>["Repo task number one","Repo task number two"].map((title,index)=>({id:"room-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
+const roomPrs=[12345,12346].map((number,index)=>({url:"https://github.com/acme/billing/pull/"+number,number,title:"Refund fix "+index,state:"open"}));
+const roomMeta=threads=>({[threads[0].id]:{projectless:false,environmentId:null,linkedPullRequests:roomPrs},[threads[1].id]:{projectless:false,environmentId:null}});
+const roomLines=["Plan for the export fix:","1. read the ledger export","2. find the double count","3. write a test for refunds","4. fix the sum","5. run the suite"];
+// The desktop app gives the page its bridge (here its Open-in only), and the shell its 32px window bar above the header.
+const asDesktop=page=>page.addInitScript(()=>Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors:[{id:"vscode",label:"Visual Studio Code"}]}),open:async()=>{}}}}));
+// Six lines typed into the composer as a person types them, Shift+Enter between them.
+async function writeRoomDraft(page){
+  const composer=page.getByTestId("composer");await composer.click();
+  for(const [index,line] of roomLines.entries()){if(index)await page.keyboard.press("Shift+Enter");await page.keyboard.type(line,{delay:5})}
+  await expect(composer).toHaveValue(roomLines.join("\n"));
+}
+// The drawer's handle given the keyboard, as Shift+Tab from the drawer's Close terminal brings it there.
+async function focusTerminalHandle(page){
+  const handle=page.getByTestId("terminal-resizer");
+  if(!(await handle.evaluate(node=>node===document.activeElement))){await page.getByTestId("drawer").getByRole("button",{name:"Close terminal",exact:true}).focus();await page.keyboard.press("Shift+Tab")}
+  await expect(handle).toBeFocused();
+}
 for(const [shell,mode] of [["desktop","dark"],["desktop","light"],["browser","dark"],["browser","light"]])test(`with the terminal drawer at its tallest the composer stays between the header and the drawer, with no draft and a six-line one, beside the inspector closed and at its widest, at 1280 and 1100 by 800, 600 tall and 1180 by 720, in the ${shell} shell in ${mode} mode`,async({page})=>{
-  test.setTimeout(180_000);
-  // The desktop app gives the page its bridge (here its Open-in only), and the shell its 32px window bar above the header.
-  if(shell==="desktop")await page.addInitScript(()=>Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{openIn:{list:async()=>({editors:[{id:"vscode",label:"Visual Studio Code"}]}),open:async()=>{}}}}));
-  const project={id:"room-project",name:"Billing reconciliation service with a very long project name",path:process.cwd(),environmentId:null,branch:"feature/reconcile-refunds-in-the-ledger-export",scripts:[{id:"dev-server",name:"Start the billing dev server",command:"npm run dev -- --port 4173"}],preferredScriptId:"dev-server"};
-  const threads=["Repo task number one","Repo task number two"].map((title,index)=>({id:"room-thread-"+(index+1),name:title,preview:"Repo",cwd:process.cwd(),model:"fixture-model",status:{type:"idle"},createdAt:now()-60-index,updatedAt:now()-index,turns:[{id:"turn-1",status:"completed",items:[{type:"userMessage",id:"user-1",content:[{type:"text",text:"Look at "+title.toLowerCase()}]},{type:"agentMessage",id:"assistant-1",text:"Looked at "+title.toLowerCase()+"."}]}]}));
-  const prs=[12345,12346].map((number,index)=>({url:"https://github.com/acme/billing/pull/"+number,number,title:"Refund fix "+index,state:"open"}));
-  const lines=["Plan for the export fix:","1. read the ledger export","2. find the double count","3. write a test for refunds","4. fix the sum","5. run the suite"];
-  const harness=await startHarness(threads);
+  test.setTimeout(240_000);
+  if(shell==="desktop")await asDesktop(page);
+  // The browser's speech recognition, which refuses to start, the microphone blocked (as composer-inputs.spec.js scripts it).
+  await page.addInitScript(()=>{class Recognition{start(){setTimeout(()=>{this.onerror?.({error:"not-allowed"});this.onend?.()},30)}stop(){setTimeout(()=>this.onend?.(),30)}abort(){this.stop()}}window.SpeechRecognition=Recognition;window.webkitSpeechRecognition=Recognition});
+  const project=roomProject,threads=roomThreads();
+  // The harness refuses a send while refusing is set, with a reason long enough to take the four lines the composer's note shows.
+  let refusing=false;
+  const refusal="The provider refused the turn: the monthly token quota of the billing reconciliation project is used up, and it renews on the first of next month or as soon as an administrator raises it in the provider's console";
+  const harness=await startHarness(threads,{respond:message=>refusing&&message.method==="turn/start"?{rpcError:{code:-32000,message:refusal}}:undefined});
+  // The code host behind the Git tab, which lists one of the thread's pull requests; its Attach puts it in the composer as a chip.
+  const hosted={provider:"github",number:12345,title:"Refund fix 0",state:"OPEN",url:roomPrs[0].url,headRefName:"fix/refund-double-count",baseRefName:"main",identity:{provider:"github",host:"github.com",repository:"acme/billing",number:12345}};
+  await page.route(/\/api\/source-control\//,route=>{
+    const path=new URL(route.request().url()).pathname.replace(/^.*\/api\/source-control\//,""),json=value=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+    if(path==="diagnostics")return json({selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{}}});
+    if(path==="prs")return json({ok:true,provider:"github",capabilities:{},items:[hosted]});
+    if(path==="pr-detail")return json({ok:true,provider:"github",capabilities:{},item:{body:"",comments:[],reviews:[],files:[],statusCheckRollup:[],...hosted}});
+    if(path==="pr-viewed")return json({ok:true,provider:"github",store:"host",files:[]});
+    // The thread's links as they are, so the Git tab's sync of them on opening leaves the header's chips as they are.
+    if(path==="thread-link")return json({threads:[],links:roomPrs});
+    if(path==="settlements")return json({enabled:false,items:[]});
+    return json({items:[]});
+  });
   try{
     await page.setViewportSize({width:1280,height:800});
-    await openApp(page,{harness,threads,meta:{[threads[0].id]:{projectless:false,environmentId:null,linkedPullRequests:prs},[threads[1].id]:{projectless:false,environmentId:null}},project,settings:{appearanceMode:mode}});
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project,settings:{appearanceMode:mode}});
     await openThread(page,threads[0].name);
-    const header=page.locator(".chat-workspace .workspace-header"),right=page.getByTestId("right-panel"),drawer=page.getByTestId("drawer"),handle=page.getByTestId("terminal-resizer"),composer=page.getByTestId("composer"),question=page.locator("dialog.inspector-text-prompt");
+    const header=page.locator(".chat-workspace .workspace-header"),right=page.getByTestId("right-panel"),drawer=page.getByTestId("drawer"),composer=page.getByTestId("composer"),question=page.locator("dialog.inspector-text-prompt");
     if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
-    // The header, the composer and its draft, the drawer and its handle, and the header's controls a press at their middle misses (what
-    // is drawn there is not the control: the composer over it). The draft's end: how far the letters of its last line reach below
-    // what it shows (its line less the space over and under the letters, and the padding under it).
-    const read=()=>page.evaluate(()=>{
-      const box=node=>{const rect=node.getBoundingClientRect();return {top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2),height:+rect.height.toFixed(2)}};
-      const header=document.querySelector(".chat-workspace .workspace-header"),wrap=document.querySelector(".chat-workspace .composer-wrap"),draft=wrap.querySelector("textarea"),node=document.querySelector("[data-testid=terminal-resizer]"),style=getComputedStyle(draft);
-      const missed=[...header.querySelectorAll("button,select")].filter(control=>{const rect=control.getBoundingClientRect();return rect.width>0&&rect.height>0&&getComputedStyle(control).visibility!=="hidden"&&!control.contains(document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2))}).map(control=>control.getAttribute("aria-label")||control.textContent.trim());
-      const shelf=wrap.querySelector(".attachment-shelf");
-      return {header:box(header),composer:box(wrap),shelf:shelf.getClientRects().length?box(shelf):null,drawer:box(document.querySelector("[data-testid=drawer]")),now:Number(node.getAttribute("aria-valuenow")),max:Number(node.getAttribute("aria-valuemax")),missed,below:wrap.scrollHeight-wrap.clientHeight,
-        draft:{holds:draft.scrollHeight,shows:draft.clientHeight,scrolls:style.overflowY,end:Math.round(draft.scrollHeight-draft.clientHeight-draft.scrollTop-parseFloat(style.paddingBottom)-(parseFloat(style.lineHeight)-parseFloat(style.fontSize))/2)}};
-    });
+    const read=()=>readRoom(page);
     // The drawer at its tallest and its handle agree, the composer sits 12px above it and under the header with its shelf of
-    // attachments, of which they cover no control, nothing of the composer hangs out of its box, and a draft it shows in part scrolls;
-    // read once the layout is the same two frames running.
+    // attachments, of which they cover no control, nothing of the composer hangs out of its box, its draft shows a line of it at least,
+    // and the last line, where it was typed, in its view, and a draft it shows in part scrolls; read once the layout is the same two
+    // frames running.
     const between=async where=>{
       let state=null;
       await expect.poll(async()=>{await settle(page);const next=await read(),same=JSON.stringify(next)===JSON.stringify(state);state=next;return same},{message:`the layout settles ${where}`,intervals:[50]}).toBe(true);
@@ -2999,16 +3044,13 @@ for(const [shell,mode] of [["desktop","dark"],["desktop","light"],["browser","da
       expect.soft(Math.min(state.composer.top,state.shelf?.top??Infinity),`the top of the composer and its shelf against the header's foot, at ${state.header.bottom}px, ${where}`).toBeGreaterThanOrEqual(state.header.bottom);
       expect.soft(state.missed,`the header's controls a press at their middle misses ${where}`).toEqual([]);
       expect.soft(state.below,`what the composer holds below its box ${where}`).toBeLessThanOrEqual(1);
+      expect.soft(state.draft.shows,`the height the draft shows ${where}, against a line of it with its padding, ${state.draft.line}px`).toBeGreaterThanOrEqual(state.draft.line);
+      expect.soft(state.draft.top,`how far the letters of the draft's last line, where it was typed, stand over what it shows ${where}`).toBeLessThanOrEqual(1);
+      expect.soft(state.draft.end,`how far the letters of the draft's last line, where it was typed, reach under what it shows ${where}`).toBeLessThanOrEqual(1);
       if(state.draft.holds>state.draft.shows+1)expect.soft(state.draft.scrolls,`the draft the composer shows in part ${where} scrolls`).toBe("auto");
       return state;
     };
-    // Six lines typed into the composer as a person types them, Shift+Enter between them: what was typed last is in view.
-    const type=async where=>{
-      await composer.click();
-      for(const [index,line] of lines.entries()){if(index)await page.keyboard.press("Shift+Enter");await page.keyboard.type(line,{delay:5})}
-      await expect(composer).toHaveValue(lines.join("\n"));
-      expect.soft((await between(where)).draft.end,`the letters of the draft's last line, where it was typed, below what it shows ${where}`).toBeLessThanOrEqual(1);
-    };
+    const type=async where=>{await writeRoomDraft(page);return between(where)};
     const clear=async()=>{await composer.click();await page.keyboard.press("Control+a");await page.keyboard.press("Delete");await expect(composer).toHaveValue("")};
     // The title pressed at its middle as a person presses it: Trebell asks for the thread's new name, and Escape leaves it.
     const pressTitle=async where=>{
@@ -3017,15 +3059,19 @@ for(const [shell,mode] of [["desktop","dark"],["desktop","light"],["browser","da
       await expect.soft(question,`a press on the title ${where} asks for the thread's new name`).toBeVisible();
       if(await question.isVisible()){await page.keyboard.press("Escape");await expect(question).toHaveCount(0)}
     };
-    // The drawer opened from the header (or More actions, where the header folded its button), and set to its tallest from the
-    // keyboard on its handle, as Shift+Tab from its Close terminal brings it there: the window less 260px, where the composer has room.
+    // The drawer opened from the header (or More actions, where the header folded its button), a six-line draft typed while it is as
+    // tall as it opens, which leaves the composer room for all of it, and the drawer then set to its tallest from the keyboard on its
+    // handle: the window less 260px, where the composer has room, and the draft, given less of it, still shows what was typed last.
     const toggle=page.getByTestId("terminal-toggle");
     if(await toggle.isVisible())await toggle.click();
     else{await header.getByRole("button",{name:"More actions",exact:true}).click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:"Terminal"}).click()}
     await expect(drawer).toBeVisible();
-    const toHandle=async()=>{if(!(await handle.evaluate(node=>node===document.activeElement))){await drawer.getByRole("button",{name:"Close terminal",exact:true}).focus();await page.keyboard.press("Shift+Tab")}await expect(handle).toBeFocused()};
+    const toHandle=()=>focusTerminalHandle(page);
+    await writeRoomDraft(page);
     await toHandle();await page.keyboard.press("End");
     await expect.poll(async()=>(await read()).now,{message:"End takes the drawer to its tallest at 1280 by 800"}).toBe(540);
+    await between("at 1280 by 800 after End with a six-line draft typed before it");
+    await clear();
     await between("at 1280 by 800 with no draft");
     await type("at 1280 by 800 with a six-line draft");
     await pressTitle("at 1280 by 800 with a six-line draft");
@@ -3046,6 +3092,43 @@ for(const [shell,mode] of [["desktop","dark"],["desktop","light"],["browser","da
     await toHandle();await page.keyboard.press("ArrowUp");
     await expect.soft.poll(async()=>(await read()).now,{message:"ArrowUp at the drawer's tallest beside the inspector at its widest leaves it",timeout:2000}).toBe(tallest);
     await between("after ArrowUp at the drawer's tallest beside the inspector at its widest");
+    // Dictation refused, the microphone blocked: the composer's note says so under the draft, and the drawer gives way for it, leaving
+    // the draft its line (in the desktop app the composer was held under the header, where any row that grows takes the drawer's
+    // room; in a browser it had 11px to spare). A key typed takes the note off, and the drawer is as tall as it was again.
+    const note=page.getByTestId("composer-alert");
+    await page.getByRole("button",{name:"Voice dictation",exact:true}).click();
+    await expect(note).toHaveText("The microphone is blocked. Allow microphone access for Trebell Code to dictate.");
+    const blocked=await between("beside the inspector at its widest with the note that the microphone is blocked");
+    if(shell==="desktop")expect.soft(blocked.now,"the drawer beside the inspector at its widest with the note that the microphone is blocked, against its tallest without it").toBeLessThan(tallest);
+    await page.screenshot({path:join(shotsDir,`composer-under-header-${shell}-${mode}-1280x800-inspector-dictation.png`),animations:"disabled"});
+    await composer.focus();await page.keyboard.type("x",{delay:5});await expect(note).toHaveCount(0);
+    await expect.poll(async()=>(await read()).now,{message:"the drawer at its tallest beside the inspector at its widest once the dictation note is off"}).toBe(tallest);
+    await between("beside the inspector at its widest once the dictation note is off");
+    await clear();
+    // A send the harness refuses: the composer's note says why under the draft it keeps, in the four lines it shows, and the drawer
+    // gives way for them, leaving the draft its line. A key typed takes the note off, and the drawer is as tall as it was again.
+    refusing=true;
+    await composer.click();await page.keyboard.type("Ship the export fix",{delay:5});await page.keyboard.press("Enter");
+    await expect(note).toContainText("Not sent: The provider refused the turn");await expect(composer).toHaveValue("Ship the export fix");
+    refusing=false;
+    expect.soft((await between("beside the inspector at its widest with the note of a refused send")).now,"the drawer beside the inspector at its widest with the note of a refused send, against its tallest without it").toBeLessThan(tallest);
+    await page.screenshot({path:join(shotsDir,`composer-under-header-${shell}-${mode}-1280x800-inspector-refused.png`),animations:"disabled"});
+    await composer.focus();await page.keyboard.type(".",{delay:5});await expect(note).toHaveCount(0);
+    await expect.poll(async()=>(await read()).now,{message:"the drawer at its tallest beside the inspector at its widest once the note is off"}).toBe(tallest);
+    await between("beside the inspector at its widest once the note is off");
+    await clear();
+    // A pull request attached from the Git tab: its chip's row stands in the composer over the draft, and the drawer gives way for it,
+    // leaving the draft its line. With the chip taken off the drawer is as tall as it was again.
+    await right.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+    const pulls=right.locator(".pr-card"),chip=page.getByTestId("context-chip");
+    await pulls.locator(".pr-list").getByRole("button",{name:/#12345 Refund fix 0/}).click();await expect(pulls.locator(".pr-detail h3")).toHaveText("#12345 Refund fix 0");
+    await pulls.locator(".pr-actions").getByRole("button",{name:"Attach",exact:true}).click();
+    await expect(chip).toHaveText([/PR #12345\s*Refund fix 0/]);
+    expect.soft((await between("beside the inspector at its widest with a pull request attached")).now,"the drawer beside the inspector at its widest with a pull request attached, against its tallest without it").toBeLessThan(tallest);
+    await page.screenshot({path:join(shotsDir,`composer-under-header-${shell}-${mode}-1280x800-inspector-pull-request.png`),animations:"disabled"});
+    await chip.getByRole("button",{name:"Remove context"}).click();await expect(chip).toHaveCount(0);
+    await expect.poll(async()=>(await read()).now,{message:"the drawer at its tallest beside the inspector at its widest once the pull request is taken off"}).toBe(tallest);
+    await between("beside the inspector at its widest once the pull request is taken off");
     // Two files attached from the composer's Attach files: the shelf that shows them stands on the composer, under the header too, and
     // the drawer gives way while they are there.
     const dir=await mkdtemp(join(tmpdir(),"trebell-room-")),files=["ledger-export.csv","refunds.log"].map(name=>join(dir,name));
@@ -3069,5 +3152,81 @@ for(const [shell,mode] of [["desktop","dark"],["desktop","light"],["browser","da
     await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden();
     await expect.poll(async()=>(await read()).now,{message:"the drawer at 1280 by 800 once the inspector closes"}).toBe(540);
     await between("at 1280 by 800 once the inspector closes");
+  }finally{await harness.close()}
+});
+
+// With the panels animating (Settings > Appearance, here at its longest, 400ms) the composer stays under the header while the terminal
+// drawer slides from its tallest to its shortest and back (repair of lane B, round 11). The composer's foot slides with the drawer's
+// top, and the room the header leaves it only came with the slide's end: set to its shortest with Home, the drawer gave the six-line
+// draft it held to a few lines its whole height at once, while the composer's foot still stood where the drawer's top had been, so
+// for the first part of the slide the composer covered the title and the header's actions in the desktop app (its top at 31 against
+// the header's foot at 84, at 1280 by 800) and, beside the inspector at its widest, reached past the window's top. Each slide is read
+// at 21 points of its way, the composer's transitions paused and set there, and the draft, given less room, shows what was typed last.
+for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`with the panels animating, the composer stays under the header while the terminal drawer slides from its tallest to its shortest and back with a six-line draft, beside the inspector closed and at its widest, in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(150_000);
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads);
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode,panelAnimationMs:400}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),drawer=page.getByTestId("drawer");
+    await expect.poll(()=>page.evaluate(()=>document.documentElement.style.getPropertyValue("--panel-animation-ms")),{message:"the panels animate over 400ms"}).toBe("400ms");
+    // Every transition on the page ended, and two frames drawn after it.
+    const still=async where=>{await expect.poll(()=>page.evaluate(()=>document.getAnimations().filter(animation=>animation instanceof CSSTransition&&animation.playState==="running").length),{message:`the transitions end ${where}`}).toBe(0);await settle(page);await settle(page)};
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden();await still("as the inspector closes")}
+    // A key on the drawer's handle, and the composer's slide after it read at 21 points of its way, from its start to its end: each
+    // frame from the key on looks for its transitions and pauses them as they start (so a slow round trip cannot let one end unread),
+    // and they are set at each point, and let finish after.
+    const slide=async(key,where)=>{
+      await page.evaluate(()=>{
+        const wrap=document.querySelector(".chat-workspace .composer-wrap");window.__slide=null;
+        let frames=0;const watch=()=>{const moving=wrap.getAnimations().filter(animation=>animation instanceof CSSTransition&&["bottom","max-height"].includes(animation.transitionProperty));if(moving.some(animation=>animation.transitionProperty==="bottom")){moving.forEach(animation=>animation.pause());window.__slide=moving}else if(++frames<600)requestAnimationFrame(watch)};
+        requestAnimationFrame(watch);
+      });
+      await page.keyboard.press(key);
+      await expect.poll(()=>page.evaluate(()=>Boolean(window.__slide)),{message:`the composer's foot slides ${where}`}).toBe(true);
+      const slid=await page.evaluate(()=>{
+        const wrap=document.querySelector(".chat-workspace .composer-wrap"),header=document.querySelector(".chat-workspace .workspace-header"),moving=window.__slide,samples=[];
+        for(let step=0;step<=20;step++){const at=step*20;moving.forEach(animation=>{animation.currentTime=at});const rect=wrap.getBoundingClientRect();samples.push({at,top:+rect.top.toFixed(2),bottom:+rect.bottom.toFixed(2),header:+header.getBoundingClientRect().bottom.toFixed(2)})}
+        moving.forEach(animation=>animation.finish());window.__slide=null;
+        return {properties:moving.map(animation=>animation.transitionProperty).sort(),samples};
+      });
+      expect(slid.samples.at(-1).bottom,`the composer's foot at the slide's end, against its start, ${where}`).not.toBe(slid.samples[0].bottom);
+      const highest=slid.samples.reduce((top,sample)=>sample.top<top.top?sample:top);
+      expect.soft(highest.top,`the composer's top at its highest through the slide ${where}, ${highest.at}ms in, its ${slid.properties.join(" and ")} sliding, against the header's foot at ${highest.header}px`).toBeGreaterThanOrEqual(highest.header);
+      await still(where);
+    };
+    // The draft shows a line of it at least, and the last line, where it was typed.
+    const shown=async where=>{
+      const {draft}=await readRoom(page);
+      expect.soft(draft.shows,`the height the draft shows ${where}, against a line of it with its padding, ${draft.line}px`).toBeGreaterThanOrEqual(draft.line);
+      expect.soft(draft.top,`how far the letters of the draft's last line, where it was typed, stand over what it shows ${where}`).toBeLessThanOrEqual(1);
+      expect.soft(draft.end,`how far the letters of the draft's last line, where it was typed, reach under what it shows ${where}`).toBeLessThanOrEqual(1);
+    };
+    const toggle=page.getByTestId("terminal-toggle");
+    if(await toggle.isVisible())await toggle.click();
+    else{await page.locator(".chat-workspace .workspace-header").getByRole("button",{name:"More actions",exact:true}).click();await page.getByTestId("header-overflow-menu").getByRole("button",{name:"Terminal"}).click()}
+    await expect(drawer).toBeVisible();await still("as the drawer opens");
+    await focusTerminalHandle(page);await page.keyboard.press("End");
+    await expect.poll(async()=>(await readRoom(page)).now,{message:"End takes the drawer to its tallest at 1280 by 800"}).toBe(540);await still("at the drawer's tallest");
+    await writeRoomDraft(page);await still("with the six-line draft typed");
+    await shown("at the drawer's tallest with the six-line draft");
+    await focusTerminalHandle(page);
+    await slide("Home","as the drawer goes from its tallest to its shortest with the six-line draft");
+    await slide("End","as the drawer goes from its shortest to its tallest with the six-line draft");
+    await shown("once the drawer has slid to its tallest with the six-line draft");
+    // The inspector opened and set to its widest from the keyboard on its handle: the composer's controls take two rows.
+    await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible();
+    await right.locator(".context-panel-tab").first().focus();await page.keyboard.press("Shift+Tab");await expect(page.getByTestId("right-panel-resizer")).toBeFocused();
+    await page.keyboard.press("End");
+    await expect.poll(async()=>Math.round((await right.boundingBox()).width),{message:"End takes the inspector to its widest at 1280 by 800"}).toBe(1280-258-400);
+    await still("beside the inspector at its widest");
+    await shown("beside the inspector at its widest with the six-line draft");
+    await focusTerminalHandle(page);
+    await slide("Home","beside the inspector at its widest as the drawer goes from its tallest to its shortest with the six-line draft");
+    await slide("End","beside the inspector at its widest as the drawer goes from its shortest to its tallest with the six-line draft");
+    await shown("beside the inspector at its widest once the drawer has slid to its tallest with the six-line draft");
+    await page.screenshot({path:join(shotsDir,`composer-slides-under-header-${shell}-${mode}-1280x800-inspector-draft.png`),animations:"disabled"});
   }finally{await harness.close()}
 });
