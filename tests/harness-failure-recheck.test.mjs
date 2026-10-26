@@ -222,7 +222,7 @@ test("a harness session that does not start after a sign-out outside Trebell fai
   fx.grok.signedIn=false;
   const before=fx.launches.length;
   await refusedWith(fx.relay.rpc("thread/start",{cwd:"/srv/app"}),`Authentication required. ${GROK_ADVICE}`,"the harness's own message, then the probe's advice");
-  assert.deepEqual(fx.launches.slice(before),["grok --version","grok models"],"the start found the kept answer, and the failure asked once");
+  assert.deepEqual(fx.launches.slice(before),["grok --version","grok models","grok models"],"the start found the kept answer, and the failure asked once (a logged-out `grok models` is read twice)");
   assert.equal(fx.threadStore.list().length,0,"a thread whose session never started is not kept");
   const poll=await fx.poll();
   assert.deepEqual([poll.available,poll.authenticated],[false,false]);
@@ -289,7 +289,7 @@ test("B7: a session start the relay retries in a fresh session asks once when th
   fx.grok.lostLoad=true;fx.grok.signedIn=false;
   await refusedWith(fx.relay.rpc("turn/start",{threadId:seeded.id,input:[{type:"text",text:"Hello"}]}),`Authentication required. ${GROK_ADVICE}`);
   assert.equal(fx.grok.harnessLaunches,2,"the resume and the fresh session");
-  assert.equal(fx.launches.length,base+2,"one probe for the one failed start");
+  assert.equal(fx.launches.length,base+3,"one probe for the one failed start (its logged-out `grok models` read twice)");
   // Signed in again (Settings' Refresh asks fresh): a turn the person stops, which the harness ends with an error, asks nothing.
   fx.grok.signedIn=true;fx.grok.lostLoad=false;fx.grok.holdPrompts=true;
   assert.equal((await fx.manager.probe(fx.manager.activeInstance(),{fresh:true})).available,true);

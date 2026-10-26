@@ -810,8 +810,11 @@ export class AgentRuntimeManager{
       if(String(environment.XAI_API_KEY||"").trim()){
         authenticated=true;account={authMethod:"api_key"};
       }else{
-        const models=await this.#run(instance,["models"],{timeoutMs:10_000,environmentId});
-        authenticated=models.ok?parseGrokModelsAuth((models.stdout||"")+"\n"+(models.stderr||"")):null;
+        const signedIn=async()=>{const models=await this.#run(instance,["models"],{timeoutMs:10_000,environmentId});return models.ok?parseGrokModelsAuth((models.stdout||"")+"\n"+(models.stderr||"")):null};
+        // Grok prints the logged-out line for an access token that has just expired, then refreshes it in the same process: a
+        // second `grok models` tells that from a sign-out (T3 checkGrokProviderStatus). One that reads nothing keeps the first.
+        authenticated=await signedIn();
+        if(authenticated===false)authenticated=(await signedIn())??false;
         if(authenticated===false)message="Grok CLI is installed but not logged in. Run grok login.";
         else if(authenticated==null)message="Grok CLI is installed, but Trebell could not verify its authentication status.";
       }

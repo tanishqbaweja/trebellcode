@@ -2,7 +2,8 @@
 // - each CLI's --version gets T3's budget (Claude Code and Codex 20 s, OpenCode 10 s, the others 6 s), and on this machine one
 //   that runs out of time or exits with an error reads installed and may start, never "not installed"; only a command that is not
 //   there does;
-// - Grok's checks run with its updater off, and its sessions keep their environment.
+// - Grok's checks run with its updater off, and its sessions keep their environment;
+// - a logged-out `grok models` is read once more, as Grok refreshes an expired token in the same process.
 // Stubbed process runners (the manager's runFn, a remote environment's executeArgv) and scripts of the test's own standing in for
 // Grok and for Codex's app-server: no real harness is started or signed in.
 import test from "node:test";
@@ -210,6 +211,28 @@ else readline.createInterface({input:process.stdin}).on("line",line=>{const m=JS
   assert.equal(listed.error,undefined);assert.deepEqual(listed.models,["grok-4.7"]);
   const launches=(await readFile(log,"utf8")).trim().split("\n").map(line=>JSON.parse(line));
   assert.deepEqual(launches.map(item=>[item.args[0]==="--version"||item.args[0]==="models"?item.args[0]:"agent stdio",item.updater]),[["--version","1"],["models","1"],["agent stdio","1"]]);
+});
+
+test("a logged-out `grok models` is read once more, and the second answer decides unless it says nothing",async t=>{
+  for(const [answers,expected,calls] of [
+    // An access token that has just expired: Grok prints the logged-out line, then refreshes it.
+    [["Not authenticated. Run grok login.\n","You are logged in with grok.com.\n"],[true,true,"Ready"],2],
+    [["Not logged in\n","Not logged in\n"],[false,false,"Grok CLI is installed but not logged in. Run grok login."],2],
+    // A second read that times out keeps the first answer.
+    [["Not logged in\n",null],[false,false,"Grok CLI is installed but not logged in. Run grok login."],2],
+    [["You are logged in with grok.com.\n"],[true,true,"Ready"],1],
+  ]){
+    const left=[...answers];
+    const fx=await localHarness(t,"grok",args=>{if(args[0]!=="models")return answered("grok 1.0.41\n");const next=left.shift();return next==null?TIMED_OUT:answered(next)});
+    const status=await fx.manager.probe("grok");
+    assert.deepEqual([status.available,status.authenticated,status.message],expected,answers.join(" then "));
+    assert.equal(fx.calls.filter(call=>call.args==="models").length,calls,answers.join(" then "));
+  }
+  // With an xAI API key Grok's own sign-in is not asked.
+  const keyed=await localHarness(t,"grok",args=>args[0]==="models"?answered("Not logged in\n"):answered("grok 1.0.41\n"),{env:{XAI_API_KEY:"xai-test-not-a-key"}});
+  const status=await keyed.manager.probe("grok");
+  assert.deepEqual([status.available,status.authenticated],[true,true]);
+  assert.deepEqual(keyed.calls.map(call=>call.args),["--version"]);
 });
 
 // The relay over its socket, as a window speaks to it: rpc requests, and a send settled as turn/completed reports it.
