@@ -3322,13 +3322,13 @@ for(const [shell,mode] of [["browser","dark"],["browser","light"],["desktop","da
 // while the drawer is pulled shorter by its handle; the @ menu open under the composer while its word takes the draft to a second
 // line leaves the drawer at its tallest (read with the menu hanging below the composer, the room the composer needs took the drawer
 // down by the menu's height); and so in the desktop app's smallest window, 1180 by 720, and in a browser 700px wide.
-const ledgerFiles=Array.from({length:10},(_,index)=>({name:`ledger-export-${index+1}.js`,path:join(process.cwd(),"src","ledger",`ledger-export-${index+1}.js`),relativePath:`src/ledger/ledger-export-${index+1}.js`,type:"file"}));
+const ledgerFile=name=>({name,path:join(process.cwd(),"src","ledger",name),relativePath:`src/ledger/${name}`,type:"file"}),ledgerFiles=Array.from({length:10},(_,index)=>ledgerFile(`ledger-export-${index+1}.js`)),ledgerFilesFor=word=>Array.from({length:10},(_,index)=>ledgerFile(`${word}-${index+1}.js`));
 async function composerMenusInWindow(page,{shell,mode,zoomTo=null}){
   if(shell==="desktop")await asDesktop(page);
   const threads=roomThreads(),harness=await startHarness(threads);
   try{
-    // The workspace's search answers ten files for the word after the @, of which the menu offers eight.
-    await page.route(/\/api\/workspace\/search\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:ledgerFiles})}));
+    // The workspace's search answers ten files named for the word after the @, so a word typed on finds them too; the menu offers eight.
+    await page.route(/\/api\/workspace\/search\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:ledgerFilesFor(new URL(route.request().url()).searchParams.get("q")||"")})}));
     await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode}});
     await openThread(page,threads[0].name);
     // Zoomed once the app is up, as a person zooms it (zoomed while it starts, its resize came before App listened for it).
