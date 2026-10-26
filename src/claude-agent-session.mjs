@@ -23,6 +23,10 @@ export const CLAUDE_MCP_REGISTRATION_TIMED_OUT="Claude Code did not finish conne
 // The SDK sets no deadline for setMcpServers, and Claude Code waits up to 30 s for each server (T3 Code's
 // CLAUDE_MCP_REGISTRATION_TIMEOUT).
 const CLAUDE_MCP_REGISTRATION_TIMEOUT_MS=90_000;
+// A steer waits at most this long, from its request, for the subagents the root turn runs in the foreground to move to the background.
+const CLAUDE_STEER_BACKGROUND_MS=5_000;
+// The tools that run a subagent (Agent, called Task before).
+const CLAUDE_SUBAGENT_TOOLS=new Set(["Agent","Task"]);
 const CLAUDE_EFFORTS=new Set(["low","medium","high","xhigh","max"]);
 const CLAUDE_IMAGE_TYPES=new Set(["image/gif","image/jpeg","image/png","image/webp"]);
 const CLAUDE_INTERRUPT_TIMEOUT_MS=10_000;
@@ -373,10 +377,26 @@ export class ClaudeAgentSession{
   async steer(parts){
     const turn=this.turn&&!this.turn.settled?this.turn:null,live=turn?.live;
     if(!turn||!live||live.closed)throw new Error("Claude Code has no running turn to steer.");
+    const content=claudeUserContent(parts);
+    // A "now" message cancels the root turn's running tool calls, a subagent it runs in the foreground among them: each moves to the
+    // background first, for at most 5 s from the steer, and its result comes in later, in a turn of its own (T3 Code's 0b68a4a9c).
+    await this.#backgroundSubagents(live);
+    // A turn that ended meanwhile takes no steer: the message would start a turn nobody sent.
+    if(turn.settled||live.closed)throw new Error("Claude Code has no running turn to steer.");
     const uuid=randomUUID();
     turn.uuids.add(uuid);turn.steered=true;turn.steers.push(parts);
-    live.input.push({type:"user",message:{role:"user",content:claudeUserContent(parts)},parent_tool_use_id:null,priority:"now",uuid});
+    live.input.push({type:"user",message:{role:"user",content},parent_tool_use_id:null,priority:"now",uuid});
     return {accepted:true,pending:0};
+  }
+  // Claude Code refuses a move while background tasks are turned off (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS), and the steer goes all the
+  // same. A move an earlier steer asked for is waited on, not asked again.
+  async #backgroundSubagents(live){
+    const moves=[...live.foregroundSubagents].map(id=>{
+      let move=live.subagentMoves.get(id);
+      if(!move){move=Promise.resolve().then(()=>live.query.backgroundTasks(id)).catch(()=>false).finally(()=>live.subagentMoves.delete(id));live.subagentMoves.set(id,move)}
+      return move;
+    });
+    if(moves.length)await withTimeout(Promise.allSettled(moves),CLAUDE_STEER_BACKGROUND_MS).catch(()=>{});
   }
 
   async setModel(model){this.model=model||null;return {modelId:this.model}}
@@ -514,8 +534,9 @@ export class ClaudeAgentSession{
     };
     const runtime=this.sdk.query({prompt:input,options});
     // resumed: the session this query asked Claude Code to resume, which it may no longer have.
-    // failure: what ended the process's messages; stopped: Stop or close ended it.
-    const live={query:runtime,input,key,fork,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,failure:null,stopped:false,pump:null};
+    // failure: what ended the process's messages; stopped: Stop or close ended it. foregroundSubagents: the root turn's subagent calls
+    // that wait on their subagent (no result yet); subagentMoves: the moves to the background steers asked for, by call.
+    const live={query:runtime,input,key,fork,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),foregroundSubagents:new Set(),subagentMoves:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,failure:null,stopped:false,pump:null};
     this.live=live;
     live.pump=this.#pump(live);
     Promise.resolve(runtime.initializationResult?.()).then(init=>{
@@ -588,6 +609,8 @@ export class ClaudeAgentSession{
     if(turn.settled)return;
     turn.settled=true;if(this.turn===turn)this.turn=null;
     const result=turn.result,live=turn.live,fork=live?.fork||null;
+    // A turn that ended waits on no subagent call any more.
+    live?.foregroundSubagents.clear();
     const ids={providerMessageId:turn.cursor||turn.promptUuid||null,userMessageId:turn.promptUuid||null};
     const raw=result?{...result,total_cost_usd:turn.cost}:null;
     this.#scheduleIdle();
@@ -634,14 +657,17 @@ export class ClaudeAgentSession{
     this.#emit({sessionUpdate:"agent_message_chunk",content:{type:"text",text:value},messageId:messageId||null});
   }
   #emitThought(text,messageId){if(text)this.#emit({sessionUpdate:"agent_thought_chunk",content:{type:"text",text},messageId:messageId||null})}
-  #toolUse(block){
+  // live: the process whose root turn made the call; a subagent's own calls come without it.
+  #toolUse(block,live=null){
     if(!block?.id)return;
     const tool={title:toolTitle(block),kind:toolKind(block.name),rawInput:block.input};
     this.tools.set(block.id,tool);
+    if(live&&CLAUDE_SUBAGENT_TOOLS.has(String(block.name))&&block.input?.run_in_background!==true)live.foregroundSubagents.add(block.id);
     this.#emit({sessionUpdate:"tool_call",toolCallId:block.id,...tool,status:"in_progress"});
   }
-  #toolResult(block){
+  #toolResult(block,live=null){
     if(!block?.tool_use_id)return;
+    live?.foregroundSubagents.delete(block.tool_use_id);
     const tool=this.tools.get(block.tool_use_id)||{title:"Tool",kind:"other",rawInput:{}};this.tools.delete(block.tool_use_id);
     this.#emit({sessionUpdate:"tool_call_update",toolCallId:block.tool_use_id,...tool,status:block.is_error?"failed":"completed",rawOutput:toolResultText(block.content)});
   }
@@ -712,12 +738,12 @@ export class ClaudeAgentSession{
       for(const block of blocks){
         if(block?.type==="text"&&block.text)this.#snapshotText(turn,messageId,block.text,message.uuid);
         else if(block?.type==="thinking"&&block.thinking&&!turn.thoughtMessages.has(messageId))this.#emitThought(block.thinking,message.uuid);
-        else if(block?.type==="tool_use")this.#toolUse(block);
+        else if(block?.type==="tool_use")this.#toolUse(block,live);
       }
       return;
     }
     if(type==="user"){
-      for(const block of Array.isArray(message.message?.content)?message.message.content:[])if(block?.type==="tool_result")this.#toolResult(block);
+      for(const block of Array.isArray(message.message?.content)?message.message.content:[])if(block?.type==="tool_result")this.#toolResult(block,live);
       return;
     }
     // A steered turn's aborted leg is followed by the result of the turn that takes the steering message up.
