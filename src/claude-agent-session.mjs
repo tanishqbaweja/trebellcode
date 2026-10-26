@@ -19,6 +19,10 @@ export const CLAUDE_PLAN_CAPTURED="The client captured your proposed plan. Stop 
 export const CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE="Claude is still running background agents or commands, and this model or setting change would end them. Wait for them to finish (or ask Claude to stop them), or keep the current model and settings, then send the message again.";
 export const CLAUDE_USAGE_LIMIT_HINT="Claude usage limit reached. Send the message again once the limit resets.";
 export const CLAUDE_CONTEXT_FULL="Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
+export const CLAUDE_MCP_REGISTRATION_TIMED_OUT="Claude Code did not finish connecting this thread's MCP servers within 90 seconds. Send the message again; if it keeps timing out, check the MCP servers in Settings.";
+// The SDK sets no deadline for setMcpServers, and Claude Code waits up to 30 s for each server (T3 Code's
+// CLAUDE_MCP_REGISTRATION_TIMEOUT).
+const CLAUDE_MCP_REGISTRATION_TIMEOUT_MS=90_000;
 const CLAUDE_EFFORTS=new Set(["low","medium","high","xhigh","max"]);
 const CLAUDE_IMAGE_TYPES=new Set(["image/gif","image/jpeg","image/png","image/webp"]);
 const CLAUDE_INTERRUPT_TIMEOUT_MS=10_000;
@@ -353,6 +357,8 @@ export class ClaudeAgentSession{
       const turn=this.#newTurn({promptUuid,live});
       turn.onDelivered=typeof onDelivered==="function"?onDelivered:null;
       this.turn=turn;clearTimeout(this.idleTimer);
+      // A process that ended while it opened (it exited, or Stop or close ended it) ends the turn as its pump would have.
+      if(live.closed){turn.cancelRequested=live.stopped;turn.queryError=live.failure;this.#finishTurn(turn);return turn.promise}
       live.input.push({type:"user",message:{role:"user",content},parent_tool_use_id:null,uuid:promptUuid});
       if(live.sawInit)this.#delivered(turn);
       return turn.promise;
@@ -383,6 +389,7 @@ export class ClaudeAgentSession{
   async cancel(){
     const turn=this.turn&&!this.turn.settled?this.turn:null,live=this.live;
     if(turn)turn.cancelRequested=true;
+    if(live)live.stopped=true;
     if(turn&&live&&!live.closed)await withTimeout(live.query.interrupt(),CLAUDE_INTERRUPT_TIMEOUT_MS).catch(()=>{});
     await this.#closeLive(live);
     if(turn&&!turn.settled)this.#finishTurn(turn);
@@ -416,6 +423,7 @@ export class ClaudeAgentSession{
   async close(){
     if(this.closed)return;this.closed=true;clearTimeout(this.idleTimer);
     const turn=this.turn&&!this.turn.settled?this.turn:null;if(turn)turn.cancelRequested=true;
+    if(this.live)this.live.stopped=true;
     await this.#closeLive();
     if(turn&&!turn.settled)this.#finishTurn(turn);
   }
@@ -464,7 +472,7 @@ export class ClaudeAgentSession{
     }
     return this.#openLive(this.#queryKey());
   }
-  #openLive(key){
+  async #openLive(key,{reopen=true}={}){
     const input=new MessageQueue(),policy=claudeQueryPolicy(this.permissionMode,this.collaborationMode),fork=this.pendingFork;
     const allowRules=[...this.sessionAllowRules],directories=[...this.additionalDirectories];
     const settings={
@@ -484,7 +492,9 @@ export class ClaudeAgentSession{
       enableFileCheckpointing:true,
       settingSources:["user","project","local"],
       systemPrompt:{type:"preset",preset:"claude_code",append:runtimeInstructions({harness:"Claude Code"})},
-      mcpServers:this.mcpServers,
+      // No mcpServers: the SDK would put every server but its own in-process ones on Claude Code's command line (--mcp-config), with
+      // the env values the person set for them, where other local users can read them, and Claude Code exits at startup on that flag
+      // next to an administrator's managed-mcp.json. They go over stdin once it runs (#registerMcpServers), as T3 Code sends them.
       ...(this.agent?{agent:this.agent}:{}),
       ...(this.reasoningEffort?{effort:this.reasoningEffort}:{}),
       thinking:{type:"adaptive",display:"summarized"},
@@ -498,13 +508,30 @@ export class ClaudeAgentSession{
     };
     const runtime=this.sdk.query({prompt:input,options});
     // resumed: the session this query asked Claude Code to resume, which it may no longer have.
-    const live={query:runtime,input,key,fork,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,pump:null};
+    // failure: what ended the process's messages; stopped: Stop or close ended it.
+    const live={query:runtime,input,key,fork,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,failure:null,stopped:false,pump:null};
     this.live=live;
     live.pump=this.#pump(live);
     Promise.resolve(runtime.initializationResult?.()).then(init=>{
       if(init&&this.live===live)this.#publishProbe(init,INVENTORY_LIVE);
     },()=>{});
-    return live;
+    if(await this.#registerMcpServers(live))return live;
+    // A process that did not connect them in time is closed, and the SDK's close waits a little for it to exit. A resumed conversation
+    // then opens once more; a new one does not, since its id may already name a transcript the closed process started (T3 Code's
+    // 572cf7427).
+    await this.#closeLive(live);
+    await withTimeout(Promise.resolve().then(()=>runtime.return()),CLAUDE_CLOSE_TIMEOUT_MS).catch(()=>{});
+    if(reopen&&live.resumed&&!this.closed)return this.#openLive(key,{reopen:false});
+    throw new Error(CLAUDE_MCP_REGISTRATION_TIMED_OUT);
+  }
+  // The thread's MCP servers, Trebell's in-process ones with them, before the first prompt, so their tools are there when the turn
+  // starts. Every one goes each time: setMcpServers replaces the whole set Claude Code was given. False when Claude Code did not
+  // answer in time (a process that ended first answers nothing more). Claude Code's init lists each server by name with its status;
+  // the error setMcpServers gives for one it could not connect, which can repeat the server's headers, is not kept.
+  async #registerMcpServers(live){
+    const servers={...this.mcpServers};if(!Object.keys(servers).length)return true;
+    const registered=Promise.resolve().then(()=>live.query.setMcpServers(servers)).catch(()=>null);
+    return withTimeout(Promise.race([registered,live.pump]),CLAUDE_MCP_REGISTRATION_TIMEOUT_MS).then(()=>true,()=>false);
   }
   async #closeLive(live=this.live){
     if(!live)return;
@@ -517,7 +544,7 @@ export class ClaudeAgentSession{
     let failure=null;
     try{for await(const message of {[Symbol.asyncIterator]:()=>live.query})this.#handle(live,message)}
     catch(error){failure=error}
-    live.closed=true;live.input.end();live.backgroundTasks=new Map();
+    live.closed=true;live.failure=failure;live.input.end();live.backgroundTasks=new Map();
     if(this.live===live)this.live=null;
     const turn=this.turn;
     if(turn&&turn.live===live&&!turn.settled){turn.queryError=failure;this.#finishTurn(turn)}

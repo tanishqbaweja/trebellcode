@@ -37,7 +37,7 @@ function fakeClaude({turn=replyWith("OK"),init={},sessionExists=true}={}){
   const calls=[];
   const query=({prompt,options})=>{
     const out=new Channel();
-    const call={prompt,options,inputs:[],interrupts:0,closed:false,permissionModes:[],out,interrupted:null};
+    const call={prompt,options,inputs:[],interrupts:0,closed:false,permissionModes:[],mcpServers:[],backgroundTasks:[],out,interrupted:null};
     let interruptNow;call.interrupted=new Promise(resolve=>{interruptNow=resolve});
     calls.push(call);
     const emit=message=>out.push(message);
@@ -61,6 +61,8 @@ function fakeClaude({turn=replyWith("OK"),init={},sessionExists=true}={}){
       async interrupt(){call.interrupts++;interruptNow()},
       close(){call.closed=true;out.end()},
       async setPermissionMode(mode){call.permissionModes.push(mode)},
+      async setMcpServers(servers){call.mcpServers.push(servers);return {added:Object.keys(servers),removed:[],errors:{}}},
+      async backgroundTasks(toolUseId){call.backgroundTasks.push(toolUseId);return true},
       initializationResult:async()=>({commands:[{name:"review",description:"Review"}],agents:[{name:"Plan",description:"Plans"}],models:[{value:"default",displayName:"Default"}]}),
     };
   };
@@ -128,7 +130,8 @@ test("Claude query options keep Claude Code's own prompt, settings sources, MCP 
   assert.deepEqual(options.settingSources,["user","project","local"]);
   assert.equal(options.systemPrompt.type,"preset");assert.equal(options.systemPrompt.preset,"claude_code");
   assert.match(options.systemPrompt.append,/Trebell Code/);assert.match(options.systemPrompt.append,/Claude Code harness/);
-  assert.deepEqual(options.mcpServers,mcpServers);
+  // The MCP servers go over stdin once the process runs (setMcpServers), never on its command line.
+  assert.equal(options.mcpServers,undefined);assert.deepEqual(calls[0].mcpServers,[mcpServers]);
   assert.equal(options.settings.autoCompactWindow,300000);
   assert.equal(options.includePartialMessages,true);
   assert.deepEqual(options.thinking,{type:"adaptive",display:"summarized"});
@@ -142,7 +145,7 @@ test("Claude preserves live SDK-hosted MCP server instances",async()=>{
   const repository=await createClaudeRepositoryMcp({contextEngine,root:"/repo",version:"fixture"});
   const claude=session(sdk,{mcpServers:{trebell_repository:repository}});
   await claude.start();await claude.prompt([{type:"text",text:"inspect symbols"}]);
-  assert.equal(calls[0].options.mcpServers.trebell_repository.instance,repository.instance);
+  assert.equal(calls[0].mcpServers[0].trebell_repository.instance,repository.instance);
 });
 
 test("Claude user content sends images as base64 blocks and keeps the user's text last",()=>{
