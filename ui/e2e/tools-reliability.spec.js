@@ -1871,8 +1871,9 @@ test("Tools keeps Reading… or Loading… in view until Codex answers, with the
 // A plugin search run again on the term its results are listed under (Enter in the box again, Search clicked or double clicked, or
 // reached with Tab at 700) shows one list, as a term searched does: those results beside Searching… until Codex answers, on the page
 // that sent it and on the page drawn again meanwhile, and refused, the results with the line saying why, their Load more adding the
-// next page of the search they are. The catalog shows only under a term not searched yet. On 4708aac5 the page that sent the search
-// listed the whole catalog under the results and their Load more while it ran, and a refusal left both lists there, Load more live.
+// next page of the search they are; a term that matched nothing goes on saying so the same way. The catalog shows only under a term
+// not searched yet. On 4708aac5 the page that sent the search listed the whole catalog under the results and their Load more while
+// it ran, and a refusal left both lists there, Load more live.
 test("Tools Plugins shows one list while a search runs again on the term its results are under, the results beside Searching… and with the line once Codex refuses",async({page})=>{
   test.setTimeout(150_000);
   const fixture=await startHeldMcpFixture();fixture.release();
@@ -1926,16 +1927,21 @@ test("Tools Plugins shows one list while a search runs again on the term its res
     await during("after a click on Search",all);
     fixture.releaseReads();await expect(search).toBeEnabled();
     await expect.soft(results,"Codex's answer takes their place").toHaveText(first);await expect.soft(listed,"with no catalog under it").toHaveCount(0);
-    // Search double clicked, which sends one search, then Settings and back with the keys: the page drawn again lists the results
-    // beside Searching… too, and refused, with the line.
+    // Search double clicked, which sends one search: the results beside Searching… on the page that sent it; then Settings and back
+    // with the keys: the page drawn again lists the results beside Searching… too, and refused, with the line.
     const before=sent.length;
     await search.dblclick();await held();
+    await during("after a double click on the page that sent it",first);
     await ways.keys();await wheelTo(page,plugins);
     await expect(searching).toHaveAttribute("aria-busy","true");await expect.soft(box,"the page drawn again shows the search in the box").toHaveValue("lane");
     await during("on the page drawn again",first);
     await shootTools(page,"tools-drawn-again-plugin-search-again-searching",plugins);
     await refused("on the page drawn again");
     expect.soft(sent.length-before,"a double click on Search sends one search").toBe(1);
+    // 'lane' listed again, answered at once, so the search at 700 runs over its results whatever the page drawn again kept.
+    fixture.control.holdReads=false;await box.fill("");await box.fill("lane");await box.press("Enter");
+    await expect(results).toHaveText(first);await expect(listed).toHaveCount(0);await expect(line).toHaveCount(0);
+    fixture.control.holdReads=true;
     // At 700, Search reached with Tab from the box and pressed with Enter: the results beside Searching…, then Codex's answer.
     await page.setViewportSize({width:700,height:800});
     await box.click();await page.keyboard.press("Tab");await page.keyboard.press("Tab");await expect(search).toBeFocused();
@@ -1944,6 +1950,33 @@ test("Tools Plugins shows one list while a search runs again on the term its res
     fixture.releaseReads();await expect(search).toBeEnabled();
     await expect.soft(results,"Codex's answer at 700").toHaveText(first);await expect.soft(listed,"with no catalog under it at 700").toHaveCount(0);
     await page.setViewportSize({width:1280,height:800});
+    // A term that matched nothing, searched again, says so as results stay: beside Searching… until Codex answers, and refused, with
+    // the line saying why, on the page that sent it and on the page drawn again. Over an answer that matched nothing the card was
+    // left empty while the search ran, and refused, said only the line.
+    const none=plugins.getByText("No plugins matched this search.",{exact:true}),refusal=["Could not search plugins: the plugin index is rebuilding"];
+    const unmatched=async(where,refused)=>{
+      await expect.soft(none,"the term searched again still matched nothing "+where).toBeVisible();
+      await expect.soft(listed,"with no catalog under it "+where).toHaveCount(0);await expect.soft(results,"and no results "+where).toHaveCount(0);
+      if(refused)await expect.soft(line,"and the line saying why "+where).toHaveText(refusal);
+    };
+    fixture.control.holdReads=false;await box.fill("lane-x");await box.press("Enter");
+    await expect(none).toBeVisible();await expect(listed).toHaveCount(0);await expect(results).toHaveCount(0);
+    fixture.control.holdReads=true;await box.press("Enter");await held();
+    await unmatched("beside Searching… on the page that sent it");
+    await shootTools(page,"tools-plugin-search-again-unmatched-searching",plugins);
+    fixture.refuseReads("the plugin index is rebuilding");await expect(line).toHaveText(refusal);await expect(search).toBeEnabled();
+    await unmatched("once refused on the page that sent it",true);
+    await shootTools(page,"tools-plugin-search-again-unmatched-refused",plugins);
+    await search.click();await held();
+    await ways.keys();await wheelTo(page,plugins);
+    await expect(searching).toHaveAttribute("aria-busy","true");await expect.soft(box,"the page drawn again shows that search in the box").toHaveValue("lane-x");
+    await unmatched("beside Searching… on the page drawn again");
+    fixture.refuseReads("the plugin index is rebuilding");await expect(line).toHaveText(refusal);await expect(search).toBeEnabled();
+    await unmatched("once refused on the page drawn again",true);
+    // Answered, it says so again, and the line goes.
+    fixture.control.holdReads=false;await search.click();await expect(search).toBeEnabled();await expect(line).toHaveCount(0);
+    await expect.soft(none,"answered, the term matched nothing").toBeVisible();await expect.soft(listed,"with no catalog under it").toHaveCount(0);
+    fixture.control.holdReads=true;
     // A term not searched yet keeps the catalog under it while Codex searches it, and then its results take its place.
     await box.fill("lane-g-t");await expect(listed).toHaveCount(3);await expect(results).toHaveCount(0);
     await box.press("Enter");await held();
