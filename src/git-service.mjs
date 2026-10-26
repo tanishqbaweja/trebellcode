@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 
 const execFileAsync=promisify(execFile);
@@ -423,72 +423,50 @@ export function worktreeSubmoduleArgs(mode="recursive"){
 // and one that reads the folder of an add still writing it fails ("failed to read .git/worktrees/<id>/commondir"), as a model of a
 // multi-model send did. So the adds and removes of a repository take turns, one at a time in the order asked, a failed one letting the
 // next go, in a queue keyed by its common git dir (worktreeTurnKey), which its linked worktrees share. Repositories apart do not wait
-// for each other. A turn holds only git's bookkeeping, the part that races, not the files, where those are on this machine: in a
-// repository of 6,000 files an add took 6.6 s, 6.4 s of it the checkout, and a remove 5 to 6 s, so with whole adds in turns the third
-// model of a send waited for two checkouts (its worktree made after 20 s, where three made at once took 13.5 s each). So an add here
-// ends its turn once git has written the new worktree's admin folder (addWorktreeInTurn), and a remove sets the work tree aside before
-// its turn and deletes it after (setWorktreeAside); a remote environment's add or remove holds its turn for the whole git command.
-// The submodule update after an add, which can take minutes, waits for no turn.
+// for each other. An add here holds its turn for git's bookkeeping, up to the new worktree's HEAD, not for its checkout
+// (addWorktreeInTurn): in a repository of 6,000 files an add took 6.6 s, 6.4 s of it the checkout, so with whole adds in turns the
+// third model of a send waited for two checkouts (its worktree made after 20 s, where three made at once took 13.5 s each). A remove,
+// here or in a remote environment, and an add in a remote environment or through source control hold the turn for the whole git
+// command. The submodule update after an add, which can take minutes, waits for no turn.
 const worktreeTurns=new Map();
 export function worktreeTurn(key,task){
   const turn=(worktreeTurns.get(key)||Promise.resolve()).then(()=>task()),done=turn.then(()=>{},()=>{});
   worktreeTurns.set(key,done);done.then(()=>{if(worktreeTurns.get(key)===done)worktreeTurns.delete(key)});
   return turn;
 }
-// The common git dir of the repository at cwd as a real path (its turns' key in either case on Windows), or for a repository on
-// another host (remote, its git run by gitFn there) its path there.
-async function localCommonDir(cwd,gitFn=git){
-  const res=await gitFn(cwd,["rev-parse","--git-common-dir"],{allowFailure:true}).catch(()=>null),path=resolve(cwd,res?.ok&&String(res.stdout).trim()||".git");
-  return realpath(path).catch(()=>path);
-}
-const localTurnKey=dir=>process.platform==="win32"?dir.toLowerCase():dir;
+// The common git dir of the repository at cwd as a real path (on Windows in either case), or for a repository on another host
+// (remote, its git run by gitFn there) its path there.
 export async function worktreeTurnKey(cwd,{gitFn=git,remote=false}={}){
-  if(!remote)return localTurnKey(await localCommonDir(cwd,gitFn));
-  const res=await gitFn(cwd,["rev-parse","--git-common-dir"],{allowFailure:true}).catch(()=>null);
-  return "remote:"+posix.resolve("/",String(cwd),res?.ok&&String(res.stdout).trim()||".git");
+  const res=await gitFn(cwd,["rev-parse","--git-common-dir"],{allowFailure:true}).catch(()=>null),dir=res?.ok&&String(res.stdout).trim()||".git";
+  if(remote)return "remote:"+posix.resolve("/",String(cwd),dir);
+  const path=resolve(cwd,dir),real=await realpath(path).catch(()=>path);
+  return process.platform==="win32"?real.toLowerCase():real;
 }
+const inWorktreeTurn=async(root,task)=>worktreeTurn(await worktreeTurnKey(root),task);
 // The admin folder git names in a linked worktree's .git file ("gitdir: <folder>"), which it writes in full before the checkout.
 const LINKED_GIT_FILE=/^gitdir: (.+)\r?\n/;
 const namedAdminFolder=async tree=>LINKED_GIT_FILE.exec(await readFile(join(tree,".git"),"utf8").catch(()=>""))?.[1]?.trim()||null;
-// An add's turn ends once git has written its worktree's admin folder, the commondir and HEAD another add or remove reads, or when git
-// ends before that. The checkout and the post-checkout hook that follow, all of git's own add, run after the turn, beside the next add.
+// An add's turn ends once git has written the new worktree's admin folder up to its HEAD, or when git ends before that: the commondir
+// another add or remove reads, and the HEAD another add reads to refuse a branch a worktree has checked out. With reftable refs the HEAD
+// file is a stub, written after the admin folder's reftable folder, and the worktree's HEAD is in once git has written
+// reftable/tables.list. The checkout and the post-checkout hook that follow, all of git's own add, run after the turn, beside the next
+// add, and so does git's deletion of the new worktree when its checkout fails: another add or remove that reads its admin folder as it
+// goes could fail on it, in a window of microseconds that no run has made fail.
 async function worktreeAdminWritten(dest,ended){
   let over=false;ended.then(()=>{over=true});
   while(!over){
     const named=await namedAdminFolder(dest);
     if(named){
       const admin=resolve(dest,named),[common,head]=await Promise.all(["commondir","HEAD"].map(name=>stat(join(admin,name)).catch(()=>null)));
-      if(common?.size>0&&head)return;
+      if(common?.size>0&&head&&(!await stat(join(admin,"reftable")).catch(()=>null)||await stat(join(admin,"reftable","tables.list")).catch(()=>null)))return;
     }
     await new Promise(next=>setTimeout(next,10));
   }
 }
 async function addWorktreeInTurn(root,dest,args){
   let added;
-  await worktreeTurn(await worktreeTurnKey(root),()=>{added=git(root,args,{timeout:180000});const ended=added.then(()=>{},()=>{});return Promise.race([ended,worktreeAdminWritten(dest,ended)])});
+  await inWorktreeTurn(root,()=>{added=git(root,args,{timeout:180000});const ended=added.then(()=>{},()=>{});return Promise.race([ended,worktreeAdminWritten(dest,ended)])});
   return added;
-}
-// A remove's turn holds only git's bookkeeping too: the work tree is renamed aside first, git then finds it gone and removes only the
-// admin folder in the turn, and the files set aside are deleted after it. Before the rename come the checks git makes before it
-// deletes a work tree: one of this repository's linked worktrees, which its admin folder names back, not locked, and unless forced
-// nothing changed or untracked by git's own status and no submodule. A work tree that fails one, that is asked for through a link to
-// it, or that cannot be renamed (a file of it in use on Windows) stays for git to check and remove in the turn, as before; a work tree
-// set aside for a remove git refuses goes back. Deleted so, a junction or link in the work tree goes without what it points to,
-// which git worktree remove 2.50.1.windows.1 deleted.
-async function setWorktreeAside(dest,commonDir,{force}){
-  const same=(a,b)=>process.platform==="win32"?a.toLowerCase()===b.toLowerCase():a===b;
-  const named=await namedAdminFolder(dest),admin=named?await realpath(resolve(dest,named)).catch(()=>null):null;
-  if(!admin||!same(dirname(admin),join(commonDir,"worktrees"))||!(await lstat(dest).catch(()=>null))?.isDirectory())return null;
-  const back=(await readFile(join(admin,"gitdir"),"utf8").catch(()=>"")).trim();
-  const [namedBack,tree]=await Promise.all([back?realpath(dirname(resolve(admin,back))).catch(()=>null):null,realpath(dest).catch(()=>null)]);
-  if(!namedBack||!tree||!same(namedBack,tree)||existsSync(join(admin,"locked")))return null;
-  if(!force){
-    if(existsSync(join(admin,"modules")))return null;
-    const [status,index]=await Promise.all([git(dest,["status","--porcelain","--ignore-submodules=none"],{allowFailure:true}),git(dest,["ls-files","--stage"],{allowFailure:true,maxBuffer:64*1024*1024})]);
-    if(!status.ok||status.stdout.trim()||!index.ok||/^160000 /m.test(index.stdout))return null;
-  }
-  const aside=dest+".trebell-removing-"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-  return rename(dest,aside).then(()=>aside,()=>null);
 }
 export async function createWorktree(cwd,{branch,path,baseBranch=null,submodules="recursive"}){
   const info=await gitInfo(cwd);
@@ -514,11 +492,8 @@ export async function removeWorktree(cwd,path,{force=false}={}){
   const info=await gitInfo(cwd);
   const args=["worktree","remove"];
   if(force) args.push("--force");
-  const dest=resolve(path);args.push(dest);
-  const commonDir=await localCommonDir(info.root||resolve(cwd)),aside=info.isGit?await setWorktreeAside(dest,commonDir,{force}):null;
-  try{await worktreeTurn(localTurnKey(commonDir),()=>git(info.root,args,{timeout:180000}))}
-  catch(error){if(aside)await rename(aside,dest).catch(()=>{});throw error}
-  if(aside)await rm(aside,{recursive:true,force:true,maxRetries:8,retryDelay:100});
+  args.push(resolve(path));
+  await inWorktreeTurn(info.root||resolve(cwd),()=>git(info.root,args,{timeout:180000}));
   return gitInfo(info.root,{fresh:true});
 }
 export async function sourceControlDiagnostics(cwd){
