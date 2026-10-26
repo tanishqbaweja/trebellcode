@@ -6,6 +6,8 @@ import { readNdjsonLines } from "./ndjson-lines.mjs";
 
 const DEFAULT_TIMEOUT_MS=180_000;
 export const ACP_STDERR_TAIL_MAX_CHARS=4096;
+// The kinds of dropped message a connection warns about, at most, and the length of the reason each warning gives.
+const DROPPED_KINDS_LIMIT=64,DROPPED_REASON_MAX_CHARS=300;
 
 export function appendAcpStderrTail(current,chunk){
   const next=String(current||"")+String(chunk||"");
@@ -78,6 +80,8 @@ export class AcpClient extends EventEmitter{
     this.closed=false;
     this.stderrTail="";
     this.terminationError=null;
+    // Each kind of message dropped on this connection, by method and reason, so it is warned about once.
+    this.droppedKinds=new Set();
   }
 
   async start(){
@@ -94,7 +98,7 @@ export class AcpClient extends EventEmitter{
         :spawn(this.command,this.args,{cwd:this.cwd,env:this.env,windowsHide:true,stdio:["pipe","pipe","pipe"]});
     }catch(error){await this.#removeRunTemp();throw processError(this.command,error)}
     this.child=child;
-    this.stdoutReader=readNdjsonLines(child.stdout,line=>this.#handleLine(line));
+    this.stdoutReader=readNdjsonLines(child.stdout,line=>{this.#handleLine(line).catch(error=>this.#dropped(null,error))});
     child.stderr?.on("data",chunk=>{
       const text=String(chunk);
       this.stderrTail=appendAcpStderrTail(this.stderrTail,text);
@@ -202,7 +206,12 @@ export class AcpClient extends EventEmitter{
     if(!raw)return;
     let message;
     try{message=JSON.parse(raw)}catch{
-      this.emit("protocolWarning",{message:"ACP stdout contained non-JSON output",raw:raw.slice(0,4000)});
+      this.#warn({message:"ACP stdout contained non-JSON output",raw:raw.slice(0,4000)});
+      return;
+    }
+    // A JSON-RPC message is an object: null (which threw here), a number, a string or an array is none.
+    if(!message||typeof message!=="object"||Array.isArray(message)){
+      this.#warn({message:"ACP stdout contained JSON that is not a JSON-RPC message",raw:raw.slice(0,4000)});
       return;
     }
     if(Object.prototype.hasOwnProperty.call(message,"id")&&!message.method){
@@ -224,10 +233,30 @@ export class AcpClient extends EventEmitter{
       return;
     }
     if(message.method){
-      this.emit("notification",{method:message.method,params:message.params||{}});
-      if(message.method==="session/update")this.emit("sessionUpdate",message.params||{});
+      this.#dispatch("notification",{method:message.method,params:message.params||{}},message.method);
+      if(message.method==="session/update")this.#dispatch("sessionUpdate",message.params||{},message.method);
     }
   }
+
+  // A listener that throws on a notification (an update in a newer or unexpected shape) drops that one notification, and the client
+  // reads on, as T3 drops one it cannot decode. The throw was an unhandled rejection, which ends a Trebell server.
+  #dispatch(event,payload,method){
+    try{this.emit(event,payload)}catch(error){this.#dropped(method,error)}
+  }
+
+  // Each kind of drop is warned about once per connection, by method and reason, with the reason bounded and none of the message's
+  // values: an agent repeats a shape it sends on every update. A message of no known method is one that failed before its dispatch.
+  #dropped(method,error){
+    const name=String(method??"").replace(/\s+/g," ").trim().slice(0,100)||null;
+    const detail=sanitizeAcpStderrExcerpt(String(error instanceof Error?error.message:error).replace(/\s+/g," "),this.env);
+    const reason=detail.length>DROPPED_REASON_MAX_CHARS?detail.slice(0,DROPPED_REASON_MAX_CHARS-3)+"...":detail||"unknown error";
+    const key=(name||"")+"\n"+reason;
+    if(this.droppedKinds.has(key)||this.droppedKinds.size>=DROPPED_KINDS_LIMIT)return;
+    this.droppedKinds.add(key);
+    this.#warn({message:`Dropped an ACP ${name?name+" notification":"message"} that Trebell could not handle: ${reason}`,method:name,reason});
+  }
+
+  #warn(warning){try{this.emit("protocolWarning",warning)}catch{}}
 
   #terminate(error){
     if(this.closed)return;
