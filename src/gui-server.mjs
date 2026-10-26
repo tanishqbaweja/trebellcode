@@ -61,6 +61,7 @@ import { codexGoalRecord, codexGoalSetParams, codexGoalStatus } from "./codex-go
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
 import { recordCodexRecoveryItemEvidence, staleCodexRecoveryState } from "./codex-recovery-evidence.mjs";
 import { withCodexContextPieces } from "./codex-additional-context.mjs";
+import { createCodexTurnUsage } from "./codex-turn-usage.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
 import { verificationRepairAttempt, verificationRepairChainState, verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
 import { collectVerificationEvidence } from "./verification-evidence-collector.mjs";
@@ -1525,6 +1526,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   // runs or is starting a turn, a turn start that comes meanwhile is refused (startsCodexTurn), and one Codex starts by itself
   // meanwhile (a goal's next turn) is noted, so the restore puts the files back as they were.
   const codexRunningTurns=new Map(),restoringThreads=new Map();
+  // Each running Codex turn's token usage over all its model requests, from the thread's running total (codex-turn-usage.mjs).
+  const codexTurnUsage=createCodexTurnUsage();
   // A thread's own app-server that died (it had served, nothing stopped or released it): how it ended, and whether a turn ran on it, by
   // thread. Each resume of the thread names it (trebellAppServerExit) until the thread's next turn starts, so the app can say once, in
   // the thread, what happened, however often it reconnects.
@@ -3409,9 +3412,12 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       if(answeredThreadId&&CODEX_TURN_START_METHODS.has(route?.requestMethod)&&!message?.error){const turn=message?.result?.turn;if(turn?.id&&(!turn.status||turn.status==="inProgress"))noteCodexTurnStarted(answeredThreadId,turn.id)}
       if(answeredThreadId&&(route?.requestMethod==="thread/read"||route?.requestMethod==="thread/resume")&&message?.result?.thread&&message.result.thread.status?.type!=="active")noteCodexTurnEnded(answeredThreadId);
       if(message?.method==="thread/status/changed"&&params.threadId&&params.status&&params.status.type!=="active")noteCodexTurnEnded(params.threadId);
+      // A turn's record holds every model request it made so far. Codex's token usage carries no cost (total, last and the context
+      // window only), so the record has none, and the Usage page prices the tokens of a model whose price is set.
       if(message?.method==="thread/tokenUsage/updated"&&params.threadId&&params.turnId){
-        const meta=state.threadMeta(params.threadId);
-        state.recordUsage({runtime:"codex",provider:codexRuntimeProvider(params.threadId),model:codexThreadModels.get(params.threadId)||null,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId:params.threadId,turnId:params.turnId,usage:params.tokenUsage?.last||params.tokenUsage?.total||{},cost:params.tokenUsage?.cost||null,at:Date.now()});
+        const usage=codexTurnUsage.update({threadId:params.threadId,turnId:params.turnId,tokenUsage:params.tokenUsage,running:Boolean(codexRunningTurns.get(String(params.threadId))?.has(String(params.turnId)))});
+        const meta=usage?state.threadMeta(params.threadId):null;
+        if(usage)state.recordUsage({runtime:"codex",provider:codexRuntimeProvider(params.threadId),model:codexThreadModels.get(params.threadId)||null,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId:params.threadId,turnId:params.turnId,usage,cost:null,at:Date.now()});
       }
     },
   });
