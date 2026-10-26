@@ -297,7 +297,9 @@ export class AcpAgentSession{
     this.spawnProcess=spawnProcess;this.remoteIo=remoteIo;this.processCwd=processCwd?resolve(processCwd):null;
     this.mcpServers=Array.isArray(mcpServers)?mcpServers.map(server=>({...server,args:[...(server.args||[])],env:(server.env||[]).map(item=>({...item}))})):[];
     this.client=null;this.sessionId=null;this.initializeResult=null;this.sessionSetup=null;this.model=null;
-    this.runtimeContextSent=false;
+    // Whether the harness still has Trebell's runtime notes; compactions counts the compactions it finished, so a prompt that one
+    // overtook does not count its notes as kept (T3 compactionMarkers).
+    this.runtimeContextSent=false;this.compactions=0;
     this.label=runtimeHarnessLabel(runtime);
     this.dead=false;this.deadError=null;this.closing=false;this.starting=false;this.loading=false;
     this.activePrompt=null;this.wake=null;this.userWaits=new Set();this.tools=new Map();this.todos=new Map();
@@ -418,15 +420,21 @@ export class AcpAgentSession{
     await this.#applyEffort();
     // A harness slash command goes alone: Trebell's context or runtime notes beside it would make it an ordinary prompt.
     const given=Array.isArray(content)?content:[],commandParts=acpSlashCommandPrompt(given,this.commandNames),command=Boolean(commandParts);
+    // A lone /compact, the relay's or the person's, compacts the harness's context and the runtime notes in it (T3: its text alone).
+    const compacting=command&&commandParts.length===1&&text(commandParts[0]?.text)==="/compact";
     const parts=this.runtime==="antigravity"&&!this.remoteIo?await antigravityPromptParts(commandParts||given):[...(commandParts||given)];
     if(!this.runtimeContextSent&&!command)parts.push({type:"text",text:runtimeInstructions({harness:this.label,model:this.#modelLabel()})});
     let markDone;const done=new Promise(resolve=>{markDone=resolve});
     const active={promptId:this.runtime==="grok"?randomUUID():null,cancelled:false,transport:this.runtime==="cursor"?new CursorTransportFailure():null,done,taken:!command&&typeof onDelivered==="function"?onDelivered:null};
     this.activePrompt=active;
+    const compactions=this.compactions;
     try{
       const result=this.runtime==="grok"?await this.#grokPrompt(parts,active,messageId):await this.client.prompt(this.sessionId,parts,{messageId});
       this.#promptTaken(active);
-      if(!command)this.runtimeContextSent=true;
+      // A /compact the harness finished (as the relay counts one: neither stopped nor refused) leaves it without the notes, so the
+      // next ordinary prompt carries them again; a compaction that came during this prompt took the ones it carried.
+      if(compacting&&result?.stopReason!=="cancelled"&&result?.stopReason!=="refusal")this.#compacted();
+      else if(!command&&this.compactions===compactions)this.runtimeContextSent=true;
       // Cursor streams a lost backend connection as the reply and ends the turn normally (T3 CursorTransportFailure).
       const failure=active.transport?.failure;
       if(failure&&result?.stopReason!=="cancelled")throw Object.assign(new Error(failure),{code:"CURSOR_TRANSPORT_FAILURE"});
@@ -439,6 +447,9 @@ export class AcpAgentSession{
       markDone();
     }
   }
+
+  // The harness compacted its context, Trebell's runtime notes with it: the next ordinary prompt carries them again.
+  #compacted(){this.compactions++;this.runtimeContextSent=false}
 
   // Tells, once, that the harness took the running prompt into its conversation (prompt's onDelivered).
   #promptTaken(active){
@@ -658,6 +669,8 @@ export class AcpAgentSession{
     if((this.starting||this.loading)&&!METADATA_UPDATES.has(type))return;
     if(type==="config_option_update"&&Array.isArray(update.configOptions))this.sessionSetup=acpSetupWithConfigOptions(this.sessionSetup,update.configOptions);
     if(type==="current_mode_update"&&text(update.currentModeId))this.sessionSetup=acpSetupWithValue(this.sessionSetup,"mode",text(update.currentModeId));
+    // A compaction the harness reports finished, its own or a /compact's (T3 marks it on the completed compaction item).
+    if(type==="compaction_update"&&text(update.status)==="completed")this.#compacted();
     // Grok answers a finished background task in a turn of its own, tagged task-completed-*.
     const promptId=params?._meta?.promptId;
     if(this.runtime==="grok"&&!this.activePrompt&&typeof promptId==="string"&&promptId.startsWith(GROK_TASK_PROMPT_PREFIX)&&this.wake?.promptId!==promptId){this.#finishWake("end_turn");this.#beginWake(promptId)}
