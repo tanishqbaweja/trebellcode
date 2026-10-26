@@ -640,10 +640,10 @@ test("Tools Skills card drops the previous workspace's skills while the next wor
 // A plugin shared with the account, as Codex lists it, with no local copy yet.
 const share=(id,name,version)=>({plugin:{id,name,...(version?{version}:{}),remotePluginId:"remote-"+id,shareContext:{remotePluginId:"remote-"+id,discoverability:"PRIVATE",shareUrl:"https://plugins.example.invalid/share/"+id,creatorName:"Lane G"}},localPluginPath:null});
 // The mouse wheel over the page, notch by notch, as a person scrolls a card up to read it, until its head is near the window's top,
-// or, for a card at the page's foot, until the page ends with it in view.
+// or, for a card at the page's foot, until the page ends with it in view. In a window too narrow for its place, over the right edge.
 async function wheelTo(page,card){
   const scroller=page.locator(".secondary-page");
-  await page.mouse.move(760,420);
+  await page.mouse.move(Math.min(760,page.viewportSize().width-6),420);
   for(let notch=0;notch<40;notch++){
     const {y}=await card.boundingBox();if(y>=60&&y<=200)return;
     if(y>200&&await scroller.evaluate(node=>node.scrollTop+node.clientHeight>=node.scrollHeight-1))return;
@@ -1984,6 +1984,61 @@ test("Tools Plugins shows one list while a search runs again on the term its res
     fixture.releaseReads();
     await expect.soft(results,"then its results").toHaveText(["Lane G Tasks"]);await expect.soft(listed,"in the catalog's place").toHaveCount(0);
   }finally{fixture.releaseReads();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
+});
+
+// A term that matched nothing goes on saying so under it while another of the page's actions runs, as listed results stay with
+// their actions waiting: Reconcile clicked or double clicked, Upgrade all reached with Tab and pressed with Enter, or a
+// marketplace's Upgrade clicked at 700, and once the action is done. On c1b8b885 the Plugins card showed only its search row while
+// Reconciling… or Upgrading… ran: no line, no results and no catalog, until the action ended.
+test("Tools Plugins goes on saying a term matched nothing while another action runs, Reconcile or a marketplace's Upgrade, pressed with the mouse or the keys, wide and narrow",async({page})=>{
+  test.setTimeout(120_000);
+  const fixture=await startHeldMcpFixture();fixture.release();
+  fixture.control.marketplaces=catalog();
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openTools(page,fixture.wsUrl);
+    await expect(page.locator(".capabilities-toolbar button")).toHaveText("Refresh");
+    const plugins=toolsCard(page,"Plugins"),marketplaces=toolsCard(page,"Marketplaces"),market=marketplaces.locator(".capability-list>div").filter({hasText:"Lane G Market"}),button=(card,name)=>card.getByRole("button",{name,exact:true});
+    const box=plugins.getByPlaceholder("Search plugins"),none=plugins.getByText("No plugins matched this search.",{exact:true}),results=plugins.locator(".plugin-search-results>div"),listed=plugins.locator(".capability-list:not(.plugin-search-results)>div"),busy=page.locator(".capabilities-page [aria-busy=true]");
+    // While the action runs (doing says it runs): the line under the term, with no results and no catalog, the box waiting.
+    const during=async(doing,where,shot)=>{
+      await expect(doing).toHaveAttribute("aria-busy","true");await wheelTo(page,plugins);
+      await expect.soft(none,"the term still says it matched nothing "+where).toBeVisible();
+      await expect.soft(results,"with no results "+where).toHaveCount(0);await expect.soft(listed,"and no catalog "+where).toHaveCount(0);
+      await expect.soft(box,"under the term searched").toHaveValue("kubernetes");await expect.soft(box,"which waits, as the page's other actions do").toBeDisabled();
+      if(shot)await shootTools(page,shot,plugins);
+    };
+    // Once Codex has answered and the page has read it again, the line still says so.
+    const done=async where=>{
+      await expect(busy).toHaveCount(0);await expect(box).toBeEnabled();
+      await expect.soft(none,"and once it is done "+where).toBeVisible();await expect.soft(listed,"with no catalog "+where).toHaveCount(0);
+    };
+    await wheelTo(page,plugins);
+    await box.click();await page.keyboard.type("kubernetes");await page.keyboard.press("Enter");
+    await expect(none).toBeVisible();await expect(listed).toHaveCount(0);await expect(results).toHaveCount(0);
+    // Reconcile clicked, then double clicked, while Codex holds it.
+    fixture.control.holdReads=true;
+    await button(plugins,"Reconcile").click();await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    await during(button(plugins,"Reconciling…"),"while Reconciling… runs","tools-plugin-search-unmatched-reconciling");
+    fixture.releaseReads();await expect(plugins.getByText("0 plugin changes reconciled.",{exact:true})).toBeVisible();
+    await done("after Reconcile");
+    await button(plugins,"Reconcile").dblclick();await expect.poll(()=>fixture.control.heldReads.length).toBe(1);
+    await during(button(plugins,"Reconciling…"),"while a double-clicked Reconcile runs");
+    fixture.releaseReads();await done("after the double-clicked Reconcile");
+    fixture.control.holdReads=false;fixture.control.holdShare=true;
+    // Upgrade all, reached with Tab from the source field and pressed with Enter, while Codex holds it.
+    await wheelTo(page,marketplaces);
+    await marketplaces.getByPlaceholder("Git URL or local path").focus();await page.keyboard.press("Tab");
+    await expect(button(marketplaces,"Upgrade all")).toBeFocused();await page.keyboard.press("Enter");
+    await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await during(button(marketplaces,"Upgrading…"),"while Upgrade all runs, pressed with the keys");
+    fixture.releaseShare();await done("after Upgrade all");
+    // At 700, the marketplace's own Upgrade clicked.
+    await page.setViewportSize({width:700,height:800});await wheelTo(page,marketplaces);
+    await button(market,"Upgrade").click();await expect.poll(()=>fixture.control.heldShare.length).toBe(1);
+    await during(button(market,"Upgrading…"),"at 700 while the marketplace's Upgrade runs","tools-plugin-search-unmatched-upgrading");
+    fixture.releaseShare();await done("after the marketplace's Upgrade at 700");
+  }finally{fixture.releaseReads();fixture.releaseShare();await page.evaluate(()=>{document.documentElement.dataset.mode="dark"}).catch(()=>{});await fixture.close()}
 });
 
 // A history import says what it did once Conversation history is scanned again: the scan cleared the line as it started, so the
