@@ -119,6 +119,25 @@ function runtimeProbeFailure(def,result={}){
   const first=raw.split(/\r?\n/).map(line=>line.trim()).find(Boolean);
   return (first||`${def?.name||"Runtime"} executable was not found`).slice(0,500);
 }
+// How long a harness's --version may take (T3's budgets): Claude Code's native CLI and Codex can take longer to start on a cold
+// Windows start or while Defender scans them, and an OpenCode behind its npm shim several seconds.
+const VERSION_CHECK_TIMEOUT_MS=Object.freeze({claude:20_000,codex:20_000,opencode:10_000});
+const versionCheckTimeoutMs=kind=>VERSION_CHECK_TIMEOUT_MS[kind]||6000;
+// Why a --version did not answer: "missing" only when its command is not there (Node's ENOENT, cmd.exe's "is not recognized", a
+// shell's "command not found", or the 127 a shell or env exits with then), "timeout" when it ran out of time, "exit" when it ran and
+// exited with an error, and "spawn" when it could not start (spawn EINVAL for a launcher Node cannot run).
+function versionCheckFailure(result={}){
+  if(result.code===127||/ENOENT|not recognized as an internal or external command|command not found/i.test(String(result.error||"")+"\n"+String(result.stderr||"")))return "missing";
+  if(result.error==="probe timed out")return "timeout";
+  return Number.isInteger(result.code)?"exit":"spawn";
+}
+// What a harness whose --version timed out or exited with an error says: that it is installed, and what its check did.
+function versionCheckMessage(def,kind,command,result){
+  const name=def?.command||String(command||"").split(/[\\/]/).pop().replace(/\.(?:exe|cmd|bat)$/i,"")||kind;
+  if(versionCheckFailure(result)==="timeout")return `${def.name} is installed but did not answer \`${name} --version\` within ${versionCheckTimeoutMs(kind)/1000} seconds.`;
+  const said=stripAnsi(String(result.stderr||result.stdout||"")).split(/\r?\n/).map(line=>line.trim()).find(Boolean);
+  return `${def.name} is installed but \`${name} --version\` exited with code ${result.code}${said?": "+said:"."}`.slice(0,500);
+}
 export function parseCursorAboutResult(result={}){
   const stdout=String(result.stdout||"").trim();
   const combined=stripAnsi(stdout+"\n"+String(result.stderr||""));
@@ -557,7 +576,7 @@ export class AgentRuntimeManager{
   async openCodeInstallPlan({environmentId=undefined}={}){
     const instances=this.instances();
     const instance=instances.find(item=>item.kind==="opencode"&&item.id==="opencode-default")||instances.find(item=>item.kind==="opencode")||defaultInstance("opencode");
-    const checked=await this.#run(instance,["--version"],{timeoutMs:6000,environmentId});
+    const checked=await this.#run(instance,["--version"],{timeoutMs:versionCheckTimeoutMs("opencode"),environmentId});
     const installed=checked.ok?runtimeCompatibility("opencode",(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null):null;
     if(installed?.version?.startsWith("2."))throw new Error(`This OpenCode is ${installed.version}. Trebell Code supports OpenCode 2.x but will not replace it with the separate OpenCode 1.x npm package. Update this 2.x install with opencode upgrade or the package manager that installed it.`);
     const local=checked.ok&&!this.processSpawner(instance,environmentId)?this.#openCodeInstall(instance):null;
@@ -652,7 +671,8 @@ export class AgentRuntimeManager{
   }
   #probes=new Map();
   // One answer per profile and environment: callers that ask while it runs share it, and later ones reuse a ready answer for
-  // PROBE_REUSE_MS. An answer that the harness cannot run is not kept (nor one that found no sign-in, keptProbeAnswer), and a
+  // PROBE_REUSE_MS. An answer that the harness cannot run is not kept (nor one that found no sign-in, keptProbeAnswer, nor one
+  // whose version check did not answer, versionCheckFailed), and a
   // caller that joined one that cannot run asks again (or joins a probe started after it asked): a thread start refuses on it, and
   // the person may just have signed in outside Trebell, or the check timed out under load. fresh starts a new one, which the next
   // callers share. Each caller gets its own copy.
@@ -670,7 +690,7 @@ export class AgentRuntimeManager{
     const pending=this.#probeNow(instance,{environmentId,fresh});this.#probes.set(key,{pending,owner});
     try{
       const value=await pending;
-      if(this.#probes.get(key)?.pending===pending){if(keptProbeAnswer(value))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
+      if(this.#probes.get(key)?.pending===pending){if(keptProbeAnswer(value)&&!value.versionCheckFailed)this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
       return structuredClone(value);
     }catch(error){
       if(this.#probes.get(key)?.pending===pending)this.#probes.delete(key);
@@ -713,7 +733,7 @@ export class AgentRuntimeManager{
     const signature=binarySignature(this.#binaryPaths(instance,environmentId));
     const cached=signature?this.#versions.get(instance.id):null;
     if(!fresh&&cached?.signature===signature)return cached.result;
-    const result=await this.#run(instance,["--version"],{timeoutMs:6000,environmentId});
+    const result=await this.#run(instance,["--version"],{timeoutMs:versionCheckTimeoutMs(instance.kind),environmentId});
     if(signature&&result.ok)this.#versions.set(instance.id,{signature,result});
     return result;
   }
@@ -721,17 +741,19 @@ export class AgentRuntimeManager{
     const def=RUNTIMES[instance.kind];
     if(instance.kind==="native")return {id:instance.id,kind:"native",name:def.name,available:true,installed:true,authenticated:null,protocol:"native",managed:true,version:null,binary:null,message:"Built into Trebell Code"};
     if(instance.kind==="codex"){
-      const checked=await this.#versionCheck(instance,{environmentId,fresh});
-      if(!checked.ok){
-        const missing=/ENOENT|not found|not recognized/i.test(String(checked.error||checked.stderr||""));
-        return {id:instance.id,kind:"codex",name:def.name,available:false,installed:false,authenticated:false,protocol:"codex",version:null,binary:this.executable(instance,{environmentId}),message:missing?"Codex CLI was not found. Install it (npm install -g @openai/codex), then sign in with codex login.":(checked.stderr||checked.error||"Codex CLI is unavailable").trim().slice(0,500)};
+      const checked=await this.#versionCheck(instance,{environmentId,fresh}),failure=checked.ok?null:versionCheckFailure(checked),host=Boolean(failure&&this.processSpawner(instance,environmentId));
+      // Here a --version that ran out of time leaves the answer to Codex's account read, which has 20 s of its own and names the
+      // version (T3 asks only that). On a host (SSH, WSL) a failed check is unavailable as before (see below).
+      if(failure&&(host||failure!=="timeout")){
+        const missing=failure==="missing";
+        return {id:instance.id,kind:"codex",name:def.name,available:false,installed:!host&&!missing,authenticated:false,protocol:"codex",version:null,binary:this.executable(instance,{environmentId}),message:missing?"Codex CLI was not found. Install it (npm install -g @openai/codex), then sign in with codex login.":(checked.stderr||checked.error||"Codex CLI is unavailable").trim().slice(0,500)};
       }
-      const version=(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null;
+      const version=failure?null:(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null;
       // Readiness is Codex's own account/read answer (T3 accountProbeStatus), so non-OpenAI model providers need no login.
       const probed=await this.#codexAccount(instance,environmentId);
       if(probed.error)return {id:instance.id,kind:"codex",name:def.name,available:false,installed:true,authenticated:null,protocol:"codex",version,binary:this.executable(instance,{environmentId}),message:("Codex app-server account check failed: "+probed.error).slice(0,500)};
       const status=codexAccountStatus(probed.result.account);
-      return {id:instance.id,kind:"codex",name:def.name,available:status.ready,installed:true,authenticated:status.authenticated,protocol:"codex",version,binary:this.executable(instance,{environmentId}),message:status.message,account:{type:status.authType,label:status.label}};
+      return {id:instance.id,kind:"codex",name:def.name,available:status.ready,installed:true,authenticated:status.authenticated,protocol:"codex",version:version??probed.result.version??null,binary:this.executable(instance,{environmentId}),message:status.message,account:{type:status.authType,label:status.label},...(failure?{versionCheckFailed:true}:{})};
     }
     const command=this.executable(instance);
     if(instance.kind==="antigravity"&&!this.activeEnvironment(environmentId)){
@@ -750,8 +772,13 @@ export class AgentRuntimeManager{
         return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated!==false,installed:true,authenticated,protocol:def.protocol,managed:true,version:String(install.version),binary:command,account:auth.methodId?{authMethod:auth.methodId}:null,message};
       }
     }
-    const versionResult=await this.#versionCheck(instance,{environmentId,fresh});
-    if(!versionResult.ok)return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:Boolean(def.managed),binary:command,message:runtimeProbeFailure(def,versionResult)};
+    const versionResult=await this.#versionCheck(instance,{environmentId,fresh}),failure=versionResult.ok?null:versionCheckFailure(versionResult),host=Boolean(failure&&this.processSpawner(instance,environmentId));
+    // Here a --version that ran out of time (a cold start, a scan) or exited with an error says nothing of whether the harness
+    // runs: it stays installed and may start (T3 refuses no turn on its check), and its own error says why if it then fails
+    // (withProbeAdvice). Its sign-in is not read, and the answer is never kept, so the next check asks again. On a host (SSH, WSL) a
+    // failed check is unavailable as before: ssh's own failures (a host it cannot reach) are no answer of the harness's.
+    if(!host&&(failure==="timeout"||failure==="exit"))return {id:instance.id,kind:instance.kind,name:def.name,available:true,installed:true,authenticated:null,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version:null,account:null,versionCheckFailed:true,message:versionCheckMessage(def,instance.kind,command,versionResult)};
+    if(failure)return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:!host&&failure!=="missing",authenticated:false,protocol:def.protocol,managed:Boolean(def.managed),binary:command,message:runtimeProbeFailure(def,versionResult)};
     let authenticated=true,account=null,message="Ready";
     if(instance.kind==="claude"){
       // `claude auth status` prints {"loggedIn":…} (exiting 1 when signed out). A check that printed nothing, or was cut off before it
