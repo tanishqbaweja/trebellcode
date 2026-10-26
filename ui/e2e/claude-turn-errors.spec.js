@@ -1,0 +1,52 @@
+import { test,expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { routeClaudeApp,startClaudeRelay } from "./claude-relay-harness.js";
+
+// Claude Code turn errors as a person reads them, on the real relay with Claude Code's SDK scripted: a full context says to run
+// /compact or start a new thread instead of sending them to wait for a usage reset, and a quick retry into a usage limit still says
+// when it resets, although Claude Code sends that window only on the reply the limit blocked.
+const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+const CONTEXT_FULL="Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
+const failedResult=(message,terminal_reason,extra={})=>({type:"result",subtype:"success",is_error:true,terminal_reason,result:"",user_message_uuid:message.uuid,total_cost_usd:0,usage:{input_tokens:3,output_tokens:0},...extra});
+
+async function openThread(page,title){
+  const row=page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${title}"]`)});
+  await expect(row).toBeVisible({timeout:15_000});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+}
+async function send(page,text){await page.getByTestId("composer").click();await page.keyboard.type(text,{delay:5});await page.getByTestId("send").click()}
+
+test("a Claude turn that fills its context says to compact, and a quick retry into a usage limit says when the limit resets",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const resetsAt=Math.floor(Date.now()/1000)+90*60;
+  const harness=await startClaudeRelay({turn:async({message,index,emit})=>{
+    if(index===0){emit(failedResult(message,"blocking_limit",{result:"Prompt is too long"}));return}
+    // No rate_limit_event: Claude Code throttles an unchanged one, and only the blocked reply repeats the rejected window.
+    emit({type:"assistant",uuid:"blocked-"+index,parent_tool_use_id:null,error:"rate_limit",api_error_params:{rate_limit_info:{status:"rejected",rateLimitType:"five_hour",resetsAt}},message:{id:"m-blocked-"+index,content:[{type:"text",text:"API Error: Rate limited"}]}});
+    emit(failedResult(message,"api_error",{api_error_status:429,result:"API Error: Rate limited"}));
+  }});
+  try{
+    harness.seedThread("Repository summary",{permissionProfile:"supervised"});
+    await routeClaudeApp(page,harness,{permissionMode:"supervised"});
+    await page.goto("/");await openThread(page,"Repository summary");
+    const errors=page.locator(".agent-block .tool-event.kind-error");
+
+    await send(page,"Summarize every file in the repository");
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:15_000});
+    // Soft, so that the old code also shows what the quick retry says.
+    await expect.soft(errors.filter({hasText:CONTEXT_FULL}),"a full context says to compact").toBeVisible();
+    await expect.soft(page.getByText("a usage limit blocked the request"),"a full context is not a usage limit").toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:`${auditDir}claude-context-full-error-dark-1280x800.png`});
+
+    await send(page,"Try again");
+    const notice=page.getByText(/^Claude usage limit reached\. This turn is paused until the 5-hour limit resets in 1h (?:29|30)m\.$/);
+    await expect(notice).toBeVisible({timeout:15_000});
+    await expect(errors.filter({hasText:"Claude API rate limit reached. Try again later."})).toBeVisible();
+    for(const mode of ["dark","light"]){
+      if(mode==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      await notice.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:`${auditDir}claude-usage-limit-quick-retry-${mode}-1280x800.png`});
+    }
+  }finally{await harness.close()}
+});

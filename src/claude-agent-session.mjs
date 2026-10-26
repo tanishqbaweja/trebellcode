@@ -5,6 +5,7 @@ import { fileUriPath } from "./file-uri.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
+import { redactSecretText } from "./secret-redactor.mjs";
 import { SessionRefusalError } from "./session-refusal.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
@@ -17,6 +18,7 @@ export const CLAUDE_MAX_IDLE_PIN_MS=4*60*60_000;
 export const CLAUDE_PLAN_CAPTURED="The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.";
 export const CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE="Claude is still running background agents or commands, and this model or setting change would end them. Wait for them to finish (or ask Claude to stop them), or keep the current model and settings, then send the message again.";
 export const CLAUDE_USAGE_LIMIT_HINT="Claude usage limit reached. Send the message again once the limit resets.";
+export const CLAUDE_CONTEXT_FULL="Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
 const CLAUDE_EFFORTS=new Set(["low","medium","high","xhigh","max"]);
 const CLAUDE_IMAGE_TYPES=new Set(["image/gif","image/jpeg","image/png","image/webp"]);
 const CLAUDE_INTERRUPT_TIMEOUT_MS=10_000;
@@ -189,6 +191,27 @@ export function describeClaudeUsageLimit(info={},nowMs=Date.now()){
   const wait=waitMs>0&&waitMs<=30*24*60*60_000?formatWait(waitMs):null;
   return `Claude usage limit reached. This turn is paused until the ${label?label+" ":""}limit resets${wait?` in ${wait}`:""}.`;
 }
+// A turn's usage-limit error, with the wait when Claude Code said when each rejected window resets (the latest of them, as T3 Code's
+// resetAt): limits are the rejected windows' rate_limit_info.
+export function claudeUsageLimitHint(limits=[],nowMs=Date.now()){
+  const resets=limits.map(info=>Number(info?.resetsAt)),waitMs=limits.length&&resets.every(value=>Number.isFinite(value)&&value>0)?Math.max(...resets)*1000-nowMs:NaN;
+  if(!(waitMs>0&&waitMs<=30*24*60*60_000))return CLAUDE_USAGE_LIMIT_HINT;
+  const label=limits.length===1?CLAUDE_USAGE_LIMIT_WINDOWS[limits[0]?.rateLimitType]||null:null;
+  return `Claude usage limit reached. Send the message again once the ${label?label+" ":""}limit resets in ${formatWait(waitMs)}.`;
+}
+// The usage window a message says Claude Code rejected, or null: a rate_limit_event, or the window a reply the limit blocked repeats
+// (api_error_params), which Claude Code sends each time while it throttles an unchanged event (T3 Code's 9957790c9). An allowed
+// overage takes over a rejected window, so it rejects nothing.
+export function claudeRejectedLimit(message){
+  const info=message?.type==="rate_limit_event"?message.rate_limit_info:message?.type==="assistant"&&message.error==="rate_limit"?message.api_error_params?.rate_limit_info:null;
+  if(!info||typeof info!=="object"||info.status!=="rejected")return null;
+  return info.overageStatus==="allowed"||info.overageStatus==="allowed_warning"||info.isUsingOverage===true||info.overageInUse===true?null:info;
+}
+// A turn Claude Code refused for a usage limit (a rejected window, or the API's rate_limit error) reads as a usage limit only while its
+// result agrees: a 429 or no status, and an API error, a blocking limit or no reason (T3 Code's usageLimited).
+export function claudeUsageLimited(result,limited){
+  return Boolean(limited)&&(result?.subtype!=="success"||result?.api_error_status==null||result?.api_error_status===429)&&(result?.terminal_reason==null||result.terminal_reason==="api_error"||result.terminal_reason==="blocking_limit");
+}
 
 export function claudeSignedOutMessage(configDir=""){
   const home=String(configDir||"").trim();
@@ -203,9 +226,11 @@ function terminalResultError(reason,failureHint){
     case "structured_output_retry_exhausted":return "Claude could not produce the requested structured output.";
     case "tool_deferred_unavailable":return "Claude could not resume a deferred tool call: the tool is no longer available.";
     case "turn_setup_failed":return "Claude could not start the turn.";
-    case "blocking_limit":return "Claude stopped: a usage limit blocked the request.";
+    // Claude Code also ends a turn on blocking_limit once the context window is full: only rate-limit evidence (the hint) makes it a
+    // usage limit (T3 Code's fb9af9e57).
+    case "blocking_limit":return failureHint||CLAUDE_CONTEXT_FULL;
     case "rapid_refill_breaker":return "Claude stopped: the context refilled too quickly after compaction.";
-    case "prompt_too_long":return "Claude stopped: the prompt exceeds the model's context window.";
+    case "prompt_too_long":return CLAUDE_CONTEXT_FULL;
     case "image_error":return "Claude stopped: an image in the conversation could not be processed.";
     case "model_error":return "Claude stopped: the model returned an error.";
     default:return null;
@@ -225,9 +250,12 @@ export function claudeResultFailure(result,{failureHint=null}={}){
   if(!result)return null;
   const success=result.subtype==="success";
   const listed=success&&!result.is_error?null:userFacingErrors(result)[0]||null;
+  // The API's own words for the request it refused ("API Error: 400 …"), secrets redacted and cut to 500 characters, when nothing
+  // names the failure better (T3 Code's 55a8fe9a9).
+  const apiError=success&&result.terminal_reason==="api_error"&&String(result.result||"").trim().startsWith("API Error:")?redactSecretText(String(result.result),{trim:true}).slice(0,500):null;
   const structured=success&&result.api_error_status===529?"Claude API is overloaded (529). Try again shortly."
     :success&&result.api_error_status===429?"Claude API rate limit reached. Try again later."
-    :terminalResultError(result.terminal_reason,failureHint);
+    :terminalResultError(result.terminal_reason,failureHint||apiError);
   if(!success)return listed||structured||`Claude Code turn failed: ${result.subtype||"unknown error"}`;
   if(!result.is_error&&!structured)return null;
   return listed||structured||failureHint||String(result.result||"").trim()||"Claude Code turn failed.";
@@ -512,7 +540,7 @@ export class ClaudeAgentSession{
     return {
       id:randomUUID(),promptUuid,uuids:new Set(promptUuid?[promptUuid]:[]),live,wake,echoed:!promptUuid,cursor:null,steered:false,steers:[],cancelRequested:false,
       result:null,queryError:null,cost:0,emittedText:false,separator:false,stream:null,textBlocks:new Map(),thoughtMessages:new Set(),
-      authFailure:false,rateLimited:false,apiErrorText:null,rejectedLimits:new Set(),announcedLimits:new Set(),settled:false,promise,resolve,reject,
+      authFailure:false,rateLimited:false,apiErrorText:null,rejectedLimits:new Map(),announcedLimits:new Set(),settled:false,promise,resolve,reject,
     };
   }
   // Output Claude produces on its own while no prompt runs (a background task or agent finished): a turn of its own.
@@ -554,8 +582,8 @@ export class ClaudeAgentSession{
       const message=String(turn.queryError?.message||"").replace(/^Claude Code returned an error result:\s*/,"");
       return turn.reject(Object.assign(new Error(message||"Claude Code ended without a result message"),failedIds));
     }
-    const usageLimited=!turn.authFailure&&(turn.rejectedLimits.size>0||turn.rateLimited)&&(result.subtype!=="success"||result.api_error_status==null||result.api_error_status===429)&&(result.terminal_reason==null||result.terminal_reason==="api_error"||result.terminal_reason==="blocking_limit");
-    const failureHint=turn.authFailure?claudeSignedOutMessage(this.helperSharesRuntime?"":this.env.CLAUDE_CONFIG_DIR):usageLimited?CLAUDE_USAGE_LIMIT_HINT:turn.apiErrorText;
+    const usageLimited=!turn.authFailure&&claudeUsageLimited(result,turn.rejectedLimits.size>0||turn.rateLimited);
+    const failureHint=turn.authFailure?claudeSignedOutMessage(this.helperSharesRuntime?"":this.env.CLAUDE_CONFIG_DIR):usageLimited?claudeUsageLimitHint([...turn.rejectedLimits.values()]):turn.apiErrorText;
     const failure=claudeResultFailure(result,{failureHint});
     if(failure){
       // A process that failed to authenticate keeps its stale credentials: the next prompt starts a fresh one.
@@ -638,6 +666,8 @@ export class ClaudeAgentSession{
       if(message.error){
         turn.rateLimited=message.error==="rate_limit";if(message.error==="authentication_failed")turn.authFailure=true;
         turn.apiErrorText=claudeExplainedApiError(message);
+        // A reply the limit blocked repeats the rejected window, so a quick retry still says when it resets.
+        const blocked=claudeRejectedLimit(message);if(blocked)this.#rateLimit({rate_limit_info:blocked});
         return;
       }
       turn.rateLimited=false;turn.apiErrorText=null;
@@ -712,7 +742,7 @@ export class ClaudeAgentSession{
     const overage=info.overageStatus==="allowed"||info.overageStatus==="allowed_warning"||info.isUsingOverage===true||info.overageInUse===true;
     const limitType=info.rateLimitType||"unknown";
     if(info.status==="rejected"&&!overage){
-      turn.rejectedLimits.add(limitType);
+      turn.rejectedLimits.set(limitType,info);
       const key=`${limitType}:${info.resetsAt??"unknown"}`;
       if(turn.announcedLimits.has(key))return;
       turn.announcedLimits.add(key);

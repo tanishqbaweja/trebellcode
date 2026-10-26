@@ -5,7 +5,7 @@ import { AcpClient } from "./acp-client.mjs";
 import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "./acp-session-config.mjs";
 import { withProbeAdvice } from "./agent-runtime-manager.mjs";
-import { claudeExplainedApiError, claudeResultFailure, claudeSignedOutMessage } from "./claude-agent-session.mjs";
+import { claudeExplainedApiError, claudeRejectedLimit, claudeResultFailure, claudeSignedOutMessage, claudeUsageLimitHint, claudeUsageLimited } from "./claude-agent-session.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexApprovalResponse, isCodexApprovalRequest } from "./codex-policy-adapter.mjs";
 import { checkedOpenCodeProviders, connectedOpenCodeModels, openCodeModelPreferences, startOpenCodeServer } from "./opencode-agent-session.mjs";
@@ -153,16 +153,18 @@ async function claudeText(ctx){
     abortController,...(spawnProcess?{spawnClaudeCodeProcess:spawnProcess}:{}),
   }});
   ctx.defer(()=>{abortController.abort();try{runtime?.close?.()}catch{}});
-  let result=null,usedModel=model,streamed="",failureHint=null;
+  let result=null,usedModel=model,streamed="",signedOut=null,explained=null,rateLimited=false;const limits=new Map();
   for await(const message of runtime){
     if(message?.type==="system"&&message.subtype==="init"){usedModel=message.model||usedModel;continue}
-    // An assistant message that carries an error is the API error the result reports, never the reply; a sign-in failure or
-    // an error Claude does not retry (an unknown model) names the failure, as in a Claude thread.
-    if(message?.type==="assistant"){if(message.error){failureHint=message.error==="authentication_failed"?claudeSignedOutMessage(spawnProcess||String(env.CLAUDE_CONFIG_DIR||"")!==String(process.env.CLAUDE_CONFIG_DIR||"")?env.CLAUDE_CONFIG_DIR:""):claudeExplainedApiError(message);continue}for(const block of message.message?.content||[])if(block?.type==="text"&&block.text)streamed+=block.text;continue}
+    const rejected=claudeRejectedLimit(message);if(rejected)limits.set(rejected.rateLimitType||"unknown",rejected);
+    // An assistant message that carries an error is the API error the result reports, never the reply; a sign-in failure, a usage
+    // limit or an error Claude does not retry (an unknown model) names the failure, as in a Claude thread.
+    if(message?.type==="assistant"){if(message.error){if(message.error==="authentication_failed")signedOut=claudeSignedOutMessage(spawnProcess||String(env.CLAUDE_CONFIG_DIR||"")!==String(process.env.CLAUDE_CONFIG_DIR||"")?env.CLAUDE_CONFIG_DIR:"");rateLimited=message.error==="rate_limit";explained=claudeExplainedApiError(message);continue}for(const block of message.message?.content||[])if(block?.type==="text"&&block.text)streamed+=block.text;continue}
     if(message?.type==="result"){result=message;break}
   }
   if(!result)throw new Error("Claude Code ended without a result");
   // The user-facing failure, as a Claude thread turn reports it (CLI diagnostics are never the message).
+  const failureHint=signedOut||(claudeUsageLimited(result,rateLimited||limits.size>0)?claudeUsageLimitHint([...limits.values()]):explained);
   const failure=claudeResultFailure(result,{failureHint});if(failure)throw new Error(failure);
   return {text:String(result.result||streamed||""),model:usedModel||null};
 }

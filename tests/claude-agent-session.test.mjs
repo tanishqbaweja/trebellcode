@@ -302,7 +302,7 @@ test("Claude errors read like T3 Code's: no SDK wrapper, no diagnostics, no API 
   assert.equal(claudeResultFailure({subtype:"error_during_execution",errors:["[ede_diagnostic] result_type=user","Real failure"]}),"Real failure");
   assert.equal(claudeResultFailure({subtype:"success",is_error:false,result:"fine"}),null);
   assert.equal(claudeResultFailure({subtype:"success",is_error:true,api_error_status:529,result:"overloaded"}),"Claude API is overloaded (529). Try again shortly.");
-  assert.equal(claudeResultFailure({subtype:"success",is_error:true,terminal_reason:"blocking_limit",result:""}),"Claude stopped: a usage limit blocked the request.");
+  assert.equal(claudeResultFailure({subtype:"success",is_error:true,terminal_reason:"blocking_limit",result:""}),"Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.");
   const apiError="There's an issue with the selected model (claude-nonexistent-9). It may not exist or you may not have access to it.";
   const {sdk}=fakeClaude({turn:({message,emit})=>{
     emit({type:"assistant",uuid:"err-1",parent_tool_use_id:null,error:"model_not_found",message:{id:"m",content:[{type:"text",text:apiError}]}});
@@ -319,7 +319,7 @@ test("Claude errors read like T3 Code's: no SDK wrapper, no diagnostics, no API 
     emit({type:"result",subtype:"success",is_error:true,terminal_reason:"api_error",api_error_status:500,result:"API Error: 500",user_message_uuid:message.uuid});
   }});
   const gaveUp=session(retried);await gaveUp.start();
-  await assert.rejects(()=>gaveUp.prompt([{type:"text",text:"x"}]),error=>error.message==="Claude gave up after repeated API errors.");
+  await assert.rejects(()=>gaveUp.prompt([{type:"text",text:"x"}]),error=>error.message==="API Error: 500","the API's own words, as T3 Code keeps them");
   const {sdk:crashing}=fakeClaude({turn:()=>{throw new Error("Claude Code returned an error result: Invalid API key")}});
   const crashed=session(crashing);await crashed.start();
   await assert.rejects(()=>crashed.prompt([{type:"text",text:"x"}]),error=>error.message==="Invalid API key");
