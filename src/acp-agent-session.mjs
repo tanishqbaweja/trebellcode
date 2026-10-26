@@ -21,6 +21,8 @@ import { SessionRefusalError } from "./session-refusal.mjs";
 const CANCELLED=Symbol("cancelled");
 // Updates that describe the session rather than a turn; they pass while a session starts or loads.
 const METADATA_UPDATES=new Set(["available_commands_update","config_option_update","current_mode_update","session_info_update"]);
+// Turn updates after which Cursor's next text is a new reply message.
+const CURSOR_MESSAGE_BREAKS=new Set(["tool_call","tool_call_update","agent_thought_chunk","plan"]);
 // Grok and Antigravity resume without replaying history; the rest load (T3 resumeMethod).
 const RESUME_FIRST=new Set(["grok","antigravity"]);
 // The model ids Trebell used before real model lists; they mean "the harness's current model".
@@ -631,11 +633,20 @@ export class AcpAgentSession{
     // Grok answers a finished background task in a turn of its own, tagged task-completed-*.
     const promptId=params?._meta?.promptId;
     if(this.runtime==="grok"&&!this.activePrompt&&typeof promptId==="string"&&promptId.startsWith(GROK_TASK_PROMPT_PREFIX)&&this.wake?.promptId!==promptId){this.#finishWake("end_turn");this.#beginWake(promptId)}
-    if(this.activePrompt?.transport&&type==="agent_message_chunk"&&update.content?.type==="text")this.activePrompt.transport.push(update.content.text);
+    if(this.activePrompt?.transport)this.#watchCursorMessage(this.activePrompt,type,update);
     // Any update but session metadata while a prompt runs is the harness at work on it, so the prompt is in its conversation. It is
     // told before the update goes on, so the delivery is recorded ahead of the turn's first step.
     if(this.activePrompt&&!METADATA_UPDATES.has(type))this.#promptTaken(this.activePrompt);
     this.onUpdate?.(this.#decorate(params,update,type));
+  }
+
+  // Each Cursor reply message is read on its own for a lost-connection dump (T3 656f3f409): a tool call, a thought or a plan ends
+  // the message before it, so the next text starts a new one, and the end of the prompt reads only the last. Session metadata ends none.
+  #watchCursorMessage(active,type,update){
+    if(CURSOR_MESSAGE_BREAKS.has(type)){active.messageEnded=true;return}
+    if(type!=="agent_message_chunk"||update.content?.type!=="text")return;
+    if(active.messageEnded){active.transport=new CursorTransportFailure();active.messageEnded=false}
+    active.transport.push(update.content.text);
   }
 
   #decorate(params,update,type){
