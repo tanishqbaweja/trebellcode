@@ -61,25 +61,35 @@ function codexText(value){
   }
   return "";
 }
+// A session Codex ran for itself: a spawned child agent, a review, a compaction or a guardian check ({subagent:...}; {subAgent:...}).
+function codexSubagentSource(source){
+  return Boolean(source)&&typeof source==="object"&&!Array.isArray(source)&&(Object.hasOwn(source,"subagent")||Object.hasOwn(source,"subAgent"));
+}
+// The setup text Codex records as user text ahead of a request (T3 Code's CODEX_TITLE_PREAMBLE): its context and instruction blocks,
+// the AGENTS.md heading and the IDE's request heading. A title is taken after it; the session itself is imported as it is.
+const CODEX_TITLE_PREAMBLE=/^(?:\s*(?:<(recommended_plugins|environment_context|user_instructions|INSTRUCTIONS|in-app-browser-context)(?:\s[^>]*)?>[\s\S]*?<\/\1>|# AGENTS\.md instructions\b[^\n]*|## My request for Codex:))+/;
 export function parseCodexHistoryPrefix(text,{path="",updatedAt=0,createdAt=0}={}){
-  let sessionId=null,cwd=null,model=null,firstPrompt=null,timestamp=null;
+  let sessionId=null,cwd=null,model=null,request=null,timestamp=null;
   for(const line of String(text||"").split(/\r?\n/)){
     if(!line.trim())continue;
     let record;try{record=JSON.parse(line)}catch{continue}
     if(!timestamp&&record.timestamp)timestamp=Date.parse(record.timestamp)||null;
     const payload=record.payload||{};
     if(record.type==="session_meta"){
+      // Left out before it counts toward the scan's sessions, whatever later records say.
+      if(codexSubagentSource(payload.source))return null;
       sessionId=String(payload.id||payload.session_id||sessionId||"").trim()||sessionId;
       cwd=String(payload.cwd||cwd||"").trim()||cwd;
     }else if(record.type==="turn_context"){
       model=String(payload.model||model||"").trim()||model;
-    }else if(record.type==="event_msg"&&payload.type==="user_message"&&!firstPrompt){
-      firstPrompt=codexText(payload.message||payload.content);
+    }else if(record.type==="event_msg"&&payload.type==="user_message"&&!request){
+      // A message that is only setup text names nothing; the next one may.
+      request=codexText(payload.message||payload.content).replace(CODEX_TITLE_PREAMBLE,"").trim()||null;
     }
-    if(sessionId&&cwd&&firstPrompt&&model)break;
+    if(sessionId&&cwd&&request&&model)break;
   }
   if(!sessionId||!cwd)return null;
-  const title=(firstPrompt||"Imported Codex session").replace(/\s+/g," ").trim().slice(0,160);
+  const title=(request||"Imported Codex session").replace(/\s+/g," ").trim().slice(0,160);
   return {
     id:stableId("codex",path||sessionId),
     source:"codex",
