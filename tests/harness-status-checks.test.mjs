@@ -37,12 +37,13 @@ function memoryState(settings){
 }
 // A profile on this machine whose CLI answers through answer(args, options) (the manager's run() stubbed), its binary a file of the
 // test's own, as a real binary's version check is kept until it changes. calls: each launch with its timeout and environment.
-async function localHarness(t,kind,answer,{env={},instance={}}={}){
+// now: the manager's clock (Date.now unless given).
+async function localHarness(t,kind,answer,{env={},instance={},now=undefined}={}){
   const home=await tempHome(t,kind),binary=join(home,{cursor:"cursor-agent",antigravity:"agy"}[kind]||kind),calls=[];
   await writeFile(binary,kind+" build 1");
   const state=memoryState({agentRuntime:kind,agentRuntimeInstances:[{id:kind+"-default",kind,binaryPath:binary,environment:{},...instance}]});
   const runFn=async(_command,args,options)=>{calls.push({args:args.join(" "),timeoutMs:options.timeoutMs,env:options.env});return answer(args,options)};
-  const manager=new AgentRuntimeManager({state,platform:"linux",env:{PATH:"/usr/bin",HOME:home,TREBELL_HOME:join(home,"trebell"),...env},runFn});
+  const manager=new AgentRuntimeManager({state,platform:"linux",env:{PATH:"/usr/bin",HOME:home,TREBELL_HOME:join(home,"trebell"),...env},runFn,...(now?{now}:{})});
   return {manager,calls,home,state,instance:manager.instances().find(item=>item.id===kind+"-default")};
 }
 // A profile on an SSH host whose commands answer through executeArgv(command, args, timeoutMs); spawnArgv starts its long-lived
@@ -71,17 +72,21 @@ test("Claude Code gets 20 s to answer --version: one that answers after 19 s rea
 // in the test after these.
 const BUDGETS=[["claude","Claude Code","claude",20],["cursor","Cursor","cursor-agent",6],["grok","Grok Build","grok",6],["antigravity","Antigravity","agy",6]];
 for(const [kind,name,command,seconds] of BUDGETS){
-  test(`${name} reads installed and may start when its --version never answers, says how long it waited, and is asked again next time`,async t=>{
-    const fx=await localHarness(t,kind,args=>args[0]==="--version"?TIMED_OUT:answered("unexpected"));
+  test(`${name} reads installed and may start when its --version never answers, says how long it waited, and costs that wait once a minute`,async t=>{
+    let clock=1_000_000;
+    const fx=await localHarness(t,kind,args=>args[0]==="--version"?TIMED_OUT:answered("unexpected"),{now:()=>clock});
     const status=await fx.manager.probe(kind);
     assert.deepEqual([status.installed,status.available,status.authenticated,status.version],[true,true,null,null]);
     assert.equal(status.message,`${name} is installed but did not answer \`${command} --version\` within ${seconds} seconds.`);
     assert.deepEqual(fx.calls.map(call=>[call.args,call.timeoutMs]),[["--version",seconds*1000]],"its sign-in is not read");
-    // Settings' next poll, a harness switch and a chat start do not reuse it, and a version check that answers is kept as before.
-    await fx.manager.probe(kind);
-    assert.equal(fx.calls.length,2,"the answer was not kept");
+    // The page load, Settings' 5-s poll and a chat start, which wait for the check, reuse its answer for a minute, as a ready one's.
+    clock+=59_000;
+    assert.equal((await fx.manager.probe(kind)).message,status.message);
+    assert.equal(fx.calls.length,1,"the next poll, page load or chat start did not wait for another check");
     await fx.manager.setActive({runtime:kind});
-    assert.equal(fx.calls.length,3,"a switch to it is not refused");
+    assert.equal(fx.calls.length,2,"a switch to it asks again, and is not refused");
+    clock+=60_001;await fx.manager.probe(kind);
+    assert.equal(fx.calls.length,3,"after a minute the check asks again");
   });
 }
 
@@ -117,7 +122,9 @@ test("a harness whose --version exits with an error reads installed and may star
   assert.equal(status.message,"Cursor is installed but `cursor-agent --version` exited with code 1: Error: Cannot find module 'index.js'");
   assert.deepEqual(fx.calls.map(call=>call.args),["--version"]);
   await fx.manager.probe("cursor");
-  assert.equal(fx.calls.length,2,"the answer was not kept");
+  assert.equal(fx.calls.length,1,"the answer is kept for a minute, as a ready one is");
+  await fx.manager.probe("cursor",{fresh:true});
+  assert.equal(fx.calls.length,2,"Settings' Refresh asks again");
 });
 
 test("only a command that is not there reads not installed; one that cannot start is installed but not ready",async t=>{
@@ -160,7 +167,7 @@ test("on a host a failed version check reads unavailable as before, with the bud
   answer={exitCode:127,stdout:"",stderr:"env: 'codex': No such file or directory\n"};
   const codex=await fx.manager.probe("codex");
   assert.deepEqual([codex.installed,codex.available],[false,false]);assert.match(codex.message,/^Codex CLI was not found\./);
-  assert.deepEqual(fx.asked.map(item=>[item.line,item.timeoutMs]),[["claude --version",20_000],["cursor-agent --version",6000],["codex --version",20_000]]);
+  assert.deepEqual(fx.asked.map(item=>[item.line,item.timeoutMs]),[["claude --version",20_000],["cursor-agent --version",6000],["codex --version",6000]]);
 });
 
 // A `codex app-server` as a signed-in Codex runs one, standing in for Codex here: a node script behind a launcher of the test's own,
@@ -178,7 +185,7 @@ readline.createInterface({input:process.stdin}).on("line",line=>{const m=JSON.pa
   if(!windows)await chmod(launcher,0o755);
   return launcher;
 }
-test("Codex gets 20 s to answer --version, and one that runs out of time leaves the answer to its account read",async t=>{
+test("Codex gets 6 s to answer --version, as one that runs out of time leaves the answer to its account read, which has 20 s",async t=>{
   const home=await tempHome(t,"codex"),binaryPath=await codexAppServerLauncher(home),calls=[];
   let version=()=>TIMED_OUT;
   const runFn=async(_command,args,{timeoutMs})=>{calls.push([args.join(" "),timeoutMs]);return version()};
@@ -186,9 +193,9 @@ test("Codex gets 20 s to answer --version, and one that runs out of time leaves 
   const manager=new AgentRuntimeManager({state:memoryState({agentRuntimeInstances:[{id:"codex-default",kind:"codex",binaryPath}]}),env,runFn});
   const status=await manager.probe("codex");
   assert.deepEqual([status.installed,status.available,status.authenticated,status.version,status.message],[true,true,true,"0.162.0","Signed in with ChatGPT Plus"]);
-  assert.deepEqual(calls,[["--version",20_000]]);
+  assert.deepEqual(calls,[["--version",6000]],"a hung --version adds 6 s before the account read, not 20");
   await manager.probe("codex");
-  assert.equal(calls.length,2,"the answer was not kept: the next poll asks for the version again");
+  assert.equal(calls.length,1,"the answer is kept for a minute: the next poll waits for no check");
   // A Codex whose --version exits with an error is there, but not ready; one that is not there is not installed.
   version=()=>exited(1,"error: unexpected argument found\n");
   const failed=await manager.probe("codex",{fresh:true});
@@ -366,15 +373,16 @@ function fakeClaudeSdk(){
   return {query,getSessionInfo:async id=>({sessionId:id}),forkSession:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
 }
 test("a chat starts on a Claude Code whose --version did not answer in time, and its sign-in is read once it answers",async t=>{
-  let slow=true;
-  const fx=await localHarness(t,"claude",args=>args[0]==="--version"?(slow?TIMED_OUT:answered("2.1.310 (Claude Code)\n")):answered(JSON.stringify({loggedIn:true,authMethod:"claude.ai"})));
+  let slow=true,clock=1_000_000;
+  const fx=await localHarness(t,"claude",args=>args[0]==="--version"?(slow?TIMED_OUT:answered("2.1.310 (Claude Code)\n")):answered(JSON.stringify({loggedIn:true,authMethod:"claude.ai"})),{now:()=>clock});
   const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(fx.home,"trebell-home")});
   const relay=await startRelay(t,{runtimeManager:fx.manager,threadStore,state:fx.state,claudeSdk:fakeClaudeSdk()});
   const {thread}=await relay.rpc("thread/start",{cwd:fx.home});
   const turn=await relay.turn(thread.id);
   assert.equal(turn.status,"completed",JSON.stringify(turn.error||null));
-  // Once the CLI answers again, the next check reads its version and its sign-in, and keeps that answer.
-  slow=false;
+  // Once the CLI answers again, the next check (a minute on, or Settings' Refresh) reads its version and its sign-in, and keeps that
+  // answer.
+  slow=false;clock+=60_001;
   const status=await fx.manager.probe("claude");
   assert.deepEqual([status.available,status.authenticated,status.version],[true,true,"2.1.310 (Claude Code)"]);
   const asked=fx.calls.length;await fx.manager.probe("claude");

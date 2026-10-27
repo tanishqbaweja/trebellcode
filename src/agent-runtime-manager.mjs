@@ -119,9 +119,10 @@ function runtimeProbeFailure(def,result={}){
   const first=raw.split(/\r?\n/).map(line=>line.trim()).find(Boolean);
   return (first||`${def?.name||"Runtime"} executable was not found`).slice(0,500);
 }
-// How long a harness's --version may take (T3's budgets): Claude Code's native CLI and Codex can take longer to start on a cold
-// Windows start or while Defender scans them, and an OpenCode behind its npm shim several seconds.
-const VERSION_CHECK_TIMEOUT_MS=Object.freeze({claude:20_000,codex:20_000,opencode:10_000});
+// How long a harness's --version may take (T3's budgets): Claude Code's native CLI can take longer to start on a cold Windows start
+// or while Defender scans it, and an OpenCode behind its npm shim several seconds. Codex keeps 6 s: one that runs out of time leaves
+// the answer to its account read, which has 20 s of its own (T3's one Codex check), so a longer --version would only add waiting.
+const VERSION_CHECK_TIMEOUT_MS=Object.freeze({claude:20_000,opencode:10_000});
 const versionCheckTimeoutMs=kind=>VERSION_CHECK_TIMEOUT_MS[kind]||6000;
 // Why a --version did not answer: "missing" only when its command is not there (the spawn's own ENOENT, cmd.exe's "is not
 // recognized" line, or the 127 a shell or env exits with then), never for an ENOENT or "command not found" that a CLI which ran
@@ -696,8 +697,9 @@ export class AgentRuntimeManager{
   }
   #probes=new Map();
   // One answer per profile and environment: callers that ask while it runs share it, and later ones reuse a ready answer for
-  // PROBE_REUSE_MS. An answer that the harness cannot run is not kept (nor one that found no sign-in, keptProbeAnswer, nor one
-  // whose version check did not answer, versionCheckFailed), and a
+  // PROBE_REUSE_MS. An answer that the harness cannot run is not kept (nor one that found no sign-in, keptProbeAnswer), but one
+  // that may start although its version check did not answer (versionCheckFailed) is: the page load, Settings' poll and every chat
+  // start wait for the check, so a hung CLI costs its wait once a minute, not on each of them. And a
   // caller that joined one that cannot run asks again (or joins a probe started after it asked): a thread start refuses on it, and
   // the person may just have signed in outside Trebell, or the check timed out under load. fresh starts a new one, which the next
   // callers share. Each caller gets its own copy.
@@ -715,7 +717,7 @@ export class AgentRuntimeManager{
     const pending=this.#probeNow(instance,{environmentId,fresh});this.#probes.set(key,{pending,owner});
     try{
       const value=await pending;
-      if(this.#probes.get(key)?.pending===pending){if(keptProbeAnswer(value)&&!value.versionCheckFailed)this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
+      if(this.#probes.get(key)?.pending===pending){if(value?.available&&(value.versionCheckFailed||keptProbeAnswer(value)))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
       return structuredClone(value);
     }catch(error){
       if(this.#probes.get(key)?.pending===pending)this.#probes.delete(key);
@@ -800,7 +802,7 @@ export class AgentRuntimeManager{
     const versionResult=await this.#versionCheck(instance,{environmentId,fresh}),failure=versionResult.ok?null:versionCheckFailure(versionResult),host=Boolean(failure&&this.processSpawner(instance,environmentId));
     // Here a --version that ran out of time (a cold start, a scan) or exited with an error says nothing of whether the harness
     // runs: it stays installed and may start (T3 refuses no turn on its check), and its own error says why if it then fails
-    // (withProbeAdvice). Its sign-in is not read, and the answer is never kept, so the next check asks again. On a host (SSH, WSL) a
+    // (withProbeAdvice). Its sign-in is not read, and the answer is kept for a minute (probe). On a host (SSH, WSL) a
     // failed check is unavailable as before: ssh's own failures (a host it cannot reach) are no answer of the harness's. OpenCode
     // is not ready without its version: its 1.x and 2.x servers each speak only their own client, which the relay, Git text and its
     // model list choose by that version, so it is asked again at the next check.
