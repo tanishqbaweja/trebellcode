@@ -35,14 +35,23 @@ test("a status check waits for an OpenCode server that takes 25 seconds to start
   assert.deepEqual([status.value.available,status.value.authenticated,status.value.message],[true,true,"1 upstream provider connected through OpenCode."]);
 });
 
-test("a status check still ends at 20 seconds when OpenCode's server is up but its answer never comes, or when the read starts no server",async t=>{
+test("a server that came up after 19 seconds still gets 20 seconds for OpenCode's answer",async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
-  for(const reader of [async({onServerStart})=>{onServerStart?.(later(1_000));return new Promise(()=>{})},async()=>new Promise(()=>{})]){
+  const manager=await openCodeManager(t,async({onServerStart})=>{const starting=later(19_000);onServerStart?.(starting);await starting;await later(10_000);return structuredClone(catalog)});
+  const status=settle(manager.probe("opencode",{fresh:true}));await flush(100);
+  for(let second=0;second<30&&!status.done;second++){t.mock.timers.tick(1_000);await flush()}
+  assert.equal(status.done,true);assert.equal(status.error,undefined,status.error?.message);
+  assert.equal(status.value.authenticated,true,status.value.message);
+});
+
+test("a status check still ends 20 seconds after OpenCode's server is up when its answer never comes, and at 20 seconds when the read starts no server",async t=>{
+  t.mock.timers.enable({apis:["setTimeout"]});
+  for(const [reader,ends] of [[async({onServerStart})=>{onServerStart?.(later(1_000));return new Promise(()=>{})},21],[async()=>new Promise(()=>{}),20]]){
     const manager=await openCodeManager(t,reader),status=settle(manager.probe("opencode",{fresh:true}));await flush(100);
-    for(let second=0;second<19;second++){t.mock.timers.tick(1_000);await flush()}
-    assert.equal(status.done,false);
+    for(let second=0;second<ends-1;second++){t.mock.timers.tick(1_000);await flush()}
+    assert.equal(status.done,false,`still waiting at ${ends-1} s`);
     t.mock.timers.tick(1_000);await flush();
-    assert.equal(status.done,true);
+    assert.equal(status.done,true,`ended at ${ends} s`);
     assert.deepEqual([status.value.available,status.value.message],[false,"OpenCode could not list its providers: OpenCode did not answer within 20 seconds."]);
   }
 });
