@@ -71,7 +71,12 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // in any reply (R11A), and the first bundle's new name in the import line of the lazy chunks that load it), which took them 0.1 KB
 // gzip over it: its headroom stays 1.0 / 0.0 KB, as on main before round 11. The first bundle grew 619.8 / 198.6 to 622.0 / 199.4 KB
 // with the composer's @-menu fixes (R11C), Cite's place in Tab's order (R11A) and the composer held under the header (R11B).
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:766.1,gzipKB:252.5}};
+// Then by what the first wave of the T3 Code port adds to the lazy chunks, 0.5 / 0.3 KB (Settings' harness and profile rows saying
+// what a version check that did not answer, or a custom API endpoint, found, and the runtime profile editor's note on the proxy and
+// toolchain variables (T3I), and Antigravity's questions answered only by their choices (T3A); Muse Code's name in Settings, Usage
+// and Environments (T3M) about evens out), which took them 0.2 KB gzip over it: its headroom stays 1.0 / 0.1 KB, as on main before
+// the port. The first bundle grew 623.0 / 199.7 to 623.3 / 199.8 KB with Muse Code in App's harness lists (T3M).
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:766.6,gzipKB:252.8}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
