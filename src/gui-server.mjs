@@ -71,7 +71,7 @@ import { normalizeBrowserVerificationReceipt } from "./browser-verification-evid
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 import { cleanupDelegationWorktree, createDelegationWorktree } from "./delegation-worktree.mjs";
-import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
+import { codexFileChanges, resolveCodexApprovalByPolicy, workspaceFilePath } from "./codex-policy-adapter.mjs";
 import { allowsSession, approvalThreadId, createCodexSessionApprovals, sessionApprovalKind, sessionApprovalResult } from "./codex-session-approvals.mjs";
 import { resolveRecipeExecution } from "./recipes.mjs";
 import { runProjectHooks, verificationHookSteps } from "./project-hooks.mjs";
@@ -1477,12 +1477,34 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   // The allowance ("Allow session") each approval the window is asked was read from as it came, by the request's params, until the
   // window answers it (onServerRequestAnswered).
   const codexApprovalAllowances=new WeakMap();
+  // The files each Codex file change in progress touches, from its item/started, by thread, turn and item, until the item or its
+  // turn completes: Codex's approval request for it names none (codexFileChanges). They go to the policy as the paths asked for,
+  // and to the window's card (trebellFileChanges).
+  const codexFileChangeItems=new Map(),fileChangeKey=(threadId,turnId,itemId)=>[threadId,turnId,itemId].map(value=>String(value??"")).join("\0");
+  function noteCodexFileChanges(message){
+    const params=message?.params||{},item=params.item,threadId=String(params.threadId||"");if(!threadId)return;
+    if((message.method==="item/started"||message.method==="item/completed")&&item?.type==="fileChange"&&item.id!=null){
+      const key=fileChangeKey(threadId,params.turnId,item.id);codexFileChangeItems.delete(key);
+      if(message.method==="item/started")codexFileChangeItems.set(key,codexFileChanges(item.changes).slice(0,200));
+      while(codexFileChangeItems.size>500)codexFileChangeItems.delete(codexFileChangeItems.keys().next().value);
+      return;
+    }
+    if(!["turn/completed","thread/closed","thread/archived","thread/deleted"].includes(message.method))return;
+    const prefix=threadId+"\0"+(message.method==="turn/completed"?String(params.turn?.id||params.turnId||"")+"\0":"");
+    for(const key of [...codexFileChangeItems.keys()])if(key.startsWith(prefix))codexFileChangeItems.delete(key);
+  }
+  function codexApprovalFiles(message){
+    const params=message?.params||{};
+    if(message?.method==="applyPatchApproval")return codexFileChanges(params.fileChanges).slice(0,200);
+    return message?.method==="item/fileChange/requestApproval"?codexFileChangeItems.get(fileChangeKey(params.threadId,params.turnId,params.itemId))||[]:[];
+  }
   function resolveCodexServerApproval(message){
     const params=message?.params||{},threadId=approvalThreadId(params)||null,meta=threadId?state.threadMeta(threadId):{},profile=meta?.permissionProfile||"supervised";
     const resolved=resolveCodexApprovalByPolicy(message,{
       profile,workspace:meta?.cwd||null,
       rules:Array.isArray(state.settings().policyRules)?state.settings().policyRules:[],
       provenance:params?._meta?.provenance||params.provenance||"unknown",
+      files:codexApprovalFiles(message),
     });
     if(!resolved?.policy)return null;
     const action=resolved.policy.action,base={runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,turnId:params.turnId||null,category:"policy"};
@@ -3305,6 +3327,14 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     targetLive:({key,url})=>codexAppServers.get(key)?.targetUrl===url,
     transformClientMessage:message=>transformCodexClientMessage(message),
     handleServerRequest:async message=>resolveCodexServerRequest(message),
+    // A file change's card names the files it touches (trebellFileChanges), which Codex's request leaves out, each from the thread's
+    // workspace when it is inside it.
+    transformServerRequest:message=>{
+      if(message?.method!=="item/fileChange/requestApproval"&&message?.method!=="applyPatchApproval")return message;
+      const files=codexApprovalFiles(message);if(!files.length)return message;
+      const workspace=state.threadMeta(approvalThreadId(message.params))?.cwd||null,shown=path=>path&&workspaceFilePath(workspace,path);
+      return {...message,params:{...message.params,trebellFileChanges:files.map(file=>({...file,path:shown(file.path),movePath:shown(file.movePath)}))}};
+    },
     // The person's "Allow session" allows the request's kind in its thread and mode from here (codex-session-approvals.mjs).
     onServerRequestAnswered:(message,{method,params})=>{
       const pending=params&&typeof params==="object"?codexApprovalAllowances.get(params):null;if(!pending)return;
@@ -3402,6 +3432,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       const params=message?.params||{};
       recordCodexBudgetEvidence(state,message);
       recordCodexRecoveryItemEvidence(state,message);
+      noteCodexFileChanges(message);
       if(params.threadId&&["thread/closed","thread/archived","thread/deleted"].includes(message?.method))codexSessionApprovals.end(params.threadId);
       const traceMethod=message?.method||route?.requestMethod||"";
       if(traceMethod&&!NOISY_METHOD.test(traceMethod)){

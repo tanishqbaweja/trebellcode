@@ -1,4 +1,5 @@
-import { evaluatePolicy, POLICY_ALLOW, POLICY_CONFIRM, POLICY_REJECT } from "./policy-engine.mjs";
+import { posix, win32 } from "node:path";
+import { evaluatePolicy, policyPathInside, POLICY_ALLOW, POLICY_CONFIRM, POLICY_REJECT } from "./policy-engine.mjs";
 
 const APPROVAL_METHODS=new Set([
   "item/commandExecution/requestApproval",
@@ -31,19 +32,42 @@ function networkTarget(params={}){
 
 export function isCodexApprovalRequest(message){return Boolean(message?.method&&Object.prototype.hasOwnProperty.call(message,"id")&&APPROVAL_METHODS.has(message.method))}
 
-export function codexApprovalPolicyDecision(message,{profile="supervised",workspace=null,rules=[],provenance="unknown"}={}){
+// The files a Codex file change touches, each {path, kind (add, delete or update), movePath}: a fileChange item's changes
+// ([{path, kind:{type, move_path}}], from its item/started) or a legacy applyPatchApproval's fileChanges ({path: {type, move_path}}).
+// Codex's v2 approval request names no file (T3 21cbec39d: "Modern approval requests omit paths").
+export function codexFileChanges(changes){
+  const entries=Array.isArray(changes)?changes.map(change=>[change?.path,change?.kind]):changes&&typeof changes==="object"?Object.entries(changes):[];
+  return entries.filter(([path])=>typeof path==="string"&&path.trim()).map(([path,kind])=>({
+    path,kind:String((typeof kind==="string"?kind:kind?.type)||"update").toLowerCase(),movePath:kind&&typeof kind==="object"&&kind.move_path?String(kind.move_path):null,
+  }));
+}
+
+// A file as a person knows it: from the workspace when it is inside it, else as Codex named it.
+export function workspaceFilePath(workspace,path){
+  const root=String(workspace||"").trim(),file=String(path||"");if(!root||!file||!policyPathInside(root,file))return file;
+  const api=/^[a-z]:[\\/]/i.test(root)?win32:posix,base=api.resolve(root);
+  return api.relative(base,api.resolve(base,file))||file;
+}
+
+// files: the files a file change touches (codexFileChanges). Each is decided as the path asked for, a move's new path too: one
+// rejected rejects the change, and one to confirm asks.
+export function codexApprovalPolicyDecision(message,{profile="supervised",workspace=null,rules=[],provenance="unknown",files=[]}={}){
   if(!isCodexApprovalRequest(message))return null;
   const params=message.params||{},permissionEscalation=message.method==="item/permissions/requestApproval";
-  return evaluatePolicy({
+  const decide=path=>evaluatePolicy({
     profile,runtime:"codex",workspace,
     action:approvalAction(message),kind:approvalKind(message.method,params),rawInput:params,
-    requestedPath:requestedPath(params),networkTarget:networkTarget(params),
+    requestedPath:path,networkTarget:networkTarget(params),
     requestedPermissionEscalation:permissionEscalation,
     provenance:params?._meta?.provenance||params.provenance||provenance,
     externalSideEffect:params?._meta?.externalSideEffect,
     riskLevel:params?._meta?.riskLevel,reversibility:params?._meta?.reversibility,idempotent:params?._meta?.idempotent,
     rules,
   });
+  const paths=(Array.isArray(files)?files:[]).flatMap(file=>[file?.path,file?.movePath]).filter(Boolean);
+  if(!paths.length)return decide(requestedPath(params));
+  const decisions=paths.map(decide);
+  return decisions.find(item=>item.decision===POLICY_REJECT)||decisions.find(item=>item.decision===POLICY_CONFIRM)||decisions[0];
 }
 
 export function codexApprovalResponse(message,decision){

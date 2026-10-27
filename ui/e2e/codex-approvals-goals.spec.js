@@ -133,3 +133,28 @@ test("after Allow session the thread's next command runs without asking: only th
     expect(second.answers()).toHaveLength(1);expect(first.answers()).toHaveLength(1);
   }finally{await harness.close()}
 });
+
+test("a Codex file-change approval's card names the files it adds, edits, moves and deletes",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,"Release notes");const {codex,thread,cwd}=harness;
+  try{
+    const file=(...parts)=>join(cwd,...parts);
+    codex.notify("item/started",{threadId:thread.id,turnId:"turn-1",item:{type:"fileChange",id:"patch-1",status:"inProgress",changes:[
+      {path:file("src","app.js"),kind:{type:"update",move_path:null},diff:"@@ -1 +1 @@\n-old\n+new\n"},
+      {path:file("src","old-name.js"),kind:{type:"update",move_path:file("src","new-name.js")},diff:""},
+      {path:file("NOTES.md"),kind:{type:"add"},diff:"+# Notes\n"},
+      {path:file("legacy.txt"),kind:{type:"delete"},diff:""},
+    ]}});
+    const asked=codex.ask("item/fileChange/requestApproval",{threadId:thread.id,turnId:"turn-1",itemId:"patch-1",startedAtMs:Date.now()});
+    await expect(card(page)).toHaveCount(1);await expect(card(page)).toContainText("File changes need approval");
+    // One line a file, in Codex's order, each named from the thread's workspace.
+    await expect.poll(()=>card(page).getByTestId("approval-files").innerText()).toBe([
+      "Edit "+join("src","app.js"),"Move "+join("src","old-name.js")+" to "+join("src","new-name.js"),"Add NOTES.md","Delete legacy.txt",
+    ].join("\n"));
+    await expect(card(page)).not.toContainText("item/fileChange/requestApproval");
+    await shoot(page,"file-change-files",()=>expect(card(page).getByTestId("approval-files")).toBeVisible());
+    await card(page).getByRole("button",{name:"Allow once",exact:true}).click();
+    await expect.poll(()=>asked.answers()).toEqual([{decision:"accept"}]);
+    await expect(card(page)).toHaveCount(0);
+  }finally{await harness.close()}
+});

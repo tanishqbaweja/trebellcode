@@ -30,6 +30,8 @@ export function attachCodexRelay(httpServer, {
   // Synchronous (message, {targetKey, targetUrl, requestUpstream}) => message: rewrites a Codex notification before the
   // renderer gets it, so notifications keep their order.
   transformServerMessage = null,
+  // Synchronous (message, {targetKey}) => message: rewrites a Codex request the renderer is to answer before it gets it.
+  transformServerRequest = null,
   // (message, {method, params, targetKey}) => void: the renderer's answer to a Codex request, as it goes back to Codex. params are
   // the request's, the object handleServerRequest got.
   onServerRequestAnswered = () => {},
@@ -167,7 +169,9 @@ export function attachCodexRelay(httpServer, {
             }
             const relayId=`trebell-server-${context.nextServerRequestId++}`;
             context.serverRequestRoutes.set(relayId,{record,originalId:message.id,method:message.method,params:message.params});
-            sendBrowser({...message,id:relayId});return;
+            let asked=message;
+            if(transformServerRequest)try{asked=transformServerRequest(message,{targetKey:record.key})||message}catch(error){log("Codex request hook failed: "+error.message)}
+            sendBrowser({...asked,id:relayId});return;
           }
           if(message?.method==="serverRequest/resolved"&&message.params&&Object.prototype.hasOwnProperty.call(message.params,"requestId")){
             if(record.autoHandledRequests.has(message.params.requestId)){record.autoHandledRequests.delete(message.params.requestId);return}
