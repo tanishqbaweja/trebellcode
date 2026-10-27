@@ -799,7 +799,11 @@ export class AgentRuntimeManager{
   #binaryPaths(instance,environmentId=undefined){
     const profile=this.activeEnvironment(environmentId),local=!(profile&&profile.type!=="local"&&this.environments);
     const command=local?this.executable(instance):null,found=command?commandOnPath(command,{env:this.childEnv(instance),platform:this.platform}):null;
-    return !found?[]:/\.(?:cmd|bat|ps1)$/i.test(found)?[found,dirname(found),join(dirname(found),"versions")]:[found];
+    const paths=!found?[]:/\.(?:cmd|bat|ps1)$/i.test(found)?[found,dirname(found),join(dirname(found),"versions")]:[found];
+    // Meta's launcher, ~/.local/bin/muse as much as muse.cmd, keeps the Muse Code it runs beside itself (muse-bin-<version>, named in
+    // .muse-version) and updates it without changing itself.
+    if(found&&instance?.kind==="muse")for(const path of [dirname(found),join(dirname(found),".muse-version")])if(!paths.includes(path))paths.push(path);
+    return paths;
   }
   async #versionCheck(instance,{environmentId=undefined,fresh=false}={}){
     const signature=binarySignature(this.#binaryPaths(instance,environmentId));

@@ -285,6 +285,32 @@ test("the GUI server's own harness listing (Settings' open and Refresh) reads Mu
   }
 });
 
+test("a Muse Code that updated itself beside a launcher left as it was, as Meta's ~/.local/bin/muse keeps it, is checked again at the next poll",{timeout:60_000},async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-muse-unix-update-")),log=join(root,"muse.log"),bin=join(root,"home",".local","bin");
+  try{
+    await mkdir(bin,{recursive:true});
+    // The launcher runs the build its .muse-version names; written for node, so the test runs it on every platform, and CommonJS
+    // wherever the temporary folder is (a package.json above it can make an extensionless file a module).
+    await writeFile(join(root,"package.json"),"{\"type\":\"commonjs\"}\n");
+    const launcher=join(bin,"muse");
+    await writeFile(launcher,`#!/usr/bin/env node\nconst {readFileSync}=require("node:fs"),{join}=require("node:path");\nprocess.env.MUSE_FAKE_VERSION="Muse Code "+readFileSync(join(__dirname,".muse-version"),"utf8").trim();\nrequire(${JSON.stringify(FAKE_MUSE)});\n`);
+    await chmod(launcher,0o755);
+    const install=async version=>{await writeFile(join(bin,".muse-version"),version+"\n");await writeFile(join(bin,"muse-bin-"+version),"")};
+    await install("1.4.13-R6996.1");
+    const manager=new AgentRuntimeManager({state:museState({MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST}),env:{...process.env,HOME:join(root,"home"),MUSE_INSTALL_DIR:"",TREBELL_HOME:join(root,"trebell")},platform:"linux",runFn:onlyMuse(launcher)});
+    assert.equal(manager.executable({id:"muse-default",kind:"muse"}),launcher);
+    const versionRuns=async()=>(await launches(log)).filter(entry=>entry.start[0]==="--version").length;
+    for(let poll=0;poll<2;poll++)assert.equal((await manager.probe("muse")).version,"1.4.13-R6996.1");
+    assert.equal(await versionRuns(),1,"a poll reuses the check");
+    // Muse Code updates itself from the person's own shell: a new build and .muse-version beside the launcher, which stays as it was.
+    await rm(join(bin,"muse-bin-1.4.13-R6996.1"));await install("1.4.14-R7100.1");
+    const updated=await manager.probe("muse");
+    assert.deepEqual([updated.version,updated.available],["1.4.14-R7100.1",true]);
+    assert.equal(await versionRuns(),2);
+    assert.equal((await hosts(log)).length,2,"the new build lists its models again");
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
+});
+
 test("Muse Code signs in with `muse login` in a Trebell terminal, offers Meta's installer as text and is never installed by Trebell",async()=>{
   const fixture=await museFixture("trebell-muse-auth-");
   try{
