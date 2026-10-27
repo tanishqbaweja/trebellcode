@@ -59,6 +59,7 @@ export const claudeReply=(message,text)=>[
 ];
 
 // Claude Code threads on the real relay, Claude Code itself answered as installed and signed in and its SDK scripted by turn.
+// state: the store the relay keeps its records in (the Usage page's turns among them).
 // seedThread stores a Claude thread with no turns yet, in the harness's repository and the given permission mode. mcpServers: the MCP
 // servers set in Settings, which each Claude Code is given to connect. claudeHome: Claude Code runs with a Claude home of its own
 // (CLAUDE_CONFIG_DIR) in the harness's folder, which the harness names as claudeHome for a test to fill as Claude Code would.
@@ -81,7 +82,7 @@ export async function startClaudeRelay({turn,control={},mcpServers=null,claudeHo
   const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,version:"claude-relay-fixture",claudeSdk:scriptedClaudeSdk(turn,control)});
   const port=await freePort();await new Promise((resolve,reject)=>relayServer.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {
-    repo,claudeHome:claudeConfig,threadStore,threads,seedThread,wsUrl:`ws://127.0.0.1:${port}/api/agent/ws`,
+    repo,claudeHome:claudeConfig,state,threadStore,threads,seedThread,wsUrl:`ws://127.0.0.1:${port}/api/agent/ws`,
     async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})},
   };
 }
