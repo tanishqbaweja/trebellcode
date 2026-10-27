@@ -1528,6 +1528,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   const codexRunningTurns=new Map(),restoringThreads=new Map();
   // Each running Codex turn's token usage over all its model requests, from the thread's running total (codex-turn-usage.mjs).
   const codexTurnUsage=createCodexTurnUsage();
+  // The threads a read or resume found running a turn it did not name, whose start no window saw (noteCodexTurnResumed).
+  const codexUnnamedTurns=new Set();
   // A thread's own app-server that died (it had served, nothing stopped or released it): how it ended, and whether a turn ran on it, by
   // thread. Each resume of the thread names it (trebellAppServerExit) until the thread's next turn starts, so the app can say once, in
   // the thread, what happened, however often it reconnects.
@@ -1546,10 +1548,18 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     const id=String(threadId||"");if(!id)return;
     codexAppServerExits.delete(id);
     const restoring=restoringThreads.get(id);if(restoring)restoring.turnStarted=true;
-    if(!turnId)return;let turns=codexRunningTurns.get(id);if(!turns)codexRunningTurns.set(id,turns=new Set());turns.add(String(turnId));
+    if(!turnId)return;codexUnnamedTurns.delete(id);let turns=codexRunningTurns.get(id);if(!turns)codexRunningTurns.set(id,turns=new Set());turns.add(String(turnId));
+  }
+  // A read or resume that finds the thread running a turn: one Codex started while no window showed the thread (a goal's next turn)
+  // was never seen to start. The turn the answer names in progress runs; an answer with no turns (excludeTurns, the app's own
+  // resume) leaves it to the turn of the thread's next usage update. That turn's updates then count toward it (codexTurnUsage).
+  function noteCodexTurnResumed(threadId,thread){
+    const id=String(threadId||""),named=(Array.isArray(thread?.turns)?thread.turns:[]).findLast(turn=>turn?.id&&(turn.status==="inProgress"||turn.status?.type==="active"));
+    if(named){if(!codexRunningTurns.get(id)?.has(String(named.id)))noteCodexTurnStarted(id,named.id);return}
+    codexUnnamedTurns.delete(id);codexUnnamedTurns.add(id);while(codexUnnamedTurns.size>500)codexUnnamedTurns.delete(codexUnnamedTurns.values().next().value);
   }
   function noteCodexTurnEnded(threadId,turnId=null){
-    const id=String(threadId||""),turns=codexRunningTurns.get(id);if(!turns)return;
+    const id=String(threadId||""),turns=codexRunningTurns.get(id);codexUnnamedTurns.delete(id);if(!turns)return;
     if(turnId)turns.delete(String(turnId));else turns.clear();
     if(!turns.size)codexRunningTurns.delete(id);
   }
@@ -3407,14 +3417,18 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       if(message?.method==="turn/started"){markCodexTurnActive(params.threadId,params.turn?.id||params.turnId);noteCodexTurnStarted(params.threadId,params.turn?.id||params.turnId)}
       if(message?.method==="turn/completed"){clearCodexRecovery(params.threadId,"completed");noteCodexTurnEnded(params.threadId,params.turn?.id||params.turnId||null)}
       // A turn-start's answer names a turn that runs; a read of the thread says whether one still does (one whose end the relay never
-      // saw, its window having closed, no longer counts).
+      // saw, its window having closed, no longer counts), and finds one whose start it never saw.
       const answeredThreadId=String(route?.requestParams?.threadId||"");
       if(answeredThreadId&&CODEX_TURN_START_METHODS.has(route?.requestMethod)&&!message?.error){const turn=message?.result?.turn;if(turn?.id&&(!turn.status||turn.status==="inProgress"))noteCodexTurnStarted(answeredThreadId,turn.id)}
-      if(answeredThreadId&&(route?.requestMethod==="thread/read"||route?.requestMethod==="thread/resume")&&message?.result?.thread&&message.result.thread.status?.type!=="active")noteCodexTurnEnded(answeredThreadId);
+      if(answeredThreadId&&(route?.requestMethod==="thread/read"||route?.requestMethod==="thread/resume")&&message?.result?.thread){
+        if(message.result.thread.status?.type!=="active")noteCodexTurnEnded(answeredThreadId);else noteCodexTurnResumed(answeredThreadId,message.result.thread);
+      }
       if(message?.method==="thread/status/changed"&&params.threadId&&params.status&&params.status.type!=="active")noteCodexTurnEnded(params.threadId);
       // A turn's record holds every model request it made so far. Codex's token usage carries no cost (total, last and the context
       // window only), so the record has none, and the Usage page prices the tokens of a model whose price is set.
       if(message?.method==="thread/tokenUsage/updated"&&params.threadId&&params.turnId){
+        // The turn a read or resume found running without naming it is the one its thread's next update is for.
+        if(codexUnnamedTurns.delete(String(params.threadId))&&!codexRunningTurns.get(String(params.threadId))?.has(String(params.turnId)))noteCodexTurnStarted(params.threadId,params.turnId);
         const usage=codexTurnUsage.update({threadId:params.threadId,turnId:params.turnId,tokenUsage:params.tokenUsage,running:Boolean(codexRunningTurns.get(String(params.threadId))?.has(String(params.turnId)))});
         const meta=usage?state.threadMeta(params.threadId):null;
         if(usage)state.recordUsage({runtime:"codex",provider:codexRuntimeProvider(params.threadId),model:codexThreadModels.get(params.threadId)||null,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId:params.threadId,turnId:params.turnId,usage,cost:null,at:Date.now()});

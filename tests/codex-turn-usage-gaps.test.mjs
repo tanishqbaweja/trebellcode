@@ -108,3 +108,25 @@ test("a Codex turn after every window was closed and the thread resumed counts o
   assert.deepEqual(await record(threadId,t2),q1,"the new turn's record is its one request, not the requests the ended turn made with no window open");
   assert.deepEqual(await record(threadId,t1),r1,"and the turn the server lost sight of keeps what it saw");
 });
+
+test("a Codex turn that started while every window was closed is counted from the update after a window resumes the thread",async t=>{
+  const {codex,open,shown,record}=await usageServer(t);
+  const r1=request(9_000,400,{cached:8_000}),q1=request(9_500,600,{cached:8_800}),q2=request(10_000,900,{cached:9_200}),q3=request(10_400,500,{cached:9_600,write:300});
+  for(const [threadId,excludeTurns] of [["codex-goal-thread",true],["codex-goal-thread-turns",false]]){
+    await shown(threadId);
+    const first=await open();
+    const t1=(await first.rpc("turn/start",{threadId,input:[{type:"text",text:"Work toward the goal"}]})).turn.id;
+    codex.request(threadId,t1,r1);codex.endTurn(threadId,t1);await first.settle();
+    await first.close();
+    // A goal's next turn, which Codex starts by itself with no window open: its start and its first request reach no one.
+    const goal="goal-turn-"+threadId;codex.startTurn(threadId,goal);codex.request(threadId,goal,q1);
+    const second=await open();
+    await second.rpc("thread/resume",{threadId,excludeTurns});
+    codex.request(threadId,goal,q2);codex.request(threadId,goal,q3);codex.endTurn(threadId,goal);await second.settle();
+    // With its turns the resume names the turn that runs, and Codex replays the usage of its first request; without them (the app's
+    // own resume) the turn is the one its next update is for.
+    assert.deepEqual(await record(threadId,goal),excludeTurns?add(q2,q3):add(q1,q2,q3),`excludeTurns ${excludeTurns}`);
+    assert.deepEqual(await record(threadId,t1),r1,`excludeTurns ${excludeTurns}: the turn before keeps its own`);
+    await second.close();
+  }
+});
