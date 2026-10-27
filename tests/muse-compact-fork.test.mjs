@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { threadHistoryHandoff } from "../src/thread-history-handoff.mjs";
 import { FakeMuse, startSession, until, settlesWithin } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
@@ -205,6 +208,29 @@ test("through the relay, a message sent in another mode while Muse writes its ow
     assert.deepEqual(relay.threadStore.get(thread.id).turns.map(turn=>turn.status),["completed","completed","completed"]);
     assert.equal((await relay.hosts()).length,1);
   }finally{await relay.close()}
+});
+
+test("through the relay, a message refused in Full access while Muse writes its report on a Supervised thread leaves the thread in Supervised: what the report asks next goes to the person on the card, never answered by Full access's policy",{timeout:90_000},async()=>{
+  const holds=await mkdtemp(join(tmpdir(),"trebell-muse-report-ask-")),ask=join(holds,"report-ask");
+  const relay=await museRelay("trebell-muse-report-mode-policy-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_ASK_HOLD:ask}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"supervised"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}],permissionProfile:"supervised"});
+    await relay.completed(thread.id,1);
+    await eventually(()=>relay.threadStore.get(thread.id).turns.length===2,"Muse's report turn");
+    await assert.rejects(relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"In Full access now"}],permissionProfile:"full"}),{message:REPORT_BLOCKS_MODE});
+    // The report then asks to run a command: in Supervised, the person answers it.
+    await writeFile(ask,"");
+    const asked=()=>relay.requests.some(request=>request.method==="item/tool/requestApproval");
+    await eventually(async()=>asked()||(await relay.frames("approval/decide")).length>0,"the report's approval to be asked or answered");
+    assert.deepEqual((await relay.frames("approval/decide")).map(frame=>frame.params.choiceId),[],"nothing answered for the person");
+    assert.equal(asked(),true,"the approval card");
+    assert.equal(relay.threadStore.get(thread.id).providerMeta?.permissionProfile,"supervised","the thread keeps the mode its host runs");
+    relay.respond(relay.requests.find(request=>request.method==="item/tool/requestApproval"),{decision:"decline"});
+    await relay.completed(thread.id,2);
+    assert.deepEqual((await relay.frames("approval/decide")).map(frame=>frame.params.choiceId),["abort"],"the person's Reject");
+    assert.equal((await relay.hosts()).length,1);
+  }finally{await relay.close();await rm(holds,{recursive:true,force:true})}
 });
 
 test("a fork's handed-over history tells the model the thread is a fork in a new session, and a lost conversation's keeps its words",()=>{

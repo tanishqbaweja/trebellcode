@@ -49,7 +49,8 @@
 //                       holds after its first sentence until a message comes, which Muse queues behind it (ifBusy queue): the report
 //                       then says the rest of its reply and ends, its turn/completed adding up the report's tokens, and the message's
 //                       turn runs, reporting its own. With MUSE_FAKE_REPORT_COMMAND "1" the held report also runs `npm test`, which
-//                       ends once the message comes, before the rest of the report
+//                       ends once the message comes, before the rest of the report; once the file MUSE_FAKE_REPORT_ASK_HOLD names is
+//                       there, the held report asks to run `touch muse-approved.txt` ("ask approval"), and its answer ends the report
 const fs=require("node:fs"),readline=require("node:readline");
 const log=entry=>{if(process.env.MUSE_FAKE_LOG)fs.appendFileSync(process.env.MUSE_FAKE_LOG,JSON.stringify(entry)+"\n")};
 const argv=process.argv.slice(2);
@@ -171,6 +172,7 @@ function reportTurn(sessionId,turnId){
   reply(sessionId,turn,"The workflow with ping and pong agents is complete.");
   usageStep(sessionId,turnId,{prompt:36716,output:262,cacheRead:33393,reasoning:238});
   if(process.env.MUSE_FAKE_REPORT_HOLD==="1"&&process.env.MUSE_FAKE_REPORT_COMMAND==="1")notify("item/started",sessionId,{item:reportCheck(turnId,1,"inProgress")});
+  if(process.env.MUSE_FAKE_REPORT_HOLD==="1"&&process.env.MUSE_FAKE_REPORT_ASK_HOLD)later(process.env.MUSE_FAKE_REPORT_ASK_HOLD,0,()=>{if(running.has(turnId))askApproval(sessionId,turnId,false)});
   if(process.env.MUSE_FAKE_REPORT_HOLD==="1")return void heldReports.set(sessionId,{turnId,turn});
   setTimeout(()=>complete(sessionId,turnId),20);
 }

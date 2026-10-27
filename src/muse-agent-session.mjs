@@ -398,11 +398,12 @@ export class MuseAgentSession{
   // A new host can take the conversation up again unless this one keeps its sessions in memory only.
   get resumable(){return Boolean(this.initializeResult)&&this.initializeResult.sessionDurability!=="ephemeral"}
   setPermissionMode(mode){this.permissionMode=normalizePermissionMode(mode||"supervised");return this.permissionMode}
-  // Why a message cannot go now in the session's mode, or null: the mode needs another host (needsRelaunch), and Muse's own work holds
-  // this one, a compaction or the report Muse writes (also one a message's turn took in before the message went), which a relaunch
-  // would stop. The relay refuses such a message before its turn starts, so the person keeps their draft; prompt refuses it too.
-  modeRefusal(){
-    if(!this.launched||this.dead||!this.needsRelaunch(this.permissionMode))return null;
+  // Why a message cannot go now in the session's mode, or in the mode it asks for (mode), or null: the mode needs another host
+  // (needsRelaunch), and Muse's own work holds this one, a compaction or the report Muse writes (also one a message's turn took in
+  // before the message went), which a relaunch would stop. The relay refuses such a message before it keeps the message's mode and
+  // before its turn starts, so the person keeps their draft and the thread the mode its host runs; prompt refuses it too.
+  modeRefusal(mode=this.permissionMode){
+    if(!this.launched||this.dead||!this.needsRelaunch(mode))return null;
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
     const report=running?.wake||running?.successor&&!running.prompted&&[...running.joined].some(id=>!running.endedJoined.has(id));
     return this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:report?MUSE_REPORT_BLOCKS_MODE_CHANGE:null;

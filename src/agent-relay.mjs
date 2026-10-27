@@ -2037,6 +2037,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       thread=migrateRetiredNativeThread(thread).thread;
       const permissionPatch=agentPermissionProfilePatch(params),requestedProvider=runtime==="native"&&params.modelProvider?normalizeProviderId(params.modelProvider):null;
       const providerPatch=requestedProvider?{modelProvider:requestedProvider}:{};
+      // A Muse Code message in a mode its held host cannot take (MuseAgentSession.modeRefusal) is refused before its mode is kept: the
+      // thread keeps the mode the host runs, which Trebell's policy answers that work's approvals in.
+      const heldMuse=sessions.get(thread.id),heldRefusal=heldMuse instanceof MuseAgentSession?heldMuse.modeRefusal(permissionPatch.permissionProfile||thread.providerMeta?.permissionProfile||"supervised"):null;if(heldRefusal)throw new Error(heldRefusal);
       if(Object.keys(permissionPatch).length||Object.keys(providerPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch,...providerPatch}});
       if(thread.runtime==="native"&&Array.isArray(params.dynamicToolNamespaces)&&params.dynamicToolNamespaces.length)thread=(await ensureNativeToolNamespaces(thread,params.dynamicToolNamespaces)).thread;
       const session=await sessionUnlessStopped(send,ensureSession(thread,context,{model:params.model||thread.model,freshIfLost:true}));
