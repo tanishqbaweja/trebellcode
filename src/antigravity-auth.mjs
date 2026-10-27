@@ -27,7 +27,7 @@ export const ANTIGRAVITY_SIGN_IN_TIMEOUT_MS=300_000;
 export const ANTIGRAVITY_KEY_NEEDED="Antigravity needs a Gemini API key. Create one in Google AI Studio (aistudio.google.com/apikey), then add it to Antigravity in Settings.";
 export const ANTIGRAVITY_KEY_SAVED="Gemini API key saved.";
 export const ANTIGRAVITY_IPV6_MESSAGE="Antigravity needs IPv6 socket support, which this machine does not give it. Turn IPv6 on, then try again (in WSL: remove ipv6.disable=1 from .wslconfig, then run wsl --shutdown).";
-const UNREACHABLE="Antigravity did not finish signing in with the Gemini API key within 5 minutes: it could not reach Google. Check this machine's network connection, then try again. Broken IPv6 is a common cause, as Antigravity has no IPv4 fallback.";
+const UNREACHABLE="Google did not answer Antigravity's sign-in with the Gemini API key within 5 minutes. Antigravity does not fall back to IPv4 when IPv6 fails, so a network whose IPv6 does not work is the likeliest reason: check that this machine reaches Google, then sign in again.";
 
 export function antigravityHome(env=process.env){return join(trebellHome(env),"antigravity-home")}
 export function antigravityApiKey(env=process.env){return harnessSecret(API_KEY_SECRET,{env})}
@@ -102,7 +102,7 @@ function signInFailure(error,step,key){
   const ipv6=antigravityIpv6Failure(error);if(ipv6)return ipv6;
   const said=redactSecretText(String(error?.message||error||""),{environment:{GEMINI_API_KEY:key},redactHomes:true,trim:true}),detail=said||"Antigravity gave no reason",code=error?.code;
   const subscription=/\bSUBSCRIPTION_REQUIRED\b/.test(said)||/\bSUBSCRIPTION_REQUIRED\b/.test(JSON.stringify(error?.data??""));
-  const message=subscription?"Google refused Antigravity for this Gemini API key: it needs an eligible Antigravity subscription (SUBSCRIPTION_REQUIRED)."
+  const message=subscription?"Google refused Antigravity for this Gemini API key, saying the key's account needs a subscription that includes Antigravity (SUBSCRIPTION_REQUIRED)."
     :/^(?:authenticate|session\/new) timed out$/.test(said)?UNREACHABLE
     :step==="authenticate"&&code===-32602?"Antigravity rejected the Gemini API key. Check the key in Google AI Studio, then enter it again."
     :step==="session"&&code===-32603?`Antigravity signed in with the Gemini API key but could not start a session or load its models: ${detail}`

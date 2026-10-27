@@ -15,6 +15,9 @@ const AGENT=fileURLToPath(new URL("./fixtures/antigravity-acp-agent.mjs",import.
 const KEY="AIzaSyTrebellFixtureKey0123456789abcdef";
 const inside=(path,root)=>{const rel=relative(resolve(root),resolve(path));return Boolean(rel)&&!rel.startsWith("..")&&!isAbsolute(rel)};
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
+// Trebell words these itself: T3 Code's own sentences for them are not reused.
+const UNREACHABLE="Google did not answer Antigravity's sign-in with the Gemini API key within 5 minutes. Antigravity does not fall back to IPv4 when IPv6 fails, so a network whose IPv6 does not work is the likeliest reason: check that this machine reaches Google, then sign in again.";
+const T3_WORDS=/could not reach Google\. Check this machine's network connection|Broken IPv6 is a common cause|eligible Antigravity subscription/;
 
 // A scenario for the stand-in in a folder of its own, removed after the test; env is a launch's environment as Trebell builds it.
 async function standIn(t,scenario){
@@ -56,9 +59,8 @@ test("a sign-in Antigravity never answers ends after 5 minutes saying it could n
   t.mock.timers.tick(1);
   await signing;
   assert.ok(settled instanceof Error,"the sign-in failed");
-  assert.match(settled.message,/^Antigravity did not finish signing in with the Gemini API key within 5 minutes: it could not reach Google\. /);
-  assert.match(settled.message,/Broken IPv6 is a common cause/);
-  assert.doesNotMatch(settled.message,/authenticate timed out/);
+  assert.equal(settled.message,UNREACHABLE,"Google out of reach for 5 minutes, and the likeliest reason, in Trebell's words");
+  assert.doesNotMatch(settled.message,T3_WORDS,"not T3 Code's sentences");
 });
 
 test("an Antigravity that exits for want of IPv6 sockets says it needs them, as it starts or as it signs in",async t=>{
@@ -71,14 +73,14 @@ test("an Antigravity that exits for want of IPv6 sockets says it needs them, as 
 
 test("Google's subscription refusal, a rejected key and a session that cannot start each say so, without the key in it",async t=>{
   const cases=[
-    [{authenticate:{code:-32603,message:"Internal error",data:{message:`SUBSCRIPTION_REQUIRED: this project has no Antigravity access (key ${KEY})`}}},/^Google refused Antigravity for this Gemini API key: it needs an eligible Antigravity subscription \(SUBSCRIPTION_REQUIRED\)\.$/],
+    [{authenticate:{code:-32603,message:"Internal error",data:{message:`SUBSCRIPTION_REQUIRED: this project has no Antigravity access (key ${KEY})`}}},/^Google refused Antigravity for this Gemini API key, saying the key's account needs a subscription that includes Antigravity \(SUBSCRIPTION_REQUIRED\)\.$/],
     [{authenticate:{code:-32602,message:"Invalid params",data:{message:`API key ${KEY} not valid`}}},/^Antigravity rejected the Gemini API key\. Check the key in Google AI Studio, then enter it again\.$/],
     [{sessionNew:{code:-32603,message:"Internal error",data:{message:`could not load models for ${KEY}`}}},/^Antigravity signed in with the Gemini API key but could not start a session or load its models: could not load models for \[redacted\]$/],
     [{authenticate:{code:-32000,message:`Login failed for ${KEY}`}},/^Antigravity could not sign in with the Gemini API key: Login failed for \[redacted\]$/],
   ];
   for(const [scenario,said] of cases){
     const fx=await standIn(t,scenario);
-    await assert.rejects(signIn(fx),error=>{assert.match(error.message,said);assert.ok(!error.message.includes(KEY),"no key in the message");return true});
+    await assert.rejects(signIn(fx),error=>{assert.match(error.message,said);assert.ok(!error.message.includes(KEY),"no key in the message");assert.doesNotMatch(error.message,T3_WORDS);return true});
   }
 });
 

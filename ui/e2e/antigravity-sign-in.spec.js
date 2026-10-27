@@ -17,7 +17,7 @@ const json=(route,value,status=200)=>route.fulfill({status,contentType:"applicat
 const missing=command=>({ok:false,code:null,error:`spawn ${command} ENOENT`,stdout:"",stderr:""});
 const KEY="AIzaSyE2eFixtureKeyForTrebell0123456789";
 const NEEDED="Antigravity needs a Gemini API key. Create one in Google AI Studio (aistudio.google.com/apikey), then add it to Antigravity in Settings.";
-const UNREACHABLE="Antigravity did not finish signing in with the Gemini API key within 5 minutes: it could not reach Google. Check this machine's network connection, then try again. Broken IPv6 is a common cause, as Antigravity has no IPv4 fallback.";
+const UNREACHABLE="Google did not answer Antigravity's sign-in with the Gemini API key within 5 minutes. Antigravity does not fall back to IPv4 when IPv6 fails, so a network whose IPv6 does not work is the likeliest reason: check that this machine reaches Google, then sign in again.";
 async function switchMode(page,mode){
   if(await page.locator("html").getAttribute("data-mode")!==mode)await page.locator("[data-testid=appearance-toggle]:visible").first().click();
   await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
