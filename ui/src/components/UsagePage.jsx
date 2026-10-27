@@ -15,7 +15,7 @@ function withoutKey(object,key){return Object.fromEntries(Object.entries(object|
 function meterTone(remaining){const value=Number(remaining);if(remaining==null||!Number.isFinite(value))return "";return value<=10?" critical":value<=25?" low":""}
 // What each live Codex read loads, so a failed one is listed by what could not be loaded rather than by its request key.
 const CODEX_READS={account:"Could not load the Codex account",rateLimits:"Could not load Codex rate limits",usage:"Could not load Codex usage",messages:"Could not load workspace messages"};
-const SUBSCRIPTION_RUNTIMES=["claude","opencode","cursor","grok"];
+const SUBSCRIPTION_RUNTIMES=["claude","opencode","cursor","grok","muse"];
 
 export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected",activeThread=null,agentRuntime="codex"}){
   // Each read starts out loading, as it runs when the page opens: nothing claims a period or an account is empty before it answers.
@@ -227,7 +227,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       {Object.values(codex.errors).length>0&&<details className="capability-details"><summary>Unavailable Codex account data</summary><pre>{Object.entries(codex.errors).map(([key,value])=>failureText(CODEX_READS[key]||"Could not load "+key,value)).join("\n")}</pre></details>}
     </section>}
     {showLiveRuntime&&<section className="capability-card codex-account-usage" data-testid="runtime-account-usage">
-      <div className="capability-card-head"><span><Sparkles size={15}/><strong>{runtimeLabel(agentRuntime)} subscription limits</strong></span><em>{activeEnvironmentName} · {runtimeUsage.data?.account?.email?runtimeUsage.data.account.email+" · ":""}live</em></div>
+      <div className="capability-card-head"><span><Sparkles size={15}/><strong>{runtimeLabel(agentRuntime)} subscription limits</strong></span><em>{activeEnvironmentName} · {runtimeUsage.data?.account?.email?runtimeUsage.data.account.email+" · ":""}{/* Windows a harness reported with a turn (Muse Code's) say when that was, not live. */}{runtimeUsage.data?.observedAt?"observed "+new Date(runtimeUsage.data.observedAt).toLocaleString():"live"}</em></div>
       {/* Windows already read stay beside a failed refresh; a claim that there are none, or none exposed, does not. */}
       {runtimeUsage.data?.windows?.length>0?<div className="codex-limit-grid">{runtimeUsage.data.windows.map(window=>{
         const used=Math.max(0,Math.min(100,Number(window.usedPercent)||0));const remaining=Math.max(0,100-used);

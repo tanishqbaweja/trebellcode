@@ -23,6 +23,7 @@ import { acpProbeSession, acpSessionModelCatalog, antigravityModelCatalog, antig
 import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { acpCommandsFromAvailable } from "./acp-agent-session.mjs";
 import { readMuseModelCatalog } from "./muse-model-catalog.mjs";
+import { museSubscriptionUsage, museUsageLimits } from "./muse-subscription-usage.mjs";
 
 const RUNTIMES=Object.freeze({
   native:{id:"native",name:"Trebell Native",protocol:"native",command:null,multipleInstances:false,managed:true},
@@ -1182,9 +1183,20 @@ export class AgentRuntimeManager{
     const profile=this.activeEnvironment(environmentId),spawnProcess=this.processSpawner(instance,environmentId);
     this.claudeCapabilitiesCache.drop?.({command:this.executable(instance,{environmentId}),env:this.childEnv(instance),spawnProcess,scope:spawnProcess?String(profile?.id||""):""});
   }
+  #museUsage=new Map();
+  // Muse Code's last subscription windows of each profile (usage/changed, which a Muse Code session passes on: account-wide, with no
+  // session), the latest observed one kept. A report not in Muse's form is skipped. Returns whether the report was kept.
+  noteMuseUsage(instanceId,params){
+    const id=String(instanceId||""),usage=museSubscriptionUsage(params),kept=this.#museUsage.get(id);
+    if(!id||!usage||(kept&&kept.observedAtMs>usage.observedAtMs))return false;
+    this.#museUsage.set(id,usage);return true;
+  }
   async usageLimits(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="claude")return readAgentRuntimeUsage("claude",{readCapabilities:()=>this.claudeCapabilities(instance,{environmentId})});
+    // Muse Code's are the windows of the profile's last report (noteMuseUsage), as no read asks Muse: MSP's usage/read answers only
+    // the host's last report too. A Muse Code runs only on this machine.
+    if(instance.kind==="muse")return this.processSpawner(instance,environmentId)?{checkedAt:new Date(this.now()).toISOString(),windows:[],unavailable:{reason:"unsupported",message:MUSE_LOCAL_ONLY}}:museUsageLimits(this.#museUsage.get(instance.id),{now:this.now()});
     const profile=this.activeEnvironment(environmentId);
     if(profile&&profile.type!=="local"&&this.environments){
       const names=["HOME","XDG_CONFIG_HOME","XDG_DATA_HOME","AGENT_CLI_CREDENTIAL_STORE","CURSOR_AUTH_TOKEN","CURSOR_API_KEY","CURSOR_API_ENDPOINT","XAI_API_KEY","GROK_AUTH","GROK_HOME","GROK_OIDC_ISSUER","GROK_OIDC_CLIENT_ID","GROK_OAUTH2_ISSUER","GROK_OAUTH2_CLIENT_ID","GROK_OAUTH2_PRINCIPAL_TYPE","GROK_OAUTH2_PRINCIPAL_ID","GROK_AUTH_PROVIDER_COMMAND","GROK_LOCAL_AUTH","GROK_CLI_CHAT_PROXY_BASE_URL","GROK_MODELS_BASE_URL","GROK_CONFIG","GROK_CONFIG_PATH","OPENCODE_AUTH_CONTENT","OPENCODE_API_KEY"];
