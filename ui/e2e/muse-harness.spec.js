@@ -35,8 +35,21 @@ function onlyMuse(launcher){
   });
 }
 
+// Nothing a test of this file runs leaves this machine, as the GUI server's offline E2E fetch keeps it: while a harness is up, a
+// request the global fetch would send anywhere but here is refused and recorded, and its close fails the test that made it.
+function offlineGlobalFetch(){
+  const ownFetch=globalThis.fetch,external=[];
+  globalThis.fetch=async(input,init)=>{
+    const url=String(input?.url||input);
+    if(/^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?:[:/]|$)/i.test(url))return ownFetch(input,init);
+    external.push(url);throw new Error("Offline E2E blocked a request leaving this machine: "+url);
+  };
+  return {external,restore(){globalThis.fetch=ownFetch;if(external.length)throw new Error("Requests left this machine: "+external.join(", "))}};
+}
+
 // serveFails: while the file it names is there, the stand-in's host exits as Muse does with a malformed settings file.
 async function startMuseHarness({serveFails=false}={}){
+  const offline=offlineGlobalFetch();
   const root=await mkdtemp(join(tmpdir(),"trebell-muse-e2e-")),repo=join(root,"muse-repo"),log=join(root,"muse.log");await mkdir(repo,{recursive:true});
   const failing=serveFails?join(root,"serve-fails"):null;if(failing)await writeFile(failing,"3");
   const folder=windows?join(root,"AppData","Local","Programs","muse"):join(root,"home",".local","bin");await mkdir(folder,{recursive:true});
@@ -46,14 +59,16 @@ async function startMuseHarness({serveFails=false}={}){
   const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,...(failing?{MUSE_FAKE_SERVE_FAIL:failing}:{})}}]},meta=new Map();
   const state={settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
   const env={...process.env,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),CLAUDE_CONFIG_DIR:join(root,"claude"),MUSE_INSTALL_DIR:"",...(windows?{LOCALAPPDATA:join(root,"AppData","Local")}:{HOME:join(root,"home")})};
-  const runtimeManager=new AgentRuntimeManager({state,env,runFn:onlyMuse(launcher)}),threadStore=new AgentThreadStore(env);
+  // Meta's channel manifest is not read from here: the update reading of Settings' listings finds it unavailable.
+  const fetchImpl=async()=>new Response("unavailable",{status:503});
+  const runtimeManager=new AgentRuntimeManager({state,env,runFn:onlyMuse(launcher),fetchImpl}),threadStore=new AgentThreadStore(env);
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
   const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,version:"muse-e2e-fixture"});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const frames=async method=>(await readFile(log,"utf8").catch(()=>"")).split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line)).filter(entry=>entry.frame?.method===method).map(entry=>entry.frame);
   return {
     root,repo,launcher,failing,runtimeManager,threadStore,frames,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,
-    async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})},
+    async close(){try{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}finally{offline.restore()}},
   };
 }
 
