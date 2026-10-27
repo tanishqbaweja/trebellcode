@@ -2,7 +2,8 @@
 // acceptForSession only skips the exact command or patch it answered, so every new command asked again. The allowances are kept
 // per thread and permission mode. A turn in another mode ends them, and so does the thread unloading (thread/unsubscribe, closed,
 // archived or deleted) or its app-server ending, as with Codex's own session approvals. Network access and extra permissions
-// stay per request.
+// stay per request, a command's own extra filesystem or network permission (additionalPermissions) too; input a command sends to a
+// process it started (kind writeStdin) is part of running it.
 const KINDS={
   "item/commandExecution/requestApproval":"command",execCommandApproval:"command",
   "item/fileChange/requestApproval":"fileChange",applyPatchApproval:"fileChange",
@@ -12,7 +13,7 @@ const LEGACY=new Set(["execCommandApproval","applyPatchApproval"]);
 // The kind of an approval request that "Allow session" can cover, or null.
 export function sessionApprovalKind(method,params={}){
   const kind=KINDS[method]||null;
-  return kind==="command"&&params?.networkApprovalContext?null:kind;
+  return kind==="command"&&(params?.networkApprovalContext||params?.additionalPermissions)?null:kind;
 }
 // The thread an approval belongs to: Codex's v2 requests name it threadId, its legacy ones conversationId.
 export function approvalThreadId(params={}){
