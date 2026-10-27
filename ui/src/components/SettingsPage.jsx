@@ -1063,9 +1063,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>
           {selectedInstances.map(instance=>{
             const status=agentInfo?.statuses?.find(item=>item.id===instance.id);const active=activeInstanceId===instance.id;
+            // Its answer reads as the harness rows' do: one that says nothing of a sign-in shows what was found, with no Sign in.
+            const noSignIn=saysNothingOfSignIn(status,instance.kind);
             return <div className="runtime-profile-row" key={instance.id}>
-              <button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(instance.kind,instance.id)}><span><strong>{instance.displayName||instance.id}</strong><small>{status?.available?status.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?"Active":"Use"}</em></button>
-              {(agentInfo?.definitions||[]).find(item=>item.id===instance.kind)?.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button onClick={()=>authenticateAgentRuntime(instance.kind,instance.id)} disabled={!!authenticatingAgent}>{authenticatingAgent===instance.id?"Opening…":"Sign in"}</button>}
+              <button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(instance.kind,instance.id)}><span><strong>{instance.displayName||instance.id}</strong><small>{noSignIn?status.message:status?.available?status.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?"Active":"Use"}</em></button>
+              {(agentInfo?.definitions||[]).find(item=>item.id===instance.kind)?.canAuthenticate&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button onClick={()=>authenticateAgentRuntime(instance.kind,instance.id)} disabled={!!authenticatingAgent}>{authenticatingAgent===instance.id?"Opening…":"Sign in"}</button>}
               {selectedAgentDefinition?.multipleInstances!==false&&<button onClick={()=>editInstance(instance)}>Edit</button>}
               {instance.id!==`${instance.kind}-default`&&<button onClick={()=>removeInstance(instance)}>Remove</button>}
               {switchRefusal?.profile&&switchRefusal.instanceId===instance.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}
