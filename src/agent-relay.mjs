@@ -1176,9 +1176,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           ?new OpenCode2AgentSession({...common,version:status.version,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp})
           :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp})))
       // Muse Code through Meta's SDK on a `muse serve` of Trebell's own, the thread's model and Thinking level resolved against the
-      // list its status check read.
+      // list its status check read, with the MCP servers the ACP harnesses get.
       :instance.kind==="muse"
-      ?new MuseAgentSession({...common,command:runtimeManager.executable(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys,modelCatalog:()=>runtimeManager.museModelCatalog?.(instance)||null})
+      ?new MuseAgentSession({...common,command:runtimeManager.executable(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys,modelCatalog:()=>runtimeManager.museModelCatalog?.(instance)||null,mcpServers:acpMcpServers})
       :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),argsForPermission:mode=>runtimeManager.acpArgs(instance,mode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,runTempRoot:instance.kind==="antigravity"&&!remoteIo?acpRuntimeTempRoot(runtimeManager.childEnv(instance),"antigravity"):null,attachmentsDir:instance.kind==="antigravity"&&!remoteIo?join(trebellHome(runtimeManager.env||process.env),"attachments"):null,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
     let runtime=create(),started,lost=null;
     // A Cursor thread runs in the Plan mode it last ran in until a turn names another (also after a restart).

@@ -1,6 +1,7 @@
 import { isSecretCliArgument, isSecretCliFlag, isSecretEnvironmentName } from "./secret-redactor.mjs";
 
-const ACP_MCP_RUNTIMES=new Set(["cursor","grok","antigravity"]);
+// The harnesses that get the person's local MCP servers as ACP lists them: Muse Code takes the same list into its session's config.
+const ACP_MCP_RUNTIMES=new Set(["cursor","grok","antigravity","muse"]);
 const STDIO_MCP_RUNTIMES=new Set(["native","claude",...ACP_MCP_RUNTIMES]);
 const HTTP_MCP_RUNTIMES=new Set(["native"]);
 

@@ -23,6 +23,8 @@ const MUSE_ASK_ATTEMPTS=3;
 const MUSE_SETTLED_LIMIT=500;
 export const MUSE_SIGNED_OUT_MESSAGE="Muse Code is signed out. Sign in with muse login, then send the message again.";
 export const MUSE_VIEW_GAP_MESSAGE="Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. The next message starts it again.";
+// A host that did not grant session MCP servers is refused when Trebell has servers for the session (T3 d6f47ff97).
+export const MUSE_SESSION_MCP_MESSAGE="This Muse Code build cannot take Trebell's MCP servers into its sessions. Update Muse Code to a version that supports session MCP servers.";
 // Meta's provider refuses "none"; the rest are MSP's efforts.
 const MUSE_EFFORTS=new Set(MUSE_REASONING_EFFORTS);
 // The model choice that lets Muse pick: the catalog's default row (T3 MUSE_DEFAULT_MODEL); the word itself never goes to Muse.
@@ -68,6 +70,20 @@ export function museToolStatus(item={}){
   if(item.status==="inProgress")return "in_progress";
   if(item.status==="completed"&&!(item.kind==="compaction"&&item.outcome&&item.outcome!=="compacted"))return "completed";
   return "failed";
+}
+
+// Trebell's MCP servers for a Muse session (T3 d6f47ff97): the repository tools (trebell_repository) and the person's own servers,
+// as session/start's and session/resume's config.mcpServers names them. Each is optional: with Muse's default, required, a server
+// Muse cannot reach fails the turn. A server Trebell runs is a stdio one and a remote one is streamable HTTP; MSP has no SSE.
+export function museMcpServers(servers=[]){
+  const out={},pairs=list=>Object.fromEntries((Array.isArray(list)?list:[]).filter(entry=>entry&&typeof entry.name==="string"&&entry.name).map(entry=>[entry.name,text(entry.value)]));
+  for(const server of Array.isArray(servers)?servers:[]){
+    const name=text(server?.name).trim();if(!name||server.type==="sse")continue;
+    const url=text(server.url).trim(),command=text(server.command).trim();
+    if(url&&!command)out[name]={transport:"streamableHttp",url,headers:pairs(server.headers),mode:"optional"};
+    else if(command)out[name]={transport:"stdio",command,args:(Array.isArray(server.args)?server.args:[]).map(text),env:pairs(server.env),mode:"optional"};
+  }
+  return out;
 }
 
 function jsonObject(value){
@@ -244,9 +260,12 @@ export class MuseAgentSession{
   // modelCatalog: the list Muse Code's status check read ({models, metadata, preferred}, museModelCatalog), or null, which the
   // thread's model and Thinking level are resolved against before each turn. env: the profile's (AgentRuntimeManager.childEnv), and
   // approvedEnvironmentKeys the names its profile approves (a META_API_KEY reaches Muse only with its name there, museEnvironment).
-  constructor({command="muse",cwd,env=undefined,approvedEnvironmentKeys=[],permissionMode="supervised",onUpdate,onPermission=null,onQuestion=null,version="0.0.0",modelCatalog=()=>null,spawnFn=undefined,platform=process.platform,loadSdk=loadMuseSdk,stopTree=undefined,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,requestTimeoutMs=MUSE_REQUEST_TIMEOUT_MS,interruptTimeoutMs=MUSE_INTERRUPT_TIMEOUT_MS}={}){
+  // mcpServers: the MCP servers the session gets, as the ACP harnesses get them (the relay's trebell_repository and the person's own,
+  // museMcpServers).
+  constructor({command="muse",cwd,env=undefined,approvedEnvironmentKeys=[],permissionMode="supervised",onUpdate,onPermission=null,onQuestion=null,mcpServers=[],version="0.0.0",modelCatalog=()=>null,spawnFn=undefined,platform=process.platform,loadSdk=loadMuseSdk,stopTree=undefined,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,requestTimeoutMs=MUSE_REQUEST_TIMEOUT_MS,interruptTimeoutMs=MUSE_INTERRUPT_TIMEOUT_MS}={}){
     this.command=command;this.cwd=resolve(cwd||process.cwd());this.env=env;this.permissionMode=normalizePermissionMode(permissionMode||"supervised");
     this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.version=version;this.modelCatalog=modelCatalog;
+    this.mcpServers=Array.isArray(mcpServers)?mcpServers:[];
     this.hostOptions={spawnFn,platform,stopTree,startupTimeoutMs,shutdownTimeoutMs,approvedEnvironmentKeys};this.platform=platform;this.loadSdk=loadSdk;
     this.requestTimeoutMs=requestTimeoutMs;this.interruptTimeoutMs=interruptTimeoutMs;
     this.args=museServeArgs(this.permissionMode);this.launched=null;this.host=null;this.connection=null;this.initializeResult=null;this.sessionSetup=null;
@@ -300,12 +319,16 @@ export class MuseAgentSession{
     connection.onProtocolError(error=>{if(this.host===host)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"protocol_warning",message:`Muse Code sent a frame Trebell could not read: ${error?.message||error}`}})});
     this.#watch(host);
     try{
+      // Trebell's MCP servers ride the session's config, which the host must have granted: one that did not is refused before any
+      // session opens (T3 register).
+      const mcpServers=museMcpServers(this.mcpServers),config=Object.keys(mcpServers).length?{config:{mcpServers}}:{};
+      if(config.config&&!(Array.isArray(this.initializeResult?.grantedCapabilities)&&this.initializeResult.grantedCapabilities.includes("sessionMcp")))throw new Error(MUSE_SESSION_MCP_MESSAGE);
       const [workspaceRoot,turnRoot]=await Promise.all([museWorkspaceRoot(this.cwd,{platform:this.platform,verbatim:false}),museWorkspaceRoot(this.cwd,{platform:this.platform})]);
       this.turnRoot=turnRoot;
       const modelId=this.#resolveModel(model);this.wantedModel=modelId;
       const sessionId=providerSessionId?text(providerSessionId):connection.mintCommandId();
       this.sessionId=sessionId;
-      const result=providerSessionId?await this.#resume(sessionId):await this.#command("session/start",{sessionId,workspaceRoot,providerId:"meta",...(modelId?{modelId}:{}),approvalMode:plan.approvalMode,permissionProfile:plan.permissionProfile});
+      const result=providerSessionId?await this.#resume(sessionId,config):await this.#command("session/start",{sessionId,workspaceRoot,...config,providerId:"meta",...(modelId?{modelId}:{}),approvalMode:plan.approvalMode,permissionProfile:plan.permissionProfile});
       if(result?.session?.sessionId!==sessionId)throw new Error("Muse Code answered with another session than the one Trebell asked for.");
       this.model=text(result.session.modelId)||modelId;
       this.sessionSetup={sessionId,models:{currentModelId:this.model,availableModels:this.model?[{modelId:this.model,name:this.model}]:[]},configOptions:[],modes:{currentModeId:"default",availableModes:[]}};
@@ -320,10 +343,10 @@ export class MuseAgentSession{
   // A saved conversation is resumed with its mode's profile asked for again, then its approval mode set (a resume replays the mode
   // it had); one Muse no longer has is a lost session, which the relay continues in a fresh one with the thread's earlier messages
   // handed over.
-  async #resume(sessionId){
+  async #resume(sessionId,config={}){
     const {permissionProfile,approvalMode}=this.launched?.plan||museSessionPolicy(this.permissionMode);
     try{
-      const result=await this.#command("session/resume",{sessionId,excludeItems:true,permissionProfile});
+      const result=await this.#command("session/resume",{sessionId,excludeItems:true,...config,permissionProfile});
       await this.#command("session/setApprovalMode",{sessionId,mode:approvalMode});
       return result;
     }catch(error){

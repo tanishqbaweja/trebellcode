@@ -23,8 +23,9 @@ async function fakeMuseInstall(root){
   if(!windows)await chmod(launcher,0o755);
   return {launcher,env:windows?{LOCALAPPDATA:join(root,"AppData","Local")}:{HOME:join(root,"home")}};
 }
-function museState(environment={}){
-  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment}]},meta=new Map();
+// extra: more settings (the person's MCP servers).
+function museState(environment={},extra={}){
+  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment}],...extra},meta=new Map();
   return {settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
 }
 // The status checks' CLI runs for the stand-in only: any other CLI answers as not installed, so nothing installed here is started.
@@ -41,13 +42,15 @@ function onlyMuse(launcher){
 export async function eventually(check,label,ms=15_000){const end=Date.now()+ms;while(!(await check())){if(Date.now()>end)throw new Error("timed out waiting for "+label);await new Promise(done=>setTimeout(done,25))}}
 const entries=async log=>(await readFile(log,"utf8").catch(()=>"")).split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line));
 
-export async function museRelay(prefix,{environment={},answer=()=>undefined}={}){
+// settings: more settings; relayOptions: more of the relay's options (a context engine, which gives each thread Trebell's repository
+// tools).
+export async function museRelay(prefix,{environment={},answer=()=>undefined,settings={},relayOptions={}}={}){
   const root=await mkdtemp(join(tmpdir(),prefix)),log=join(root,"muse.log"),install=await fakeMuseInstall(root);
   const env={...process.env,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),CLAUDE_CONFIG_DIR:join(root,"claude"),MUSE_INSTALL_DIR:"",...install.env};
-  const state=museState({MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,...environment});
+  const state=museState({MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,...environment},settings);
   const manager=new AgentRuntimeManager({state,env,runFn:onlyMuse(install.launcher)}),threadStore=new AgentThreadStore(env);
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});
-  const relay=attachAgentRelay(server,{runtimeManager:manager,threadStore,terminals:{},state,version:"1.6.0-test"});
+  const relay=attachAgentRelay(server,{runtimeManager:manager,threadStore,terminals:{},state,version:"1.6.0-test",...relayOptions});
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   const ws=new WebSocket("ws://127.0.0.1:"+server.address().port+"/api/agent/ws");await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
   const notifications=[],requests=[];
