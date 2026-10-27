@@ -1,8 +1,12 @@
 // What an external harness (Claude Code, Codex, Cursor, Grok, OpenCode, Antigravity) starts with, beside the OS baseline and its own
-// variables: the person's toolchain locations and proxy, as their terminal gives them, without a value that holds a credential.
-// Native's command environment is what it was. Fixture values only: no real environment is read.
+// variables: the person's toolchain locations and proxy, as their terminal gives them, without a value that holds a credential, and
+// for Claude Code its cloud-provider switches with their region, profile, project and model names. Native's command environment is
+// what it was. Fixture values only: no real environment is read.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { codexAppServerEnvironment } from "../src/gui-server.mjs";
 import { buildRuntimeEnvironment, TOOLCHAIN_ENVIRONMENT_KEYS } from "../src/runtime-environment.mjs";
@@ -46,6 +50,47 @@ test("on Windows a harness gets each proxy once, whatever its spelling, and its 
   assert.deepEqual(approved,{PATH:"C:\\Tools",https_proxy:"http://user:pass@proxy:8080"});
 });
 
+test("Claude Code gets its cloud-provider switches and their region, profile, project and model names, and not the providers' secrets",()=>{
+  const providers={
+    CLAUDE_CODE_USE_BEDROCK:"1",CLAUDE_CODE_USE_VERTEX:"1",CLAUDE_CODE_USE_FOUNDRY:"1",CLAUDE_CODE_USE_MANTLE:"1",CLAUDE_CODE_SKIP_BEDROCK_AUTH:"1",
+    AWS_REGION:"us-east-1",AWS_PROFILE:"bedrock-dev",ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION:"us-west-2",ANTHROPIC_BEDROCK_BASE_URL:"https://gateway.example/bedrock",
+    ANTHROPIC_VERTEX_PROJECT_ID:"vertex-project",CLOUD_ML_REGION:"global",VERTEX_REGION_CLAUDE_4_6_SONNET:"europe-west1",VERTEX_REGION_CLAUDE_5_5_OPUS:"us-east5",
+    ANTHROPIC_FOUNDRY_RESOURCE:"my-resource",ANTHROPIC_DEFAULT_OPUS_MODEL:"us.anthropic.claude-opus-4-8",ANTHROPIC_DEFAULT_HAIKU_MODEL:"claude-haiku-4-5",ANTHROPIC_MODEL:"claude-opus-4-8",
+  };
+  const secrets={AWS_ACCESS_KEY_ID:"AKIAFIXTURE",AWS_SECRET_ACCESS_KEY:"fixture-secret",AWS_SESSION_TOKEN:"fixture-session",AWS_BEARER_TOKEN_BEDROCK:"fixture-bedrock-key",
+    ANTHROPIC_FOUNDRY_API_KEY:"fixture-foundry-key",ANTHROPIC_FOUNDRY_AUTH_TOKEN:"fixture-foundry-token",ANTHROPIC_AWS_API_KEY:"fixture-aws-platform",ANTHROPIC_CUSTOM_HEADERS:"Authorization: Bearer fixture"};
+  const parent={PATH:"/usr/bin",HOME:"/home/me",...providers,...secrets};
+  const claude=buildRuntimeEnvironment("claude",{parent,platform:"linux"});
+  for(const [name,value] of Object.entries(providers))assert.equal(claude[name],value,name);
+  for(const name of Object.keys(secrets))assert.equal(claude[name],undefined,name);
+  // The person can still approve one, as any other name.
+  assert.equal(buildRuntimeEnvironment("claude",{parent,approved:["AWS_SECRET_ACCESS_KEY"],platform:"linux"}).AWS_SECRET_ACCESS_KEY,"fixture-secret");
+  // They are Claude Code's: Codex and Cursor do not get them.
+  for(const kind of ["codex","cursor"]){const env=buildRuntimeEnvironment(kind,{parent,platform:"linux"});for(const name of ["CLAUDE_CODE_USE_BEDROCK","VERTEX_REGION_CLAUDE_4_6_SONNET","ANTHROPIC_VERTEX_PROJECT_ID"])assert.equal(env[name],undefined,`${kind} ${name}`)}
+});
+
+// `claude auth status` answers for the provider its switch names: Claude Code 2.1.311 in a home of its own said
+// {"loggedIn":true,"authMethod":"third_party","apiProvider":"bedrock"} with CLAUDE_CODE_USE_BEDROCK=1 (and the same for "vertex" and
+// "foundry" with their switches), and {"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"} (exit 1) without one
+// (live check, 2026-10-27).
+test("a Claude Code profile that runs on Amazon Bedrock from the shell reads signed in: its status check gets the switch and the region",async t=>{
+  const home=mkdtempSync(join(tmpdir(),"trebell-harness-env-"));t.after(()=>rmSync(home,{recursive:true,force:true}));
+  const binary=join(home,"claude");writeFileSync(binary,"claude build 1");
+  const calls=[],settings={agentRuntime:"claude",agentRuntimeInstances:[{id:"claude-default",kind:"claude",binaryPath:binary,environment:{}}]};
+  const runFn=async(_command,args,options)=>{
+    calls.push({args:args.join(" "),env:options.env});
+    if(args[0]==="--version")return {ok:true,code:0,error:null,stdout:"2.1.310 (Claude Code)\n",stderr:""};
+    return options.env.CLAUDE_CODE_USE_BEDROCK==="1"
+      ?{ok:true,code:0,error:null,stdout:JSON.stringify({loggedIn:true,authMethod:"third_party",apiProvider:"bedrock"}),stderr:""}
+      :{ok:false,code:1,error:null,stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"}),stderr:""};
+  };
+  const manager=new AgentRuntimeManager({state:{settings:()=>settings},platform:"linux",env:{PATH:"/usr/bin",HOME:home,TREBELL_HOME:join(home,"trebell"),CLAUDE_CODE_USE_BEDROCK:"1",AWS_REGION:"us-east-1",AWS_PROFILE:"bedrock-dev",AWS_SECRET_ACCESS_KEY:"fixture-secret"},runFn});
+  const status=await manager.probe("claude");
+  assert.deepEqual([status.installed,status.available,status.authenticated],[true,true,true],status.message);
+  const auth=calls.find(call=>call.args==="auth status");
+  assert.deepEqual([auth.env.CLAUDE_CODE_USE_BEDROCK,auth.env.AWS_REGION,auth.env.AWS_PROFILE,auth.env.AWS_SECRET_ACCESS_KEY],["1","us-east-1","bedrock-dev",undefined]);
+});
+
 test("Native's command environment is what it was, with and without the toolchain: no proxy, no Claude Code switch",()=>{
   const parent=parentWith({CLAUDE_CODE_USE_BEDROCK:"1",AWS_REGION:"us-east-1",VERTEX_REGION_CLAUDE_4_6_SONNET:"europe-west1",http_proxy:"http://proxy:3128"});
   assert.deepEqual(buildRuntimeEnvironment("native",{parent,platform:"linux"}),{PATH:"/usr/local/bin:/usr/bin",HOME:"/home/me",LANG:"en_US.UTF-8"});
@@ -55,11 +100,11 @@ test("Native's command environment is what it was, with and without the toolchai
 });
 
 test("the harness processes Trebell starts get them: Claude Code's sessions and checks, and the Codex app-server, with their homes from the profile",()=>{
-  const env=parentWith({CLAUDE_CONFIG_DIR:"/home/me/.claude-elsewhere",CODEX_HOME:"/home/me/.codex"});
+  const env=parentWith({CLAUDE_CONFIG_DIR:"/home/me/.claude-elsewhere",CODEX_HOME:"/home/me/.codex",CLAUDE_CODE_USE_VERTEX:"1",CLOUD_ML_REGION:"global"});
   const manager=new AgentRuntimeManager({state:{settings:()=>({})},platform:"linux",env});
   const claude=manager.childEnv({id:"claude-work",kind:"claude",homePath:"/home/me/.claude-work",approvedEnvironmentKeys:[],environment:{}});
   assert.equal(claude.CLAUDE_CONFIG_DIR,"/home/me/.claude-work","the profile's home, never the parent's");
-  assert.equal(claude.JAVA_HOME,TOOLCHAIN.JAVA_HOME);assert.equal(claude.HTTPS_PROXY,PROXY.HTTPS_PROXY);
+  assert.equal(claude.JAVA_HOME,TOOLCHAIN.JAVA_HOME);assert.equal(claude.HTTPS_PROXY,PROXY.HTTPS_PROXY);assert.equal(claude.CLAUDE_CODE_USE_VERTEX,"1");assert.equal(claude.CLOUD_ML_REGION,"global");
   assert.equal(claude.GITHUB_TOKEN,undefined);
   assert.equal(manager.childEnv({id:"claude-default",kind:"claude"}).CLAUDE_CONFIG_DIR,undefined,"no profile home: Claude Code's own default, not the parent's");
   const cursor=manager.childEnv({id:"cursor-default",kind:"cursor"});
