@@ -12,9 +12,9 @@ import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
 // Muse Code asking the person, as they meet it in Trebell: its approval on Trebell's approval card with Muse's own three choices, its
-// question in Trebell's question dialog, and a card Muse's reviewer takes away by deciding it. Behind the page run the real agent
-// relay and runtime manager on the stand-in Muse Code (tests/fixtures/muse/fake-muse.cjs), which asks as T3's recorded Muse session
-// asks and records what Trebell answers.
+// question in Trebell's question dialog, a card Muse's reviewer takes away by deciding it, a retry on the turn's retry row, and a turn
+// the subscription quota stopped. Behind the page run the real agent relay and runtime manager on the stand-in Muse Code
+// (tests/fixtures/muse/fake-muse.cjs), which asks as T3's recorded Muse session asks and records what Trebell answers.
 const auditDir=fileURLToPath(new URL("../../visual-audit/muse-requests/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const FAKE_MUSE=fileURLToPath(new URL("../../tests/fixtures/muse/fake-muse.cjs",import.meta.url));
 const MODEL_LIST=fileURLToPath(new URL("../../tests/fixtures/muse/model-list-1.4.13.json",import.meta.url));
@@ -165,3 +165,29 @@ test("an approval card Muse's reviewer decides goes by itself, with nothing sent
   }finally{await harness.close()}
 });
 
+test("a retry Muse schedules shows on the turn's retry row while the turn goes on, and a turn the quota stopped says the usage limit was reached and when it resets",async({page})=>{
+  test.setTimeout(120_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_RETRY_MS:"3000"}});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    // Muse retries the turn's model request: the row says so while it waits, and reads recovered once the reply comes.
+    await send(page,"Please retry once");
+    const row=page.locator(".tool-event.kind-retry");
+    await expect(row.locator("summary strong")).toHaveText("Retrying: Muse Code is trying again in 2 s (attempt 2 of 3): 429 Too Many Requests",{timeout:20_000});
+    await expect(row).toHaveClass(/status-running/);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await row.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-retry-row-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    await expect(reply(page,"Muse fixture reply after a retry.")).toBeVisible({timeout:20_000});
+    await expect(row.locator("summary strong")).toHaveText("Recovered after retrying");
+    // A turn the subscription quota stopped: the usage limit and its reset in the person's own time, not Meta's 429.
+    await send(page,"This one hits the quota");
+    const resets=new Date("2031-05-04T10:45:52Z").toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});
+    const failed=page.locator(".tool-event.kind-error").filter({hasText:"Muse Code usage limit reached"});
+    await expect(failed.locator("summary strong")).toHaveText(`Muse Code usage limit reached. Send the message again after it resets at ${resets}.`,{timeout:20_000});
+    await expect(failed).toHaveClass(/status-error/);
+    await expect(page.locator(".conversation-history")).not.toContainText("API error 429");
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await failed.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-usage-limit-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});

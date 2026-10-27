@@ -21,6 +21,8 @@ export const MUSE_FREE_TEXT_LIMIT=500;
 const MUSE_ASK_ATTEMPTS=3;
 // How many settled approvals and questions a session remembers, so a late copy of one is not asked again.
 const MUSE_SETTLED_LIMIT=500;
+export const MUSE_SIGNED_OUT_MESSAGE="Muse Code is signed out. Sign in with muse login, then send the message again.";
+export const MUSE_VIEW_GAP_MESSAGE="Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. The next message starts it again.";
 // Meta's provider refuses "none"; the rest are MSP's efforts.
 const MUSE_EFFORTS=new Set(MUSE_REASONING_EFFORTS);
 // The model choice that lets Muse pick: the catalog's default row (T3 MUSE_DEFAULT_MODEL); the word itself never goes to Muse.
@@ -196,6 +198,46 @@ export function museUserInputAnswers(questions=[],answers={}){
   }
   return {answers:out};
 }
+// A turn the subscription quota stopped (T3 93ea95cf4 usageLimits.ts): Muse types it with error.quota, and a refusal relayed without
+// one is a 429 that names the quota or a usage limit. A plain 429 rate limit stays an ordinary failure.
+export function museUsageLimited(error={},message=""){
+  return Boolean(error?.quota&&typeof error.quota==="object")||(/\b429\b/.test(text(message))&&/quota|usage limit/i.test(text(message)));
+}
+const MUSE_NAMED_RESET=/\bresets at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))/i;
+// The latest instant a JavaScript Date holds.
+const LATEST_DATE_MS=8.64e15;
+// When the limit lifts: the latest future reset among the used-up windows of Muse's last usage report (the 5-hour window and the
+// week, at 100% or more), the quota's own reset, and a "resets at <time>" in the refusal; null when none is known.
+export function museUsageLimitResetAt(usage,nowMs=Date.now(),{quota=null,message=""}={}){
+  const named=text(message).match(MUSE_NAMED_RESET)?.[1];
+  const resets=[...[usage?.window,usage?.weekly].map(window=>window&&window.usedPercent>=100?window.resetsAtMs:undefined),quota?.resetsAtMs,named===undefined?undefined:Date.parse(named)]
+    .filter(ms=>typeof ms==="number"&&Number.isFinite(ms)&&ms>nowMs&&ms<=LATEST_DATE_MS);
+  return resets.length?new Date(Math.max(...resets)).toISOString():null;
+}
+// What a turn the limit stopped says, with the reset in the person's own time when Muse gave one.
+export function museUsageLimitMessage(resetAt=null){
+  const at=resetAt?new Date(resetAt):null;
+  return at&&!Number.isNaN(at.getTime())
+    ?`Muse Code usage limit reached. Send the message again after it resets at ${at.toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"})}.`
+    :"Muse Code usage limit reached. Send the message again once it resets.";
+}
+// Muse's usage report (usage/changed, account-wide): when the host saw it, the tier, and the current window's and the week's
+// verbatim percentages (over 100 past the quota) with their resets; null for a report Trebell cannot read.
+export function museSubscriptionUsage(params={}){
+  const number=value=>typeof value==="number"&&Number.isFinite(value)&&value>=0,stamp=value=>number(value)&&value>0&&value<=LATEST_DATE_MS;
+  const window=params?.window,weekly=params?.weekly;
+  if(!stamp(params?.observedAtMs)||typeof params?.tier!=="string")return null;
+  if(!window||typeof window!=="object"||!number(window.usedPercent)||!(number(window.windowDurationMins)&&window.windowDurationMins>0)||!stamp(window.resetsAtMs))return null;
+  if(!weekly||typeof weekly!=="object"||!number(weekly.usedPercent)||!stamp(weekly.resetsAtMs))return null;
+  return {observedAtMs:params.observedAtMs,tier:params.tier,window:{usedPercent:window.usedPercent,windowDurationMins:window.windowDurationMins,resetsAtMs:window.resetsAtMs},weekly:{usedPercent:weekly.usedPercent,resetsAtMs:weekly.resetsAtMs}};
+}
+// turn/retryScheduled: Muse retries the turn's model request itself and the turn goes on, so its retry row says so in Trebell's
+// words (T3's Muse retry notice); null for a notice Trebell cannot read.
+export function museRetryNotice(params={}){
+  const whole=value=>Number.isInteger(value)&&value>=1,delay=params?.retryDelayMs,reason=text(params?.reason).replace(/\s+/g," ").trim();
+  if(!text(params?.turnId)||!whole(params?.nextAttempt)||!whole(params?.maxAttempts)||!reason||!(typeof delay==="number"&&Number.isFinite(delay)&&delay>=0))return null;
+  return `Muse Code is trying again in ${Math.max(1,Math.round(delay/1000))} s (attempt ${params.nextAttempt} of ${params.maxAttempts}): ${reason}`;
+}
 const requirementKey=requirement=>JSON.stringify(requirement??null);
 
 export class MuseAgentSession{
@@ -212,6 +254,8 @@ export class MuseAgentSession{
     this.dead=false;this.deadError=null;this.closed=false;this.activePrompt=null;
     // The approvals and questions Muse asked and has not settled ("approval:<id>", "question:<id>"), and the ones it settled.
     this.requests=new Map();this.settledRequests=new Set();
+    // Muse's last readable usage report (usage/changed), which a turn the quota stopped reads its reset from.
+    this.subscriptionUsage=null;
   }
 
   get busy(){return Boolean(this.activePrompt)}
@@ -352,14 +396,15 @@ export class MuseAgentSession{
     const done=new Promise((resolve,reject)=>{settle=resolve;fail=reject});
     const admitted=new Promise(resolve=>{admit=resolve});
     const turn={turnId,stopRequested:false,settled:false,items:new Map(),sent:new Map(),tools:new Set(),lastMessage:null,done,admitted,admit};
-    turn.settle=value=>{if(turn.settled)return;turn.settled=true;this.#endTurn();settle(value)};
-    turn.fail=error=>{if(turn.settled)return;turn.settled=true;this.#endTurn();fail(error)};
+    turn.settle=value=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,false);settle(value)};
+    turn.fail=error=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,true);fail(error)};
     done.catch(()=>{});
     return turn;
   }
-  // A turn's end settles what it left open (T3 finish): the approvals and questions asked in it go, cards and dialogs included,
-  // since Muse settles them with the turn. A workflow child's approval outlives it.
-  #endTurn(){
+  // A turn's end settles what it left open (T3 finish): a failed turn's running tools end failed, and the approvals and questions
+  // asked in it go, cards and dialogs included, since Muse settles them with the turn. A workflow child's approval outlives it.
+  #endTurn(turn,failed){
+    if(failed)for(const item of turn.items.values())if(item.status==="inProgress"&&turn.tools.has(item.itemId))this.onUpdate?.({sessionId:this.sessionId,update:{...acpToolFrame(museToolUpdate({...item,status:"failed",failureReason:text(item.failureReason)||"The turn ended before this finished."})),sessionUpdate:"tool_call_update"}});
     this.#withdrawRequests(entry=>!entry.child);
   }
 
@@ -556,14 +601,33 @@ export class MuseAgentSession{
 
   #notification(frame){
     const method=text(frame?.method),params=frame?.params;
-    if(!params||typeof params!=="object"||params.sessionId!==this.sessionId)return;
+    if(!params||typeof params!=="object")return;
+    // usage/changed is the account's, and names no session (T3).
+    if(method==="usage/changed")return void this.#usageChanged(params);
+    if(params.sessionId!==this.sessionId)return;
+    // A gap in what Muse delivered: this host's account of the conversation can no longer be trusted (T3 view/gap).
+    if(method==="view/gap")return void this.#lose(MUSE_VIEW_GAP_MESSAGE,{stop:true});
     if(method==="approval/requested"||method==="approval/updated"||method==="approval/resolved")return void this.#approvalEvent(method,params);
     if(method==="userInput/requested"||method==="userInput/settled")return void this.#questionEvent(method,params);
     const turn=this.activePrompt;if(!turn||turn.settled)return;
     if(method==="item/started"||method==="item/updated"||method==="item/completed")return this.#item(turn,params.item);
     if(method==="item/delta")return this.#delta(turn,params);
+    if(method==="turn/retryScheduled"&&(!params.turnId||params.turnId===turn.turnId))return void this.#retryScheduled(params);
     if(method==="turn/completed"&&params.turnId===turn.turnId)return this.#completed(turn,params);
   }
+  // The latest usage report a quota stop reads its reset from.
+  #usageChanged(params){
+    const usage=museSubscriptionUsage(params);
+    if(usage)this.subscriptionUsage=usage;else this.#skipped("usage/changed","it names no readable usage windows");
+  }
+  // Muse retrying the turn's model request: the turn's retry row, as Native's wait for the network shows, and the turn goes on.
+  #retryScheduled(params){
+    const message=museRetryNotice(params);
+    if(message)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",willRetry:true,message}});
+    else this.#skipped("turn/retryScheduled","it names no readable attempt, delay or reason");
+  }
+  // An informational notice Trebell cannot read is skipped with a log line, and the session goes on (T3 INFORMATIONAL_NOTIFICATIONS).
+  #skipped(method,reason){this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"protocol_warning",dropped:true,method,reason,message:`Trebell skipped Muse Code's ${method}: ${reason}.`}})}
 
   // Items keep their highest revision: an older one arriving late is ignored. Items of other turns are not this turn's.
   #item(turn,item){
@@ -605,11 +669,19 @@ export class MuseAgentSession{
     this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:type,content:{type:"text",text:value},messageId:item.itemId}});
   }
   // turn/completed settles the prompt: completed ends the turn, cancelled is a stop (interrupted when the person asked for it), and
-  // failed fails it with Muse's own error.
+  // failed fails it with Muse's own error. A stop the subscription quota made says the Muse Code usage limit was reached and when it
+  // resets (usageLimit, resetAt), as Claude Code's and Grok's limits do, Muse's own words kept as its detail; a turn Muse could not
+  // run signed out says how to sign in.
   #completed(turn,params){
     const terminal=text(params.terminal);
     if(terminal==="completed")return turn.settle({stopReason:"end_turn",providerMessageId:null,raw:params});
     if(terminal==="cancelled")return turn.settle({stopReason:"cancelled",interrupted:turn.stopRequested,providerMessageId:null,raw:params});
-    turn.fail(Object.assign(new Error(text(params.error?.message)||text(params.reason)||"Muse Code could not finish the turn."),{code:params.error?.kind||"MUSE_TURN_FAILED",raw:params}));
+    const error=params.error&&typeof params.error==="object"?params.error:{},detail=text(error.message)||text(params.reason),code=text(error.kind)||"MUSE_TURN_FAILED";
+    if(museUsageLimited(error,detail)){
+      const resetAt=museUsageLimitResetAt(this.subscriptionUsage,Date.now(),{quota:error.quota,message:detail});
+      return turn.fail(Object.assign(new Error(museUsageLimitMessage(resetAt)),{code,usageLimit:true,resetAt,detail,raw:params}));
+    }
+    if(code==="authRequired")return turn.fail(Object.assign(new Error(MUSE_SIGNED_OUT_MESSAGE),{code,detail,raw:params}));
+    turn.fail(Object.assign(new Error(detail||"Muse Code could not finish the turn."),{code,raw:params}));
   }
 }

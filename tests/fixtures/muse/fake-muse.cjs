@@ -10,6 +10,8 @@
 //                          "hold until steered"
 //   MUSE_FAKE_SERVE_FAIL   a file: while it is there, `serve` exits at once with the exit code it holds, after the line Muse writes
 //                          for a malformed settings file (3: Muse could not load its settings)
+//   MUSE_FAKE_FORGET       a file: while it is there, session/resume answers that the session was not found, as Muse does for a
+//                          session its store no longer has
 // A turn whose message says one of these runs as T3's recorded sessions (muse_permission) and Muse 1.4.13's schema shape them:
 //   "ask approval"      asks to run `touch muse-approved.txt` (approval/request and approval/requested, with Muse's own choices),
 //                       settles it with the choice decided, and replies APPROVED, ALWAYS ALLOWED or REJECTED
@@ -17,6 +19,9 @@
 //                       llmJudge)
 //   "ask question"      asks which approach to take (userInput/request and userInput/requested), settles it with the answer and
 //                       replies ANSWERED with it, or NO ANSWER for a cancel
+//   "retry"             schedules a retry of its model request (turn/retryScheduled), then replies
+//   "quota"             fails as Meta's quota refusal relayed by Muse does (a 429 naming the quota and its reset)
+//   "exit when idle"    replies, completes, and then the host exits with code 1, as a Muse that crashed between turns
 const fs=require("node:fs"),readline=require("node:readline");
 const log=entry=>{if(process.env.MUSE_FAKE_LOG)fs.appendFileSync(process.env.MUSE_FAKE_LOG,JSON.stringify(entry)+"\n")};
 const argv=process.argv.slice(2);
@@ -52,10 +57,17 @@ function startTurn(sessionId,params){
   notify("item/started",sessionId,{item:{itemId:turn.itemId,kind:"agentMessage",turnId,revision:1,status:"inProgress",text:""}});
   if(/ask approval|reviewer decides/i.test(words))return askApproval(sessionId,turnId,/reviewer decides/i.test(words));
   if(/ask question/i.test(words))return askQuestion(sessionId,turnId);
+  if(/quota/i.test(words))return setTimeout(()=>{running.delete(turnId);notify("turn/completed",sessionId,{turnId,terminal:"failed",reason:QUOTA_REFUSAL,error:{kind:"modelError",message:QUOTA_REFUSAL,retryable:true}})},20);
+  if(/retry/i.test(words)){
+    notify("turn/retryScheduled",sessionId,{turnId,attempt:1,nextAttempt:2,maxAttempts:3,reason:"429 Too Many Requests",retryDelayMs:2000,errorKind:"rateLimited",httpStatus:429,system:"meta",sourceRange:{}});
+    return setTimeout(()=>{reply(sessionId,turn,"Muse fixture reply after a retry.");complete(sessionId,turnId)},Number(process.env.MUSE_FAKE_RETRY_MS||400));
+  }
   reply(sessionId,turn,`Muse fixture reply on ${state?.modelId||"Muse's default model"} at ${params.reasoningEffort||"Muse's default"} effort.`);
   const hold=process.env.MUSE_FAKE_HOLD==="1"||(params.input||[]).some(part=>part.type==="text"&&/hold until steered/i.test(part.text));
   if(!hold)setTimeout(()=>complete(sessionId,turnId),20);
+  if(/exit when idle/i.test(words))setTimeout(()=>{process.stderr.write("panic: the model stream went away\n");process.exit(1)},300);
 }
+const QUOTA_REFUSAL="API error 429: All credentials for model muse-wonder-1.0-contributor are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2031-05-04T10:45:52Z.) (after 10 provider attempts)";
 // The approval Muse asks before running `touch muse-approved.txt` (T3's recorded muse_permission), and how it settles.
 const approvals=new Map(),questions=new Map();
 const SHELL_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"allow_local_prefix",label:"Always allow in this workspace: touch ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: touch ..."},{choiceId:"abort",label:"Reject",decision:"abort",scope:"once",acceptsFeedback:true}];
@@ -99,7 +111,10 @@ const answers={
   initialize:params=>({serverInfo:{name:"muse",version:"1.4.13"},userAgent:"muse-build/1.4.13 (serve; fake)",museHome:"~/.local/share/muse",platformFamily:process.platform==="win32"?"windows":"unix",platformOs:process.platform==="win32"?"windows":process.platform,schema:{version:1,fingerprint:"sha256:7fddaf646dbc317e5fcac0785e135eb04df14fbb0db1863089dfd6da21730e5b"},grantedCapabilities:[...(params?.capabilities?.requestedCapabilities||[])],experimentalApi:false,sessionDurability:argv.includes("--no-session-log")?"ephemeral":"durable",sandboxAvailability:"unavailable"}),
   "model/list":()=>catalog(),
   "session/start":params=>{const state={modelId:params.modelId||"muse-spark-1.2",workspaceRoot:params.workspaceRoot};sessions.set(params.sessionId,state);return {session:sessionRecord(params.sessionId,state),viewCursor:`v:${params.sessionId}:${++cursor}`}},
-  "session/resume":params=>{const state=sessions.get(params.sessionId)||{modelId:process.env.MUSE_FAKE_RESUMED_MODEL||"muse-spark-1.2",workspaceRoot:null};sessions.set(params.sessionId,state);return {session:sessionRecord(params.sessionId,state),history:{mode:"none",items:null},pendingRequests:[],viewCursor:`v:${params.sessionId}:${++cursor}`}},
+  "session/resume":params=>{
+    if(process.env.MUSE_FAKE_FORGET&&fs.existsSync(process.env.MUSE_FAKE_FORGET))throw Object.assign(new Error(`session ${params.sessionId} not found`),{code:-32020,kind:"sessionNotFound"});
+    const state=sessions.get(params.sessionId)||{modelId:process.env.MUSE_FAKE_RESUMED_MODEL||"muse-spark-1.2",workspaceRoot:null};sessions.set(params.sessionId,state);return {session:sessionRecord(params.sessionId,state),history:{mode:"none",items:null},pendingRequests:[],viewCursor:`v:${params.sessionId}:${++cursor}`};
+  },
   "session/setApprovalMode":params=>({commandId:params.commandId,applyOutcome:"noop"}),
   "session/setModel":params=>{
     const modelId=params?.model?.modelId;

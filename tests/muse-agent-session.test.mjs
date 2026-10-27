@@ -584,8 +584,8 @@ test("a failed turn rejects with Muse's own error, and a host that exits during 
   const failed=await startSession();
   const turn=failed.session.prompt([{type:"text",text:"go"}]);
   const {params:{commandId:turnId}}=await failed.muse.next("turn/start");
-  failed.muse.notify("turn/completed",{sessionId:failed.session.sessionId,viewCursor:"v",terminal:"failed",turnId,reason:"not logged in: run /login to add an API key",error:{kind:"authRequired",message:"not logged in: run /login to add an API key",retryable:false}});
-  await assert.rejects(turn,error=>{assert.equal(error.message,"not logged in: run /login to add an API key");assert.equal(error.code,"authRequired");return true});
+  failed.muse.notify("turn/completed",{sessionId:failed.session.sessionId,viewCursor:"v",terminal:"failed",turnId,reason:"model step failed: upstream answered 500",error:{kind:"modelError",message:"model step failed: upstream answered 500",retryable:false}});
+  await assert.rejects(turn,error=>{assert.equal(error.message,"model step failed: upstream answered 500");assert.equal(error.code,"modelError");return true});
   assert.equal(failed.session.dead,false);
   await failed.session.close();
 

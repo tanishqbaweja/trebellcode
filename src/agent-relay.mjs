@@ -1523,6 +1523,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       emit("thread/providerMetadata/updated",{threadId,type,update});
       // A changed model option carries the account's current model list (T3 AntigravityProvider onConfigOptionsUpdated).
       if(type==="config_option_update"){const live=sessions.get(threadId);if(live)sessionModelReports.get(live)?.()}
+    }else if(type==="runtime_error"&&update.willRetry===true){
+      // A harness retrying the turn's request itself (Muse Code's turn/retryScheduled) has not stopped: the turn goes on, and its retry
+      // row says so, as Native's wait for the network does.
+      emit("error",{threadId,turnId,willRetry:true,message:update.message||"Retrying the turn's request."});
     }else if(type==="runtime_error"){
       // A dead ACP process leaves the thread: the next turn starts the harness again and resumes the conversation (T3 releases
       // an errored session), and its open approval or question cards are withdrawn.
