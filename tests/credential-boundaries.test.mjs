@@ -1,13 +1,17 @@
-// Trebell never reads a harness's stored sign-in to act for it, and never poses as another app's client (the owner's rule).
-// T3 Code has three probes that do, and Trebell does not port them:
+// What this scan holds Trebell's server and desktop code to (the owner's rule): it never reads Claude Code's stored Claude.ai login
+// (.credentials.json, claudeAiOauth), never uses Antigravity's token file (acp_token.json) beyond checking that it exists, and never
+// poses as another app's client. T3 Code has three probes that break it, and Trebell does not port them:
 // - claudeResetCredits.ts reads Claude Code's <CLAUDE_CONFIG_DIR>/.credentials.json (claudeAiOauth.accessToken) and calls
 //   Anthropic's OAuth API as claude-cli/<version>. Anthropic: "developers may not collect, store, or intermediate Claude.ai
 //   credentials or session tokens".
 // - cliproxyApi.ts sends the subscription's OAuth calls through a proxy as claude-code/<version>.
 // - antigravityUsageLimits.ts reads Antigravity's acp_token.json (its OAuth client secret and refresh token) and calls Google's
 //   internal quota endpoints as Antigravity's own client (aidev_client), the use Antigravity's terms (section 6) name.
-// Cursor's usage read went out as the Cursor CLI (x-cursor-client-type: cli) too. This scan of Trebell's server and desktop code
-// fails on any of them and names the file and line it found.
+// Cursor's usage read went out as the Cursor CLI (x-cursor-client-type: cli) too. The scan fails on any of them and names the file
+// and line it found.
+// It does not cover every stored sign-in: the Cursor and Grok usage meters (src/agent-usage-limits.mjs) still read those CLIs' stored
+// login tokens and send them to the CLIs' own services, by the plan's decision (T3 does the same), and the OpenCode Go meter reads the
+// API key kept in OpenCode's auth.json. Whether they go on doing so is the owner's decision, still open.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
