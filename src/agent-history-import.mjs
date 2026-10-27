@@ -76,10 +76,13 @@ export function parseCodexHistoryPrefix(text,{path="",updatedAt=0,createdAt=0}={
     if(!timestamp&&record.timestamp)timestamp=Date.parse(record.timestamp)||null;
     const payload=record.payload||{};
     if(record.type==="session_meta"){
-      // Left out before it counts toward the scan's sessions, whatever later records say.
-      if(codexSubagentSource(payload.source))return null;
-      sessionId=String(payload.id||payload.session_id||sessionId||"").trim()||sessionId;
-      cwd=String(payload.cwd||cwd||"").trim()||cwd;
+      // The rollout's own session_meta comes first: a fork copies its ancestors' in after it, which name other sessions (a subagent's
+      // among them). A subagent's own is left out before it counts toward the scan's sessions, whatever later records say.
+      if(!sessionId){
+        if(codexSubagentSource(payload.source))return null;
+        sessionId=String(payload.id||payload.session_id||"").trim()||null;
+      }
+      cwd=cwd||String(payload.cwd||"").trim()||null;
     }else if(record.type==="turn_context"){
       model=String(payload.model||model||"").trim()||model;
     }else if(record.type==="event_msg"&&payload.type==="user_message"&&!request){

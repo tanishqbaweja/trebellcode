@@ -49,6 +49,30 @@ test("only a subagent or subAgent key in a session's source marks it as Codex's 
   for(const source of ["cli","vscode","exec",undefined,null,{custom:"launcher"},["subagent"]])assert.equal(parse(source)?.title,"Fix the thing",JSON.stringify(source)??"undefined");
 });
 
+// A Codex fork copies its ancestors' session_meta records in after its own (T3 Code's "uses the first valid Codex session ID when a
+// fork copies ancestor metadata"): the person's fork of a review or child-agent thread is theirs, under its own id.
+test("a person's fork of a subagent's thread is listed under its own id, whatever ancestor session_meta it copied",()=>{
+  const fork=parseCodexHistoryPrefix(rollout([
+    {type:"session_meta",payload:{id:"fork-session",forked_from_id:"review-session",cwd:"C:\\repo",source:"vscode"}},
+    {type:"session_meta",payload:{id:"review-session",cwd:"C:\\repo",source:{subagent:"review"}}},
+    {type:"session_meta",payload:{id:"parent-session",cwd:"C:\\other",source:"cli"}},
+    {type:"event_msg",payload:{type:"user_message",message:"Continue in the fork"}},
+  ]));
+  assert.deepEqual([fork?.providerSessionId,fork?.cwd,fork?.title],["fork-session","C:\\repo","Continue in the fork"]);
+  const plain=parseCodexHistoryPrefix(rollout([
+    {type:"session_meta",payload:{id:"fork-session",forked_from_id:"parent-session"}},
+    {type:"session_meta",payload:{id:"parent-session",cwd:"C:\\repo"}},
+    {type:"event_msg",payload:{type:"user_message",message:"Continue in the fork"}},
+  ]));
+  assert.equal(plain?.providerSessionId,"fork-session","the first valid id, not an ancestor's");
+  // A subagent's own session that copied a person's session_meta after its own is still the subagent's.
+  assert.equal(parseCodexHistoryPrefix(rollout([
+    {type:"session_meta",payload:{id:"review-session",cwd:"C:\\repo",source:{subagent:"review"}}},
+    {type:"session_meta",payload:{id:"person-session",cwd:"C:\\repo",source:"vscode"}},
+    {type:"event_msg",payload:{type:"user_message",message:"Review the change"}},
+  ])),null);
+});
+
 test("Codex history names a session after the request, not the setup text Codex records ahead of it",()=>{
   const title=(...messages)=>parseCodexHistoryPrefix(rollout([
     {type:"session_meta",payload:{id:"codex-session",cwd:"C:\\repo"}},

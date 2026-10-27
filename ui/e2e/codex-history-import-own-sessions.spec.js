@@ -11,8 +11,9 @@ import { attachCodexRelay } from "../../src/codex-relay.mjs";
 
 // Tools > Conversation history on a Codex window, as a person scans it. The scan is the server's own (scanLocalAgentHistory, as
 // /api/history-import runs it) over a Codex home of fixture sessions: three of the person's own, each opening with the setup text
-// Codex records ahead of a request, and four newer ones Codex ran for itself (a child agent, a review, a guardian check and a
-// compaction). The list shows the person's three, each named after what was asked.
+// Codex records ahead of a request, their fork of a review's thread (which carries the review's session_meta after its own), and four
+// newer ones Codex ran for itself (a child agent, a review, a guardian check and a compaction). The list shows the person's four,
+// each named after what was asked.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
@@ -40,6 +41,8 @@ async function writeCodexHome(root,workspace){
     {id:"own-vscode",source:"vscode",minutesAgo:10,messages:[`# AGENTS.md instructions for ${workspace}\n\n<INSTRUCTIONS>\nUse tabs.\n</INSTRUCTIONS>\n## My request for Codex:\nFix the flaky checkout test`]},
     {id:"own-cli",source:"cli",minutesAgo:20,messages:[`<environment_context>\n<cwd>${workspace}</cwd>\n<shell>bash</shell>\n</environment_context>\n\nAdd a dark mode toggle to the settings page`]},
     {id:"own-app",minutesAgo:30,messages:["<recommended_plugins>\nGitHub\n</recommended_plugins>\n<in-app-browser-context source=\"ambient-ui-state\">\nTab\n</in-app-browser-context>","Write the release notes for 2.4"]},
+    // The person's fork of the review's thread: its own session_meta, then the review's, which a fork copies in after it.
+    {id:"own-fork",source:"vscode",forkOf:{id:"review",source:{subagent:"review"}},minutesAgo:5,messages:["Apply the review's fixes in my fork"]},
     {id:"child-agent",source:{subagent:{thread_spawn:{parent_thread_id:"own-vscode",depth:1}}},minutesAgo:1,messages:["Investigate the failing checkout test"]},
     {id:"review",source:{subagent:"review"},minutesAgo:2,messages:["Review the current changes"]},
     {id:"guardian",source:{subagent:{other:"guardian"}},minutesAgo:3,messages:["Check whether this command is safe to run"]},
@@ -49,7 +52,8 @@ async function writeCodexHome(root,workspace){
   for(const session of sessions){
     const path=join(day,`rollout-2026-10-26T12-00-00-${session.id}.jsonl`);
     await writeFile(path,[
-      {timestamp:"2026-10-26T12:00:00Z",type:"session_meta",payload:{id:session.id,cwd:workspace,...(session.source?{source:session.source}:{})}},
+      {timestamp:"2026-10-26T12:00:00Z",type:"session_meta",payload:{id:session.id,cwd:workspace,...(session.source?{source:session.source}:{}),...(session.forkOf?{forked_from_id:session.forkOf.id}:{})}},
+      ...(session.forkOf?[{timestamp:"2026-10-26T11:00:00Z",type:"session_meta",payload:{id:session.forkOf.id,cwd:workspace,source:session.forkOf.source}}]:[]),
       {type:"turn_context",payload:{cwd:workspace,model:"gpt-test"}},
       ...session.messages.map(message=>({type:"event_msg",payload:{type:"user_message",message}})),
     ].map(record=>JSON.stringify(record)).join("\n"));
@@ -84,12 +88,12 @@ test("Conversation history lists a person's own Codex sessions, named after what
     const history=page.locator(".capabilities-page .capability-card").filter({has:page.getByText("Conversation history",{exact:true})}).first();
     await history.getByRole("button",{name:"Scan history",exact:true}).click();
     const rows=history.locator(".history-import-list>div");
-    await expect(rows.locator("strong")).toHaveText(["Fix the flaky checkout test","Add a dark mode toggle to the settings page","Write the release notes for 2.4"]);
+    await expect(rows.locator("strong")).toHaveText(["Apply the review's fixes in my fork","Fix the flaky checkout test","Add a dark mode toggle to the settings page","Write the release notes for 2.4"]);
     expect(scans).toBe(1);
-    await expect(history.locator(".capability-card-head em")).toHaveText("3");
+    await expect(history.locator(".capability-card-head em")).toHaveText("4");
     for(const text of ["Investigate the failing checkout test","Review the current changes","Check whether this command is safe to run","Summarize the conversation so far","AGENTS.md","environment_context"])await expect(history,text).not.toContainText(text);
     await expect(rows.first()).toContainText("Codex · "+workspace);
-    await expect(rows.getByRole("button",{name:"Import",exact:true})).toHaveCount(3);
+    await expect(rows.getByRole("button",{name:"Import",exact:true})).toHaveCount(4);
     for(const mode of ["dark","light"]){
       if(mode==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
       await history.scrollIntoViewIfNeeded();
