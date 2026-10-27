@@ -27,8 +27,10 @@ export function attachCodexRelay(httpServer, {
   handleRequest = null,
   handleServerRequest = null,
   transformClientMessage = null,
-  // Synchronous (message, {targetKey, targetUrl, requestUpstream}) => message: rewrites a Codex notification before the
-  // renderer gets it, so notifications keep their order.
+  // Synchronous (message, {targetKey, targetUrl, requestUpstream, connected}) => message: rewrites a Codex notification before the
+  // renderer gets it, so notifications keep their order. false keeps it from the renderer (a goal Trebell is still writing).
+  // connected() says whether the renderer is still there: a request made for it later, once it has gone, opens a connection no one
+  // closes.
   transformServerMessage = null,
   // Synchronous (message, {targetKey}) => message: rewrites a Codex request the renderer is to answer before it gets it.
   transformServerRequest = null,
@@ -182,7 +184,7 @@ export function attachCodexRelay(httpServer, {
             }
           }
           if(transformServerMessage&&message?.method&&!Object.prototype.hasOwnProperty.call(message,"id")){
-            try{message=transformServerMessage(message,{targetKey:record.key,targetUrl:record.url,requestUpstream})||message}
+            try{const next=transformServerMessage(message,{targetKey:record.key,targetUrl:record.url,requestUpstream,connected:()=>!context.closed});if(next===false)return;message=next||message}
             catch(error){log("Codex notification hook failed: "+error.message)}
           }
           if(transformServerResponse&&requestMeta){

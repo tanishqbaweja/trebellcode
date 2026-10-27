@@ -158,3 +158,29 @@ test("a Codex file-change approval's card names the files it adds, edits, moves 
     await expect(card(page)).toHaveCount(0);
   }finally{await harness.close()}
 });
+
+test("/goal sent while a Codex turn runs stops that turn and starts the goal, whose first turn asks for the work",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,"Release goal");const {codex,thread}=harness;
+  try{
+    const composer=page.getByTestId("composer"),stop=page.getByRole("button",{name:"Stop",exact:true});
+    await composer.click();await page.keyboard.type("Count from one to forty, one number per line.",{delay:8});await page.keyboard.press("Enter");
+    await expect.poll(()=>codex.turns.length).toBe(1);await expect(stop).toBeVisible();
+    // While it runs, a new goal: the running turn is stopped, then the goal is set and its first turn starts.
+    await composer.click();await page.keyboard.type("/goal Ship the release notes",{delay:8});await page.keyboard.press("Enter");
+    await expect.poll(()=>codex.sent("turn/interrupt")).toEqual([{threadId:thread.id,turnId:"codex-turn-1"}]);
+    await expect.poll(()=>codex.turns.length).toBe(2);
+    expect(codex.turns[0].status).toBe("interrupted");
+    expect(codex.turns[1].input.filter(item=>item.type==="text").map(item=>item.text)).toEqual(["Start working toward this goal: Ship the release notes"]);
+    await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("active");
+    expect(codex.sent("thread/goal/set").map(params=>[params.objective||null,params.status||null])).toEqual([["Ship the release notes","paused"],[null,"active"]]);
+    await expect(composer).toHaveValue("");await expect(stop).toBeVisible();
+    await expect(page.locator(".user-bubble").last()).toContainText("Start working toward this goal: Ship the release notes");
+    await expect(page.getByTestId("composer-alert")).toHaveCount(0);
+    // The Goal panel keeps the objective as written.
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    const panel=page.getByTestId("goal-panel");
+    await expect(panel.getByLabel("Objective",{exact:true})).toHaveValue("Ship the release notes");await expect(panel.locator(".goal-status")).toHaveText("active");
+    await shoot(page,"goal-during-turn",()=>expect(panel.locator(".goal-status")).toHaveText("active"));
+  }finally{await harness.close()}
+});

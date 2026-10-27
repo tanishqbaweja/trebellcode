@@ -73,6 +73,7 @@ import { executeDelegation } from "./delegation-executor.mjs";
 import { cleanupDelegationWorktree, createDelegationWorktree } from "./delegation-worktree.mjs";
 import { codexFileChanges, resolveCodexApprovalByPolicy, workspaceFilePath } from "./codex-policy-adapter.mjs";
 import { allowsSession, approvalThreadId, createCodexSessionApprovals, sessionApprovalKind, sessionApprovalResult } from "./codex-session-approvals.mjs";
+import { CODEX_GOAL_CONTINUATION_GRACE_MS, createCodexGoalContinuations } from "./codex-goal-continuation.mjs";
 import { resolveRecipeExecution } from "./recipes.mjs";
 import { runProjectHooks, verificationHookSteps } from "./project-hooks.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
@@ -1217,19 +1218,32 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     if(!nativeGoal&&trebellOnlyCodexGoal(threadId))return durableCodexGoal(threadId);
     return mirrorCodexGoal(threadId,nativeGoal);
   }
+  // The goal writes on their way, by thread (setCodexGoal): Codex's own notifications of the steps between stay from the windows,
+  // which get the goal as it ends up. A replaced goal read cleared in the Goal panel, then paused, before its first turn started
+  // (T3 goalUpdatesHeld).
+  const codexGoalWrites=new Map();
   async function setCodexGoal(threadId,patch,requestUpstream){
-    const route=codexGoalRoute(threadId),current=(await requestUpstream("thread/goal/get",{threadId},route))?.goal||null;
-    const meta=state.threadMeta(threadId),trebellOnly=current?null:trebellOnlyCodexGoal(threadId);
-    const previous=current?codexGoalRecord(current,{threadId,previous:meta?.goal||null}):trebellOnly;
-    // The whole patch (objective, budgets) is checked before any of it reaches Codex.
-    const next=normalizeGoal({threadId,previous,patch});
-    const {replace,params}=codexGoalSetParams({threadId,patch,current,next});
-    if(replace)await requestUpstream("thread/goal/clear",{threadId},route);
-    // A patch of Trebell's own guidance or budgets alone leaves Codex's goal as it is.
-    const result=Object.keys(params).some(key=>key!=="threadId")?await requestUpstream("thread/goal/set",params,route):{goal:current};
-    const goal=mirrorCodexGoal(threadId,result?.goal||null,{patch,fresh:replace||(!current&&!trebellOnly)});
-    relay.broadcast("thread/goal/updated",{threadId,goal});
-    return goal;
+    codexGoalWrites.set(threadId,(codexGoalWrites.get(threadId)||0)+1);let cleared=false;
+    try{
+      const route=codexGoalRoute(threadId),current=(await requestUpstream("thread/goal/get",{threadId},route))?.goal||null;
+      const meta=state.threadMeta(threadId),trebellOnly=current?null:trebellOnlyCodexGoal(threadId);
+      const previous=current?codexGoalRecord(current,{threadId,previous:meta?.goal||null}):trebellOnly;
+      // The whole patch (objective, budgets) is checked before any of it reaches Codex.
+      const next=normalizeGoal({threadId,previous,patch});
+      const {replace,params}=codexGoalSetParams({threadId,patch,current,next});
+      if(replace){await requestUpstream("thread/goal/clear",{threadId},route);cleared=true}
+      // A patch of Trebell's own guidance or budgets alone leaves Codex's goal as it is.
+      const result=Object.keys(params).some(key=>key!=="threadId")?await requestUpstream("thread/goal/set",params,route):{goal:current};
+      const goal=mirrorCodexGoal(threadId,result?.goal||null,{patch,fresh:replace||(!current&&!trebellOnly)});
+      relay.broadcast("thread/goal/updated",{threadId,goal});
+      return goal;
+    }catch(error){
+      // A new goal that failed after the old one went leaves none.
+      if(cleared){mirrorCodexGoal(threadId,null);relay.broadcast("thread/goal/updated",{threadId,goal:null})}
+      throw error;
+    }finally{
+      const left=(codexGoalWrites.get(threadId)||1)-1;if(left>0)codexGoalWrites.set(threadId,left);else codexGoalWrites.delete(threadId);
+    }
   }
   async function clearCodexGoal(threadId,requestUpstream){
     const result=await requestUpstream("thread/goal/clear",{threadId},codexGoalRoute(threadId));
@@ -1253,6 +1267,18 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       const meta=state.threadMeta(threadId);
       eventJournal.record({runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_paused",status:"blocked",data:{reason:gate.reason,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,costExhausted:gate.costExhausted,interruptedTurnId:nextTurnId}});
     }catch(error){appServer?.logs?.push({at:Date.now(),stream:"relay",text:safeLogText("Could not pause the Codex goal over budget: "+(error?.message||String(error))+"\n")})}
+  }
+  // A Codex goal still active once Codex has started no turn for it within the grace after a completed one reads Paused, not Active
+  // with nothing running (codex-goal-continuation.mjs). The pause goes on the connection of the window that saw the turn end, unless
+  // that window has gone (connected).
+  const codexGoalContinuations=createCodexGoalContinuations({expire:(threadId,{turnId,requestUpstream,connected})=>{if(connected?.()!==false)void pauseUncontinuedCodexGoal(threadId,turnId,requestUpstream)}});
+  async function pauseUncontinuedCodexGoal(threadId,turnId,requestUpstream){
+    const meta=state.threadMeta(threadId);if(!meta?.goal?.native||meta.goal.status!=="active"||codexRunningTurns.has(threadId))return;
+    try{
+      const paused=await requestUpstream("thread/goal/set",{threadId,status:"paused"},codexGoalRoute(threadId));
+      mirrorCodexGoal(threadId,paused?.goal||null);
+      eventJournal.record({runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId:meta.environmentId??state.settings().activeEnvironmentId??null,threadId,turnId,category:"goal",name:"goal.continuation_expired",status:"paused",data:{completedTurnId:turnId,graceMs:CODEX_GOAL_CONTINUATION_GRACE_MS}});
+    }catch(error){appServer?.logs?.push({at:Date.now(),stream:"relay",text:safeLogText("Could not pause the Codex goal Codex stopped working toward: "+(error?.message||String(error))+"\n")})}
   }
   function durableCodexContinuity(threadId){
     const meta=state.threadMeta(threadId);
@@ -3394,11 +3420,18 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       const exit=codexAppServerExits.get(String(requestParams?.threadId||message.result.thread.id||""));
       return exit?{...message,result:{...message.result,trebellAppServerExit:exit}}:message;
     },
-    transformServerMessage:(message,{requestUpstream})=>{
+    transformServerMessage:(message,{requestUpstream,connected})=>{
       const params=message.params||{},threadId=params.threadId?String(params.threadId):"";if(!threadId)return message;
+      // A goal Trebell is writing reaches the windows as it ends up (setCodexGoal), not through the steps Codex says it took.
+      if((message.method==="thread/goal/updated"||message.method==="thread/goal/cleared")&&codexGoalWrites.has(threadId))return false;
       if(message.method==="thread/goal/updated"&&params.goal)return {...message,params:{...params,goal:mirrorCodexGoal(threadId,params.goal)}};
       if(message.method==="thread/goal/cleared")mirrorCodexGoal(threadId,null);
-      if(message.method==="turn/completed")void pauseCodexGoalOverBudget(threadId,params.turn?.id||params.turnId||null,requestUpstream);
+      if(message.method==="turn/completed"){
+        const turnId=params.turn?.id||params.turnId||null,goal=state.threadMeta(threadId)?.goal;
+        void pauseCodexGoalOverBudget(threadId,turnId,requestUpstream);
+        // A completed turn of an active goal: Codex is to start the goal's next turn (codex-goal-continuation.mjs).
+        if((params.turn?.status||"completed")==="completed"&&goal?.native&&goal.status==="active")codexGoalContinuations.turnCompleted(threadId,{turnId,requestUpstream,connected});
+      }
       return message;
     },
     // A catalog not started yet starts with the transport's first request (codexRelayTarget).
@@ -3433,7 +3466,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       recordCodexBudgetEvidence(state,message);
       recordCodexRecoveryItemEvidence(state,message);
       noteCodexFileChanges(message);
-      if(params.threadId&&["thread/closed","thread/archived","thread/deleted"].includes(message?.method))codexSessionApprovals.end(params.threadId);
+      if(params.threadId&&["thread/closed","thread/archived","thread/deleted"].includes(message?.method)){codexSessionApprovals.end(params.threadId);codexGoalContinuations.cancel(params.threadId)}
+      // Codex goes on with the goal, or the goal stopped being active: no goal waits for its next turn (codex-goal-continuation.mjs).
+      if(params.threadId&&(message?.method==="turn/started"||message?.method==="thread/goal/cleared"||message?.method==="thread/goal/updated"&&codexGoalStatus(params.goal?.status)!=="active"))codexGoalContinuations.cancel(params.threadId);
       const traceMethod=message?.method||route?.requestMethod||"";
       if(traceMethod&&!NOISY_METHOD.test(traceMethod)){
         const traceThreadId=params.threadId||params.thread?.id||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
@@ -3557,6 +3592,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       if(cleanupTimer)clearInterval(cleanupTimer);
       if(pullRequestSyncTimer)clearInterval(pullRequestSyncTimer);
       if(autoPullTimer)clearInterval(autoPullTimer);
+      codexGoalContinuations.clear();
       relay.close();
       await agentRelay?.close?.();
       terminalWs?.close();

@@ -206,27 +206,41 @@ export async function continueInterruptedTurns({client,recovery,showActionError}
   }
 }
 
+// The first turn of a Codex goal asks for the work (T3 runGoalCommand): sent alone, the objective reads like a statement, and the
+// model echoed it back. The Goal panel keeps the objective as written.
+export const CODEX_GOAL_START="Start working toward this goal: ";
+// A goal command that stops the turn running (T3 goalCommandStopsActiveRun) stops it as Stop does: an active goal is paused first,
+// so Codex starts no further turn of it. waitForEnd: the command starts a turn, which waits for the stopped one's turn/completed,
+// or 10 s, after which Codex says why should it refuse the start.
+async function stopForGoal({rpc,stop},threadId,{waitForEnd=false}={}){
+  let off=()=>{},timer=null;
+  const ended=waitForEnd?new Promise(resolve=>{timer=setTimeout(resolve,10_000);off=rpc.subscribeNotifications(message=>{if(message.method==="turn/completed"&&String(message.params?.threadId||"")===threadId)resolve()})}):null;
+  try{await stop();await ended}finally{off();clearTimeout(timer)}
+}
 // Codex /goal, run like T3 Code's runGoalCommand and the Codex TUI: /goal shows the goal, clear, pause and resume
-// control it, and any other text sets a new goal and starts its first turn. One that cannot run keeps the draft ("kept") and
-// says why beside the composer, as /goal does on the other harnesses; a Codex without goals is said not to support them.
-async function runCodexGoalCommand({activeThread,running,startTurn,attachments,model,contextChips,rpc,agentRuntimeLabel,setGoal,openRightPanel,setEvents,setComposerAlert},command){
-  const threadId=activeThread?.id||null;
+// control it, and any other text sets a new goal and starts its first turn. A new goal or a resume sent while a turn runs stops that
+// turn and starts once it has ended; clear and pause stop only a turn the goal drives (it is active). One that cannot run keeps the
+// draft ("kept") and says why beside the composer, as /goal does on the other harnesses; a Codex without goals is said not to
+// support them.
+async function runCodexGoalCommand(deps,command){
+  const {activeThread,running,startTurn,attachments,model,contextChips,rpc,agentRuntimeLabel,setGoal,openRightPanel,setEvents,setComposerAlert}=deps;
+  const threadId=activeThread?.id?String(activeThread.id):null;
   const note=(title,kind="tool")=>setEvents(prev=>[...prev,{id:"goal-command-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),kind,title,status:"done",raw:{}}]);
   try{
     if(command?.type==="set"){
-      if(running){note("Stop the running turn before setting a new goal.","error");return "kept"}
-      await startTurn(command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"}});
+      if(running&&threadId)await stopForGoal(deps,threadId,{waitForEnd:true});
+      await startTurn(CODEX_GOAL_START+command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"}});
       return;
     }
     if(!threadId||!rpc){note("No goal is set.");return}
     const current=(await rpc.request("thread/goal/get",{threadId}))?.goal||null;setGoal(current);
-    if(command?.type==="clear"){const result=await rpc.request("thread/goal/clear",{threadId});setGoal(null);note(result?.cleared?"Goal cleared.":"No goal to clear.");return}
+    const drives=running&&current?.status==="active";
+    if(command?.type==="clear"){if(drives)await stopForGoal(deps,threadId);const result=await rpc.request("thread/goal/clear",{threadId});setGoal(null);note(result?.cleared?"Goal cleared.":"No goal to clear.");return}
     if(!current){note("No goal is set.");return}
-    if(command?.type==="pause"){const paused=await rpc.request("thread/goal/set",{threadId,status:"paused"});setGoal(paused?.goal||null);note("Goal paused. Send /goal resume to continue.");return}
+    if(command?.type==="pause"){if(drives)await stopForGoal(deps,threadId);const paused=await rpc.request("thread/goal/set",{threadId,status:"paused"});setGoal(paused?.goal||null);note("Goal paused. Send /goal resume to continue.");return}
     if(command?.type==="resume"){
-      // A running turn already belongs to the thread, so the goal just turns active and Codex continues after it;
-      // otherwise a turn without new input continues the goal from the history.
-      if(running){const resumed=await rpc.request("thread/goal/set",{threadId,status:"active"});setGoal(resumed?.goal||null);note("Goal resumed.");return}
+      // A turn without new input continues the goal from the history.
+      if(running)await stopForGoal(deps,threadId,{waitForEnd:true});
       await startTurn("",[],model,null,null,null,{goalPatch:{status:"active"},goalResume:true});
       return;
     }
