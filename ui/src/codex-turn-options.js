@@ -94,12 +94,14 @@ function errorText(error){
 
 // A Codex `error` notification ({error:{message, codexErrorInfo, additionalDetails}, willRetry, threadId, turnId}), as T3
 // reads it: the text is additionalDetails or message, usage and rate limits are usage-limit failures, http* and
-// responseStream* are transport failures, and willRetry means Codex is still working on the turn.
+// responseStream* are transport failures, and willRetry means Codex is still working on the turn. Retries that ran out
+// (responseTooManyFailedAttempts) say why only by the last attempt's HTTP status: a 429 is a usage limit (T3
+// codexExhaustionHttpStatus), any other status a provider error.
 export function codexErrorNotice(params={}){
   const error=params?.error&&typeof params.error==="object"?params.error:null;
   const message=errorText(error)||String(params?.message??"").trim()||"Agent error";
   const code=codexErrorInfoCode(error?.codexErrorInfo);
-  const kind=code==="usageLimitExceeded"||code==="rateLimitExceeded"?"usage_limit"
+  const kind=code==="usageLimitExceeded"||code==="rateLimitExceeded"||error?.codexErrorInfo?.responseTooManyFailedAttempts?.httpStatusCode===429?"usage_limit"
     :code==="unauthorized"?"auth"
     :code?.startsWith("http")||code?.startsWith("responseStream")?"transport"
     :"provider";
