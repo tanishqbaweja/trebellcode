@@ -121,7 +121,7 @@ async function codexText(ctx){
   // A stopped app-server (a crash, or a profile or environment change) fails the request at once instead of waiting out the time limit.
   // After a completed turn state.done is set, so the close during teardown changes nothing.
   const onClose=()=>{if(!state.done){state.done=true;settle.reject(new Error("Codex app-server stopped before it returned the Git text. Try again."))}};
-  const client=new CodexAppServerClient(server.url,{clientVersion:ctx.version,timeoutMs:ctx.limit,onNotification,onServerRequest:declineCodexServerRequest,onClose});
+  const client=new CodexAppServerClient(server.url,{clientVersion:ctx.version,timeoutMs:ctx.limit,token:server.token,onNotification,onServerRequest:declineCodexServerRequest,onClose});
   ctx.defer(()=>client.close());
   await client.connect();ctx.check();
   const account=await client.request("account/read",{}).catch(()=>null);ctx.check();

@@ -43,6 +43,9 @@ export function attachCodexRelay(httpServer, {
   // ({key, url}) => whether requests for that target still go to that URL: a routed connection that closes while they do lost a
   // process that died, not one that was released.
   targetLive = () => false,
+  // (url) => the token the app-server at that address takes (codex --ws-auth), sent as Authorization: Bearer <token> when the relay
+  // connects to it, or null for one that takes none.
+  upstreamToken = () => null,
   path = "/api/codex/ws",
   enabled = () => true,
   authorize = () => true,
@@ -135,7 +138,8 @@ export function attachCodexRelay(httpServer, {
           try{record.socket.terminate()}catch{}context.upstreams.delete(route.key);record=null;
         }
         if(record){await record.ready;return record}
-        const upstream=new WebSocket(route.url,{headers:{"User-Agent":TREBELL_USER_AGENT,"x-trebell-client":TREBELL_USER_AGENT}});
+        const token=upstreamToken(route.url);
+        const upstream=new WebSocket(route.url,{headers:{"User-Agent":TREBELL_USER_AGENT,"x-trebell-client":TREBELL_USER_AGENT,...(token?{Authorization:`Bearer ${token}`}:{})}});
         record={key:route.key,url:route.url,socket:upstream,internalPending:new Map(),forwardedRequests:new Map(),autoHandledRequests:new Set(),initialized:false,ready:null};
         context.upstreams.set(route.key,record);
         record.ready=new Promise((resolve,reject)=>{

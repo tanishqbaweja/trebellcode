@@ -2,8 +2,9 @@ import { WebSocket } from "ws";
 import { TREBELL_USER_AGENT } from "./version.mjs";
 
 export class CodexAppServerClient{
-  constructor(url,{clientVersion="0.0.0",timeoutMs=60_000,onNotification=null,onServerRequest=null,onClose=null}={}){
-    this.url=url;this.clientVersion=clientVersion;this.timeoutMs=timeoutMs;
+  // token: the one the app-server takes (codex --ws-auth, codex-app-server-auth.mjs), sent as Authorization: Bearer <token>.
+  constructor(url,{clientVersion="0.0.0",timeoutMs=60_000,token=null,onNotification=null,onServerRequest=null,onClose=null}={}){
+    this.url=url;this.clientVersion=clientVersion;this.timeoutMs=timeoutMs;this.token=token||null;
     this.onNotification=typeof onNotification==="function"?onNotification:null;this.onServerRequest=typeof onServerRequest==="function"?onServerRequest:null;
     // onClose runs whenever the socket closes, also after close(): a caller waiting on notifications (not on a request) learns the server is gone.
     this.onClose=typeof onClose==="function"?onClose:null;
@@ -11,7 +12,7 @@ export class CodexAppServerClient{
   }
   async connect(){
     if(!this.url)throw new Error("Codex app-server URL is required");
-    const ws=new WebSocket(this.url,{headers:{"User-Agent":TREBELL_USER_AGENT,"x-trebell-client":TREBELL_USER_AGENT}});
+    const ws=new WebSocket(this.url,{headers:{"User-Agent":TREBELL_USER_AGENT,"x-trebell-client":TREBELL_USER_AGENT,...(this.token?{Authorization:`Bearer ${this.token}`}:{})}});
     this.ws=ws;
     await new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>reject(new Error("Timed out connecting to Codex app-server")),12_000);

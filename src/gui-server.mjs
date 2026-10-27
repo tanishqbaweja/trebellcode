@@ -37,6 +37,7 @@ import { agentPermissionModeFromStart, attachAgentRelay } from "./agent-relay.mj
 import { NATIVE_REPLY_STREAM } from "./native-agent-session.mjs";
 import { nativeStreamOptions } from "./native-reply-streaming.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
+import { codexAppServerToken } from "./codex-app-server-auth.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
 import { StorageCleanupService } from "./storage-cleanup-service.mjs";
@@ -334,7 +335,9 @@ async function startAppServer({appPort,env=process.env,mock=false,environments=n
   const runtimeHome=homeLayout.effectiveHomePath||null;
   if(runtimeHome)await mkdir(runtimeHome,{recursive:true});
   const runtimeEnv=codexAppServerEnvironment({env,runtimeInstance,runtimeHome});
-  const args=["app-server","--listen",`ws://127.0.0.1:${appPort}`];
+  // Only Trebell's own clients can drive the app-server: they send its token (codex-app-server-auth.mjs).
+  const shell=process.platform==="win32" && !command.toLowerCase().endsWith(".exe"),auth=await codexAppServerToken({env,quote:shell});
+  const args=["app-server","--listen",`ws://127.0.0.1:${appPort}`,...auth.args];
   const logs=[];
   const pushLog=(chunk,stream)=>{
     const line=boundDiagnosticText(redactSecretText(chunk,{environment:runtimeEnv}));
@@ -346,14 +349,14 @@ async function startAppServer({appPort,env=process.env,mock=false,environments=n
     cwd:process.cwd(),
     env:runtimeEnv,
     windowsHide:true,
-    shell:process.platform==="win32" && !command.toLowerCase().endsWith(".exe"),
+    shell,
     stdio:["ignore","pipe","pipe"],
   });
   child.stdout?.on("data",chunk=>pushLog(chunk,"stdout"));
   child.stderr?.on("data",chunk=>pushLog(chunk,"stderr"));
-  child.on("error",error=>pushLog(error.stack||error.message,"stderr"));
-  child.on("exit",(code,signal)=>pushLog(`app-server exited code=${code} signal=${signal}\n`,"stderr"));
-  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome,sharedRuntimeHome:homeLayout.sharedHomePath,continuationKey:homeLayout.continuationKey };
+  child.on("error",error=>{pushLog(error.stack||error.message,"stderr");void auth.release()});
+  child.on("exit",(code,signal)=>{pushLog(`app-server exited code=${code} signal=${signal}\n`,"stderr");void auth.release()});
+  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome,sharedRuntimeHome:homeLayout.sharedHomePath,continuationKey:homeLayout.continuationKey,wsToken:auth.token };
 }
 
 // Why a local app-server did not become ready: once it has exited, the last thing it wrote (codex says why it could not listen).
@@ -361,6 +364,8 @@ function appServerStartError(server,name){
   const child=server?.child,exited=Boolean(child&&(child.exitCode!==null||child.signalCode!==null));
   if(!exited)return `Codex app-server profile '${name}' did not become ready`;
   const lines=(server.logs||[]).filter(entry=>entry.stream==="stderr").map(entry=>String(entry.text||"")).join("").split(/\r?\n/).map(line=>line.trim()).filter(line=>line&&!/^app-server exited /.test(line)&&!/^WARNING:/.test(line));
+  // A Codex from before --ws-auth stops on the argument, and its last line only says to try --help.
+  if(lines.some(line=>/unexpected argument '--ws-auth'/.test(line)))return `Codex app-server profile '${name}' exited before it was ready: this Codex has no --ws-auth, which Trebell Code starts each Codex app-server with so that only Trebell Code can connect to it. Update Codex (npm install -g @openai/codex), then try again.`;
   const said=String(lines.at(-1)||"").replace(/^Error:\s*/,"").slice(0,300);
   return `Codex app-server profile '${name}' exited before it was ready`+(said?": "+said:"");
 }
@@ -1087,7 +1092,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     const server=await ensureCodexAppServer(instanceId,{environmentId,ownerKey:"git-text:"+randomUUID()});
     const release=async()=>{if(codexAppServers.get(server.poolKey)===server)codexAppServers.delete(server.poolKey);await stopAppServer(server)};
     if(server?.error||!server?.targetUrl){await release().catch(()=>{});throw new Error(server?.error||"Codex app-server is unavailable")}
-    return {url:server.targetUrl,release};
+    return {url:server.targetUrl,token:server.wsToken||null,release};
   }
   // keepGitText leaves the private Git text app-servers running: a profile or environment switch must not kill a request in flight, which
   // already snapshotted its runtime profile and environment and releases its own server. Shutdown (close) stops every server.
@@ -1712,7 +1717,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
             await catalogAppServer().catch(()=>{});
             if(!appServer?.targetUrl||appServer?.environment)throw new Error("Local Codex app-server is not available");
             if(!await waitForAppServer(appServer,appPort,15_000))throw new Error("Local Codex app-server is not ready");
-            if(!codexClient){codexClient=new CodexAppServerClient(appServer.targetUrl,{clientVersion:TREBELL_VERSION});await codexClient.connect()}
+            if(!codexClient){codexClient=new CodexAppServerClient(appServer.targetUrl,{clientVersion:TREBELL_VERSION,token:appServer.wsToken});await codexClient.connect()}
             const forked=await codexClient.forkFromRollout({threadId:candidate.providerSessionId,path:candidate.sourcePath,cwd:candidate.cwd});
             const threadId=String(forked?.thread?.id||"").trim();if(!threadId)throw new Error("Codex did not return the imported thread");
             if(candidate.title)await codexClient.request("thread/name/set",{threadId,name:candidate.title}).catch(()=>{});
@@ -1734,7 +1739,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     const server=await catalogAppServer();
     if(!server?.targetUrl||server.error)throw new Error(server?.error||"Codex app-server is unavailable");
     if(!mock&&!await waitForAppServer(server,server.appPort||appPort,15_000))throw new Error("Codex app-server is not ready");
-    const client=new CodexAppServerClient(server.targetUrl,{clientVersion:TREBELL_VERSION});
+    const client=new CodexAppServerClient(server.targetUrl,{clientVersion:TREBELL_VERSION,token:server.wsToken});
     try{
       await client.connect();
       const account=await client.request("account/read",{}).catch(()=>null);
@@ -3353,6 +3358,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     // A thread's app-server that is released leaves the pool before it is stopped, and one started in its place has another URL; one
     // that died is still there.
     targetLive:({key,url})=>codexAppServers.get(key)?.targetUrl===url,
+    // The token of the app-server Trebell started at that address (startAppServer); one it did not start, a remote host's or a mock
+    // server's stand-in, has none.
+    upstreamToken:url=>[...codexAppServers.values()].find(item=>item.targetUrl===url)?.wsToken||null,
     transformClientMessage:message=>transformCodexClientMessage(message),
     handleServerRequest:async message=>resolveCodexServerRequest(message),
     // A file change's card names the files it touches (trebellFileChanges), which Codex's request leaves out, each from the thread's
