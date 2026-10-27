@@ -1,7 +1,9 @@
 // A harness's status check (AgentRuntimeManager probe) as Settings, a harness switch and a chat start read it:
-// - each CLI's --version gets T3's budget (Claude Code and Codex 20 s, OpenCode 10 s, the others 6 s), and on this machine one
-//   that runs out of time or exits with an error reads installed and may start, never "not installed"; only a command that is not
-//   there does;
+// - each CLI's --version gets T3's budget (Claude Code 20 s, OpenCode 10 s, the others 6 s), and on this machine one that runs
+//   out of time or exits with an error reads installed, never "not installed" (only a command that is not there does);
+// - Claude Code, Cursor, Grok and Antigravity may then start, their answer kept for a minute as a ready one is; an OpenCode is not
+//   ready without its version, which picks the client that talks to it; and Codex's account read, which has 20 s of its own,
+//   decides after a check that ran out of time (one that exited with an error is not ready);
 // - Grok's checks run with its updater off, and its sessions keep their environment;
 // - a logged-out `grok models` is read once more, as Grok refreshes an expired token in the same process;
 // - a Claude Code profile with a custom API endpoint is not called signed out.
