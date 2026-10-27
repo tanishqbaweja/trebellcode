@@ -17,9 +17,11 @@ fetch(url+"/fake/password",{method:"POST",headers:{"content-type":"application/j
 // Writes the `serve` stand-in into a folder (the thread's working folder, where `node serve --port=...` finds it).
 export async function writeFakeOpenCode2Serve(folder){await writeFile(join(folder,"serve"),SERVE_SCRIPT,"utf8")}
 
-// routes["GET /api/command"]({req, res, body, send}) answers a route in place of the stand-in.
-export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions={},onPrompt=null,routes={}}={}){
+// routes["GET /api/command"]({req, res, body, send}) answers a route in place of the stand-in. Every event stream gets OpenCode 2.0.24's
+// heartbeat (a comment, no event) every heartbeatMs, 15 s as OpenCode sends it; 0 sends none, a stream gone silent.
+export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions={},onPrompt=null,routes={},heartbeatMs=15_000}={}){
   const calls=[],streams=new Set(),forms=new Map(),messages=[];let password=null,events=0,prompts=0;
+  const heartbeat=heartbeatMs>0?setInterval(()=>{for(const res of streams)res.write(": heartbeat\n\n")},heartbeatMs):null;heartbeat?.unref?.();
   const known=new Map([["ses_main",{id:"ses_main",agent:"build"}],...Object.entries(sessions)]);
   const emit=event=>{
     const value={id:`evt_${++events}`,created:Date.now(),...event};
@@ -81,6 +83,6 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
     url,calls,emit,forms,
     called:key=>calls.filter(call=>call.key===key),
     prompts:()=>calls.filter(call=>/^POST \/api\/session\/[^/]+\/prompt$/.test(call.key)).map(call=>call.body),
-    close:()=>{for(const res of streams)res.end();server.closeAllConnections?.();return new Promise(resolve=>server.close(resolve))},
+    close:()=>{clearInterval(heartbeat);for(const res of streams)res.end();server.closeAllConnections?.();return new Promise(resolve=>server.close(resolve))},
   };
 }

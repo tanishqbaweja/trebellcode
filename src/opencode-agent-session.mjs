@@ -157,6 +157,11 @@ export async function openCode2Within(ms,message,request){
   const late=new Promise((_,reject)=>{timer=setTimeout(()=>{reject(new Error(message));controller.abort()},ms)});
   try{return await Promise.race([Promise.resolve().then(()=>request(controller.signal)),late])}finally{clearTimeout(timer)}
 }
+// An OpenCode 2 server is ready once it answers server.info, which it does at once: one that has not in five seconds is not (T3 Code).
+export const OPENCODE2_INFO_TIMEOUT_MS=5_000;
+export function openCode2ServerInfo(client){
+  return openCode2Within(OPENCODE2_INFO_TIMEOUT_MS,`OpenCode server did not answer within ${OPENCODE2_INFO_TIMEOUT_MS/1000} seconds.`,signal=>client.server.info({signal}));
+}
 
 // OpenCode 1.x answers POST /session/{id}/message (and /summarize) only once the whole turn has finished. Node's fetch (undici) stops
 // waiting for response headers after 300 seconds, so every OpenCode turn longer than five minutes failed in Trebell while OpenCode went
@@ -375,7 +380,7 @@ export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=proc
   const {OpenCode:OpenCode2}=await loadOpenCode2Client();
   const server=await startOpenCode2Server({command,cwd,env,serverUrl}),client=createOpenCode2Client(OpenCode2,server),location={directory:cwd};
   try{
-    await client.server.info();
+    await openCode2ServerInfo(client);
     const [modelResult,providerResult,defaultResult,commands,skills,agents]=await Promise.all([
       waitForOpenCode2Models(client,location),
       client.provider.list({location}).catch(()=>({data:[]})),

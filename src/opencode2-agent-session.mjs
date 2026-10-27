@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { fileUri, fileUriPath } from "./file-uri.mjs";
-import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeReadOutput, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
+import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeReadOutput, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
@@ -110,6 +110,10 @@ function executionFailure(error){
   const said=String(error?.message||"").trim().replace(/[\s.]+$/,"");
   return {text:`${said||"OpenCode reached a usage limit"}. ${OPENCODE_USAGE_LIMIT_HINT}`,usageLimit};
 }
+// OpenCode 2 sends a heartbeat on its event stream every 10 to 15 seconds, so a stream that has sent nothing for this long has stopped
+// (T3 Code; OpenCode's own app waits as long). A turn it leaves waiting is stopped saying so, and the session listens again.
+const SILENT_STREAM_MS=45_000;
+const SILENT_STREAM_STOP=`OpenCode's server sent nothing for ${SILENT_STREAM_MS/1000} seconds, so Trebell stopped the turn. Send the message again to retry.`;
 // Trebell's repository tools are an MCP server of the session's folder, which OpenCode drops when it evicts an idle folder, so it is
 // added again before every turn; adding an unchanged config keeps its connection (T3 Code).
 const MCP_ADD_TIMEOUT_MS=5_000;
@@ -147,7 +151,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(this.closed){this.server.close?.();throw new Error("OpenCode was stopped while it started.")}
     this.server.child?.once?.("exit",(code,signal)=>{this.serverExit={code,signal}});
     this.client=clientFor(OpenCode,this.server);
-    await this.client.server.info();
+    await openCode2ServerInfo(this.client);
     const location={directory:this.cwd};
     await this.#addRepositoryMcp();
     // The commands (OpenCode lists MCP prompts among them, which can take long), skills and agents hold up nothing: the composer gets
@@ -241,11 +245,13 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     const turn={done:false,cancelled:false,error:null,stopError:null,text:"",assistantMessageId:null,startedAt:Date.now(),completion,settle:settleTurn};
     this.activePrompt=turn;
     try{
-      const accepted=await this.client.session.prompt({sessionID:this.sessionId,text:input.text,...(input.files.length?{files:input.files}:{})});
-      if(typeof onDelivered==="function")try{onDelivered()}catch{}
+      // A turn Trebell ended (Stop, an event stream gone silent) does not wait on a prompt request OpenCode never answered.
+      const ended=turn.completion.then(()=>turn.stopError||turn.cancelled?STOPPED:new Promise(()=>{}));
+      const accepted=await Promise.race([this.client.session.prompt({sessionID:this.sessionId,text:input.text,...(input.files.length?{files:input.files}:{})}),ended]);
+      if(accepted!==STOPPED&&typeof onDelivered==="function")try{onDelivered()}catch{}
       await turn.completion;
       if(turn.stopError)throw turn.stopError;
-      if(turn.cancelled)return {stopReason:"cancelled",providerMessageId:null,assistantMessageId:turn.assistantMessageId,raw:accepted};
+      if(turn.cancelled)return {stopReason:"cancelled",providerMessageId:null,assistantMessageId:turn.assistantMessageId,raw:accepted===STOPPED?null:accepted};
       if(turn.error)throw Object.assign(new Error(turn.error),turn.usageLimit?{usageLimit:true}:{});
       const messages=await this.client.message.list({sessionID:this.sessionId,order:"desc",limit:20}).catch(()=>({data:[]}));
       const list=Array.isArray(messages?.data)?messages.data:[];
@@ -333,14 +339,29 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     await this.client.permission.reply({sessionID:String(data.sessionID),requestID:String(data.id),decision:permissionDecision(decision),...(refusal?{message:refusal.reason}:{})}).catch(()=>{});
   }
   #startEvents(){
+    // Every chunk the stream receives counts (onActivity), OpenCode's heartbeats among them.
+    const silence=new AbortController(),signal=AbortSignal.any([this.eventAbort.signal,silence.signal]);
+    let timer=null;const heard=()=>{clearTimeout(timer);timer=setTimeout(()=>silence.abort(),SILENT_STREAM_MS)};
     this.eventTask=(async()=>{
       try{
-        for await(const event of this.client.event.subscribe({signal:this.eventAbort.signal})){
-          if(this.closed)break;
+        heard();
+        for await(const event of this.client.event.subscribe({signal,onActivity:heard})){
+          heard();if(this.closed)break;
           try{await this.#event(event)}catch(error){if(!this.closed)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:errorText(error)}})}
         }
       }catch(error){if(!this.closed&&error?.name!=="AbortError"){if(this.activePrompt){this.activePrompt.error=errorText(error);this.activePrompt.settle?.()}this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:errorText(error)}})}}
+      finally{clearTimeout(timer)}
+      if(silence.signal.aborted&&!this.closed)this.#silentStream();
     })();
+  }
+  // The running turn is stopped with the reason, and its run on the server too, which Trebell can no longer follow.
+  #silentStream(){
+    const turn=this.activePrompt;
+    if(turn&&!turn.done&&!turn.cancelled&&!turn.stopError){
+      turn.stopError=new Error(SILENT_STREAM_STOP);turn.settle?.();
+      void Promise.resolve(this.client?.session?.interrupt?.({sessionID:this.sessionId})).catch(()=>{});
+    }
+    this.#startEvents();
   }
   async #event(event){
     const data=event?.data||{},sessionID=String(data.sessionID||"");
