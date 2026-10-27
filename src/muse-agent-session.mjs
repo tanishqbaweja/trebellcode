@@ -396,6 +396,14 @@ export class MuseAgentSession{
   // A new host can take the conversation up again unless this one keeps its sessions in memory only.
   get resumable(){return Boolean(this.initializeResult)&&this.initializeResult.sessionDurability!=="ephemeral"}
   setPermissionMode(mode){this.permissionMode=normalizePermissionMode(mode||"supervised");return this.permissionMode}
+  // Why a message cannot go now in the session's mode, or null: the mode needs another host (needsRelaunch), and Muse's own work holds
+  // this one, a compaction or the report Muse writes, which a relaunch would stop. The relay refuses such a message before its turn
+  // starts, so the person keeps their draft; prompt refuses it too.
+  modeRefusal(){
+    if(!this.launched||this.dead||!this.needsRelaunch(this.permissionMode))return null;
+    const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
+    return this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:running?.wake||running?.successor?MUSE_REPORT_BLOCKS_MODE_CHANGE:null;
+  }
   // A mode's launch flags, permission profile and approval mode are fixed when its host launches (museLaunchPlan), so a mode with
   // another plan needs a new host, which resumes the conversation (T3: runtime policy changes require a fresh Muse host).
   needsRelaunch(mode){return JSON.stringify(museLaunchPlan(mode))!==JSON.stringify(this.launched?.plan||museLaunchPlan(this.permissionMode))}
@@ -508,7 +516,7 @@ export class MuseAgentSession{
     // A mode's launch flags, profile and approvals are its host's (museLaunchPlan), and the relay relaunches for another mode between
     // turns. While Muse's own work holds this host (a compaction, or the report it writes) no host is relaunched, so a message in a mode
     // this host was not launched for is refused rather than run with the old mode's sandbox, profile and approvals.
-    if(this.launched&&this.needsRelaunch(this.permissionMode))throw refuse(new SessionRefusalError(this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:running?MUSE_REPORT_BLOCKS_MODE_CHANGE:"Muse Code's host was started for another mode, so the message was not sent. Send it again to start Muse Code in this mode."));
+    if(this.launched&&this.needsRelaunch(this.permissionMode))throw refuse(new SessionRefusalError(this.modeRefusal()||"Muse Code's host was started for another mode, so the message was not sent. Send it again to start Muse Code in this mode."));
     let input,displayText;
     try{input=museInputParts(parts);displayText=museDisplayText(parts)}catch(error){throw refuse(error)}
     if(running?.wake&&!this.takeOverWake())throw new Error("Muse Code already has a running turn.");

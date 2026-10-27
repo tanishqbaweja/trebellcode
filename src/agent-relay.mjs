@@ -2040,6 +2040,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(Object.keys(permissionPatch).length||Object.keys(providerPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch,...providerPatch}});
       if(thread.runtime==="native"&&Array.isArray(params.dynamicToolNamespaces)&&params.dynamicToolNamespaces.length)thread=(await ensureNativeToolNamespaces(thread,params.dynamicToolNamespaces)).thread;
       const session=await sessionUnlessStopped(send,ensureSession(thread,context,{model:params.model||thread.model,freshIfLost:true}));
+      // A message in a mode Muse Code's host cannot take while Muse's own work holds it (a compaction, its report) is refused before its
+      // turn starts, so the person keeps their draft and the work goes on (MuseAgentSession.modeRefusal).
+      const museRefusal=session instanceof MuseAgentSession?session.modeRefusal():null;if(museRefusal)throw new Error(museRefusal);
       if(requestedProvider&&typeof session.setProvider==="function")session.setProvider(requestedProvider);
       if(runtime==="native"&&typeof session.setReasoningEffort==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setReasoningEffort(Object.prototype.hasOwnProperty.call(params,"reasoningEffort")?params.reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",providerId,nextModel))}
       if(runtime==="native"&&typeof session.setServiceTier==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setServiceTier(Object.prototype.hasOwnProperty.call(params,"serviceTier")?params.serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",providerId,nextModel))}

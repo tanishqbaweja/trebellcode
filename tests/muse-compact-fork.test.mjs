@@ -154,7 +154,7 @@ test("while Muse's compaction or its own report holds the host, a message in a m
   await waking.session.close();
 });
 
-test("through the relay, a message sent in Supervised while a Full access thread's compaction runs never runs on the Full access host, and after Stop it starts Muse Code in Supervised",{timeout:90_000},async()=>{
+test("through the relay, a message sent in Supervised while a Full access thread's compaction runs is refused before its turn starts and never runs on the Full access host, and after Stop it starts Muse Code in Supervised",{timeout:90_000},async()=>{
   const relay=await museRelay("trebell-muse-compact-mode-",{environment:{MUSE_FAKE_COMPACT:"hold"}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"full"});
@@ -162,21 +162,38 @@ test("through the relay, a message sent in Supervised while a Full access thread
     await relay.completed(thread.id,1);
     const compacting=relay.rpc("thread/compact/start",{threadId:thread.id});compacting.catch(()=>{});
     await eventually(async()=>(await relay.frames("session/compact")).length===1,"the compaction to reach Muse");
-    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Now in Supervised"}],permissionProfile:"supervised"});
-    await relay.completed(thread.id,2);
-    const refused=relay.threadStore.get(thread.id).turns.at(-1);
-    assert.deepEqual([refused.status,refused.error?.message],["failed",COMPACTION_BLOCKS_MODE]);
+    // Refused as the send, so the person keeps the draft; no turn of it is stored, and no error ends the compaction in the window.
+    await assert.rejects(relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Now in Supervised"}],permissionProfile:"supervised"}),{message:COMPACTION_BLOCKS_MODE});
+    assert.equal(relay.threadStore.get(thread.id).turns.length,1);
+    assert.equal(relay.notifications.some(item=>item.method==="error"&&item.params.threadId===thread.id),false);
     assert.equal((await relay.frames("turn/start")).length,1,"no turn/start reached the Full access host");
     assert.deepEqual((await relay.hosts()).map(entry=>entry.start),[["serve","--trust-workspace","--disable-sandbox"]]);
     // Stop ends the compaction with its host; the next message starts Muse Code for Supervised and resumes the conversation there.
     await relay.rpc("turn/interrupt",{threadId:thread.id});
     await assert.rejects(compacting,{message:MUSE_COMPACTION_STOPPED});
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Supervised after the stop"}],permissionProfile:"supervised"});
-    await relay.completed(thread.id,3);
+    await relay.completed(thread.id,2);
     assert.equal(relay.threadStore.get(thread.id).turns.at(-1).status,"completed");
     assert.deepEqual((await relay.hosts()).map(entry=>entry.start),[["serve","--trust-workspace","--disable-sandbox"],["serve","--trust-workspace"]]);
     const resume=(await relay.frames("session/resume")).at(-1),mode=(await relay.frames("session/setApprovalMode")).at(-1);
     assert.deepEqual([resume?.params.permissionProfile,mode?.params.mode],[":ask-me","promptUnmatched"]);
+  }finally{await relay.close()}
+});
+
+test("through the relay, a message sent in another mode while Muse writes its own report is refused before its turn starts, the report going on, and one in the thread's mode then takes the report over",{timeout:90_000},async()=>{
+  const relay=await museRelay("trebell-muse-report-mode-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"supervised"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}],permissionProfile:"supervised"});
+    await relay.completed(thread.id,1);
+    await eventually(()=>relay.threadStore.get(thread.id).turns.length===2,"Muse's report turn");
+    await assert.rejects(relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"In Full access now"}],permissionProfile:"full"}),{message:REPORT_BLOCKS_MODE});
+    assert.deepEqual(relay.threadStore.get(thread.id).turns.map(turn=>turn.status),["completed","inProgress"],"the report goes on");
+    assert.equal((await relay.frames("turn/start")).length,1);
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"And one more thing"}],permissionProfile:"supervised"});
+    await relay.completed(thread.id,3);
+    assert.deepEqual(relay.threadStore.get(thread.id).turns.map(turn=>turn.status),["completed","completed","completed"]);
+    assert.equal((await relay.hosts()).length,1);
   }finally{await relay.close()}
 });
 
