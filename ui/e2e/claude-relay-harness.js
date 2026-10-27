@@ -58,15 +58,17 @@ export const claudeReply=(message,text)=>[
 
 // Claude Code threads on the real relay, Claude Code itself answered as installed and signed in and its SDK scripted by turn.
 // seedThread stores a Claude thread with no turns yet, in the harness's repository and the given permission mode. mcpServers: the MCP
-// servers set in Settings, which each Claude Code is given to connect.
-export async function startClaudeRelay({turn,control={},mcpServers=null}){
+// servers set in Settings, which each Claude Code is given to connect. claudeHome: Claude Code runs with a Claude home of its own
+// (CLAUDE_CONFIG_DIR) in the harness's folder, which the harness names as claudeHome for a test to fill as Claude Code would.
+export async function startClaudeRelay({turn,control={},mcpServers=null,claudeHome=false}){
   const root=await mkdtemp(join(tmpdir(),"trebell-claude-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const claudeConfig=claudeHome?join(root,"claude-config"):null;if(claudeConfig)await mkdir(claudeConfig,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
   state.updateSettings({agentRuntime:"claude",agentRuntimeInstanceId:CLAUDE.id,activeEnvironmentId:null,...(mcpServers?{mcpServers}:{})});
   const runtimeManager={
     instances:()=>[{...CLAUDE}],activeInstance:()=>({...CLAUDE}),activeRuntime:()=>"claude",compatibleInstanceIds:()=>[CLAUDE.id],
     probe:async()=>({id:CLAUDE.id,name:"Claude Code",available:true,authenticated:true,version:"fixture"}),
-    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),executable:()=>"claude",
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env,...(claudeConfig?{CLAUDE_CONFIG_DIR:claudeConfig}:{})}),executable:()=>"claude",
   };
   const threadStore=new AgentThreadStore(env),threads=[];
   const seedThread=(name,{permissionProfile="full"}={})=>{
@@ -77,7 +79,7 @@ export async function startClaudeRelay({turn,control={},mcpServers=null}){
   const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,version:"claude-relay-fixture",claudeSdk:scriptedClaudeSdk(turn,control)});
   const port=await freePort();await new Promise((resolve,reject)=>relayServer.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {
-    repo,threadStore,threads,seedThread,wsUrl:`ws://127.0.0.1:${port}/api/agent/ws`,
+    repo,claudeHome:claudeConfig,threadStore,threads,seedThread,wsUrl:`ws://127.0.0.1:${port}/api/agent/ws`,
     async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})},
   };
 }

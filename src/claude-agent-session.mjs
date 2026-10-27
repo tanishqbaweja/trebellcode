@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
 import { fileUriPath } from "./file-uri.mjs";
@@ -33,6 +36,10 @@ const CLAUDE_MCP_REGISTRATION_TIMEOUT_MS=90_000;
 const CLAUDE_STEER_BACKGROUND_MS=5_000;
 // The tools that run a subagent (Agent, called Task before).
 const CLAUDE_SUBAGENT_TOOLS=new Set(["Agent","Task"]);
+// Claude Code's task tools (on by default where the model supports them, or with CLAUDE_CODE_ENABLE_TODO_TOOLS=1): their results keep
+// one task list per Claude session, the root's and its subagents' alike, shown as the thread's plan as a TodoWrite list is.
+const CLAUDE_TASK_TOOLS=new Set(["TaskCreate","TaskUpdate","TaskList"]);
+const CLAUDE_TASK_STATUSES=new Set(["pending","in_progress","completed"]);
 const CLAUDE_EFFORTS=new Set(["low","medium","high","xhigh","max"]);
 const CLAUDE_IMAGE_TYPES=new Set(["image/gif","image/jpeg","image/png","image/webp"]);
 const CLAUDE_INTERRUPT_TIMEOUT_MS=10_000;
@@ -92,6 +99,53 @@ function toolResultText(content){
 }
 function usageTotal(usage={}){
   return Number(usage.input_tokens||0)+Number(usage.cache_creation_input_tokens||0)+Number(usage.cache_read_input_tokens||0)+Number(usage.output_tokens||0);
+}
+
+// A task tool's field, read defensively: the tools' result shapes are no typed SDK contract.
+const taskField=(value,key)=>value&&typeof value==="object"?value[key]:undefined;
+const taskText=(value,key)=>{const field=taskField(value,key);return typeof field==="string"&&field.trim()?field.trim():undefined};
+// A TodoWrite's list as plan entries (T3 Code's claudeTodoSteps).
+export function claudeTodoEntries(input){
+  return (Array.isArray(input?.todos)?input.todos:[]).flatMap(todo=>{
+    const content=taskText(todo,"content");
+    return content?[{content,status:CLAUDE_TASK_STATUSES.has(todo.status)?todo.status:"pending"}]:[];
+  });
+}
+// The task list after a task tool's call went through (T3 Code's applyClaudeTaskTool), or null when it changed nothing it shows.
+// result: the tool's structured result, or its text, all a subagent's call returns. TaskList's list replaces it; TaskCreate adds the
+// task its result names ("Task #3 created successfully: <subject>"); TaskUpdate changes a task the list has from its input once
+// Claude Code says it did ("Updated task #3 status"), and its "deleted" status drops it.
+export function claudeTaskList(tasks,name,input,result){
+  if(name==="TaskList"){
+    const listed=taskField(result,"tasks");if(!Array.isArray(listed))return null;
+    const next=new Map();
+    for(const task of listed){const id=taskText(task,"id"),content=taskText(task,"subject"),status=taskField(task,"status");if(id&&content&&CLAUDE_TASK_STATUSES.has(status))next.set(id,{content,status})}
+    return next.size||tasks.size?next:null;
+  }
+  if(name==="TaskCreate"){
+    const said=typeof result==="string"?/^Task #(\S+) created successfully: (.+)$/s.exec(result.trim()):null,created=taskField(result,"task");
+    const id=taskText(created,"id")??said?.[1],content=taskText(created,"subject")??said?.[2].trim()??taskText(input,"subject");
+    return id&&content?new Map(tasks).set(id,{content,status:"pending"}):null;
+  }
+  if(name!=="TaskUpdate"||taskField(result,"success")===false||(typeof result==="string"&&!result.trim().startsWith("Updated task #")))return null;
+  const id=taskText(input,"taskId")??taskText(result,"taskId"),task=id?tasks.get(id):undefined;if(!task)return null;
+  if(input?.status==="deleted"){const next=new Map(tasks);next.delete(id);return next}
+  const content=taskText(input,"subject")??task.content,status=CLAUDE_TASK_STATUSES.has(input?.status)?input.status:task.status;
+  return content===task.content&&status===task.status?null:new Map(tasks).set(id,{content,status});
+}
+// The task list Claude Code keeps on disk for a session, one <n>.json a task in its folder (T3 Code's readClaudeTaskList), in its order,
+// or null where there is no folder to read. Claude Code writes a call's change before its result comes. Its own internal tasks
+// (metadata._internal) and files that are no task are left out.
+export function readClaudeTaskStore(folder){
+  let names;try{names=readdirSync(folder)}catch{return null}
+  const tasks=new Map();
+  for(const name of names.filter(name=>/^\d+\.json$/.test(name)).sort((a,b)=>parseInt(a,10)-parseInt(b,10))){
+    let task;try{task=JSON.parse(readFileSync(join(folder,name),"utf8"))}catch{continue}
+    const id=taskText(task,"id"),content=taskText(task,"subject"),status=taskField(task,"status"),metadata=taskField(task,"metadata");
+    if(!id||!content||!CLAUDE_TASK_STATUSES.has(status)||(metadata!==undefined&&(!metadata||typeof metadata!=="object"||metadata._internal)))continue;
+    tasks.set(id,{content,status});
+  }
+  return tasks;
 }
 function echoedUuids(message){
   if(Array.isArray(message?.user_message_uuids))return message.user_message_uuids.filter(value=>typeof value==="string");
@@ -352,6 +406,8 @@ export class ClaudeAgentSession{
     // A fork or rewind that has not run yet: the first query resumes the source at the cursor into this session's new id.
     this.pendingFork=forkFromSessionId?{sourceSessionId:forkFromSessionId,targetSessionId:null,resumeSessionAt:resumeSessionAt||null}:null;
     this.live=null;this.turn=null;this.idleTimer=null;this.tools=new Map();
+    // taskCalls: the task tool calls without a result yet, by id; taskLists: each Claude session's task list, by its id.
+    this.taskCalls=new Map();this.taskLists=new Map();
     this.sessionAllowRules=new Set();this.additionalDirectories=new Set();this.inventory={};this.inventoryRank=0;this.#rewindOrigins=new WeakMap();
     this.initializeResult={agentCapabilities:{loadSession:true,sessionCapabilities:{fork:{},resume:{},close:{}}},agentInfo:{name:"Claude Code"}};
     this.sessionSetup=null;
@@ -759,13 +815,40 @@ export class ClaudeAgentSession{
     const tool={title:toolTitle(block),kind:toolKind(block.name),rawInput:block.input};
     this.tools.set(block.id,tool);
     if(live&&CLAUDE_SUBAGENT_TOOLS.has(String(block.name))&&block.input?.run_in_background!==true)live.foregroundSubagents.add(block.id);
+    if(CLAUDE_TASK_TOOLS.has(String(block.name)))this.taskCalls.set(block.id,{name:String(block.name),input:block.input});
     this.#emit({sessionUpdate:"tool_call",toolCallId:block.id,...tool,status:"in_progress"});
+    // The root's TodoWrite list is the thread's plan (T3 Code's emitClaudePlanProjection); a subagent's is its own.
+    if(live&&block.name==="TodoWrite")this.#emit({sessionUpdate:"plan",entries:claudeTodoEntries(block.input)});
   }
-  #toolResult(block,live=null){
+  // structured: the tool's structured result (tool_use_result); meta: Claude Code's notes on the message's results (tool_result_meta).
+  #toolResult(block,live=null,{structured,meta}={}){
     if(!block?.tool_use_id)return;
     live?.foregroundSubagents.delete(block.tool_use_id);
     const tool=this.tools.get(block.tool_use_id)||{title:"Tool",kind:"other",rawInput:{}};this.tools.delete(block.tool_use_id);
     this.#emit({sessionUpdate:"tool_call_update",toolCallId:block.tool_use_id,...tool,status:block.is_error?"failed":"completed",rawOutput:toolResultText(block.content)});
+    // A task tool call that failed, or that never ran (cancelled), changed no task.
+    const call=this.taskCalls.get(block.tool_use_id);if(!call)return;
+    this.taskCalls.delete(block.tool_use_id);
+    const ran=!block.is_error&&!(Array.isArray(meta)&&meta.some(item=>item?.id===block.tool_use_id&&item.non_execution_kind));
+    if(ran)this.#taskTool(call,structured!==undefined?structured:toolResultText(block.content));
+  }
+  // A task tool's call that went through changes its Claude session's task list, which goes to the thread whole, as its plan. A session
+  // this process has not followed yet (Trebell restarted, or the thread's session was started again) reads Claude Code's own list once
+  // (T3 Code's 29aec6b88), which already holds the change, unless TaskList's own list replaces it: an update then keeps every task.
+  #taskTool(call,result){
+    const id=this.sessionId,known=this.taskLists.get(id);
+    const stored=this.taskLists.has(id)||(call.name==="TaskList"&&Array.isArray(taskField(result,"tasks")))?null:this.#storedTasks(id);
+    const next=claudeTaskList(known||stored||new Map(),call.name,call.input,result)||stored;
+    this.taskLists.set(id,next||known||null);
+    if(next)this.#emit({sessionUpdate:"plan",entries:[...next.values()].map(task=>({...task}))});
+  }
+  // Claude Code's own list for the session, in its Claude home's tasks folder (CLAUDE_CODE_TASK_LIST_ID names a shared one), read only
+  // where Claude Code runs on this machine.
+  #storedTasks(sessionId){
+    if(this.spawnProcess||!sessionId)return null;
+    const configured=String(this.env?.CLAUDE_CONFIG_DIR||"").trim(),home=configured?resolve(this.cwd||".",configured):join(homedir(),".claude");
+    const list=String(this.env?.CLAUDE_CODE_TASK_LIST_ID||"").trim()||String(sessionId);
+    return readClaudeTaskStore(join(home,"tasks",list.replace(/[^a-zA-Z0-9_-]/g,"-")));
   }
 
   #handle(live,message){
@@ -840,7 +923,9 @@ export class ClaudeAgentSession{
       return;
     }
     if(type==="user"){
-      for(const block of Array.isArray(message.message?.content)?message.message.content:[])if(block?.type==="tool_result")this.#toolResult(block,live);
+      // A tool's structured result comes with a message that answers one call; a subagent's call returns only its text.
+      const results=(Array.isArray(message.message?.content)?message.message.content:[]).filter(block=>block?.type==="tool_result");
+      for(const block of results)this.#toolResult(block,live,{structured:results.length===1?message.tool_use_result:undefined,meta:message.tool_result_meta});
       return;
     }
     // A steered turn's aborted leg is followed by the result of the turn that takes the steering message up.
