@@ -88,6 +88,22 @@ test("a request Claude Code wants decided once offers no session choice, and an 
   await session.close();
 });
 
+// The session choice Claude Code wants left out is left out wherever the person is asked: Supervised and Auto-accept edits asked about
+// such a request before Full access did, and offered "Allow for this session" for it.
+test("outside Full access too, a request Claude Code wants decided once offers no session choice, and an answer for the session allows it once",async()=>{
+  const rm={command:"rm -r -- \"$rr/$h\""},edit={file_path:"/repo/a.js",old_string:"a",new_string:"b"};
+  for(const [permissionMode,toolName,input] of [["supervised","Bash",rm],["edits","Bash",rm],["supervised","Edit",edit]])for(const flag of ["suppressAlwaysAllowRule","defaultToNo"]){
+    const {session,requests,canUse}=await claudeSession({permissionMode,answers:["acceptForSession"]});
+    const decision=await canUse(toolName,input,{toolUseID:"once-1",[flag]:true,decisionReason:DANGEROUS_RM,suggestions:[{type:"addRules",rules:[{toolName}],behavior:"allow",destination:"localSettings"}]});
+    const label=`${permissionMode} ${toolName} ${flag}`;
+    assert.equal(requests.length,1,label);
+    assert.deepEqual(requests[0].options.map(option=>option.optionId),["allow_once","reject_once"],`${label}: no Allow for this session`);
+    assert.deepEqual(requests[0].approvalOptions,[{decision:"decline",label:"Deny"},{decision:"accept",label:"Allow once"}],`${label}: only Deny and Allow once`);
+    assert.deepEqual([decision.behavior,decision.decisionClassification,decision.updatedPermissions],["allow","user_temporary",undefined],`${label}: allowed once`);
+    await session.close();
+  }
+});
+
 test("read-only still denies what it denies, whatever Claude Code asks or plan mode",async()=>{
   for(const collaborationMode of ["default","plan"]){
     const {session,requests,canUse}=await claudeSession({permissionMode:"read-only",collaborationMode});
