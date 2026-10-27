@@ -116,12 +116,14 @@ test("a real login shell's profile gives its PATH and JAVA_HOME, and one that fa
     const home=join(root,"home-"+(++homes));mkdirSync(home);
     writeFileSync(join(home,".bash_profile"),profile);
     const env={...(process.platform==="win32"?{SYSTEMROOT:process.env.SYSTEMROOT,WINDIR:process.env.WINDIR}:{}),PATH:"/usr/bin:/bin",HOME:home,USERPROFILE:home,TMPDIR:tmpdir(),TEMP:tmpdir(),TMP:tmpdir()};
-    const logs=[],values=await readLoginShellEnvironment({env,shell,cwd:home,log:message=>logs.push(message),...options});
+    const logs=[],values=await readLoginShellEnvironment({env,shell,cwd:home,timeoutMs:15_000,log:message=>logs.push(message),...options});
     return {values,logs};
   };
-  const set=await read('echo "profile noise"\nexport PATH="/opt/login-tools/bin:$PATH"\nexport JAVA_HOME="/opt/login jdk"\necho "more noise"\n');
+  // These two profiles first wait past the app's own 2 s, as a login start on a loaded machine can (Git Bash's took 0.3-0.5 s on an
+  // idle one), so the reads get a limit of the test's own.
+  const set=await read('sleep 2.2\necho "profile noise"\nexport PATH="/opt/login-tools/bin:$PATH"\nexport JAVA_HOME="/opt/login jdk"\necho "more noise"\n');
   assert.match(set.values.PATH,/^\/opt\/login-tools\/bin:/);assert.equal(set.values.JAVA_HOME,"/opt/login jdk");assert.equal(set.values.__MISE_DIFF,undefined);assert.deepEqual(set.logs,[]);
-  const failed=await read("exit 1\n");
+  const failed=await read("sleep 2.2\nexit 1\n");
   assert.deepEqual(failed.values,{});assert.match(failed.logs[0],/it exited with code 1\.$/);
   const started=Date.now(),hung=await read("sleep 3\n",{timeoutMs:600});
   assert.deepEqual(hung.values,{});assert.match(hung.logs[0],/it did not finish within 0\.6 seconds\.$/);assert.ok(Date.now()-started<2500);
