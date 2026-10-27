@@ -289,6 +289,16 @@ test("Settings' harness list does not wait on a registry that does not answer, a
   assert.equal(asked.length,1);
 });
 
+// A status check slower than that wait (Muse Code's starts a host, OpenCode's a server) begins its release read only once it ends:
+// the read still has its own time, so a registry that answers shows on the first listing.
+test("a harness whose status check is slow still shows its newest release on Settings' first listing",WINDOWS_ONLY,async t=>{
+  const root=await tempRoot(t,"slow-check"),binary=await file(join(root,"home",".local","bin","claude.exe"));
+  const slowly=value=>new Promise(resolve=>setTimeout(()=>resolve(value),1800));
+  const fx=machine(root,{latest:{"@anthropic-ai/claude-code":"2.1.320"},answer:(command,args)=>command!==binary?missing(command):args[0]==="--version"?slowly(answered("2.1.300 (Claude Code)\n")):answered(JSON.stringify({loggedIn:true}))});
+  const update=statusOf(await fx.manager.snapshot({refresh:true}),"claude").update;
+  assert.deepEqual([update.current,update.latest,update.newer],["2.1.300","2.1.320",true]);
+});
+
 // An OpenCode profile on a server of its own still runs this machine's opencode, whose version its row shows and its Update installs:
 // Settings offers that Update only for a newer release of it, as for any other profile, never for every listing.
 test("an OpenCode profile with a server of its own is offered Update only for a newer release of the opencode it runs here",WINDOWS_ONLY,async t=>{

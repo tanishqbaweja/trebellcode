@@ -89,7 +89,7 @@ const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Swit
 const OPENCODE_CATALOG_REUSE_MS=10_000;
 const OPENCODE_STATUS_TIMEOUT_MS=20_000;
 // How long after it began Settings' harness list waits for a newest-release read still on its way (T3 publishes the list first and
-// the release after it): a registry or an npm that does not answer never holds the list back.
+// the release after it): a registry or an npm that does not answer never holds the list back for longer.
 const RELEASE_WAIT_MS=1500;
 
 const RUNTIME_COMPATIBILITY=Object.freeze({
@@ -740,10 +740,10 @@ export class AgentRuntimeManager{
   }
   // What Settings says of a newer Muse Code release (T3 enrichMuseSnapshot), as #updateAdvisory says it of the others: the newest
   // release of the profile's channel beside the version it runs, an update that Meta's launcher runs, or how to update one it does not.
-  async #museUpdateAdvisory(instance,status,{until=null}={}){
+  async #museUpdateAdvisory(instance,status,{waitMs=null}={}){
     if(!status?.installed||this.processSpawner(instance))return null;
     const current=parseMuseVersion(status.version),env=this.childEnv(instance),channel=museChannel(env);
-    const latest=current?await this.#latestRelease(museChannelUrl(channel),{wait:Boolean(until),until,read:()=>latestMuseRelease(this.fetchImpl,channel)}):null;
+    const latest=current?await this.#latestRelease(museChannelUrl(channel),{wait:waitMs!=null,waitMs,read:()=>latestMuseRelease(this.fetchImpl,channel)}):null;
     const newer=Boolean(latest&&compareMuseVersions(current,latest)<0),launcher=this.#museLauncher(instance);
     const advisory={current,latest,newer,canUpdate:false,command:null,binary:launcher.real,message:null};
     if(!current)return advisory;
@@ -769,14 +769,19 @@ export class AgentRuntimeManager{
   #releases=new Map();
   // The newest release kept under key: npm's registry's for a package (T3 fetchNpmLatestVersion), or the one read gives (npm's own
   // answer, Muse Code's channel, kept by its URL), kept an hour once read and a minute when it could not be read (T3
-  // ProviderLatestVersions); reads at once share one. wait:false answers from what is kept and reads nothing; until, a promise, ends
-  // the wait for a read on its way when it settles first, answering what was kept before while the read goes on for the next answer.
-  async #latestRelease(key,{wait=true,fresh=false,until=null,read=()=>registryRelease(this.fetchImpl,key)}={}){
-    const kept=this.#releases.get(key),waited=entry=>until?Promise.race([entry.pending,until.then(()=>entry.version)]):entry.pending;
+  // ProviderLatestVersions); reads at once share one. wait:false answers from what is kept and reads nothing; waitMs waits for a read
+  // on its way only that long after it began, then answers what was kept before while the read goes on for the next answer.
+  async #latestRelease(key,{wait=true,fresh=false,waitMs=null,read=()=>registryRelease(this.fetchImpl,key)}={}){
+    const kept=this.#releases.get(key);
+    const waited=entry=>{
+      if(waitMs==null)return entry.pending;
+      let timer=null;const left=Math.max(0,entry.started+waitMs-Date.now());
+      return Promise.race([entry.pending,new Promise(resolve=>{timer=setTimeout(()=>resolve(entry.version),left)})]).finally(()=>clearTimeout(timer));
+    };
     if(!fresh&&kept?.pending)return wait?await waited(kept):kept.version;
     if(!fresh&&kept&&this.now()<kept.until)return kept.version;
     if(!wait)return kept?.version??null;
-    const entry={version:kept?.version??null};
+    const entry={version:kept?.version??null,started:Date.now()};
     entry.pending=Promise.resolve().then(read).catch(()=>null).then(version=>{if(this.#releases.get(key)===entry)this.#releases.set(key,{version,until:this.now()+(version?3_600_000:60_000)});return version});
     this.#releases.set(key,entry);
     return await waited(entry);
@@ -795,7 +800,7 @@ export class AgentRuntimeManager{
   #startReleaseRead(instance){
     try{
       if(this.processSpawner(instance))return;
-      const checked=this.#versions.get(instance.id)?.result,said=[checked?.stdout,checked?.stderr].filter(Boolean).join("\n"),started={until:Promise.resolve()};
+      const checked=this.#versions.get(instance.id)?.result,said=[checked?.stdout,checked?.stderr].filter(Boolean).join("\n"),started={waitMs:0};
       if(instance.kind==="muse"){
         if(!parseMuseVersion(said))return;
         const channel=museChannel(this.childEnv(instance));return void this.#latestRelease(museChannelUrl(channel),{...started,read:()=>latestMuseRelease(this.fetchImpl,channel)});
@@ -807,10 +812,10 @@ export class AgentRuntimeManager{
   // What Settings says of a newer release of the harness a profile runs (T3's version advisory): {current, latest (null when it could
   // not be read), newer, canUpdate (Trebell runs the update: command, what it runs), binary (the file the profile runs), message (how
   // the person updates one Trebell does not), command}. Only a harness Trebell updates has one, when it is there; an OpenCode on a
-  // server of its own has the one of this machine's opencode, whose version its row shows and its Update installs. until (Settings'
-  // own listing): the newest release is read when its last answer is gone, and waited for until until settles.
-  async #updateAdvisory(instance,status,{until=null}={}){
-    if(instance?.kind==="muse")return this.#museUpdateAdvisory(instance,status,{until});
+  // server of its own has the one of this machine's opencode, whose version its row shows and its Update installs. waitMs (Settings'
+  // own listing): the newest release is read when its last answer is gone, and waited for that long after its read began.
+  async #updateAdvisory(instance,status,{waitMs=null}={}){
+    if(instance?.kind==="muse")return this.#museUpdateAdvisory(instance,status,{waitMs});
     if(!UPDATABLE.has(instance?.kind)||!status?.installed)return null;
     // A version its --version check did not give (Codex's from its account read) is no version an update could start from: the
     // update's own check would not answer either.
@@ -818,7 +823,7 @@ export class AgentRuntimeManager{
     if(remote&&instance.kind==="grok")return null;
     const packageName=npmPackageFor(instance.kind,current),line=parsedSemver(current)?.major;
     const owner=remote?{method:"npm",prefix:null,binary:null,real:null}:this.#installOwner(instance,current);
-    const release=current?this.#releaseRead(instance,current,owner):null,found=release?await this.#latestRelease(release.key,{wait:Boolean(until),until,read:release.read}):null;
+    const release=current?this.#releaseRead(instance,current,owner):null,found=release?await this.#latestRelease(release.key,{wait:waitMs!=null,waitMs,read:release.read}):null;
     // An OpenCode's newest release counts within its own line.
     const latest=found&&(instance.kind!=="opencode"||parsedSemver(found)?.major===line)?found:null,newer=Boolean(latest&&compareSemver(parsedSemver(current),parsedSemver(latest))<0);
     const advisory={current,latest,newer,canUpdate:false,command:null,binary:owner.real,message:null};
@@ -1298,14 +1303,13 @@ export class AgentRuntimeManager{
   async snapshot({fresh=true,refresh=false}={}){
     if(refresh)this.#museCatalogDue();
     // Each status of a harness Trebell updates says whether a newer release is out and how it is updated (update). Settings' own
-    // listing reads each newest release whose last answer is gone beside the status checks, and waits for one only until
-    // RELEASE_WAIT_MS after it began: one that answers later is the next listing's. The other listings use the last answers.
-    let timer=null;const until=refresh?new Promise(resolve=>{timer=setTimeout(resolve,RELEASE_WAIT_MS)}):null;
-    const instances=this.instances();if(refresh)for(const instance of instances)this.#startReleaseRead(instance);
+    // listing reads each newest release whose last answer is gone, beside the status checks where it can, and waits for one only
+    // RELEASE_WAIT_MS after its read began: one that answers later is the next listing's. The other listings use the last answers.
+    const instances=this.instances(),waitMs=refresh?RELEASE_WAIT_MS:null;if(refresh)for(const instance of instances)this.#startReleaseRead(instance);
     const statuses=await Promise.all(instances.map(async instance=>{
-      const status=await this.probe(instance,{fresh}),update=await this.#updateAdvisory(instance,status,{until}).catch(()=>null);
+      const status=await this.probe(instance,{fresh}),update=await this.#updateAdvisory(instance,status,{waitMs}).catch(()=>null);
       return update?{...status,update}:status;
-    })).finally(()=>clearTimeout(timer));
+    }));
     const publicInstances=instances.map(instance=>{
       const {environment,...safe}=instance;
       return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys)};
