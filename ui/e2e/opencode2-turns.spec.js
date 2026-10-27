@@ -11,7 +11,8 @@ import { startFakeOpenCode2,writeFakeOpenCode2Serve } from "../../tests/fixtures
 import { keepThreadMeta } from "./test-home.js";
 
 // OpenCode 2 turns as a person sees them: a screenshot pasted into the chat reaches OpenCode as a file it reads (it refused the whole
-// message before), and a provider retry shows as the turn's retry row and then reads recovered. The real agent relay runs the real OpenCode 2 session and @opencode/client
+// message before), a provider retry shows as the turn's retry row and then reads recovered, and a question OpenCode asks is the
+// question dialog, whose answer the turn goes on with. The real agent relay runs the real OpenCode 2 session and @opencode/client
 // against a stand-in for `opencode serve` (tests/fixtures/fake-opencode2-server.mjs), which answers as OpenCode 2.0.24 does.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
@@ -127,5 +128,44 @@ test("an OpenCode 2 provider retry shows as the turn's retry row, then reads rec
     await row.locator("summary").click();
     await expect(row.locator(".tool-event-body pre")).toHaveText("429 Too Many Requests. OpenCode retries opencode/big-pickle in 30 s (retry 1).");
     await shots(page,"opencode2-retry-recovered",()=>expect(row).toBeVisible());
+  });
+});
+
+test("an OpenCode 2 question is the question dialog, and the turn goes on with the person's answers",async({page})=>{
+  test.setTimeout(120_000);
+  const answer=name=>`The ${name} theme uses amber and blue.`;let asked=0;
+  await openCode2App(page,async({fake,sessionID,emit,reply:keep})=>{
+    const formID=`frm_theme_${++asked}`;
+    emit({type:"form.created",data:{form:{id:formID,sessionID,title:"Questions",metadata:{kind:"question"},fields:[
+      {key:"colors",type:"multiselect",title:"Colors",description:"Which colors should the theme use?",options:[{value:"amber",label:"Amber",description:"Warm accents"},{value:"blue",label:"Blue",description:"Cool accents"},{value:"green",label:"Green"}]},
+      {key:"name",type:"string",title:"Name",description:"What should the theme be called?"},
+    ]}}});
+    for(let waited=0;!fake.forms.get(formID)?.settled&&waited<1600;waited++)await new Promise(resolve=>setTimeout(resolve,50));
+    const name=fake.called(`POST /api/session/ses_main/form/${formID}/reply`)[0]?.body?.answer?.name||"unnamed";
+    keep(answer(name));reply(emit,sessionID,answer(name));
+  },async({fake})=>{
+    const dialog=page.getByRole("dialog",{name:"Agent needs input"});
+    // The dialog covers the header, so the mode is switched before each question comes.
+    for(const [index,[mode,name]] of [["dark","Sunrise"],["light","Moonlight"]].entries()){
+      if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+      await send(page,`Make me a ${mode} theme`);
+      await expect(dialog).toBeVisible({timeout:20_000});
+      const [colors,field]=[dialog.locator(".question-block").nth(0),dialog.locator(".question-block").nth(1)];
+      await expect(colors).toContainText("Which colors should the theme use?");await expect(field).toContainText("What should the theme be called?");
+      // The colors take only OpenCode's choices; the name takes the person's own words.
+      await expect(colors.getByPlaceholder("Custom answer…")).toHaveCount(0);await expect(field.getByPlaceholder("Custom answer…")).toBeVisible();
+      await colors.getByRole("button",{name:/Amber/}).click();await colors.getByRole("button",{name:/Blue/}).click();
+      await expect(colors.getByRole("button",{name:/Amber/})).toHaveAttribute("aria-pressed","true");
+      await field.getByPlaceholder("Custom answer…").click();await page.keyboard.type(name,{delay:5});
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await expect(dialog).toBeVisible();await page.screenshot({animations:"disabled",path:`${auditDir}opencode2-question-${mode}-${width}x800.png`})}
+      await page.setViewportSize({width:1280,height:800});
+      await dialog.getByRole("button",{name:"Submit"}).click();
+      await expect(dialog).toHaveCount(0);
+      await expect.poll(()=>fake.called(`POST /api/session/ses_main/form/frm_theme_${index+1}/reply`).map(call=>call.body)).toEqual([{answer:{colors:["amber","blue"],name}}]);
+      await expect(page.locator(".assistant-message-text").filter({hasText:answer(name)}),"the turn went on with the answers").toBeVisible({timeout:20_000});
+      await expect(stopButton(page)).toHaveCount(0);
+    }
+    await shots(page,"opencode2-question-answered");
   });
 });

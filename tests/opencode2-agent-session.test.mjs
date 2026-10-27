@@ -153,3 +153,103 @@ test("an OpenCode 2 retry hours away, or a subagent's, ends the turn with the pr
     assert.deepEqual(fake.called("session.interrupt").slice(1).map(input=>input.sessionID).sort(),["ses_child","ses_main"]);
   }finally{await session.close()}
 });
+
+const FORM={id:"frm_1",sessionID:"ses_main",title:"Questions",metadata:{kind:"question"},fields:[
+  {key:"k1",type:"multiselect",title:"Colors",description:"Which colors should the theme use?",options:[{value:"a",label:"Amber",description:"Warm"},{value:"b",label:"Blue"}]},
+  {key:"k2",type:"string",title:"Name",description:"What should the theme be called?"},
+]};
+
+test("an OpenCode 2 question (a form) goes to the question dialog, and the person's answers go back by field, a multiselect's as a list",async()=>{
+  const asked=[],fake=fakeOpenCode2(),{session}=await startedSession(fake,{onQuestion:async request=>{asked.push(request);return {k1:["a","b"],k2:["text"]}}});
+  try{
+    const turn=session.prompt([{type:"text",text:"Make a theme"}]);
+    await eventually(()=>fake.called("session.prompt").length===1);
+    fake.emit({type:"form.created",data:{form:FORM}});
+    await eventually(()=>fake.called("session.form.reply").length===1);
+    assert.equal(asked.length,1);assert.equal(asked[0].toolName,"question");assert.ok(asked[0].signal instanceof AbortSignal);
+    assert.deepEqual(asked[0].input,{questions:[
+      // Only the choices answer a field that takes no words of the person's own (field.custom).
+      {id:"k1",header:"Colors",question:"Which colors should the theme use?",multiSelect:true,options:[{label:"Amber",description:"Warm",value:"a"},{label:"Blue",description:"",value:"b"}],allowCustomAnswer:false},
+      {id:"k2",header:"Name",question:"What should the theme be called?",multiSelect:false,options:[]},
+    ]});
+    assert.deepEqual(fake.called("session.form.reply"),[{sessionID:"ses_main",formID:"frm_1",answer:{k1:["a","b"],k2:"text"}}]);
+    assert.equal(fake.called("session.form.cancel").length,0);
+    // The question held nothing: the turn goes on with the answers and ends as OpenCode ends it.
+    fake.emit({type:"form.replied",data:{id:"frm_1",sessionID:"ses_main",answer:{k1:["a","b"],k2:"text"}}});
+    ended(fake);assert.equal((await turn).stopReason,"end_turn");
+  }finally{await session.close()}
+});
+
+test("an OpenCode 2 question left unanswered is declined with a message, so the model goes on, and a subagent's question is asked and answered as its own",async()=>{
+  const answers=[{},{q0:["Blue"]}],fake=fakeOpenCode2({sessions:{ses_child:{id:"ses_child",parentID:"ses_main"}}});
+  const {session}=await startedSession(fake,{onQuestion:async()=>answers.shift()});
+  try{
+    const turn=session.prompt([{type:"text",text:"Ask me"}]);
+    await eventually(()=>fake.called("session.prompt").length===1);
+    fake.emit({type:"form.created",data:{form:{id:"frm_2",sessionID:"ses_main",title:"Questions",fields:[{key:"q0",type:"string",title:"Color",description:"Which color?",options:[{value:"Red",label:"Red"},{value:"Blue",label:"Blue"}],custom:true}]}}});
+    await eventually(()=>fake.called("session.form.cancel").length===1);
+    assert.deepEqual(fake.called("session.form.cancel"),[{sessionID:"ses_main",formID:"frm_2",message:"The user did not answer this question. Continue without the answer, and tell the user what you would need from them."}]);
+    fake.emit({type:"form.created",data:{form:{id:"frm_3",sessionID:"ses_child",title:"Questions",fields:[{key:"q0",type:"string",title:"Color",options:[{value:"Blue",label:"Blue"}],custom:true}]}}});
+    await eventually(()=>fake.called("session.form.reply").length===1);
+    assert.deepEqual(fake.called("session.form.reply"),[{sessionID:"ses_child",formID:"frm_3",answer:{q0:"Blue"}}]);
+    ended(fake);assert.equal((await turn).stopReason,"end_turn","an unanswered question does not end the turn");
+  }finally{await session.close()}
+});
+
+test("an OpenCode 2 question the dialog cannot show (a yes or no field) is declined and the turn ends saying why, instead of waiting for good",async()=>{
+  const asked=[],fake=fakeOpenCode2(),{session}=await startedSession(fake,{onQuestion:async request=>{asked.push(request);return {}}});
+  try{
+    const turn=session.prompt([{type:"text",text:"Deploy"}]);
+    await eventually(()=>fake.called("session.prompt").length===1);
+    fake.emit({type:"form.created",data:{form:{id:"frm_4",sessionID:"ses_main",title:"Confirm",fields:[{key:"ok",type:"boolean",title:"Deploy now?"}]}}});
+    await assert.rejects(turn,{message:"OpenCode asked for a yes or no answer, which Trebell Code's question dialog cannot show, so Trebell declined the question and stopped the turn."});
+    assert.equal(asked.length,0);
+    // Without a message the cancel stops the run, as OpenCode's own Stop does.
+    assert.deepEqual(fake.called("session.form.cancel"),[{sessionID:"ses_main",formID:"frm_4"}]);
+    // A link to open, a hidden field and one that depends on another are declined the same way.
+    for(const [field,what] of [[{key:"x",type:"external",url:"https://example.com"},"a link to open"],[{key:"x",type:"string",hidden:true},"a hidden field"],[{key:"x",type:"string",when:[{key:"y",equals:"z"}]},"a field that depends on another"],[{key:"x",type:"number"},"a number"]]){
+      const next=session.prompt([{type:"text",text:"Again"}]);
+      await eventually(()=>session.activePrompt);
+      fake.emit({type:"form.created",data:{form:{id:`frm_${what}`,sessionID:"ses_main",title:"Form",fields:[field]}}});
+      await assert.rejects(next,{message:`OpenCode asked for ${what}, which Trebell Code's question dialog cannot show, so Trebell declined the question and stopped the turn.`});
+    }
+  }finally{await session.close()}
+});
+
+test("an OpenCode 2 question settled elsewhere leaves the dialog and sends nothing, and one open when the turn is stopped is cancelled with it",async()=>{
+  const signals=[],release=[],fake=fakeOpenCode2();
+  const {session}=await startedSession(fake,{onQuestion:request=>{signals.push(request.signal);return new Promise(resolve=>release.push(resolve))}});
+  try{
+    const turn=session.prompt([{type:"text",text:"Ask me"}]);
+    await eventually(()=>fake.called("session.prompt").length===1);
+    fake.emit({type:"form.created",data:{form:FORM}});
+    await eventually(()=>signals.length===1);
+    // OpenCode's own app answered it: the card is withdrawn through its signal, and Trebell neither answers nor cancels it.
+    fake.emit({type:"form.replied",data:{id:"frm_1",sessionID:"ses_main",answer:{k2:"elsewhere"}}});
+    await eventually(()=>signals[0].aborted);
+    release.shift()?.({k2:["late"]});await delay(30);
+    assert.equal(fake.called("session.form.reply").length+fake.called("session.form.cancel").length,0);
+    // Stop while a question is open: the run stops, and the question goes with it (cancelled without a message).
+    fake.emit({type:"form.created",data:{form:{...FORM,id:"frm_5"}}});
+    await eventually(()=>signals.length===2);
+    await session.cancel();
+    release.shift()?.({});
+    await eventually(()=>fake.called("session.form.cancel").length===1);
+    assert.deepEqual(fake.called("session.form.cancel"),[{sessionID:"ses_main",formID:"frm_5"}]);
+    assert.equal((await turn).stopReason,"cancelled");
+  }finally{await session.close()}
+});
+
+test("an answer OpenCode 2 refuses is declined with OpenCode's reason, which the model and the person are told",async()=>{
+  const fake=fakeOpenCode2({overrides:{"session.form.reply":async()=>{throw Object.assign(new Error("Invalid option for form field: k1"),{name:"FormInvalidAnswerError"})}}});
+  const {session,updates}=await startedSession(fake,{onQuestion:async()=>({k1:["zzz"],k2:["x"]})});
+  try{
+    const turn=session.prompt([{type:"text",text:"Make a theme"}]);
+    await eventually(()=>fake.called("session.prompt").length===1);
+    fake.emit({type:"form.created",data:{form:FORM}});
+    await eventually(()=>fake.called("session.form.cancel").length===1);
+    assert.deepEqual(fake.called("session.form.cancel")[0],{sessionID:"ses_main",formID:"frm_1",message:"The user's answer could not be given: Invalid option for form field: k1. Continue without it, and tell the user what you would need from them."});
+    assert.deepEqual(notices(updates).map(update=>update.message),["OpenCode did not take the answer to its question: Invalid option for form field: k1"]);
+    ended(fake);assert.equal((await turn).stopReason,"end_turn");
+  }finally{await session.close()}
+});

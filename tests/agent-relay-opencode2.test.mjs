@@ -87,3 +87,31 @@ test("an OpenCode 2 retry reaches the window as a retrying error of the turn, an
   assert.equal(completed.turn.status,"completed");
   assert.equal(relay.messages.filter(message=>message.method==="error").length,1);
 });
+
+test("an OpenCode 2 question reaches the window as a question card, the answer goes back to OpenCode, and one settled in OpenCode leaves the window",async t=>{
+  const FIELDS=[{key:"k1",type:"multiselect",title:"Colors",description:"Which colors?",options:[{value:"a",label:"Amber"},{value:"b",label:"Blue"}]},{key:"k2",type:"string",title:"Name",description:"What name?"}];
+  const relay=await openCode2Relay(t,{serverUrl:true,onPrompt:async({sessionID,emit})=>{
+    emit({type:"form.created",data:{form:{id:"frm_ask",sessionID,title:"Questions",fields:FIELDS}}});
+    await eventually(()=>relay.fake.forms.get("frm_ask")?.settled,{timeoutMs:20_000});
+    // A second question the person never answers in Trebell: OpenCode's own app answers it.
+    emit({type:"form.created",data:{form:{id:"frm_elsewhere",sessionID,title:"Questions",fields:[FIELDS[1]]}}});
+    await eventually(()=>relay.messages.filter(message=>message.method==="item/tool/requestUserInput").length===2,{timeoutMs:20_000});
+    emit({type:"form.replied",data:{id:"frm_elsewhere",sessionID,answer:{k2:"from the OpenCode app"}}});
+    await delay(100);text(emit,sessionID,"Theme made.");succeeded(emit,sessionID);
+  }});
+  await relay.rpc("turn/start",{threadId:relay.threadId,input:[{type:"text",text:"Make a theme"}]});
+  const asked=await eventually(()=>relay.messages.find(message=>message.method==="item/tool/requestUserInput"));
+  assert.deepEqual(asked.params.questions,[
+    {id:"k1",header:"Colors",question:"Which colors?",required:true,allowMultiple:true,allowCustomAnswer:false,options:[{label:"Amber",description:"",value:"a"},{label:"Blue",description:"",value:"b"}]},
+    {id:"k2",header:"Name",question:"What name?",required:true,allowMultiple:false,options:[]},
+  ]);
+  relay.ws.send(JSON.stringify({id:asked.id,result:{answers:{k1:{answers:["a","b"]},k2:{answers:["Sunrise"]}}}}));
+  await eventually(()=>relay.fake.called("POST /api/session/ses_main/form/frm_ask/reply").length===1);
+  assert.deepEqual(relay.fake.called("POST /api/session/ses_main/form/frm_ask/reply")[0].body,{answer:{k1:["a","b"],k2:"Sunrise"}});
+  const second=await eventually(()=>relay.messages.filter(message=>message.method==="item/tool/requestUserInput")[1]);
+  const resolved=await eventually(()=>relay.messages.find(message=>message.method==="serverRequest/resolved"));
+  assert.deepEqual(resolved.params,{requestId:second.id,threadId:relay.threadId},"the card of the question answered in OpenCode is withdrawn");
+  const completed=await relay.completed();
+  assert.equal(completed.turn.status,"completed");
+  assert.equal(relay.fake.called("DELETE /api/session/ses_main/form/frm_elsewhere").length+relay.fake.called("POST /api/session/ses_main/form/frm_elsewhere/reply").length,0,"nothing is sent for a form settled elsewhere");
+});

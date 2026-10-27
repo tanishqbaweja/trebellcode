@@ -57,6 +57,45 @@ export async function openCode2PromptInput(parts=[],{external=false}={}){
   }
   return {text:text.join("\n"),files};
 }
+// OpenCode 2 asks through forms: its question tool's questions, a plugin's or a server's (T3 Code's formQuestions and formAnswer). String
+// and multiselect fields are the question dialog's questions, their options its choices; a field the dialog cannot show is named.
+const FORM_FIELD_NAMES=Object.freeze({external:"a link to open",boolean:"a yes or no answer",number:"a number",integer:"a whole number"});
+const formText=value=>typeof value==="string"?value.trim():"";
+export function openCode2FormQuestions(form){
+  const fields=Array.isArray(form?.fields)?form.fields:[],questions=[];
+  if(!fields.length)return {unsupported:"an answer to a form with no questions"};
+  for(const [index,field] of fields.entries()){
+    const type=String(field?.type||"");
+    if(type!=="string"&&type!=="multiselect")return {unsupported:FORM_FIELD_NAMES[type]||`a value of type ${type||"unknown"}`};
+    if(field.hidden===true)return {unsupported:"a hidden field"};
+    if(Array.isArray(field.when)&&field.when.length)return {unsupported:"a field that depends on another"};
+    const header=formText(field.title)||`Question ${index+1}`;
+    const options=(Array.isArray(field.options)?field.options:[]).filter(option=>formText(option?.value)||formText(option?.label)).map(option=>({label:formText(option.label)||formText(option.value),description:formText(option.description),value:formText(option.value)?String(option.value):formText(option.label)}));
+    // Choices only, unless the field takes the person's own words too (or offers no choices).
+    questions.push({id:String(field.key),header,question:formText(field.description)||header,multiSelect:type==="multiselect",options,...(field.custom===true||!options.length?{}:{allowCustomAnswer:false})});
+  }
+  return {questions};
+}
+// The answers by field key: a multiselect's as a list, a string's joined.
+export function openCode2FormAnswer(form,answers={}){
+  const answer={};
+  for(const field of Array.isArray(form?.fields)?form.fields:[]){
+    const raw=answers?.[field.key],values=(Array.isArray(raw)?raw:[raw]).filter(value=>typeof value==="string"&&value.trim());
+    if(values.length)answer[field.key]=field.type==="multiselect"?values:values.join(", ");
+  }
+  return answer;
+}
+// A form cancelled with a message fails its tool with that message and the model goes on; one cancelled without a message stops the
+// asking session's run, as Stop does.
+const FORM_UNANSWERED="The user did not answer this question. Continue without the answer, and tell the user what you would need from them.";
+const FORM_GONE=new Set(["FormNotFoundError","FormAlreadySettledError","SessionNotFoundError"]);
+function untilAborted(promise,signal){
+  if(signal.aborted)return Promise.resolve(null);
+  return new Promise((resolve,reject)=>{
+    const onAbort=()=>resolve(null);signal.addEventListener("abort",onAbort,{once:true});
+    promise.then(value=>{signal.removeEventListener("abort",onAbort);resolve(value)},error=>{signal.removeEventListener("abort",onAbort);reject(error)});
+  });
+}
 function errorText(error){
   if(!error)return "OpenCode request failed";
   return String(error?.message||error?.data?.message||error?._tag||error).slice(0,2000);
@@ -77,6 +116,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   constructor(options={}){
     super(options);
     this.version=String(options.version||"");this.loadClient=typeof options.loadClient==="function"?options.loadClient:loadOpenCodeClient;
+    // The forms waiting on the person, by form ID: {controller, answering}.
+    this.forms=new Map();
     this.appliedSelection=null;
     this.sessionRules=[];
     this.messageText=new Map();
@@ -179,7 +220,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
     let settleTurn=()=>{};const completion=new Promise(resolve=>{settleTurn=resolve});
     const input=await openCode2PromptInput(parts,{external:Boolean(this.serverUrl)});
-    // stopError: why Trebell ended the turn itself (a retry it will not wait for).
+    // stopError: why Trebell ended the turn itself (a retry it will not wait for, a question it cannot show).
     const turn={done:false,cancelled:false,error:null,stopError:null,text:"",assistantMessageId:null,startedAt:Date.now(),completion,settle:settleTurn};
     this.activePrompt=turn;
     try{
@@ -234,6 +275,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   async close(){
     if(this.closed)return;this.closed=true;
     if(this.activePrompt){this.activePrompt.cancelled=true;this.activePrompt.settle?.()}
+    for(const pending of this.forms.values())pending.controller.abort();this.forms.clear();
     this.eventAbort.abort();
     if(this.client&&this.sessionId)await this.client.session.interrupt({sessionID:this.sessionId}).catch(()=>{});
     this.server?.close?.();
@@ -288,6 +330,9 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(sessionID&&!(await this.#belongs(sessionID)))return;
     const turn=this.activePrompt;
     if(event.type==="permission.asked")return await this.#permission(data);
+    // A form names its session inside it. The question waits on the person without holding the event stream.
+    if(event.type==="form.created"){const form=data.form||{};if(await this.#belongs(form.sessionID))this.#askForm(form);return}
+    if(event.type==="form.replied"||event.type==="form.cancelled")return this.#formSettled(String(data.id||""));
     if(event.type==="session.retry.scheduled")return this.#retry(event,sessionID);
     if(event.type==="session.text.delta"&&turn&&sessionID===this.sessionId){
       const delta=String(data.delta||"");if(!delta)return;turn.text+=delta;turn.assistantMessageId=String(data.assistantMessageID||turn.assistantMessageId||"")||null;
@@ -318,5 +363,50 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(!reason){this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",willRetry:true,message:openCodeRetryNotice({message:data.error,model:own?this.model:null,retry,waitMs:Number(data.at)-created,subagent:!own})}});return}
     turn.stopError=new Error(own?reason:`A subagent's model request failed: ${reason}`);turn.settle?.();
     for(const id of own?[this.sessionId]:[sessionID,this.sessionId])void Promise.resolve(this.client?.session?.interrupt?.({sessionID:id})).catch(()=>{});
+  }
+  // A form of this session or a subagent's goes to the question dialog (onQuestion) and is answered with what the person chose. One the
+  // dialog cannot show is declined and ends the turn saying so; one left unanswered is declined with a message, so the model goes on
+  // without it. The card goes when OpenCode settles the form elsewhere (form.replied, form.cancelled).
+  #askForm(form){
+    const formID=String(form?.id||"");if(!formID||this.forms.has(formID))return;
+    const pending={controller:new AbortController(),answering:false};this.forms.set(formID,pending);
+    void this.#answerForm(form,pending).catch(()=>{}).finally(()=>{if(this.forms.get(formID)===pending)this.forms.delete(formID)});
+  }
+  #formSettled(formID){
+    const pending=this.forms.get(formID);if(!pending||pending.answering)return;
+    this.forms.delete(formID);pending.controller.abort();
+  }
+  async #cancelForm(form,message=null){
+    return await Promise.resolve(this.client?.session?.form?.cancel?.({sessionID:String(form.sessionID),formID:String(form.id),...(message?{message}:{})})).then(()=>true,error=>FORM_GONE.has(error?.name));
+  }
+  async #answerForm(form,pending){
+    const sessionID=String(form.sessionID),formID=String(form.id),turn=this.activePrompt,own=sessionID===this.sessionId,mapped=openCode2FormQuestions(form);
+    if(mapped.unsupported){
+      pending.answering=true;
+      const reason=`OpenCode asked for ${mapped.unsupported}, which Trebell Code's question dialog cannot show, so Trebell declined the question`;
+      // The cancel stops this session's run (OpenCode's Stop) and the turn ends with the reason. A subagent is told the reason instead and
+      // goes on: stopping it would not end the turn.
+      if(!own||!turn||turn.done)return void await this.#cancelForm(form,reason+".");
+      turn.stopError=new Error(reason+" and stopped the turn.");
+      if(!(await this.#cancelForm(form)))await Promise.resolve(this.client?.session?.interrupt?.({sessionID})).catch(()=>{});
+      turn.settle?.();return;
+    }
+    let answers=null;
+    if(typeof this.onQuestion==="function")answers=await untilAborted(Promise.resolve().then(()=>this.onQuestion({toolName:"question",input:{questions:mapped.questions},signal:pending.controller.signal})),pending.controller.signal).catch(()=>null);
+    // Settled elsewhere, or the session closed: there is nothing to send.
+    if(pending.controller.signal.aborted||this.closed)return;
+    pending.answering=true;
+    // A stopped turn's run is ending, and the form with it.
+    if(turn?.cancelled)return void await this.#cancelForm(form);
+    const answer=openCode2FormAnswer(form,answers||{});
+    if(!Object.keys(answer).length)return void await this.#cancelForm(form,FORM_UNANSWERED);
+    try{await this.client.session.form.reply({sessionID,formID,answer})}
+    catch(error){
+      if(FORM_GONE.has(error?.name))return;
+      // OpenCode refused the answer (one that is not among the choices, say): the model is told, and so is the person.
+      const detail=errorText(error);
+      await this.#cancelForm(form,`The user's answer could not be given: ${detail}. Continue without it, and tell the user what you would need from them.`);
+      this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:`OpenCode did not take the answer to its question: ${detail}`}});
+    }
   }
 }
