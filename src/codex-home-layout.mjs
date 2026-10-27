@@ -5,8 +5,11 @@ import { localHomePath } from "./local-home-path.mjs";
 
 const SHARED_DIRECTORIES=["sessions","archived_sessions","sqlite","shell_snapshots","worktrees","skills","plugins","cache","logs","mcp-oauth-locks"];
 const PRIVATE_ENTRIES=new Set(["auth.json","models_cache.json"]);
-const SHADOW_LOCAL_ENTRIES=new Set(["log","memories","tmp"]);
-const REPLACEABLE_SHARED_ENTRIES=new Set(["mcp-oauth-locks"]);
+// Finder keeps a .DS_Store of its own in every folder it opens, a shadow home's too, so it is never linked to the shared one.
+const SHADOW_LOCAL_ENTRIES=new Set(["log","memories","tmp",".DS_Store"]);
+// Locks Codex makes itself when it starts in a shadow home before the shared home has them: they guard shared state, so a local
+// one is replaced with the link to the shared one.
+const REPLACEABLE_SHARED_ENTRIES=new Set(["mcp-oauth-locks",".sqlite-maintenance.lock"]);
 
 // A home path as the person typed it, with ~, ~/... and ~name/... placed on this machine (local-home-path); one under a user this
 // machine does not have keeps its old place for the continuation key only, and its error refuses it before anything is made there.
