@@ -350,15 +350,18 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     await this.client.permission.reply({sessionID:String(data.sessionID),requestID:String(data.id),decision:permissionDecision(decision),...(refusal?{message:refusal.reason}:{})}).catch(()=>{});
   }
   #startEvents(){
-    // Every chunk the stream receives counts (onActivity), OpenCode's heartbeats among them.
+    // Every chunk the stream receives counts (onActivity), OpenCode's heartbeats among them. The silence counts only while the session
+    // waits for the stream, as T3 Code's timeout runs only while a read waits: @opencode/client reads the stream only when asked for the
+    // next event, so an approval the person takes minutes over holds the loop, not the stream.
     const silence=new AbortController(),signal=AbortSignal.any([this.eventAbort.signal,silence.signal]);
-    let timer=null;const heard=()=>{clearTimeout(timer);timer=setTimeout(()=>silence.abort(),SILENT_STREAM_MS)};
+    let timer=null;const waiting=()=>{clearTimeout(timer);timer=setTimeout(()=>silence.abort(),SILENT_STREAM_MS)};
     this.eventTask=(async()=>{
       try{
-        heard();
-        for await(const event of this.client.event.subscribe({signal,onActivity:heard})){
-          heard();if(this.closed)break;
+        waiting();
+        for await(const event of this.client.event.subscribe({signal,onActivity:waiting})){
+          clearTimeout(timer);if(this.closed)break;
           try{await this.#event(event)}catch(error){if(!this.closed)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:errorText(error)}})}
+          waiting();
         }
       }catch(error){
         // A stream Trebell let go of itself (closed, or silent) ends with @opencode/client's Transport error, not an AbortError: it is
