@@ -1,0 +1,84 @@
+// A stand-in for an OpenCode 2 server (`opencode serve`): its JSON API under /api, answered behind Basic auth as OpenCode 2.0.24
+// answers @opencode/client (bodies {data}, 204 for empty answers, {_tag, message} for refusals), and its event stream. It checks a
+// prompt's attachments as OpenCode 2.0.24 does: each file is {uri, name?}, and a prompt with one that has no uri is refused with
+// OpenCode's own words. onPrompt({body, sessionID, emit}) plays a turn; emit(event) sends an event to every stream. A thread's
+// managed `opencode serve` can be served.script (run as `node serve` in the thread's folder), which tells this server the password
+// the session gave it and says it listens here, so the session treats the server as its own (attachments go as files).
+import { writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { join } from "node:path";
+
+export const FAKE_OPENCODE2_MODELS=Object.freeze([{providerID:"opencode",id:"big-pickle",name:"Big Pickle",enabled:true,limit:{context:200000},variants:[]}]);
+const SERVE_SCRIPT=String.raw`
+const url=process.env.FAKE_OPENCODE2_URL;
+fetch(url+"/fake/password",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({password:process.env.OPENCODE_PASSWORD||""})})
+  .then(()=>{process.stdout.write("server listening on "+url+" \n");setInterval(()=>{},1<<30)},error=>{process.stderr.write(String(error));process.exit(1)});
+`;
+// Writes the `serve` stand-in into a folder (the thread's working folder, where `node serve --port=...` finds it).
+export async function writeFakeOpenCode2Serve(folder){await writeFile(join(folder,"serve"),SERVE_SCRIPT,"utf8")}
+
+export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions={},onPrompt=null}={}){
+  const calls=[],streams=new Set(),forms=new Map(),messages=[];let password=null,events=0,prompts=0;
+  const known=new Map([["ses_main",{id:"ses_main",agent:"build"}],...Object.entries(sessions)]);
+  const emit=event=>{
+    const value={id:`evt_${++events}`,created:Date.now(),...event};
+    if(value.type==="form.created"&&value.data?.form)forms.set(String(value.data.form.id),{settled:false});
+    for(const res of streams)res.write(`data: ${JSON.stringify(value)}\n\n`);
+    return value;
+  };
+  const server=createServer(async(req,res)=>{
+    const url=new URL(req.url,"http://127.0.0.1");let text="";for await(const chunk of req)text+=chunk;
+    let body=null;try{body=text?JSON.parse(text):null}catch{body=text}
+    const key=`${req.method} ${url.pathname}`;
+    const send=(status,value)=>{if(res.writableEnded)return;if(value===undefined){res.writeHead(status);res.end();return}res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify(value))};
+    if(key==="POST /fake/password"){password=String(body?.password??"");return send(204)}
+    if(password!==null&&req.headers.authorization!==`Basic ${Buffer.from(`opencode:${password}`,"utf8").toString("base64")}`)return send(401,{_tag:"UnauthorizedError",message:"Unauthorized"});
+    calls.push({key,body,authorization:req.headers.authorization||null});
+    if(key==="GET /api/event"){
+      res.writeHead(200,{"content-type":"text/event-stream","cache-control":"no-cache"});res.write(`data: ${JSON.stringify({id:"evt_0",type:"server.connected",data:{}})}\n\n`);
+      streams.add(res);res.on("close",()=>streams.delete(res));return;
+    }
+    if(key==="GET /api/info")return send(200,{version:"2.0.24",pid:process.pid,urls:[`http://127.0.0.1:${server.address().port}`]});
+    if(key==="GET /api/model")return send(200,{data:models});
+    if(key==="GET /api/model/default")return send(200,{data:models[0]||null});
+    if(["GET /api/command","GET /api/skill","GET /api/agent","GET /api/provider"].includes(key))return send(200,{data:[]});
+    if(key==="POST /api/session")return send(200,{data:known.get("ses_main")});
+    if(/^PUT \/api\/experimental\/session\/[^/]+\/instructions\/entries\//.test(key))return send(204);
+    const match=/^\/api\/session\/([^/]+)(\/.*)?$/.exec(url.pathname);
+    if(match){
+      const sessionID=decodeURIComponent(match[1]),rest=match[2]||"",session=known.get(sessionID);
+      if(!session)return send(404,{_tag:"SessionNotFoundError",message:`Session not found: ${sessionID}`});
+      if(req.method==="GET"&&!rest)return send(200,{data:session});
+      if(req.method==="PATCH"&&!rest)return send(204);
+      if(req.method==="POST"&&(rest==="/model"||rest==="/agent"))return send(204);
+      if(req.method==="GET"&&rest==="/message")return send(200,{data:[...messages].reverse()});
+      if(req.method==="POST"&&rest==="/interrupt"){emit({type:"session.execution.interrupted",data:{sessionID,reason:"interrupt"}});return send(200,{data:{}})}
+      if(req.method==="POST"&&rest==="/prompt"){
+        const files=Array.isArray(body?.files)?body.files:[];
+        const missing=files.findIndex(file=>!file||typeof file!=="object"||typeof file.uri!=="string");
+        if(missing>=0)return send(400,{_tag:"InvalidRequestError",message:`Missing key\n  at ["files"][${missing}]["uri"]`});
+        const id=`msg_user_${++prompts}`;send(200,{data:{id,sessionID,type:"user",payload:{text:body?.text||"",files}}});
+        if(typeof onPrompt==="function")void Promise.resolve().then(()=>onPrompt({body,sessionID,id,emit,reply:text=>messages.push({id:`msg_assistant_${prompts}`,type:"assistant",content:[{type:"text",text}]})})).catch(()=>{});
+        return;
+      }
+      const form=/^\/form\/([^/]+)(\/reply)?$/.exec(rest);
+      if(form){
+        const formID=decodeURIComponent(form[1]),entry=forms.get(formID);
+        if(!entry)return send(404,{_tag:"FormNotFoundError",message:`Form not found: ${formID}`});
+        if(entry.settled)return send(409,{_tag:"FormAlreadySettledError",message:`Form already settled: ${formID}`});
+        entry.settled=true;
+        if(req.method==="POST"&&form[2]){emit({type:"form.replied",data:{id:formID,sessionID,answer:body?.answer||{}}});return send(204)}
+        if(req.method==="DELETE"&&!form[2]){emit({type:"form.cancelled",data:{id:formID,sessionID}});return send(204)}
+      }
+    }
+    send(404,{_tag:"NotFoundError",message:`No fake route for ${key}`});
+  });
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  const url=`http://127.0.0.1:${server.address().port}`;
+  return {
+    url,calls,emit,forms,
+    called:key=>calls.filter(call=>call.key===key),
+    prompts:()=>calls.filter(call=>/^POST \/api\/session\/[^/]+\/prompt$/.test(call.key)).map(call=>call.body),
+    close:()=>{for(const res of streams)res.end();server.closeAllConnections?.();return new Promise(resolve=>server.close(resolve))},
+  };
+}

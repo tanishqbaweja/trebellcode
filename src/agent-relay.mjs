@@ -11,7 +11,7 @@ import { isSessionRefusal } from "./session-refusal.mjs";
 import { threadHistoryHandoff } from "./thread-history-handoff.mjs";
 import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
-import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
+import { OpenCode2AgentSession, withPromptImagePath } from "./opencode2-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { MuseAgentSession } from "./muse-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
@@ -184,7 +184,8 @@ async function acpPrompt(input=[]){
     else if(item?.type==="localImage"){
       const mime=IMAGE_MIME[extname(String(item.path||"")).toLowerCase()]||"image/png";
       const data=await readFile(item.path);
-      out.push({type:"image",mimeType:mime,data:data.toString("base64")});
+      // OpenCode 2 reads an attached image from its saved file, which the part keeps out of what the other harnesses are sent.
+      out.push(withPromptImagePath({type:"image",mimeType:mime,data:data.toString("base64")},item.path));
     }else if(item?.type==="mention"){
       out.push({type:"resource_link",uri:fileUri(item.path),name:String(item.name||item.path||"file")});
     }else if(item?.type==="localAudio"){

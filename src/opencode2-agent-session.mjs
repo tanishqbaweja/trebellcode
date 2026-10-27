@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { access } from "node:fs/promises";
+import { basename, extname } from "node:path";
+import { fileUri, fileUriPath } from "./file-uri.mjs";
 import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2ModelId, openCodePermissionDisposition, openCodePermissionRules, openCodePrimaryAgents, openCodeRefusal, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
@@ -28,12 +31,29 @@ function v2Rules(mode,{repositoryMcp=null,grants=[]}={}){
   const rules=openCodePermissionRules(mode,{allowedTools:repositoryMcp?.name?[`${repositoryMcp.name}_*`]:[]});
   return [...rules.map(rule=>({action:v2Action(rule.permission),resource:String(rule.pattern||"*"),effect:rule.action==="allow"?"allow":rule.action==="deny"?"deny":"ask"})),...(Array.isArray(grants)?grants:[])];
 }
-function promptParts(parts=[]){
+// The file a pasted image was saved to, which the relay keeps on its prompt part (acpPrompt). A symbol keeps it out of what the ACP
+// harnesses, Claude Code, Muse Code and Trebell Native are sent.
+export const PROMPT_IMAGE_PATH=Symbol.for("trebell.prompt.image-path");
+export function withPromptImagePath(part,path){
+  if(part&&typeof part==="object"&&path)Object.defineProperty(part,PROMPT_IMAGE_PATH,{value:String(path),enumerable:false,configurable:true});
+  return part;
+}
+// OpenCode 2 takes an attachment as a URI it reads itself ({uri, name}), and refuses the whole prompt when one is missing (T3 Code). A
+// PNG, JPEG, GIF or WebP image whose saved file is there goes that way, and every attachment is named by its saved path, which the agent
+// opens with its own tools. A server of the profile's own may not see this machine's files: it gets the paths only.
+const NATIVE_IMAGES=Object.freeze({".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp"});
+const fileExists=path=>access(path).then(()=>true,()=>false);
+export async function openCode2PromptInput(parts=[],{external=false}={}){
   const text=[],files=[];
   for(const part of Array.isArray(parts)?parts:[]){
-    if(part?.type==="text")text.push(String(part.text||""));
-    else if(part?.type==="resource_link"&&part.uri)files.push({data:"",mime:String(part.mimeType||"application/octet-stream"),source:{type:"uri",uri:String(part.uri)},...(part.name?{name:String(part.name)}:{})});
-    else if(part?.type==="image"&&part.data)files.push({data:String(part.data),mime:String(part.mimeType||"image/png"),source:{type:"inline"}});
+    if(part?.type==="text"){text.push(String(part.text||""));continue}
+    const pasted=part?.type==="image";if(!pasted&&part?.type!=="resource_link")continue;
+    const path=pasted?String(part[PROMPT_IMAGE_PATH]||""):fileUriPath(part.uri)||"";
+    const mime=pasted?String(part.mimeType||"").toLowerCase():NATIVE_IMAGES[extname(path).toLowerCase()]||"",native=Object.values(NATIVE_IMAGES).includes(mime);
+    const kind=pasted||native?"image":"file",name=String(part.name||(path?basename(path):"")||kind);
+    if(!path){text.push(pasted?`[Attached image "${name}" could not be sent: Trebell Code has no saved file for it]`:`[Attached file "${name}" is at: ${String(part.uri||"")}]`);continue}
+    text.push(`[Attached ${kind} "${name}" is saved at: ${path}]`);
+    if(native&&!external&&await fileExists(path))files.push({uri:fileUri(path),name});
   }
   return {text:text.join("\n"),files};
 }
@@ -53,9 +73,10 @@ function outputText(content){
 }
 
 export class OpenCode2AgentSession extends OpenCodeAgentSession{
+  // loadClient: the @opencode/client module the session drives (tests pass a stand-in).
   constructor(options={}){
     super(options);
-    this.version=String(options.version||"");
+    this.version=String(options.version||"");this.loadClient=typeof options.loadClient==="function"?options.loadClient:loadOpenCodeClient;
     this.appliedSelection=null;
     this.sessionRules=[];
     this.messageText=new Map();
@@ -67,7 +88,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   }
 
   async start({providerSessionId=null,model=null}={}){
-    const {OpenCode}=await loadOpenCodeClient();
+    const {OpenCode}=await this.loadClient();
     this.server=await startOpenCode2Server({command:this.command,cwd:this.cwd,env:this.env,serverUrl:this.serverUrl});
     if(this.closed){this.server.close?.();throw new Error("OpenCode was stopped while it started.")}
     this.server.child?.once?.("exit",(code,signal)=>{this.serverExit={code,signal}});
@@ -157,7 +178,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(agent){const agentId=this.agentIds.get(String(agent))||String(agent);await this.client.session.switchAgent({sessionID:this.sessionId,agent:agentId})}
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
     let settleTurn=()=>{};const completion=new Promise(resolve=>{settleTurn=resolve});
-    const input=promptParts(parts),turn={done:false,cancelled:false,error:null,text:"",assistantMessageId:null,startedAt:Date.now(),completion,settle:settleTurn};
+    const input=await openCode2PromptInput(parts,{external:Boolean(this.serverUrl)});
+    const turn={done:false,cancelled:false,error:null,text:"",assistantMessageId:null,startedAt:Date.now(),completion,settle:settleTurn};
     this.activePrompt=turn;
     try{
       const accepted=await this.client.session.prompt({sessionID:this.sessionId,text:input.text,...(input.files.length?{files:input.files}:{})});
@@ -179,7 +201,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
 
   async steer(parts){
     if(!this.client||!this.sessionId||!this.activePrompt)throw new Error("OpenCode has no running turn to steer.");
-    const input=promptParts(parts);const accepted=await this.client.session.prompt({sessionID:this.sessionId,text:input.text,...(input.files.length?{files:input.files}:{}),delivery:"steer"});
+    const input=await openCode2PromptInput(parts,{external:Boolean(this.serverUrl)});const accepted=await this.client.session.prompt({sessionID:this.sessionId,text:input.text,...(input.files.length?{files:input.files}:{}),delivery:"steer"});
     return {accepted:true,pending:0,providerMessageId:accepted?.id||null};
   }
   async cancel(){
