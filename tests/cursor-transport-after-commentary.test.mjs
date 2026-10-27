@@ -42,13 +42,19 @@ test("a Cursor message that quotes the dump in prose, or a dump that Cursor went
   for(const text of ["one","two","three"])assert.deepEqual(await session.prompt([{type:"text",text}]),{stopReason:"end_turn"},text);
 });
 
-test("the turn that ends in Cursor's dump after commentary fails in the thread, with the dump as its error",async t=>{
+// The turn keeps what Cursor wrote, as a turn that completes keeps its reply and as T3 keeps a failed turn's messages: a thread opened
+// again shows the commentary, and the dump that ended the turn, which a failed turn with a reply has no other row to show.
+test("the turn that ends in Cursor's dump after commentary fails in the thread, with the dump as its error and its reply kept",async t=>{
   const fx=await scriptedAcp(t,{...CURSOR,prompts:[{steps:[chunk("Checking the file."),...toolCall,chunk(DUMP)]}]});
   const {rpc,next,threadStore}=await acpRelay(t,"cursor",fx);
   const started=await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"});
-  const completed=next(message=>message.method==="turn/completed");
+  const replied=next(message=>message.method==="item/completed"&&message.params.item?.type==="agentMessage"),completed=next(message=>message.method==="turn/completed");
   await rpc("turn/start",{threadId:started.thread.id,input:[{type:"text",text:"read src/app.js"}]});
   const turn=(await completed).params.turn;
   assert.equal(turn.status,"failed");
-  assert.equal(threadStore.get(started.thread.id).turns.at(-1).error?.message,DUMP);
+  const stored=threadStore.get(started.thread.id).turns.at(-1);
+  assert.equal(stored.error?.message,DUMP);
+  assert.equal(stored.items.find(item=>item.type==="agentMessage")?.text,"Checking the file.\n\n"+DUMP,"the stored turn keeps Cursor's reply");
+  // The open window gets the reply as it ended, as it does for a turn that completes.
+  assert.equal((await replied).params.item.text,"Checking the file.\n\n"+DUMP);
 });
