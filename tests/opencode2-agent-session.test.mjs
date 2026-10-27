@@ -239,7 +239,8 @@ test("an OpenCode 2 question settled elsewhere leaves the dialog and sends nothi
   }finally{await session.close()}
 });
 
-test("an answer OpenCode 2 refuses is declined with OpenCode's reason, which the model and the person are told",async()=>{
+// The question tool fails with the reason, which its row shows; no error notice ends the window's turn (opencode2-question-refused).
+test("an answer OpenCode 2 refuses is declined with OpenCode's reason, which the model is told",async()=>{
   const fake=fakeOpenCode2({overrides:{"session.form.reply":async()=>{throw Object.assign(new Error("Invalid option for form field: k1"),{name:"FormInvalidAnswerError"})}}});
   const {session,updates}=await startedSession(fake,{onQuestion:async()=>({k1:["zzz"],k2:["x"]})});
   try{
@@ -248,7 +249,7 @@ test("an answer OpenCode 2 refuses is declined with OpenCode's reason, which the
     fake.emit({type:"form.created",data:{form:FORM}});
     await eventually(()=>fake.called("session.form.cancel").length===1);
     assert.deepEqual(fake.called("session.form.cancel")[0],{sessionID:"ses_main",formID:"frm_1",message:"The user's answer could not be given: Invalid option for form field: k1. Continue without it, and tell the user what you would need from them."});
-    assert.deepEqual(notices(updates).map(update=>update.message),["OpenCode did not take the answer to its question: Invalid option for form field: k1"]);
+    assert.deepEqual(notices(updates),[]);
     ended(fake);assert.equal((await turn).stopReason,"end_turn");
   }finally{await session.close()}
 });

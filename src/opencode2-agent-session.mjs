@@ -444,10 +444,9 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     try{await this.client.session.form.reply({sessionID,formID,answer})}
     catch(error){
       if(FORM_GONE.has(error?.name))return;
-      // OpenCode refused the answer (one that is not among the choices, say): the model is told, and so is the person.
-      const detail=errorText(error);
-      await this.#cancelForm(form,`The user's answer could not be given: ${detail}. Continue without it, and tell the user what you would need from them.`);
-      this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:`OpenCode did not take the answer to its question: ${detail}`}});
+      // OpenCode refused the answer (one that is not among the choices, say): the cancel's message fails the question tool with the reason,
+      // which tells the model, and the person on the tool's row, while the turn goes on. (An error notice would end the window's turn.)
+      await this.#cancelForm(form,`The user's answer could not be given: ${errorText(error)}. Continue without it, and tell the user what you would need from them.`);
     }
   }
 }
