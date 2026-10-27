@@ -8,12 +8,18 @@
 //   MUSE_FAKE_REFUSE       a model id session/setModel refuses, as Muse does a model the account cannot use
 //   MUSE_FAKE_HOLD         "1": a turn waits for a turn/steer (or a Stop) before it completes, as does a turn whose message says
 //                          "hold until steered"
+//   MUSE_FAKE_SERVE_FAIL   a file: while it is there, `serve` exits at once with the exit code it holds, after the line Muse writes
+//                          for a malformed settings file (3: Muse could not load its settings)
 const fs=require("node:fs"),readline=require("node:readline");
 const log=entry=>{if(process.env.MUSE_FAKE_LOG)fs.appendFileSync(process.env.MUSE_FAKE_LOG,JSON.stringify(entry)+"\n")};
 const argv=process.argv.slice(2);
 log({start:argv,pid:process.pid,cwd:process.cwd(),env:{MUSE_NO_AUTO_UPDATE:process.env.MUSE_NO_AUTO_UPDATE??null,META_API_KEY:process.env.META_API_KEY?"set":null,MUSE_CHANNEL:process.env.MUSE_CHANNEL??null}});
 if(argv[0]==="--version"){process.stdout.write((process.env.MUSE_FAKE_VERSION??"Muse Code 1.4.13 (1.4.13-R6996.1)")+"\n");process.exit(Number(process.env.MUSE_FAKE_VERSION_EXIT||0))}
 if(argv[0]!=="serve"){process.stderr.write("fake muse: unknown command "+argv.join(" ")+"\n");process.exit(2)}
+if(process.env.MUSE_FAKE_SERVE_FAIL&&fs.existsSync(process.env.MUSE_FAKE_SERVE_FAIL)){
+  process.stderr.write("load settings for serve composition: malformed settings file at ~/.config/muse/settings.json\n");
+  process.exit(Number(fs.readFileSync(process.env.MUSE_FAKE_SERVE_FAIL,"utf8").trim())||3);
+}
 
 const write=frame=>process.stdout.write(JSON.stringify(frame)+"\n");
 let cursor=0;

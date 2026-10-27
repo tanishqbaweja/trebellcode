@@ -35,13 +35,15 @@ function onlyMuse(launcher){
   });
 }
 
-async function startMuseHarness(){
+// serveFails: while the file it names is there, the stand-in's host exits as Muse does with a malformed settings file.
+async function startMuseHarness({serveFails=false}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-muse-e2e-")),repo=join(root,"muse-repo"),log=join(root,"muse.log");await mkdir(repo,{recursive:true});
+  const failing=serveFails?join(root,"serve-fails"):null;if(failing)await writeFile(failing,"3");
   const folder=windows?join(root,"AppData","Local","Programs","muse"):join(root,"home",".local","bin");await mkdir(folder,{recursive:true});
   const launcher=join(folder,windows?"muse.cmd":"muse");
   await writeFile(launcher,windows?`@echo off\r\nsetlocal\r\n"${process.execPath}" "${FAKE_MUSE}" %*\r\nexit /b %ERRORLEVEL%\r\n`:`#!/bin/sh\nexec "${process.execPath}" "${FAKE_MUSE}" "$@"\n`);
   if(!windows)await chmod(launcher,0o755);
-  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST}}]},meta=new Map();
+  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,...(failing?{MUSE_FAKE_SERVE_FAIL:failing}:{})}}]},meta=new Map();
   const state={settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
   const env={...process.env,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),CLAUDE_CONFIG_DIR:join(root,"claude"),MUSE_INSTALL_DIR:"",...(windows?{LOCALAPPDATA:join(root,"AppData","Local")}:{HOME:join(root,"home")})};
   const runtimeManager=new AgentRuntimeManager({state,env,runFn:onlyMuse(launcher)}),threadStore=new AgentThreadStore(env);
@@ -50,7 +52,7 @@ async function startMuseHarness(){
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const frames=async method=>(await readFile(log,"utf8").catch(()=>"")).split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line)).filter(entry=>entry.frame?.method===method).map(entry=>entry.frame);
   return {
-    root,repo,launcher,runtimeManager,threadStore,frames,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,
+    root,repo,launcher,failing,runtimeManager,threadStore,frames,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,
     async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})},
   };
 }
@@ -63,11 +65,13 @@ async function routeMuseApp(page,harness){
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"};
   await keepThreadMeta(page);
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",runtimeCapabilities:manager.capabilities("muse"),agentRuntimeReady:true,agentRuntimeStatus:status,provider:"openai",providerReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:harness.repo,platform:process.platform,version:"muse-e2e-fixture",activeEnvironment:null,activeEnvironmentId:null}));
-  await page.route(/\/api\/runtime$/,route=>json(route,{agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",agentRuntimeStatus:status,provider:"openai",providerReady:true,appServerReady:true,appServerExitCode:null,activeEnvironment:null,appServerError:null,logs:[]}));
+  // Settings' poll, which the GUI server answers with a status check of the harness in use.
+  await page.route(/\/api\/runtime$/,async route=>json(route,{agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",agentRuntimeStatus:await manager.probe("muse"),provider:"openai",providerReady:true,appServerReady:true,appServerExitCode:null,activeEnvironment:null,appServerError:null,logs:[]}));
   await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[project],activeProjectId:project.id,threadMeta:{}}));
   await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,Object.assign(settings,route.request().postDataJSON()||{})):json(route,settings));
   await page.route(/\/api\/models$/,route=>json(route,{agentRuntime:"muse",ready:true,models:listed.models,defaultModel:listed.preferred||null,metadata:{provider:"muse",agentRuntime:"muse",source:listed.source,models:listed.metadata},error:listed.error||null}));
-  await page.route(/\/api\/agent-runtimes$/,async route=>json(route,await manager.snapshot()));
+  // As the GUI server answers: its own listing (Settings' open and Refresh) reads Muse Code's list again.
+  await page.route(/\/api\/agent-runtimes$/,async route=>json(route,await manager.snapshot(route.request().method()==="GET"?{refresh:true}:{})));
   await page.route(/\/api\/agent-runtime-auth$/,route=>{
     const body=route.request().postDataJSON()||{};signIns.push(body);
     const {prelude,...auth}=manager.authCommand(body.instanceId||body.runtime,{action:"login"});
@@ -130,6 +134,32 @@ test("Settings lists Muse Code with its version, and Sign in opens a Trebell ter
     // The terminal comes up over the workspace, where the sign-in goes on in Muse Code's own words.
     await expect(page.getByRole("button",{name:"Muse Code sign in",exact:true})).toBeVisible();
     for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`settings-muse-sign-in-terminal-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
+
+test("Settings says Muse Code could not list its models and to press Refresh, and Refresh lists them once Muse Code works again",async({page})=>{
+  test.setTimeout(60_000);
+  const harness=await startMuseHarness({serveFails:true});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"Settings",exact:true}).click();
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    const status=page.locator(".agent-runtime-settings > p").filter({has:page.getByRole("button",{name:"Refresh"})});
+    await expect(status).toHaveClass(/provider-status-error/);
+    await expect(status).toContainText(/Muse Code · Muse Code could not list its models: Muse Code could not load its settings; check ~\/\.config\/muse\/settings\.json \(exit code 3\): .*malformed settings file.*\. Press Refresh to check it again\./);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await status.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`settings-muse-list-failed-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    // Muse Code works again (its settings mended outside Trebell), and the person presses Refresh.
+    await rm(harness.failing);
+    await status.getByRole("button",{name:"Refresh"}).click();
+    await expect(status).toHaveClass(/provider-note/);
+    await expect(status).toContainText("Muse Code · Muse Code checks its sign-in when a turn runs. Sign in with muse login if a turn says it is signed out.");
+    await expect(page.locator(".agent-runtime-option").filter({hasText:"Muse Code"}).locator("small")).toHaveText("1.4.13-R6996.1");
+    // Settings' next poll finds Muse Code ready too: its status checks read the list Refresh read.
+    await expect(page.locator(".settings-card").filter({hasText:"Harness connection:"})).toContainText("Agent runtime: ready",{timeout:15_000});
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await status.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`settings-muse-list-refreshed-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });
 

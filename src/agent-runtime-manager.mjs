@@ -392,6 +392,8 @@ export class AgentRuntimeManager{
   async setActive({runtime,instanceId=null}={}){
     const kind=normalizeAgentRuntime(runtime);const instance=this.instances().find(item=>item.id===(instanceId||`${kind}-default`)&&item.kind===kind)||this.instances().find(item=>item.kind===kind);
     if(!instance)throw new Error(`No ${RUNTIMES[kind].name} runtime instance is configured`);
+    // A Muse Code picked while its last list had no models, or could not be read, reads it again: the person may have signed in since.
+    if(kind==="muse")this.#museCatalogDue(instance,{keepListed:true});
     const status=await this.probe(instance,{fresh:true});
     if(kind!=="codex"&&!status.available)throw new Error(status.message||`${RUNTIMES[kind].name} is unavailable`);
     this.state.updateSettings({agentRuntime:kind,agentRuntimeInstanceId:instance.id});
@@ -784,6 +786,8 @@ export class AgentRuntimeManager{
     // session start read the answer kept under its new fields: that one goes too, so they ask the harness again.
     const owner=this.#probeOwner(instance,environmentId);
     if(owner)for(const [other,entry] of this.#probes)if(other!==key&&entry.owner===owner&&!entry.pending)this.#probes.delete(other);
+    // Muse Code's model list is read again with it: a failed turn may be a sign-out.
+    if(instance.kind==="muse")this.#museCatalogDue(instance);
     const pending=this.probe(instance,{environmentId,fresh:true}),settled=()=>{if(this.#rechecks.get(key)===pending)this.#rechecks.delete(key)};
     this.#rechecks.set(key,pending);pending.then(settled,settled);
     return pending;
@@ -932,20 +936,23 @@ export class AgentRuntimeManager{
     }
     const version=parseMuseVersion(said),compatibility=runtimeCompatibility("muse",version),known={installed:true,version,...(compatibility?{compatibility}:{})};
     let catalog;
-    try{catalog=await this.#museCatalog(instance,version,{fresh})}
-    catch(error){return answer({...known,available:false,message:("Muse Code could not list its models: "+(error?.message||String(error))).slice(0,500)})}
+    try{catalog=await this.#museCatalog(instance,version)}
+    catch(error){const reason=String(error?.message||error).trim().slice(0,400);return answer({...known,available:false,message:`Muse Code could not list its models: ${/[.!?…]$/.test(reason)?reason:reason+"."} Press Refresh to check it again.`})}
     if(!catalog.models.length)return answer({...known,available:false,message:"Muse Code listed no models. Sign in with muse login, then press Refresh."});
     return answer({...known,available:true,message:"Muse Code checks its sign-in when a turn runs. Sign in with muse login if a turn says it is signed out."});
   }
   #museCatalogs=new Map();
-  // The models Muse Code lists (readMuseModelCatalog), read once per profile, binary and version: each read starts the 400 MB muse
-  // binary, so Settings' polls, thread starts and model lists reuse the last one (an empty list or a failure too), and a check with
-  // fresh (Settings' open and Refresh, a sign-in's follow-up, a failed turn's recheck) reads it again. Reads at once share one.
-  async #museCatalog(instance,version,{fresh=false}={}){
-    const command=this.executable(instance),key=JSON.stringify([command,binarySignature(this.#binaryPaths(instance)),version||null]);
-    const cached=this.#museCatalogs.get(instance.id),current=cached?.key===key?cached:null;
+  // The models Muse Code lists (readMuseModelCatalog), read once per profile as it is set (its binary, version, environment and
+  // approved names): each read starts the 400 MB muse binary, so every status check reuses the last list, an empty one too (Settings'
+  // polls, thread starts, model lists, and the listings that answer a harness switch, a profile saved or removed and an install),
+  // and a failed read for PROBE_REUSE_MS, after which the next check reads again. Settings' own listing (its open and Refresh), a
+  // failed turn's recheck and picking a Muse Code whose list has no models read it again (#museCatalogDue). Reads at once share one.
+  async #museCatalog(instance,version){
+    const command=this.executable(instance),key=JSON.stringify([command,binarySignature(this.#binaryPaths(instance)),version||null,normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys),instance.environment||{}]);
+    const cached=this.#museCatalogs.get(instance.id),current=cached?.key===key&&!cached.due?cached:null;
     if(current?.pending)return await current.pending;
-    if(current&&!fresh){if(current.error)throw current.error;return current.value}
+    if(current&&!current.error)return current.value;
+    if(current&&this.now()-current.at<PROBE_REUSE_MS)throw current.error;
     const pending=readMuseModelCatalog({command,env:this.childEnv(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys,cwd:process.cwd()}),entry={key,pending,value:cached?.value||null};
     this.#museCatalogs.set(instance.id,entry);
     try{
@@ -953,9 +960,14 @@ export class AgentRuntimeManager{
       if(this.#museCatalogs.get(instance.id)===entry)this.#museCatalogs.set(instance.id,{key,value});
       return value;
     }catch(error){
-      if(this.#museCatalogs.get(instance.id)===entry)this.#museCatalogs.set(instance.id,{key,error,value:entry.value});
+      if(this.#museCatalogs.get(instance.id)===entry)this.#museCatalogs.set(instance.id,{key,error,at:this.now(),value:entry.value});
       throw error;
     }
+  }
+  // Has the next status check of a Muse Code profile (or of each) read its list again; keepListed keeps a list with models. A read
+  // on its way is new enough.
+  #museCatalogDue(instance=null,{keepListed=false}={}){
+    for(const [id,entry] of this.#museCatalogs)if((!instance||id===instance.id)&&!entry.pending&&!(keepListed&&!entry.error&&entry.value?.models?.length))this.#museCatalogs.set(id,{...entry,due:true});
   }
   // The list a Muse Code session resolves the thread's model and Thinking level against: the last one read for the profile, or null.
   museModelCatalog(instance){return this.#museCatalogs.get(instance?.id)?.value||null}
@@ -1117,7 +1129,9 @@ export class AgentRuntimeManager{
     return readAgentRuntimeUsage(instance.kind,{environment,platform:this.platform,home,readText,joinPath:join,fetchImpl:this.fetchImpl,serverUrl:instance.serverUrl||""});
   }
   // The full listing answers Settings (its open, Refresh, a sign-in's follow-up) and the runtime mutations, so it checks again.
-  async snapshot({fresh=true}={}){
+  // refresh (Settings' own listing) also reads Muse Code's model lists again, which the mutations' listings reuse.
+  async snapshot({fresh=true,refresh=false}={}){
+    if(refresh)this.#museCatalogDue();
     const instances=this.instances();const statuses=await Promise.all(instances.map(instance=>this.probe(instance,{fresh})));
     const publicInstances=instances.map(instance=>{
       const {environment,...safe}=instance;

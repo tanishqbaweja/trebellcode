@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import spawn from "cross-spawn";
 import { WebSocket } from "ws";
 import * as runtimes from "../src/agent-runtime-manager.mjs";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
+import { createGuiServer } from "../src/gui-server.mjs";
 
 // Muse Code as a harness of Trebell's: its registration, where Meta's installers put it, the environment it runs with, its status
 // check and model list, its sign-in and install text, and a thread that runs on it through the relay. The status check and the
@@ -175,8 +176,10 @@ test("Muse Code's models are its own list, read once per binary and version: pol
     await fixture.manager.models("muse");
     assert.equal((await hosts(fixture.log)).length,1,"polls and model lists reuse the list");
     assert.deepEqual(fixture.manager.museModelCatalog({id:"muse-default"}).models,listed.models,"the list a session resolves its model against");
-    // Settings' open and Refresh (its listing checks every harness fresh) read it again.
+    // A fresh check (a harness switch's) reuses it too; Settings' open and Refresh (its own listing) read it again.
     assert.equal((await fixture.manager.probe("muse",{fresh:true})).available,true);
+    assert.equal((await hosts(fixture.log)).length,1);
+    assert.equal((await fixture.manager.snapshot({refresh:true})).statuses.find(item=>item.kind==="muse").available,true);
     assert.equal((await hosts(fixture.log)).length,2);
     // A new Muse Code (the launcher replaced, and another version) reads it again at the next poll.
     fixture.state.settings().agentRuntimeInstances[0].environment.MUSE_FAKE_VERSION="Muse Code 1.4.14 (1.4.14-R7100.1)";
@@ -185,6 +188,101 @@ test("Muse Code's models are its own list, read once per binary and version: pol
     assert.equal(updated.version,"1.4.14-R7100.1");
     assert.equal((await hosts(fixture.log)).length,3,"another version lists its models again");
   }finally{await fixture.close()}
+});
+
+test("a model list Muse Code could not read is kept for a minute and then read again: the checks of that minute start no host and say to press Refresh",{timeout:60_000},async()=>{
+  const fixture=await museFixture("trebell-muse-failed-list-");
+  try{
+    // While this file is there, the stand-in's host exits as Muse does with a malformed settings file.
+    const failing=join(fixture.root,"serve-fails");await writeFile(failing,"3");
+    fixture.state.settings().agentRuntimeInstances[0].environment.MUSE_FAKE_SERVE_FAIL=failing;
+    let clock=Date.now();
+    const manager=new AgentRuntimeManager({state:fixture.state,env:fixture.env,runFn:onlyMuse(fixture.launcher),now:()=>clock});
+    const failed=await manager.probe("muse");
+    assert.deepEqual([failed.available,failed.installed,failed.version],[false,true,"1.4.13-R6996.1"]);
+    assert.match(failed.message,/^Muse Code could not list its models: Muse Code could not load its settings; check ~\/\.config\/muse\/settings\.json \(exit code 3\): load settings for serve composition: malformed settings file at .*settings\.json\. Press Refresh to check it again\.$/);
+    assert.equal((await hosts(fixture.log)).length,1);
+    // Muse Code works again (its settings mended in the person's own editor). The polls, thread starts and model lists of the next
+    // minute keep the failure, and start no host.
+    await rm(failing);
+    clock+=30_000;
+    for(let poll=0;poll<3;poll++)assert.equal((await manager.probe("muse")).message,failed.message);
+    assert.equal((await manager.models("muse")).error,failed.message);
+    assert.equal((await hosts(fixture.log)).length,1,"no host within the minute");
+    clock+=31_000;
+    const ready=await manager.probe("muse");
+    assert.equal(ready.available,true,"the first check after the minute reads the list again");
+    assert.equal((await hosts(fixture.log)).length,2);
+  }finally{await fixture.close()}
+});
+
+test("Muse Code's list is read again only by Settings' own listing, a failed turn's recheck and picking a Muse Code that listed no models: the listings after a switch, a profile saved or one removed start no host",{timeout:90_000},async()=>{
+  const fixture=await museFixture("trebell-muse-listings-");
+  try{
+    const manager=fixture.manager,count=async()=>(await hosts(fixture.log)).length;
+    assert.equal((await manager.snapshot({refresh:true})).statuses.find(item=>item.kind==="muse").available,true,"Settings opens");
+    assert.equal(await count(),1);
+    // A switch to another harness (the answer lists every harness after it), a profile saved and one removed, and a switch back.
+    await manager.setActive({runtime:"native"});await manager.snapshot();
+    manager.upsertInstance({id:"codex-spare",kind:"codex",displayName:"Spare Codex"});await manager.snapshot();
+    manager.removeInstance("codex-spare");await manager.snapshot();
+    await manager.setActive({runtime:"muse"});await manager.snapshot();
+    assert.equal(await count(),1,"those listings reuse the list");
+    await manager.recheck("muse");
+    assert.equal(await count(),2,"a failed turn's recheck reads it again");
+    await manager.snapshot({refresh:true});
+    assert.equal(await count(),3,"so does Settings' Refresh");
+    // A change to what the profile runs Muse Code with reads it again at the next check.
+    fixture.state.settings().agentRuntimeInstances[0].approvedEnvironmentKeys=["META_API_KEY"];
+    await manager.snapshot();
+    assert.equal(await count(),4,"a profile saved with other approved names");
+  }finally{await fixture.close()}
+  const signedOut=await museFixture("trebell-muse-listings-signed-out-",{models:false});
+  try{
+    const manager=signedOut.manager,count=async()=>(await hosts(signedOut.log)).length;
+    await manager.snapshot({refresh:true});
+    await manager.setActive({runtime:"native"});await manager.snapshot();
+    assert.equal(await count(),1,"an empty list is reused too: a Muse Code installed but signed out costs a switch nothing");
+    await assert.rejects(manager.setActive({runtime:"muse"}),/^Error: Muse Code listed no models\. Sign in with muse login, then press Refresh\.$/);
+    assert.equal(await count(),2,"picking a Muse Code that listed no models reads its list again");
+  }finally{await signedOut.close()}
+});
+
+async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+test("the GUI server's own harness listing (Settings' open and Refresh) reads Muse Code's list again, and its answers to a switch, a profile saved and one removed reuse it",{timeout:120_000},async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-muse-routes-")),log=join(root,"muse.log"),install=await fakeMuseInstall(root);
+  // Nothing but the stand-in can run: PATH holds node and the system's own folders, and every home is the test's.
+  const system=process.env.SystemRoot||"C:\\Windows";await mkdir(join(root,"tmp"),{recursive:true});
+  const env={
+    PATH:[dirname(process.execPath),...(windows?[join(system,"System32"),system]:["/usr/bin","/bin"])].join(windows?";":":"),
+    ...(windows?{SystemRoot:system,ComSpec:process.env.ComSpec||join(system,"System32","cmd.exe"),PATHEXT:process.env.PATHEXT||".COM;.EXE;.BAT;.CMD"}:{}),
+    TEMP:join(root,"tmp"),TMP:join(root,"tmp"),TMPDIR:join(root,"tmp"),HOME:join(root,"home"),USERPROFILE:join(root,"home"),APPDATA:join(root,"AppData","Roaming"),
+    XDG_CONFIG_HOME:join(root,"home",".config"),...install.env,MUSE_INSTALL_DIR:"",TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),
+    CLAUDE_CONFIG_DIR:join(root,"claude"),TREBELL_CODEX_BIN:join(root,"no-codex","codex.exe"),TREBELL_HISTORY_DISABLE_CLAUDE:"1",HARBOR_TELEMETRY:"0",
+  };
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const gui=await createGuiServer({port,appPort,mock:true,env});
+  const call=async(method,body)=>{
+    const response=await fetch(gui.url+"/api/agent-runtimes"+(method==="DELETE"?"?id="+encodeURIComponent(body):""),{method,...(method==="POST"?{headers:{"content-type":"application/json"},body:JSON.stringify(body)}:{})});
+    const value=await response.json();if(!response.ok)throw new Error(value.error);return value;
+  };
+  const count=async()=>(await hosts(log)).length;
+  try{
+    await call("POST",{action:"upsert",instance:{id:"muse-default",kind:"muse",displayName:"Muse Code",environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST}}});
+    assert.equal(await count(),1,"the profile saved lists its models once");
+    const listed=await call("GET");
+    assert.equal(listed.statuses.find(item=>item.kind==="muse").available,true);
+    assert.equal(await count(),2,"Settings opens");
+    await call("POST",{action:"select",runtime:"native",instanceId:"native-default"});
+    await call("POST",{action:"upsert",instance:{id:"codex-spare",kind:"codex",displayName:"Spare Codex"}});
+    await call("DELETE","codex-spare");
+    assert.equal(await count(),2,"a switch, a profile saved and one removed start no Muse Code");
+    await call("GET");
+    assert.equal(await count(),3,"Settings' Refresh");
+  }finally{
+    await gui.close();
+    await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});
+  }
 });
 
 test("Muse Code signs in with `muse login` in a Trebell terminal, offers Meta's installer as text and is never installed by Trebell",async()=>{

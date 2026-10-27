@@ -1909,7 +1909,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     }
     if(url.pathname==="/api/agent-runtimes"){
       if(req.method==="GET"){
-        try{return json(res,200,await agentRuntimes.snapshot());}
+        // Settings' own listing (its open and Refresh): Muse Code's model lists are read again too.
+        try{return json(res,200,await agentRuntimes.snapshot({refresh:true}));}
         catch(error){return json(res,500,{error:error.message});}
       }
       if(req.method==="POST"){
