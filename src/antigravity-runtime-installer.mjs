@@ -203,7 +203,9 @@ export async function installAntigravityRuntime({env=process.env,fetchImpl=globa
     let movedPrevious=false;
     try{await renameSettled(current,previous,platform);movedPrevious=true}catch(error){
       if(error?.code==="ENOENT"){}
-      else if(platform==="win32"&&IN_USE_CODES.has(error?.code))throw new Error(`Google Antigravity ${version} was downloaded and checked, but the Antigravity runtime in use could not be replaced: a running Antigravity chat holds it. Stop your Antigravity chats, then try again. Nothing was installed.`,{cause:error});
+      // A chat's Antigravity runs from current until the chat is archived or deleted (most keep it so, for what their commands left
+      // running) or Trebell quits: Stop ends a turn, not that process (agent-relay.mjs).
+      else if(platform==="win32"&&IN_USE_CODES.has(error?.code))throw new Error(`Google Antigravity ${version} was downloaded and checked, but the Antigravity runtime in use could not be replaced: an Antigravity chat used since Trebell Code started still runs it, and Stop does not end that. Archive or delete those Antigravity chats, which also ends what they left running, or quit Trebell Code (from its tray icon too), then try again. Nothing was installed.`,{cause:error});
       else throw error;
     }
     try{await renameSettled(ready,current,platform)}catch(error){if(movedPrevious)await rename(previous,current).catch(()=>{});throw error}

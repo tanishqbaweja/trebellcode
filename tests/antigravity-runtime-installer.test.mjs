@@ -3,7 +3,7 @@
 // unpacks, the download has the SHA-256 the registry lists beside it (an entry without one is refused), it holds agy_acp_server with
 // localharness_external beside it, and the new runtime starts and says it is antigravity-acp at the registry's version (T3 Code's
 // AntigravityInstallation checks). The unpacked folder is then moved into place, not copied; on Windows a runtime a running chat
-// holds is not replaced, and the person is told to stop their Antigravity chats. Here the registry and the download are fakes, the
+// holds is not replaced, and the person is told what frees it. Here the registry and the download are fakes, the
 // archive a real zip that extract-zip unpacks, and the runtime started a stand-in for Antigravity's server (fixtures/
 // antigravity-acp-agent.mjs, or fixtures/scripted-acp-agent.mjs for one that says it is another agent).
 import test from "node:test";
@@ -256,7 +256,8 @@ test("a drive whose free space cannot be read does not stop the install",async t
   assert.equal(error,null,String(error?.message));assert.equal((await readAntigravityInstall({env:fx.env})).version,VERSION);
 });
 
-test("on Windows, a runtime a running Antigravity chat holds is not replaced, and the install says to stop the chats first",async t=>{
+// That archiving the chat frees the runtime, as the refusal says, is antigravity-runtime-in-use.test.mjs's check, through the relay.
+test("on Windows, a runtime a running Antigravity chat holds is not replaced, and the install says what frees it",async t=>{
   if(process.platform!=="win32")return t.skip("only Windows keeps a folder a running process holds from being renamed");
   const fx=await home(t);
   const first=await install(fx);assert.equal(first.error,null,String(first.error?.message));
@@ -265,7 +266,7 @@ test("on Windows, a runtime a running Antigravity chat holds is not replaced, an
   await new Promise((resolve,reject)=>{chat.once("spawn",resolve);chat.once("error",reject)});
   const before=(await readAntigravityInstall({env:fx.env})).installedAt;
   const held=await install(fx);
-  assert.equal(held.error?.message,`Google Antigravity ${VERSION} was downloaded and checked, but the Antigravity runtime in use could not be replaced: a running Antigravity chat holds it. Stop your Antigravity chats, then try again. Nothing was installed.`);
+  assert.equal(held.error?.message,`Google Antigravity ${VERSION} was downloaded and checked, but the Antigravity runtime in use could not be replaced: an Antigravity chat used since Trebell Code started still runs it, and Stop does not end that. Archive or delete those Antigravity chats, which also ends what they left running, or quit Trebell Code (from its tray icon too), then try again. Nothing was installed.`);
   assert.equal(held.launches.length,1,"it was checked first");
   assert.equal((await readAntigravityInstall({env:fx.env})).installedAt,before,"the runtime in place is unchanged");
   assert.deepEqual(await leftovers(fx),[]);
