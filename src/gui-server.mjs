@@ -1848,7 +1848,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       try{
         const filePath=remoteEnvironmentProfile(environmentId)?relativePath:join(cwd,relativePath);
         const file=await environmentWorkspaceFile(filePath,12_000,{root:cwd,environments,environmentId});
-        const content=String(file.content||"").trim();if(content)instructions.push({path:relativePath,content});
+        // CLAUDE.md is often a link to AGENTS.md or a copy of it (T3 GitManager): a file that says what one already added says is left out.
+        const content=String(file.content||"").trim();if(content&&!instructions.some(item=>item.content===content))instructions.push({path:relativePath,content});
       }catch{}
     }
     const reviewTemplate=includeReviewTemplate
