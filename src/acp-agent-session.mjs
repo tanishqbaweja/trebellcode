@@ -297,9 +297,9 @@ export class AcpAgentSession{
     this.spawnProcess=spawnProcess;this.remoteIo=remoteIo;this.processCwd=processCwd?resolve(processCwd):null;
     this.mcpServers=Array.isArray(mcpServers)?mcpServers.map(server=>({...server,args:[...(server.args||[])],env:(server.env||[]).map(item=>({...item}))})):[];
     this.client=null;this.sessionId=null;this.initializeResult=null;this.sessionSetup=null;this.model=null;
-    // Whether the harness still has Trebell's runtime notes; compactions counts the compactions it finished, so a prompt that one
-    // overtook does not count its notes as kept (T3 compactionMarkers).
-    this.runtimeContextSent=false;this.compactions=0;
+    // Whether the harness still has Trebell's runtime notes, and the model they named; compactions counts the compactions it finished,
+    // so a prompt that one overtook does not count its notes as kept (T3 compactionMarkers).
+    this.runtimeContextSent=false;this.runtimeContextModel=null;this.compactions=0;
     this.label=runtimeHarnessLabel(runtime);
     this.dead=false;this.deadError=null;this.closing=false;this.starting=false;this.loading=false;
     this.activePrompt=null;this.wake=null;this.userWaits=new Set();this.tools=new Map();this.todos=new Map();
@@ -423,7 +423,10 @@ export class AcpAgentSession{
     // A lone /compact, the relay's or the person's, compacts the harness's context and the runtime notes in it (T3: its text alone).
     const compacting=command&&commandParts.length===1&&text(commandParts[0]?.text)==="/compact";
     const parts=this.runtime==="antigravity"&&!this.remoteIo?await antigravityPromptParts(commandParts||given):[...(commandParts||given)];
-    if(!this.runtimeContextSent&&!command)parts.push({type:"text",text:runtimeInstructions({harness:this.label,model:this.#modelLabel()})});
+    // The notes go again once the harness compacted them away, or once the session's model, a switch of Trebell's or one the harness
+    // reports, is not the one they named (T3 names the turn's model on every prompt).
+    const model=this.#modelLabel();
+    if(!command&&(!this.runtimeContextSent||this.runtimeContextModel!==model))parts.push({type:"text",text:runtimeInstructions({harness:this.label,model})});
     let markDone;const done=new Promise(resolve=>{markDone=resolve});
     const active={promptId:this.runtime==="grok"?randomUUID():null,cancelled:false,transport:this.runtime==="cursor"?new CursorTransportFailure():null,done,taken:!command&&typeof onDelivered==="function"?onDelivered:null};
     this.activePrompt=active;
@@ -434,7 +437,7 @@ export class AcpAgentSession{
       // A /compact the harness finished (as the relay counts one: neither stopped nor refused) leaves it without the notes, so the
       // next ordinary prompt carries them again; a compaction that came during this prompt took the ones it carried.
       if(compacting&&result?.stopReason!=="cancelled"&&result?.stopReason!=="refusal")this.#compacted();
-      else if(!command&&this.compactions===compactions)this.runtimeContextSent=true;
+      else if(!command&&this.compactions===compactions){this.runtimeContextSent=true;this.runtimeContextModel=model}
       // Cursor streams a lost backend connection as the reply and ends the turn normally (T3 CursorTransportFailure).
       const failure=active.transport?.failure;
       if(failure&&result?.stopReason!=="cancelled")throw Object.assign(new Error(failure),{code:"CURSOR_TRANSPORT_FAILURE"});

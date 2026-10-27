@@ -1,10 +1,10 @@
 // A scripted ACP agent over stdio, run by the tests as the harness: it answers from the JSON scenario named by
 // TREBELL_ACP_SCENARIO and logs each message it receives, and each answer to a request of its own, to TREBELL_ACP_LOG.
-// Scenario: {initialize, sessionNew, prompts:[{steps:[{update} | {request:{method,params}}], stopReason}]}; "$sessionId" in a
-// step is the session's id. errors: {method: JSON-RPC error} answers that method with the error every time. signIn: {methodId,
-// env, keepRefusing} plays a signed-out harness: session/new, load and resume answer ACP's auth_required (-32000) until an
-// authenticate with methodId arrives, with the variable env set in the agent's own environment when one is named; keepRefusing
-// accepts that authenticate and stays signed out.
+// Scenario: {initialize, sessionNew, prompts:[{steps:[{update} | {notify:{method,params}} | {request:{method,params}}], stopReason}]};
+// "$sessionId" in a step is the session's id. errors: {method: JSON-RPC error} answers that method with the error every time.
+// signIn: {methodId, env, keepRefusing} plays a signed-out harness: session/new, load and resume answer ACP's auth_required (-32000)
+// until an authenticate with methodId arrives, with the variable env set in the agent's own environment when one is named;
+// keepRefusing accepts that authenticate and stays signed out.
 import readline from "node:readline";
 import { appendFileSync, readFileSync } from "node:fs";
 
@@ -26,6 +26,7 @@ async function runPrompt(message){
   for(const raw of script.steps||[]){
     const step=JSON.parse(JSON.stringify(raw).replaceAll("$sessionId",sessionId));
     if(step.update)send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update:step.update}});
+    if(step.notify)send({jsonrpc:"2.0",method:step.notify.method,params:step.notify.params});
     if(step.request)record({reply:step.request.method,message:await request(step.request.method,step.request.params)});
   }
   send({jsonrpc:"2.0",id:message.id,result:{stopReason:script.stopReason||"end_turn"}});
