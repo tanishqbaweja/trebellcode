@@ -101,10 +101,12 @@ const releaseOrder=(kind,a,b)=>kind==="muse"?compareMuseVersions(a,b):compareSem
 // Muse Code runs where Trebell runs; a WSL or SSH environment has no Muse Code of Trebell's.
 const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Switch to the local environment to use it.";
 // A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start and the
-// window's poll make one) reuses the last read of the same binary and version that was complete (openCodeCatalogComplete) until a fresh
-// check (Settings' listing and Refresh, a sign-in's follow-up, a switch, an install, a failed turn's recheck) reads again, and one that
+// window's poll make one) reuses the last read of the same binary and version that was complete (openCodeCatalogComplete), and one that
 // was not for OPENCODE_INCOMPLETE_REUSE_MS: each read starts an `opencode serve`. (T3 Code checks such an OpenCode again on its
-// five-minute health interval.)
+// five-minute health interval.) Settings' own listing (its open, Refresh and a sign-in's follow-up) reads again. Any other fresh check
+// (a switch, the listing a profile's Save or Delete or an install answers with, a failed turn's recheck) keeps a complete read too, and
+// reads one that was not again once it is OPENCODE_CATALOG_REUSE_MS old, so a switch's read also serves the listing right after it; T3
+// Code does not read OpenCode's catalog again when a turn fails.
 const OPENCODE_CATALOG_REUSE_MS=10_000;
 const OPENCODE_INCOMPLETE_REUSE_MS=5*60_000;
 const OPENCODE_STATUS_TIMEOUT_MS=20_000;
@@ -931,12 +933,13 @@ export class AgentRuntimeManager{
     }
   }
   // A status check's provider list: the last complete one read for this binary and version, one that is not if it was read within
-  // OPENCODE_INCOMPLETE_REUSE_MS, or a new read (always for a fresh check), which may take this long.
-  async #openCodeStatusCatalog(instance,version,{fresh=false}={}){
+  // OPENCODE_INCOMPLETE_REUSE_MS (OPENCODE_CATALOG_REUSE_MS for a fresh check), or a new read (always for Settings' listing, refresh),
+  // which may take this long.
+  async #openCodeStatusCatalog(instance,version,{fresh=false,refresh=false}={}){
     let timer;
     try{
       return await Promise.race([
-        this.#openCodeCatalog(instance,{version,...(fresh?{reuseMs:0}:{reuseMs:Number.POSITIVE_INFINITY,incompleteMs:OPENCODE_INCOMPLETE_REUSE_MS})}),
+        this.#openCodeCatalog(instance,{version,...(refresh?{reuseMs:0}:{reuseMs:Number.POSITIVE_INFINITY,incompleteMs:fresh?OPENCODE_CATALOG_REUSE_MS:OPENCODE_INCOMPLETE_REUSE_MS})}),
         new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error(`OpenCode did not answer within ${OPENCODE_STATUS_TIMEOUT_MS/1000} seconds.`)),OPENCODE_STATUS_TIMEOUT_MS);timer.unref?.()}),
       ]);
     }finally{clearTimeout(timer)}
@@ -968,7 +971,7 @@ export class AgentRuntimeManager{
   // to say). And a caller that joined another answer that cannot run asks again (or joins a probe started after it asked): a thread
   // start refuses on it, and the person may just have signed in outside Trebell, or its check timed out under load. fresh starts a
   // new one, which the next callers share. Each caller gets its own copy.
-  async probe(instanceOrKind,{environmentId=undefined,fresh=false}={}){
+  async probe(instanceOrKind,{environmentId=undefined,fresh=false,refresh=false}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="native")return this.#probeNow(instance,{environmentId});
     const key=this.#probeKey(instance,environmentId),owner=this.#probeOwner(instance,environmentId),cached=this.#probes.get(key);
@@ -979,7 +982,7 @@ export class AgentRuntimeManager{
     // A local binary replaced since (npm i -g, the harness's own updater) makes its version check due, so its answer is not kept
     // past that either. Read before the probe runs, so a binary replaced while it runs makes the next caller ask again.
     const binary=this.#binaryPaths(instance,environmentId),signature=binarySignature(binary);
-    const pending=this.#probeNow(instance,{environmentId,fresh});this.#probes.set(key,{pending,owner});
+    const pending=this.#probeNow(instance,{environmentId,fresh,refresh});this.#probes.set(key,{pending,owner});
     try{
       const value=await pending;
       if(this.#probes.get(key)?.pending===pending){if(value?.available&&(value.versionCheckFailed||value.account?.type==="customEndpoint"||keptProbeAnswer(value))||versionCheckOnly(value))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
@@ -1042,7 +1045,7 @@ export class AgentRuntimeManager{
     this.#unfinishedInstalls.set(instance.id,unfinishedInstall(instance.kind,result));
     return result;
   }
-  async #probeNow(instance,{environmentId=undefined,fresh=false}={}){
+  async #probeNow(instance,{environmentId=undefined,fresh=false,refresh=false}={}){
     const def=RUNTIMES[instance.kind];
     if(instance.kind==="native")return {id:instance.id,kind:"native",name:def.name,available:true,installed:true,authenticated:null,protocol:"native",managed:true,version:null,binary:null,message:"Built into Trebell Code"};
     if(instance.kind==="codex"){
@@ -1133,7 +1136,7 @@ export class AgentRuntimeManager{
       // T3 Code's status check: the upstream providers OpenCode's matching 1.x/2.x server adapter reports connected, ready once it lists
       // models for them.
       let catalog;
-      try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null,{fresh})}
+      try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null,{fresh,refresh})}
       catch(error){
         if(instance.serverUrl&&openCodeServerRefused(error))return unavailable(openCodeServerRefusal(compatibility?.version),{authenticated:false});
         return unavailable(("OpenCode could not list its providers: "+(error?.message||String(error))).slice(0,500));
@@ -1385,7 +1388,7 @@ export class AgentRuntimeManager{
     return readAgentRuntimeUsage(instance.kind,{environment,platform:this.platform,home,readText,joinPath:join,fetchImpl:this.fetchImpl,serverUrl:instance.serverUrl||""});
   }
   // The full listing answers Settings (its open, Refresh, a sign-in's follow-up) and the runtime mutations, so it checks again.
-  // refresh (Settings' own listing) also reads Muse Code's model lists again, which the mutations' listings reuse.
+  // refresh (Settings' own listing) also reads Muse Code's model lists and OpenCode's catalogs again, which the mutations' listings reuse.
   async snapshot({fresh=true,refresh=false}={}){
     if(refresh)this.#museCatalogDue();
     // Each status of a harness Trebell updates says whether a newer release is out and how it is updated (update). Settings' own
@@ -1394,7 +1397,7 @@ export class AgentRuntimeManager{
     // check runs is in this listing, one that answers later the next listing's. The other listings use the last answers.
     const instances=this.instances(),waitMs=refresh?RELEASE_WAIT_MS:null;if(refresh)for(const instance of instances)this.#startReleaseRead(instance);
     const checked=await Promise.all(instances.map(async instance=>{
-      const status=await this.probe(instance,{fresh});
+      const status=await this.probe(instance,{fresh,refresh});
       if(refresh)void this.#updateAdvisory(instance,status,{waitMs:0}).catch(()=>null);
       return status;
     }));

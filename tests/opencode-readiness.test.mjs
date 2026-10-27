@@ -23,7 +23,7 @@ const catalog=({connected=["anthropic"],models:ids=["anthropic/claude-x"],pendin
   inventory:{commands:[{name:"init"}],skills:[],agents:[{name:"build"}]},...(pending?{pending}:{}),source:"live-connected",
 });
 
-test("OpenCode with a connected provider that lists no models is not ready and says so, and its answer is read again at once by a fresh check and after five minutes by the window's",async t=>{
+test("OpenCode with a connected provider that lists no models is not ready and says so, and its answer is read again at once by Settings' listing and after five minutes by the window's",async t=>{
   const {manager,reads,fake,advance}=await openCodeManager(t);
   fake.answer=catalog({models:[]});
   const first=await manager.probe("opencode");
@@ -35,10 +35,12 @@ test("OpenCode with a connected provider that lists no models is not ready and s
   // A model list reads it again once it is ten seconds old, as it reads every answer.
   await manager.models("opencode");assert.equal(reads.length,2);
   advance(5*60_000+1);await manager.probe("opencode");assert.equal(reads.length,3);
-  await manager.probe("opencode",{fresh:true});assert.equal(reads.length,4);
-  // OpenCode lists the provider's models now: Settings' Refresh (a fresh check, as its listing makes) shows it ready.
+  // Settings' listing and Refresh check with refresh (snapshot), which reads OpenCode again; other fresh checks keep a recent read.
+  await manager.probe("opencode",{fresh:true});assert.equal(reads.length,3);
+  await manager.probe("opencode",{fresh:true,refresh:true});assert.equal(reads.length,4);
+  // OpenCode lists the provider's models now: Settings' Refresh shows it ready.
   fake.answer=catalog();
-  const ready=await manager.probe("opencode",{fresh:true});
+  const ready=await manager.probe("opencode",{fresh:true,refresh:true});
   assert.deepEqual([ready.available,ready.authenticated,ready.message],[true,true,"1 upstream provider connected through OpenCode."]);
   assert.equal(reads.length,5);
 });
@@ -46,17 +48,17 @@ test("OpenCode with a connected provider that lists no models is not ready and s
 test("a provider connected after OpenCode's last read shows on Settings' Refresh, while the window's checks keep reusing a ready answer",async t=>{
   const {manager,reads,fake,advance}=await openCodeManager(t);
   fake.answer=catalog({connected:[],models:["anthropic/claude-x","openai/gpt"]});
-  // Settings' listing checks with fresh (snapshot).
-  const before=await manager.probe("opencode",{fresh:true});
+  // Settings' listing checks with refresh (snapshot).
+  const before=await manager.probe("opencode",{fresh:true,refresh:true});
   assert.deepEqual([before.authenticated,before.message],[null,"OpenCode is available, but it did not report any connected upstream providers."]);
   // The person signs in to a provider with OpenCode's own `opencode auth login`, then presses Refresh.
   fake.answer=catalog();
-  const after=await manager.probe("opencode",{fresh:true});
+  const after=await manager.probe("opencode",{fresh:true,refresh:true});
   assert.deepEqual([after.authenticated,after.message],[true,"1 upstream provider connected through OpenCode."]);
   assert.equal(reads.length,2);
   advance(10*60_000);await manager.probe("opencode");await manager.probe("opencode");
   assert.equal(reads.length,2,"a ready answer is not read again by the window's checks");
-  await manager.probe("opencode",{fresh:true});assert.equal(reads.length,3);
+  await manager.probe("opencode",{fresh:true,refresh:true});assert.equal(reads.length,3);
 });
 
 test("an OpenCode answer with a list that timed out, or an OpenCode 2 model list still changing, is not kept: the window's checks read it again",async t=>{
@@ -70,7 +72,7 @@ test("an OpenCode answer with a list that timed out, or an OpenCode 2 model list
     advance(6*60_000);await manager.probe("opencode");
     assert.equal(reads.length,2,`${version}: a pending answer is read again`);
     fake.answer=catalog();
-    await manager.probe("opencode",{fresh:true});advance(6*60_000);await manager.probe("opencode");await manager.probe("opencode");
+    await manager.probe("opencode",{fresh:true,refresh:true});advance(6*60_000);await manager.probe("opencode");await manager.probe("opencode");
     assert.equal(reads.length,3,`${version}: a complete answer is kept`);
     // A model list shows what the read listed so far.
     assert.deepEqual((await manager.models("opencode")).inventory.commands,[{name:"init"}]);
