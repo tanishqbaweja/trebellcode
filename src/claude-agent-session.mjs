@@ -255,6 +255,11 @@ export function claudeExplainedApiError(message){
 // "[ede_diagnostic] ..." entries are CLI-internal telemetry and never the error to show.
 function userFacingErrors(result){return (Array.isArray(result?.errors)?result.errors:[]).filter(error=>typeof error==="string"&&error.trim()&&!error.startsWith("[ede_diagnostic]"))}
 
+// Quoted JSON keys of secrets ({"token":"…"}, {"client_secret":"…"}) an API's error text can repeat, whose values the shared redactor's
+// key=value form does not reach (T3 Code's provider failure text redacts them).
+const QUOTED_SECRET_VALUE=/(["'])([\w-]*(?:token|secret|password|passwd|api[_-]?key|credential|authorization|cookie))\1(\s*:\s*)(["'])(?:\\.|(?!\4)[^\\])*\4/gi;
+function redactApiErrorText(text){return redactSecretText(String(text).replace(QUOTED_SECRET_VALUE,"$1$2$1$3$4[redacted]$4"),{trim:true})}
+
 // The user-facing failure of a result, or null when the turn succeeded (T3 Code's providerFailureFromResult). failureHint: a sign-in or
 // usage-limit failure; explainedError: the text of a reply that explained its own API error (claudeExplainedApiError).
 export function claudeResultFailure(result,{failureHint=null,explainedError=null}={}){
@@ -263,7 +268,7 @@ export function claudeResultFailure(result,{failureHint=null,explainedError=null
   const listed=success&&!result.is_error?null:userFacingErrors(result)[0]||null;
   // The API's own words for the request it refused ("API Error: 400 …"), secrets redacted and cut to 500 characters, when nothing
   // names the failure better (T3 Code's 55a8fe9a9).
-  const apiError=success&&result.terminal_reason==="api_error"&&String(result.result||"").trim().startsWith("API Error:")?redactSecretText(String(result.result),{trim:true}).slice(0,500):null;
+  const apiError=success&&result.terminal_reason==="api_error"&&String(result.result||"").trim().startsWith("API Error:")?redactApiErrorText(result.result).slice(0,500):null;
   const structured=success&&result.api_error_status===529?"Claude API is overloaded (529). Try again shortly."
     :success&&result.api_error_status===429?"Claude API rate limit reached. Try again later."
     :terminalResultError(result.terminal_reason,failureHint,explainedError||apiError);

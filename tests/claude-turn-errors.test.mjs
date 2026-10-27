@@ -31,6 +31,17 @@ test("an API failure keeps the API's own words, secrets redacted and cut to 500 
   assert.equal(claudeResultFailure(failed("api_error",{api_error_status:500,result:"API Error: 500"}),{failureHint:CLAUDE_USAGE_LIMIT_HINT}),CLAUDE_USAGE_LIMIT_HINT);
 });
 
+test("an API failure's own words keep no secret a JSON key names, quoted as the API repeats it, before they are cut",()=>{
+  const apiError=result=>claudeResultFailure(failed("api_error",{api_error_status:400,result}));
+  // T3 Code's case: a token crossing the 500-character cut.
+  assert.equal(apiError(`API Error: 400 ${"x".repeat(440)} {"token":"${"synthetic-secret".repeat(100)}"} ${"y".repeat(100)}`),`API Error: 400 ${"x".repeat(440)} {"token":"[redacted]"} `.padEnd(500,"y"));
+  assert.equal(apiError(`API Error: 400 {"password": "it's-a-secret", "client_secret":"cs-123", "refresh_token":"rt-\\"quoted\\"-456"}`),`API Error: 400 {"password": "[redacted]", "client_secret":"[redacted]", "refresh_token":"[redacted]"}`);
+  assert.equal(apiError("API Error: 400 {'api_key': 'key-789', 'Authorization': 'Basic dXNlcjpwYXNz'}"),"API Error: 400 {'api_key': '[redacted]', 'Authorization': '[redacted]'}");
+  // What names no secret stays as the API said it.
+  const plain='API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 64000 > 32000","stop_reason":"max_tokens","input_tokens":12}}';
+  assert.equal(apiError(plain),plain);
+});
+
 // One Claude Code turn whose CLI messages are frames (each a function of the prompt's message); resolves with the session's outcome.
 async function claudeTurn(frames){
   const {sdk}=scriptedClaudeSdk({turn:({message,emit})=>{for(const frame of frames)emit(typeof frame==="function"?frame(message):frame)}});
