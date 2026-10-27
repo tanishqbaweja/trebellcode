@@ -730,10 +730,12 @@ export class MuseAgentSession{
   // Asks the stage through the relay, as an ACP harness's request is asked: Trebell's policy answers what it allows or denies, and
   // the person the rest, on the approval card with Muse's own choices. askUser: only the person answers. So it is in Auto, whose
   // reviewer (':auto-review') has cleared what it could, as in Grok's Auto; for a protected write, a subject Trebell does not know,
-  // and a stage with no Allow once to answer for the person with. A card Muse settles meanwhile is withdrawn (signal); a window that
-  // never answers declines, rather than leave Muse waiting.
+  // a stage with no Allow once to answer for the person with, and a file read: Muse reads its workspace unasked, so one it asks about
+  // is outside it, and goes to the person (T3 shows it) rather than to the workspace boundary that refuses what a harness does
+  // unasked (outsideReadsAsk). A card Muse settles meanwhile is withdrawn (signal); a window that never answers declines, rather than
+  // leave Muse waiting.
   async #askApproval(entry,{askUser=false}={}){
-    const params=entry.params,choices=museApprovalChoices(params.availableChoices);
+    const params=entry.params,choices=museApprovalChoices(params.availableChoices),read=params.subject?.kind==="fileAccess"&&params.subject?.access==="read";
     // The stage and choices asked about, which the answer decides.
     const shown={requirementId:params.currentRequirementId,availableChoices:params.availableChoices};
     if(typeof this.onPermission!=="function")return this.#answerApproval(entry,"decline",shown);
@@ -743,8 +745,8 @@ export class MuseAgentSession{
       decision=await this.onPermission({
         method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},
         options:(Array.isArray(params.availableChoices)?params.availableChoices:[]).filter(choice=>choice?.choiceId).map(choice=>({optionId:text(choice.choiceId),name:text(choice.label),kind:text(choice.decision)})),
-        askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||personOnly(params)||!choices.has("accept"),
-        approvalOptions:museApprovalOptions(params.availableChoices),signal:ask.signal,
+        askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||personOnly(params)||!choices.has("accept")||read,
+        approvalOptions:museApprovalOptions(params.availableChoices),signal:ask.signal,...(read?{outsideReadsAsk:true}:{}),
       });
     }catch{decision="decline"}
     finally{if(entry.ask===ask)entry.ask=null}

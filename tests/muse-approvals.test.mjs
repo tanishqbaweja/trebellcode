@@ -443,6 +443,35 @@ test("through the relay, Muse's approval is the approval card with Muse's own ch
   }finally{await relay.close()}
 });
 
+test("a file read Muse asks about goes to the person on the card, its path and Muse's choices shown, and is never refused first as outside the workspace",async()=>{
+  const fixture=await startSession({permissionMode:"read-only"});
+  const {running,turnId,sid}=await runningTurn(fixture);
+  fixture.muse.notify("approval/requested",shellApproval(sid,turnId,{approvalId:"read-1",subject:{kind:"fileAccess",access:"read",path:"C:\\Users\\someone\\notes.txt",toolName:"read_file"},toolName:"read_file",availableChoices:[{choiceId:"yes",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"no",label:"Reject",decision:"denied",scope:"once"}]}));
+  fixture.muse.notify("approval/requested",shellApproval(sid,turnId,{approvalId:"write-1",subject:{kind:"fileAccess",access:"write",path:"src/app.js"},toolName:"write_file",availableChoices:[{choiceId:"yes",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"no",label:"Reject",decision:"denied",scope:"once"}]}));
+  await until(()=>fixture.asks.length===2,"both asks");
+  const [read,write]=fixture.asks.map(ask=>ask.request);
+  assert.deepEqual([read.params.toolCall.kind,read.params.toolCall.title,read.askUser,read.outsideReadsAsk],["read","C:\\Users\\someone\\notes.txt",true,true]);
+  assert.equal(write.outsideReadsAsk,undefined,"a write keeps the workspace boundary");
+  complete(fixture,turnId);await running;await fixture.session.close();
+});
+
+test("through the relay, a file Muse asks to read outside the workspace shows on the approval card in Supervised and Read only, and the person's Allow once lets Muse read it",{timeout:120_000},async()=>{
+  const relay=await museRelay("trebell-muse-reads-",{answer:request=>request.method==="item/tool/requestApproval"?{decision:"accept"}:undefined});
+  try{
+    for(const [index,permissionProfile] of ["supervised","read-only"].entries()){
+      const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile});
+      await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please read outside the workspace"}],permissionProfile});
+      await relay.completed(thread.id,1);
+      const card=relay.requests[index];
+      assert.equal(card?.method,"item/tool/requestApproval",permissionProfile);
+      assert.match(card.params.toolCall.title,/outside-notes\.txt$/,permissionProfile);
+      assert.deepEqual(card.params.approvalOptions,[{decision:"accept",label:"Allow once"},{decision:"decline",label:"Reject"}],permissionProfile);
+      assert.equal(relay.reply(thread.id),"READ IT",permissionProfile);
+    }
+    assert.deepEqual((await relay.frames("approval/decide")).map(frame=>frame.params.choiceId),["allow_once","allow_once"]);
+  }finally{await relay.close()}
+});
+
 test("through the relay, Muse's question opens Trebell's question dialog, and the person's choice and own words reach Muse as its answer",{timeout:120_000},async()=>{
   const relay=await museRelay("trebell-muse-questions-",{answer:request=>request.method==="item/tool/requestUserInput"?{answers:{approach:{answers:["Small","Keep the tests focused"]}}}:undefined});
   try{

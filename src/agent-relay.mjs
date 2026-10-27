@@ -2251,7 +2251,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
             if(signal?.aborted)withdrawServerRequest(id);else signal?.addEventListener?.("abort",()=>withdrawServerRequest(id),{once:true});
           });
         },
-        async permission(thread,{params,options,askUser=false,approvalOptions=null,signal=null}){
+        // outsideReadsAsk: the harness asks the person before it reads outside the workspace (Muse Code), so such a read is the person's
+        // to answer, as T3 shows it: the workspace boundary refuses what a harness would do unasked.
+        async permission(thread,{params,options,askUser=false,approvalOptions=null,signal=null,outsideReadsAsk=false}){
           const current=threadStore.get(thread.id)||thread,turnId=current?.turns?.at(-1)?.id||null,traceData=agentPermissionTraceData({toolCall:params.toolCall,options});
           const traceBase={runtime:current?.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),environmentId:current?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,threadId:thread.id,turnId,category:"policy"};
           journal?.record?.({...traceBase,name:"permission.requested",status:"pending",data:traceData});
@@ -2268,7 +2270,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
             journal?.record?.({...traceBase,name:"permission.resolved",status:"accept",data:{...traceData,decision:"accept",policyDecision:policy.decision}});
             return "accept";
           }
-          if(policy.decision===POLICY_REJECT){
+          const askedRead=outsideReadsAsk&&policy.decision===POLICY_REJECT&&policy.action.kind==="read"&&policy.action.pathInsideWorkspace===false;
+          if(policy.decision===POLICY_REJECT&&!askedRead){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"decline",data:{...traceData,decision:"decline",policyDecision:policy.decision}});
             return "decline";
           }
