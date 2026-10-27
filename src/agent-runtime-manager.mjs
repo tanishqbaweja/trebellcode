@@ -258,11 +258,22 @@ export function openCodeStatusMessage(connected,{external=false,models=null}={})
 // nothing in it is pending either: a command, skill or agent list that timed out or failed, or an OpenCode 2 model list still changing.
 const openCodeCatalogReady=catalog=>Boolean(catalog?.connectedProviders?.length&&catalog?.models?.length);
 const openCodeCatalogComplete=catalog=>openCodeCatalogReady(catalog)&&!catalog?.pending?.length;
-// A profile's own OpenCode server that refused the password: a 401 or 403 said as a status, or Unauthorized or Forbidden. The digits alone
-// are not one, as a port or a path can hold them (http://127.0.0.1:4010); T3 Code reads them as strictly.
+// A profile's own OpenCode server that refused the password: an HTTP 401 or 403 (OpenCode 1.x answers an empty one, whose status the
+// error keeps), OpenCode 2's UnauthorizedError or ForbiddenError, or a 401 or 403 said as a status, or Unauthorized or Forbidden, in its
+// text. The digits alone are not one, as a port or a path can hold them (http://127.0.0.1:4010); T3 Code reads them as strictly.
+const OPENCODE_REFUSED_STATUS=new Set([401,403]),OPENCODE_REFUSED_TAG=new Set(["UnauthorizedError","ForbiddenError"]);
 export function openCodeServerRefused(error){
+  if(OPENCODE_REFUSED_STATUS.has(Number(error?.status))||OPENCODE_REFUSED_STATUS.has(Number(error?.cause?.status))||OPENCODE_REFUSED_TAG.has(String(error?._tag||error?.name||"")))return true;
   const text=String(error?.message||error||"");
   return /\b(?:unauthorized|forbidden)\b/i.test(text)||/\b(?:unexpected)?status(?:\s+code)?(?:\s*[:=]\s*|\s+)(?:401|403)\b/i.test(text)||/\bhttp(?:\/\d(?:\.\d)?)?\s+(?:401|403)\b/i.test(text);
+}
+// What a refusal by a profile's own server says. Trebell sends an OpenCode 2 server the profile's OPENCODE_SERVER_PASSWORD (or
+// OPENCODE_PASSWORD), and an OpenCode 1.x server only when Trebell starts it, so for a 1.x server of the profile's own the password
+// in its environment cannot help.
+function openCodeServerRefusal(version){
+  return String(version||"").startsWith("2.")
+    ?"The configured OpenCode server rejected the password. Check this profile's server URL and the OPENCODE_SERVER_PASSWORD in its environment."
+    :"The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or start that server without OPENCODE_SERVER_PASSWORD.";
 }
 // OpenCode's own answer for a profile, from its 1.x or 2.x server: its version chooses the client, as it does for the relay and Git text.
 function readOpenCodeCatalog({version=null,...options}={}){return (String(version||"").startsWith("2.")?discoverOpenCode2ModelCatalog:discoverOpenCodeModelCatalog)(options)}
@@ -1124,7 +1135,7 @@ export class AgentRuntimeManager{
       let catalog;
       try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null,{fresh})}
       catch(error){
-        if(instance.serverUrl&&openCodeServerRefused(error))return unavailable("The configured OpenCode server rejected the password. Check this profile's server URL and the OPENCODE_SERVER_PASSWORD in its environment.",{authenticated:false});
+        if(instance.serverUrl&&openCodeServerRefused(error))return unavailable(openCodeServerRefusal(compatibility?.version),{authenticated:false});
         return unavailable(("OpenCode could not list its providers: "+(error?.message||String(error))).slice(0,500));
       }
       const connected=Array.isArray(catalog?.connectedProviders)?catalog.connectedProviders.length:0,models=Array.isArray(catalog?.models)?catalog.models.length:0;

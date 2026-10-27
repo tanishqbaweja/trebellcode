@@ -52,8 +52,10 @@ function openCodeErrorText(error){
 // itself as a session.error event.
 const GENERIC_SERVER_ERROR=/^Unexpected server error\b/i;
 const LATE_SESSION_ERROR_MS=1000;
+// The error keeps the HTTP status OpenCode answered with: OpenCode 1.x refuses a wrong password with an empty 401, which says nothing.
 function unwrap(result,label="OpenCode request"){
-  if(result?.error)throw new Error(openCodeErrorText(result.error)||`${label} failed`);
+  const status=Number(result?.response?.status)||0;
+  if(result?.error)throw Object.assign(new Error(openCodeErrorText(result.error)||`${label} failed`),status?{status}:{});
   return result?.data;
 }
 
