@@ -15,7 +15,8 @@ const MODELS={agentRuntime:"claude",ready:true,models:["default"],defaultModel:"
 // The Claude Agent SDK as the relay's Claude Code sessions drive it, scripted: query() returns the Query, an async iterator of the
 // CLI's messages fed by the streaming-input prompt. Claude Code reports its session (init) as it takes the first message in, and
 // turn({message,index,options,emit,signal}) runs for each user message in turn, a steer ("now") at once into the running turn; signal
-// aborts once the query closes. control.backgroundTasks(toolUseId,{emit}) answers a move of a foreground task to the background.
+// aborts once the query closes. control.backgroundTasks(toolUseId,{emit}) answers a move of a foreground task to the background, and
+// control.setPermissionMode(mode) a change of the process's mode (it throws where Claude Code refuses one).
 function scriptedClaudeSdk(turn,control={}){
   const query=({prompt,options})=>{
     const items=[],waiters=[],stop=new AbortController();let done=false;
@@ -34,7 +35,7 @@ function scriptedClaudeSdk(turn,control={}){
     return {
       next:()=>items.length?Promise.resolve({value:items.shift(),done:false}):done?Promise.resolve({value:undefined,done:true}):new Promise(resolve=>waiters.push(resolve)),
       return:()=>{end();return Promise.resolve({value:undefined,done:true})},[Symbol.asyncIterator](){return this},
-      async interrupt(){},close(){end()},async setPermissionMode(){},initializationResult:async()=>({commands:[],agents:[],models:[]}),
+      async interrupt(){},close(){end()},async setPermissionMode(mode){if(control.setPermissionMode)return control.setPermissionMode(mode)},initializationResult:async()=>({commands:[],agents:[],models:[]}),
       async setMcpServers(servers){return {added:Object.keys(servers),removed:[],errors:{}}},
       async backgroundTasks(toolUseId){return control.backgroundTasks?control.backgroundTasks(toolUseId,{emit}):true},
     };

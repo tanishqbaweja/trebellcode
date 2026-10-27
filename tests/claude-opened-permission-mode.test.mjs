@@ -8,6 +8,7 @@ import { isSessionRefusal } from "../src/session-refusal.mjs";
 import { claudeResult, scriptedClaudeSdk } from "./fixtures/scripted-claude-sdk.mjs";
 
 const BACKGROUND_WORK="Claude is still running background agents or commands, and this model or setting change would end them. Wait for them to finish (or ask Claude to stop them), or keep the current model and settings, then send the message again.";
+const STUCK_IN_PLAN="Claude Code could not leave the Plan mode Claude switched to, and restarting it would end the background agents or commands it is still running. Wait for them to finish, then send the message again.";
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const modes=call=>call.log.filter(entry=>entry[0]==="setPermissionMode").map(entry=>entry[1]);
 const steps=call=>call.log.map(entry=>entry[0]==="input"?"input":`${entry[0]}:${entry[1]}`);
@@ -83,7 +84,11 @@ test("a process that cannot leave Plan is replaced only once no background work 
   const claude=session(sdk,"edits");await claude.start();
   await claude.prompt([{type:"text",text:"Look first"}]);
   calls[0].emit({type:"system",subtype:"background_tasks_changed",tasks:[{task_id:"bg-1",description:"npm run watch"}]});await tick();
-  await assert.rejects(claude.prompt([{type:"text",text:"Now fix it"}]),error=>isSessionRefusal(error)&&error.message===BACKGROUND_WORK);
+  // The person changed nothing: the refusal says Claude Code is stuck in the Plan mode Claude chose, not that a change of theirs would
+  // end the background work, and asks them to wait, since every message is refused until it ends.
+  const refusal=await claude.prompt([{type:"text",text:"Now fix it"}]).then(()=>null,error=>error);
+  assert.ok(isSessionRefusal(refusal),"refused by Trebell, not failed by Claude Code");
+  assert.equal(refusal.message,STUCK_IN_PLAN);assert.notEqual(refusal.message,BACKGROUND_WORK);
   assert.equal(calls.length,1);assert.equal(calls[0].closed,false,"the process and its background work go on");
   calls[0].emit({type:"system",subtype:"background_tasks_changed",tasks:[]});await tick();
   assert.equal((await claude.prompt([{type:"text",text:"Now fix it"}])).stopReason,"end_turn");
