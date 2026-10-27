@@ -1032,7 +1032,10 @@ export class OpenCodeAgentSession{
         if(part.tool==="task"&&part.state?.metadata?.sessionId)await this.#applyChildRules(part.state.metadata.sessionId);
       }else if(part.type==="subtask")this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call",toolCallId:part.id,title:part.description||`Subtask · ${part.agent}`,kind:"other",status:"in_progress",rawInput:{prompt:part.prompt,agent:part.agent}}});
       else if(part.type==="step-finish")this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"usage_update",used:Number(part.tokens?.input||0)+Number(part.tokens?.output||0)+Number(part.tokens?.reasoning||0),size:this.contextByModel.get(this.model)||0,cost:{amount:Number(part.cost||0),currency:"USD"},usage:{input_tokens:Number(part.tokens?.input||0),output_tokens:Number(part.tokens?.output||0),reasoning_tokens:Number(part.tokens?.reasoning||0),cache_read_input_tokens:Number(part.tokens?.cache?.read||0),cache_write_input_tokens:Number(part.tokens?.cache?.write||0)}}});
-    }else if(event.type==="todo.updated")this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"plan",entries:(p.todos||[]).map(todo=>({content:todo.content,status:todo.status,priority:todo.priority}))}});
+    }
+    // A cancelled todo is no work left to do, and a plan step has no cancelled status: it is left out of the plan rather than shown as
+    // pending (T3 Code).
+    else if(event.type==="todo.updated")this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"plan",entries:(p.todos||[]).filter(todo=>todo?.status!=="cancelled").map(todo=>({content:todo.content,status:todo.status,priority:todo.priority}))}});
     else if((event.type==="permission.asked"||event.type==="permission.updated")&&p.sessionID===this.sessionId)await this.#permission(event.type,p);
     else if(event.type==="question.asked"&&p.sessionID===this.sessionId)await this.#question(p);
     else if(event.type==="session.error"&&(!p.sessionID||p.sessionID===this.sessionId)){
