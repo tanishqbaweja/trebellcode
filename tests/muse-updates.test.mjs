@@ -102,7 +102,7 @@ test("a Muse Code that Meta's launcher does not run gets no Update but the relea
   await writeFile(wrapper,`@echo off\r\nsetlocal\r\n"${process.execPath}" "${FAKE_MUSE}" %*\r\nexit /b %ERRORLEVEL%\r\n`);
   fx.settings.agentRuntimeInstances[0].binaryPath=wrapper;fx.runnable.add(wrapper);
   const real=realpathSync.native(wrapper),update=museStatus(await fx.manager.snapshot({refresh:true})).update;
-  assert.deepEqual(update,{current:"1.4.13-R6996.1",latest:"1.4.14-R7010.1",newer:true,canUpdate:false,command:null,binary:real,message:`Muse Code 1.4.14-R7010.1 is out. Trebell Code runs ${real} and could not tell how it was installed: update it the way you installed it.`});
+  assert.deepEqual(update,{current:"1.4.13-R6996.1",latest:"1.4.14-R7010.1",newer:true,canUpdate:false,command:null,binary:real,message:`Muse Code 1.4.14-R7010.1 is available. This profile runs ${real}, and Trebell Code cannot tell what installed it: update it the way you installed it.`});
   await assert.rejects(()=>fx.manager.install("muse"),{message:`Trebell Code updates Muse Code only through Meta's launcher, which Meta's installer puts in place, and ${real} is not it: update it the way you installed it. Nothing was installed.`});
   assert.deepEqual([fx.updateRuns(),await fx.updates()],[[],[]]);
 });

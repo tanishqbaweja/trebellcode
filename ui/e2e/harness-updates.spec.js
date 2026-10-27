@@ -117,7 +117,7 @@ test("Update shows only for a newer release Trebell installs itself: npm's Claud
     // Grok Build from WinGet: no Update, but what is out, the file the profile runs and how to update it.
     const grokFile=realpathSync.native(grok);
     await expect(harnessRow(page,"Grok Build").getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
-    await expect(note("Grok Build")).toHaveText(`Grok Build 1.0.70 is out. Trebell Code runs ${grokFile}, which WinGet installed: update it with \`winget upgrade xAI.GrokBuild\`.`);
+    await expect(note("Grok Build")).toHaveText(`Grok Build 1.0.70 is available. This profile runs ${grokFile}, installed by WinGet: run \`winget upgrade xAI.GrokBuild\` to update it.`);
     // Codex from its own installer is the newest: nothing to offer. OpenCode is not there: Install.
     await expect(harnessRow(page,"Codex").locator("button").first().locator("small")).toHaveText("codex-cli 0.164.0");
     await expect(harnessRow(page,"Codex").getByRole("button",{name:"Update",exact:true})).toHaveCount(0);await expect(note("Codex")).toHaveCount(0);
@@ -165,7 +165,7 @@ test("a WinGet Claude Code offers no Update, and says the release, the file Treb
     const pressed=[];await serve(page,fx.manager,pressed);
     await openHarnesses(page);
     const row=harnessRow(page,"Claude Code");
-    await expect(row.locator("p.agent-runtime-option-note:not([role])")).toHaveText(`Claude Code 2.1.320 is out. Trebell Code runs ${realpathSync.native(claude)}, which WinGet installed: update it with \`winget upgrade Anthropic.ClaudeCode\`.`);
+    await expect(row.locator("p.agent-runtime-option-note:not([role])")).toHaveText(`Claude Code 2.1.320 is available. This profile runs ${realpathSync.native(claude)}, installed by WinGet: run \`winget upgrade Anthropic.ClaudeCode\` to update it.`);
     await expect(row.getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
     await expect(row.getByRole("button",{name:"Install",exact:true})).toHaveCount(0);
     await shootRows(page,"winget",["Claude Code"]);

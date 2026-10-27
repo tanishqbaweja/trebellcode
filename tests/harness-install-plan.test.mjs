@@ -41,7 +41,8 @@ const CASES=[
   ["npm's script launcher for Codex, proven by its package beside it",{kind:"codex",found:"D:\\tools\\npm\\codex.cmd",files:["D:\\tools\\npm\\node_modules\\@openai\\codex\\package.json"]},{method:"npm",prefix:"D:\\tools\\npm"}],
   ["npm's global prefix on Linux",{kind:"claude",platform:"linux",found:"/usr/local/bin/claude",real:"/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"},{method:"npm",prefix:"/usr/local"}],
   ["a global of Homebrew's Node, which is npm's",{kind:"codex",platform:"darwin",found:"/opt/homebrew/bin/codex",real:"/opt/homebrew/Cellar/node/22.1.0/lib/node_modules/@openai/codex/bin/codex.js"},{method:"npm",prefix:"/opt/homebrew/Cellar/node/22.1.0"}],
-  ["pnpm's global store",{kind:"claude",platform:"linux",found:"/home/me/.local/share/pnpm/claude",real:"/home/me/.local/share/pnpm/global/5/.pnpm/@anthropic-ai+claude-code@2.1.300/node_modules/@anthropic-ai/claude-code/cli.js"},{method:"manual",by:"pnpm",command:"pnpm add -g @anthropic-ai/claude-code@latest"}],
+  // pnpm 10 runs Claude Code's install script, which puts its binary in place, only when told to (T3 a523b0036).
+  ["pnpm's global store",{kind:"claude",platform:"linux",found:"/home/me/.local/share/pnpm/claude",real:"/home/me/.local/share/pnpm/global/5/.pnpm/@anthropic-ai+claude-code@2.1.300/node_modules/@anthropic-ai/claude-code/cli.js"},{method:"manual",by:"pnpm",command:"pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest"}],
   ["bun's global bin",{kind:"claude",platform:"darwin",found:"/Users/me/.bun/bin/claude"},{method:"manual",by:"bun",command:"bun add -g @anthropic-ai/claude-code@latest"}],
   ["Vite+'s bin on Windows",{kind:"claude",found:"C:\\Users\\me\\AppData\\Local\\vite-plus\\bin\\claude.cmd",real:"C:\\Users\\me\\AppData\\Local\\vite-plus\\packages\\@anthropic-ai\\claude-code\\lib\\node_modules\\@anthropic-ai\\claude-code\\cli.js"},{method:"manual",by:"Vite+",command:"vp i -g @anthropic-ai/claude-code"}],
   ["a folder named vite-plus in a project",{kind:"claude",platform:"linux",found:"/work/vite-plus/bin/claude",real:"/work/vite-plus/node_modules/@anthropic-ai/claude-code/cli.js"},UNKNOWN],
@@ -65,10 +66,12 @@ const CASES=[
 ];
 test("what updates a harness, judged from where the binary a profile runs really is: npm's prefix, the harness's own updater or the person",()=>{
   for(const [name,{kind,...fixture},expected] of CASES)assert.deepEqual(judged(kind,fixture),expected,name);
-  // What Settings says of a newer release Trebell does not install itself: the release, the file the profile runs, and how.
-  assert.equal(manualUpdateText({name:"Claude Code",latest:"2.1.320",binary:WINGET_PACKAGE,by:"WinGet",command:"winget upgrade Anthropic.ClaudeCode"}),`Claude Code 2.1.320 is out. Trebell Code runs ${WINGET_PACKAGE}, which WinGet installed: update it with \`winget upgrade Anthropic.ClaudeCode\`.`);
-  assert.equal(manualUpdateText({name:"Claude Code",latest:"2.1.320",binary:"/home/me/.local/share/mise/shims/claude",by:"mise"}),"Claude Code 2.1.320 is out. Trebell Code runs /home/me/.local/share/mise/shims/claude, which mise installed: update it through mise.");
-  assert.equal(manualUpdateText({name:"Claude Code",latest:"2.1.320",binary:"C:\\tools\\claude.exe"}),"Claude Code 2.1.320 is out. Trebell Code runs C:\\tools\\claude.exe and could not tell how it was installed: update it the way you installed it.");
+  // What Settings says of a newer release Trebell does not install itself, in Trebell's own words: the release, the file the profile
+  // runs, and what installed it with the command that updates it.
+  assert.equal(manualUpdateText({name:"Claude Code",latest:"2.1.320",binary:WINGET_PACKAGE,by:"WinGet",command:"winget upgrade Anthropic.ClaudeCode"}),`Claude Code 2.1.320 is available. This profile runs ${WINGET_PACKAGE}, installed by WinGet: run \`winget upgrade Anthropic.ClaudeCode\` to update it.`);
+  assert.equal(manualUpdateText({name:"Claude Code",latest:"2.1.320",binary:"/home/me/.local/share/mise/shims/claude",by:"mise"}),"Claude Code 2.1.320 is available. This profile runs /home/me/.local/share/mise/shims/claude, installed by mise: update it with mise.");
+  assert.equal(manualUpdateText({name:"Claude Code",latest:"2.1.320",binary:"C:\\tools\\claude.exe"}),"Claude Code 2.1.320 is available. This profile runs C:\\tools\\claude.exe, and Trebell Code cannot tell what installed it: update it the way you installed it.");
+  assert.equal(manualUpdateText({name:"Claude Code",latest:"2.1.320",binary:"/home/me/.local/share/pnpm/claude",by:"pnpm",command:"pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest"}),"Claude Code 2.1.320 is available. This profile runs /home/me/.local/share/pnpm/claude, installed by pnpm: run `pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest` to update it.");
   // `npm view <package>@<range> version --json` lists every version in range, in no order to rely on: the newest by version wins.
   assert.equal(newestListed('["2.0.24","2.10.0","2.2.0"]\n'),"2.10.0");assert.equal(newestListed('"1.14.19"\n'),"1.14.19");assert.equal(newestListed(""),null);
 });
@@ -173,9 +176,9 @@ test("a WinGet Claude Code gets no Update but the version, the file it runs and 
     return args[0]==="--version"?answered("2.1.300 (Claude Code)\n"):answered(JSON.stringify({loggedIn:true}));
   }});
   const real=realpathSync.native(binary),update=statusOf(await fx.manager.snapshot({refresh:true}),"claude").update;
-  assert.deepEqual(update,{current:"2.1.300",latest:"2.1.320",newer:true,canUpdate:false,command:"winget upgrade Anthropic.ClaudeCode",binary:real,message:`Claude Code 2.1.320 is out. Trebell Code runs ${real}, which WinGet installed: update it with \`winget upgrade Anthropic.ClaudeCode\`.`});
+  assert.deepEqual(update,{current:"2.1.300",latest:"2.1.320",newer:true,canUpdate:false,command:"winget upgrade Anthropic.ClaudeCode",binary:real,message:`Claude Code 2.1.320 is available. This profile runs ${real}, installed by WinGet: run \`winget upgrade Anthropic.ClaudeCode\` to update it.`});
   const before=fx.calls.length;
-  await assert.rejects(()=>fx.manager.install("claude"),{message:`Trebell Code does not update the Claude Code at ${real}, which WinGet installed: update it with \`winget upgrade Anthropic.ClaudeCode\`. Nothing was installed.`});
+  await assert.rejects(()=>fx.manager.install("claude"),{message:`Trebell Code does not update the Claude Code at ${real}, installed by WinGet: run \`winget upgrade Anthropic.ClaudeCode\` to update it. Nothing was installed.`});
   assert.deepEqual(fx.calls.slice(before).map(call=>call.args.join(" ")),["--version"],"only its version was read");
   // The newest already, or a registry that does not answer: nothing to say.
   const another=machine(root,{path:folder,latest:{"@anthropic-ai/claude-code":"2.1.300"},answer:(command,args)=>command!=="claude"?missing(command):args[0]==="--version"?answered("2.1.300 (Claude Code)\n"):answered(JSON.stringify({loggedIn:true}))});
@@ -252,6 +255,8 @@ test("an OpenCode 2.x from npm updates @opencode/cli in its own prefix to the ne
   await writeFile(shim,npmShim("node_modules\\opencode-ai\\bin\\opencode.exe"),"utf8");
   const before=fx.calls.length;
   await assert.rejects(()=>fx.manager.installPlan("opencode"),/^Error: npm cannot update @opencode\/cli in .*: the opencode command there runs opencode-ai, and npm does not replace another package's command\. Trebell Code changes neither install\. To update OpenCode 2\.x, uninstall opencode-ai/);
+  // The forced install it names lets npm 12 run OpenCode's install script, which puts its binary in place, into that prefix.
+  await assert.rejects(()=>fx.manager.installPlan("opencode"),{message:`npm cannot update @opencode/cli in ${realPrefix}: the opencode command there runs opencode-ai, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode 2.x, uninstall opencode-ai, or run \`${shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=@opencode/cli","@opencode/cli","--force"],"win32")}\` yourself (the opencode command then runs OpenCode 2.x).`});
   assert.deepEqual(npmCalls(fx.calls.slice(before)),[]);
   // OpenCode's own installer keeps a 2.x in its line too: `opencode upgrade` to the newest 2.x, and nothing to a 3.x.
   const native=await file(join(root,"home",".opencode","bin","opencode.exe"));

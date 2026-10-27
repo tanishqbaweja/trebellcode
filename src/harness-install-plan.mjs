@@ -55,7 +55,8 @@ function packageManagerInstall(paths,real,packageName){
   const has=test=>paths.some(path=>test(folded(path)));
   if(has(path=>/\/(?:\.vite-plus|\.local\/share\/vite-plus|appdata\/local\/vite-plus)\/bin\//.test(path)))return {by:"Vite+",command:`vp i -g ${packageName}`};
   if(has(path=>path.includes("/.bun/bin/")))return {by:"bun",command:`bun add -g ${packageName}@latest`};
-  if(has(path=>["/.local/share/pnpm/","/library/pnpm/","/local/share/pnpm/","/appdata/local/pnpm/","/pnpm/global/"].some(part=>path.includes(part))))return {by:"pnpm",command:`pnpm add -g ${packageName}@latest`};
+  // pnpm 10 runs no build script it was not told to (10.4 and later take --allow-build), and Claude Code's puts its binary in place.
+  if(has(path=>["/.local/share/pnpm/","/library/pnpm/","/local/share/pnpm/","/appdata/local/pnpm/","/pnpm/global/"].some(part=>path.includes(part))))return {by:"pnpm",command:`pnpm add -g --allow-build=${packageName} ${packageName}@latest`};
   if(has(path=>/\/yarn\/(?:data\/)?global\/node_modules\//.test(path)))return {by:"Yarn",command:`yarn global add ${packageName}@latest`};
   if(/^volta-shim(?:\.exe)?$/.test(folded(real).split("/").pop()))return {by:"Volta",command:`volta install ${packageName}@latest`};
   return null;
@@ -103,17 +104,17 @@ export function shownCommand(command,args=[],platform=process.platform){
   return [command,...args].map(word=>quote(String(word))).join(" ");
 }
 // Who installed a binary, said in Settings and in a refused update: the tool and, when it is known, the command that updates it.
-function updatedBy(by,command){return command?`which ${by} installed: update it with \`${command}\``:`which ${by} installed: update it through ${by}`}
-// What Settings says of a newer release that Trebell does not install itself (T3 96d354ae8, in Trebell's words): the release, the
-// file the profile runs, and who installed it with its command when they are known.
+function installedBy(by,command){return command?`installed by ${by}: run \`${command}\` to update it`:`installed by ${by}: update it with ${by}`}
+// What Settings says of a newer release that Trebell does not install itself (T3 96d354ae8): the release, the file the profile runs,
+// and who installed it with its command when they are known.
 export function manualUpdateText({name,latest,binary,by=null,command=null}){
-  return by?`${name} ${latest} is out. Trebell Code runs ${binary}, ${updatedBy(by,command)}.`
-    :`${name} ${latest} is out. Trebell Code runs ${binary} and could not tell how it was installed: update it the way you installed it.`;
+  return by?`${name} ${latest} is available. This profile runs ${binary}, ${installedBy(by,command)}.`
+    :`${name} ${latest} is available. This profile runs ${binary}, and Trebell Code cannot tell what installed it: update it the way you installed it.`;
 }
 // Why an update was refused for an install Trebell does not update itself.
 export function manualUpdateRefusal({name,binary,by=null,command=null}){
-  return by?`Trebell Code does not update the ${name} at ${binary}, ${updatedBy(by,command)}. Nothing was installed.`
-    :`Trebell Code updates ${/^[aeiou]/i.test(name)?"an":"a"} ${name} installed by npm or by ${name}'s own installer, and could not tell how ${binary} was installed. Update it the way you installed it.`;
+  return by?`Trebell Code does not update the ${name} at ${binary}, ${installedBy(by,command)}. Nothing was installed.`
+    :`Trebell Code updates ${/^[aeiou]/i.test(name)?"an":"a"} ${name} installed by npm or by ${name}'s own installer, and cannot tell what installed ${binary}: update it the way you installed it. Nothing was installed.`;
 }
 // The newest release npm's registry names for packageName (T3 fetchNpmLatestVersion: 4 s), or null when it could not be read.
 export async function registryRelease(fetchImpl,packageName,{timeoutMs=4000}={}){

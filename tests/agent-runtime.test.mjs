@@ -626,7 +626,7 @@ test("updating npm's global opencode-ai installs into the prefix that holds the 
     const custom=join(root,"custom","opencode.cmd");await fixture.launcher(custom,"opencode.mjs");
     manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:custom,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});
     await fixture.update({calls:[]});
-    await assert.rejects(()=>manager.install("opencode"),/could not tell how .*custom.*opencode\.cmd was installed/);
+    await assert.rejects(()=>manager.install("opencode"),/cannot tell what installed .*custom.*opencode\.cmd: update it the way you installed it\. Nothing was installed\.$/);
     assert.deepEqual((await fixture.read()).calls,[["opencode","--version"]]);
     // Once OpenCode 2.x (@opencode/cli) holds the prefix's opencode command, npm would refuse to replace it: Trebell runs no npm.
     manager.upsertInstance({id:"opencode-default",kind:"opencode",binaryPath:binary,approvedEnvironmentKeys:["FAKE_OPENCODE_STATE","XDG_STATE_HOME"]});

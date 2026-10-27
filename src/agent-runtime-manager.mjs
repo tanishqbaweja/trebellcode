@@ -267,9 +267,10 @@ export function openCodeCommandHolder(prefix,{platform=process.platform,packageN
   const parts=paths.relative(root,target).split(/[\\/]/),index=parts[0]===".."?-1:parts.indexOf("node_modules");
   return (index>=0?parts.slice(index+1,parts[index+1]?.startsWith("@")?index+3:index+2).join("/"):"")||target;
 }
-// Why npm cannot update OpenCode's packageName in prefix while the opencode command there is holder's.
-function openCodeHolderRefusal(prefix,holder,packageName,line){
-  return `npm cannot update ${packageName} in ${prefix}: the opencode command there runs ${holder}, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode ${line}.x, uninstall ${holder}, or run npm install -g ${packageName} --force yourself (the opencode command then runs OpenCode ${line}.x).`;
+// Why npm cannot update OpenCode's packageName in prefix while the opencode command there is holder's, with the forced install that
+// would, its install script allowed (npm 12 runs none unless allowed, and OpenCode's puts its binary in place).
+function openCodeHolderRefusal(prefix,holder,packageName,line,platform=process.platform){
+  return `npm cannot update ${packageName} in ${prefix}: the opencode command there runs ${holder}, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode ${line}.x, uninstall ${holder}, or run \`${shownCommand("npm",[...npmInstallArgs(packageName,null,prefix),"--force"],platform)}\` yourself (the opencode command then runs OpenCode ${line}.x).`;
 }
 export function runtimeCompatibility(kind,version){
   const policy=RUNTIME_COMPATIBILITY[normalizeAgentRuntime(kind)];if(!policy)return null;
@@ -697,7 +698,7 @@ export class AgentRuntimeManager{
     const owner=remote?{method:"npm",prefix:null,binary:null,real:null}:this.#installOwner(instance,installed);
     if(owner.method==="manual")throw new Error(manualUpdateRefusal({name:def.name,binary:owner.real||def.command,by:owner.by,command:owner.command}));
     const holder=owner.method==="npm"&&owner.prefix&&runtime==="opencode"?openCodeCommandHolder(owner.prefix,{platform:this.platform,packageName}):null;
-    if(holder)throw new Error(openCodeHolderRefusal(owner.prefix,holder,packageName,line));
+    if(holder)throw new Error(openCodeHolderRefusal(owner.prefix,holder,packageName,line,this.platform));
     let targetVersion;
     if(owner.method==="npm"){await this.#npmReady(environmentId);targetVersion=await this.#npmRelease(packageName,{environmentId,range:packageName==="@opencode/cli"?">=2.0.0 <3.0.0":null})}
     else{
@@ -793,10 +794,10 @@ export class AgentRuntimeManager{
     const owner=remote?{method:"npm",prefix:null,binary:null,real:null}:this.#installOwner(instance,current);
     const advisory={current,latest,newer,canUpdate:false,command:null,binary:owner.real,message:null};
     if(!current)return advisory;
-    if(remote&&instance.kind==="opencode"&&line===2)return {...advisory,message:newer?`OpenCode ${latest} is out. Update this 2.x install with \`opencode upgrade\` or the package manager that installed it.`:null};
+    if(remote&&instance.kind==="opencode"&&line===2)return {...advisory,message:newer?`OpenCode ${latest} is available. Update this 2.x install with \`opencode upgrade\` or the package manager that installed it.`:null};
     if(owner.method==="manual")return {...advisory,command:owner.command,message:newer?manualUpdateText({name:def.name,latest,binary:owner.real||def.command,by:owner.by,command:owner.command}):null};
     const holder=owner.method==="npm"&&owner.prefix&&instance.kind==="opencode"?openCodeCommandHolder(owner.prefix,{platform:this.platform,packageName}):null;
-    if(holder)return {...advisory,message:newer?`OpenCode ${latest} is out. ${openCodeHolderRefusal(owner.prefix,holder,packageName,line)}`:null};
+    if(holder)return {...advisory,message:newer?`OpenCode ${latest} is available. ${openCodeHolderRefusal(owner.prefix,holder,packageName,line,this.platform)}`:null};
     const args=owner.method==="npm"?npmInstallArgs(packageName,latest,owner.prefix):instance.kind==="opencode"?["upgrade",...(latest?[latest]:[])]:owner.args;
     const command=shownCommand(owner.method==="npm"?"npm":owner.binary,args,remote?"linux":this.platform)+(owner.env?.CODEX_HOME?` (with CODEX_HOME set to ${owner.env.CODEX_HOME})`:"");
     return {...advisory,canUpdate:true,command};

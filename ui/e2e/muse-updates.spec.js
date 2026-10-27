@@ -138,7 +138,7 @@ test("a Muse Code that Meta's launcher does not run offers no Update, and says t
     const fx=await machine(root,{binaryPath:wrapper}),pressed=[];await serve(page,fx.manager,pressed);
     await openHarnesses(page);
     const row=harnessRow(page,"Muse Code");
-    await expect(row.locator("p.agent-runtime-option-note:not([role])")).toHaveText(`Muse Code 1.4.14-R7010.1 is out. Trebell Code runs ${realpathSync.native(wrapper)} and could not tell how it was installed: update it the way you installed it.`,{timeout:30_000});
+    await expect(row.locator("p.agent-runtime-option-note:not([role])")).toHaveText(`Muse Code 1.4.14-R7010.1 is available. This profile runs ${realpathSync.native(wrapper)}, and Trebell Code cannot tell what installed it: update it the way you installed it.`,{timeout:30_000});
     await expect(row.getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
     await expect(row.getByRole("button",{name:"Install",exact:true})).toHaveCount(0);
     await shootRow(page,"manual");
