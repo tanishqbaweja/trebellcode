@@ -72,6 +72,7 @@ import { delegationContextValue, delegationGoalPatch, delegationPolicies } from 
 import { executeDelegation } from "./delegation-executor.mjs";
 import { cleanupDelegationWorktree, createDelegationWorktree } from "./delegation-worktree.mjs";
 import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
+import { allowsSession, approvalThreadId, createCodexSessionApprovals, sessionApprovalKind, sessionApprovalResult } from "./codex-session-approvals.mjs";
 import { resolveRecipeExecution } from "./recipes.mjs";
 import { runProjectHooks, verificationHookSteps } from "./project-hooks.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
@@ -1043,6 +1044,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   const cloneJobs=new CloneJobService({state,environments,env,log:message=>appServer?.logs?.push({at:Date.now(),stream:"clone",text:safeLogText(String(message)+"\n")})});
   await cloneJobs.recoverInterrupted();
   const codexAppServers=new Map(),codexAppServerStarts=new Map(),codexThreadServerKeys=new Map(),codexThreadReleases=new Map();
+  // "Allow session" on a Codex approval, by thread and permission mode (codex-session-approvals.mjs): a thread's session that ends (it
+  // unloads, or its app-server is released or dies) takes it along.
+  const codexSessionApprovals=createCodexSessionApprovals();
   const codexPoolKey=(ownerKey,instanceId,environmentId=state.settings().activeEnvironmentId||null)=>String(ownerKey||"catalog")+":"+(environmentId||"local")+":"+String(instanceId||"codex-default");
   function codexInstance(instanceId=null){
     const instances=agentRuntimes.instances();
@@ -1090,12 +1094,13 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     if(codexThreadReleases.size)await Promise.allSettled([...codexThreadReleases.values()]);
     const keys=[...codexAppServers.keys()].filter(key=>!keepGitText||!key.startsWith("git-text:")),servers=keys.map(key=>codexAppServers.get(key));
     for(const key of keys)codexAppServers.delete(key);
-    codexThreadServerKeys.clear();codexThreadReleases.clear();
+    codexThreadServerKeys.clear();codexThreadReleases.clear();codexSessionApprovals.clear();
     await Promise.all(servers.map(server=>stopAppServer(server)));
   }
   async function releaseCodexThreadServer(threadId){
     const id=String(threadId||"").trim();if(!id)return;
     if(codexThreadReleases.has(id))return codexThreadReleases.get(id);
+    codexSessionApprovals.end(id);
     const releasing=(async()=>{
       const key=codexThreadServerKeys.get(id);codexThreadServerKeys.delete(id);if(!key)return;
       const server=codexAppServers.get(key);codexAppServers.delete(key);codexAppServerStarts.delete(key);
@@ -1469,10 +1474,13 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       return {handled:true,result:{contentItems:[{type:"inputText",text:error?.message||String(error)}],success:false}};
     }
   }
+  // The allowance ("Allow session") each approval the window is asked was read from as it came, by the request's params, until the
+  // window answers it (onServerRequestAnswered).
+  const codexApprovalAllowances=new WeakMap();
   function resolveCodexServerApproval(message){
-    const params=message?.params||{},threadId=params.threadId?String(params.threadId):null,meta=threadId?state.threadMeta(threadId):{};
+    const params=message?.params||{},threadId=approvalThreadId(params)||null,meta=threadId?state.threadMeta(threadId):{},profile=meta?.permissionProfile||"supervised";
     const resolved=resolveCodexApprovalByPolicy(message,{
-      profile:meta?.permissionProfile||"supervised",workspace:meta?.cwd||null,
+      profile,workspace:meta?.cwd||null,
       rules:Array.isArray(state.settings().policyRules)?state.settings().policyRules:[],
       provenance:params?._meta?.provenance||params.provenance||"unknown",
     });
@@ -1485,7 +1493,16 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     };
     eventJournal.record({...base,name:"permission.requested",status:"pending",data:{method:message.method,action:action.action,kind:action.kind}});
     eventJournal.record({...base,name:"policy.decision",status:resolved.policy.decision.toLowerCase(),data});
-    if(!resolved.handled)return null;
+    if(!resolved.handled){
+      // A request the person would be asked: one of a kind "Allow session" allowed in this thread and mode is answered for them.
+      const kind=sessionApprovalKind(message.method,params),allowance=kind&&threadId?codexSessionApprovals.allowance(threadId,profile):null;
+      if(allowance?.has(kind)){
+        eventJournal.record({...base,name:"permission.resolved",status:"accept",data:{method:message.method,policyDecision:resolved.policy.decision,sessionAllowed:true}});
+        return {handled:true,result:sessionApprovalResult(message.method)};
+      }
+      if(allowance&&message.params&&typeof message.params==="object")codexApprovalAllowances.set(message.params,{kind,allowance});
+      return null;
+    }
     eventJournal.record({...base,name:"permission.resolved",status:resolved.policy.decision==="ALLOW"?"accept":"decline",data:{method:message.method,policyDecision:resolved.policy.decision}});
     return {handled:true,result:resolved.result};
   }
@@ -1538,7 +1555,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     for(const [threadId,key] of codexThreadServerKeys){
       if(key!==server.poolKey)continue;
       codexAppServerExits.delete(threadId);codexAppServerExits.set(threadId,{id:randomUUID(),code:Number.isInteger(code)?code:null,signal:signal||null,at,turnRunning:codexRunningTurns.has(threadId)});
-      noteCodexTurnEnded(threadId);
+      noteCodexTurnEnded(threadId);codexSessionApprovals.end(threadId);
     }
     while(codexAppServerExits.size>200)codexAppServerExits.delete(codexAppServerExits.keys().next().value);
   }
@@ -3288,6 +3305,12 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     targetLive:({key,url})=>codexAppServers.get(key)?.targetUrl===url,
     transformClientMessage:message=>transformCodexClientMessage(message),
     handleServerRequest:async message=>resolveCodexServerRequest(message),
+    // The person's "Allow session" allows the request's kind in its thread and mode from here (codex-session-approvals.mjs).
+    onServerRequestAnswered:(message,{method,params})=>{
+      const pending=params&&typeof params==="object"?codexApprovalAllowances.get(params):null;if(!pending)return;
+      codexApprovalAllowances.delete(params);
+      if(!message?.error&&allowsSession(method,message?.result))pending.allowance.add(pending.kind);
+    },
     handleRequest:async (message,{requestUpstream})=>{
       const params=message.params||{},threadId=params.threadId?String(params.threadId):"";
       if(message.method==="thread/goal/get")return {handled:true,result:{goal:threadId?await readCodexGoal(threadId,requestUpstream):null}};
@@ -3368,15 +3391,18 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         const threadId=message.params?.threadId,model=message.params?.model;
         if(threadId){
           const permissionPatch=codexPermissionProfilePatch(message.params||{});
-          if(Object.keys(permissionPatch).length)state.updateThreadMeta(threadId,permissionPatch);
+          if(Object.keys(permissionPatch).length){state.updateThreadMeta(threadId,permissionPatch);codexSessionApprovals.turnStarted(threadId,permissionPatch.permissionProfile)}
           if(model)codexThreadModels.set(threadId,model);
         }
       }
+      // A thread the window lets go unloads (T3 unloadThread): what "Allow session" allowed in it goes.
+      if(message?.method==="thread/unsubscribe"&&message.params?.threadId)codexSessionApprovals.end(message.params.threadId);
     },
     onServerMessage:(message,route)=>{
       const params=message?.params||{};
       recordCodexBudgetEvidence(state,message);
       recordCodexRecoveryItemEvidence(state,message);
+      if(params.threadId&&["thread/closed","thread/archived","thread/deleted"].includes(message?.method))codexSessionApprovals.end(params.threadId);
       const traceMethod=message?.method||route?.requestMethod||"";
       if(traceMethod&&!NOISY_METHOD.test(traceMethod)){
         const traceThreadId=params.threadId||params.thread?.id||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;

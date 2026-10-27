@@ -30,6 +30,9 @@ export function attachCodexRelay(httpServer, {
   // Synchronous (message, {targetKey, targetUrl, requestUpstream}) => message: rewrites a Codex notification before the
   // renderer gets it, so notifications keep their order.
   transformServerMessage = null,
+  // (message, {method, params, targetKey}) => void: the renderer's answer to a Codex request, as it goes back to Codex. params are
+  // the request's, the object handleServerRequest got.
+  onServerRequestAnswered = () => {},
   // Synchronous (message, {requestMethod, requestParams, targetKey}) => message: rewrites the answer to a request the renderer sent
   // before the renderer gets it.
   transformServerResponse = null,
@@ -163,7 +166,7 @@ export function attachCodexRelay(httpServer, {
               }catch(error){log("Codex server-request hook failed; using renderer confirmation: "+error.message)}
             }
             const relayId=`trebell-server-${context.nextServerRequestId++}`;
-            context.serverRequestRoutes.set(relayId,{record,originalId:message.id});
+            context.serverRequestRoutes.set(relayId,{record,originalId:message.id,method:message.method,params:message.params});
             sendBrowser({...message,id:relayId});return;
           }
           if(message?.method==="serverRequest/resolved"&&message.params&&Object.prototype.hasOwnProperty.call(message.params,"requestId")){
@@ -224,7 +227,11 @@ export function attachCodexRelay(httpServer, {
         if(isBinary){const record=await ensureUpstream(await baseTarget());record.socket.send(raw,{binary:true});return}
         if(message&&Object.prototype.hasOwnProperty.call(message,"id")&&!message.method){
           const routed=context.serverRequestRoutes.get(message.id);
-          if(routed){context.serverRequestRoutes.delete(message.id);const restored={...message,id:routed.originalId};routed.record.socket.send(JSON.stringify(restored));return}
+          if(routed){
+            context.serverRequestRoutes.delete(message.id);const restored={...message,id:routed.originalId};
+            try{onServerRequestAnswered(restored,{method:routed.method,params:routed.params,targetKey:routed.record.key})}catch(error){log("Codex request answer hook failed: "+error.message)}
+            routed.record.socket.send(JSON.stringify(restored));return;
+          }
         }
         if(message?.method&&transformClientMessage){
           const transformed=await transformClientMessage(message,{request,primaryKey:context.primaryKey,resolveTarget:routeFor});
