@@ -88,6 +88,9 @@ const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Swit
 // reuses the last read of the same binary and version, and makes one only when there is none.
 const OPENCODE_CATALOG_REUSE_MS=10_000;
 const OPENCODE_STATUS_TIMEOUT_MS=20_000;
+// How long after it began Settings' harness list waits for a newest-release read still on its way (T3 publishes the list first and
+// the release after it): a registry or an npm that does not answer never holds the list back.
+const RELEASE_WAIT_MS=1500;
 
 const RUNTIME_COMPATIBILITY=Object.freeze({
   opencode:Object.freeze({
@@ -737,10 +740,10 @@ export class AgentRuntimeManager{
   }
   // What Settings says of a newer Muse Code release (T3 enrichMuseSnapshot), as #updateAdvisory says it of the others: the newest
   // release of the profile's channel beside the version it runs, an update that Meta's launcher runs, or how to update one it does not.
-  async #museUpdateAdvisory(instance,status,{wait=false}={}){
+  async #museUpdateAdvisory(instance,status,{until=null}={}){
     if(!status?.installed||this.processSpawner(instance))return null;
     const current=parseMuseVersion(status.version),env=this.childEnv(instance),channel=museChannel(env);
-    const latest=current?await this.#latestRelease(museChannelUrl(channel),{wait,read:()=>latestMuseRelease(this.fetchImpl,channel)}):null;
+    const latest=current?await this.#latestRelease(museChannelUrl(channel),{wait:Boolean(until),until,read:()=>latestMuseRelease(this.fetchImpl,channel)}):null;
     const newer=Boolean(latest&&compareMuseVersions(current,latest)<0),launcher=this.#museLauncher(instance);
     const advisory={current,latest,newer,canUpdate:false,command:null,binary:launcher.real,message:null};
     if(!current)return advisory;
@@ -764,35 +767,60 @@ export class AgentRuntimeManager{
     return {...harnessInstallOwner(instance.kind,{paths:{found,binary,real},packageName:npmPackageFor(instance.kind,version),command:RUNTIMES[instance.kind].command,platform:this.platform,env:this.env,codexHome,grokHome}),binary,real};
   }
   #releases=new Map();
-  // The newest release npm's registry names for a package (T3 fetchNpmLatestVersion), or the one read gives (Muse Code's channel,
-  // kept by its URL), kept an hour once read and a minute when it could not be read (T3 ProviderLatestVersions); reads at once share
-  // one. wait:false answers from what is kept and reads nothing.
-  async #latestRelease(packageName,{wait=true,fresh=false,read=()=>registryRelease(this.fetchImpl,packageName)}={}){
-    const kept=this.#releases.get(packageName);
-    if(!fresh&&kept?.pending)return wait?await kept.pending:kept.version;
+  // The newest release kept under key: npm's registry's for a package (T3 fetchNpmLatestVersion), or the one read gives (npm's own
+  // answer, Muse Code's channel, kept by its URL), kept an hour once read and a minute when it could not be read (T3
+  // ProviderLatestVersions); reads at once share one. wait:false answers from what is kept and reads nothing; until, a promise, ends
+  // the wait for a read on its way when it settles first, answering what was kept before while the read goes on for the next answer.
+  async #latestRelease(key,{wait=true,fresh=false,until=null,read=()=>registryRelease(this.fetchImpl,key)}={}){
+    const kept=this.#releases.get(key),waited=entry=>until?Promise.race([entry.pending,until.then(()=>entry.version)]):entry.pending;
+    if(!fresh&&kept?.pending)return wait?await waited(kept):kept.version;
     if(!fresh&&kept&&this.now()<kept.until)return kept.version;
     if(!wait)return kept?.version??null;
-    const entry={pending:read(),version:kept?.version??null};this.#releases.set(packageName,entry);
-    const version=await entry.pending;
-    if(this.#releases.get(packageName)===entry)this.#releases.set(packageName,{version,until:this.now()+(version?3_600_000:60_000)});
-    return version;
+    const entry={version:kept?.version??null};
+    entry.pending=Promise.resolve().then(read).catch(()=>null).then(version=>{if(this.#releases.get(key)===entry)this.#releases.set(key,{version,until:this.now()+(version?3_600_000:60_000)});return version});
+    this.#releases.set(key,entry);
+    return await waited(entry);
   }
-  // What Settings says of a newer release of the harness a profile runs (T3's version advisory): {current, latest (null when npm's
-  // registry could not be read), newer, canUpdate (Trebell runs the update: command, what it runs), binary (the file the profile
-  // runs), message (how the person updates one Trebell does not), command}. Only a harness Trebell updates has one, when it is there;
-  // an OpenCode on a server of its own has the one of this machine's opencode, whose version its row shows and its Update installs.
-  // wait reads the registry when its last answer is gone (Settings' own listing).
-  async #updateAdvisory(instance,status,{wait=false}={}){
-    if(instance?.kind==="muse")return this.#museUpdateAdvisory(instance,status,{wait});
+  // How a profile's newest release is read and the key it is kept under: npm's own answer for an install npm updates on this machine
+  // (`npm view`, through the person's npm registry and proxy, as its update reads it; OpenCode 2.x's below 3.0.0), and npm's registry
+  // for a harness's own updater (T3) and for a host's harness. owner: the profile's (#installOwner), when it is known.
+  #releaseRead(instance,version,owner=null){
+    const packageName=npmPackageFor(instance.kind,version);if(!packageName)return null;
+    if(this.processSpawner(instance)||(owner||this.#installOwner(instance,version)).method!=="npm")return {key:packageName,read:()=>registryRelease(this.fetchImpl,packageName)};
+    const range=packageName==="@opencode/cli"?">=2.0.0 <3.0.0":null;
+    return {key:`npm view ${range?packageName+"@"+range:packageName}`,read:()=>this.#npmRelease(packageName,{range})};
+  }
+  // Settings' listing starts the read of a profile's newest release before its status check when an earlier check in this run read
+  // the version the profile runs here (which also names an OpenCode's package, by its line); any other starts after its check.
+  #startReleaseRead(instance){
+    try{
+      if(this.processSpawner(instance))return;
+      const checked=this.#versions.get(instance.id)?.result,said=[checked?.stdout,checked?.stderr].filter(Boolean).join("\n"),started={until:Promise.resolve()};
+      if(instance.kind==="muse"){
+        if(!parseMuseVersion(said))return;
+        const channel=museChannel(this.childEnv(instance));return void this.#latestRelease(museChannelUrl(channel),{...started,read:()=>latestMuseRelease(this.fetchImpl,channel)});
+      }
+      const version=UPDATABLE.has(instance.kind)?parsedSemver(said)?.raw:null,release=version?this.#releaseRead(instance,version):null;
+      if(release)void this.#latestRelease(release.key,{...started,read:release.read});
+    }catch{}
+  }
+  // What Settings says of a newer release of the harness a profile runs (T3's version advisory): {current, latest (null when it could
+  // not be read), newer, canUpdate (Trebell runs the update: command, what it runs), binary (the file the profile runs), message (how
+  // the person updates one Trebell does not), command}. Only a harness Trebell updates has one, when it is there; an OpenCode on a
+  // server of its own has the one of this machine's opencode, whose version its row shows and its Update installs. until (Settings'
+  // own listing): the newest release is read when its last answer is gone, and waited for until until settles.
+  async #updateAdvisory(instance,status,{until=null}={}){
+    if(instance?.kind==="muse")return this.#museUpdateAdvisory(instance,status,{until});
     if(!UPDATABLE.has(instance?.kind)||!status?.installed)return null;
     // A version its --version check did not give (Codex's from its account read) is no version an update could start from: the
     // update's own check would not answer either.
     const def=RUNTIMES[instance.kind],remote=Boolean(this.processSpawner(instance)),current=status.versionCheckFailed?null:parsedSemver(status.version)?.raw||null;
     if(remote&&instance.kind==="grok")return null;
-    const packageName=npmPackageFor(instance.kind,current),line=parsedSemver(current)?.major,found=current?await this.#latestRelease(packageName,{wait}):null;
+    const packageName=npmPackageFor(instance.kind,current),line=parsedSemver(current)?.major;
+    const owner=remote?{method:"npm",prefix:null,binary:null,real:null}:this.#installOwner(instance,current);
+    const release=current?this.#releaseRead(instance,current,owner):null,found=release?await this.#latestRelease(release.key,{wait:Boolean(until),until,read:release.read}):null;
     // An OpenCode's newest release counts within its own line.
     const latest=found&&(instance.kind!=="opencode"||parsedSemver(found)?.major===line)?found:null,newer=Boolean(latest&&compareSemver(parsedSemver(current),parsedSemver(latest))<0);
-    const owner=remote?{method:"npm",prefix:null,binary:null,real:null}:this.#installOwner(instance,current);
     const advisory={current,latest,newer,canUpdate:false,command:null,binary:owner.real,message:null};
     if(!current)return advisory;
     if(remote&&instance.kind==="opencode"&&line===2)return {...advisory,message:newer?`OpenCode ${latest} is available. Update this 2.x install with \`opencode upgrade\` or the package manager that installed it.`:null};
@@ -1269,12 +1297,15 @@ export class AgentRuntimeManager{
   // refresh (Settings' own listing) also reads Muse Code's model lists again, which the mutations' listings reuse.
   async snapshot({fresh=true,refresh=false}={}){
     if(refresh)this.#museCatalogDue();
-    // Each status of a harness Trebell updates says whether a newer release is out and how it is updated (update): Settings' own
-    // listing reads npm's registry when its last answer is gone, and the other listings use the last one.
-    const instances=this.instances();const statuses=await Promise.all(instances.map(async instance=>{
-      const status=await this.probe(instance,{fresh}),update=await this.#updateAdvisory(instance,status,{wait:refresh}).catch(()=>null);
+    // Each status of a harness Trebell updates says whether a newer release is out and how it is updated (update). Settings' own
+    // listing reads each newest release whose last answer is gone beside the status checks, and waits for one only until
+    // RELEASE_WAIT_MS after it began: one that answers later is the next listing's. The other listings use the last answers.
+    let timer=null;const until=refresh?new Promise(resolve=>{timer=setTimeout(resolve,RELEASE_WAIT_MS)}):null;
+    const instances=this.instances();if(refresh)for(const instance of instances)this.#startReleaseRead(instance);
+    const statuses=await Promise.all(instances.map(async instance=>{
+      const status=await this.probe(instance,{fresh}),update=await this.#updateAdvisory(instance,status,{until}).catch(()=>null);
       return update?{...status,update}:status;
-    }));
+    })).finally(()=>clearTimeout(timer));
     const publicInstances=instances.map(instance=>{
       const {environment,...safe}=instance;
       return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys)};

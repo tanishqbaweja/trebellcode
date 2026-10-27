@@ -92,7 +92,7 @@ async function tempRoot(t,name){
 // A machine of the test's own under root: its home, %APPDATA% and %LOCALAPPDATA%, a PATH of path, a stand-in npm registry naming
 // latest[package], and answer(command,args,options) giving every launch's answer (calls lists them). Every harness not answered for
 // is not there.
-function machine(root,{instances=[],answer,latest={},path="",extraEnv={}}){
+function machine(root,{instances=[],answer,latest={},path="",extraEnv={},fetchImpl:registry=null}){
   const env={USERPROFILE:join(root,"home"),HOME:join(root,"home"),APPDATA:join(root,"AppData","Roaming"),LOCALAPPDATA:join(root,"AppData","Local"),ProgramFiles:join(root,"Program Files"),PATH:path,PATHEXT:".COM;.EXE;.BAT;.CMD",SystemRoot:process.env.SystemRoot,COMSPEC:process.env.COMSPEC,TEMP:root,TMP:root,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"home",".codex"),...extraEnv};
   const calls=[],fetched=[],settings={agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeInstances:instances};
   const state={settings:()=>({...settings}),updateSettings:patch=>Object.assign(settings,patch)};
@@ -101,7 +101,7 @@ function machine(root,{instances=[],answer,latest={},path="",extraEnv={}}){
     fetched.push(String(url));const name=decodeURIComponent(String(url).split("/").slice(3,-1).join("/"));
     return name in latest?new Response(JSON.stringify({name,version:latest[name]}),{status:200,headers:{"content-type":"application/json"}}):new Response("{}",{status:404});
   };
-  return {manager:new AgentRuntimeManager({state,env,platform:"win32",runFn,fetchImpl}),calls,fetched,env,latest};
+  return {manager:new AgentRuntimeManager({state,env,platform:"win32",runFn,fetchImpl:registry||fetchImpl}),calls,fetched,env,latest};
 }
 const statusOf=(list,kind)=>list.statuses.find(item=>item.kind===kind);
 const npmCalls=calls=>calls.filter(call=>call.command==="npm").map(call=>call.args.join(" "));
@@ -124,15 +124,17 @@ test("Update on npm's global Claude Code installs into the prefix holding the bi
     return answered(JSON.stringify({loggedIn:true,authMethod:"claude.ai",apiProvider:"firstParty"}));
   }});
   const realPrefix=realpathSync.native(prefix),real=realpathSync.native(binary);
-  // The listings that answer a switch or a save read no registry: until Settings' own listing has, no newer release is known.
+  // The listings that answer a switch or a save read no newest release: until Settings' own listing has, no newer release is known.
   assert.deepEqual(statusOf(await fx.manager.snapshot(),"claude").update?.latest,null);
-  assert.deepEqual(fx.fetched,[]);
+  assert.deepEqual([fx.fetched,npmCalls(fx.calls)],[[],[]]);
   const update=statusOf(await fx.manager.snapshot({refresh:true}),"claude").update;
   const command=shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=@anthropic-ai/claude-code","@anthropic-ai/claude-code@2.1.320"],"win32");
   assert.deepEqual(update,{current:"2.1.300",latest:"2.1.320",newer:true,canUpdate:true,command,binary:real,message:null});
-  assert.deepEqual(fx.fetched,["https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/latest"],"the registry is read for the one harness there");
+  // npm itself names the newest release of an install it updates, as that update will (through the person's npm registry and proxy),
+  // so nothing reads npm's public registry for it.
+  assert.deepEqual([fx.fetched,npmCalls(fx.calls)],[[],["view @anthropic-ai/claude-code version --json"]]);
   const installed=await fx.manager.install("claude");
-  assert.deepEqual(npmCalls(fx.calls),["--version","view @anthropic-ai/claude-code version --json",`install -g --prefix ${realPrefix} --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.320`]);
+  assert.deepEqual(npmCalls(fx.calls),["view @anthropic-ai/claude-code version --json","--version","view @anthropic-ai/claude-code version --json",`install -g --prefix ${realPrefix} --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.320`]);
   assert.deepEqual([installed.method,installed.packageName,installed.targetVersion,installed.status.version],["npm","@anthropic-ai/claude-code","2.1.320","2.1.320 (Claude Code)"]);
   // Now the newest: no Update, and pressing it from an older page installs nothing.
   const current=statusOf(await fx.manager.snapshot(),"claude").update;
@@ -266,6 +268,25 @@ test("an OpenCode 2.x from npm updates @opencode/cli in its own prefix to the ne
   own.latest["@opencode/cli"]="3.0.0";
   await assert.rejects(()=>own.manager.installPlan("opencode"),/^Error: This OpenCode version is outside Trebell Code's supported range\./);
   assert.deepEqual(npmCalls(own.calls),[]);
+});
+
+// Settings' own harness list reads each harness's newest release beside its status check, and never waits long on a registry that
+// does not answer (packets dropped): it answers about when the checks do, and the release, once read, is the next listing's.
+test("Settings' harness list does not wait on a registry that does not answer, and its next listing has the release once it is read",WINDOWS_ONLY,async t=>{
+  const root=await tempRoot(t,"slow-registry"),binary=await file(join(root,"home",".local","bin","claude.exe")),asked=[];
+  // A registry whose answer comes only when the test gives it, and that gives up as fetch does when the request's time runs out.
+  const fetchImpl=(url,{signal}={})=>new Promise((resolve,reject)=>{asked.push({url:String(url),resolve});signal?.addEventListener("abort",()=>reject(signal.reason||new Error("aborted")))});
+  const fx=machine(root,{fetchImpl,answer:(command,args)=>command!==binary?missing(command):args[0]==="--version"?answered("2.1.300 (Claude Code)\n"):answered(JSON.stringify({loggedIn:true}))});
+  const started=Date.now(),first=statusOf(await fx.manager.snapshot({refresh:true}),"claude"),took=Date.now()-started;
+  assert.ok(took<3000,`the list answered in ${took} ms, not after the registry's 4 s`);
+  assert.deepEqual([first.version,first.update.current,first.update.latest,first.update.newer],["2.1.300 (Claude Code)","2.1.300",null,false],"no release known yet, so no Update");
+  assert.deepEqual(asked.map(item=>item.url),["https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/latest"],"read once, beside the check");
+  // The registry answers later: the next listing has the release, and reads it no more.
+  asked[0].resolve(new Response(JSON.stringify({version:"2.1.320"}),{status:200,headers:{"content-type":"application/json"}}));
+  for(let round=0;round<50;round++)await new Promise(resolve=>setImmediate(resolve));
+  const next=statusOf(await fx.manager.snapshot({refresh:true}),"claude").update;
+  assert.deepEqual([next.latest,next.newer,next.canUpdate,next.command],["2.1.320",true,true,shownCommand(binary,["update"],"win32")]);
+  assert.equal(asked.length,1);
 });
 
 // An OpenCode profile on a server of its own still runs this machine's opencode, whose version its row shows and its Update installs:
