@@ -59,3 +59,37 @@ test("Claude Code's requests in Full access reach the person with Claude's reaso
     await expect(card).toHaveCount(0);expect(decisions).toEqual(["allow","deny"]);
   }finally{await harness.close()}
 });
+
+// In Plan mode Claude Code asks before what Plan mode holds back, whatever the profile: a Full access thread's card says Plan mode
+// asks, not that Claude Code overruled Full access.
+test("a Claude Code request in Plan mode says Plan mode asks, also in a Full access thread",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const asked=[];
+  const harness=await startClaudeRelay({turn:async({message,options,emit,signal})=>{
+    asked.push(options.permissionMode);
+    const decision=await options.canUseTool("Edit",{file_path:harness.repo+"/src/helper.js",old_string:"oldName",new_string:"newName"},{toolUseID:"edit-plan",signal,suggestions:[]});
+    for(const frame of claudeReply(message,decision.behavior==="allow"?"Renamed the helper.":"Left the helper as it was."))emit(frame);
+  }});
+  try{
+    harness.seedThread("Helper rename");
+    await routeClaudeApp(page,harness,{permissionMode:"full"});
+    await page.goto("/");await openThread(page,"Helper rename");
+    await expect(page.locator("select.permission-picker:not(.collaboration-mode-picker)")).toHaveValue("full");
+    await page.getByTestId("collaboration-mode-picker").selectOption("plan");
+    await expect(page.getByTestId("collaboration-mode-picker")).toHaveValue("plan");
+    const card=page.locator(".inline-approval .approval-card");
+
+    await send(page,"Rename the old helper");
+    await expect(card).toBeVisible({timeout:15_000});
+    expect(asked,"Claude Code runs in Plan mode").toEqual(["plan"]);
+    await expect(card.locator("p:not(.approval-thread)")).toHaveText(`Claude Code asks in Plan mode: Edit: ${harness.repo}/src/helper.js`);
+    for(const mode of ["dark","light"]){
+      if(mode==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      await page.screenshot({animations:"disabled",path:`${auditDir}claude-plan-mode-ask-card-${mode}-1280x800.png`});
+    }
+    await card.getByRole("button",{name:"Deny",exact:true}).click();
+    await expect(page.getByText("Left the helper as it was.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(card).toHaveCount(0);
+  }finally{await harness.close()}
+});

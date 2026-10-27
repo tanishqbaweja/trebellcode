@@ -174,11 +174,14 @@ export function claudePermissionPrompt(toolName,input,options={}){
 }
 // Every request Claude Code forwards in Full access is one it does not approve itself: an ask rule, its own safety checks (an rm of a
 // critical path, a read outside the folder), or, once an administrator turned bypass off, any request of the lower mode it runs in.
-// The card says so, and names the person's ask rule when one matched.
-function claudeAskLead({fullAccess,rule}){
+// The card says so, and names the person's ask rule when one matched. In Plan mode (the composer's, or one Claude switched itself to)
+// Claude Code asks for what Plan mode holds back, whatever the profile, so that is what the card says (T3 Code notes Full access only
+// when the query runs in bypassPermissions).
+function claudeAskLead({fullAccess,planMode,rule}){
   const ruleText=plainText(permissionRuleText(rule)||"");
-  if(fullAccess)return ruleText?`Claude Code asks even in Full access, as its ask rule ${ruleText} says`:"Claude Code asks even in Full access";
-  return ruleText?`Claude Code asks, as its ask rule ${ruleText} says`:null;
+  if(ruleText)return fullAccess&&!planMode?`Claude Code asks even in Full access, as its ask rule ${ruleText} says`:`Claude Code asks, as its ask rule ${ruleText} says`;
+  if(planMode)return "Claude Code asks in Plan mode";
+  return fullAccess?"Claude Code asks even in Full access":null;
 }
 // A request Claude Code wants decided once (a standing grant would allow more than it asks, or no stray key may approve it) offers
 // no session choice: the card's own buttons, as the default card words them.
@@ -859,7 +862,7 @@ export class ClaudeAgentSession{
       ...(once?[]:[{optionId:"allow_always",name:"Allow for this session",kind:"allow_always"}]),
       {optionId:"reject_once",name:"Reject",kind:"reject_once"},
     ];
-    const prompt=claudePermissionPrompt(toolName,input,options),lead=claudeAskLead({fullAccess,rule});
+    const prompt=claudePermissionPrompt(toolName,input,options),lead=claudeAskLead({fullAccess,planMode:this.collaborationMode==="plan"||this.live?.permissionMode==="plan",rule});
     let decision="decline";
     try{
       decision=await untilAborted(this.onPermission?.({

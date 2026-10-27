@@ -45,9 +45,18 @@ test("Plan mode asks before a write in Full access and in Auto, and an ask rule 
     const decision=await canUse("Edit",{file_path:"/repo/a.js",old_string:"a",new_string:"b"},{toolUseID:"edit-1",suggestions:[]});
     assert.equal(decision.behavior,"allow");
     assert.equal(requests.length,1,`Plan mode in ${permissionMode} asks before the edit`);assert.equal(requests[0].askUser,true);
-    assert.equal(requests[0].params.prompt,(permissionMode==="full"?"Claude Code asks even in Full access: ":"")+"Edit: /repo/a.js");
+    // Plan mode asks, whatever the profile: the card says so, not that Full access was overruled.
+    assert.equal(requests[0].params.prompt,"Claude Code asks in Plan mode: Edit: /repo/a.js");
     await session.close();
   }
+  // Claude can switch itself to Plan (EnterPlanMode): a Full access process it left there asks for Plan mode too.
+  const {sdk:planning,calls:planned}=scriptedClaudeSdk({turn:({message,emit})=>{emit({type:"system",subtype:"status",status:null,permissionMode:"plan"});emit(claudeResult(message))}});
+  const asked=[],full=new ClaudeAgentSession({cwd:"/repo",sdk:planning,permissionMode:"full",onUpdate:()=>{},onPermission:async request=>{asked.push(request);return "accept"}});
+  await full.start();await full.prompt([{type:"text",text:"Look first"}]);
+  assert.equal(full.live.permissionMode,"plan");
+  await planned.at(-1).options.canUseTool("Write",{file_path:"/repo/b.js",content:"x"},{toolUseID:"write-1",suggestions:[]});
+  assert.equal(asked[0].params.prompt,"Claude Code asks in Plan mode: Write: /repo/b.js");
+  await full.close();
   const {session,requests,canUse}=await claudeSession({permissionMode:"auto"});
   const pushed=await canUse("Bash",{command:"git push origin main"},{toolUseID:"push-1",matchedAskRule:GIT_PUSH_RULE,suggestions:[]});
   assert.equal(pushed.behavior,"allow");
