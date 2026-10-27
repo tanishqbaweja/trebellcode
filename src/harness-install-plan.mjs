@@ -116,13 +116,17 @@ export function manualUpdateRefusal({name,binary,by=null,command=null}){
   return by?`Trebell Code does not update the ${name} at ${binary}, ${installedBy(by,command)}. Nothing was installed.`
     :`Trebell Code updates ${/^[aeiou]/i.test(name)?"an":"a"} ${name} installed by npm or by ${name}'s own installer, and cannot tell what installed ${binary}: update it the way you installed it. Nothing was installed.`;
 }
-// The newest release npm's registry names for packageName (T3 fetchNpmLatestVersion: 4 s), or null when it could not be read.
-export async function registryRelease(fetchImpl,packageName,{timeoutMs=4000}={}){
+// The newest release npm's registry names for packageName (T3 fetchNpmLatestVersion: 4 s), or null when it could not be read. line:
+// the newest of that major (an OpenCode updates only within its own): its latest when that is of the line, else the newest stable one
+// of the line that the package's document lists, which is read only then (it lists every release: some MB).
+export async function registryRelease(fetchImpl,packageName,{timeoutMs=4000,line=null}={}){
+  const read=async(path,accept,ms)=>{const response=await fetchImpl(`https://registry.npmjs.org/${encodeURIComponent(packageName)}${path}`,{headers:{accept},signal:AbortSignal.timeout(ms)});return response?.ok?await response.json():null};
   try{
-    const response=await fetchImpl(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`,{headers:{accept:"application/json"},signal:AbortSignal.timeout(timeoutMs)});
-    if(!response?.ok)return null;
-    const body=await response.json(),version=typeof body?.version==="string"?body.version.trim():"";
-    return SEMVER.test(version)?version.replace(/^v/,""):null;
+    const body=await read("/latest","application/json",timeoutMs),version=typeof body?.version==="string"?body.version.trim():"";
+    const latest=SEMVER.test(version)?version.replace(/^v/,""):null;
+    if(!latest||line==null||Number(SEMVER.exec(latest)[1])===line)return latest;
+    const document=await read("","application/vnd.npm.install-v1+json",Math.max(timeoutMs,15_000));
+    return newestListed(JSON.stringify(Object.keys(document?.versions||{}).filter(item=>Number(SEMVER.exec(item)?.[1])===line)));
   }catch{return null}
 }
 // The newest of the versions `npm view <package>@<range> version --json` prints: one string, or a list when several match.

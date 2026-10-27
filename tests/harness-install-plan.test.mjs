@@ -265,9 +265,22 @@ test("an OpenCode 2.x from npm updates @opencode/cli in its own prefix to the ne
   const own=machine(root,{instances:[{id:"opencode-default",kind:"opencode",binaryPath:native,environment:{}}],latest:{"@opencode/cli":"2.2.0"},answer:command=>command===native?answered("2.0.24\n"):missing(command)});
   const upgrade=await own.manager.installPlan("opencode");
   assert.deepEqual([upgrade.method,upgrade.command,upgrade.args,upgrade.targetVersion],["native",native,["upgrade","2.2.0"],"2.2.0"]);
-  own.latest["@opencode/cli"]="3.0.0";
-  await assert.rejects(()=>own.manager.installPlan("opencode"),/^Error: This OpenCode version is outside Trebell Code's supported range\./);
   assert.deepEqual(npmCalls(own.calls),[]);
+  // Once 3.0.0 is npm's latest, the newest 2.x is still what it updates to, as npm's own range does for one from npm: the package's
+  // document lists every release, and is read only then.
+  const asked=[],releases=["2.0.24","2.2.0","2.3.1","3.0.0","0.0.0-dev-96"];
+  const registry=async url=>{
+    asked.push(String(url));
+    if(String(url).endsWith("/latest"))return Response.json({name:"@opencode/cli",version:"3.0.0"});
+    return Response.json({name:"@opencode/cli","dist-tags":{latest:"3.0.0"},versions:Object.fromEntries(releases.map(version=>[version,{version}]))});
+  };
+  const later=machine(root,{instances:[{id:"opencode-default",kind:"opencode",binaryPath:native,environment:{}}],fetchImpl:registry,answer:command=>command===native?answered("2.0.24\n"):missing(command)});
+  const second=await later.manager.installPlan("opencode");
+  assert.deepEqual([second.method,second.args,second.targetVersion],["native",["upgrade","2.3.1"],"2.3.1"]);
+  assert.deepEqual(asked,["https://registry.npmjs.org/%40opencode%2Fcli/latest","https://registry.npmjs.org/%40opencode%2Fcli"]);
+  // Settings offers that update too.
+  const offered=statusOf(await later.manager.snapshot({refresh:true}),"opencode").update;
+  assert.deepEqual([offered.current,offered.latest,offered.newer,offered.canUpdate,offered.command],["2.0.24","2.3.1",true,true,shownCommand(native,["upgrade","2.3.1"],"win32")]);
 });
 
 // Settings' own harness list reads each harness's newest release beside its status check, and never waits long on a registry that

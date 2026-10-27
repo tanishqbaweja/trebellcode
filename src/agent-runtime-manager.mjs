@@ -716,7 +716,7 @@ export class AgentRuntimeManager{
     let targetVersion;
     if(owner.method==="npm"){await this.#npmReady(environmentId);targetVersion=await this.#npmRelease(packageName,{environmentId,range:packageName==="@opencode/cli"?">=2.0.0 <3.0.0":null})}
     else{
-      targetVersion=await this.#latestRelease(packageName,{fresh:true});
+      const release=this.#registryRead(runtime,packageName,line);targetVersion=await this.#latestRelease(release.key,{fresh:true,read:release.read});
       if(!targetVersion)throw new Error(`Trebell Code could not read the newest ${def.name} release from the npm registry. Nothing was installed.`);
     }
     let compatibility=null;
@@ -802,9 +802,14 @@ export class AgentRuntimeManager{
   // for a harness's own updater (T3) and for a host's harness. owner: the profile's (#installOwner), when it is known.
   #releaseRead(instance,version,owner=null){
     const packageName=npmPackageFor(instance.kind,version);if(!packageName)return null;
-    if(this.processSpawner(instance)||(owner||this.#installOwner(instance,version)).method!=="npm")return {key:packageName,read:()=>registryRelease(this.fetchImpl,packageName)};
+    if(this.processSpawner(instance)||(owner||this.#installOwner(instance,version)).method!=="npm")return this.#registryRead(instance.kind,packageName,parsedSemver(version)?.major);
     const range=packageName==="@opencode/cli"?">=2.0.0 <3.0.0":null;
     return {key:`npm view ${range?packageName+"@"+range:packageName}`,read:()=>this.#npmRelease(packageName,{range})};
+  }
+  // npm's registry's read of a package's newest release, an OpenCode's within the line it runs (registryRelease), and its key.
+  #registryRead(kind,packageName,line){
+    const lined=kind==="opencode"&&line!=null;
+    return {key:lined?`${packageName} ${line}.x`:packageName,read:()=>registryRelease(this.fetchImpl,packageName,lined?{line}:{})};
   }
   // Settings' listing starts the read of a profile's newest release before its status check when an earlier check in this run read
   // the version the profile runs here (which also names an OpenCode's package, by its line); any other starts after its check.
