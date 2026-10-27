@@ -12,6 +12,11 @@ const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent
 
 const MAX_CODEX_SCAN_FILES=240;
 const MAX_CODEX_SCAN_BYTES=1024*1024;
+// Before a rollout counts toward the 240 read, its own session_meta (its first line) says whether Codex ran it for itself: read in
+// 8 KiB pieces, for at most 5,000 rollouts and 64 MiB in all per scan (T3 Code's metadata budget per source).
+const CODEX_META_READ_BYTES=8*1024;
+const MAX_CODEX_CLASSIFIED_FILES=5000;
+const MAX_CODEX_CLASSIFIED_BYTES=64*1024*1024;
 const MAX_CLAUDE_SESSIONS=80;
 const MAX_IMPORTED_TURNS=120;
 const MAX_MESSAGE_CHARS=32_000;
@@ -29,21 +34,49 @@ async function directoryExists(path){
   if(!path)return false;
   try{return (await stat(path)).isDirectory()}catch{return false}
 }
-async function collectJsonl(root,{limit=MAX_CODEX_SCAN_FILES,depth=5}={}){
-  const result=[];
+// The newest .jsonl files under root, up to limit of those accept(path) takes (true; false skips one; null, a spent budget, ends the walk).
+async function collectJsonl(root,{limit=MAX_CODEX_SCAN_FILES,depth=5,accept=null}={}){
+  const result=[];let spent=false;
   async function walk(dir,remainingDepth){
-    if(result.length>=limit||remainingDepth<0)return;
+    if(spent||result.length>=limit||remainingDepth<0)return;
     let entries;try{entries=await readdir(dir,{withFileTypes:true})}catch{return}
     entries.sort((a,b)=>String(b.name).localeCompare(String(a.name)));
     for(const entry of entries){
-      if(result.length>=limit)break;
+      if(spent||result.length>=limit)break;
       const path=join(dir,entry.name);
       if(entry.isDirectory())await walk(path,remainingDepth-1);
-      else if(entry.isFile()&&entry.name.toLowerCase().endsWith(".jsonl"))result.push(path);
+      else if(entry.isFile()&&entry.name.toLowerCase().endsWith(".jsonl")){
+        const taken=accept?await accept(path):true;
+        if(taken===null)spent=true;else if(taken)result.push(path);
+      }
     }
   }
   await walk(root,depth);
   return result;
+}
+// Whether a rollout is one of the person's own sessions, from its first session_meta (codexSubagentSource), read piece by piece up to
+// MAX_CODEX_SCAN_BYTES from the scan's budget: false for Codex's own or a file with no session_meta there, null once the budget is spent.
+async function codexOwnRollout(path,budget){
+  if(budget.files<=0||budget.bytes<=0)return null;
+  budget.files--;
+  let handle;try{handle=await open(path,"r")}catch{return false}
+  try{
+    const decoder=new TextDecoder();let rest="",offset=0;
+    const verdict=line=>{
+      let record;try{record=JSON.parse(line)}catch{return undefined}
+      return record?.type==="session_meta"?!codexSubagentSource(record.payload?.source):undefined;
+    };
+    while(offset<MAX_CODEX_SCAN_BYTES){
+      if(budget.bytes<=0)return null;
+      const size=Math.min(CODEX_META_READ_BYTES,MAX_CODEX_SCAN_BYTES-offset,budget.bytes),buffer=Buffer.alloc(size);
+      const {bytesRead}=await handle.read(buffer,0,size,offset);budget.bytes-=bytesRead;
+      if(!bytesRead)return verdict(rest+decoder.decode())??false;
+      offset+=bytesRead;rest+=decoder.decode(buffer.subarray(0,bytesRead),{stream:true});
+      const lines=rest.split("\n");rest=lines.pop();
+      for(const line of lines){const own=verdict(line.trim());if(own!==undefined)return own}
+    }
+    return false;
+  }finally{await handle.close()}
 }
 async function readPrefix(path,maxBytes=MAX_CODEX_SCAN_BYTES){
   const handle=await open(path,"r");
@@ -111,7 +144,10 @@ export async function scanCodexHistory({env=process.env,sourceHome=null,excludeH
   const sessionsRoot=join(home,"sessions");
   const excluded=new Set([codexHome(env),...excludeHomes].filter(Boolean).map(pathKey));
   if(excluded.has(pathKey(home)))return [];
-  const paths=await collectJsonl(sessionsRoot);
+  // Only the person's own sessions count toward the rollouts read: newer child-agent, review, guardian and compaction sessions,
+  // however many, are passed over first.
+  const budget={files:MAX_CODEX_CLASSIFIED_FILES,bytes:MAX_CODEX_CLASSIFIED_BYTES};
+  const paths=await collectJsonl(sessionsRoot,{accept:path=>codexOwnRollout(path,budget)});
   const candidates=[];
   for(const path of paths){
     if(candidates.length>=maxSessions)break;

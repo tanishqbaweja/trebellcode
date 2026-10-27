@@ -40,6 +40,32 @@ test("Codex history leaves out subagent sessions before they use up the recent-s
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
+// T3 Code's fix is for exactly this: "Newer subagents would exhaust the import budget before any parent". Each rollout's own first
+// session_meta is read before it counts toward the 240 rollouts the scan reads, so newer subagent sessions, more of them than that,
+// use none of it.
+test("Codex history passes over more newer subagent sessions than the rollouts it reads, and lists the person's own after them",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-codex-many-subagents-")),workspace=join(root,"workspace"),home=join(root,"codex-home");
+  try{
+    await mkdir(workspace,{recursive:true});
+    const now=Date.now(),write=async(day,name,records,minutesAgo)=>{
+      const folder=join(home,"sessions","2026","10",day);await mkdir(folder,{recursive:true});
+      const path=join(folder,name);await writeFile(path,rollout(records));const at=new Date(now-minutesAgo*60_000);await utimes(path,at,at);
+    };
+    // 300 subagent sessions on the newest day, each with a long tail of records after its session_meta.
+    const tail=Array.from({length:40},(_,index)=>({type:"response_item",payload:{type:"message",role:"assistant",content:[{type:"output_text",text:"x".repeat(1000)+index}]}}));
+    for(let index=0;index<300;index++)await write("26",`rollout-2026-10-26T12-00-00-${String(index).padStart(3,"0")}.jsonl`,[
+      {timestamp:"2026-10-26T12:00:00Z",type:"session_meta",payload:{id:"subagent-"+index,cwd:workspace,source:SUBAGENT_SOURCES[index%4]}},
+      {type:"event_msg",payload:{type:"user_message",message:"Codex's own work "+index}},...tail,
+    ],index);
+    for(const [index,id] of ["own-a","own-b","own-c"].entries())await write("25",`rollout-2026-10-25T12-00-00-${id}.jsonl`,[
+      {timestamp:"2026-10-25T12:00:00Z",type:"session_meta",payload:{id,cwd:workspace,source:"vscode"}},
+      {type:"event_msg",payload:{type:"user_message",message:"The person's request "+id}},
+    ],400+index);
+    const found=await scanCodexHistory({env:{...process.env,TREBELL_HOME:join(root,"trebell-home")},sourceHome:home,maxSessions:60});
+    assert.deepEqual(found.map(item=>item.providerSessionId),["own-a","own-b","own-c"]);
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
 test("only a subagent or subAgent key in a session's source marks it as Codex's own",()=>{
   const parse=source=>parseCodexHistoryPrefix(rollout([
     {type:"session_meta",payload:{id:"codex-session",cwd:"C:\\repo",source}},

@@ -62,34 +62,45 @@ async function writeCodexHome(root,workspace){
   return home;
 }
 
+// A Codex window on the fixture's relay, its app API answered here, and /api/history-import answered as src/gui-server.mjs answers the
+// scan, over codexHome and without Claude Code's sessions. scans counts the scans answered.
+async function routeCodexWindow(page,{fixture,root,workspace,codexHome}){
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const counts={scans:0};
+  await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:fixture.wsUrl,cwd:workspace,platform:process.platform,version:"codex-history-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
+  // A setting the page saves (the light and dark toggle) holds for its later reads.
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(settings,route.request().postDataJSON()||{});return json(route,settings)});
+  await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+  await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+  await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+  await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+  await page.route(/\/api\/history-import$/,async route=>{
+    if(route.request().method()!=="GET")return json(route,{ok:false,results:[]});
+    counts.scans++;const candidates=await scanLocalAgentHistory({env:{...process.env,TREBELL_HOME:join(root,"trebell-home")},sourceHome:codexHome,includeClaude:false});
+    return json(route,{sessions:candidates.map(candidate=>publicHistoryCandidate(candidate)),codexImportAvailable:true,codexImportUnavailable:null});
+  });
+  return counts;
+}
+// Opens Tools and presses Scan history, as a person does; the Conversation history card.
+async function scanHistory(page){
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");await page.getByRole("button",{name:"Tools",exact:true}).click();
+  const history=page.locator(".capabilities-page .capability-card").filter({has:page.getByText("Conversation history",{exact:true})}).first();
+  await history.getByRole("button",{name:"Scan history",exact:true}).click();
+  return history;
+}
+
 test("Conversation history lists a person's own Codex sessions, named after what was asked, and not the sessions Codex ran for itself",async({page})=>{
   test.setTimeout(45_000);
   const root=await mkdtemp(join(tmpdir(),"trebell-codex-history-")),workspace=join(root,"workspace");await mkdir(workspace,{recursive:true});
   const codexHome=await writeCodexHome(root,workspace),fixture=await startToolsFixture();
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
-  let scans=0;
   try{
-    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:fixture.wsUrl,cwd:workspace,platform:process.platform,version:"codex-history-fixture",activeEnvironmentId:null,activeEnvironment:null}));
-    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
-    // A setting the page saves (the light and dark toggle) holds for its later reads.
-    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(settings,route.request().postDataJSON()||{});return json(route,settings)});
-    await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
-    await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
-    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
-    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
-    // As src/gui-server.mjs answers the scan, over the fixture Codex home and without Claude Code's sessions.
-    await page.route(/\/api\/history-import$/,async route=>{
-      if(route.request().method()!=="GET")return json(route,{ok:false,results:[]});
-      scans++;const candidates=await scanLocalAgentHistory({env:{...process.env,TREBELL_HOME:join(root,"trebell-home")},sourceHome:codexHome,includeClaude:false});
-      return json(route,{sessions:candidates.map(candidate=>publicHistoryCandidate(candidate)),codexImportAvailable:true,codexImportUnavailable:null});
-    });
-    await page.setViewportSize({width:1280,height:800});
-    await page.goto("/");await page.getByRole("button",{name:"Tools",exact:true}).click();
-    const history=page.locator(".capabilities-page .capability-card").filter({has:page.getByText("Conversation history",{exact:true})}).first();
-    await history.getByRole("button",{name:"Scan history",exact:true}).click();
+    const counts=await routeCodexWindow(page,{fixture,root,workspace,codexHome});
+    const history=await scanHistory(page),scans=()=>counts.scans;
     const rows=history.locator(".history-import-list>div");
     await expect(rows.locator("strong")).toHaveText(["Apply the review's fixes in my fork","Fix the flaky checkout test","Add a dark mode toggle to the settings page","Write the release notes for 2.4"]);
-    expect(scans).toBe(1);
+    expect(scans()).toBe(1);
     await expect(history.locator(".capability-card-head em")).toHaveText("4");
     for(const text of ["Investigate the failing checkout test","Review the current changes","Check whether this command is safe to run","Summarize the conversation so far","AGENTS.md","environment_context"])await expect(history,text).not.toContainText(text);
     await expect(rows.first()).toContainText("Codex · "+workspace);
@@ -99,5 +110,38 @@ test("Conversation history lists a person's own Codex sessions, named after what
       await history.scrollIntoViewIfNeeded();
       await page.screenshot({animations:"disabled",path:`${auditDir}codex-history-import-own-sessions-${mode}-1280x800.png`});
     }
+  }finally{await fixture.close();await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+// More sessions Codex ran for itself than the scan reads, all newer than the person's own: the scan reads each one's first
+// session_meta before it counts, so they use none of it, and the person's sessions after them are still listed.
+test("Conversation history still lists a person's Codex sessions behind more newer subagent sessions than the scan reads",async({page})=>{
+  test.setTimeout(90_000);
+  const root=await mkdtemp(join(tmpdir(),"trebell-codex-history-many-")),workspace=join(root,"workspace");await mkdir(workspace,{recursive:true});
+  const home=join(root,"codex-home"),now=Date.now(),fixture=await startToolsFixture();
+  const write=async(day,name,records,minutesAgo)=>{
+    const folder=join(home,"sessions","2026","10",day);await mkdir(folder,{recursive:true});
+    const path=join(folder,name);await writeFile(path,records.map(record=>JSON.stringify(record)).join("\n"));const at=new Date(now-minutesAgo*60_000);await utimes(path,at,at);
+  };
+  const SOURCES=[{subagent:{thread_spawn:{parent_thread_id:"own-1",depth:1}}},{subagent:"review"},{subagent:{other:"guardian"}},{subAgent:"compact"}];
+  try{
+    for(let index=0;index<300;index++)await write("26",`rollout-2026-10-26T12-00-00-sub-${String(index).padStart(3,"0")}.jsonl`,[
+      {timestamp:"2026-10-26T12:00:00Z",type:"session_meta",payload:{id:"sub-"+index,cwd:workspace,source:SOURCES[index%4]}},
+      {type:"event_msg",payload:{type:"user_message",message:"Codex's own work "+index}},
+    ],index);
+    const own=["Migrate the billing tables","Speed up the search index","Fix the login redirect"];
+    for(const [index,request] of own.entries())await write("25",`rollout-2026-10-25T12-00-00-own-${index+1}.jsonl`,[
+      {timestamp:"2026-10-25T12:00:00Z",type:"session_meta",payload:{id:"own-"+(index+1),cwd:workspace,source:"vscode"}},
+      {type:"turn_context",payload:{cwd:workspace,model:"gpt-test"}},
+      {type:"event_msg",payload:{type:"user_message",message:request}},
+    ],400+index);
+    await routeCodexWindow(page,{fixture,root,workspace,codexHome:home});
+    const history=await scanHistory(page),rows=history.locator(".history-import-list>div");
+    await expect(rows.locator("strong"),"the person's sessions behind Codex's 300").toHaveText(own,{timeout:30_000});
+    await expect(history.locator(".capability-card-head em")).toHaveText("3");
+    await expect(history).not.toContainText("Codex's own work");
+    await expect(rows.getByRole("button",{name:"Import",exact:true})).toHaveCount(3);
+    await history.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:`${auditDir}codex-history-import-behind-subagents-dark-1280x800.png`});
   }finally{await fixture.close();await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
