@@ -1423,10 +1423,10 @@ test("a Claude Code approval waiting when its thread is deleted leaves the windo
   }
 });
 
-test("an attached audio file reaches every harness but Antigravity by its saved path, as T3 Code names the attachments it does not send as content",async()=>{
+test("an attached audio file reaches every harness by its saved path, as T3 Code names the attachments it does not send as content",async()=>{
   const prompt=await contextualAgentPrompt([{type:"text",text:"Transcribe this"},{type:"localAudio",path:"/recordings/memo 1.mp3"}]);
   assert.deepEqual(prompt.map(part=>({type:part.type,text:part.text})),[{type:"text",text:"Transcribe this"},{type:"text",text:'[Attached audio "memo 1.mp3" is saved at: /recordings/memo 1.mp3]'}]);
-  // The line keeps its file for Antigravity's session, which sends the audio itself when Antigravity takes audio
+  // The line keeps its file for Antigravity's session, which adds the audio after it when Antigravity takes audio
   // (tests/antigravity-prompt-capabilities.test.mjs); what the other harnesses are sent is the line alone.
   assert.equal(JSON.stringify(prompt[1]),JSON.stringify({type:"text",text:'[Attached audio "memo 1.mp3" is saved at: /recordings/memo 1.mp3]'}));
 });

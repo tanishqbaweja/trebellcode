@@ -192,7 +192,7 @@ async function acpPrompt(input=[]){
       out.push({type:"resource_link",uri:fileUri(item.path),name:String(item.name||item.path||"file")});
     }else if(item?.type==="localAudio"){
       // Audio is named by its saved path, as T3 Code names every attachment it does not send as content, and the harness opens it
-      // with its own tools. The line keeps the file for Antigravity's session, which sends it as audio when Antigravity takes audio.
+      // with its own tools. The line keeps the file for Antigravity's session, which adds the audio after it when Antigravity takes audio.
       const path=String(item.path||"");
       out.push(withPromptAudioPath({type:"text",text:`[Attached audio "${basename(path)}" is saved at: ${path}]`},path));
     }

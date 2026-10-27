@@ -13,7 +13,7 @@ import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizeModelOptionValues } from "./model-options.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
-import { PROMPT_AUDIO_PATH, PROMPT_IMAGE_PATH, unreadableAttachment } from "./prompt-attachments.mjs";
+import { attachmentName, PROMPT_AUDIO_PATH, PROMPT_IMAGE_PATH, unreadableAttachment } from "./prompt-attachments.mjs";
 import { runtimeHarnessLabel, runtimeInstructions } from "./runtime-instructions.mjs";
 import { SessionRefusalError } from "./session-refusal.mjs";
 
@@ -77,33 +77,42 @@ function text(value){return String(value??"").trim()}
 
 // T3 buildAntigravityPrompt (532023a24): what goes to Antigravity as content follows the promptCapabilities its initialize advertises,
 // up to 50 MiB a message: BMP, JPEG, PNG and WebP images up to 10 MiB as images (image), the audio Trebell names by its saved path up
-// to 20 MiB as audio (audio), and a UTF-8 text file up to 1 MiB as embedded content and a PDF as a document link (embeddedContext).
-// Antigravity 1.2.1 refuses to open any path outside its workspace folders, even one granted with additionalDirectories, so a pasted
-// text or an uploaded file in Trebell's attachments folder is unreadable as a link. Any other image is named by its saved path, audio
-// keeps its path line, and other files stay links.
+// to 20 MiB as audio after the line that names it (audio), and a UTF-8 text file up to 1 MiB as embedded content and a PDF as a
+// document link (embeddedContext). Antigravity 1.2.1 refuses to open any path outside its workspace folders, even one granted with
+// additionalDirectories, so a pasted text or an uploaded file in Trebell's attachments folder is unreadable as a link. An image it
+// takes that does not fit refuses the message, as T3 refuses it; any other image is named by its saved path, and other files stay links.
 const ANTIGRAVITY_TEXT_EXTENSIONS=new Set([".txt",".md",".mdx",".json",".jsonl",".yaml",".yml",".toml",".xml",".csv",".tsv",".js",".jsx",".mjs",".cjs",".ts",".tsx",".html",".css",".scss",".less",".py",".rs",".go",".java",".kt",".swift",".c",".h",".cc",".cpp",".hpp",".cs",".rb",".php",".sh",".bash",".zsh",".sql",".graphql",".svelte",".vue",".log",".diff",".patch",".ini",".conf"]);
 const ANTIGRAVITY_TEXT_MIME={".json":"application/json",".jsonl":"application/jsonl",".md":"text/markdown",".mdx":"text/markdown",".html":"text/html",".css":"text/css",".csv":"text/csv",".xml":"application/xml",".yaml":"application/yaml",".yml":"application/yaml"};
 const ANTIGRAVITY_IMAGE_TYPES=new Set(["image/bmp","image/jpeg","image/png","image/webp"]);
 // The composer's audio (App.jsx inputsFor), all of T3's audio types.
 const ANTIGRAVITY_AUDIO_MIME={".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"audio/mp4",".ogg":"audio/ogg",".flac":"audio/flac"};
 const ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES=1024*1024,ANTIGRAVITY_MAX_IMAGE_BYTES=10*1024*1024,ANTIGRAVITY_MAX_AUDIO_BYTES=20*1024*1024,ANTIGRAVITY_MAX_CONTENT_BYTES=50*1024*1024;
+// An image Antigravity takes that does not fit in the message, said by its name with what to do; Antigravity is asked nothing.
+const antigravityImageTooLarge=path=>new SessionRefusalError(`The attached image "${attachmentName(path)}" is too large for one Antigravity message, which takes images up to 10 MiB and 50 MiB of attachments in all. Send it in a message of its own.`);
 export async function antigravityPromptParts(parts,promptCapabilities={}){
   const can=promptCapabilities&&typeof promptCapabilities==="object"?promptCapabilities:{},out=[];let total=0;
   const fits=(size,limit)=>size<=limit&&total+size<=ANTIGRAVITY_MAX_CONTENT_BYTES;
   for(const part of Array.isArray(parts)?parts:[]){
     if(part?.type==="image"){
       const path=part[PROMPT_IMAGE_PATH]||"",size=Buffer.byteLength(String(part.data||""),"base64");
-      if(can.image===true&&ANTIGRAVITY_IMAGE_TYPES.has(String(part.mimeType||"").toLowerCase())&&fits(size,ANTIGRAVITY_MAX_IMAGE_BYTES)){total+=size;out.push(part)}
-      else out.push({type:"text",text:path?`[Attached image "${basename(path)}" is saved at: ${path}]`:"[Attached image could not be sent: Trebell Code has no saved file for it]"});
+      if(can.image===true&&ANTIGRAVITY_IMAGE_TYPES.has(String(part.mimeType||"").toLowerCase())){
+        // Named by a path Antigravity cannot open, an image that does not fit would never reach the model (T3: "still rejects images
+        // when the native budget is full").
+        if(!fits(size,ANTIGRAVITY_MAX_IMAGE_BYTES))throw antigravityImageTooLarge(path);
+        total+=size;out.push(part);
+      }else out.push({type:"text",text:path?`[Attached image "${basename(path)}" is saved at: ${path}]`:"[Attached image could not be sent: Trebell Code has no saved file for it]"});
       continue;
     }
-    // An audio file's path line (agent-relay acpPrompt) becomes the audio itself. Base64 audio travels on one JSON-RPC line: 20 MiB
-    // of audio is a line of about 27 MB.
+    // An audio file keeps the line that names it (agent-relay acpPrompt), and the audio itself follows when Antigravity takes audio, as
+    // T3 names every attachment in the text and adds the content after it. Base64 audio travels on one JSON-RPC line: 20 MiB of audio
+    // is a line of about 27 MB.
     const audio=part?.type==="text"?part[PROMPT_AUDIO_PATH]:null,audioType=audio?ANTIGRAVITY_AUDIO_MIME[extname(audio).toLowerCase()]:null;
     if(audioType&&can.audio===true){
       const info=await stat(audio).catch(error=>{throw unreadableAttachment("file",audio,error)});
       const bytes=info.isFile()&&fits(info.size,ANTIGRAVITY_MAX_AUDIO_BYTES)?await readFile(audio).catch(error=>{throw unreadableAttachment("file",audio,error)}):null;
-      if(bytes&&fits(bytes.length,ANTIGRAVITY_MAX_AUDIO_BYTES)){total+=bytes.length;out.push({type:"audio",mimeType:audioType,data:bytes.toString("base64")});continue}
+      out.push(part);
+      if(bytes&&fits(bytes.length,ANTIGRAVITY_MAX_AUDIO_BYTES)){total+=bytes.length;out.push({type:"audio",mimeType:audioType,data:bytes.toString("base64")})}
+      continue;
     }
     // Trebell writes file links as percent-encoded file: URLs (agent-relay acpPrompt).
     const path=part?.type==="resource_link"&&can.embeddedContext===true?fileUriPath(part.uri):null,extension=path?extname(path).toLowerCase():"";
