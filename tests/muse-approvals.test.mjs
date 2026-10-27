@@ -42,6 +42,8 @@ async function runningTurn(fixture){
 }
 const complete=(fixture,turnId,terminal="completed",extra={})=>fixture.muse.notify("turn/completed",{sessionId:fixture.session.sessionId,viewCursor:"v",terminal,turnId,...extra});
 const accepted=params=>({commandId:params.commandId,status:"accepted",approvalId:params.approvalId,terminal:true});
+// A stage's decision that leaves the approval's later stages to decide, as Muse acknowledges one (terminal false).
+const staged=params=>({...accepted(params),terminal:false});
 
 test("each Trebell mode launches Muse Code's host with its own flags and starts its session in its own permission profile and approval mode (T3 sdk.test.ts)",async()=>{
   for(const [mode,args,permissionProfile,approvalMode] of MODES){
@@ -109,27 +111,71 @@ test("Always allow in this workspace answers with Muse's own rule, and each choi
   assert.deepEqual(muse.museApprovalOptions([{choiceId:"keep",label:"Keep out",decision:"deniedPolicyAmendment",scope:"localPersistent"},{choiceId:"n",label:"Deny",decision:"denied",scope:"once"},{choiceId:"later",label:"Later",decision:"approvedSomeday",scope:"once"}]),[{decision:"decline",label:"Deny"}],"the narrowest Reject, and no choice of a decision Trebell does not know");
 });
 
-test("a decision names the approval's latest requirement: one asked before Muse moved the approval to its next stage takes that stage, and a decided stage's next stage is asked in turn",async()=>{
-  const fixture=await startSession();
+const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+test("a card answers the stage it shows: one Muse moves to its next stage meanwhile is withdrawn and that stage asked in its place, with its own choices, and a decided stage's next stage is asked in turn",async()=>{
+  const fixture=await startSession({muse:child=>new FakeMuse(child,{handlers:{"approval/decide":staged}})});
   const {running,turnId,sid}=await runningTurn(fixture);
   fixture.muse.notify("approval/requested",shellApproval(sid,turnId));
   await until(()=>fixture.asks.length===1,"the card");
-  fixture.muse.notify("approval/updated",{...shellApproval(sid,turnId,{sourceIndex:1}),change:{kind:"reviewCompleted"}});
-  await settle();await settle();
-  assert.equal(fixture.asks.length,1,"the open card stays");
-  fixture.asks[0].answer("accept");
-  const first=await fixture.muse.next("approval/decide");
-  assert.deepEqual([first.params.choiceId,first.params.requirementId],["allow_once",{approvalId:"ap-1",sourceIndex:1}]);
-  // A staged shell review: Muse moves the approval to the command's next stage, which is asked again.
-  fixture.muse.notify("approval/updated",{...shellApproval(sid,turnId,{sourceIndex:2}),change:{kind:"stageResolved",requirementId:{approvalId:"ap-1",sourceIndex:1},choiceId:"allow_once",decision:"approved"}});
+  // Muse's reviewer moves the approval to the command's next stage while its card shows: that card goes, and the next stage is asked
+  // with its own rule, never the rule the first card showed.
+  const nextChoices=[RECORDED_CHOICES[0],{...RECORDED_CHOICES[1],choiceId:"allow_local_prefix_rm",label:"Always allow in this workspace: rm ...",rulePreview:"Always allow in this workspace: rm ..."},RECORDED_CHOICES[2]];
+  fixture.muse.notify("approval/updated",{...shellApproval(sid,turnId,{sourceIndex:1,availableChoices:nextChoices}),change:{kind:"reviewCompleted"}});
   await until(()=>fixture.asks.length===2,"the next stage's card");
-  fixture.asks[1].answer("decline");
+  assert.equal(fixture.asks[0].withdrawn,true,"the card of the stage Muse moved past is withdrawn");
+  assert.deepEqual(fixture.asks[1].request.approvalOptions.map(option=>option.label),["Allow once","Always allow in this workspace: rm ...","Reject"]);
+  fixture.asks[1].answer("acceptAlways");
+  const first=await fixture.muse.next("approval/decide");
+  assert.deepEqual([first.params.choiceId,first.params.requirementId],["allow_local_prefix_rm",{approvalId:"ap-1",sourceIndex:1}]);
+  // A staged shell review: Muse moves the approval to the command's next stage, which is asked again.
+  fixture.muse.notify("approval/updated",{...shellApproval(sid,turnId,{sourceIndex:2}),change:{kind:"stageResolved",requirementId:{approvalId:"ap-1",sourceIndex:1},choiceId:"allow_local_prefix_rm",decision:"approvedPolicyAmendment"}});
+  await until(()=>fixture.asks.length===3,"the stage after the decided one");
+  fixture.asks[2].answer("decline");
   const second=await fixture.muse.next("approval/decide");
   assert.deepEqual([second.params.choiceId,second.params.requirementId],["abort",{approvalId:"ap-1",sourceIndex:2}]);
   fixture.muse.notify("approval/resolved",resolved(sid,turnId,"ap-1",{decision:"abort"}));
   complete(fixture,turnId);await running;
-  assert.equal(fixture.muse.sent("approval/decide").length,2);
+  assert.equal(fixture.muse.sent("approval/decide").length,2,"nothing was sent for the withdrawn card");
+  assert.equal(fixture.asks.length,3);
+  await fixture.session.close();
+});
+
+test("an answer to a stage Muse moved past before its card went is refused by Muse as stale and never asked again, and the stage Muse asks now is asked once",async()=>{
+  const decide=async params=>{if(params.requirementId?.sourceIndex===0)throw mspError("approvalRequirementStale","the requirement is stale",-32053);return accepted(params)};
+  const fixture=await startSession({muse:child=>new FakeMuse(child,{handlers:{"approval/decide":decide}})});
+  const {running,turnId,sid}=await runningTurn(fixture);
+  fixture.muse.notify("approval/requested",shellApproval(sid,turnId));
+  await until(()=>fixture.asks.length===1,"the card");
+  fixture.asks[0].answer("accept");
+  assert.deepEqual((await fixture.muse.next("approval/decide")).params.requirementId,{approvalId:"ap-1",sourceIndex:0},"the answer names the stage it was given for");
+  await pause(150);
+  assert.equal(fixture.asks.length,1,"the stage Muse moved past is not asked again");
+  fixture.muse.notify("approval/updated",{...shellApproval(sid,turnId,{sourceIndex:1}),change:{kind:"reviewCompleted"}});
+  await until(()=>fixture.asks.length===2,"the stage Muse asks now");
+  fixture.asks[1].answer("accept");
+  assert.deepEqual((await fixture.muse.next("approval/decide")).params.requirementId,{approvalId:"ap-1",sourceIndex:1});
+  fixture.muse.notify("approval/resolved",resolved(sid,turnId));
+  complete(fixture,turnId);await running;
   assert.equal(fixture.asks.length,2);
+  await fixture.session.close();
+});
+
+test("a decision Muse acknowledges as closing the whole approval (terminal) asks no later stage, though a trailing update still names one (Meta's SDK)",async()=>{
+  let turnKey=null;
+  const decide=(params,fake)=>{
+    fake.notify("approval/updated",{...shellApproval(params.sessionId,turnKey,{sourceIndex:1}),change:{kind:"stageResolved",requirementId:{approvalId:"ap-1",sourceIndex:0},choiceId:params.choiceId,decision:"approvedPolicyAmendment"}});
+    return {...accepted(params),terminal:true};
+  };
+  const fixture=await startSession({approve:()=>"acceptAlways",muse:child=>new FakeMuse(child,{handlers:{"approval/decide":decide}})});
+  const {running,turnId,sid}=await runningTurn(fixture);turnKey=turnId;
+  fixture.muse.notify("approval/requested",shellApproval(sid,turnId));
+  assert.equal((await fixture.muse.next("approval/decide")).params.choiceId,"allow_local_prefix");
+  await pause(150);
+  assert.equal(fixture.asks.length,1,"no card for a stage the decision already closed");
+  fixture.muse.notify("approval/resolved",resolved(sid,turnId,"ap-1",{decision:"approvedPolicyAmendment"}));
+  complete(fixture,turnId);await running;
+  assert.equal(fixture.muse.sent("approval/decide").length,1);
+  assert.equal(fixture.session.requests.size,0);
   await fixture.session.close();
 });
 
@@ -170,7 +216,7 @@ test("Muse settling an approval itself withdraws its card, its reviewer deciding
 
 test("in Full access a workflow child's approval is answered Allow once without a card, while its turn runs and after the turn ended (T3: Muse does not pass allowAll on to workflow children)",async()=>{
   for(const turnEnded of [false,true]){
-    const fixture=await startSession({permissionMode:"full"});
+    const fixture=await startSession({permissionMode:"full",muse:child=>new FakeMuse(child,{handlers:{"approval/decide":staged}})});
     const {running,turnId,sid}=await runningTurn(fixture);
     if(turnEnded){complete(fixture,turnId);await running}
     fixture.muse.notify("approval/requested",childApproval(sid));

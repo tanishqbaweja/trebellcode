@@ -343,6 +343,8 @@ export function museRetryNotice(params={}){
   return `Muse Code is trying again in ${Math.max(1,Math.round(delay/1000))} s (attempt ${params.nextAttempt} of ${params.maxAttempts}): ${reason}`;
 }
 const requirementKey=requirement=>JSON.stringify(requirement??null);
+// What an approval's card shows: its stage and Muse's choices for it.
+const shownKey=params=>JSON.stringify([params?.currentRequirementId??null,params?.availableChoices??null]);
 
 export class MuseAgentSession{
   // modelCatalog: the list Muse Code's status check read ({models, metadata, preferred}, museModelCatalog), or null, which the
@@ -689,9 +691,16 @@ export class MuseAgentSession{
     if(method==="approval/resolved"||params.change?.kind==="alreadyTerminal")return this.#settleRequest(key);
     if(this.settledRequests.has(key))return;
     const known=this.requests.get(key);
-    if(known){known.params={...known.params,...params};return void this.#approve(known)}
+    if(known){
+      known.params={...known.params,...params};
+      // A card answers the stage and choices it shows (as Meta's SDK decides the request it asked about): one Muse has moved on from
+      // (its next stage, or other choices) is withdrawn and what Muse asks now is asked in its place (T3 shows the card again), so no
+      // answer goes to a stage the person never saw.
+      if(known.ask&&known.shown!==shownKey(known.params)){const ask=known.ask;known.ask=null;ask.abort()}
+      return void this.#approve(known);
+    }
     if(method!=="approval/requested")return;
-    const entry={key,kind:"approval",id,params:{...params},child:Boolean(params.subagentOrigin),ask:null,deciding:false,decided:null,automatic:null,attempts:0};
+    const entry={key,kind:"approval",id,params:{...params},child:Boolean(params.subagentOrigin),ask:null,shown:null,deciding:false,decided:null,automatic:null,terminal:false,attempts:0};
     this.requests.set(key,entry);void this.#approve(entry);
   }
   // Who answers the approval's current stage: nobody once it is decided, while Muse settles it or moves it to its next stage. In Full
@@ -699,7 +708,9 @@ export class MuseAgentSession{
   // (T3 d81afa0a6, a752363b1); it is shown only when Muse refuses that answer, and never once Muse has settled it. Every other stage
   // goes to Trebell's policy and the approval card.
   async #approve(entry){
-    if(this.requests.get(entry.key)!==entry||entry.ask||entry.deciding)return;
+    // A decision Muse acknowledged as closing the whole approval (terminal) leaves no later stage to ask, though a trailing update
+    // may still name one (Meta's SDK).
+    if(this.requests.get(entry.key)!==entry||entry.ask||entry.deciding||entry.terminal)return;
     const stage=requirementKey(entry.params.currentRequirementId);
     if(entry.decided===stage)return;
     if(entry.child&&this.launched?.plan.approvalMode==="allowAll"&&entry.automatic!==stage){
@@ -717,8 +728,10 @@ export class MuseAgentSession{
   // never answers declines, rather than leave Muse waiting.
   async #askApproval(entry,{askUser=false}={}){
     const params=entry.params,choices=museApprovalChoices(params.availableChoices);
-    if(typeof this.onPermission!=="function")return this.#answerApproval(entry,"decline");
-    const ask=new AbortController();entry.ask=ask;
+    // The stage and choices asked about, which the answer decides.
+    const shown={requirementId:params.currentRequirementId,availableChoices:params.availableChoices};
+    if(typeof this.onPermission!=="function")return this.#answerApproval(entry,"decline",shown);
+    const ask=new AbortController();entry.ask=ask;entry.shown=shownKey(params);
     let decision="decline";
     try{
       decision=await this.onPermission({
@@ -730,32 +743,38 @@ export class MuseAgentSession{
     }catch{decision="decline"}
     finally{if(entry.ask===ask)entry.ask=null}
     if(ask.signal.aborted||this.requests.get(entry.key)!==entry)return;
-    return this.#answerApproval(entry,decision);
+    return this.#answerApproval(entry,decision,shown);
   }
-  // The answer for the stage asked. Cancel (a card the relay withdrew as its thread stopped, a workflow child's among them) is
-  // Muse's abort, or its Reject. A decision Muse refuses, or no longer offers once a later stage came, is asked again on the card, a
-  // few times at most; a stage that cannot be declined stops the turn rather than leave it waiting.
-  async #answerApproval(entry,decision){
-    const choices=museApprovalChoices(entry.params.availableChoices);
+  // The answer for the stage asked (shown: the stage and choices it was asked with, else the approval's current ones). Cancel (a card
+  // the relay withdrew as its thread stopped) is Muse's abort, or its Reject. A decision Muse refuses is asked again on the card, a few
+  // times at most; one for a stage Muse has moved past goes nowhere, and the stage Muse asks now is asked in turn, here or by the
+  // update that moves it; a stage that cannot be declined stops the turn rather than leave it waiting.
+  async #answerApproval(entry,decision,shown=null){
+    const choices=museApprovalChoices(shown?shown.availableChoices:entry.params.availableChoices);
     const wanted=decision==="cancel"&&!choices.has("cancel")?"decline":["accept","acceptForSession","acceptAlways","decline","cancel"].includes(decision)?decision:"decline";
-    const outcome=await this.#decide(entry,wanted);
+    const outcome=await this.#decide(entry,wanted,shown);
     if(outcome==="taken")return this.#approve(entry);
     if(outcome==="settled"||this.requests.get(entry.key)!==entry)return;
+    if(outcome==="stale")return requirementKey(entry.params.currentRequirementId)===requirementKey(shown?.requirementId)?undefined:this.#approve(entry);
     if(outcome==="missing"&&(wanted==="decline"||wanted==="cancel"))return void this.cancel();
     if(++entry.attempts>=MUSE_ASK_ATTEMPTS)return;
     return this.#askApproval(entry,{askUser:true});
   }
-  // Sends the decision for the approval's current stage (approval/decide names its latest requirement), recorded first: Muse can
-  // settle the approval before it acknowledges the command (T3 decideApproval). taken: Muse took it; missing: Muse does not offer it;
-  // settled: Muse had settled the approval already; refused: Muse refused it.
-  async #decide(entry,decision){
-    const requirement=entry.params.currentRequirementId,choice=museApprovalChoices(entry.params.availableChoices).get(decision);
+  // Sends the decision for the stage asked about (approval/decide names that stage's requirement, Meta's race guard: Muse refuses a
+  // stale one, -32053), recorded first: Muse can settle the approval before it acknowledges the command (T3 decideApproval). taken:
+  // Muse took it; missing: Muse does not offer it; settled: Muse had settled the approval already; stale: Muse had moved past that
+  // stage; refused: Muse refused it.
+  async #decide(entry,decision,shown=null){
+    const requirement=shown?shown.requirementId:entry.params.currentRequirementId,choice=museApprovalChoices(shown?shown.availableChoices:entry.params.availableChoices).get(decision);
     if(!choice)return "missing";
     const stage=requirementKey(requirement);entry.decided=stage;entry.deciding=true;
-    try{await this.#command("approval/decide",{sessionId:this.sessionId,approvalId:entry.id,requirementId:requirement,choiceId:choice.choiceId});return "taken"}
-    catch(error){
+    try{
+      const ack=await this.#command("approval/decide",{sessionId:this.sessionId,approvalId:entry.id,requirementId:requirement,choiceId:choice.choiceId});
+      if(ack?.terminal===true)entry.terminal=true;
+      return "taken";
+    }catch(error){
       if(entry.decided===stage)entry.decided=null;
-      return error?.kind==="approvalAlreadyResolved"||error?.kind==="approvalNotFound"?"settled":"refused";
+      return error?.kind==="approvalAlreadyResolved"||error?.kind==="approvalNotFound"?"settled":error?.kind==="approvalRequirementStale"?"stale":"refused";
     }finally{entry.deciding=false}
   }
 
