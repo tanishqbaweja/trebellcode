@@ -54,7 +54,8 @@ test("a Muse Code window's Usage card says no windows came before a turn reports
   // No Muse Code turn has reported its windows yet.
   await expect(card.locator(".capability-card-head strong")).toHaveText("Muse Code subscription limits");
   await expect(card.getByText(NOT_OBSERVED,{exact:true})).toBeVisible();
-  await expect(rows).toHaveCount(0);await expect(head).toHaveText(/ · live$/);
+  // Muse's windows are never read live, so with no report its head names only the environment.
+  await expect(rows).toHaveCount(0);await expect(head).toHaveText(/^[^·]+$/);await expect(head).not.toContainText("live");
   await shoot(page,card,"not-observed");
   // A Muse Code turn reports them (usage/changed, which its session keeps): Meta's 103% for the 5-hour window, 41% for the week.
   const now=Date.now(),observedAtMs=now-2*60_000,windowReset=now+3*3_600_000,weeklyReset=now+4*86_400_000;
