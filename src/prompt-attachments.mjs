@@ -27,3 +27,8 @@ export function unreadableAttachment(kind,path,error){
   const code=typeof error?.code==="string"&&error.code?` (${error.code})`:"";
   return new SessionRefusalError(`The attached ${kind} "${attachmentName(path)}" could not be read${code}. Attach it again.`);
 }
+// An image of a thread in a remote environment: the composer keeps the copy it made on the remote host, which this machine cannot read
+// to send as an image. The file is not gone, so attaching it again would not help.
+export function remoteEnvironmentImage(path){
+  return new SessionRefusalError(`The attached image "${attachmentName(path)}" is in this thread's remote environment, and Trebell Code sends images to the agent only from this machine. Remove the image to send the message.`);
+}

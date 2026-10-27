@@ -12,7 +12,7 @@ import { threadHistoryHandoff } from "./thread-history-handoff.mjs";
 import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
 import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
-import { unreadableAttachment, withPromptAudioPath, withPromptImagePath } from "./prompt-attachments.mjs";
+import { remoteEnvironmentImage, unreadableAttachment, withPromptAudioPath, withPromptImagePath } from "./prompt-attachments.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { MuseAgentSession } from "./muse-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
@@ -178,13 +178,16 @@ export function agentPermissionPolicyDecision(thread,request={},settings={}){
   });
 }
 
-async function acpPrompt(input=[]){
+// remote: the thread runs in a remote environment, where the composer keeps its attachments.
+async function acpPrompt(input=[],{remote=false}={}){
   const out=[];
   for(const item of input){
     if(item?.type==="text")out.push({type:"text",text:String(item.text||"")});
     else if(item?.type==="localImage"){
       const mime=IMAGE_MIME[extname(String(item.path||"")).toLowerCase()]||"image/png";
-      // An image whose saved file is gone is refused by its name, not with Node's bare error.
+      // An image of a thread in a remote environment is on the remote host, which this machine cannot read; one whose saved file is gone
+      // is refused by its name, not with Node's bare error.
+      if(remote)throw remoteEnvironmentImage(item.path);
       const data=await readFile(item.path).catch(error=>{throw unreadableAttachment("image",item.path,error)});
       // OpenCode 2 reads an attached image from its saved file, which the part keeps out of what the other harnesses are sent.
       out.push(withPromptImagePath({type:"image",mimeType:mime,data:data.toString("base64")},item.path));
@@ -202,8 +205,8 @@ async function acpPrompt(input=[]){
 
 // Every harness gets its working context fenced the same way (working-context-envelope.mjs), Trebell Native on every provider.
 // parts: the message's own parts when they are built already (turn/start reads a message's files before its turn exists).
-export async function contextualAgentPrompt(input=[],additionalContext={},{parts=null}={}){
-  const prompt=parts||await acpPrompt(input);
+export async function contextualAgentPrompt(input=[],additionalContext={},{parts=null,remote=false}={}){
+  const prompt=parts||await acpPrompt(input,{remote});
   for(const item of prompt)attachNativePromptProvenance(item,{kind:"user_input"});
   return withWorkingContext(prompt,Object.entries(additionalContext||{}));
 }
@@ -909,6 +912,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(thread?.runtime!=="opencode")return false;
     const live=sessions.get(thread.id);if(live)return live instanceof AcpAgentSession;
     const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
+    return Boolean(runtimeManager.remoteIo?.(runtimeManager.runtimeCwd?.(thread.cwd,environmentId)??thread.cwd,environmentId));
+  }
+
+  // Whether a thread runs in a remote environment (an SSH or WSL profile), whose attachments the composer keeps on the remote host.
+  function threadRunsRemote(thread){
+    const environmentId=thread?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
     return Boolean(runtimeManager.remoteIo?.(runtimeManager.runtimeCwd?.(thread.cwd,environmentId)??thread.cwd,environmentId));
   }
 
@@ -2110,7 +2119,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       }
       // The message's files are read before its turn exists: one Trebell cannot read refuses the send by its name, the draft kept,
       // and leaves no turn running behind it.
-      const messageParts=await acpPrompt(params.input||[]);
+      const messageParts=await acpPrompt(params.input||[],{remote:threadRunsRemote(thread)});
       if(send?.stopped)throw stoppedBeforeTurn();
       // An earlier turn that failed and still waits on its harness's recheck ends before this one starts.
       endFailureWait(thread.id);
@@ -2164,7 +2173,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const activeTurn=[...(thread.turns||[])].reverse().find(turn=>turn?.status==="inProgress");if(!activeTurn)throw new Error(`${label} has no active turn to steer.`);
         if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error(`The active ${label} turn changed before steering could be applied.`);
         const session=sessions.get(thread.id);if(!(session instanceof steerable))throw new Error(`The active ${label} session is unavailable for steering.`);
-        const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{}));
+        const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread)}));
         const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env})},...fileInputs(params.input)]};
         threadStore.addItem(thread.id,activeTurn.id,item);emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});
         return {turnId:activeTurn.id,accepted:Boolean(result?.accepted),pending:Number(result?.pending)||0};
@@ -2173,7 +2182,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const activeTurn=[...(thread.turns||[])].reverse().find(turn=>["inProgress","running","starting"].includes(turn?.status));if(!activeTurn)throw new Error("Trebell Native has no active turn to steer.");
       if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error("The active Native turn changed before steering could be applied.");
       const session=sessions.get(thread.id);if(!(session instanceof NativeAgentSession))throw new Error("The active Native session is unavailable for steering.");
-      const prompt=await contextualAgentPrompt(params.input||[],{}),result=session.steer(prompt),text=textOfInput(params.input||[]);
+      const prompt=await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread)}),result=session.steer(prompt),text=textOfInput(params.input||[]);
       const safeText=redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env});
       const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:safeText},...fileInputs(params.input)]};threadStore.addItem(thread.id,activeTurn.id,item);
       emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});
