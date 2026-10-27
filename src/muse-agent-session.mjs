@@ -225,18 +225,22 @@ export function museToolUpdate(item={}){
 }
 
 // The decision a Muse approval choice applies (T3 museApprovalDecision): approved once is Allow once, approvedForSession (or a rule
-// for the session) Allow for this session, a rule saved for the workspace Always allow, denied (or a rule that keeps it out)
-// Reject, and abort Cancel. A decision Muse adds later has none, and is never offered.
+// for the session) Allow for this session, a rule saved for the workspace Always allow, denied Reject, and abort Cancel. A rule that
+// keeps the action out, for the session or saved for the workspace, is a decision of its own, as Always allow is: only the person
+// takes it, on the card that shows its words, and the declines Trebell makes itself (its policy's, a window that never answered, a
+// stop) save no rule (as group M1's did). A decision Muse adds later has none, and is never offered.
 export function museApprovalDecision(choice={}){
   switch(text(choice?.decision)){
     case "approved":return "accept";
     case "approvedForSession":return "acceptForSession";
     case "approvedPolicyAmendment":return choice.scope==="session"?"acceptForSession":choice.scope==="localPersistent"?"acceptAlways":null;
-    case "denied":case "deniedPolicyAmendment":return "decline";
+    case "denied":return choice.scope==="localPersistent"?"declineAlways":"decline";
+    case "deniedPolicyAmendment":return choice.scope==="session"?"declineForSession":choice.scope==="localPersistent"?"declineAlways":null;
     case "abort":return "cancel";
     default:return null;
   }
 }
+const MUSE_DECISIONS=new Set(["accept","acceptForSession","acceptAlways","decline","declineForSession","declineAlways","cancel"]);
 // Muse's choice for each decision, the narrowest grant first: once, then the session, then saved, and a choice without a rule before
 // one that saves a rule (T3 museApprovalChoices). Shell approvals offer abort as their Reject, so abort also declines one that has
 // no denied choice.
@@ -753,7 +757,7 @@ export class MuseAgentSession{
   // update that moves it; a stage that cannot be declined stops the turn rather than leave it waiting.
   async #answerApproval(entry,decision,shown=null){
     const choices=museApprovalChoices(shown?shown.availableChoices:entry.params.availableChoices);
-    const wanted=decision==="cancel"&&!choices.has("cancel")?"decline":["accept","acceptForSession","acceptAlways","decline","cancel"].includes(decision)?decision:"decline";
+    const wanted=decision==="cancel"&&!choices.has("cancel")?"decline":MUSE_DECISIONS.has(decision)?decision:"decline";
     const outcome=await this.#decide(entry,wanted,shown);
     if(outcome==="taken")return this.#approve(entry);
     if(outcome==="settled"||this.requests.get(entry.key)!==entry)return;

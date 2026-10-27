@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as host from "../src/muse-host.mjs";
 import * as muse from "../src/muse-agent-session.mjs";
-import { FakeMuse, ReplayMuse, chunks, mspError, settle, startSession, until } from "./fixtures/muse/fake-host.mjs";
+import { FakeMuse, ReplayMuse, chunks, mspError, settle, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
 import { museRelay } from "./fixtures/muse/relay-harness.mjs";
 
 // Muse Code's access modes, approvals and questions (T3 f87dd14da, d81afa0a6, a752363b1): each Trebell mode as Muse's launch flags,
@@ -108,7 +108,38 @@ test("Always allow in this workspace answers with Muse's own rule, and each choi
   complete(fixture,turnId);await running;await fixture.session.close();
   assert.deepEqual(muse.museApprovalOptions?.([{choiceId:"y",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"s",label:"Allow for this session",decision:"approvedForSession",scope:"session"},{choiceId:"n",label:"Deny",decision:"denied",scope:"once"},{choiceId:"x",label:"Stop",decision:"abort",scope:"once"}]),
     [{decision:"accept",label:"Allow once"},{decision:"acceptForSession",label:"Allow for this session"},{decision:"decline",label:"Deny"},{decision:"cancel",label:"Stop"}],"an abort beside a denied choice is its own button");
-  assert.deepEqual(muse.museApprovalOptions([{choiceId:"keep",label:"Keep out",decision:"deniedPolicyAmendment",scope:"localPersistent"},{choiceId:"n",label:"Deny",decision:"denied",scope:"once"},{choiceId:"later",label:"Later",decision:"approvedSomeday",scope:"once"}]),[{decision:"decline",label:"Deny"}],"the narrowest Reject, and no choice of a decision Trebell does not know");
+  assert.deepEqual(muse.museApprovalOptions([{choiceId:"keep",label:"Keep out",decision:"deniedPolicyAmendment",scope:"localPersistent"},{choiceId:"n",label:"Deny",decision:"denied",scope:"once"},{choiceId:"later",label:"Later",decision:"approvedSomeday",scope:"once"}]),[{decision:"declineAlways",label:"Keep out"},{decision:"decline",label:"Deny"}],"a rule that keeps it out is a button of its own beside Reject, and no choice of a decision Trebell does not know shows");
+});
+
+// Muse's own choices of a shell stage that offers a saved rule keeping the command out and no plain Reject but abort.
+const KEEP_OUT_CHOICES=[RECORDED_CHOICES[0],{choiceId:"deny_local_prefix",label:"Always reject in this workspace: touch ...",decision:"deniedPolicyAmendment",scope:"localPersistent",rulePreview:"Always reject in this workspace: touch ..."},RECORDED_CHOICES[2]];
+test("a decline Trebell makes itself never saves a rule that keeps the command out: its policy's or the window's Reject, no window to ask in and a stop take Muse's abort, a stage with no other Reject stops the turn, and only the person's own click on the rule saves it",async()=>{
+  for(const [label,options] of [["Reject",{approve:()=>"decline"}],["no window",{options:{onPermission:null}}],["a stop",{approve:()=>"cancel"}]]){
+    const fixture=await startSession(options);
+    const {running,turnId,sid}=await runningTurn(fixture);
+    fixture.muse.notify("approval/requested",shellApproval(sid,turnId,{availableChoices:KEEP_OUT_CHOICES}));
+    assert.equal((await fixture.muse.next("approval/decide")).params.choiceId,"abort",label);
+    complete(fixture,turnId);await running;await fixture.session.close();
+  }
+  const choices=muse.museApprovalChoices(KEEP_OUT_CHOICES);
+  assert.deepEqual([choices.get("decline")?.choiceId,choices.get("declineAlways")?.choiceId],["abort","deny_local_prefix"]);
+  assert.equal(muse.museApprovalChoices([RECORDED_CHOICES[0],KEEP_OUT_CHOICES[1]]).has("decline"),false,"a rule is never a plain Reject");
+  assert.equal(muse.museApprovalChoices([{choiceId:"s",label:"Keep it out this session",decision:"deniedPolicyAmendment",scope:"session"}]).get("declineForSession")?.choiceId,"s");
+  assert.deepEqual(muse.museApprovalOptions(KEEP_OUT_CHOICES),[{decision:"accept",label:"Allow once"},{decision:"declineAlways",label:"Always reject in this workspace: touch ..."},{decision:"decline",label:"Reject"}],"Muse's three choices in its order and words");
+  // With no Reject but the rule, Trebell's decline stops the turn rather than save the rule.
+  const stuck=await startSession({approve:()=>"decline"});
+  const held=await runningTurn(stuck);
+  stuck.muse.notify("approval/requested",shellApproval(held.sid,held.turnId,{availableChoices:[RECORDED_CHOICES[0],KEEP_OUT_CHOICES[1]]}));
+  assert.equal((await settlesWithin(stuck.muse.next("turn/interrupt"),5000,"the turn's stop")).params.turnId,held.turnId);
+  complete(stuck,held.turnId,"cancelled");await held.running;
+  assert.equal(stuck.muse.sent("approval/decide").length,0,"no rule saved");
+  await stuck.session.close();
+  // The person's own click on the rule, which the card shows in Muse's words, saves it.
+  const chosen=await startSession({approve:()=>"declineAlways"});
+  const turn=await runningTurn(chosen);
+  chosen.muse.notify("approval/requested",shellApproval(turn.sid,turn.turnId,{availableChoices:KEEP_OUT_CHOICES}));
+  assert.equal((await chosen.muse.next("approval/decide")).params.choiceId,"deny_local_prefix");
+  complete(chosen,turn.turnId);await turn.running;await chosen.session.close();
 });
 
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));

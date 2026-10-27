@@ -157,6 +157,19 @@ test("Muse Code's Git text denies an approval with Muse's own denied choice and 
   assert.equal(question.muse.sent("userInput/cancel")[0].params.userInputId,"question-1");
 });
 
+test("Muse Code's Git text never saves a rule that keeps a command out: with no plain Reject among Muse's choices it declines with Muse's abort",async()=>{
+  const choices=[{choiceId:"allow-1",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"deny-amend",label:"Always reject in this workspace: cat ...",decision:"deniedPolicyAmendment",scope:"localPersistent"},{choiceId:"abort",label:"Reject",decision:"abort",scope:"once"}];
+  const approval=await museText({turn:(params,fake)=>{
+    const request={sessionId:params.sessionId,approvalId:"approval-1",turnId:params.commandId,currentRequirementId:{approvalId:"approval-1",sourceIndex:0},availableChoices:choices,subject:{kind:"shell",command:"cat secrets.txt"}};
+    setImmediate(()=>fake.notify("approval/requested",request));
+    return ACCEPTED(params);
+  }});
+  await assert.rejects(approval.result,/Trebell declined it: Git text generation is read-only and tool-less\./);
+  await until(()=>approval.muse.sent("approval/decide").length>0,"the denial");
+  assert.deepEqual(approval.muse.sent("approval/decide").map(frame=>frame.params.choiceId),["abort"]);
+  await until(()=>approval.muse.stdinEnded,"the host to close");
+});
+
 test("Muse Code's Git text says Muse Code is signed out for a turn it could not run signed out, and gives Muse's own words for another failure",async()=>{
   const signedOut=await museText({turn:(params,fake)=>{turnEvents(fake,params,completed(params,"failed",{error:{kind:"authRequired",message:"not logged in: run /login to add an API key"}}));return ACCEPTED(params)}});
   await assert.rejects(signedOut.result,{message:"Muse Code could not write the Git text: Muse Code is signed out. Sign in with muse login, then try again."});
