@@ -257,6 +257,22 @@ test("a Full access child's approval is shown when Muse refuses the automatic an
   await fixture.session.close();
 });
 
+test("in Full access a workflow child's protected write and a subject Trebell does not know go to the person on the card, never answered for them",async()=>{
+  const fixture=await startSession({permissionMode:"full"});
+  const {running,turnId,sid}=await runningTurn(fixture);
+  fixture.muse.notify("approval/requested",childApproval(sid,{approvalId:"child-protected",subject:{kind:"fileAccess",access:"write",path:".muse/settings.json"},toolName:"write_file",protectedWrite:true,availableChoices:[{choiceId:"yes",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"no",label:"Reject",decision:"denied",scope:"once"}]}));
+  fixture.muse.notify("approval/requested",childApproval(sid,{approvalId:"child-odd",subject:{kind:"screenRecording",target:"the whole screen"}}));
+  await until(()=>fixture.asks.length===2,"both cards");
+  assert.deepEqual(fixture.asks.map(ask=>[ask.request.params.toolCall.title,ask.request.askUser]),[[".muse/settings.json",true],["the whole screen",true]]);
+  await pause(100);
+  assert.equal(fixture.muse.sent("approval/decide").length,0,"nothing is answered for the person");
+  fixture.asks[0].answer("decline");fixture.asks[1].answer("accept");
+  await until(()=>fixture.muse.sent("approval/decide").length===2,"the person's answers");
+  assert.deepEqual(fixture.muse.sent("approval/decide").map(frame=>[frame.params.approvalId,frame.params.choiceId]).sort(),[["child-odd","allow_once"],["child-protected","no"]]);
+  complete(fixture,turnId);await running;
+  await fixture.session.close();
+});
+
 test("in Supervised a workflow child's approval waits for the person past its turn's end, and goes with the session's close",async()=>{
   const fixture=await startSession();
   const {running,turnId,sid}=await runningTurn(fixture);

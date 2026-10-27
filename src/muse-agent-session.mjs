@@ -258,6 +258,8 @@ export function museApprovalOptions(choices=[]){
 }
 // The subjects Muse names (an approval's subject.kind); Trebell's policy answers no other kind for the person.
 const MUSE_SUBJECTS=new Set(["shell","fileAccess","network","unixSocket","process","tool"]);
+// An approval only the person answers: a protected write, and a subject Trebell does not know, which Muse says clients never approve.
+const personOnly=params=>params?.protectedWrite===true||!MUSE_SUBJECTS.has(text(params?.subject?.kind));
 // What a Muse approval asks, as the relay's approval card and Trebell's policy read it (T3 publishRequest): a shell stage is a command
 // and a file read a read, other file access an edit, a network host network and anything else a tool; its title is the command,
 // path, host or target, else the tool.
@@ -705,15 +707,15 @@ export class MuseAgentSession{
   }
   // Who answers the approval's current stage: nobody once it is decided, while Muse settles it or moves it to its next stage. In Full
   // access a workflow child's stage is answered Allow once without asking, as Muse does not pass allowAll on to workflow children
-  // (T3 d81afa0a6, a752363b1); it is shown only when Muse refuses that answer, and never once Muse has settled it. Every other stage
-  // goes to Trebell's policy and the approval card.
+  // (T3 d81afa0a6, a752363b1), unless only the person answers it (a protected write, a subject Trebell does not know); it is shown
+  // only when Muse refuses that answer, and never once Muse has settled it. Every other stage goes to Trebell's policy and the card.
   async #approve(entry){
     // A decision Muse acknowledged as closing the whole approval (terminal) leaves no later stage to ask, though a trailing update
     // may still name one (Meta's SDK).
     if(this.requests.get(entry.key)!==entry||entry.ask||entry.deciding||entry.terminal)return;
     const stage=requirementKey(entry.params.currentRequirementId);
     if(entry.decided===stage)return;
-    if(entry.child&&this.launched?.plan.approvalMode==="allowAll"&&entry.automatic!==stage){
+    if(entry.child&&this.launched?.plan.approvalMode==="allowAll"&&entry.automatic!==stage&&!personOnly(entry.params)){
       entry.automatic=stage;
       const outcome=await this.#decide(entry,"accept");
       if(outcome==="taken")return this.#approve(entry);
@@ -737,7 +739,7 @@ export class MuseAgentSession{
       decision=await this.onPermission({
         method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},
         options:(Array.isArray(params.availableChoices)?params.availableChoices:[]).filter(choice=>choice?.choiceId).map(choice=>({optionId:text(choice.choiceId),name:text(choice.label),kind:text(choice.decision)})),
-        askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||params.protectedWrite===true||!MUSE_SUBJECTS.has(text(params.subject?.kind))||!choices.has("accept"),
+        askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||personOnly(params)||!choices.has("accept"),
         approvalOptions:museApprovalOptions(params.availableChoices),signal:ask.signal,
       });
     }catch{decision="decline"}
