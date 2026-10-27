@@ -1273,7 +1273,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   // that window has gone (connected).
   const codexGoalContinuations=createCodexGoalContinuations({expire:(threadId,{turnId,requestUpstream,connected})=>{if(connected?.()!==false)void pauseUncontinuedCodexGoal(threadId,turnId,requestUpstream)}});
   async function pauseUncontinuedCodexGoal(threadId,turnId,requestUpstream){
-    const meta=state.threadMeta(threadId);if(!meta?.goal?.native||meta.goal.status!=="active"||codexRunningTurns.has(threadId))return;
+    // A turn that runs, or whose start a window has on its way (a follow-up sent just now), goes on with the thread.
+    const meta=state.threadMeta(threadId);if(!meta?.goal?.native||meta.goal.status!=="active"||threadTurnRuns(threadId))return;
     try{
       const paused=await requestUpstream("thread/goal/set",{threadId,status:"paused"},codexGoalRoute(threadId));
       mirrorCodexGoal(threadId,paused?.goal||null);

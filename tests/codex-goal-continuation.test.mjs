@@ -58,12 +58,12 @@ test("a goal whose completed turn Codex follows with no turn for 5 s expires, an
   continuations.turnCompleted("closed",{});continuations.clear();clock.advance(10_000);assert.equal(expired.length,2);assert.equal(clock.pending(),0);
 });
 
-// On a fake clock: of five threads with an active goal whose turn ends, only the one Codex starts no next turn for is paused. One Codex
-// goes on with, one whose goal was paused or cleared meanwhile, and one whose turn failed (T3 waits only after a completed turn) are
-// left as they are.
+// On a fake clock: of six threads with an active goal whose turn ends, only the one Codex starts no next turn for is paused. One Codex
+// goes on with, one whose window has a follow-up's start on its way, one whose goal was paused or cleared meanwhile, and one whose turn
+// failed (T3 waits only after a completed turn) are left as they are.
 test("the server pauses an active Codex goal Codex started no turn for within 5 s of a completed one, and leaves the others",async()=>{
-  const fixture=await startCodexGui("trebell-goal-continuation-"),{upstream}=fixture,[idleId,busyId,pausedId,failedId,clearedId]=["goal-stalls","goal-continues","goal-paused","goal-failed","goal-cleared"];
-  const ids=[idleId,busyId,pausedId,failedId,clearedId];
+  const fixture=await startCodexGui("trebell-goal-continuation-"),{upstream}=fixture,[idleId,busyId,sendingId,pausedId,failedId,clearedId]=["goal-stalls","goal-continues","goal-follow-up","goal-paused","goal-failed","goal-cleared"];
+  const ids=[idleId,busyId,sendingId,pausedId,failedId,clearedId];
   try{
     for(const threadId of ids)await fixture.thread(threadId);
     const window=await fixture.window();await window.request("initialize",{clientInfo:{name:"goal-continuation"}});
@@ -71,6 +71,10 @@ test("the server pauses an active Codex goal Codex started no turn for within 5 
     await window.request("thread/goal/set",{threadId:pausedId,status:"paused"});
     assert.equal(upstream.goals.get(idleId).status,"active");
     const setsBefore=upstream.calls("thread/goal/set").length;
+    // The person's follow-up in one thread: its start is on its way to Codex, which has not answered it yet.
+    const release=upstream.hold("turn/start");
+    window.request("turn/start",{threadId:sendingId,input:[{type:"text",text:"Also list the breaking changes.",textElements:[]}]}).catch(()=>{});
+    assert.ok(await until(()=>upstream.calls("turn/start").length===1));
     mock.timers.enable({apis:["setTimeout"]});
     try{
       for(const threadId of ids)upstream.notify("turn/started",{threadId,turn:{id:threadId+"-turn-1",status:"inProgress",items:[]}});
@@ -86,9 +90,9 @@ test("the server pauses an active Codex goal Codex started no turn for within 5 
       mock.timers.tick(1);
       assert.ok(await until(()=>upstream.goals.get(idleId)?.status==="paused"),"the goal Codex stopped working toward is paused");
       mock.timers.tick(10_000);await sleep(150);
-    }finally{mock.timers.reset()}
+    }finally{mock.timers.reset();release()}
     assert.deepEqual(upstream.calls("thread/goal/set").slice(setsBefore).map(call=>call.params),[{threadId:idleId,status:"paused"}],"only that one");
-    assert.equal(upstream.goals.get(busyId).status,"active");assert.equal(upstream.goals.get(failedId).status,"active");
+    assert.equal(upstream.goals.get(busyId).status,"active");assert.equal(upstream.goals.get(sendingId).status,"active");assert.equal(upstream.goals.get(failedId).status,"active");
     const expired=(await fixture.traces(idleId)).find(item=>item.name==="goal.continuation_expired");
     assert.equal(expired?.status,"paused");assert.equal(expired?.data?.completedTurnId,idleId+"-turn-1");
     assert.equal((await window.request("thread/goal/get",{threadId:idleId})).goal.status,"paused","the thread's goal reads paused");

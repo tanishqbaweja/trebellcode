@@ -15,7 +15,7 @@ export const sleep=ms=>new Promise(resolve=>realSetTimeout(resolve,ms));
 export async function until(check,ms=3000){const end=Date.now()+ms;while(!check()&&Date.now()<end)await sleep(10);return check()}
 
 async function fakeCodex(port){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),requests=[],answers=new Map(),goals=new Map(),sockets=new Set();let nextId=9000,turns=0;
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),requests=[],answers=new Map(),goals=new Map(),sockets=new Set(),holds=new Map();let nextId=9000,turns=0;
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   const send=value=>{for(const ws of sockets)if(ws.readyState===1)ws.send(JSON.stringify(value))};
   const notify=(method,params)=>send({method,params});
@@ -25,23 +25,29 @@ async function fakeCodex(port){
       const message=JSON.parse(String(raw));
       if(message.id!=null&&!message.method){const id=String(message.id);answers.set(id,[...(answers.get(id)||[]),message]);return}
       if(message.id==null||!message.method)return;requests.push(message);
-      const params=message.params||{},reply=result=>ws.send(JSON.stringify({id:message.id,result})),now=Math.floor(Date.now()/1000);
-      if(message.method==="thread/goal/get")return reply({goal:goals.get(params.threadId)||null});
-      if(message.method==="thread/goal/set"){
-        const previous=goals.get(params.threadId)||null;
-        const goal={threadId:params.threadId,objective:params.objective??previous?.objective,status:params.status??previous?.status??"active",tokenBudget:previous?.tokenBudget??null,tokensUsed:previous?.tokensUsed??0,timeUsedSeconds:previous?.timeUsedSeconds??0,createdAt:previous?.createdAt??now,updatedAt:now};
-        goals.set(params.threadId,goal);notify("thread/goal/updated",{threadId:params.threadId,goal});return reply({goal});
-      }
-      if(message.method==="thread/goal/clear"){const cleared=goals.delete(params.threadId);if(cleared)notify("thread/goal/cleared",{threadId:params.threadId});return reply({cleared})}
-      if(message.method==="turn/start")return reply({turn:{id:"fake-turn-"+(++turns),status:"inProgress",items:[],startedAt:now}});
-      if(message.method==="thread/unsubscribe")return reply({status:"unsubscribed"});
-      reply({});
+      const held=holds.get(message.method);if(held){holds.delete(message.method);held.then(()=>answer(ws,message));return}
+      answer(ws,message);
     });
   });
+  function answer(ws,message){
+    const params=message.params||{},reply=result=>{if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,result}))},now=Math.floor(Date.now()/1000);
+    if(message.method==="thread/goal/get")return reply({goal:goals.get(params.threadId)||null});
+    if(message.method==="thread/goal/set"){
+      const previous=goals.get(params.threadId)||null;
+      const goal={threadId:params.threadId,objective:params.objective??previous?.objective,status:params.status??previous?.status??"active",tokenBudget:previous?.tokenBudget??null,tokensUsed:previous?.tokensUsed??0,timeUsedSeconds:previous?.timeUsedSeconds??0,createdAt:previous?.createdAt??now,updatedAt:now};
+      goals.set(params.threadId,goal);notify("thread/goal/updated",{threadId:params.threadId,goal});return reply({goal});
+    }
+    if(message.method==="thread/goal/clear"){const cleared=goals.delete(params.threadId);if(cleared)notify("thread/goal/cleared",{threadId:params.threadId});return reply({cleared})}
+    if(message.method==="turn/start")return reply({turn:{id:"fake-turn-"+(++turns),status:"inProgress",items:[],startedAt:now}});
+    if(message.method==="thread/unsubscribe")return reply({status:"unsubscribed"});
+    reply({});
+  }
   await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {
     requests,goals,notify,calls:method=>requests.filter(item=>item.method===method),
     connected:()=>sockets.size>0,
+    // The next request of the method waits for release() before it is answered.
+    hold(method){let release=()=>{};holds.set(method,new Promise(resolve=>{release=resolve}));return ()=>release()},
     // A server request as Codex sends it; answers() gives what came back for it.
     ask(method,params){const id=nextId++;send({id,method,params});return {id,answers:()=>answers.get(String(id))||[]}},
     async close(){for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))},
