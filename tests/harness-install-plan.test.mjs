@@ -283,6 +283,37 @@ test("an OpenCode 2.x from npm updates @opencode/cli in its own prefix to the ne
   assert.deepEqual([offered.current,offered.latest,offered.newer,offered.canUpdate,offered.command],["2.0.24","2.3.1",true,true,shownCommand(native,["upgrade","2.3.1"],"win32")]);
 });
 
+// Only a 2.x looks for its line's newest release in its package's list of every release, as @opencode/cli's latest can be a 3.x.
+// Any other OpenCode reads npm's latest alone, an update keeping it only in line: an OpenCode 0.x, which Trebell rates broken below
+// 1.14.19, gets no Update and no note, and opencode-ai's list (some 15 MB) is never read for it, on this machine or on a host.
+test("an OpenCode 0.x is offered no update to the newest 0.x, and nothing reads opencode-ai's list of every release for it",WINDOWS_ONLY,async t=>{
+  const root=await tempRoot(t,"opencode0"),asked=[],releases=["0.15.0","0.15.31","1.14.19","1.19.4"];
+  const registry=async url=>{
+    asked.push(String(url));
+    if(String(url).endsWith("/latest"))return Response.json({name:"opencode-ai",version:"1.19.4"});
+    return Response.json({name:"opencode-ai","dist-tags":{latest:"1.19.4"},versions:Object.fromEntries(releases.map(version=>[version,{version}]))});
+  };
+  const listOnly=()=>asked.filter(url=>!url.endsWith("/latest"));
+  // OpenCode's own installer: no `opencode upgrade 0.15.31`, and an Update pressed from an older page says why nothing was installed.
+  const native=await file(join(root,"home",".opencode","bin","opencode.exe"));
+  const own=machine(root,{instances:[{id:"opencode-default",kind:"opencode",binaryPath:native,environment:{}}],fetchImpl:registry,answer:command=>command===native?answered("0.15.0\n"):missing(command)});
+  const update=statusOf(await own.manager.snapshot({refresh:true}),"opencode").update;
+  assert.deepEqual([update.current,update.latest,update.newer,update.message],["0.15.0",null,false,null]);
+  await assert.rejects(()=>own.manager.installPlan("opencode"),{message:"The newest OpenCode release, 1.19.4, is not an OpenCode 0.x like the one this profile runs (0.15.0), and Trebell Code updates an OpenCode only within its own line (2.x converts OpenCode's shared database in place). Nothing was installed."});
+  // One in a folder nothing proves: no note naming a 0.x to update to.
+  const loose=await file(join(root,"tools","opencode.exe"));
+  const manual=machine(root,{instances:[{id:"opencode-default",kind:"opencode",binaryPath:loose,environment:{}}],fetchImpl:registry,answer:command=>command===loose?answered("0.15.0\n"):missing(command)});
+  const note=statusOf(await manual.manager.snapshot({refresh:true}),"opencode").update;
+  assert.deepEqual([note.current,note.latest,note.newer,note.message],["0.15.0",null,false,null]);
+  // A host's: no `npm install -g opencode-ai@0.15.31` offered.
+  const profile={id:"ssh-fixture",type:"ssh",cwd:"/srv/app"};
+  const environments={get:id=>id===profile.id?profile:null,spawnArgv:()=>{throw new Error("nothing is started on the host")},executeArgv:async(_id,{command,args})=>command==="opencode"&&args[0]==="--version"?{exitCode:0,stdout:"0.15.0\n",stderr:""}:{exitCode:1,stdout:"",stderr:"unexpected command"}};
+  const host=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/test"},fetchImpl:registry});
+  const remote=statusOf(await host.snapshot({refresh:true}),"opencode").update;
+  assert.deepEqual([remote.current,remote.latest,remote.newer,remote.message],["0.15.0",null,false,null]);
+  assert.deepEqual(listOnly(),[],"only npm's latest was read");
+});
+
 // Settings' own harness list reads each harness's newest release beside its status check, and never waits long on a registry that
 // does not answer (packets dropped): it answers about when the checks do, and the release, once read, is the next listing's.
 test("Settings' harness list does not wait on a registry that does not answer, and its next listing has the release once it is read",WINDOWS_ONLY,async t=>{

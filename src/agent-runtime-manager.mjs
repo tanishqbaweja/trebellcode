@@ -812,9 +812,11 @@ export class AgentRuntimeManager{
     const range=packageName==="@opencode/cli"?">=2.0.0 <3.0.0":null;
     return {key:`npm view ${range?packageName+"@"+range:packageName}`,read:()=>this.#npmRelease(packageName,{range})};
   }
-  // npm's registry's read of a package's newest release, an OpenCode's within the line it runs (registryRelease), and its key.
+  // npm's registry's read of a package's newest release, and its key: an OpenCode 2.x's within its line (registryRelease), as
+  // @opencode/cli's latest can be a 3.x; any other's is npm's latest (opencode-ai's is a 1.x), which an update keeps only in line, so
+  // an OpenCode 0.x reads no list of every opencode-ai release for a 0.x Trebell rates broken.
   #registryRead(kind,packageName,line){
-    const lined=kind==="opencode"&&line!=null;
+    const lined=kind==="opencode"&&line===2;
     return {key:lined?`${packageName} ${line}.x`:packageName,read:()=>registryRelease(this.fetchImpl,packageName,lined?{line}:{})};
   }
   // Settings' listing starts the read of a profile's newest release before its status check when an earlier check in this run read
