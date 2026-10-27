@@ -112,6 +112,8 @@ const SILENT_STREAM_STOP=`OpenCode's server sent nothing for ${SILENT_STREAM_MS/
 // Trebell's repository tools are an MCP server of the session's folder, which OpenCode drops when it evicts an idle folder, so it is
 // added again before every turn; adding an unchanged config keeps its connection (T3 Code).
 const MCP_ADD_TIMEOUT_MS=5_000;
+// How long a resumed session's open requests are listed, and then stopped, before the session goes on without (T3 Code: 5 and 10 s).
+const LEFTOVER_LIST_MS=5_000,LEFTOVER_STOP_MS=10_000;
 function permissionDecision(value){return value==="accept"||value==="acceptForSession"?"once":"reject"}
 function permissionTitle(data){
   const action=String(data?.action||"tool"),resources=(Array.isArray(data?.resources)?data.resources:[]).map(String).filter(Boolean);
@@ -180,7 +182,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     this.sessionRules=v2Rules(this.permissionMode,{repositoryMcp:this.repositoryMcp,grants:this.sessionGrants});
     if(!info)info=await this.client.session.create({location,permissions:this.sessionRules});
     this.sessionId=String(info.id);
-    if(providerSessionId)await this.#applyPermissionRules();
+    if(providerSessionId){await this.#stopLeftoverRequests();await this.#applyPermissionRules()}
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
     const availableModels=[...this.modelMap.keys()];
     this.sessionSetup={sessionId:this.sessionId,models:{currentModelId:this.model,availableModels:availableModels.map(modelId=>({modelId,name:this.modelNames.get(modelId)||modelId}))},configOptions:[],modes:{currentModeId:String(info.agent||"build"),availableModes:[]},trebellRepositoryMcp:this.repositoryMcpStatus[0]||null};
@@ -189,6 +191,20 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     return {initialize:this.initializeResult,session:this.sessionSetup};
   }
 
+  // A resumed session's run may still wait on a question or an approval asked while Trebell was not there (a profile's own server
+  // outlives Trebell): nothing would ever answer it, and the thread's next prompt would wait behind that run. As T3 Code does when it
+  // resumes a session (stopLeftoverRequests), each is stopped without a message, which ends the run; requests OpenCode cannot list in
+  // time are left as they are.
+  async #stopLeftoverRequests(){
+    const sessionID=this.sessionId;
+    const listed=await openCode2Within(LEFTOVER_LIST_MS,"OpenCode did not list the session's open requests.",signal=>Promise.all([this.client.permission.list({sessionID},{signal}),this.client.session.form.list({sessionID},{signal})])).catch(()=>null);
+    if(!listed)return;
+    const [permissions,forms]=listed.map(list=>Array.isArray(list)?list:[]);
+    await openCode2Within(LEFTOVER_STOP_MS,"OpenCode did not take the session's open requests back.",()=>Promise.allSettled([
+      ...permissions.map(request=>this.client.permission.reply({sessionID,requestID:String(request.id),decision:"reject"})),
+      ...forms.map(form=>this.#cancelForm({id:form.id,sessionID})),
+    ])).catch(()=>{});
+  }
   // A turn whose add fails goes on without the repository tools, and the session's MCP status says why.
   async #addRepositoryMcp(){
     if(!this.repositoryMcp)return;

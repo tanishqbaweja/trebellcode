@@ -26,10 +26,10 @@ export function fakeOpenCode2Client({sessions={},overrides={},models=FAKE_OPENCO
       prompt:call("session.prompt",({delivery})=>({id:delivery==="steer"?"msg_steer":"msg_user"})),
       interrupt:call("session.interrupt",{}),synthetic:call("session.synthetic",{}),
       fork:call("session.fork",{id:"ses_fork"}),
-      form:{reply:call("session.form.reply",undefined),cancel:call("session.form.cancel",undefined)},
+      form:{list:call("session.form.list",[]),reply:call("session.form.reply",undefined),cancel:call("session.form.cancel",undefined)},
     },
     message:{list:call("message.list",{data:[]})},
-    permission:{reply:call("permission.reply",undefined)},
+    permission:{list:call("permission.list",[]),reply:call("permission.reply",undefined)},
     event:{subscribe:({signal,onActivity}={})=>{
       const subscription={signal,onActivity};subscriptions.push(subscription);
       return {async*[Symbol.asyncIterator](){
