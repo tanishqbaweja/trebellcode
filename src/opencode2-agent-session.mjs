@@ -100,6 +100,16 @@ function errorText(error){
   if(!error)return "OpenCode request failed";
   return String(error?.message||error?.data?.message||error?._tag||error).slice(0,2000);
 }
+// OpenCode 2 types a usage window or budget the provider says is used up as provider.quota (HTTP 429) or provider.rate-limit: a usage
+// limit, whose failure says where to check it. An empty balance is provider.quota too, with HTTP 402, and never resets, so OpenCode's
+// own message (where to add credit) stands alone (T3 Code).
+export const OPENCODE_USAGE_LIMIT_HINT="See Usage for your OpenCode limits.";
+function executionFailure(error){
+  const type=String(error?.type||""),usageLimit=(type==="provider.quota"&&Number(error?.status)!==402)||type==="provider.rate-limit";
+  if(!usageLimit)return {text:errorText(error),usageLimit};
+  const said=String(error?.message||"").trim().replace(/[\s.]+$/,"");
+  return {text:`${said||"OpenCode reached a usage limit"}. ${OPENCODE_USAGE_LIMIT_HINT}`,usageLimit};
+}
 // Trebell's repository tools are an MCP server of the session's folder, which OpenCode drops when it evicts an idle folder, so it is
 // added again before every turn; adding an unchanged config keeps its connection (T3 Code).
 const MCP_ADD_TIMEOUT_MS=5_000;
@@ -236,7 +246,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
       await turn.completion;
       if(turn.stopError)throw turn.stopError;
       if(turn.cancelled)return {stopReason:"cancelled",providerMessageId:null,assistantMessageId:turn.assistantMessageId,raw:accepted};
-      if(turn.error)throw new Error(turn.error);
+      if(turn.error)throw Object.assign(new Error(turn.error),turn.usageLimit?{usageLimit:true}:{});
       const messages=await this.client.message.list({sessionID:this.sessionId,order:"desc",limit:20}).catch(()=>({data:[]}));
       const list=Array.isArray(messages?.data)?messages.data:[];
       const user=list.find(item=>item?.type==="user"),assistant=list.find(item=>item?.type==="assistant");
@@ -357,7 +367,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(event.type==="session.tool.success"){const id=String(data.id),name=this.toolNames.get(id)||"tool";this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"completed",rawOutput:outputText(data.content)}});return}
     if(event.type==="session.tool.failed"){const id=String(data.id),name=this.toolNames.get(id)||"tool";this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"failed",rawOutput:errorText(data.error)}});return}
     if(event.type==="session.execution.succeeded"&&turn&&sessionID===this.sessionId){turn.settle?.();return}
-    if(event.type==="session.execution.failed"&&turn&&sessionID===this.sessionId){turn.error=errorText(data.error);turn.settle?.();return}
+    if(event.type==="session.execution.failed"&&turn&&sessionID===this.sessionId){const failure=executionFailure(data.error);turn.error=failure.text;turn.usageLimit=failure.usageLimit;turn.settle?.();return}
     if(event.type==="session.execution.interrupted"&&turn&&sessionID===this.sessionId){turn.cancelled=true;turn.settle?.();return}
   }
   // A retry OpenCode schedules for this turn's request, or a subagent's, shows while Trebell waits for it (openCodeRetryNotice); one that
