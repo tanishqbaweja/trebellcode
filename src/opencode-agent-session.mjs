@@ -536,6 +536,18 @@ export function remapOpenCodeTurns(turns=[],mapping={}){
   });
 }
 
+// OpenCode's read tool wraps what it read in tags, each on a line of its own: <path>, <type> (file or directory), then <content> (the
+// file's numbered lines) or <entries> (the folder's). A read's output is what it read, with any text OpenCode added after the wrapping
+// (a system reminder, say) kept as it is (T3 Code's nativeReadOutput). Output in any other shape is left alone.
+export function openCodeReadOutput(output){
+  if(typeof output!=="string")return output;
+  const header=/^<path>[^\r\n]+<\/path>\r?\n<type>(directory|file)<\/type>\r?\n/.exec(output);if(!header)return output;
+  const body=output.slice(header[0].length);
+  // A file's lines are numbered ("2: </content>"), so only a closing tag on a line of its own ends the wrapping.
+  const wrapped=header[1]==="directory"?/^<entries>\r?\n([\s\S]*?)\r?\n<\/entries>(?=\r?\n|$)/.exec(body):/^<content>(?:\r?\n)?([\s\S]*?)\r?\n<\/content>(?=\r?\n|$)/.exec(body);
+  return wrapped?wrapped[1]+body.slice(wrapped[0].length):output;
+}
+
 function toolTitle(tool,stateTitle){
   const id=String(tool||"").toLowerCase();
   if(id==="read")return "Read file";
@@ -1027,7 +1039,7 @@ export class OpenCodeAgentSession{
         else if(delta)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:delta}}});
       }else if(part.type==="tool"){
         const status=part.state?.status==="running"?"in_progress":part.state?.status==="completed"?"completed":part.state?.status==="error"?"failed":"pending";
-        const update={sessionUpdate:part.state?.status==="pending"?"tool_call":"tool_call_update",toolCallId:part.callID||part.id,title:toolTitle(part.tool,part.state?.title),kind:toolKind(part.tool),status,rawInput:part.state?.input||{},rawOutput:part.state?.output||part.state?.error||null};
+        const update={sessionUpdate:part.state?.status==="pending"?"tool_call":"tool_call_update",toolCallId:part.callID||part.id,title:toolTitle(part.tool,part.state?.title),kind:toolKind(part.tool),status,rawInput:part.state?.input||{},rawOutput:(part.tool==="read"?openCodeReadOutput(part.state?.output):part.state?.output)||part.state?.error||null};
         this.onUpdate?.({sessionId:this.sessionId,update});
         // The task tool names the subagent's session once it has created it.
         if(part.tool==="task"&&part.state?.metadata?.sessionId)await this.#applyChildRules(part.state.metadata.sessionId);
