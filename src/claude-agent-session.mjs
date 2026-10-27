@@ -20,7 +20,9 @@ export const CLAUDE_MAX_IDLE_PIN_MS=4*60*60_000;
 export const CLAUDE_PLAN_CAPTURED="The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.";
 export const CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE="Claude is still running background agents or commands, and this model or setting change would end them. Wait for them to finish (or ask Claude to stop them), or keep the current model and settings, then send the message again.";
 // Nothing the person changed: Claude switched itself to Plan, and Claude Code refuses to leave it while its background work pins the process.
-export const CLAUDE_PLAN_STUCK="Claude Code could not leave the Plan mode Claude switched to, and restarting it would end the background agents or commands it is still running. Wait for them to finish, then send the message again.";
+// Work that never ends by itself (a watcher) would hold every message back until the process is released, up to 4 hours: Edit from here
+// on the refused message ends the process, and the work with it (rewindConversation closes it), and gives the message back to send.
+export const CLAUDE_PLAN_STUCK="Claude Code could not leave the Plan mode Claude switched to, and restarting it would end the background agents or commands it is still running. Wait for them to finish, then send the message again. To end them now, choose Edit from here on this message and send it again.";
 export const CLAUDE_USAGE_LIMIT_HINT="Claude usage limit reached. Send the message again once the limit resets.";
 export const CLAUDE_CONTEXT_FULL="Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
 export const CLAUDE_MCP_REGISTRATION_TIMED_OUT="Claude Code did not finish connecting this thread's MCP servers within 90 seconds. Send the message again; if it keeps timing out, check the MCP servers in Settings.";

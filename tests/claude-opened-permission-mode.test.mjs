@@ -8,7 +8,7 @@ import { isSessionRefusal } from "../src/session-refusal.mjs";
 import { claudeResult, scriptedClaudeSdk } from "./fixtures/scripted-claude-sdk.mjs";
 
 const BACKGROUND_WORK="Claude is still running background agents or commands, and this model or setting change would end them. Wait for them to finish (or ask Claude to stop them), or keep the current model and settings, then send the message again.";
-const STUCK_IN_PLAN="Claude Code could not leave the Plan mode Claude switched to, and restarting it would end the background agents or commands it is still running. Wait for them to finish, then send the message again.";
+const STUCK_IN_PLAN="Claude Code could not leave the Plan mode Claude switched to, and restarting it would end the background agents or commands it is still running. Wait for them to finish, then send the message again. To end them now, choose Edit from here on this message and send it again.";
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const modes=call=>call.log.filter(entry=>entry[0]==="setPermissionMode").map(entry=>entry[1]);
 const steps=call=>call.log.map(entry=>entry[0]==="input"?"input":`${entry[0]}:${entry[1]}`);
@@ -85,7 +85,7 @@ test("a process that cannot leave Plan is replaced only once no background work 
   await claude.prompt([{type:"text",text:"Look first"}]);
   calls[0].emit({type:"system",subtype:"background_tasks_changed",tasks:[{task_id:"bg-1",description:"npm run watch"}]});await tick();
   // The person changed nothing: the refusal says Claude Code is stuck in the Plan mode Claude chose, not that a change of theirs would
-  // end the background work, and asks them to wait, since every message is refused until it ends.
+  // end the background work, and, since every message is refused until it ends, to wait for it or end it with Edit from here.
   const refusal=await claude.prompt([{type:"text",text:"Now fix it"}]).then(()=>null,error=>error);
   assert.ok(isSessionRefusal(refusal),"refused by Trebell, not failed by Claude Code");
   assert.equal(refusal.message,STUCK_IN_PLAN);assert.notEqual(refusal.message,BACKGROUND_WORK);
@@ -94,6 +94,25 @@ test("a process that cannot leave Plan is replaced only once no background work 
   assert.equal((await claude.prompt([{type:"text",text:"Now fix it"}])).stopReason,"end_turn");
   assert.equal(calls.length,2,"with nothing running in it, the process is replaced");assert.equal(calls[0].closed,true);
   assert.equal(calls[1].options.permissionMode,"acceptEdits");
+  await claude.close();
+});
+
+// The way out the refusal names, for work that never ends by itself (a watcher): Edit from here on the refused message closes the
+// process, and the background work with it, and the message sent again opens a new Claude Code on the conversation, at the thread's mode.
+test("Edit from here on a message refused while Claude Code is stuck in Plan ends the process and its background work, and the message sent again goes",async()=>{
+  const {sdk,calls}=scriptedClaudeSdk({turn:args=>args.call.index===0?intoPlan(args):args.emit(claudeResult(args.message)),control:{setPermissionMode:()=>{throw new Error("The mode cannot change now")}}});
+  const claude=session(sdk,"edits");await claude.start();
+  const first=await claude.prompt([{type:"text",text:"Start the watcher, then plan the fix"}]);
+  calls[0].emit({type:"system",subtype:"background_tasks_changed",tasks:[{task_id:"bg-1",description:"npm run watch"}]});await tick();
+  const refusal=await claude.prompt([{type:"text",text:"Now fix it"}]).then(()=>null,error=>error);
+  assert.equal(refusal?.message,STUCK_IN_PLAN,"the refusal says how to end the work now");
+  // Edit from here on the refused message, as the relay rewinds the thread: to the turn before it.
+  await claude.rewindConversation(first.providerMessageId);
+  assert.equal(calls[0].closed,true,"the process, and the watcher in it, ended");
+  assert.equal((await claude.prompt([{type:"text",text:"Now fix it"}])).stopReason,"end_turn");
+  assert.equal(calls.length,2);
+  const {forkSession,resumeSessionAt,permissionMode}=calls[1].options;
+  assert.deepEqual([forkSession,resumeSessionAt,permissionMode],[true,first.providerMessageId,"acceptEdits"],"a new Claude Code on the conversation up to the turn before, at the thread's mode");
   await claude.close();
 });
 
