@@ -100,6 +100,25 @@ function toolResultText(content){
 function usageTotal(usage={}){
   return Number(usage.input_tokens||0)+Number(usage.cache_creation_input_tokens||0)+Number(usage.cache_read_input_tokens||0)+Number(usage.output_tokens||0);
 }
+const tokens=value=>Math.max(0,Math.round(Number(value))||0);
+// The prompt a request sent: its input and cache tokens (T3 Code's claudeMessageInputTokens).
+function promptTokens(usage){return tokens(usage?.input_tokens)+tokens(usage?.cache_creation_input_tokens)+tokens(usage?.cache_read_input_tokens)}
+// A message_delta's usage counts its message so far: a field it leaves null or out keeps message_start's (T3 Code's
+// mergeClaudeStreamUsage).
+function mergedUsage(current,delta){
+  return {...current,input_tokens:delta.input_tokens??current.input_tokens,cache_creation_input_tokens:delta.cache_creation_input_tokens??current.cache_creation_input_tokens??null,cache_read_input_tokens:delta.cache_read_input_tokens??current.cache_read_input_tokens??null,output_tokens:delta.output_tokens??current.output_tokens};
+}
+// The tokens of a turn's root requests so far, which its result's main-loop usage gives once it ends.
+function summedUsage(requests){
+  const sum={input_tokens:0,cache_creation_input_tokens:0,cache_read_input_tokens:0,output_tokens:0};
+  for(const usage of requests.values())for(const key of Object.keys(sum))sum[key]+=tokens(usage?.[key]);
+  return sum;
+}
+// The context meter's reading of one request: its prompt, as the relay's last request.
+function contextReading(usage){
+  const input=promptTokens(usage),output=tokens(usage?.output_tokens);
+  return {totalTokens:input+output,inputTokens:input,cachedInputTokens:tokens(usage?.cache_read_input_tokens),cacheWriteInputTokens:tokens(usage?.cache_creation_input_tokens),outputTokens:output};
+}
 
 // A task tool's field, read defensively: the tools' result shapes are no typed SDK contract.
 const taskField=(value,key)=>value&&typeof value==="object"?value[key]:undefined;
@@ -408,6 +427,9 @@ export class ClaudeAgentSession{
     this.live=null;this.turn=null;this.idleTimer=null;this.tools=new Map();
     // taskCalls: the task tool calls without a result yet, by id; taskLists: each Claude session's task list, by its id.
     this.taskCalls=new Map();this.taskLists=new Map();
+    // contextWindows: Claude Code's window for each model it ran (getContextUsage), asked once. meter: what the context meter last
+    // showed (the total, its cost and the context), and request the latest root request's usage as its stream reports it.
+    this.contextWindows=new Map();this.meter={usage:null,modelUsage:null,cost:null,context:null};this.request=null;
     this.sessionAllowRules=new Set();this.additionalDirectories=new Set();this.inventory={};this.inventoryRank=0;this.#rewindOrigins=new WeakMap();
     this.initializeResult={agentCapabilities:{loadSession:true,sessionCapabilities:{fork:{},resume:{},close:{}}},agentInfo:{name:"Claude Code"}};
     this.sessionSetup=null;
@@ -745,6 +767,8 @@ export class ClaudeAgentSession{
       id:randomUUID(),promptUuid,uuids:new Set(promptUuid?[promptUuid]:[]),live,wake,echoed:!promptUuid,cursor:null,steered:false,steers:[],cancelRequested:false,
       result:null,queryError:null,cost:0,emittedText:false,separator:false,stream:null,textBlocks:new Map(),thoughtMessages:new Set(),
       authFailure:false,rateLimited:false,apiErrorText:null,rejectedLimits:new Map(),blockedLimit:null,announcedLimits:new Set(),settled:false,promise,resolve,reject,
+      // requests: the usage of the turn's root requests, by message id.
+      requests:new Map(),
     };
   }
   // Output Claude produces on its own while no prompt runs (a background task or agent finished): a turn of its own.
@@ -860,6 +884,7 @@ export class ClaudeAgentSession{
       // from the one asked for (T3 Code's 598298cc3).
       if(!live.sawInit&&message.permissionMode)live.openedPermissionMode=message.permissionMode;
       live.sawInit=true;this.sessionId=message.session_id||this.sessionId;this.startedOnce=true;
+      if(typeof message.model==="string"&&message.model.trim())live.model=message.model.trim();
       if(this.turn?.live===live&&!this.turn.settled)this.#delivered(this.turn);
       if(live.fork&&this.pendingFork===live.fork){
         this.pendingFork=null;
@@ -876,6 +901,7 @@ export class ClaudeAgentSession{
       return;
     }
     if(type==="system"&&subtype==="status"){this.#publishInventory({},{status:message.status??null,permissionMode:message.permissionMode,compactResult:message.compact_result});return}
+    if(type==="system"&&subtype==="compact_boundary"){this.#compacted(live,message);return}
     if(type==="system"&&subtype==="commands_changed"){if(Array.isArray(message.commands))this.#publishInventory({commands:message.commands});return}
     if(type==="system"&&subtype==="background_tasks_changed"){this.#backgroundTasks(live,message);return}
     if(type==="rate_limit_event"){this.#rateLimit(message);return}
@@ -899,7 +925,7 @@ export class ClaudeAgentSession{
         else if(type==="result"){this.#usage(live,null,message);return}
       }else if(type==="result"&&live.echoes&&message.origin&&message.origin.kind!=="human"){this.#usage(live,null,message);return}
     }
-    if(type==="stream_event"){if(root)this.#streamEvent(turn,message.event||{});return}
+    if(type==="stream_event"){if(root)this.#streamEvent(live,turn,message.event||{});return}
     if(type==="assistant"){
       const blocks=Array.isArray(message.message?.content)?message.message.content:[];
       if(!root){for(const block of blocks)if(block?.type==="tool_use")this.#toolUse(block);return}
@@ -914,6 +940,7 @@ export class ClaudeAgentSession{
       }
       turn.rateLimited=false;turn.apiErrorText=null;turn.blockedLimit=null;
       if(message.uuid)turn.cursor=message.uuid;
+      this.#snapshotUsage(live,turn,message.message);
       const messageId=message.message?.id||null;
       for(const block of blocks){
         if(block?.type==="text"&&block.text)this.#snapshotText(turn,messageId,block.text,message.uuid);
@@ -936,8 +963,19 @@ export class ClaudeAgentSession{
   }
   // Root token streaming: text and thinking deltas as they arrive; the per-block assistant snapshots then add only what the
   // stream did not already show.
-  #streamEvent(turn,event){
-    if(event.type==="message_start"){turn.stream={id:event.message?.id||null,blocks:new Map()};return}
+  #streamEvent(live,turn,event){
+    if(event.type==="message_start"){
+      turn.stream={id:event.message?.id||null,blocks:new Map()};
+      // The request's usage, which its message_delta then completes (T3 Code's 66cae3d75); one that comes without it is not measured.
+      const usage=event.message?.usage;
+      this.request=usage&&typeof usage==="object"?{id:event.message?.id||null,usage:{...usage}}:null;
+      if(this.request)this.#requestUsage(live,turn);
+      return;
+    }
+    if(event.type==="message_delta"){
+      if(this.request?.usage&&event.usage&&typeof event.usage==="object"){this.request.usage=mergedUsage(this.request.usage,event.usage);this.#requestUsage(live,turn)}
+      return;
+    }
     if(event.type==="content_block_start"){
       const kind=event.content_block?.type;
       if(kind==="text"){
@@ -965,13 +1003,63 @@ export class ClaudeAgentSession{
     record.consumed=true;
     if(text.startsWith(record.text))this.#emitText(turn,text.slice(record.text.length),uuid);
   }
+  // An assistant snapshot repeats its request's message_start usage, which some proxies send as zeros: it reports a request the stream
+  // did not, or fills in a prompt the stream left out (T3 Code's 66cae3d75). Claude Code's own <synthetic> frames measure no request.
+  #snapshotUsage(live,turn,body){
+    const usage=body?.usage;if(!usage||typeof usage!=="object"||body.model==="<synthetic>")return;
+    const id=body.id||null,request=this.request;
+    if(!request||request.id!==id){this.request={id,usage:{...usage}};this.#requestUsage(live,turn)}
+    else if(request.usage&&promptTokens(request.usage)<=0&&promptTokens(usage)>0){request.usage={...usage,output_tokens:Math.max(tokens(usage.output_tokens),tokens(request.usage.output_tokens))};this.#requestUsage(live,turn)}
+  }
+  // One root request's usage as the context meter reads it: its prompt is the context, which usage without input never is (some proxies
+  // send zeros), and its tokens join the turn's so far, the total until the turn's result gives it. A turn's first request ends the
+  // reading of the turn before, whose cost its own result brings.
+  #requestUsage(live,turn){
+    const request=this.request,usage=request?.usage;if(!usage||promptTokens(usage)<=0)return;
+    if(!turn.requests.size){this.meter.cost=null;this.meter.modelUsage=null}
+    request.key??=request.id||randomUUID();turn.requests.set(request.key,usage);
+    this.meter.usage=summedUsage(turn.requests);this.meter.context=contextReading(usage);
+    this.#emitMeter(live);
+  }
+  // A compaction leaves the request it ended stale, whose later deltas measure what it removed: the context is what it kept, once Claude
+  // Code says how much.
+  #compacted(live,message){
+    if(this.request)this.request.usage=null;
+    const kept=tokens(message.compact_metadata?.post_tokens);if(!kept)return;
+    this.meter.context={totalTokens:kept,inputTokens:kept,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0};
+    this.#emitMeter(live);
+  }
+  // The result keeps its turn's usage and cost as the total (main-loop tokens, as its requests gave them); one that has no tokens (a
+  // /compact's) leaves the total shown.
   #usage(live,turn,result){
     const total=Number(result?.total_cost_usd);
     const cost=Number.isFinite(total)?Math.max(0,total-live.costBase):0;
     if(Number.isFinite(total))live.costBase=total;
     if(turn)turn.cost=cost;
     const used=usageTotal(result?.usage||{});
-    if(used||cost)this.#emit({sessionUpdate:"usage_update",used,size:0,cost:{amount:cost,currency:"USD"},usage:result?.usage||null,modelUsage:result?.modelUsage||null});
+    if(!used&&!cost)return;
+    if(used){this.meter.usage=result.usage;this.meter.modelUsage=result.modelUsage||null}
+    this.meter.cost=cost;
+    this.#emitMeter(live);
+  }
+  // The context meter: the latest turn's tokens and its result's cost as the total, and the latest root request's prompt (or what a
+  // compaction kept) as the context, against the window Claude Code measures this model's context by.
+  #emitMeter(live){
+    const {usage,modelUsage,cost,context}=this.meter,size=context?this.#contextWindow(live)||0:0;
+    this.#emit({sessionUpdate:"usage_update",used:usageTotal(usage||{}),size,...(cost!=null?{cost:{amount:cost,currency:"USD"}}:{}),usage:usage||null,modelUsage:modelUsage||null,...(context?{context:{...context}}:{})});
+  }
+  // The window of Claude Code's own context reading (its /context window: the model's, or the profile's autoCompactWindow below it),
+  // asked once per model; the meter shows the percentage once it answers. A Claude Code that cannot say leaves the token count alone,
+  // and a process that ended first leaves the question to the next one.
+  #contextWindow(live){
+    const model=String(live?.model||"");if(!model)return null;
+    const known=this.contextWindows.get(model);if(known)return known.value;
+    const entry={value:null};this.contextWindows.set(model,entry);
+    Promise.resolve().then(()=>live.query.getContextUsage({detail:"summary"})).then(answer=>{
+      entry.value=tokens(answer?.rawMaxTokens)||null;
+      if(entry.value&&this.meter.context&&this.live===live&&!this.closed)this.#emitMeter(live);
+    },()=>{if(live.closed&&this.contextWindows.get(model)===entry)this.contextWindows.delete(model)});
+    return null;
   }
   #backgroundTasks(live,message){
     const next=new Map();

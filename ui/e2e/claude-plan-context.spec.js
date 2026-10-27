@@ -8,14 +8,17 @@ import { routeClaudeApp,startClaudeRelay } from "./claude-relay-harness.js";
 // A Claude Code thread as a person reads it, on the real relay with Claude Code's SDK scripted.
 // Claude's to-do list (TodoWrite) and task list (TaskCreate, TaskUpdate) show as the turn's plan and update as Claude works, and after
 // a restart the list goes on from the one Claude Code keeps.
+// The composer's meter says how full Claude's context window is: its latest request's prompt against the window Claude Code reports.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const TODOS=[{content:"Read the release checklist",status:"in_progress",activeForm:"Reading the release checklist"},{content:"Update the changelog",status:"pending",activeForm:"Updating the changelog"},{content:"Tag the release",status:"pending",activeForm:"Tagging the release"}];
+const WINDOW={rawMaxTokens:200_000,maxTokens:200_000,totalTokens:20_000,percentage:10,isAutoCompactEnabled:true};
 
 async function openThread(page,title){
   const row=page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${title}"]`)});
   await expect(row).toBeVisible({timeout:15_000});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
 }
 async function send(page,text){await page.getByTestId("composer").click();await page.keyboard.type(text,{delay:5});await page.getByTestId("send").click()}
+const started=(id,usage)=>({type:"stream_event",parent_tool_use_id:null,event:{type:"message_start",message:{id,usage}}});
 const toolCall=(id,name,input,text=null)=>({type:"assistant",uuid:randomUUID(),parent_tool_use_id:null,message:{id:"msg-"+id,content:[...(text?[{type:"text",text}]:[]),{type:"tool_use",id,name,input}]}});
 const toolAnswer=(id,content,structured)=>({type:"user",parent_tool_use_id:null,message:{role:"user",content:[{type:"tool_result",tool_use_id:id,content}]},tool_use_result:structured});
 const reply=(message,text,usage,cost)=>[
@@ -124,4 +127,66 @@ test("after Trebell restarts, Claude's next change to its task list keeps the ta
     planSeen.open();
     await expect(page.getByText("The migration tests are running.",{exact:true})).toBeVisible({timeout:15_000});
   }finally{planSeen.open();await harness.close()}
+});
+
+test("the composer's meter says how full Claude's context window is: its latest request's prompt against the window Claude Code reports",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const firstSeen=gate(),secondSeen=gate(),compactedSeen=gate();
+  const harness=await startClaudeRelay({
+    control:{getContextUsage:()=>({...WINDOW})},
+    turn:async({message,index,emit})=>{
+      const delta=usage=>emit({type:"stream_event",parent_tool_use_id:null,event:{type:"message_delta",delta:{stop_reason:"tool_use"},usage}});
+      if(index===0){
+        emit(started("msg-ctx-1",{input_tokens:1200,cache_creation_input_tokens:2800,cache_read_input_tokens:120_000,output_tokens:1}));
+        emit({type:"assistant",uuid:randomUUID(),parent_tool_use_id:null,message:{id:"msg-ctx-1",content:[{type:"text",text:"Reading the repository."}]}});
+        delta({output_tokens:240});
+        await firstSeen.shut;
+        emit(started("msg-ctx-2",{input_tokens:400,cache_creation_input_tokens:0,cache_read_input_tokens:149_600,output_tokens:1}));
+        await secondSeen.shut;
+        for(const frame of reply(message,"The repository has three packages.",{input_tokens:1600,cache_creation_input_tokens:2800,cache_read_input_tokens:269_600,output_tokens:420},0.42))emit(frame);
+        return;
+      }
+      // Claude compacts the conversation on its own in the next turn: the meter shows what the compaction kept.
+      emit({type:"system",subtype:"status",status:"compacting",session_id:"s",uuid:randomUUID()});
+      emit({type:"system",subtype:"status",status:null,compact_result:"success",session_id:"s",uuid:randomUUID()});
+      emit({type:"system",subtype:"compact_boundary",compact_metadata:{trigger:"auto",pre_tokens:150_000,post_tokens:30_000},session_id:"s",uuid:randomUUID()});
+      await compactedSeen.shut;
+      emit(started("msg-ctx-3",{input_tokens:500,cache_creation_input_tokens:31_500,cache_read_input_tokens:0,output_tokens:1}));
+      for(const frame of reply(message,"Summarized the parser.",{input_tokens:500,cache_creation_input_tokens:31_500,cache_read_input_tokens:0,output_tokens:60},0.5))emit(frame);
+    },
+  });
+  try{
+    harness.seedThread("Repository tour");
+    await routeClaudeApp(page,harness,{permissionMode:"supervised"});
+    await page.goto("/");await openThread(page,"Repository tour");
+    const meter=page.getByRole("meter",{name:"Context window used"}),context=page.locator(".composer-context");
+    // The meter's numbers as the page writes them, in its own locale.
+    const [k124,k150,k30,k32,k200]=await page.evaluate(values=>values.map(value=>value.toLocaleString()),[124_000,150_000,30_000,32_000,200_000]);
+
+    await send(page,"Tour the repository");
+    await expect(page.getByText("Reading the repository.",{exact:true})).toBeVisible({timeout:15_000});
+    // 124,000 of the request's prompt (its input and cache tokens) against Claude Code's 200,000-token window.
+    await expect(meter).toHaveAttribute("aria-valuenow","62");
+    await expect(context).toContainText(`62% · ${k124}/${k200}`);
+    await page.screenshot({animations:"disabled",path:`${auditDir}claude-context-meter-dark-1280x800.png`});
+    firstSeen.open();
+    // The next request's prompt is the context now.
+    await expect(meter).toHaveAttribute("aria-valuenow","75",{timeout:15_000});
+    await expect(context).toContainText(`75% · ${k150}/${k200}`);
+    secondSeen.open();
+    // The turn's result brings its cost; the context stays its last request's.
+    await expect(page.getByText("The repository has three packages.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(context).toContainText(`75% · ${k150}/${k200} · $0.42`);
+    await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
+    await page.screenshot({animations:"disabled",path:`${auditDir}claude-context-meter-light-1280x800.png`});
+
+    await send(page,"Summarize the parser");
+    await expect(meter).toHaveAttribute("aria-valuenow","15",{timeout:15_000});
+    await expect(context).toContainText(`15% · ${k30}/${k200}`);
+    await page.screenshot({animations:"disabled",path:`${auditDir}claude-context-meter-compacted-light-1280x800.png`});
+    compactedSeen.open();
+    await expect(page.getByText("Summarized the parser.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(context).toContainText(`16% · ${k32}/${k200} · $0.08`);
+  }finally{firstSeen.open();secondSeen.open();compactedSeen.open();await harness.close()}
 });

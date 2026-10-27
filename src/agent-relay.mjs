@@ -1519,9 +1519,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const used=Number(update.used)||(input+output+cached+cacheWrite+reasoning),size=Number(update.size)||0;
       const snapshot={totalTokens:used,inputTokens:input||Math.max(0,used-output-reasoning),cachedInputTokens:cached,cacheWriteInputTokens:cacheWrite,outputTokens:output,reasoningOutputTokens:reasoning};
       const runtimeSession=sessions.get(threadId);if(runtimeSession)runtimeSession.__usage={usage:snapshot,cost:update.cost||null,at:Date.now()};
-      // A harness that reports what its context holds apart from the turn's tokens (Muse Code's session/contextUsage) sends it as
-      // contextTokens: the context meter reads it as the last request's input, as it reads Codex's, and the turn keeps its own totals.
-      const context=Number(update.contextTokens)>0?Number(update.contextTokens):0,last=context?{totalTokens:context,inputTokens:context,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0}:snapshot;
+      // A harness that reports what its context holds apart from the turn's tokens sends it: Claude Code its latest request's prompt
+      // (context, by kind of token), Muse Code what its context holds (contextTokens, from session/contextUsage). The context meter
+      // reads it as the last request's input, as it reads Codex's, and the turn keeps its own totals.
+      const context=update.context&&typeof update.context==="object"?update.context:null,contextTokens=Number(update.contextTokens)>0?Number(update.contextTokens):0;
+      const last=context?{totalTokens:Number(context.totalTokens)||0,inputTokens:Number(context.inputTokens)||0,cachedInputTokens:Number(context.cachedInputTokens)||0,cacheWriteInputTokens:Number(context.cacheWriteInputTokens)||0,outputTokens:Number(context.outputTokens)||0,reasoningOutputTokens:0}
+        :contextTokens?{totalTokens:contextTokens,inputTokens:contextTokens,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0}:snapshot;
       emit("thread/tokenUsage/updated",{threadId,turnId,tokenUsage:{total:snapshot,last,modelContextWindow:size||null,cost:update.cost||null}});
     }else if(type==="diff"){
       emit("turn/diff/updated",{threadId,turnId,diff:update.diff||[]});

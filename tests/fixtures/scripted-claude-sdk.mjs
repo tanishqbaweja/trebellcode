@@ -5,7 +5,8 @@ import { PassThrough } from "node:stream";
 // messages fed by the streaming-input prompt. Claude Code reports its session (init) as it takes the first message in, and
 // turn({message,index,options,emit,signal,call}) runs for each user message in turn, a "now" message at once as Claude Code takes a
 // steer into the running turn; signal aborts once the query closes (Stop, close). init adds to the init frame (or is a function of
-// the options); control answers the Query's control requests by name (setMcpServers, setPermissionMode, backgroundTasks), and
+// the options); control answers the Query's control requests by name (setMcpServers, setPermissionMode, backgroundTasks, and
+// getContextUsage, which a Query without control.getContextUsage lacks, as an older SDK does), and
 // control.return(call) is what the Query's return() waits on (the SDK waits there for the CLI to exit). Each call logs its inputs and
 // control requests in order; call.emit sends a frame of its own and call.end(error) ends the stream, as a CLI that exits. With spawn,
 // each Query starts its process as the SDK does (call.child); fakeClaudeChildren gives a session's spawnChild such processes.
@@ -40,6 +41,7 @@ export function scriptedClaudeSdk({turn=({message,emit})=>emit(claudeResult(mess
       async setMcpServers(servers){return answer("setMcpServers",[servers],{added:Object.keys(servers),removed:[],errors:{}})},
       async backgroundTasks(toolUseId){return answer("backgroundTasks",[toolUseId],true)},
       initializationResult:async()=>({commands:[],agents:[],models:[]}),
+      ...(control.getContextUsage?{async getContextUsage(options){return answer("getContextUsage",[options],undefined)}}:{}),
     };
   };
   const sdk={query,getSessionInfo:async()=>undefined,forkSession:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};

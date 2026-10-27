@@ -19,9 +19,10 @@ const MODELS={agentRuntime:"claude",ready:true,models:["default"],defaultModel:"
 // move of a foreground task to the background,
 // control.setPermissionMode(mode) a change of the process's mode (it throws where Claude Code refuses one), and control.init(options)
 // gives what the init frame says otherwise (the mode Claude Code opened in, where it is not the one asked for).
-// control.setMcpServers(servers,{index}) answers the registration of the thread's MCP servers by the index-th query (0 first), and
-// control.open(options,{index}) can give the error a Claude Code exits on before it starts the session (a fork at a message its
-// transcript does not have), which ends that query.
+// control.setMcpServers(servers,{index}) answers the registration of the thread's MCP servers by the index-th query (0 first),
+// control.getContextUsage(options,{index}) Claude Code's own context reading (a query without it lacks the request, as an older SDK
+// does), and control.open(options,{index}) can give the error a Claude Code exits on before it starts the session (a fork at a message
+// its transcript does not have), which ends that query.
 function scriptedClaudeSdk(turn,control={}){
   let queries=0;
   const query=({prompt,options})=>{
@@ -46,6 +47,7 @@ function scriptedClaudeSdk(turn,control={}){
       async interrupt(){},close(){end()},async setPermissionMode(mode){if(control.setPermissionMode)return control.setPermissionMode(mode)},initializationResult:async()=>({commands:[],agents:[],models:[]}),
       async setMcpServers(servers){return control.setMcpServers?control.setMcpServers(servers,{index:number}):{added:Object.keys(servers),removed:[],errors:{}}},
       async backgroundTasks(toolUseId){return control.backgroundTasks?control.backgroundTasks(toolUseId,{emit}):true},
+      ...(control.getContextUsage?{async getContextUsage(options){return control.getContextUsage(options,{index:number})}}:{}),
     };
   };
   return {query,getSessionInfo:async()=>undefined,forkSession:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
