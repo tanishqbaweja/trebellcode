@@ -17,7 +17,8 @@ fetch(url+"/fake/password",{method:"POST",headers:{"content-type":"application/j
 // Writes the `serve` stand-in into a folder (the thread's working folder, where `node serve --port=...` finds it).
 export async function writeFakeOpenCode2Serve(folder){await writeFile(join(folder,"serve"),SERVE_SCRIPT,"utf8")}
 
-export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions={},onPrompt=null}={}){
+// routes["GET /api/command"]({req, res, body, send}) answers a route in place of the stand-in.
+export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions={},onPrompt=null,routes={}}={}){
   const calls=[],streams=new Set(),forms=new Map(),messages=[];let password=null,events=0,prompts=0;
   const known=new Map([["ses_main",{id:"ses_main",agent:"build"}],...Object.entries(sessions)]);
   const emit=event=>{
@@ -34,6 +35,7 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
     if(key==="POST /fake/password"){password=String(body?.password??"");return send(204)}
     if(password!==null&&req.headers.authorization!==`Basic ${Buffer.from(`opencode:${password}`,"utf8").toString("base64")}`)return send(401,{_tag:"UnauthorizedError",message:"Unauthorized"});
     calls.push({key,body,authorization:req.headers.authorization||null});
+    if(routes[key])return routes[key]({req,res,body,send});
     if(key==="GET /api/event"){
       res.writeHead(200,{"content-type":"text/event-stream","cache-control":"no-cache"});res.write(`data: ${JSON.stringify({id:"evt_0",type:"server.connected",data:{}})}\n\n`);
       streams.add(res);res.on("close",()=>streams.delete(res));return;

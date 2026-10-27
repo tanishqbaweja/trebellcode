@@ -271,14 +271,41 @@ export async function openCodeModelPreferences({client,directory,env=process.env
 export function openCodePrimaryAgents(agents=[]){
   return (Array.isArray(agents)?agents:[]).filter(agent=>agent&&typeof agent==="object"&&agent.name&&agent.hidden!==true&&agent.mode!=="subagent");
 }
-// A session's commands, skills and agents. The composer shows them, and a new chat shows a profile's before its first message.
+// One of OpenCode's lists (commands, skills, agents), waited for at most timeoutMs: OpenCode lists MCP prompts among its commands, which
+// can take long (T3 Code waits ten seconds too). null when it did not answer in time or failed: the list is pending, and a later read
+// fills it in. A null timeoutMs waits for OpenCode's answer, for a list nothing waits on.
+export function openCodeListWithin(read,timeoutMs=COMMAND_LIST_TIMEOUT_MS){
+  const listed=Promise.resolve().then(read).then(value=>Array.isArray(value)?value:[]);
+  if(timeoutMs==null)return listed.catch(()=>null);
+  let timer;
+  return Promise.race([listed,new Promise(resolve=>{timer=setTimeout(()=>resolve(null),timeoutMs);timer.unref?.()})]).catch(()=>null).finally(()=>clearTimeout(timer));
+}
+// A session's commands, skills and agents, each a list or null while it is pending (openCodeListWithin). listMs bounds the commands and
+// skills; the agents are always waited for at most COMMAND_LIST_TIMEOUT_MS.
+function openCodeInventoryReads(client,v2Client,directory,{listMs=COMMAND_LIST_TIMEOUT_MS}={}){
+  return {
+    commands:openCodeListWithin(()=>client.command.list({query:{directory}}).then(result=>unwrap(result,"command list")),listMs),
+    skills:openCodeListWithin(()=>Promise.resolve(v2Client?.app?.skills?.({directory})).then(result=>unwrap(result,"skill list")),listMs),
+    agents:openCodeListWithin(()=>client.app.agents({query:{directory}}).then(result=>unwrap(result,"agent list"))),
+  };
+}
+// A session's commands, skills and agents reach the composer (session_info_update) as OpenCode lists them. The returned function sends
+// the session's first update, with the lists in by then; each list that comes later goes in an update of its own, with every list known
+// by then (the relay keeps a thread's last update). A list that failed or never came stays the profile's (its model list's inventory).
+export function openCodeListsAsListed(session,reads,{agents:primary=openCodePrimaryAgents}={}){
+  const lists={};for(const [name,read] of Object.entries(reads))void read.then(list=>{if(list)lists[name]=list});
+  const update=(extra={})=>({sessionUpdate:"session_info_update",...(lists.commands?{commands:lists.commands}:{}),...(lists.skills?{skills:lists.skills}:{}),...(lists.agents?{agents:primary(lists.agents)}:{}),...extra});
+  return first=>{
+    session.onUpdate?.({sessionId:session.sessionId,update:update(first)});
+    for(const [name,read] of Object.entries(reads))if(!lists[name])void read.then(list=>{if(list&&!session.closed)session.onUpdate?.({sessionId:session.sessionId,update:update()})});
+  };
+}
+// The lists of an inventory that are pending, by name.
+const pendingLists=lists=>Object.entries(lists).filter(([,list])=>list===null).map(([name])=>name);
+// A profile's commands, skills and agents, which a new chat shows before its first message, and the names of those still pending.
 async function openCodeInventory(client,v2Client,directory){
-  const [commands,skills,agents]=await Promise.all([
-    client.command.list({query:{directory}}).then(result=>unwrap(result,"command list")||[]).catch(()=>[]),
-    Promise.resolve(v2Client?.app?.skills?.({directory})).then(result=>unwrap(result,"skill list")||[]).catch(()=>[]),
-    client.app.agents({query:{directory}}).then(result=>unwrap(result,"agent list")||[]).catch(()=>[]),
-  ]);
-  return {commands:Array.isArray(commands)?commands:[],skills:Array.isArray(skills)?skills:[],agents:Array.isArray(agents)?agents:[]};
+  const reads=openCodeInventoryReads(client,v2Client,directory),[commands,skills,agents]=await Promise.all([reads.commands,reads.skills,reads.agents]);
+  return {commands:commands||[],skills:skills||[],agents:agents||[],pending:pendingLists({commands,skills,agents})};
 }
 
 export async function discoverOpenCodeModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null,readText}={}){
@@ -300,6 +327,7 @@ export async function discoverOpenCodeModelCatalog({command="opencode",cwd=proce
       preferred:catalog.preferred,
       connectedProviders:Array.isArray(providers.connected)?providers.connected.map(String):[],
       inventory:{commands:inventory.commands,skills:inventory.skills,agents:openCodePrimaryAgents(inventory.agents)},
+      ...(inventory.pending.length?{pending:inventory.pending}:{}),
       source:"live-connected",
     };
   }finally{
@@ -346,9 +374,7 @@ export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=proc
       waitForOpenCode2Models(client,location),
       client.provider.list({location}).catch(()=>({data:[]})),
       client.model.default({location}).catch(()=>({data:null})),
-      client.command.list({location}).then(result=>result?.data||[]).catch(()=>[]),
-      client.skill.list({location}).then(result=>result?.data||[]).catch(()=>[]),
-      client.agent.list({location}).then(result=>result?.data||[]).catch(()=>[]),
+      ...openCode2InventoryReads(client,location),
     ]);
     const providerNames=new Map((providerResult?.data||[]).map(provider=>[String(provider.id),trimmedText(provider.name)||String(provider.id)]));
     const rows=(Array.isArray(modelResult?.data)?modelResult.data:[]).filter(model=>model?.enabled!==false).map(model=>{
@@ -356,19 +382,25 @@ export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=proc
       return {id,providerID,name:trimmedText(model.name)||id,providerName:providerNames.get(providerID)||providerID,context:Number(model.limit?.context)||0,variants};
     }).filter(item=>item.id);
     const preferred=openCode2ModelId(defaultResult?.data)||rows[0]?.id||null,ordered=preferred?[rows.find(item=>item.id===preferred),...rows.filter(item=>item.id!==preferred)].filter(Boolean):rows;
-    const pending=rows.length&&modelResult?.settled===false?["models"]:[];
+    const pending=[...(rows.length&&modelResult?.settled===false?["models"]:[]),...pendingLists({commands,skills,agents})];
     return {
       models:ordered.map(item=>item.id),
       metadata:ordered.map(item=>({id:item.id,name:item.name,provider:"opencode",agent:"OpenCode",upstreamProvider:item.providerName,...(item.context?{contextWindow:item.context}:{}),...(item.variants.length?{reasoningEfforts:item.variants,defaultReasoningEffort:inferOpenCodeDefaultVariant(item.providerID,item.variants)}:{})})),
       preferred,
       connectedProviders:[...new Set(ordered.map(item=>item.providerID).filter(Boolean))],
-      inventory:{commands:Array.isArray(commands)?commands:[],skills:Array.isArray(skills)?skills:[],agents:openCodePrimaryAgents((Array.isArray(agents)?agents:[]).map(agent=>({...agent,name:agent?.name||agent?.id})))},
-      // A model list that was still changing when the wait ended is pending: a later read lists the rest.
+      inventory:{commands:commands||[],skills:skills||[],agents:openCode2PrimaryAgents(agents||[])},
+      // A model list that was still changing when the wait ended is pending too: a later read lists the rest.
       ...(pending.length?{pending}:{}),
       source:"live-connected-v2",
     };
   }finally{server.close?.()}
 }
+// OpenCode 2's commands, skills and agents (each a list, or null while pending: openCodeListWithin, which listMs bounds).
+export function openCode2InventoryReads(client,location,{listMs=COMMAND_LIST_TIMEOUT_MS}={}){
+  return [client.command,client.skill,client.agent].map(api=>openCodeListWithin(()=>api.list({location}).then(result=>result?.data),listMs));
+}
+// OpenCode 2 names an agent by its id.
+export function openCode2PrimaryAgents(agents=[]){return openCodePrimaryAgents(agents.map(agent=>({...agent,name:agent?.name||agent?.id})))}
 
 function permissionResponse(decision){return decision==="acceptForSession"?"always":decision==="accept"?"once":"reject"}
 const PERMISSION_MODE_NAMES=Object.freeze({"read-only":"Read only",supervised:"Supervised",edits:"Auto-accept edits",auto:"Auto",full:"Full access"});
@@ -589,6 +621,10 @@ export class OpenCodeAgentSession{
     this.client=createOpencodeClient(openCodeClientOptions(this.server,this.cwd));
     this.v2Client=createOpencodeV2Client(openCodeClientOptions(this.server,this.cwd));
     if(this.repositoryMcp)this.repositoryMcpStatus=await configureOpenCodeMcpServers(this.client,{cwd:this.cwd,servers:[{name:this.repositoryMcp.name,config:this.repositoryMcp.openCode}]});
+    // The session's commands, skills and agents are read beside its setup. Only the agents hold its creation, for at most ten seconds:
+    // their rules name the folders the session's rules keep allowed. The commands (OpenCode lists MCP prompts among them, which can take
+    // long) and the skills reach the composer whenever OpenCode lists them.
+    const reads=openCodeInventoryReads(this.client,this.v2Client,this.cwd,{listMs:null}),announce=openCodeListsAsListed(this,reads);
     const providers=checkedOpenCodeProviders(unwrap(await this.client.provider.list({query:{directory:this.cwd}}),"provider list"));
     let catalog=connectedOpenCodeModels(providers);
     for(const entry of catalog.models){
@@ -599,8 +635,7 @@ export class OpenCodeAgentSession{
     if(!requested)catalog=connectedOpenCodeModels(providers,await openCodeModelPreferences({client:this.client,directory:this.cwd,env:this.env,localState:!this.serverUrl,readText:this.readStateFile}));
     this.model=requested||catalog.preferred;
     // The agents' own rules name the folders they trust, which the session's rules keep allowed.
-    const inventory=await openCodeInventory(this.client,this.v2Client,this.cwd);
-    this.trustedDirectories=openCodeTrustedDirectories(inventory.agents);
+    this.trustedDirectories=openCodeTrustedDirectories(await reads.agents||[]);
     let info=null;
     if(providerSessionId){
       const found=await this.client.session.get({path:{id:providerSessionId},query:{directory:this.cwd}});
@@ -618,7 +653,7 @@ export class OpenCodeAgentSession{
     }
     const availableModels=[...this.modelMap.keys()];if(this.model&&!availableModels.includes(this.model))availableModels.push(this.model);
     this.sessionSetup={sessionId:this.sessionId,models:{currentModelId:this.model,availableModels:availableModels.map(modelId=>({modelId,name:this.modelNames.get(modelId)||modelId}))},configOptions:[],modes:{currentModeId:"build",availableModes:[]},trebellRepositoryMcp:this.repositoryMcpStatus[0]||null};
-    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"session_info_update",commands:inventory.commands,skills:inventory.skills,agents:openCodePrimaryAgents(inventory.agents),status:{type:"idle"}}});
+    announce({status:{type:"idle"}});
     this.#startEvents();return {initialize:this.initializeResult,session:this.sessionSetup};
   }
   // The thread's permission mode, applied to the session's rules before the next prompt (a running turn keeps the rules it started with).

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { fileUri, fileUriPath } from "./file-uri.mjs";
-import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2ModelId, openCodePermissionDisposition, openCodePermissionRules, openCodePrimaryAgents, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
+import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
@@ -148,12 +148,13 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
         this.repositoryMcpStatus=[{name:String(this.repositoryMcp.name),configured:true,status:"connected"}];
       }catch(error){this.repositoryMcpStatus=[{name:String(this.repositoryMcp.name),configured:false,error:errorText(error)}]}
     }
-    const [modelResult,defaultResult,commands,skills,agents]=await Promise.all([
+    // The commands (OpenCode lists MCP prompts among them, which can take long), skills and agents hold up nothing: the composer gets
+    // them, and a turn's agent its id, whenever OpenCode lists them.
+    const [commands,skills,agents]=openCode2InventoryReads(this.client,location,{listMs:null}),announce=openCodeListsAsListed(this,{commands,skills,agents},{agents:openCode2PrimaryAgents});
+    void agents.then(list=>{for(const entry of list||[]){const id=String(entry?.id||"").trim(),name=String(entry?.name||"").trim();if(id){this.agentIds.set(id,id);if(name)this.agentIds.set(name,id)}}});
+    const [modelResult,defaultResult]=await Promise.all([
       waitForOpenCode2Models(this.client,location,{requiredModel:model}),
       this.client.model.default({location}).catch(()=>({data:null})),
-      this.client.command.list({location}).then(result=>result?.data||[]).catch(()=>[]),
-      this.client.skill.list({location}).then(result=>result?.data||[]).catch(()=>[]),
-      this.client.agent.list({location}).then(result=>result?.data||[]).catch(()=>[]),
     ]);
     for(const entry of Array.isArray(modelResult?.data)?modelResult.data:[]){
       if(entry?.enabled===false)continue;
@@ -163,7 +164,6 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
       this.modelNames.set(id,String(entry.name||id));this.modelVariants.set(id,variants);
       if(Number(entry.limit?.context)>0)this.contextByModel.set(id,Number(entry.limit.context));
     }
-    for(const entry of Array.isArray(agents)?agents:[]){const id=String(entry?.id||"").trim(),name=String(entry?.name||"").trim();if(id){this.agentIds.set(id,id);if(name)this.agentIds.set(name,id)}}
     const requestedId=String(model||"").trim(),requested=this.modelMap.has(requestedId)?requestedId:null;
     if(requestedId&&!requested)throw new Error(`Model unavailable: ${requestedId}`);
     const defaultId=modelKey(defaultResult?.data);
@@ -183,7 +183,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
     const availableModels=[...this.modelMap.keys()];
     this.sessionSetup={sessionId:this.sessionId,models:{currentModelId:this.model,availableModels:availableModels.map(modelId=>({modelId,name:this.modelNames.get(modelId)||modelId}))},configOptions:[],modes:{currentModeId:String(info.agent||"build"),availableModes:[]},trebellRepositoryMcp:this.repositoryMcpStatus[0]||null};
-    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"session_info_update",commands:Array.isArray(commands)?commands:[],skills:Array.isArray(skills)?skills:[],agents:openCodePrimaryAgents((Array.isArray(agents)?agents:[]).map(agent=>({...agent,name:agent?.name||agent?.id}))),status:{type:"idle"}}});
+    announce({status:{type:"idle"}});
     this.#startEvents();
     return {initialize:this.initializeResult,session:this.sessionSetup};
   }
