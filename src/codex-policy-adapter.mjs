@@ -50,7 +50,8 @@ export function workspaceFilePath(workspace,path){
 }
 
 // files: the files a file change touches (codexFileChanges). Each is decided as the path asked for, a move's new path too: one
-// rejected rejects the change, and one to confirm asks.
+// rejected rejects the change, and one to confirm asks, the decision of a person's rule first (its rule), as "Allow session" never
+// answers what a rule asks about.
 export function codexApprovalPolicyDecision(message,{profile="supervised",workspace=null,rules=[],provenance="unknown",files=[]}={}){
   if(!isCodexApprovalRequest(message))return null;
   const params=message.params||{},permissionEscalation=message.method==="item/permissions/requestApproval";
@@ -67,7 +68,7 @@ export function codexApprovalPolicyDecision(message,{profile="supervised",worksp
   const paths=(Array.isArray(files)?files:[]).flatMap(file=>[file?.path,file?.movePath]).filter(Boolean);
   if(!paths.length)return decide(requestedPath(params));
   const decisions=paths.map(decide);
-  return decisions.find(item=>item.decision===POLICY_REJECT)||decisions.find(item=>item.decision===POLICY_CONFIRM)||decisions[0];
+  return decisions.find(item=>item.decision===POLICY_REJECT)||decisions.find(item=>item.decision===POLICY_CONFIRM&&item.rule)||decisions.find(item=>item.decision===POLICY_CONFIRM)||decisions[0];
 }
 
 export function codexApprovalResponse(message,decision){

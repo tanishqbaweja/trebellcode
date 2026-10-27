@@ -1551,9 +1551,10 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     eventJournal.record({...base,name:"permission.requested",status:"pending",data:{method:message.method,action:action.action,kind:action.kind}});
     eventJournal.record({...base,name:"policy.decision",status:resolved.policy.decision.toLowerCase(),data});
     if(!resolved.handled){
-      // A request the person would be asked: one of a kind "Allow session" allowed in this thread and mode is answered for them.
+      // A request the person would be asked: one of a kind "Allow session" allowed in this thread and mode is answered for them, unless
+      // a rule of theirs asks about it (resolved.policy.rule), which asks every time.
       const kind=sessionApprovalKind(message.method,params),allowance=kind&&threadId?codexSessionApprovals.allowance(threadId,profile):null;
-      if(allowance?.has(kind)){
+      if(allowance?.has(kind)&&!resolved.policy.rule){
         eventJournal.record({...base,name:"permission.resolved",status:"accept",data:{method:message.method,policyDecision:resolved.policy.decision,sessionAllowed:true}});
         return {handled:true,result:sessionApprovalResult(message.method)};
       }
