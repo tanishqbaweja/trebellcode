@@ -268,6 +268,28 @@ test("an OpenCode 2.x from npm updates @opencode/cli in its own prefix to the ne
   assert.deepEqual(npmCalls(own.calls),[]);
 });
 
+// An OpenCode profile on a server of its own still runs this machine's opencode, whose version its row shows and its Update installs:
+// Settings offers that Update only for a newer release of it, as for any other profile, never for every listing.
+test("an OpenCode profile with a server of its own is offered Update only for a newer release of the opencode it runs here",WINDOWS_ONLY,async t=>{
+  const root=await tempRoot(t,"opencode-server"),prefix=join(root,"AppData","Roaming","npm");
+  await file(join(prefix,"node_modules","opencode-ai","bin","opencode.exe"));
+  await file(join(prefix,"opencode.cmd"),npmShim("node_modules\\opencode-ai\\bin\\opencode.exe"));
+  const instances=[{id:"opencode-server",kind:"opencode",displayName:"OpenCode server",serverUrl:"http://127.0.0.1:9",environment:{}}];
+  const listed=async release=>{
+    const fx=machine(root,{instances,latest:{"opencode-ai":release},answer:(command,args)=>{
+      if(command==="npm")return args[0]==="view"?answered(JSON.stringify(release)+"\n"):answered("11.0.0\n");
+      return command.endsWith("opencode.exe")?answered("1.18.30\n"):missing(command);
+    }});
+    return {fx,status:(await fx.manager.snapshot({refresh:true})).statuses.find(item=>item.id==="opencode-server")};
+  };
+  const {status}=await listed("1.19.4"),realPrefix=realpathSync.native(prefix);
+  assert.deepEqual([status.installed,status.version],[true,"1.18.30"]);
+  assert.deepEqual(status.update,{current:"1.18.30",latest:"1.19.4",newer:true,canUpdate:true,command:shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=opencode-ai","opencode-ai@1.19.4"],"win32"),binary:realpathSync.native(join(prefix,"node_modules","opencode-ai","bin","opencode.exe")),message:null});
+  // The newest already: no Update for it.
+  const current=(await listed("1.18.30")).status.update;
+  assert.deepEqual([current.current,current.latest,current.newer,current.message],["1.18.30","1.18.30",false,null]);
+});
+
 test("an update whose version check times out or fails installs nothing, for every harness",WINDOWS_ONLY,async t=>{
   const root=await tempRoot(t,"unread"),claude=await file(join(root,"home",".local","bin","claude.exe")),grok=await file(join(root,"home",".grok","bin","grok.exe"));
   const fx=machine(root,{answer:command=>command===claude?TIMED_OUT:command===grok?exited(2,"error: config file is not valid TOML\n"):missing(command)});

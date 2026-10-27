@@ -779,11 +779,12 @@ export class AgentRuntimeManager{
   }
   // What Settings says of a newer release of the harness a profile runs (T3's version advisory): {current, latest (null when npm's
   // registry could not be read), newer, canUpdate (Trebell runs the update: command, what it runs), binary (the file the profile
-  // runs), message (how the person updates one Trebell does not), command}. Only a harness Trebell updates has one, when it is there
-  // and not an OpenCode on a server of its own. wait reads the registry when its last answer is gone (Settings' own listing).
+  // runs), message (how the person updates one Trebell does not), command}. Only a harness Trebell updates has one, when it is there;
+  // an OpenCode on a server of its own has the one of this machine's opencode, whose version its row shows and its Update installs.
+  // wait reads the registry when its last answer is gone (Settings' own listing).
   async #updateAdvisory(instance,status,{wait=false}={}){
     if(instance?.kind==="muse")return this.#museUpdateAdvisory(instance,status,{wait});
-    if(!UPDATABLE.has(instance?.kind)||!status?.installed||(instance.kind==="opencode"&&instance.serverUrl))return null;
+    if(!UPDATABLE.has(instance?.kind)||!status?.installed)return null;
     // A version its --version check did not give (Codex's from its account read) is no version an update could start from: the
     // update's own check would not answer either.
     const def=RUNTIMES[instance.kind],remote=Boolean(this.processSpawner(instance)),current=status.versionCheckFailed?null:parsedSemver(status.version)?.raw||null;
