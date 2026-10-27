@@ -19,14 +19,15 @@
 //   "ask approval"      asks to run `touch muse-approved.txt` (approval/request and approval/requested, with Muse's own choices),
 //                       settles it with the choice decided, and replies APPROVED, ALWAYS ALLOWED or REJECTED
 //   "reviewer decides"  asks the same, and Muse's reviewer allows it MUSE_FAKE_REVIEW_MS (300) ms later (approval/resolved by
-//                       llmJudge)
+//                       llmJudge), or once the file MUSE_FAKE_REVIEW_HOLD names is there
 //   "read outside"      asks to read outside-notes.txt beside the workspace folder (a fileAccess read, as Muse asks one outside the
 //                       workspace), and replies READ IT or REJECTED
 //   "child approval"    a workflow child (subagentOrigin, its own run) asks to run the same command while the turn waits until it
 //                       is stopped; the child's approval outlives the turn
 //   "ask question"      asks which approach to take (userInput/request and userInput/requested), settles it with the answer and
 //                       replies ANSWERED with it, or NO ANSWER for a cancel
-//   "retry"             schedules a retry of its model request (turn/retryScheduled), then replies
+//   "retry"             schedules a retry of its model request (turn/retryScheduled), then replies MUSE_FAKE_RETRY_MS (400) ms later,
+//                       or once the file MUSE_FAKE_RETRY_HOLD names is there
 //   "quota"             fails as Meta's quota refusal relayed by Muse does (a 429 naming the quota and its reset)
 //   "signed out"        fails as a turn Muse could not run without a sign-in does (authRequired)
 //   "exit when idle"    replies, completes, and then the host exits with code 1, as a Muse that crashed between turns
@@ -54,6 +55,8 @@ if(process.env.MUSE_FAKE_SERVE_FAIL&&fs.existsSync(process.env.MUSE_FAKE_SERVE_F
 }
 
 const write=frame=>process.stdout.write(JSON.stringify(frame)+"\n");
+// What Muse does after a while: once the file hold names is there (a test releases it when it has seen what it waits for), else ms later.
+function later(hold,ms,then){if(!hold)return setTimeout(then,ms);const check=()=>fs.existsSync(hold)?then():setTimeout(check,25);check()}
 let cursor=0;
 const notify=(method,sessionId,params)=>write({jsonrpc:"2.0",method,params:{sessionId,viewCursor:`v:${sessionId}:${++cursor}`,...params},emittedAtMs:Date.now()});
 const catalog=()=>{try{return JSON.parse(fs.readFileSync(process.env.MUSE_FAKE_MODELS,"utf8")).result}catch{return {providerId:"meta",profileId:"tbh",source:"bundledCatalog",models:[]}}};
@@ -88,7 +91,7 @@ function startTurn(sessionId,params,{usage=null}={}){
   if(/signed out/i.test(words))return setTimeout(()=>{running.delete(turnId);notify("turn/completed",sessionId,{turnId,terminal:"failed",reason:"not logged in",error:{kind:"authRequired",message:"not logged in: run /login to add an API key",retryable:false}})},20);
   if(/retry/i.test(words)){
     notify("turn/retryScheduled",sessionId,{turnId,attempt:1,nextAttempt:2,maxAttempts:3,reason:"429 Too Many Requests",retryDelayMs:2000,errorKind:"rateLimited",httpStatus:429,system:"meta",sourceRange:{}});
-    return setTimeout(()=>{reply(sessionId,turn,"Muse fixture reply after a retry.");complete(sessionId,turnId)},Number(process.env.MUSE_FAKE_RETRY_MS||400));
+    return later(process.env.MUSE_FAKE_RETRY_HOLD,Number(process.env.MUSE_FAKE_RETRY_MS||400),()=>{reply(sessionId,turn,"Muse fixture reply after a retry.");complete(sessionId,turnId)});
   }
   reply(sessionId,turn,`Muse fixture reply on ${state?.modelId||"Muse's default model"} at ${params.reasoningEffort||"Muse's default"} effort.`);
   if(usage)usageStep(sessionId,turnId,usage);
@@ -188,7 +191,7 @@ function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false}={}
   approvals.set(approvalId,{sessionId,turnId,settled:false,choices,read});
   write({jsonrpc:"2.0",id:++nextRequest,method:"approval/request",params});
   notify("approval/requested",sessionId,{...params,emittedAtMs:Date.now()});
-  if(reviewer)setTimeout(()=>settleApproval(approvalId,{decision:"approved",resolvedBy:"llmJudge"}),Number(process.env.MUSE_FAKE_REVIEW_MS||300));
+  if(reviewer)later(process.env.MUSE_FAKE_REVIEW_HOLD,Number(process.env.MUSE_FAKE_REVIEW_MS||300),()=>settleApproval(approvalId,{decision:"approved",resolvedBy:"llmJudge"}));
 }
 function settleApproval(approvalId,{decision,resolvedBy="user",commandId=null}){
   const approval=approvals.get(approvalId);if(!approval||approval.settled)return false;

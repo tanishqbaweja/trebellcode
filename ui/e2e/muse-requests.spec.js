@@ -33,9 +33,12 @@ function onlyMuse(launcher){
     child.once("close",code=>{clearTimeout(timer);resolve({ok:code===0,code,error:null,stdout,stderr})});
   });
 }
-// environment: the stand-in's switches, as the Muse Code profile's own variables.
-async function startMuseHarness({environment={}}={}){
+// environment: the stand-in's switches, as the Muse Code profile's own variables. holds: what the stand-in waits to do until the test
+// has seen what it checks (release), as Muse's reviewer deciding ("review") or a retried request answering ("retry").
+async function startMuseHarness({environment={},holds=[]}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-muse-requests-")),repo=join(root,"muse-repo"),log=join(root,"muse.log");await mkdir(repo,{recursive:true});
+  const held=Object.fromEntries(holds.map(name=>[name,join(root,`release-${name}`)]));
+  environment={...environment,...Object.fromEntries(holds.map(name=>[`MUSE_FAKE_${name.toUpperCase()}_HOLD`,held[name]]))};
   const folder=windows?join(root,"AppData","Local","Programs","muse"):join(root,"home",".local","bin");await mkdir(folder,{recursive:true});
   const launcher=join(folder,windows?"muse.cmd":"muse");
   await writeFile(launcher,windows?`@echo off\r\nsetlocal\r\n"${process.execPath}" "${FAKE_MUSE}" %*\r\nexit /b %ERRORLEVEL%\r\n`:`#!/bin/sh\nexec "${process.execPath}" "${FAKE_MUSE}" "$@"\n`);
@@ -49,7 +52,7 @@ async function startMuseHarness({environment={}}={}){
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const frames=async method=>(await readFile(log,"utf8").catch(()=>"")).split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line)).filter(entry=>entry.frame?.method===method).map(entry=>entry.frame);
   return {
-    root,repo,runtimeManager,frames,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,
+    root,repo,runtimeManager,frames,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,release:name=>writeFile(held[name],""),
     async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})},
   };
 }
@@ -149,7 +152,8 @@ test("Muse Code's question opens Trebell's question dialog with Muse's options, 
 
 test("an approval card Muse's reviewer decides goes by itself, with nothing sent for it",async({page})=>{
   test.setTimeout(90_000);
-  const harness=await startMuseHarness({environment:{MUSE_FAKE_REVIEW_MS:"2500"}});
+  // Muse's reviewer decides only once the card has been seen, however long the page took to show it.
+  const harness=await startMuseHarness({holds:["review"]});
   try{
     await routeMuseApp(page,harness);
     await page.setViewportSize({width:1280,height:800});
@@ -158,6 +162,7 @@ test("an approval card Muse's reviewer decides goes by itself, with nothing sent
     await send(page,"Muse's reviewer decides this one");
     await expect(card).toBeVisible({timeout:20_000});
     await expect(card.locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: touch ...","Reject"]);
+    await harness.release("review");
     await expect(reply(page,"THE REVIEWER ALLOWED IT")).toBeVisible({timeout:20_000});
     await expect(card).toHaveCount(0);
     expect(await harness.frames("approval/decide")).toEqual([]);
@@ -167,7 +172,8 @@ test("an approval card Muse's reviewer decides goes by itself, with nothing sent
 
 test("a retry Muse schedules shows on the turn's retry row while the turn goes on, and a turn the quota stopped says the usage limit was reached and when it resets",async({page})=>{
   test.setTimeout(120_000);
-  const harness=await startMuseHarness({environment:{MUSE_FAKE_RETRY_MS:"3000"}});
+  // The retried request answers only once the running row has been seen and photographed in both modes.
+  const harness=await startMuseHarness({holds:["retry"]});
   try{
     await routeMuseApp(page,harness);
     await page.setViewportSize({width:1280,height:800});
@@ -175,10 +181,15 @@ test("a retry Muse schedules shows on the turn's retry row while the turn goes o
     // Muse retries the turn's model request: the row says so while it waits, and reads recovered once the reply comes.
     await send(page,"Please retry once");
     const row=page.locator(".tool-event.kind-retry");
-    await expect(row.locator("summary strong")).toHaveText("Retrying: Muse Code is trying again in 2 s (attempt 2 of 3): 429 Too Many Requests",{timeout:20_000});
-    await expect(row).toHaveClass(/status-running/);
-    for(const mode of ["dark","light"]){await switchMode(page,mode);await row.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-retry-row-${mode}-1280x800.png`})}
+    const retrying="Retrying: Muse Code is trying again in 2 s (attempt 2 of 3): 429 Too Many Requests";
+    await expect(row.locator("summary strong")).toHaveText(retrying,{timeout:20_000});
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);await row.scrollIntoViewIfNeeded();
+      await expect(row).toHaveClass(/status-running/);await expect(row.locator("summary strong")).toHaveText(retrying);
+      await page.screenshot({animations:"disabled",path:auditDir+`muse-retry-row-${mode}-1280x800.png`});
+    }
     await switchMode(page,"dark");
+    await harness.release("retry");
     await expect(reply(page,"Muse fixture reply after a retry.")).toBeVisible({timeout:20_000});
     await expect(row.locator("summary strong")).toHaveText("Recovered after retrying");
     // A turn the subscription quota stopped: the usage limit and its reset in the person's own time, not Meta's 429.
