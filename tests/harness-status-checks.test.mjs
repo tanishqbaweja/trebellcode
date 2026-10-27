@@ -215,6 +215,31 @@ test("OpenCode gets 10 s to answer --version, in its status check and in its ins
   assert.deepEqual(fx.asked.filter(item=>item.line==="opencode --version").map(item=>item.timeoutMs),[10_000,10_000]);
 });
 
+test("an OpenCode update whose --version does not answer or fails installs nothing; only an OpenCode that is not there gets a fresh one",async()=>{
+  // Planned as if no OpenCode were there, an update of a 2.x or of one from OpenCode's own installer would put a separate 1.x
+  // beside it, which the next start prefers.
+  let version={exitCode:null,timedOut:true,stdout:"",stderr:""};
+  const fx=remoteHarness((command,args)=>{
+    if(command==="opencode"&&args[0]==="--version")return version;
+    if(command==="npm"&&args[0]==="--version")return {exitCode:0,stdout:"11.0.0\n",stderr:""};
+    if(command==="npm"&&args[0]==="view")return {exitCode:0,stdout:"\"1.14.30\"\n",stderr:""};
+    return {exitCode:1,stdout:"",stderr:"unexpected command"};
+  });
+  const refused=[];
+  for(const answer of [version,{exitCode:1,stdout:"",stderr:"Error: Cannot find module '@opencode/cli-linux-x64'\n"}]){
+    version=answer;
+    refused.push(await fx.manager.openCodeInstallPlan({environmentId:fx.profile.id}).then(plan=>`planned: ${plan.command} ${plan.args.join(" ")}`,error=>error.message));
+  }
+  assert.deepEqual(refused,[
+    "Trebell Code could not read the version of the OpenCode it would update: `opencode --version` did not answer within 10 seconds. Nothing was installed.",
+    "Trebell Code could not read the version of the OpenCode it would update: `opencode --version` exited with code 1: Error: Cannot find module '@opencode/cli-linux-x64'. Nothing was installed.",
+  ]);
+  assert.deepEqual(fx.asked.filter(item=>item.line.startsWith("npm")),[],"npm was not asked");
+  version={exitCode:127,stdout:"",stderr:"env: 'opencode': No such file or directory\n"};
+  const plan=await fx.manager.openCodeInstallPlan({environmentId:fx.profile.id});
+  assert.deepEqual([plan.installedVersion,plan.command,plan.args],[null,"npm",["install","-g","--allow-scripts=opencode-ai","opencode-ai@1.14.30"]]);
+});
+
 test("Grok's version and sign-in checks run with its updater off, and its sessions keep their environment",async t=>{
   const fx=await localHarness(t,"grok",args=>answered(args[0]==="models"?"You are logged in with grok.com.\n":"grok 1.0.41\n"));
   const status=await fx.manager.probe("grok");

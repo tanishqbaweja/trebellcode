@@ -133,13 +133,17 @@ function versionCheckFailure(result={}){
   if(error==="probe timed out")return "timeout";
   return error?"spawn":"exit";
 }
+// How a --version that ran ended: its exit code, or the signal that stopped it, with the first line it printed.
+function versionCheckEnded(result){
+  const said=stripAnsi(String(result.stderr||result.stdout||"")).split(/\r?\n/).map(line=>line.trim()).find(Boolean);
+  const ended=Number.isInteger(result.code)?`exited with code ${result.code}`:`was stopped${result.signal?" by "+result.signal:""}`;
+  return said?`${ended}: ${said}`:ended+".";
+}
 // What a harness whose --version timed out, exited with an error or was stopped says: that it is installed, and what its check did.
 function versionCheckMessage(def,kind,command,result){
   const name=def?.command||String(command||"").split(/[\\/]/).pop().replace(/\.(?:exe|cmd|bat)$/i,"")||kind;
   if(versionCheckFailure(result)==="timeout")return `${def.name} is installed but did not answer \`${name} --version\` within ${versionCheckTimeoutMs(kind)/1000} seconds.`;
-  const said=stripAnsi(String(result.stderr||result.stdout||"")).split(/\r?\n/).map(line=>line.trim()).find(Boolean);
-  const ended=Number.isInteger(result.code)?`exited with code ${result.code}`:`was stopped${result.signal?" by "+result.signal:""}`;
-  return `${def.name} is installed but \`${name} --version\` ${ended}${said?": "+said:"."}`.slice(0,500);
+  return `${def.name} is installed but \`${name} --version\` ${versionCheckEnded(result)}`.slice(0,500);
 }
 // A Claude Code profile that runs through a router or gateway: an http(s) ANTHROPIC_BASE_URL whose host is not api.anthropic.com.
 function claudeCustomEndpoint(env={}){
@@ -591,6 +595,13 @@ export class AgentRuntimeManager{
     const instances=this.instances();
     const instance=instances.find(item=>item.kind==="opencode"&&item.id==="opencode-default")||instances.find(item=>item.kind==="opencode")||defaultInstance("opencode");
     const checked=await this.#run(instance,["--version"],{timeoutMs:versionCheckTimeoutMs("opencode"),environmentId});
+    // A check that did not answer for any reason but a command that is not there says nothing of which OpenCode is there: planned as
+    // if none were, the update would put a separate OpenCode 1.x beside a 2.x or an installer's copy, which the next start prefers.
+    const failure=checked.ok?null:versionCheckFailure(checked);
+    if(failure&&failure!=="missing"){
+      const reason=failure==="spawn"?runtimeProbeFailure(RUNTIMES.opencode,checked):failure==="timeout"?`\`opencode --version\` did not answer within ${versionCheckTimeoutMs("opencode")/1000} seconds.`:`\`opencode --version\` ${versionCheckEnded(checked)}`;
+      throw new Error(`Trebell Code could not read the version of the OpenCode it would update: ${/[.!?…]$/.test(reason)?reason:reason+"."} Nothing was installed.`);
+    }
     const installed=checked.ok?runtimeCompatibility("opencode",(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null):null;
     if(installed?.version?.startsWith("2."))throw new Error(`This OpenCode is ${installed.version}. Trebell Code supports OpenCode 2.x but will not replace it with the separate OpenCode 1.x npm package. Update this 2.x install with opencode upgrade or the package manager that installed it.`);
     const local=checked.ok&&!this.processSpawner(instance,environmentId)?this.#openCodeInstall(instance):null;
