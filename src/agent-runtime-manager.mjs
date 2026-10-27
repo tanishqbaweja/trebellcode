@@ -1291,7 +1291,12 @@ export class AgentRuntimeManager{
           const setup=await withAcpProbe(options,async(client,initialized)=>(await afterAntigravitySignIn(client,options.env,()=>acpProbeSession(client,initialized,{cwd:folder,timeoutMs:90_000}))).setup);
           this.rememberAcpSessionModels(instance,setup,{environmentId});
         }finally{await rm(folder,{recursive:true,force:true,maxRetries:10,retryDelay:200}).catch(()=>{})}
-      })().catch(error=>{const ipv6=antigravityIpv6Failure(error);if(ipv6)this.#antigravityModelFailures.set(key,ipv6.message)});
+      })().catch(error=>{
+        const ipv6=antigravityIpv6Failure(error);if(!ipv6)return;
+        // The open windows read the list again, as for a list a session reported, and their composer says why.
+        this.#antigravityModelFailures.set(key,ipv6.message);
+        for(const listener of [...this.#modelListeners]){try{listener({runtime:"antigravity",instanceId:instance.id,environmentId:this.activeEnvironment(environmentId)?.id||null})}catch{}}
+      });
       this.#antigravityRefreshes.set(key,refresh);
     }
     const failure=this.#antigravityModelFailures.get(key);
