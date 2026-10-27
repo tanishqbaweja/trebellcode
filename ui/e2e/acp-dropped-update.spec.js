@@ -10,8 +10,9 @@ import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { EventJournal } from "../../src/event-journal.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
-// A Cursor tool call whose first frame has a location that is no object. The relay leaves that location out (agent-relay.mjs
-// acpEntries): the call shows in the turn's card from that frame, by its title, as it names no file. An update the relay fails on while it
+// A Cursor tool call whose first frame has a location that is no object, after a plan with an entry that is no object. The relay leaves
+// such entries out (agent-relay.mjs acpEntries): the plan shows its other step, and the call shows in the turn's card from that frame, by
+// its title, as it names no file. Both updates used to be dropped whole. An update the relay fails on while it
 // handles it is dropped with a warning (acp-client.mjs), and it does not join the call's state, as T3 drops an update it cannot decode:
 // the next update shows the call. The drop is listed in the thread's Execution trace by its method and reason, as T3 logs one it cannot
 // decode; the warning reached no one before. The relay no longer fails on this frame, so the trace test's journal refuses it instead.
@@ -59,6 +60,8 @@ readline.createInterface({input:process.stdin}).on("line",line=>{
   if(m.method==="session/set_config_option"){options=options.map(option=>option.id===m.params.configId?{...option,currentValue:m.params.value}:option);return reply({configOptions:options})}
   if(m.method==="session/prompt"){
     const id=m.params.sessionId;
+    // A plan with one entry that is no object: the relay leaves that entry out and shows the other.
+    update(id,{sessionUpdate:"plan",entries:[null,{content:"Remove the old notes file",status:"in_progress"}]});
     update(id,{sessionUpdate:"tool_call",toolCallId:"delete-notes",title:"Delete old-notes.txt",kind:"delete",status:"pending",locations:[null]});
     update(id,{sessionUpdate:"tool_call_update",toolCallId:"delete-notes",title:"Delete old-notes.txt",status:"completed"});
     update(id,{sessionUpdate:"agent_message_chunk",content:{type:"text",text:"Removed the old notes."}});
@@ -117,13 +120,15 @@ async function sendAndWait(page,name,message){
   await expect(page.locator(".history-assistant-body").last().getByText(/^done/),"the turn shows as done").toBeVisible();
 }
 
-test("a Cursor tool call whose only location is no object shows in the turn's card by its title",async({page})=>{
+test("a Cursor tool call whose only location is no object shows in the turn's card by its title, and a plan its steps but such an entry",async({page})=>{
   test.setTimeout(60_000);
   const thread=await cursorThread(page,{name:"Old notes"});
   try{
     await sendAndWait(page,"Old notes","Remove the old notes file.");
     const row=page.locator(".agent-block .tool-event").filter({hasText:"Delete old-notes.txt"});
     await expect(row,"the call shows in the card").toHaveCount(1);await expect(row).toContainText("done");
+    const step=page.locator(".agent-block .tool-event.kind-plan");
+    await expect(step,"the plan shows its step, without the entry that is no object").toHaveCount(1);await expect(step).toContainText("Remove the old notes file");
     expect(thread.threadStore.get(thread.seed.id).turns.at(-1).items.find(item=>item.id==="delete-notes")?.status,"the thread keeps the call").toBe("completed");
     await shots(page,"acp-dropped-update-tool");
   }finally{await thread.close()}
