@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { createGuiServer } from "../src/gui-server.mjs";
+import { extendConnectAttemptTimeout } from "../src/connect-attempt-timeout.mjs";
 import { hydrateLoginShellEnvironment } from "../src/login-shell-environment.mjs";
 import { parseFirefoxProfiles, readFirefoxCookieDatabase } from "./firefox-import.mjs";
 import { chromiumCookieDatabase, discoverHeliumProfiles, readHeliumProfileCookies } from "./chromium-import.mjs";
@@ -890,6 +891,8 @@ const lock=app.requestSingleInstanceLock();
 if(!lock){
   app.quit();
 }else{
+  // A slow IPv4 connect where IPv6 does not route gets a second, not 250 ms, here as in the GUI server (connect-attempt-timeout.mjs).
+  extendConnectAttemptTimeout();
   // Opened from the Dock, Finder or a launcher, the app has launchd's or the session's bare PATH: the login shell's is read while
   // Electron starts (at most two seconds, macOS and Linux only), and the harness CLIs are looked for on it.
   loginShellRead=hydrateLoginShellEnvironment(process.env,{log:message=>console.warn(message)}).catch(error=>console.warn("Trebell could not read PATH from the login shell:",error));

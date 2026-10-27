@@ -38,6 +38,7 @@ import { NATIVE_REPLY_STREAM } from "./native-agent-session.mjs";
 import { nativeStreamOptions } from "./native-reply-streaming.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexAppServerToken } from "./codex-app-server-auth.mjs";
+import { extendConnectAttemptTimeout } from "./connect-attempt-timeout.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
 import { StorageCleanupService } from "./storage-cleanup-service.mjs";
@@ -3625,6 +3626,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
 }
 
 export async function mainGui(argv=process.argv.slice(2)){
+  // A slow IPv4 connect where IPv6 does not route gets a second, not 250 ms (connect-attempt-timeout.mjs).
+  extendConnectAttemptTimeout();
   const opts=parseArgs(argv);
   const gui=await createGuiServer(opts);
   console.log(`Trebell Code GUI running at ${gui.url}`);
