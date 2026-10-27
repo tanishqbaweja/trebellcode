@@ -4596,7 +4596,9 @@ export default function App(){
     let support;try{support=await loadTurnSupport()}
     catch(error){keepDraft();setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return "kept"}
     let filled=false;const fill=value=>{filled=true;restoreSentDraft({text:typeof value==="function"?value(""):String(value??"")})};
-    const result=await support.runSlashCommand({currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,running,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,stop,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt:fill,setGoal,setEvents,setComposerAlert},text);
+    // compacting: the open thread compacts (this window waits for it, or its row runs), which a goal command never stops.
+    const compacting=Boolean(compactionWaitersRef.current.get(String(activeThread?.id||"")))||events.some(event=>event.kind==="contextCompaction"&&event.status==="running");
+    const result=await support.runSlashCommand({currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,running,compacting,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,stop,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt:fill,setGoal,setEvents,setComposerAlert},text);
     if(result==="kept"&&!filled)keepDraft();
     return result;
   }

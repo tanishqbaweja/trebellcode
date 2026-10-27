@@ -212,19 +212,21 @@ export async function continueInterruptedTurns({client,recovery,showActionError}
 export { CODEX_GOAL_START };
 // A goal command that stops the turn running (T3 goalCommandStopsActiveRun) stops it as Stop does: an active goal is paused first,
 // so Codex starts no further turn of it. waitForEnd: the command starts a turn, which waits for the stopped one's turn/completed,
-// or 10 s, after which Codex says why should it refuse the start.
-async function stopForGoal({rpc,stop},threadId,{waitForEnd=false}={}){
+// or 10 s, after which Codex says why should it refuse the start. A compaction that runs (compacting) is never stopped for a goal
+// (T3 isNativeMaintenanceCommand): the command waits for its turn to end, up to a minute, as T3 queues it after the compaction.
+async function stopForGoal({rpc,stop,compacting=false},threadId,{waitForEnd=false}={}){
   let off=()=>{},timer=null;
-  const ended=waitForEnd?new Promise(resolve=>{timer=setTimeout(resolve,10_000);off=rpc.subscribeNotifications(message=>{if(message.method==="turn/completed"&&String(message.params?.threadId||"")===threadId)resolve()})}):null;
-  try{await stop();await ended}finally{off();clearTimeout(timer)}
+  const ended=waitForEnd?new Promise(resolve=>{timer=setTimeout(resolve,compacting?60_000:10_000);off=rpc.subscribeNotifications(message=>{if(message.method==="turn/completed"&&String(message.params?.threadId||"")===threadId)resolve()})}):null;
+  try{if(!compacting)await stop();await ended}finally{off();clearTimeout(timer)}
 }
 // Codex /goal, run like T3 Code's runGoalCommand and the Codex TUI: /goal shows the goal, clear, pause and resume
 // control it, and any other text sets a new goal and starts its first turn. A new goal or a resume sent while a turn runs stops that
-// turn and starts once it has ended; clear and pause stop only a turn the goal drives (it is active). One that cannot run keeps the
+// turn and starts once it has ended; clear and pause stop only a turn the goal drives (it is active); none stops a compaction, whose
+// end a goal's turn waits for (compacting, from App: the window waits for one, or shows one running). One that cannot run keeps the
 // draft ("kept") and says why beside the composer, as /goal does on the other harnesses; a Codex without goals is said not to
 // support them.
 async function runCodexGoalCommand(deps,command){
-  const {activeThread,running,startTurn,attachments,model,contextChips,rpc,agentRuntimeLabel,setGoal,openRightPanel,setEvents,setComposerAlert}=deps;
+  const {activeThread,running,compacting,startTurn,attachments,model,contextChips,rpc,agentRuntimeLabel,setGoal,openRightPanel,setEvents,setComposerAlert}=deps;
   const threadId=activeThread?.id?String(activeThread.id):null;
   const note=(title,kind="tool")=>setEvents(prev=>[...prev,{id:"goal-command-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),kind,title,status:"done",raw:{}}]);
   try{
@@ -235,7 +237,7 @@ async function runCodexGoalCommand(deps,command){
     }
     if(!threadId||!rpc){note("No goal is set.");return}
     const current=(await rpc.request("thread/goal/get",{threadId}))?.goal||null;setGoal(current);
-    const drives=running&&current?.status==="active";
+    const drives=running&&current?.status==="active"&&!compacting;
     if(command?.type==="clear"){if(drives)await stopForGoal(deps,threadId);const result=await rpc.request("thread/goal/clear",{threadId});setGoal(null);note(result?.cleared?"Goal cleared.":"No goal to clear.");return}
     if(!current){note("No goal is set.");return}
     if(command?.type==="pause"){if(drives)await stopForGoal(deps,threadId);const paused=await rpc.request("thread/goal/set",{threadId,status:"paused"});setGoal(paused?.goal||null);note("Goal paused. Send /goal resume to continue.");return}
