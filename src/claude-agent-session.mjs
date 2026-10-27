@@ -414,6 +414,9 @@ export class ClaudeAgentSession{
       const turn=this.#newTurn({promptUuid,live});
       turn.onDelivered=typeof onDelivered==="function"?onDelivered:null;
       this.turn=turn;clearTimeout(this.idleTimer);
+      // A prompt that never reaches Claude Code (its opening stopped, or its process ended first) is in no transcript, so its turn ends
+      // with no ids: an Edit from here would resume at one, and a later session start would take the thread for one Claude Code has.
+      if(opening.stopped||!live||live.closed)turn.promptUuid=null;
       if(opening.stopped||!live){
         turn.cancelRequested=true;
         if(live&&!live.closed){live.stopped=true;await this.#closeLive(live)}

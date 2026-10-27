@@ -96,3 +96,21 @@ test("a process that cannot leave Plan is replaced only once no background work 
   assert.equal(calls[1].options.permissionMode,"acceptEdits");
   await claude.close();
 });
+
+// Stop while Claude Code is asked to leave the Plan mode Claude switched to ends the prompt before it reaches Claude Code, which so
+// never wrote it: the turn names no message of it, for an Edit from here or a later session start to take for one in the transcript.
+test("Stop while a process is asked to leave Plan ends the prompt cancelled, with no ids of the message Claude Code never got",async()=>{
+  let answer=null;
+  const {sdk,calls}=scriptedClaudeSdk({turn:intoPlan,control:{setPermissionMode:()=>new Promise(resolve=>{answer=resolve})}});
+  const claude=session(sdk,"edits");await claude.start();
+  await claude.prompt([{type:"text",text:"Look first"}]);
+  const prompting=claude.prompt([{type:"text",text:"Now fix it"}]);
+  for(let round=0;round<50&&!answer;round++)await tick();
+  assert.deepEqual(modes(calls[0]),["acceptEdits"],"Claude Code is asked to leave Plan");
+  await claude.cancel();answer();
+  const outcome=await prompting;
+  assert.equal(outcome.stopReason,"cancelled");
+  assert.equal(calls[0].inputs.length,1,"the prompt never reached Claude Code");
+  assert.deepEqual([outcome.providerMessageId??null,outcome.userMessageId??null],[null,null],"no ids of a message Claude Code never got");
+  await claude.close();
+});

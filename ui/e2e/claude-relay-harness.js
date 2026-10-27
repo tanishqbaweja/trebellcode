@@ -18,12 +18,18 @@ const MODELS={agentRuntime:"claude",ready:true,models:["default"],defaultModel:"
 // aborts once the query closes. control.backgroundTasks(toolUseId,{emit}) answers a move of a foreground task to the background,
 // control.setPermissionMode(mode) a change of the process's mode (it throws where Claude Code refuses one), and control.init(options)
 // gives what the init frame says otherwise (the mode Claude Code opened in, where it is not the one asked for).
+// control.setMcpServers(servers,{index}) answers the registration of the thread's MCP servers by the index-th query (0 first), and
+// control.open(options,{index}) can give the error a Claude Code exits on before it starts the session (a fork at a message its
+// transcript does not have), which ends that query.
 function scriptedClaudeSdk(turn,control={}){
+  let queries=0;
   const query=({prompt,options})=>{
-    const items=[],waiters=[],stop=new AbortController();let done=false;
-    const emit=value=>{if(done)return;const waiter=waiters.shift();if(waiter)waiter({value,done:false});else items.push(value)};
-    const end=()=>{if(done)return;done=true;stop.abort();for(const waiter of waiters.splice(0))waiter({value:undefined,done:true})};
-    void (async()=>{
+    const items=[],waiters=[],stop=new AbortController(),number=queries++;let done=false,failure=null;
+    const emit=value=>{if(done)return;const waiter=waiters.shift();if(waiter)waiter.resolve({value,done:false});else items.push(value)};
+    const end=(error=null)=>{if(done)return;done=true;failure=error;stop.abort();for(const waiter of waiters.splice(0))error?waiter.reject(error):waiter.resolve({value:undefined,done:true})};
+    const refused=control.open?.(options,{index:number})||null;
+    if(refused)end(refused);
+    else void (async()=>{
       let index=0,chain=Promise.resolve();
       for await(const message of prompt){
         if(index===0)emit({type:"system",subtype:"init",session_id:options.sessionId||options.resume,model:"claude-fixture",permissionMode:options.permissionMode,tools:[],mcp_servers:[],slash_commands:[],agents:[],capabilities:[],...(control.init?control.init(options):{})});
@@ -34,10 +40,10 @@ function scriptedClaudeSdk(turn,control={}){
       end();
     })();
     return {
-      next:()=>items.length?Promise.resolve({value:items.shift(),done:false}):done?Promise.resolve({value:undefined,done:true}):new Promise(resolve=>waiters.push(resolve)),
+      next:()=>items.length?Promise.resolve({value:items.shift(),done:false}):done?(failure?Promise.reject(failure):Promise.resolve({value:undefined,done:true})):new Promise((resolve,reject)=>waiters.push({resolve,reject})),
       return:()=>{end();return Promise.resolve({value:undefined,done:true})},[Symbol.asyncIterator](){return this},
       async interrupt(){},close(){end()},async setPermissionMode(mode){if(control.setPermissionMode)return control.setPermissionMode(mode)},initializationResult:async()=>({commands:[],agents:[],models:[]}),
-      async setMcpServers(servers){return {added:Object.keys(servers),removed:[],errors:{}}},
+      async setMcpServers(servers){return control.setMcpServers?control.setMcpServers(servers,{index:number}):{added:Object.keys(servers),removed:[],errors:{}}},
       async backgroundTasks(toolUseId){return control.backgroundTasks?control.backgroundTasks(toolUseId,{emit}):true},
     };
   };
@@ -50,11 +56,12 @@ export const claudeReply=(message,text)=>[
 ];
 
 // Claude Code threads on the real relay, Claude Code itself answered as installed and signed in and its SDK scripted by turn.
-// seedThread stores a Claude thread with no turns yet, in the harness's repository and the given permission mode.
-export async function startClaudeRelay({turn,control={}}){
+// seedThread stores a Claude thread with no turns yet, in the harness's repository and the given permission mode. mcpServers: the MCP
+// servers set in Settings, which each Claude Code is given to connect.
+export async function startClaudeRelay({turn,control={},mcpServers=null}){
   const root=await mkdtemp(join(tmpdir(),"trebell-claude-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
-  state.updateSettings({agentRuntime:"claude",agentRuntimeInstanceId:CLAUDE.id,activeEnvironmentId:null});
+  state.updateSettings({agentRuntime:"claude",agentRuntimeInstanceId:CLAUDE.id,activeEnvironmentId:null,...(mcpServers?{mcpServers}:{})});
   const runtimeManager={
     instances:()=>[{...CLAUDE}],activeInstance:()=>({...CLAUDE}),activeRuntime:()=>"claude",compatibleInstanceIds:()=>[CLAUDE.id],
     probe:async()=>({id:CLAUDE.id,name:"Claude Code",available:true,authenticated:true,version:"fixture"}),

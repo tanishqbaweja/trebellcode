@@ -275,6 +275,8 @@ for(const resumed of [true,false])test(`Stop while a stalled MCP registration's 
     assert.equal(outcome?.stopReason,"cancelled",`${resumed?"resumed":"new"}: ${outcome?.message||""}`);
     assert.equal(calls.length,1,`${resumed?"resumed":"new"}: no other Claude Code opened after Stop`);
     assert.equal(calls[0].inputs.length,0,"the prompt never reached Claude Code");
+    // So no transcript holds it: the turn names no message an Edit from here could resume at, nor one that says the thread has turns.
+    assert.deepEqual([outcome.providerMessageId??null,outcome.userMessageId??null],[null,null],`${resumed?"resumed":"new"}: no ids of a message Claude Code never got`);
     await claude.close();
   }
 });
@@ -293,7 +295,9 @@ test("Claude Code that exits while it registers the servers ends the prompt as i
   const prompting=stopped.prompt([{type:"text",text:"hi"}]);
   await until(()=>calls[0]?.log.length===1);
   await stopped.cancel();
-  assert.equal((await prompting).stopReason,"cancelled");
+  const outcome=await prompting;
+  assert.equal(outcome.stopReason,"cancelled");
   assert.equal(calls[0].inputs.length,0);
+  assert.deepEqual([outcome.providerMessageId??null,outcome.userMessageId??null],[null,null],"no ids of a message Claude Code never got");
   await stopped.close();
 });
