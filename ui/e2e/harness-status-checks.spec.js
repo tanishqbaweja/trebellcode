@@ -10,7 +10,8 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 // harness runner is in offline E2E), so it is the server's reading of these answers the page shows:
 // - Claude Code answers --version after 8 s (a cold Windows start) and runs through a gateway, where `claude auth status` finds no
 //   sign-in of its own;
-// - OpenCode's --version never answers; Cursor's exits with an error;
+// - OpenCode's --version never answers, so it is installed but not ready (its version picks the client Trebell talks to it with);
+//   Cursor's exits with an error;
 // - Grok prints its logged-out line once, as it does for an access token it then refreshes;
 // - Codex is not there.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/harness-status-checks/",import.meta.url));mkdirSync(shots,{recursive:true});
@@ -61,11 +62,12 @@ test("Settings shows a slow, hung or failing harness CLI as installed, and Grok 
     await expect(action("Claude Code")).toHaveText("Switch");
     await expect(row("Claude Code").getByRole("button",{name:"Update",exact:true})).toBeVisible();
     await expect(row("Claude Code").getByRole("button",{name:"Install",exact:true})).toHaveCount(0);
-    // OpenCode and Cursor: installed, with what their check did, never "not installed".
-    await expect(said("OpenCode")).toHaveText("OpenCode is installed but did not answer `opencode --version` within 10 seconds.");
+    // OpenCode and Cursor: installed, with what their check did, never "not installed"; OpenCode waits for its version.
+    await expect(said("OpenCode")).toHaveText("OpenCode is installed but did not answer `opencode --version` within 10 seconds. Trebell Code needs its version (1.x or 2.x) to start it.");
+    await expect(action("OpenCode")).toHaveText("Not ready");
     await expect(row("OpenCode").getByRole("button",{name:"Update",exact:true})).toBeVisible();
     await expect(said("Cursor")).toHaveText("Cursor is installed but `cursor-agent --version` exited with code 1: Error: Cannot find module 'index.js'");
-    for(const name of ["OpenCode","Cursor"])await expect(action(name)).not.toHaveText(/Not installed|Not ready/);
+    await expect(action("Cursor")).not.toHaveText(/Not installed|Not ready/);
     // Grok: its second `grok models` read the refreshed sign-in.
     await expect(said("Grok Build")).toHaveText("grok 1.0.41 (4220f3b224a6)");
     await expect(action("Grok Build")).toHaveText("Switch");

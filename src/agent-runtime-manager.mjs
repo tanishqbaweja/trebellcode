@@ -790,8 +790,13 @@ export class AgentRuntimeManager{
     // Here a --version that ran out of time (a cold start, a scan) or exited with an error says nothing of whether the harness
     // runs: it stays installed and may start (T3 refuses no turn on its check), and its own error says why if it then fails
     // (withProbeAdvice). Its sign-in is not read, and the answer is never kept, so the next check asks again. On a host (SSH, WSL) a
-    // failed check is unavailable as before: ssh's own failures (a host it cannot reach) are no answer of the harness's.
-    if(!host&&(failure==="timeout"||failure==="exit"))return {id:instance.id,kind:instance.kind,name:def.name,available:true,installed:true,authenticated:null,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version:null,account:null,versionCheckFailed:true,message:versionCheckMessage(def,instance.kind,command,versionResult)};
+    // failed check is unavailable as before: ssh's own failures (a host it cannot reach) are no answer of the harness's. OpenCode
+    // is not ready without its version: its 1.x and 2.x servers each speak only their own client, which the relay, Git text and its
+    // model list choose by that version, so it is asked again at the next check.
+    if(!host&&(failure==="timeout"||failure==="exit")){
+      const versionless=instance.kind==="opencode",said=versionCheckMessage(def,instance.kind,command,versionResult);
+      return {id:instance.id,kind:instance.kind,name:def.name,available:!versionless,installed:true,authenticated:null,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version:null,account:null,versionCheckFailed:true,message:versionless?`${/[.!?…]$/.test(said)?said:said+"."} Trebell Code needs its version (1.x or 2.x) to start it.`:said};
+    }
     if(failure)return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:!host&&failure!=="missing",authenticated:false,protocol:def.protocol,managed:Boolean(def.managed),binary:command,message:runtimeProbeFailure(def,versionResult)};
     let authenticated=true,account=null,message="Ready";
     if(instance.kind==="claude"){

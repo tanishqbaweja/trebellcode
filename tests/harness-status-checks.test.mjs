@@ -67,8 +67,9 @@ test("Claude Code gets 20 s to answer --version: one that answers after 19 s rea
   assert.deepEqual(fx.calls.map(call=>[call.args,call.timeoutMs]),[["--version",20_000],["auth status",8000]]);
 });
 
-// What each harness's check waits for, and the name its message gives the command.
-const BUDGETS=[["claude","Claude Code","claude",20],["cursor","Cursor","cursor-agent",6],["grok","Grok Build","grok",6],["opencode","OpenCode","opencode",10],["antigravity","Antigravity","agy",6]];
+// What each harness's check waits for, and the name its message gives the command. OpenCode, whose version picks its client, is
+// in the test after these.
+const BUDGETS=[["claude","Claude Code","claude",20],["cursor","Cursor","cursor-agent",6],["grok","Grok Build","grok",6],["antigravity","Antigravity","agy",6]];
 for(const [kind,name,command,seconds] of BUDGETS){
   test(`${name} reads installed and may start when its --version never answers, says how long it waited, and is asked again next time`,async t=>{
     const fx=await localHarness(t,kind,args=>args[0]==="--version"?TIMED_OUT:answered("unexpected"));
@@ -83,6 +84,31 @@ for(const [kind,name,command,seconds] of BUDGETS){
     assert.equal(fx.calls.length,3,"a switch to it is not refused");
   });
 }
+
+test("an OpenCode whose --version does not answer or fails is installed but not ready, as its version picks the client that talks to it",async t=>{
+  // An OpenCode 2.x (npm's @opencode/cli exe, which a cold start after a reboot keeps past 10 s) has a 2.x server that only the 2.x
+  // client speaks to; the relay, Git text and the model list choose that client by the version, so without one nothing starts.
+  let version=()=>TIMED_OUT;
+  const fx=await localHarness(t,"opencode",args=>args[0]==="--version"?version():answered("unexpected"));
+  const SLOW="OpenCode is installed but did not answer `opencode --version` within 10 seconds. Trebell Code needs its version (1.x or 2.x) to start it.";
+  const slow=await fx.manager.probe("opencode");
+  assert.deepEqual([slow.installed,slow.available,slow.versionCheckFailed,slow.version,slow.message],[true,false,true,null,SLOW]);
+  await assert.rejects(fx.manager.setActive({runtime:"opencode"}),error=>error.message===SLOW,"a switch to it is refused");
+  const listed=await fx.manager.models("opencode");
+  assert.deepEqual([listed.source,listed.error],["unavailable",SLOW],"no 1.x model catalog is read for it");
+  // A chat is refused with that answer, before any OpenCode client or server starts.
+  const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(fx.home,"trebell-home")});
+  const relay=await startRelay(t,{runtimeManager:fx.manager,threadStore,state:fx.state});
+  await assert.rejects(Promise.race([relay.rpc("thread/start",{cwd:fx.home}),new Promise((_resolve,reject)=>setTimeout(()=>reject(new Error("the start was not refused within 20 s")),20_000))]),error=>error.message===SLOW);
+  assert.deepEqual(fx.calls.map(call=>[call.args,call.timeoutMs]),Array(4).fill(["--version",10_000]),"each check asked its version again, and nothing else ran");
+  // One that exits with an error, and a profile that uses an OpenCode server of its own, read the same.
+  version=()=>exited(1,"Error: Cannot find module '@opencode/cli-win32-x64'\n");
+  const failed=await fx.manager.probe("opencode");
+  assert.deepEqual([failed.installed,failed.available,failed.message],[true,false,"OpenCode is installed but `opencode --version` exited with code 1: Error: Cannot find module '@opencode/cli-win32-x64'. Trebell Code needs its version (1.x or 2.x) to start it."]);
+  const external=await localHarness(t,"opencode",()=>TIMED_OUT,{instance:{serverUrl:"http://127.0.0.1:4096"}});
+  const served=await external.manager.probe("opencode");
+  assert.deepEqual([served.installed,served.available,served.message],[true,false,SLOW]);
+});
 
 test("a harness whose --version exits with an error reads installed and may start, with what it said",async t=>{
   const fx=await localHarness(t,"cursor",()=>exited(1,"\u001b[31mError: Cannot find module 'index.js'\u001b[0m\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1207:15)\n"));
