@@ -247,6 +247,7 @@ export class AcpClient extends EventEmitter{
 
   // Each kind of drop is warned about once per connection, by method and reason, with the reason bounded and none of the message's
   // values: an agent repeats a shape it sends on every update. A message of no known method is one that failed before its dispatch.
+  // dropped marks the warning as one about a message Trebell let go, which the relay keeps in the thread's trace.
   #dropped(method,error){
     const name=String(method??"").replace(/\s+/g," ").trim().slice(0,100)||null;
     const detail=sanitizeAcpStderrExcerpt(String(error instanceof Error?error.message:error).replace(/\s+/g," "),this.env);
@@ -254,7 +255,7 @@ export class AcpClient extends EventEmitter{
     const key=(name||"")+"\n"+reason;
     if(this.droppedKinds.has(key)||this.droppedKinds.size>=DROPPED_KINDS_LIMIT)return;
     this.droppedKinds.add(key);
-    this.#warn({message:`Dropped an ACP ${name?name+" notification":"message"} that Trebell could not handle: ${reason}`,method:name,reason});
+    this.#warn({message:`Dropped an ACP ${name?name+" notification":"message"} that Trebell could not handle: ${reason}`,method:name,reason,dropped:true});
   }
 
   #warn(warning){try{this.emit("protocolWarning",warning)}catch{}}

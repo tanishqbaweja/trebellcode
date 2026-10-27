@@ -57,10 +57,11 @@ function memoryState(){
   const meta=new Map();
   return {settings:()=>({activeEnvironmentId:null}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
 }
-// rpc asks the relay as the app does; next waits for the first message from the relay that matches.
-export async function acpRelay(t,kind,fx){
+// rpc asks the relay as the app does; next waits for the first message from the relay that matches. relayOptions go to the relay as
+// they are (its log, its journal).
+export async function acpRelay(t,kind,fx,relayOptions={}){
   const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(fx.root,"home")});
-  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager:scenarioRuntimeManager(kind,fx),threadStore,terminals:{},state:memoryState(),version:"test"});
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{runtimeManager:scenarioRuntimeManager(kind,fx),threadStore,terminals:{},state:memoryState(),version:"test",...relayOptions});
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   const ws=new WebSocket("ws://127.0.0.1:"+server.address().port+"/api/agent/ws");await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
   onCleanup(t,async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()))});

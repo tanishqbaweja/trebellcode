@@ -50,19 +50,29 @@ test("a JSON line that is not a message, such as null, is dropped with a warning
 
 // Through the relay, as in a Trebell server: Cursor's plan update with a null entry, which the relay's plan mapping throws on, was an
 // unhandled rejection that ends the server; the update is dropped, and the rest of the turn, its reply with a line separator in it
-// too, reaches the thread.
-test("a thread's turn goes on past an update the relay cannot map, and its reply keeps its line separator",{timeout:60000},async t=>{
+// too, reaches the thread. The drop goes to the thread's trace and to the server's log, by its method and reason, as T3 logs one it
+// cannot decode: the warning reached no one.
+test("a thread's turn goes on past an update the relay cannot map, its reply keeps its line separator, and the drop is in the thread's trace",{timeout:60000},async t=>{
   const rejections=unhandledRejections(t);
   const chunk=text=>({update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text}}});
   const fx=await scriptedAcp(t,{initialize:{protocolVersion:1,agentCapabilities:{loadSession:true}},sessionNew:{sessionId:"cursor-session",configOptions:[select("mode","mode","agent",["agent","plan","ask"]),select("model","model","default",[["default","Auto"]])]},prompts:[
-    {steps:[chunk(`Read the file${LS}and the notes.`),{update:{sessionUpdate:"plan",entries:[null]}},chunk(" Both are fine.")]},
+    {steps:[chunk(`Read the file${LS}and the notes.`),{update:{sessionUpdate:"plan",entries:[null]}},{update:{sessionUpdate:"plan",entries:[null]}},chunk(" Both are fine.")]},
   ]});
-  const {rpc,next,threadStore}=await acpRelay(t,"cursor",fx);
+  const logged=[],recorded=[],journal={record:entry=>{recorded.push(entry);return entry},recordProtocol:()=>null,list:()=>[]};
+  const {rpc,next,threadStore}=await acpRelay(t,"cursor",fx,{log:message=>logged.push(String(message)),journal});
   const started=await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"});
   const completed=next(message=>message.method==="turn/completed");
   await rpc("turn/start",{threadId:started.thread.id,input:[{type:"text",text:"check the file"}]});
-  assert.equal((await completed).params.turn.status,"completed");
+  const turn=(await completed).params.turn;
+  assert.equal(turn.status,"completed");
   const reply=threadStore.get(started.thread.id).turns.at(-1).items.find(item=>item.type==="agentMessage");
   assert.equal(reply?.text,`Read the file${LS}and the notes. Both are fine.`);
   assert.deepEqual(await rejections(),[]);
+  const dropped=recorded.filter(entry=>entry.name==="acp.message.dropped");
+  assert.equal(dropped.length,1,"the drop is in the thread's trace, once for its kind");
+  const [entry]=dropped;
+  assert.deepEqual({threadId:entry.threadId,turnId:entry.turnId,runtime:entry.runtime,category:entry.category,status:entry.status,method:entry.data.method},{threadId:started.thread.id,turnId:turn.id,runtime:"cursor",category:"protocol",status:"warning",method:"session/update"});
+  assert.match(entry.data.reason,/^TypeError: Cannot read properties of null|^Cannot read properties of null/);
+  assert.deepEqual(logged.filter(line=>line.includes("Dropped an ACP")),[`Cursor: Dropped an ACP session/update notification that Trebell could not handle: ${entry.data.reason}`],"and in the server's log");
+  assert.doesNotMatch(JSON.stringify([dropped,logged]),/Both are fine|Read the file|entries/,"neither carries the update's values");
 });

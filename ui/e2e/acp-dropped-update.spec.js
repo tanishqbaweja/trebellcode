@@ -7,12 +7,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { attachAgentRelay } from "../../src/agent-relay.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
+import { EventJournal } from "../../src/event-journal.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
 // A Cursor tool call whose first frame the relay cannot map (a location that is no object) and whose next update it can. The frame is
 // dropped with a warning (acp-client.mjs), and it no longer joins the call's state, as T3 drops an update it cannot decode: the update
 // shows the call in the turn's card. Kept in that state, the frame's fields went with the update, which the relay dropped as well, so
-// the call never showed.
+// the call never showed. The drop is listed in the thread's Execution trace by its method and reason, as T3 logs one it cannot decode;
+// the warning reached no one before.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 
@@ -25,6 +27,17 @@ async function shots(page,name){
       await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
       await page.screenshot({animations:"disabled",path:`${auditDir}${name}-${mode}-${width}x800.png`});
     }
+  }
+  await page.setViewportSize({width:1280,height:800});
+}
+// The same with the right panel open: the theme is switched at 1280, as in a narrower window the open panel lies over the header, and
+// each width shows the trace row (into view).
+async function panelShots(page,row,name){
+  for(const mode of ["dark","light"]){
+    await page.setViewportSize({width:1280,height:800});
+    if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").first().click();
+    await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await row.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:`${auditDir}${name}-${mode}-${width}x800.png`})}
   }
   await page.setViewportSize({width:1280,height:800});
 }
@@ -54,11 +67,13 @@ readline.createInterface({input:process.stdin}).on("line",line=>{
 });
 `;
 
-// A Cursor thread over the real relay, with the fake Cursor behind it; relayOptions go to the relay (a journal).
-async function cursorThread(page,{name,relayOptions={}}){
+// A Cursor thread over the real relay, with the fake Cursor behind it; with traces, the relay keeps an event journal of its own, which
+// answers the page's trace requests as the server's does.
+async function cursorThread(page,{name,traces=false}){
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-dropped-")),fixture=join(root,"fake-cursor.mjs");
   await writeFile(fixture,FAKE_CURSOR,"utf8");
-  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env),journal=traces?new EventJournal(env):null;
+  const relayOptions=journal?{journal}:{};
   const seed=threadStore.create({runtime:"cursor",cwd:root,providerSessionId:"",model:"default",name});
   const instance={id:"cursor-default",kind:"cursor",displayName:"Cursor",enabled:true};
   const runtimeManager={
@@ -82,7 +97,11 @@ async function cursorThread(page,{name,relayOptions={}}){
   await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
-  return {seed,threadStore,close:async()=>{await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}};
+  if(journal)await page.route(/\/api\/traces\?/,route=>{
+    const params=new URL(route.request().url()).searchParams,value=key=>params.get(key)||null;
+    return json(route,{items:journal.list({threadId:value("threadId"),turnId:value("turnId"),runtime:value("runtime"),category:value("category"),limit:Number(value("limit")||200),before:value("before"),after:value("after")}),journal:journal.status()});
+  });
+  return {seed,threadStore,close:async()=>{await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await journal?.close();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}};
 }
 // Opens the thread and sends one message as a person does, then waits for the reply.
 async function sendAndWait(page,name,message){
@@ -104,5 +123,27 @@ test("a Cursor tool call whose first frame Trebell cannot map shows in the turn'
     await expect(row,"the call shows in the card").toHaveCount(1);await expect(row).toContainText("done");
     expect(thread.threadStore.get(thread.seed.id).turns.at(-1).items.find(item=>item.id==="delete-notes")?.status,"the thread keeps the call").toBe("completed");
     await shots(page,"acp-dropped-update-tool");
+  }finally{await thread.close()}
+});
+
+test("the thread's Execution trace lists a Cursor update Trebell dropped, by its method and reason",async({page})=>{
+  test.setTimeout(60_000);
+  const thread=await cursorThread(page,{name:"Trace notes",traces:true});
+  try{
+    await sendAndWait(page,"Trace notes","Remove the old notes file.");
+    const panel=page.getByTestId("right-panel");
+    if(!await panel.isVisible())await page.getByTestId("right-panel-toggle").click();
+    await panel.getByRole("button",{name:"Runtime",exact:true}).click();
+    const trace=page.getByTestId("runtime-trace");await expect(trace).toBeVisible();
+    const row=trace.locator(".runtime-trace-row").filter({has:page.locator("summary strong",{hasText:/^acp\.message\.dropped$/})});
+    await expect(row,"the drop is in the trace once").toHaveCount(1,{timeout:15_000});
+    await expect(row.locator("summary span")).toHaveText("warning");
+    await row.locator("summary").click();
+    const turnId=thread.threadStore.get(thread.seed.id).turns.at(-1).id;
+    await expect(row.locator("p"),"the drop names the thread and the turn it came in").toHaveText(new RegExp(`^cursor · .*thread ${thread.seed.id.slice(0,12)} · turn ${String(turnId).slice(0,12)}$`));
+    const data=JSON.parse(await row.locator("pre").textContent());
+    expect(data.method).toBe("session/update");expect(data.reason).toMatch(/Cannot read properties of null \(reading 'path'\)/);
+    expect(JSON.stringify(data),"none of the update's values").not.toMatch(/old-notes|delete-notes/);
+    await panelShots(page,row,"acp-dropped-update-trace");
   }finally{await thread.close()}
 });

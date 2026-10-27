@@ -1419,9 +1419,20 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(!session||session.__liveTurnId!==turnId)return;dropNativeDraft(session,threadId,"turn_end");delete session.__liveTurnId;
   }
 
+  // A message an ACP harness's connection dropped as one Trebell could not handle (acp-client.mjs, told once for each kind) goes to the
+  // thread's trace and the server's log by its method and reason only, as T3 logs one it cannot decode; the turn goes on without it.
+  function droppedAcpMessage(threadId,warning){
+    if(warning?.dropped!==true)return;
+    const thread=threadMetadata(threadId),turn=lastTurnOf(threadId);
+    journal?.record?.({runtime:thread?.runtime||null,provider:agentProviderIdentity(thread),environmentId:thread?.providerMeta?.environmentId??null,threadId,turnId:turn?.status==="inProgress"?turn.id:null,category:"protocol",name:"acp.message.dropped",status:"warning",data:{method:warning.method||null,reason:String(warning.reason||"")}});
+    log(`${runtimeHarnessLabel(thread?.runtime)}: ${warning.message}`);
+  }
+
   function handleUpdate(threadId,params,source=null){
     const draftType=params?.update?.sessionUpdate;
     if(draftType==="agent_message_draft_delta"||draftType==="agent_message_draft_reset")return handleNativeDraft(threadId,params.update,source);
+    // Also before the thread's first turn, as during a session's start.
+    if(draftType==="protocol_warning")return droppedAcpMessage(threadId,params.update);
     // A chunk needs only the last turn's id and status; reading the stored thread for each one read and parsed all of its history.
     const update=params?.update||{};const lastTurn=lastTurnOf(threadId);if(!lastTurn)return;const turnId=lastTurn.id||null;
     const type=update.sessionUpdate;
