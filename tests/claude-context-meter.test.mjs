@@ -119,9 +119,9 @@ const runtimeManager={
   runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env}),executable:()=>"claude",
 };
 const state={settings:()=>({activeEnvironmentId:null}),threadMeta:()=>({}),updateThreadMeta:(_id,patch)=>patch};
-async function startRelay(threadStore,sdk){
+async function startRelay(threadStore,sdk,relayState=state){
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});
-  const relay=attachAgentRelay(server,{runtimeManager,threadStore,state,terminals:{},version:"test",claudeSdk:sdk});
+  const relay=attachAgentRelay(server,{runtimeManager,threadStore,state:relayState,terminals:{},version:"test",claudeSdk:sdk});
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   const ws=new WebSocket(`ws://127.0.0.1:${server.address().port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
   let id=0;const seen=[];
@@ -155,4 +155,48 @@ test("the relay hands Claude's context on as the last request, apart from the tu
   // The cue Trebell's auto-compaction setting runs on (70% at the least) reads Claude's context against its window.
   const decision=autoCompactionDecision(final,{enabled:true,thresholdPercent:70});
   assert.deepEqual([decision.reason,decision.utilizationPercent],["below-threshold",62],"the auto-compaction cue reads Claude's context");
+});
+
+// Until a turn's first request the meter still shows the turn before's tokens (and a compaction's context against them), which are not
+// the new turn's: a turn that fails before a request of its own (its request failing after Claude compacted on its own, or at once
+// with a cost its background agents ran up since the last result) keeps only its own cost in the Usage records, never the turn
+// before's tokens or cost again.
+test("a Claude turn that fails before a request of its own records only its own cost, never the turn before's tokens or cost, while the meter still shows the context",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-claude-carried-usage-"));let relay=null;
+  t.after(async()=>{await relay?.close().catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100})});
+  const compacted=kept=>({type:"system",subtype:"compact_boundary",compact_metadata:{trigger:"auto",pre_tokens:150_000,post_tokens:kept}});
+  const overloaded=(message,total)=>({type:"result",subtype:"success",is_error:true,terminal_reason:"api_error",api_error_status:529,result:"API Error: 529 Overloaded",user_message_uuid:message.uuid,total_cost_usd:total,usage:{input_tokens:0,cache_creation_input_tokens:0,cache_read_input_tokens:0,output_tokens:0}});
+  const {sdk}=scriptedClaudeSdk({control:contextUsage({default:200_000}),turn:({message,index,emit})=>{
+    if(index===0){
+      emit(started("m1",{input_tokens:1200,cache_creation_input_tokens:2800,cache_read_input_tokens:120_000,output_tokens:1}));
+      emit({type:"assistant",uuid:"a1",parent_tool_use_id:null,message:{id:"m1",content:[{type:"text",text:"Summarized."}]}});
+      emit(delta({output_tokens:30}));
+      return emit(claudeResult(message,{usage:{input_tokens:1200,cache_creation_input_tokens:2800,cache_read_input_tokens:120_000,output_tokens:30},total_cost_usd:0.12}));
+    }
+    // Claude compacts on its own as the turn starts, and the request after it fails: the compaction's cost is the turn's own.
+    if(index===1){emit({type:"system",subtype:"status",status:"compacting"});emit({type:"system",subtype:"status",status:null,compact_result:"success"});emit(compacted(30_000));return emit(overloaded(message,0.15))}
+    // It fails at once, with what background agents spent since the last result.
+    if(index===2)return emit(overloaded(message,0.18));
+    // It compacts and fails with nothing of its own.
+    emit(compacted(28_000));emit(overloaded(message,0.18));
+  }});
+  const records=[],relayState={...state,recordUsage:entry=>records.push(entry)};
+  const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(root,"home")});
+  const thread=threadStore.create({runtime:"claude",cwd:root,providerSessionId:"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",model:"claude-test",providerMeta:{runtimeInstanceId:CLAUDE.id,permissionProfile:"supervised"}});
+  relay=await startRelay(threadStore,sdk,relayState);
+  const turns=[];
+  for(const text of ["Summarize the repository","Go on","Go on again","Once more"]){
+    const {turn}=await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text}]});turns.push(turn.id);
+    for(let round=0;round<400&&!relay.seen.some(message=>message.method==="turn/completed"&&message.params.turn?.id===turn.id);round++)await tick();
+    assert.ok(relay.seen.some(message=>message.method==="turn/completed"&&message.params.turn?.id===turn.id),`turn ${turns.length} ended`);
+  }
+  const recorded=id=>records.filter(entry=>entry.turnId===id).map(entry=>[entry.usage.totalTokens,entry.cost?Number(entry.cost.amount.toFixed(2)):null]);
+  assert.deepEqual(recorded(turns[0]),[[124_030,0.12]],"the first turn's own usage");
+  assert.deepEqual(recorded(turns[1]),[[0,0.03]],"the compaction's cost, and none of the first turn's tokens or cost");
+  assert.deepEqual(recorded(turns[2]),[[0,0.03]],"its own cost only");
+  assert.deepEqual(recorded(turns[3]),[],"nothing of its own to record");
+  // The meter goes on showing the context the compaction kept against the window, with the earlier turn's tokens as its total.
+  const shown=relay.seen.filter(message=>message.method==="thread/tokenUsage/updated"&&message.params.turnId===turns[1]).map(message=>message.params.tokenUsage);
+  const kept=shown.find(usage=>usage.last.inputTokens===30_000);
+  assert.ok(kept&&kept.total.totalTokens>0&&kept.modelContextWindow===200_000,"the composer's meter still reads 15% after the compaction");
 });

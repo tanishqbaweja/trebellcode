@@ -433,8 +433,9 @@ export class ClaudeAgentSession{
     // taskCalls: the task tool calls without a result yet, by id; taskLists: each Claude session's task list, by its id.
     this.taskCalls=new Map();this.taskLists=new Map();
     // contextWindows: Claude Code's window for each model it ran (getContextUsage), asked once. meter: what the context meter last
-    // showed (the total, its cost and the context), and request the latest root request's usage as its stream reports it.
-    this.contextWindows=new Map();this.meter={usage:null,modelUsage:null,cost:null,context:null};this.request=null;
+    // showed (the total, its cost and the context, with the turns the total and the cost are of), and request the latest root
+    // request's usage as its stream reports it.
+    this.contextWindows=new Map();this.meter={usage:null,modelUsage:null,cost:null,context:null,turn:null,costTurn:null};this.request=null;
     this.sessionAllowRules=new Set();this.additionalDirectories=new Set();this.inventory={};this.inventoryRank=0;this.#rewindOrigins=new WeakMap();
     this.initializeResult={agentCapabilities:{loadSession:true,sessionCapabilities:{fork:{},resume:{},close:{}}},agentInfo:{name:"Claude Code"}};
     this.sessionSetup=null;
@@ -1041,7 +1042,7 @@ export class ClaudeAgentSession{
     const request=this.request,usage=request?.usage;if(!usage||promptTokens(usage)<=0)return;
     if(!turn.requests.size){this.meter.cost=null;this.meter.modelUsage=null}
     request.key??=request.id||randomUUID();turn.requests.set(request.key,usage);
-    this.meter.usage=summedUsage(turn.requests);this.meter.context=contextReading(usage);
+    this.meter.usage=summedUsage(turn.requests);this.meter.context=contextReading(usage);this.meter.turn=turn;
     this.#emitMeter(live);
   }
   // A compaction leaves the request it ended stale, whose later deltas measure what it removed: the context is what it kept, once Claude
@@ -1061,15 +1062,18 @@ export class ClaudeAgentSession{
     if(turn)turn.cost=cost;
     const used=usageTotal(result?.usage||{});
     if(!used&&!cost)return;
-    if(used){this.meter.usage=result.usage;this.meter.modelUsage=result.modelUsage||null}
-    this.meter.cost=cost;
+    if(used){this.meter.usage=result.usage;this.meter.modelUsage=result.modelUsage||null;this.meter.turn=turn}
+    this.meter.cost=cost;this.meter.costTurn=turn;
     this.#emitMeter(live);
   }
   // The context meter: the latest turn's tokens and its result's cost as the total, and the latest root request's prompt (or what a
-  // compaction kept) as the context, against the window Claude Code measures this model's context by.
+  // compaction kept) as the context, against the window Claude Code measures this model's context by. Until the live turn's first
+  // request (or its own result with tokens) the tokens are an earlier turn's: they still show, but carried tells the relay they are not
+  // this turn's usage, and a cost goes with them only when it is this turn's own (a /compact's, or what background agents spent).
   #emitMeter(live){
-    const {usage,modelUsage,cost,context}=this.meter,size=context?this.#contextWindow(live)||0:0;
-    this.#emit({sessionUpdate:"usage_update",used:usageTotal(usage||{}),size,...(cost!=null?{cost:{amount:cost,currency:"USD"}}:{}),usage:usage||null,modelUsage:modelUsage||null,...(context?{context:{...context}}:{})});
+    const {usage,modelUsage,context}=this.meter,size=context?this.#contextWindow(live)||0:0,turn=this.#liveTurn(live);
+    const carried=Boolean(turn)&&this.meter.turn!==turn,cost=carried&&this.meter.costTurn!==turn?null:this.meter.cost;
+    this.#emit({sessionUpdate:"usage_update",used:usageTotal(usage||{}),size,...(cost!=null?{cost:{amount:cost,currency:"USD"}}:{}),usage:usage||null,modelUsage:modelUsage||null,...(context?{context:{...context}}:{}),...(carried?{carried:true}:{})});
   }
   // The window of Claude Code's own context reading (its /context window: the model's, or the profile's autoCompactWindow below it),
   // asked once per model; the meter shows the percentage once it answers. A Claude Code that cannot say leaves the token count alone,

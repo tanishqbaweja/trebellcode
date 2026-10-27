@@ -1518,7 +1518,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const reasoning=Number(usage.reasoning_tokens??usage.reasoningOutputTokens??0)||0;
       const used=Number(update.used)||(input+output+cached+cacheWrite+reasoning),size=Number(update.size)||0;
       const snapshot={totalTokens:used,inputTokens:input||Math.max(0,used-output-reasoning),cachedInputTokens:cached,cacheWriteInputTokens:cacheWrite,outputTokens:output,reasoningOutputTokens:reasoning};
-      const runtimeSession=sessions.get(threadId);if(runtimeSession)runtimeSession.__usage={usage:snapshot,cost:update.cost||null,at:Date.now()};
+      // Tokens carried from an earlier turn (Claude Code's meter before this turn's first request) show, but are not this turn's
+      // usage: only a cost of its own that comes with them is.
+      const runtimeSession=sessions.get(threadId),own=update.carried?(update.cost?Object.fromEntries(Object.keys(snapshot).map(key=>[key,0])):null):snapshot;
+      if(runtimeSession&&own)runtimeSession.__usage={usage:own,cost:update.cost||null,at:Date.now()};
       // A harness that reports what its context holds apart from the turn's tokens sends it: Claude Code its latest request's prompt
       // (context, by kind of token), Muse Code what its context holds (contextTokens, from session/contextUsage). The context meter
       // reads it as the last request's input, as it reads Codex's, and the turn keeps its own totals.
