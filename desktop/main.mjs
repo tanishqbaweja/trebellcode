@@ -809,7 +809,16 @@ async function recoverAfterFailedUpdateInstall(){
   if(snapshotConfig.enabled&&!registeredSnapshotShortcut)try{applySnapshotConfig(snapshotConfig,{persist:false})}catch(error){console.error("Could not restore SnapShot shortcut after updater launch failure:",error)}
 }
 
-async function createWindow(){
+// One start of the main window at a time: a Dock click (activate) while the first window is still on its way (the login shell's
+// PATH being read, the GUI server starting) gets that start, where a second window would load the app hidden behind the first
+// (ready-to-show shows windowRef, the window made last) and leave getAllWindows() never empty again, so later Dock clicks opened none.
+let windowStart=null;
+function createWindow(){
+  windowStart??=openWindow().finally(()=>{windowStart=null});
+  return windowStart;
+}
+
+async function openWindow(){
   configureBundledRuntime();
   try{ process.chdir(app.getPath("home")); }catch{}
   await startGuiServer();
