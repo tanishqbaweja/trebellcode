@@ -36,7 +36,7 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
     const send=(status,value)=>{if(res.writableEnded)return;if(value===undefined){res.writeHead(status);res.end();return}res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify(value))};
     if(key==="POST /fake/password"){password=String(body?.password??"");return send(204)}
     if(password!==null&&req.headers.authorization!==`Basic ${Buffer.from(`opencode:${password}`,"utf8").toString("base64")}`)return send(401,{_tag:"UnauthorizedError",message:"Unauthorized"});
-    calls.push({key,body,authorization:req.headers.authorization||null});
+    calls.push({key,body,authorization:req.headers.authorization||null,query:Object.fromEntries(url.searchParams)});
     if(routes[key])return routes[key]({req,res,body,send});
     if(key==="GET /api/event"){
       res.writeHead(200,{"content-type":"text/event-stream","cache-control":"no-cache"});res.write(`data: ${JSON.stringify({id:"evt_0",type:"server.connected",data:{}})}\n\n`);

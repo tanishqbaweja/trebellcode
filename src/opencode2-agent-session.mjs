@@ -80,8 +80,9 @@ export function openCode2FormAnswer(form,answers={}){
   return answer;
 }
 // A form cancelled with a message fails its tool with that message and the model goes on; one cancelled without a message stops the
-// asking session's run, as Stop does.
-const FORM_UNANSWERED="The user did not answer this question. Continue without the answer, and tell the user what you would need from them.";
+// asking session's run, as Stop does. A question the person dismissed (the dialog's Cancel and close answer with nothing) or left
+// unanswered until the window stopped waiting is cancelled without one, as T3 Code cancels it, and this session's turn ends saying so.
+const FORM_UNANSWERED=Object.freeze({dismissed:"OpenCode's question was dismissed, so Trebell declined it and stopped the turn.",unanswered:"OpenCode's question was not answered in time, so Trebell declined it and stopped the turn."});
 const FORM_GONE=new Set(["FormNotFoundError","FormAlreadySettledError","SessionNotFoundError"]);
 function untilAborted(promise,signal){
   if(signal.aborted)return Promise.resolve(null);
@@ -397,8 +398,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     for(const id of own?[this.sessionId]:[sessionID,this.sessionId])void Promise.resolve(this.client?.session?.interrupt?.({sessionID:id})).catch(()=>{});
   }
   // A form of this session or a subagent's goes to the question dialog (onQuestion) and is answered with what the person chose. One the
-  // dialog cannot show is declined and ends the turn saying so; one left unanswered is declined with a message, so the model goes on
-  // without it. The card goes when OpenCode settles the form elsewhere (form.replied, form.cancelled).
+  // dialog cannot show is declined and ends the turn saying so, and so does one left unanswered (FORM_UNANSWERED). The card goes when
+  // OpenCode settles the form elsewhere (form.replied, form.cancelled).
   #askForm(form){
     const formID=String(form?.id||"");if(!formID||this.forms.has(formID))return;
     const pending={controller:new AbortController(),answering:false};this.forms.set(formID,pending);
@@ -431,7 +432,15 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     // A stopped turn's run is ending, and the form with it.
     if(turn?.cancelled)return void await this.#cancelForm(form);
     const answer=openCode2FormAnswer(form,answers||{});
-    if(!Object.keys(answer).length)return void await this.#cancelForm(form,FORM_UNANSWERED);
+    if(!Object.keys(answer).length){
+      // The cancel stops the asking session's run: this session's turn ends with the reason, set before OpenCode says the run stopped.
+      // A subagent's question ends the subagent's run only, and the turn goes on as OpenCode goes on.
+      const ends=own&&turn&&!turn.done&&!turn.cancelled&&!turn.stopError;
+      if(ends)turn.stopError=new Error(answers?FORM_UNANSWERED.dismissed:FORM_UNANSWERED.unanswered);
+      if(!(await this.#cancelForm(form))&&own)await Promise.resolve(this.client?.session?.interrupt?.({sessionID})).catch(()=>{});
+      if(ends)turn.settle?.();
+      return;
+    }
     try{await this.client.session.form.reply({sessionID,formID,answer})}
     catch(error){
       if(FORM_GONE.has(error?.name))return;

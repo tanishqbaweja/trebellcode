@@ -180,19 +180,18 @@ test("an OpenCode 2 question (a form) goes to the question dialog, and the perso
   }finally{await session.close()}
 });
 
-test("an OpenCode 2 question left unanswered is declined with a message, so the model goes on, and a subagent's question is asked and answered as its own",async()=>{
-  const answers=[{},{q0:["Blue"]}],fake=fakeOpenCode2({sessions:{ses_child:{id:"ses_child",parentID:"ses_main"}}});
-  const {session}=await startedSession(fake,{onQuestion:async()=>answers.shift()});
+// A question left unanswered ends the turn (tests/opencode2-question-unanswered.test.mjs).
+test("a subagent's OpenCode 2 question is asked and answered as its own",async()=>{
+  const fake=fakeOpenCode2({sessions:{ses_child:{id:"ses_child",parentID:"ses_main"}}});
+  const {session}=await startedSession(fake,{onQuestion:async()=>({q0:["Blue"]})});
   try{
     const turn=session.prompt([{type:"text",text:"Ask me"}]);
     await eventually(()=>fake.called("session.prompt").length===1);
-    fake.emit({type:"form.created",data:{form:{id:"frm_2",sessionID:"ses_main",title:"Questions",fields:[{key:"q0",type:"string",title:"Color",description:"Which color?",options:[{value:"Red",label:"Red"},{value:"Blue",label:"Blue"}],custom:true}]}}});
-    await eventually(()=>fake.called("session.form.cancel").length===1);
-    assert.deepEqual(fake.called("session.form.cancel"),[{sessionID:"ses_main",formID:"frm_2",message:"The user did not answer this question. Continue without the answer, and tell the user what you would need from them."}]);
     fake.emit({type:"form.created",data:{form:{id:"frm_3",sessionID:"ses_child",title:"Questions",fields:[{key:"q0",type:"string",title:"Color",options:[{value:"Blue",label:"Blue"}],custom:true}]}}});
     await eventually(()=>fake.called("session.form.reply").length===1);
     assert.deepEqual(fake.called("session.form.reply"),[{sessionID:"ses_child",formID:"frm_3",answer:{q0:"Blue"}}]);
-    ended(fake);assert.equal((await turn).stopReason,"end_turn","an unanswered question does not end the turn");
+    assert.equal(fake.called("session.form.cancel").length,0);
+    ended(fake);assert.equal((await turn).stopReason,"end_turn");
   }finally{await session.close()}
 });
 

@@ -2283,7 +2283,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         serverRequest(method,params,owner=params?.threadId,signal=null,{runless=false}={}){
           const id=`agent-${nextServerId++}`,holder=openContext(context);
           return new Promise((resolve,reject)=>{
-            const timer=setTimeout(()=>{pendingServer.delete(id);reject(new Error(`${method} user response timed out`))},5*60_000);
+            // One left unanswered this long is refused to the harness and taken off the screen, where it could no longer be answered.
+            const timer=setTimeout(()=>{const pending=pendingServer.get(id);pendingServer.delete(id);reject(new Error(`${method} user response timed out`));if(isOpen(pending?.holder))pending.holder.ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:pending.threadId}}))},5*60_000);
             pendingServer.set(id,{resolve,reject,timer,method,params,threadId:owner?String(owner):null,holder,runless:Boolean(runless)});
             holder?.ws.send(JSON.stringify({id,method,params}));
             if(signal?.aborted)withdrawServerRequest(id);else signal?.addEventListener?.("abort",()=>withdrawServerRequest(id),{once:true});
