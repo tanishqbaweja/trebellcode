@@ -4,9 +4,10 @@ import { OpenCode2AgentSession } from "../src/opencode2-agent-session.mjs";
 import { eventually, fakeOpenCode2Client, flush } from "./fixtures/fake-opencode2-client.mjs";
 
 // OpenCode 2 sends a heartbeat on its event stream every 10 to 15 seconds (15 s live, OpenCode 2.0.24). A stream that sent nothing for
-// 45 seconds has stopped, and a turn waiting on it waited for good: T3 Code fails it (OpenCode2SilentStreamError), and so does
-// OpenCode's own app. These run on mocked timers; polling uses setImmediate.
-const STOPPED="OpenCode's server sent nothing for 45 seconds, so Trebell stopped the turn. Send the message again to retry.";
+// 45 seconds is lost (T3 Code's OpenCode2Client and OpenCode's own app wait as long), and a turn waiting on it waited for good. As T3
+// Code does, the session subscribes again and asks OpenCode whether it still runs the turn (opencode2-stream-reconnect has the rest).
+// These run on mocked timers; polling uses setImmediate.
+const UNSENT="OpenCode never confirmed the message and is not running it, so Trebell stopped the turn. Send the message again to retry.";
 // Runs a promise to its end while time goes by in steps (the session's start waits a quarter second between two model reads).
 async function along(t,promise,stepMs=250){
   let done=false;promise.then(()=>{done=true},()=>{done=true});
@@ -20,32 +21,30 @@ async function startedSession(t,fake){
 }
 const settledWithin=async promise=>{let state="pending";promise.then(()=>{state="resolved"},()=>{state="rejected"});for(let index=0;index<50;index++)await flush();return state};
 
-test("an OpenCode 2 turn whose event stream sends nothing for 45 seconds ends saying so, while heartbeats keep a quiet turn going",{timeout:30_000},async t=>{
+test("heartbeats keep a quiet OpenCode 2 turn going, and after 45 seconds of nothing the session listens on a new stream while OpenCode runs it",{timeout:30_000},async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
-  const fake=fakeOpenCode2Client(),session=await startedSession(t,fake);
+  const fake=fakeOpenCode2Client({overrides:{"session.active":async()=>({ses_main:{type:"running"}})}}),session=await startedSession(t,fake);
   try{
     const turn=session.prompt([{type:"text",text:"Think it over"}]);
     await eventually(()=>fake.called("session.prompt").length===1);
     // A model thinking for a minute sends nothing, but OpenCode's heartbeat comes every 15 s: the turn waits.
     for(let beat=0;beat<4;beat++){t.mock.timers.tick(15_000);fake.heartbeat();await flush()}
     assert.equal(await settledWithin(turn),"pending","heartbeats keep the turn waiting");
+    assert.equal(fake.subscriptions(),1);
     t.mock.timers.tick(44_000);await flush();
-    assert.equal(await settledWithin(turn),"pending");
+    assert.equal(fake.subscriptions(),1);
     t.mock.timers.tick(1_000);
-    await assert.rejects(turn,{message:STOPPED});
-    // Its run is stopped too, since Trebell can no longer follow it, and the session listens on a new stream for the next turn.
-    await eventually(()=>fake.called("session.interrupt").length===1);
-    assert.deepEqual(fake.called("session.interrupt"),[{sessionID:"ses_main"}]);
-    await eventually(()=>fake.subscriptions()===2);assert.equal(fake.listening(),1);
-    const next=session.prompt([{type:"text",text:"Again"}]);
-    await eventually(()=>fake.called("session.prompt").length===2);
-    fake.emit({type:"session.text.delta",data:{sessionID:"ses_main",assistantMessageID:"msg_a2",delta:"Done."}});
+    // Lost: the session subscribes again, and OpenCode still runs the turn, which goes on and is not interrupted.
+    await eventually(()=>fake.called("session.active").length===1);
+    assert.equal(await settledWithin(turn),"pending");
+    assert.equal(fake.subscriptions(),2);assert.equal(fake.listening(),1);assert.equal(fake.called("session.interrupt").length,0);
+    fake.emit({type:"session.text.delta",data:{sessionID:"ses_main",assistantMessageID:"msg_a1",delta:"Done."}});
     fake.emit({type:"session.execution.succeeded",data:{sessionID:"ses_main"}});
-    assert.equal((await next).stopReason,"end_turn");
+    assert.equal((await turn).stopReason,"end_turn");
   }finally{await session.close()}
 });
 
-test("an OpenCode 2 turn ends after 45 silent seconds also when OpenCode never answered its prompt request",{timeout:30_000},async t=>{
+test("an OpenCode 2 turn whose prompt request OpenCode never answered ends after 45 silent seconds when OpenCode does not run it, and an idle stream is reopened quietly",{timeout:30_000},async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
   let answered=0;
   const fake=fakeOpenCode2Client({overrides:{"session.prompt":()=>++answered===1?new Promise(()=>{}):{id:"msg_user_2"}}});
@@ -54,11 +53,11 @@ test("an OpenCode 2 turn ends after 45 silent seconds also when OpenCode never a
     const turn=session.prompt([{type:"text",text:"Hello"}]);
     await eventually(()=>fake.called("session.prompt").length===1);
     t.mock.timers.tick(45_000);
-    await assert.rejects(turn,{message:STOPPED});
+    await assert.rejects(turn,{message:UNSENT});
     // An idle session's stream that goes quiet is opened again without a word.
     await eventually(()=>fake.subscriptions()===2);
     t.mock.timers.tick(45_000);await eventually(()=>fake.subscriptions()===3);
-    assert.equal(fake.called("session.interrupt").length,1,"only the stopped turn's run is stopped");
+    assert.equal(fake.called("session.interrupt").length,0,"a run OpenCode does not have is not stopped");
   }finally{await session.close()}
 });
 

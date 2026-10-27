@@ -20,12 +20,14 @@ export async function writeFakeOpenCode2Serve(folder){await writeFile(join(folde
 // routes["GET /api/command"]({req, res, body, send}) answers a route in place of the stand-in. Every event stream gets OpenCode 2.0.24's
 // heartbeat (a comment, no event) every heartbeatMs, 15 s as OpenCode sends it; 0 sends none, a stream gone silent.
 export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions={},onPrompt=null,routes={},heartbeatMs=15_000}={}){
-  const calls=[],streams=new Set(),forms=new Map(),messages=[];let password=null,events=0,prompts=0;
+  // active: the sessions OpenCode runs, from a prompt until an execution event ends the run (GET /api/session/active).
+  const calls=[],streams=new Set(),forms=new Map(),messages=[],active=new Set();let password=null,events=0,prompts=0;
   const heartbeat=heartbeatMs>0?setInterval(()=>{for(const res of streams)res.write(": heartbeat\n\n")},heartbeatMs):null;heartbeat?.unref?.();
   const known=new Map([["ses_main",{id:"ses_main",agent:"build"}],...Object.entries(sessions)]);
   const emit=event=>{
     const value={id:`evt_${++events}`,created:Date.now(),...event};
     if(value.type==="form.created"&&value.data?.form)forms.set(String(value.data.form.id),{settled:false});
+    if(/^session\.execution\.(?:succeeded|failed|interrupted)$/.test(String(value.type)))active.delete(String(value.data?.sessionID||""));
     for(const res of streams)res.write(`data: ${JSON.stringify(value)}\n\n`);
     return value;
   };
@@ -47,6 +49,7 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
     if(key==="GET /api/model/default")return send(200,{data:models[0]||null});
     if(["GET /api/command","GET /api/skill","GET /api/agent","GET /api/provider"].includes(key))return send(200,{data:[]});
     if(key==="POST /api/session")return send(200,{data:known.get("ses_main")});
+    if(key==="GET /api/session/active")return send(200,{data:Object.fromEntries([...active].map(id=>[id,{type:"running"}]))});
     if(/^PUT \/api\/experimental\/session\/[^/]+\/instructions\/entries\//.test(key))return send(204);
     const match=/^\/api\/session\/([^/]+)(\/.*)?$/.exec(url.pathname);
     if(match){
@@ -56,12 +59,13 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
       if(req.method==="PATCH"&&!rest)return send(204);
       if(req.method==="POST"&&(rest==="/model"||rest==="/agent"))return send(204);
       if(req.method==="GET"&&rest==="/message")return send(200,{data:[...messages].reverse()});
+      if(req.method==="GET"&&(rest==="/permission"||rest==="/form"))return send(200,{data:[]});
       if(req.method==="POST"&&rest==="/interrupt"){emit({type:"session.execution.interrupted",data:{sessionID,reason:"interrupt"}});return send(200,{data:{}})}
       if(req.method==="POST"&&rest==="/prompt"){
         const files=Array.isArray(body?.files)?body.files:[];
         const missing=files.findIndex(file=>!file||typeof file!=="object"||typeof file.uri!=="string");
         if(missing>=0)return send(400,{_tag:"InvalidRequestError",message:`Missing key\n  at ["files"][${missing}]["uri"]`});
-        const id=`msg_user_${++prompts}`;send(200,{data:{id,sessionID,type:"user",payload:{text:body?.text||"",files}}});
+        const id=`msg_user_${++prompts}`;active.add(sessionID);send(200,{data:{id,sessionID,type:"user",payload:{text:body?.text||"",files}}});
         if(typeof onPrompt==="function")void Promise.resolve().then(()=>onPrompt({body,sessionID,id,emit,reply:text=>messages.push({id:`msg_assistant_${prompts}`,type:"assistant",content:[{type:"text",text}]})})).catch(()=>{});
         return;
       }
@@ -80,7 +84,7 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
   await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
   const url=`http://127.0.0.1:${server.address().port}`;
   return {
-    url,calls,emit,forms,
+    url,calls,emit,forms,active,
     called:key=>calls.filter(call=>call.key===key),
     prompts:()=>calls.filter(call=>/^POST \/api\/session\/[^/]+\/prompt$/.test(call.key)).map(call=>call.body),
     close:()=>{clearInterval(heartbeat);for(const res of streams)res.end();server.closeAllConnections?.();return new Promise(resolve=>server.close(resolve))},
