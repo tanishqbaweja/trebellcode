@@ -2057,12 +2057,15 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         if(instance.kind==="antigravity"){
           // Antigravity signs in only with a Gemini API key (antigravity-auth.mjs): the key typed in Settings, or the one saved, is
           // saved once Antigravity has signed in with it and opened a session. No answer carries it back.
+          // An Antigravity chat's process keeps the key it started with: a key removed, or another one saved, stops the chats open on the
+          // key before (the relay's closeRuntimeSessions), and the answer says how many (stoppedChats).
           const signedIn={ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:ANTIGRAVITY_API_KEY_METHOD,methodName:"Gemini API key"}};
-          if(action==="remove-key"){saveAntigravityApiKey(null,{env:agentRuntimes.env});return json(res,200,{ok:true,authenticated:false,agentSnapshot:await agentRuntimes.snapshot()})}
+          if(action==="remove-key"){saveAntigravityApiKey(null,{env:agentRuntimes.env});const stoppedChats=await agentRelay?.closeRuntimeSessions?.("antigravity")||0;return json(res,200,{ok:true,authenticated:false,stoppedChats,agentSnapshot:await agentRuntimes.snapshot()})}
           if(mock)return json(res,200,{...signedIn,agentSnapshot:await agentRuntimes.snapshot()});
           if(environmentId)throw new Error("Antigravity ACP sign-in is currently supported on the local machine only.");
-          await signInAntigravityProfile(agentRuntimes,instance,{apiKey:body.apiKey,version:TREBELL_VERSION});
-          return json(res,200,{...signedIn,agentSnapshot:await agentRuntimes.snapshot()});
+          const {changed}=await signInAntigravityProfile(agentRuntimes,instance,{apiKey:body.apiKey,version:TREBELL_VERSION});
+          const stoppedChats=changed?await agentRelay?.closeRuntimeSessions?.("antigravity")||0:0;
+          return json(res,200,{...signedIn,stoppedChats,agentSnapshot:await agentRuntimes.snapshot()});
         }
         if(action!=="login")throw new Error("Unsupported runtime authentication action");
         // prelude: what a WSL or SSH host runs before the sign-in there (a Codex profile's home), kept out of the answer.

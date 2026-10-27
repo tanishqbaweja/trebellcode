@@ -2371,7 +2371,20 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(promptSettlements.size)await Promise.allSettled([...promptSettlements]);
     for(const threadId of [...toolWrites.keys()])settleToolWrites(threadId);
   }
-  return {reset:closeSessions,close:async()=>{
+  // The sessions of one harness close, as a reset closes them all, and a turn one runs stops as Stop stops it: Antigravity's once its
+  // saved Gemini API key changed or went, as each process keeps the key it started with (T3 closes a provider instance whose settings
+  // changed). The next turn starts the harness again. Answers how many sessions it closed.
+  async function closeRuntimeSessions(kind){
+    const closes=[];
+    for(const runtime of [...startingSessions])if(runtime?.runtime===kind)closes.push(runtime.close().catch(()=>{}));
+    for(const [threadId,session] of [...sessions]){
+      if((sessionHarnesses.get(session)?.instance?.kind||session?.runtime)!==kind)continue;
+      sessions.delete(threadId);if(session.busy)try{session.cancel?.()}catch{}
+      closes.push(closeThreadSession(session,threadId).catch(()=>{}).then(()=>emit("thread/closed",{threadId})));
+    }
+    await Promise.all(closes);return closes.length;
+  }
+  return {reset:closeSessions,closeRuntimeSessions,close:async()=>{
     closing=true;stopModelUpdates();clearInterval(sessionSweep);sessionSweep=null;
     server.off("upgrade",upgrade);
     for(const context of socketContexts){try{context.ws.terminate()}catch{}}

@@ -141,13 +141,14 @@ export async function signInAntigravity({command,args=[],processCwd=null,env={},
 // Settings' Antigravity sign-in (gui-server's /api/agent-runtime-auth) for the profile: Antigravity's home made ready, the sign-in with
 // the key typed (or, with none typed, the one saved), then the key saved and the account's models kept in place of the stand-in list
 // (T3 publishes the catalog on sign-in). runtimes: the AgentRuntimeManager. Antigravity unpacks its bundle into a Trebell-owned temp
-// folder, removed once the process stops.
+// folder, removed once the process stops. Answers whether the key saved is another than the one saved before (changed).
 export async function signInAntigravityProfile(runtimes,instance,{apiKey=null,version="0.0.0"}={}){
   await prepareAntigravityHome({env:runtimes.env,platform:runtimes.platform});
-  const command=runtimes.executable(instance),env=runtimes.childEnv(instance);
-  const {setup,key}=await signInAntigravity({command,args:runtimes.acpArgs(instance,"supervised"),processCwd:dirname(command),env,runTempRoot:acpRuntimeTempRoot(env,"antigravity"),version,apiKey:String(apiKey??"").trim()?apiKey:antigravityApiKey(runtimes.env)});
+  const command=runtimes.executable(instance),env=runtimes.childEnv(instance),saved=antigravityApiKey(runtimes.env);
+  const {setup,key}=await signInAntigravity({command,args:runtimes.acpArgs(instance,"supervised"),processCwd:dirname(command),env,runTempRoot:acpRuntimeTempRoot(env,"antigravity"),version,apiKey:String(apiKey??"").trim()?apiKey:saved});
   saveAntigravityApiKey(key,{env:runtimes.env});
   runtimes.rememberAcpSessionModels?.(instance,setup,{environmentId:null});
+  return {changed:key!==saved};
 }
 
 // A short Antigravity session of Trebell's own (the model list's) that Antigravity answers with ACP's auth_required (-32000) signs in

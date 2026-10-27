@@ -4,9 +4,17 @@ import { openWebLink } from "../web-link.js";
 
 const AI_STUDIO_KEYS="https://aistudio.google.com/apikey";
 
+// What the line under the harness list says once a key is saved or removed: the Antigravity chats open on the key before were stopped
+// (the server's stoppedChats), as each kept the key it started with.
+function answerText(result,removed){
+  const count=Number(result?.stoppedChats)||0,chats=count===1?"The Antigravity chat":`The ${count} Antigravity chats`,were=count===1?"was":"were";
+  if(removed)return "Gemini API key removed."+(count?` ${chats} open on it ${were} stopped.`:"");
+  return "Gemini API key saved, and Antigravity opened a session with it. Google checks the key with the first chat message."+(count?` ${chats} open on the earlier key ${were} stopped, and ${count===1?"goes":"go"} on with this key at the next message.`:"");
+}
+
 // Antigravity's sign-in in Settings: a Gemini API key from Google AI Studio, the route Google recommends for third-party apps.
 // Trebell saves the key once Antigravity has signed in with it, and never shows it again: the field only says that one is saved.
-// saved: whether a key is saved. onAnswer(result, removed) takes the server's answer, with the harness list in it.
+// saved: whether a key is saved. onAnswer(result, said) takes the server's answer, with the harness list in it, and what to say of it.
 export default function AntigravityKeyForm({saved=false,instanceId=null,onAnswer,onClose}){
   const [key,setKey]=useState(""),[busy,setBusy]=useState(""),[refusal,setRefusal]=useState(""),field=useRef(null);
   useEffect(()=>{field.current?.focus();field.current?.scrollIntoView?.({block:"nearest"})},[]);
@@ -15,7 +23,7 @@ export default function AntigravityKeyForm({saved=false,instanceId=null,onAnswer
     setBusy(action);setRefusal("");
     try{
       const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action,runtime:"antigravity",instanceId,...(action==="login"?{apiKey:key.trim()}:{})}});
-      setKey("");onAnswer?.(result,action==="remove-key");
+      setKey("");onAnswer?.(result,answerText(result,action==="remove-key"));
     }catch(error){setRefusal(error.message||String(error))}
     finally{setBusy("")}
   }
