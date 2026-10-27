@@ -321,9 +321,11 @@ async function openCodeInventory(client,v2Client,directory){
   return {commands:commands||[],skills:skills||[],agents:agents||[],pending:pendingLists({commands,skills,agents})};
 }
 
-export async function discoverOpenCodeModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null,readText}={}){
+// onServerStart(promise): the read's server start, which can take SERVER_START_TIMEOUT_MS (the status check waits for it).
+export async function discoverOpenCodeModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null,readText,onServerStart=null}={}){
   const [{createOpencodeClient},{createOpencodeClient:createOpencodeV2Client}]=await loadOpenCodeClients();
-  const server=await startServer({command,cwd,env,serverUrl});
+  const starting=startServer({command,cwd,env,serverUrl});onServerStart?.(starting);
+  const server=await starting;
   const client=createOpencodeClient(openCodeClientOptions(server,cwd)),v2Client=createOpencodeV2Client(openCodeClientOptions(server,cwd));
   try{
     const providers=checkedOpenCodeProviders(unwrap(await client.provider.list({query:{directory:cwd}}),"provider list"));
@@ -378,9 +380,10 @@ export async function waitForOpenCode2Models(client,location,{timeoutMs=15_000,s
     await new Promise(resolve=>setTimeout(resolve,intervalMs));
   }
 }
-export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null}={}){
+export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null,onServerStart=null}={}){
   const {OpenCode:OpenCode2}=await loadOpenCode2Client();
-  const server=await startOpenCode2Server({command,cwd,env,serverUrl}),client=createOpenCode2Client(OpenCode2,server),location={directory:cwd};
+  const starting=startOpenCode2Server({command,cwd,env,serverUrl});onServerStart?.(starting);
+  const server=await starting,client=createOpenCode2Client(OpenCode2,server),location={directory:cwd};
   try{
     await openCode2ServerInfo(client);
     const [modelResult,providerResult,defaultResult,commands,skills,agents]=await Promise.all([

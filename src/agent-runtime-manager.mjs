@@ -916,13 +916,16 @@ export class AgentRuntimeManager{
   openCodeCatalogReader=readOpenCodeCatalog;
   // OpenCode's own answer for a profile (its connected models and providers, and its commands, skills and agents), from one managed
   // server or the profile's server, kept per binary and version: a complete one for reuseMs, one that is not for incompleteMs. Readers
-  // at the same time share one read; a failed read is not kept.
-  async #openCodeCatalog(instance,{version=null,reuseMs=OPENCODE_CATALOG_REUSE_MS,incompleteMs=reuseMs}={}){
+  // at the same time share one read; a failed read is not kept. read.entry is the read waited on, with its server's start (start, and
+  // started once it is up) when the read starts one.
+  async #openCodeCatalog(instance,{version=null,reuseMs=OPENCODE_CATALOG_REUSE_MS,incompleteMs=reuseMs,read=null}={}){
     const command=this.executable(instance),key=[instance.id,command,instance.serverUrl||"",version||""].join("|"),cached=this.#openCodeCatalogs.get(key);
-    if(cached?.pending)return await cached.pending;
+    if(cached?.pending){if(read)read.entry=cached;return await cached.pending}
     if(cached&&this.now()-cached.at<(cached.complete?reuseMs:incompleteMs))return cached.value;
-    const pending=Promise.resolve().then(()=>this.openCodeCatalogReader({version,command,cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null}));
-    this.#openCodeCatalogs.set(key,{pending});
+    const entry={pending:null,start:null,started:false};if(read)read.entry=entry;
+    const pending=entry.pending=Promise.resolve().then(()=>this.openCodeCatalogReader({version,command,cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null,
+      onServerStart:start=>{entry.start=start;Promise.resolve(start).then(()=>{entry.started=true},()=>{})}}));
+    this.#openCodeCatalogs.set(key,entry);
     try{
       const value=await pending;
       if(this.#openCodeCatalogs.get(key)?.pending===pending)this.#openCodeCatalogs.set(key,{at:this.now(),value,complete:openCodeCatalogComplete(value)});
@@ -934,15 +937,20 @@ export class AgentRuntimeManager{
   }
   // A status check's provider list: the last complete one read for this binary and version, one that is not if it was read within
   // OPENCODE_INCOMPLETE_REUSE_MS (OPENCODE_CATALOG_REUSE_MS for a fresh check), or a new read (always for Settings' listing, refresh),
-  // which may take this long.
+  // which may take this long once its server is up. OpenCode's server can take up to 30 seconds to start (its first run converts the
+  // shared database), and a start that runs out of time fails the read itself, so the wait counts from when the server is up.
   async #openCodeStatusCatalog(instance,version,{fresh=false,refresh=false}={}){
-    let timer;
+    let timer,done=false;const read={};
     try{
       return await Promise.race([
-        this.#openCodeCatalog(instance,{version,...(refresh?{reuseMs:0}:{reuseMs:Number.POSITIVE_INFINITY,incompleteMs:fresh?OPENCODE_CATALOG_REUSE_MS:OPENCODE_INCOMPLETE_REUSE_MS})}),
-        new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error(`OpenCode did not answer within ${OPENCODE_STATUS_TIMEOUT_MS/1000} seconds.`)),OPENCODE_STATUS_TIMEOUT_MS);timer.unref?.()}),
+        this.#openCodeCatalog(instance,{version,read,...(refresh?{reuseMs:0}:{reuseMs:Number.POSITIVE_INFINITY,incompleteMs:fresh?OPENCODE_CATALOG_REUSE_MS:OPENCODE_INCOMPLETE_REUSE_MS})}),
+        new Promise((_resolve,reject)=>{
+          const fail=()=>reject(new Error(`OpenCode did not answer within ${OPENCODE_STATUS_TIMEOUT_MS/1000} seconds.`));
+          const wait=then=>{timer=setTimeout(then,OPENCODE_STATUS_TIMEOUT_MS);timer.unref?.()};
+          wait(()=>{const entry=read.entry;if(!entry?.start||entry.started)return fail();Promise.resolve(entry.start).then(()=>{if(!done)wait(fail)},()=>{})});
+        }),
       ]);
-    }finally{clearTimeout(timer)}
+    }finally{done=true;clearTimeout(timer)}
   }
   acpArgs(instance,permissionMode="supervised",cwd=process.cwd()){
     if(instance.kind==="cursor"){
