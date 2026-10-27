@@ -1,4 +1,4 @@
-import test from "node:test";
+import nodeTest from "node:test";
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -20,14 +20,29 @@ import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
 // The Muse Code installed where the tests run never starts here: each harness listing would run its `muse --version` and a 400 MB
-// read-only `muse serve` in the everyday home of the person running them. A Muse Code profile answers as not installed
-// (tests/muse-runtime.test.mjs drives a stand-in Muse Code through the same paths).
+// read-only `muse serve` in the everyday home of the person running them. While each test of this file runs, a Muse Code profile
+// answers as not installed (tests/muse-runtime.test.mjs drives a stand-in Muse Code through the same paths), and the probe is put
+// back as the test ends: `npm run test:fast` runs every file's tests in this one process.
 const probeHarness=AgentRuntimeManager.prototype.probe;
-AgentRuntimeManager.prototype.probe=async function(instanceOrKind,options){
+async function probeWithoutMuse(instanceOrKind,options){
   const kind=String((typeof instanceOrKind==="string"?instanceOrKind:instanceOrKind?.kind)||"").trim().toLowerCase();
   if(kind!=="muse")return probeHarness.call(this,instanceOrKind,options);
   return {id:typeof instanceOrKind==="string"?"muse-default":instanceOrKind.id,kind:"muse",name:"Muse Code",protocol:"msp",managed:false,binary:null,available:false,installed:false,authenticated:null,account:null,version:null,message:"Muse Code (muse) was not found."};
-};
+}
+function test(name,options,fn){
+  if(typeof options==="function")[fn,options]=[options,{}];
+  return nodeTest(name,options,async(...args)=>{
+    AgentRuntimeManager.prototype.probe=probeWithoutMuse;
+    try{return await fn(...args)}finally{AgentRuntimeManager.prototype.probe=probeHarness}
+  });
+}
+nodeTest("outside this file's own tests the harness probe is Trebell's own, Muse Code's included",async()=>{
+  assert.equal(AgentRuntimeManager.prototype.probe,probeHarness);
+});
+test("while a test of this file runs, a Muse Code profile answers as not installed and nothing is started",async()=>{
+  const answer=await new AgentRuntimeManager({env:{},runFn:async()=>{throw new Error("a probe of Muse Code ran a command")}}).probe("muse");
+  assert.deepEqual([answer.installed,answer.available,answer.message],[false,false,"Muse Code (muse) was not found."]);
+});
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 // Waits for a condition that a host benchmarks load can take seconds to reach (a Codex app-server process starting and recording its
 // start), checking it every 50 ms, for a generous bound that still ends a wait for one that never comes.
