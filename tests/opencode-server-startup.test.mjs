@@ -26,11 +26,17 @@ if(mode==="schema"&&attempt===1){writeSync(2,"EffectDrizzleQueryError: Failed qu
 if(mode==="schema"&&attempt===2){writeSync(2,esc+"[91m"+esc+"[1mError: "+esc+"[0mUnexpected error\r\n\r\nFailed query: \n        CREATE TABLE "+tick+"workspace"+tick+" (\n          "+tick+"id"+tick+" text PRIMARY KEY\n        );\n      \nparams: \r\n");process.exit(1)}
 if(mode==="configuration"){writeSync(2,"Invalid configuration\n");process.exit(1)}
 if(mode==="unrelated"){writeSync(1,"note: database is locked was seen earlier\n");writeSync(2,"Invalid configuration\n");process.exit(1)}
-if(mode==="late"){descendant("setTimeout(()=>{process.stderr.write('Error: opencode.json is not valid JSON\\n')},150)");process.exit(1)}
+// The late writer starts slower than the half second the error waits (as a cold Node can on a loaded machine), and writes once this
+// stand-in has exited: the stand-in exits only when the writer says it runs, so the timing does not hang on how fast it started.
+if(mode==="late"){
+  const running=file+".running";
+  descendant("setTimeout(()=>{require('node:fs').writeFileSync("+JSON.stringify(running)+",'1');const parent="+process.pid+";const gone=setInterval(()=>{try{process.kill(parent,0)}catch{clearInterval(gone);process.stderr.write('Error: opencode.json is not valid JSON\\n')}},5)},700)");
+  const ready=setInterval(()=>{if(existsSync(running)){clearInterval(ready);process.exit(1)}},5);
+}
 if(mode==="held"){descendant("setTimeout(()=>{},20000)");writeSync(2,"Invalid configuration\n");process.exit(1)}
 if(mode==="slow"){const go=file+".go";writeFileSync(file+".started","1");const wait=setInterval(()=>{if(existsSync(go)){clearInterval(wait);listen()}},20)}
 else if(mode==="silent")writeFileSync(file+".started","1"),setInterval(()=>{},1<<30);
-else listen();
+else if(mode!=="late")listen();
 function listen(){const server=createServer((req,res)=>res.end("ok"));server.listen(port,"127.0.0.1",()=>process.stdout.write("opencode server listening on http://127.0.0.1:"+port+"\n"))}
 `;
 async function serveFolder(t,mode){
