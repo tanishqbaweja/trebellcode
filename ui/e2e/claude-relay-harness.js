@@ -15,8 +15,9 @@ const MODELS={agentRuntime:"claude",ready:true,models:["default"],defaultModel:"
 // The Claude Agent SDK as the relay's Claude Code sessions drive it, scripted: query() returns the Query, an async iterator of the
 // CLI's messages fed by the streaming-input prompt. Claude Code reports its session (init) as it takes the first message in, and
 // turn({message,index,options,emit,signal}) runs for each user message in turn, a steer ("now") at once into the running turn; signal
-// aborts once the query closes. control.backgroundTasks(toolUseId,{emit}) answers a move of a foreground task to the background, and
-// control.setPermissionMode(mode) a change of the process's mode (it throws where Claude Code refuses one).
+// aborts once the query closes. control.backgroundTasks(toolUseId,{emit}) answers a move of a foreground task to the background,
+// control.setPermissionMode(mode) a change of the process's mode (it throws where Claude Code refuses one), and control.init(options)
+// gives what the init frame says otherwise (the mode Claude Code opened in, where it is not the one asked for).
 function scriptedClaudeSdk(turn,control={}){
   const query=({prompt,options})=>{
     const items=[],waiters=[],stop=new AbortController();let done=false;
@@ -25,7 +26,7 @@ function scriptedClaudeSdk(turn,control={}){
     void (async()=>{
       let index=0,chain=Promise.resolve();
       for await(const message of prompt){
-        if(index===0)emit({type:"system",subtype:"init",session_id:options.sessionId||options.resume,model:"claude-fixture",permissionMode:options.permissionMode,tools:[],mcp_servers:[],slash_commands:[],agents:[],capabilities:[]});
+        if(index===0)emit({type:"system",subtype:"init",session_id:options.sessionId||options.resume,model:"claude-fixture",permissionMode:options.permissionMode,tools:[],mcp_servers:[],slash_commands:[],agents:[],capabilities:[],...(control.init?control.init(options):{})});
         const position=index++,run=()=>turn({message,index:position,options,emit,signal:stop.signal});
         (message.priority==="now"?Promise.resolve().then(run):(chain=chain.then(run))).catch(()=>end());
       }

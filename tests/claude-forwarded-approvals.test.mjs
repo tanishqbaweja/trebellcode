@@ -68,6 +68,42 @@ test("Plan mode asks before a write in Full access and in Auto, and an ask rule 
   await session.close();
 });
 
+// An administrator's disableBypassPermissionsMode: Claude Code opens a Full access thread in a lower mode and says so at init, and asks
+// for what that mode holds back. The card names the mode it runs in, not Full access, which it does not run in.
+test("a Full access thread whose Claude Code runs in another mode names that mode on the card, not Full access",async()=>{
+  const asked=async sdk=>{
+    const requests=[],session=new ClaudeAgentSession({cwd:"/repo",sdk:sdk.sdk,permissionMode:"full",onUpdate:()=>{},onPermission:async request=>{requests.push(request);return "accept"}});
+    await session.start();await session.prompt([{type:"text",text:"go"}]);
+    return {session,requests,canUse:(...args)=>sdk.calls.at(-1).options.canUseTool(...args)};
+  };
+  const edit=[{file_path:"/repo/a.js",old_string:"a",new_string:"b"},{toolUseID:"edit-1",suggestions:[]}];
+  {
+    const {session,requests,canUse}=await asked(scriptedClaudeSdk({init:{permissionMode:"default"}}));
+    assert.equal(session.live.permissionMode,"default");
+    assert.equal((await canUse("Edit",...edit)).behavior,"allow");
+    assert.equal(requests[0].askUser,true,"asked, not allowed for the thread's Full access");
+    assert.equal(requests[0].params.prompt,"Claude Code asks, as it runs in Supervised mode, not Full access: Edit: /repo/a.js");
+    await canUse("Bash",{command:"git push origin main"},{toolUseID:"push-1",matchedAskRule:GIT_PUSH_RULE,suggestions:[]});
+    assert.equal(requests[1].params.prompt,"Claude Code asks, as its ask rule Bash(git push:*) says: Bash: git push origin main");
+    await session.close();
+  }
+  // Full access Claude Code could not take back after Plan (bypass turned off since the process opened) runs in Supervised too.
+  {
+    const sdk=scriptedClaudeSdk({turn:({message,index,emit})=>{if(index===0)emit({type:"system",subtype:"status",status:null,permissionMode:"plan"});emit(claudeResult(message))},control:{setPermissionMode:mode=>{if(mode==="bypassPermissions")throw new Error("Bypass permissions mode is disabled")}}});
+    const {session,requests,canUse}=await asked(sdk);
+    await session.prompt([{type:"text",text:"Now fix it"}]);
+    assert.equal(session.live.permissionMode,"default");
+    await canUse("Edit",...edit);
+    assert.equal(requests[0].params.prompt,"Claude Code asks, as it runs in Supervised mode, not Full access: Edit: /repo/a.js");
+    await session.close();
+  }
+  // Where Claude Code runs in Full access, the card still says it asks even there.
+  const {session,requests,canUse}=await asked(scriptedClaudeSdk());
+  await canUse("Edit",...edit);
+  assert.equal(requests[0].params.prompt,"Claude Code asks even in Full access: Edit: /repo/a.js");
+  await session.close();
+});
+
 test("a request Claude Code wants decided once offers no session choice, and an answer for the session allows it once",async()=>{
   for(const flag of ["suppressAlwaysAllowRule","defaultToNo"]){
     const {session,calls,requests,canUse}=await claudeSession({permissionMode:"full",answers:["acceptForSession"]});

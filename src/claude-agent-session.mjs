@@ -203,16 +203,22 @@ export function claudePermissionPrompt(toolName,input,options={}){
   }
   return reason&&!prompt.includes(reason)?`${prompt} (${reason})`:prompt;
 }
-// Every request Claude Code forwards in Full access is one it does not approve itself: an ask rule, its own safety checks (an rm of a
-// critical path, a read outside the folder), or, once an administrator turned bypass off, any request of the lower mode it runs in.
-// The card says so, and names the person's ask rule when one matched. In Plan mode (the composer's, or one Claude switched itself to)
-// Claude Code asks for what Plan mode holds back, whatever the profile, so that is what the card says (T3 Code notes Full access only
-// when the query runs in bypassPermissions).
-function claudeAskLead({fullAccess,planMode,rule}){
+// Every request Claude Code forwards in Full access is one it does not approve itself: an ask rule, or its own safety checks (an rm of
+// a critical path, a read outside the folder). The card says so, and names the person's ask rule when one matched. In Plan mode (the
+// composer's, or one Claude switched itself to) Claude Code asks for what Plan mode holds back, whatever the profile, so that is what
+// the card says. A Full access thread whose Claude Code runs in another mode (liveMode: its settings turned bypass off, as an
+// administrator's can) asks for what that mode holds back, and the card names that mode (T3 Code notes Full access only when the
+// query runs in bypassPermissions).
+const CLAUDE_MODE_PROFILES=Object.freeze({default:"Supervised",acceptEdits:"Auto-accept edits",auto:"Auto"});
+function claudeAskLead({fullAccess,planMode,liveMode,rule}){
+  const bypass=fullAccess&&!planMode&&(!liveMode||liveMode==="bypassPermissions");
   const ruleText=plainText(permissionRuleText(rule)||"");
-  if(ruleText)return fullAccess&&!planMode?`Claude Code asks even in Full access, as its ask rule ${ruleText} says`:`Claude Code asks, as its ask rule ${ruleText} says`;
+  if(ruleText)return bypass?`Claude Code asks even in Full access, as its ask rule ${ruleText} says`:`Claude Code asks, as its ask rule ${ruleText} says`;
   if(planMode)return "Claude Code asks in Plan mode";
-  return fullAccess?"Claude Code asks even in Full access":null;
+  if(bypass)return "Claude Code asks even in Full access";
+  if(!fullAccess)return null;
+  const profile=CLAUDE_MODE_PROFILES[liveMode];
+  return profile?`Claude Code asks, as it runs in ${profile} mode, not Full access`:"Claude Code asks, as it does not run in Full access";
 }
 // A request Claude Code wants decided once (a standing grant would allow more than it asks, or no stray key may approve it) offers
 // no session choice: the card's own buttons, as the default card words them.
@@ -934,7 +940,8 @@ export class ClaudeAgentSession{
       ...(once?[]:[{optionId:"allow_always",name:"Allow for this session",kind:"allow_always"}]),
       {optionId:"reject_once",name:"Reject",kind:"reject_once"},
     ];
-    const prompt=claudePermissionPrompt(toolName,input,options),lead=claudeAskLead({fullAccess,planMode:this.collaborationMode==="plan"||this.live?.permissionMode==="plan",rule});
+    const prompt=claudePermissionPrompt(toolName,input,options),liveMode=this.live?.permissionMode||null;
+    const lead=claudeAskLead({fullAccess,planMode:this.collaborationMode==="plan"||liveMode==="plan",liveMode,rule});
     let decision="decline";
     try{
       decision=await untilAborted(this.onPermission?.({

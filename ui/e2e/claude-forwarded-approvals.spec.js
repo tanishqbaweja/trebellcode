@@ -93,3 +93,39 @@ test("a Claude Code request in Plan mode says Plan mode asks, also in a Full acc
     await expect(card).toHaveCount(0);
   }finally{await harness.close()}
 });
+
+// An administrator can turn Claude Code's bypass off (disableBypassPermissionsMode): Claude Code then opens a Full access thread in
+// Supervised mode, says so as it starts, and asks for what that mode holds back. The card names the mode Claude Code runs in.
+test("a Claude Code request in a Full access thread whose Claude Code runs in Supervised mode says so, not that it asks even in Full access",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const asked=[];
+  const harness=await startClaudeRelay({
+    turn:async({message,options,emit,signal})=>{
+      asked.push(options.permissionMode);
+      const decision=await options.canUseTool("Edit",{file_path:harness.repo+"/src/config.js",old_string:"debug: true",new_string:"debug: false"},{toolUseID:"edit-supervised",signal,suggestions:[]});
+      for(const frame of claudeReply(message,decision.behavior==="allow"?"Turned debug off.":"Left debug on."))emit(frame);
+    },
+    control:{init:()=>({permissionMode:"default"})},
+  });
+  try{
+    harness.seedThread("Config cleanup");
+    await routeClaudeApp(page,harness,{permissionMode:"full"});
+    await page.goto("/");await openThread(page,"Config cleanup");
+    await expect(page.locator("select.permission-picker:not(.collaboration-mode-picker)")).toHaveValue("full");
+    const card=page.locator(".inline-approval .approval-card");
+
+    await send(page,"Turn debug off in the config");
+    await expect(card).toBeVisible({timeout:15_000});
+    expect(asked,"Full access was asked for").toEqual(["bypassPermissions"]);
+    await expect(card.locator("p:not(.approval-thread)")).toHaveText(`Claude Code asks, as it runs in Supervised mode, not Full access: Edit: ${harness.repo}/src/config.js`);
+    await expect(page.getByText("Turned debug off.",{exact:true})).toHaveCount(0);
+    for(const mode of ["dark","light"]){
+      if(mode==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      await page.screenshot({animations:"disabled",path:`${auditDir}claude-full-access-runs-supervised-card-${mode}-1280x800.png`});
+    }
+    await card.getByRole("button",{name:"Allow once",exact:true}).click();
+    await expect(page.getByText("Turned debug off.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(card).toHaveCount(0);
+  }finally{await harness.close()}
+});
