@@ -87,18 +87,47 @@ export function openCodeServerHeaders(env={}){
 export function openCodeClientOptions(server,directory){
   const headers=server?.headers||{};return {baseUrl:server.url,directory,...(Object.keys(headers).length?{headers}:{})};
 }
+// How long `opencode serve` may take to say it listens: OpenCode 2 converts the shared database on its first run (T3 Code waits as long).
+const SERVER_START_TIMEOUT_MS=30_000;
+// Every `opencode serve` Trebell starts shares OpenCode's database (opencode.db): each thread's, the status check's and model list's,
+// and Git text's. One that finds the database locked by another exits saying so on stderr, and is started again on a new port, at most
+// three more times a quarter second apart (T3 Code); any other exit is final. So is one that lost the first run's schema setup to
+// another: OpenCode 1.x and 2.x then fail a CREATE statement of their own ("Failed query: CREATE TABLE ...", a table that already
+// exists), which a second start a moment later gets past.
+const SERVER_LOCK_RETRIES=3,SERVER_LOCK_RETRY_MS=250,DATABASE_CONTENDED=/SQLITE_BUSY|database is locked|Failed query:\s*CREATE\s/i;
+// A server that exited can still have its last words in its pipes, which a process it started may hold open: they get this long.
+const SERVER_EXIT_DRAIN_MS=500;
 async function startServer({command="opencode",cwd,env=process.env,serverUrl=null}={}){
   if(serverUrl)return {url:serverUrl,headers:{},close(){}};
+  for(let retry=0;;retry++){
+    try{return await startServerOnce({command,cwd,env})}
+    catch(error){
+      if(error?.code!=="OPENCODE_DATABASE_BUSY"||retry>=SERVER_LOCK_RETRIES)throw error;
+      await new Promise(resolve=>setTimeout(resolve,SERVER_LOCK_RETRY_MS));
+    }
+  }
+}
+async function startServerOnce({command,cwd,env}){
   const port=await freePort();const args=["serve","--hostname=127.0.0.1",`--port=${port}`];
   const child=spawn(command,args,{cwd,env,windowsHide:true,stdio:["ignore","pipe","pipe"]});
-  // Only the recent output is kept: it is just for startup errors, and the server lives as long as the session.
-  let output="";const keep=chunk=>{output=(output+String(chunk)).slice(-8192)};
+  // Only the recent output is kept: it is just for startup errors, and the server lives as long as the session. Its stderr is kept apart
+  // too: only what it says there of the database counts.
+  let output="",errors="";const keep=chunk=>{output=(output+String(chunk)).slice(-8192)};
   try{
     const url=await new Promise((resolve,reject)=>{
-      let settled=false;const timer=setTimeout(()=>finish(new Error(`OpenCode server did not start. ${startupLog(output)}`)),15_000);
+      let settled=false,exited=false;const timer=setTimeout(()=>finish(new Error(`OpenCode server did not start within ${SERVER_START_TIMEOUT_MS/1000} seconds. ${startupLog(output)}`)),SERVER_START_TIMEOUT_MS);
       const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);error?reject(error):resolve(value)};
-      child.stdout?.on("data",chunk=>{keep(chunk);const match=output.match(SERVER_LISTENING);if(match)finish(null,match[1])});
-      child.stderr?.on("data",keep);child.once("error",error=>finish(error));child.once("exit",code=>finish(new Error(`OpenCode server exited with code ${code}. ${startupLog(output)}`)));
+      child.stdout?.on("data",chunk=>{keep(chunk);const match=output.match(SERVER_LISTENING);if(match&&!exited)finish(null,match[1])});
+      child.stderr?.on("data",chunk=>{keep(chunk);errors=(errors+String(chunk)).slice(-8192)});child.once("error",error=>finish(error));
+      // The exit's error waits for both pipes to end ('close'), or for SERVER_EXIT_DRAIN_MS, after which they are let go.
+      child.once("exit",code=>{
+        exited=true;if(settled)return;clearTimeout(timer);
+        const failed=()=>{
+          clearTimeout(drain);child.off("close",failed);child.stdout?.destroy();child.stderr?.destroy();
+          finish(Object.assign(new Error(`OpenCode server exited with code ${code}. ${startupLog(output)}`),DATABASE_CONTENDED.test(errors)?{code:"OPENCODE_DATABASE_BUSY"}:{}));
+        };
+        const drain=setTimeout(failed,SERVER_EXIT_DRAIN_MS);child.once("close",failed);
+      });
     });
     return {url,child,headers:openCodeServerHeaders(env),close(){stopProcessTree(child)}};
   }catch(error){
