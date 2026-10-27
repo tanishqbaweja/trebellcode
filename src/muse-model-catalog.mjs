@@ -66,12 +66,14 @@ export function museModelCatalog(result={}){
 
 // One short read-only host for the list (T3 discoverMuseModels): `muse serve --disable-shell --disable-write --no-session-log`, an
 // initialize that asks for no session capabilities, model/list, then close; 8 s to start and 12 s in all. The host is always closed.
+// museHome: the Muse home its initialize names (the account's, by its sign-in), whose usage reports the Usage page reads (T3
+// MuseUsageHome reads it from a read-only host too), or null.
 export async function readMuseModelCatalog({command,env,cwd=process.cwd(),version="0.0.0",startupTimeoutMs=MUSE_CATALOG_STARTUP_TIMEOUT_MS,timeoutMs=MUSE_CATALOG_TIMEOUT_MS,shutdownTimeoutMs=MUSE_CATALOG_SHUTDOWN_TIMEOUT_MS,...hostOptions}={}){
   const host=new MuseHost({...hostOptions,command,args:museServeArgs("read-only",{sessionLog:false}),cwd,env,startupTimeoutMs,shutdownTimeoutMs});
   let timer;
   const expired=new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error(`Muse Code did not list its models within ${Math.round(timeoutMs/1000)} seconds.`)),timeoutMs);timer.unref?.()});
   const listed=(async()=>{await host.start({version,requestedCapabilities:[]});return host.connection.request("model/list",{})})();
   listed.catch(()=>{});
-  try{return museModelCatalog(await Promise.race([listed,expired]))}
+  try{const catalog=museModelCatalog(await Promise.race([listed,expired])),home=host.initializeResult?.museHome;return {...catalog,museHome:typeof home==="string"&&home.trim()?home:null}}
   finally{clearTimeout(timer);await host.close().catch(()=>{})}
 }

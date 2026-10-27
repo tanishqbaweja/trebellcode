@@ -1,22 +1,10 @@
-// Muse Code's subscription windows, as its host reports them in usage/changed (T3 Code's MuseSubscriptionUsage): account-wide, with
-// no session, the windows the latest model response came with: {observedAtMs, tier, window {usedPercent, windowDurationMins,
-// resetsAtMs}, weekly {usedPercent, resetsAtMs}}. Meta's percentages are verbatim and may exceed 100.
+// Muse Code's subscription windows, as its host reports them in usage/changed (T3 Code's MuseSubscriptionUsage), which Muse Code's
+// sessions decode and keep (muse-agent-session.mjs museSubscriptionUsage): account-wide, with no session, the windows the latest model
+// response came with: {observedAtMs, tier, window {usedPercent, windowDurationMins, resetsAtMs}, weekly {usedPercent, resetsAtMs}}.
+// Meta's percentages are verbatim and may exceed 100.
 
-// The latest instant a JavaScript Date holds (T3 LATEST_DATE_MS).
-const LATEST_DATE_MS=8.64e15;
-const instant=value=>typeof value==="number"&&Number.isFinite(value)&&value>0&&value<=LATEST_DATE_MS;
-const share=value=>typeof value==="number"&&Number.isFinite(value)&&value>=0;
 const clamped=value=>Math.max(0,Math.min(100,value));
 const iso=ms=>new Date(ms).toISOString();
-
-// A usage/changed report in Muse's form, or null for anything else, which is skipped (T3 decodes it, and keeps the last report).
-export function museSubscriptionUsage(params){
-  const window=params?.window,weekly=params?.weekly;
-  if(!instant(params?.observedAtMs)||typeof params.tier!=="string")return null;
-  if(!share(window?.usedPercent)||!(typeof window.windowDurationMins==="number"&&Number.isFinite(window.windowDurationMins)&&window.windowDurationMins>0)||!instant(window.resetsAtMs))return null;
-  if(!share(weekly?.usedPercent)||!instant(weekly.resetsAtMs))return null;
-  return {observedAtMs:params.observedAtMs,tier:params.tier,window:{usedPercent:window.usedPercent,windowDurationMins:window.windowDurationMins,resetsAtMs:window.resetsAtMs},weekly:{usedPercent:weekly.usedPercent,resetsAtMs:weekly.resetsAtMs}};
-}
 
 // A window's length as its row is named: Muse's 300 minutes are 5-hour.
 const lengthLabel=minutes=>minutes%1440===0?`${minutes/1440}-day`:minutes%60===0?`${minutes/60}-hour`:`${minutes}-minute`;

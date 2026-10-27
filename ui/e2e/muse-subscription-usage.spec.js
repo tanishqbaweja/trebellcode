@@ -5,7 +5,8 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 
 // Muse Code's subscription windows on the Usage page, as a person on a Muse Code window reads them. The page's subscription limits
 // read is answered as gui-server.mjs answers /api/agent-runtime-usage, by a runtime manager of the test's own: what it shows is the
-// last usage/changed a Muse Code turn passed on (noteMuseUsage), in the shape of T3 Code's recorded Muse 1.4 report. Before any
+// last usage/changed Muse Code's sessions keep for the account (read through museUsageReport, which a stand-in for that store answers
+// here), in the shape of T3 Code's recorded Muse 1.4 report. Before any
 // report the card says none came yet; then a 5-hour row (the length Muse reports) and a Weekly row, a window Meta reports at 103%
 // held at 100% used, with their resets and the time the report was observed; a later report shows at the next Refresh.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/muse-usage/",import.meta.url));mkdirSync(shots,{recursive:true});
@@ -28,6 +29,8 @@ test("a Muse Code window's Usage card says no windows came before a turn reports
   // Nothing of the manager's runs a command or reads the network for the windows: both are refused here.
   const manager=new AgentRuntimeManager({state:{settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch)},env:{PATH:""},
     runFn:async command=>{throw new Error("ran "+command)},fetchImpl:async url=>{throw new Error("fetched "+url)}});
+  // The store Muse Code's sessions keep the account's last report in: none yet.
+  manager.museUsageReport=()=>null;
   const reads=[];
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:true,provider:"openai",providerReady:true,agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:"win32",version:"muse-subscription-usage",activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
@@ -53,9 +56,9 @@ test("a Muse Code window's Usage card says no windows came before a turn reports
   await expect(card.getByText(NOT_OBSERVED,{exact:true})).toBeVisible();
   await expect(rows).toHaveCount(0);await expect(head).toHaveText(/ · live$/);
   await shoot(page,card,"not-observed");
-  // A Muse Code turn reports them (usage/changed, passed on by its session): Meta's 103% for the 5-hour window, 41% for the week.
+  // A Muse Code turn reports them (usage/changed, which its session keeps): Meta's 103% for the 5-hour window, 41% for the week.
   const now=Date.now(),observedAtMs=now-2*60_000,windowReset=now+3*3_600_000,weeklyReset=now+4*86_400_000;
-  expect(manager.noteMuseUsage("muse-default",{observedAtMs,tier:"tier-1",window:{usedPercent:103,windowDurationMins:300,resetsAtMs:windowReset},weekly:{usedPercent:41,resetsAtMs:weeklyReset}})).toBe(true);
+  manager.museUsageReport=()=>({observedAtMs,tier:"tier-1",window:{usedPercent:103,windowDurationMins:300,resetsAtMs:windowReset},weekly:{usedPercent:41,resetsAtMs:weeklyReset}});
   await refresh.click();await expect(refresh).toHaveText("Refresh");
   const local=ms=>page.evaluate(value=>new Date(value).toLocaleString(),ms);
   await expect(rows).toHaveCount(2);
@@ -72,7 +75,7 @@ test("a Muse Code window's Usage card says no windows came before a turn reports
   await shoot(page,card,"observed");
   // A later turn's report shows at the next Refresh, pressed from the keyboard this time.
   const later=now-30_000;
-  manager.noteMuseUsage("muse-default",{observedAtMs:later,tier:"tier-1",window:{usedPercent:12,windowDurationMins:300,resetsAtMs:windowReset},weekly:{usedPercent:44,resetsAtMs:weeklyReset}});
+  manager.museUsageReport=()=>({observedAtMs:later,tier:"tier-1",window:{usedPercent:12,windowDurationMins:300,resetsAtMs:windowReset},weekly:{usedPercent:44,resetsAtMs:weeklyReset}});
   await refresh.focus();await page.keyboard.press("Enter");await expect(refresh).toHaveText("Refresh");
   await expect(hours.locator(".limit-window strong")).toHaveText("12% used");await expect(weekly.locator(".limit-window strong")).toHaveText("44% used");
   await expect(head).toContainText(` · observed ${await local(later)}`);

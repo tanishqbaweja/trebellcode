@@ -314,6 +314,20 @@ test("a Muse Code that updated itself beside a launcher left as it was, as Meta'
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
 });
 
+// The Usage card's windows are the account's: the last usage/changed Muse Code's sessions keep for the Muse home its host names, which
+// the profile's status check reads from its own short host too (the stand-in names ~/.local/share/muse).
+test("the Usage card reads the windows Muse Code's sessions keep for the Muse home the profile's status check found",{timeout:60_000},async()=>{
+  const fixture=await museFixture("trebell-muse-usage-home-");
+  try{
+    const asked=[],observedAtMs=Date.now()-60_000;
+    fixture.manager.museUsageReport=({museHome=null}={})=>{asked.push(museHome);return {observedAtMs,tier:"tier-1",window:{usedPercent:40,windowDurationMins:300,resetsAtMs:Date.now()+3_600_000},weekly:{usedPercent:7,resetsAtMs:Date.now()+86_400_000}}};
+    assert.equal((await fixture.manager.probe("muse",{fresh:true})).available,true);
+    const usage=await fixture.manager.usageLimits("muse");
+    assert.deepEqual(asked,["~/.local/share/muse"]);
+    assert.deepEqual([usage.observedAt,usage.windows.map(row=>[row.label,row.usedPercent])],[new Date(observedAtMs).toISOString(),[["5-hour",40],["Weekly",7]]]);
+  }finally{await fixture.close()}
+});
+
 test("Muse Code signs in with `muse login` in a Trebell terminal, offers Meta's installer as text and is never installed by Trebell",async()=>{
   const fixture=await museFixture("trebell-muse-auth-");
   try{

@@ -109,6 +109,8 @@ test("the list is read from a short read-only host: no shell, no writes, no sess
   const child=fakeChild(),muse=new FakeMuse(child),spawned=[];
   const catalog=await readMuseModelCatalog({command:"muse",env:{PATH:""},cwd:process.cwd(),spawnFn:(command,args,options)=>{spawned.push({command,args,options});return child},stopTree:fakeStop});
   assert.deepEqual(catalog.models,["muse-wonder-1.0","muse-spark-1.3","muse-spark-1.2","muse-spark-1.3-contributor"]);
+  // The Muse home its host names, the account's (its sign-in) whose usage reports the Usage page shows.
+  assert.equal(catalog.museHome,INIT.museHome);
   assert.deepEqual(spawned.map(item=>item.args),[["serve","--disable-shell","--disable-write","--no-session-log"]]);
   assert.equal(spawned[0].options.windowsHide,true);assert.equal(spawned[0].options.env.MUSE_NO_AUTO_UPDATE,"1");
   assert.deepEqual(muse.sent("initialize")[0].params.capabilities,{requestedCapabilities:[]});
