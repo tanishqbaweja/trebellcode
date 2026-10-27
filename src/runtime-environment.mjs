@@ -49,10 +49,9 @@ const RUNTIME_KEYS=Object.freeze({
     "AZURE_OPENAI_API_KEY","AZURE_OPENAI_ENDPOINT",
     "AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_SESSION_TOKEN","AWS_REGION","AWS_DEFAULT_REGION",
   ]),
-  antigravity:Object.freeze([
-    "GEMINI_HOME","GOOGLE_API_KEY","GEMINI_API_KEY","GOOGLE_APPLICATION_CREDENTIALS",
-    "GOOGLE_CLOUD_PROJECT","GOOGLE_CLOUD_LOCATION","CLOUDSDK_CORE_PROJECT",
-  ]),
+  // Antigravity takes no Google credential, project or home from Trebell's environment: it signs in only with the Gemini API key
+  // Trebell keeps for it, in a home of its own (antigravity-auth.mjs).
+  antigravity:Object.freeze([]),
   // Muse Code's release channel. META_API_KEY is left out, so a key in Trebell's own environment never takes the place of the
   // person's Muse sign-in (Muse prefers the key); a profile that approves it forwards it.
   muse:Object.freeze(["MUSE_CHANNEL"]),

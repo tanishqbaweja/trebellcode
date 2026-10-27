@@ -4,7 +4,6 @@ import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
 import { trebellHome } from "./paths.mjs";
 
 // extract-zip loads with the first install, not with the server (budget B25).
@@ -12,27 +11,7 @@ let extractZipModule=null;
 const loadExtractZip=()=>extractZipModule??=import("extract-zip");
 
 export const ACP_REGISTRY_URL="https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
-const ANTIGRAVITY_AUTH_METHODS=new Set(["oauth-personal","oauth-business","gemini-api-key","agent-platform"]);
-
-export function antigravityConfigHome(env=process.env){
-  return String(env.GEMINI_HOME||join(env.USERPROFILE||env.HOME||homedir(),".gemini"));
-}
-
-export async function readAntigravityAuthState({env=process.env}={}){
-  const root=join(antigravityConfigHome(env),"antigravity-acp"),settingsPath=join(root,"settings.json"),tokenPath=join(root,"acp_token.json");
-  let settings=null;try{settings=JSON.parse(await readFile(settingsPath,"utf8"))}catch{}
-  const methodId=String(settings?.auth?.type||"").trim()||null;
-  let tokenPresent=false;try{await access(tokenPath);tokenPresent=true}catch{}
-  return {configured:Boolean(methodId),methodId,tokenPresent,settingsPath,tokenPath};
-}
-
-export async function configureAntigravityAuth(methodId,{env=process.env}={}){
-  const id=String(methodId||"").trim();if(!ANTIGRAVITY_AUTH_METHODS.has(id))throw new Error("Unsupported Antigravity authentication method");
-  const root=join(antigravityConfigHome(env),"antigravity-acp"),settingsPath=join(root,"settings.json");await mkdir(root,{recursive:true});
-  let current={};try{const parsed=JSON.parse(await readFile(settingsPath,"utf8"));if(parsed&&typeof parsed==="object")current=parsed}catch{}
-  const next={...current,auth:{...(current.auth&&typeof current.auth==="object"?current.auth:{}),type:id}},tmp=settingsPath+`.tmp-${randomUUID()}`;
-  await writeFile(tmp,JSON.stringify(next,null,2),{encoding:"utf8",mode:0o600});await rename(tmp,settingsPath);return {methodId:id,settingsPath};
-}
+// Antigravity's sign-in and the home it runs in are antigravity-auth.mjs's.
 
 export function antigravityRegistryTarget(platform=process.platform,arch=process.arch){
   const platformName=platform==="win32"?"windows":platform==="darwin"?"darwin":platform==="linux"?"linux":null;

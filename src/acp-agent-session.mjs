@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, extname, join, resolve, relative, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AcpClient, defaultAcpClientCapabilities } from "./acp-client.mjs";
+import { ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_KEY_NEEDED, antigravityIpv6Failure } from "./antigravity-auth.mjs";
 import { acpApplyValue, acpConfigChoices, acpConfigSelect, acpReadOnlyMode, acpSetupWithConfigOptions, acpSetupWithValue } from "./acp-session-config.mjs";
 import { cursorEffortOption, cursorEffortValue, cursorFastOption, cursorSwitchValue, GROK_INITIALIZE_META } from "./acp-model-catalog.mjs";
 import { acpToolFrame, mergeAcpToolUpdate } from "./acp-tool-state.mjs";
@@ -337,7 +338,8 @@ export class AcpAgentSession{
       this.grokEffort=this.runtime==="grok"?text(this.#grokModelMeta(acpConfigSelect(this.sessionSetup,"model").current).reasoningEffort).toLowerCase()||null:null;
       this.grokEffortSet=false;
       this.defaultMode=acpConfigSelect(this.sessionSetup,"mode").current;
-    }finally{this.starting=false}
+    }catch(error){throw (this.runtime==="antigravity"&&antigravityIpv6Failure(error))||error}
+    finally{this.starting=false}
     this.runtimeContextSent=false;
     await this.#applyModel(model);
     this.#emitInventory();
@@ -352,6 +354,8 @@ export class AcpAgentSession{
     try{return await setUp()}
     catch(error){
       const methodId=error?.code===ACP_AUTH_REQUIRED&&!client.closed?this.#signInMethod():null;
+      // An Antigravity with no key saved in Trebell has no sign-in to make here: it needs one first.
+      if(!methodId&&this.runtime==="antigravity"&&error?.code===ACP_AUTH_REQUIRED)throw Object.assign(new Error(ANTIGRAVITY_KEY_NEEDED),{code:error.code,cause:error});
       if(!methodId)throw error;
       try{await client.authenticate(methodId)}
       catch(failure){throw Object.assign(new Error(`${this.label} could not sign in with '${methodId}': ${failure?.message||failure}`),{code:failure?.code,cause:failure})}
@@ -367,12 +371,13 @@ export class AcpAgentSession{
   }
 
   // The method a signed-out harness signs in with, only when its initialize lists it (T3 selectAcpAgentAuthMethod and
-  // resolveGrokAuthMethodId): Grok its API key when XAI_API_KEY is set, else its cached login. Antigravity none: its sign-in is
-  // Settings' own, and the Google login it lists is the route Google's terms rule out for third-party apps. Any other harness the
-  // first method it runs itself (type agent, or none given), such as Cursor's cursor_login.
+  // resolveGrokAuthMethodId): Grok its API key when XAI_API_KEY is set, else its cached login. Antigravity its Gemini API key method
+  // when Trebell has a key saved for it (its launch's GEMINI_API_KEY comes from that key alone), listed or not, as T3 signs in with
+  // the method it is set to, and never the Google logins it lists, the route Google's terms rule out for third-party apps. Any other
+  // harness the first method it runs itself (type agent, or none given), such as Cursor's cursor_login.
   #signInMethod(){
     const methods=Array.isArray(this.initializeResult?.authMethods)?this.initializeResult.authMethods:[];
-    if(this.runtime==="antigravity")return null;
+    if(this.runtime==="antigravity")return text(this.env?.GEMINI_API_KEY)?ANTIGRAVITY_API_KEY_METHOD:null;
     if(this.runtime==="grok"){const id=text(this.env?.XAI_API_KEY)?"xai.api_key":"cached_token";return methods.some(method=>text(method?.id)===id)?id:null}
     return text(methods.find(method=>text(method?.id)&&(method.type==null||method.type==="agent"))?.id)||null;
   }

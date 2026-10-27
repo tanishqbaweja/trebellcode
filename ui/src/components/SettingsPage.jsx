@@ -15,6 +15,7 @@ import { harnessCheck, harnessStateText, harnessStateTitle } from "../harness-ch
 import { agentName } from "../display-labels.js";
 import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, MODEL_PROVIDER_LABELS, modelProviderLabel } from "../provider-labels.js";
 import ScopedSettingsCard from "./ScopedSettingsCard.jsx";
+import AntigravityKeyForm from "./AntigravityKeyForm.jsx";
 import { ignorePressRest } from "./ThreadSidebar.jsx";
 import { askConfirm } from "../ask-dialog.js";
 
@@ -246,6 +247,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     }
   },[agentInfo]);
   const [authenticatingAgent,setAuthenticatingAgent]=useState(null);
+  // Antigravity's Sign in opens its Gemini API key form under the harness list (AntigravityKeyForm).
+  const [antigravityKeyOpen,setAntigravityKeyOpen]=useState(false);
   const [instanceDraft,setInstanceDraft]=useState(null);
   // The approved variables as typed, while their field is being edited. The list is made from them at each change and shows, one name
   // a line, once the field is left: shown at each key, it took a new line or a comma away as soon as it was typed. Another window
@@ -511,6 +514,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   // while the harness's sign in starts keeps it.
   async function authenticateAgentRuntime(kind,instanceId){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind),pressed=terminalPresses();if(!definition?.canAuthenticate)return;
+    if(kind==="antigravity"){setAntigravityKeyOpen(true);return}
     setAgentMessageTarget(kind);
     setAuthenticatingAgent(instanceId||kind);showAgentMessage("Opening "+(definition.name||kind)+" sign in…");
     try{
@@ -1066,6 +1070,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
             <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em className={"is-"+String(actionText).toLowerCase().replace(/\s+/g,"-")}>{actionText}</em>
           </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{(verb||installing)&&<button className="agent-runtime-install" disabled={installing} onClick={()=>installAgentRuntime(def.id,verb,status)}>{installing?"Installing…":verb}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}{update?.message&&<p className="agent-runtime-option-note">{update.message}</p>}{installNote&&<p ref={installNoteRef} className={installNote.error?"agent-runtime-option-error":"agent-runtime-option-note"} role={installNote.error?"alert":"status"}>{installNote.text}</p>}</div>;
         })}</div>
+        {antigravityKeyOpen&&<AntigravityKeyForm saved={Boolean(runtimeStatusForKind(agentInfo,"antigravity")?.account?.authMethod)} instanceId={runtimeStatusForKind(agentInfo,"antigravity")?.id||null} onClose={()=>setAntigravityKeyOpen(false)} onAnswer={(result,removed)=>{setAntigravityKeyOpen(false);if(result?.agentSnapshot)setAgentInfo(result.agentSnapshot);else loadAgentRuntimes();setAgentMessageTarget("antigravity");showAgentMessage(removed?"Gemini API key removed.":"Gemini API key saved, and Antigravity opened a session with it. Google checks the key with the first chat message.")}}/>}
         {settingDrawn["agents-profiles"]&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>
           {selectedInstances.map(instance=>{

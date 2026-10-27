@@ -3,7 +3,7 @@ import { createServer as createTcpServer } from "node:net";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createReadStream, statfsSync } from "node:fs";
 import { cpus, freemem, totalmem, tmpdir, loadavg, homedir } from "node:os";
-import { basename, dirname, extname, isAbsolute, join, normalize, posix, relative, resolve, sep } from "node:path";
+import { basename, extname, isAbsolute, join, normalize, posix, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID, randomBytes } from "node:crypto";
 import { attachCodexRelay, probeCodexReady, waitForCodexReady } from "./codex-relay.mjs";
@@ -30,9 +30,7 @@ import { isRetiredProviderModel, removeRetiredProviderData } from "./legacy-prov
 import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-context-window.mjs";
 import { withNormalizedModelCapabilities } from "./model-capabilities.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
-import { AcpClient } from "./acp-client.mjs";
-import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
-import { configureAntigravityAuth } from "./antigravity-runtime-installer.mjs";
+import { ANTIGRAVITY_API_KEY_METHOD, saveAntigravityApiKey, signInAntigravityProfile } from "./antigravity-auth.mjs";
 import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { importClaudeHistory, publicHistoryCandidate, scanLocalAgentHistory } from "./agent-history-import.mjs";
 import { agentPermissionModeFromStart, attachAgentRelay } from "./agent-relay.mjs";
@@ -1968,8 +1966,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     }
     if(url.pathname==="/api/agent-runtime-auth"&&req.method==="POST"){
       try{
-        const body=await readJsonBody(req);
-        if(String(body.action||"login")!=="login")throw new Error("Unsupported runtime authentication action");
+        const body=await readJsonBody(req),action=String(body.action||"login");
+        // remove-key: Antigravity's saved Gemini API key goes.
+        if(action!=="login"&&action!=="remove-key")throw new Error("Unsupported runtime authentication action");
         const instance=agentRuntimes.instances().find(item=>item.id===String(body.instanceId||""))
           ||agentRuntimes.instances().find(item=>item.kind===String(body.runtime||""))
           ||agentRuntimes.activeInstance();
@@ -1978,30 +1977,16 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           :requestedEnvironmentId(null);
         const cwd=agentRuntimes.runtimeCwd(body.cwd||process.cwd(),environmentId);
         if(instance.kind==="antigravity"){
-          if(mock)return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:"oauth-personal",methodName:"Log in with Google",methods:[{id:"oauth-personal",name:"Log in with Google"}]},agentSnapshot:await agentRuntimes.snapshot()});
+          // Antigravity signs in only with a Gemini API key (antigravity-auth.mjs): the key typed in Settings, or the one saved, is
+          // saved once Antigravity has signed in with it and opened a session. No answer carries it back.
+          const signedIn={ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:ANTIGRAVITY_API_KEY_METHOD,methodName:"Gemini API key"}};
+          if(action==="remove-key"){saveAntigravityApiKey(null,{env:agentRuntimes.env});return json(res,200,{ok:true,authenticated:false,agentSnapshot:await agentRuntimes.snapshot()})}
+          if(mock)return json(res,200,{...signedIn,agentSnapshot:await agentRuntimes.snapshot()});
           if(environmentId)throw new Error("Antigravity ACP sign-in is currently supported on the local machine only.");
-          // Antigravity unpacks its bundle into a Trebell-owned temp folder that is removed once the process stops.
-          const command=agentRuntimes.executable(instance),client=new AcpClient({command,args:agentRuntimes.acpArgs(instance,"supervised",cwd),cwd:dirname(command),env:agentRuntimes.childEnv(instance),runTempRoot:acpRuntimeTempRoot(agentRuntimes.childEnv(instance),"antigravity")});
-          let sessionId=null;
-          try{
-            await client.start();
-            const initialized=await client.initialize({version:TREBELL_VERSION,timeoutMs:90_000});
-            const methods=Array.isArray(initialized?.authMethods)?initialized.authMethods:[];
-            const requested=String(body.authMethodId||"").trim();
-            const method=(requested&&methods.find(item=>item.id===requested))||methods.find(item=>item.id==="oauth-personal")||methods[0];
-            if(!method?.id)throw new Error("Antigravity ACP did not advertise a supported authentication method.");
-            await configureAntigravityAuth(method.id,{env:agentRuntimes.childEnv(instance)});
-            await client.authenticate(method.id);
-            const verified=await client.createSession({cwd,mcpServers:[]});sessionId=verified?.sessionId||null;
-            if(!sessionId)throw new Error("Antigravity authentication finished, but a verified ACP session could not be created.");
-            // The signed-in account's models replace the stand-in list (T3 publishes the catalog on sign-in).
-            agentRuntimes.rememberAcpSessionModels?.(instance,verified,{environmentId:null});
-            return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:method.id,methodName:method.name||method.id,methods:methods.map(item=>({id:item.id,name:item.name||item.id}))},agentSnapshot:await agentRuntimes.snapshot()});
-          }finally{
-            if(sessionId)await client.closeSession(sessionId).catch(()=>{});
-            await client.stop().catch(()=>{});
-          }
+          await signInAntigravityProfile(agentRuntimes,instance,{apiKey:body.apiKey,version:TREBELL_VERSION});
+          return json(res,200,{...signedIn,agentSnapshot:await agentRuntimes.snapshot()});
         }
+        if(action!=="login")throw new Error("Unsupported runtime authentication action");
         // prelude: what a WSL or SSH host runs before the sign-in there (a Codex profile's home), kept out of the answer.
         const {prelude,...auth}=agentRuntimes.authCommand(instance,{action:"login",environmentId});
         if(mock){

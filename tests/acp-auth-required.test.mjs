@@ -2,7 +2,8 @@
 // the setup runs once more (T3 authenticateAfterRequired, selectAcpAgentAuthMethod and resolveGrokAuthMethodId): Grok with its API
 // key when XAI_API_KEY is set, as xAI documents for headless clients, else with its cached login; Cursor, and any other agent, with
 // the first method it runs itself, such as Cursor's cursor_login. A method initialize did not list, a sign-in the harness refuses
-// and a harness still signed out after it keep the start's failure; Antigravity is never signed in from a session.
+// and a harness still signed out after it keep the start's failure; Antigravity signs in only with the Gemini API key Trebell keeps
+// for it (tests/antigravity-api-key.test.mjs), never with its Google login.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
@@ -76,10 +77,11 @@ test("a harness still signed out after its sign-in fails as before, with one sig
   assert.deepEqual(asked(await fresh.log()),["initialize","session/new","authenticate cursor_login","session/new"]);
 });
 
-test("Antigravity is never signed in from a session: its Google login stays Settings' own",async t=>{
+test("Antigravity is never signed in from a session with its Google login: with no key saved it says it needs one",async t=>{
   const fx=await scriptedAcp(t,{initialize:{protocolVersion:1,agentCapabilities:{sessionCapabilities:{resume:{}}},authMethods:[{id:"oauth-personal",name:"Log in with Google"},{id:"gemini-api-key",name:"Use Gemini API key"}]},sessionNew:{sessionId:"agy-session"},signIn:{methodId:"oauth-personal"}});
-  const {session}=acpSession(t,fx,{runtime:"antigravity"});
-  await assert.rejects(session.start(),AUTH_REQUIRED);
+  const env={...fx.env};delete env.GEMINI_API_KEY;
+  const {session}=acpSession(t,{...fx,env},{runtime:"antigravity"});
+  await assert.rejects(session.start(),error=>error.code===-32000&&/^Antigravity needs a Gemini API key\./.test(error.message));
   assert.deepEqual(asked(await fx.log()),["initialize","session/new"]);
 });
 

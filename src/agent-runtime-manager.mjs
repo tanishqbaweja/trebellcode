@@ -10,7 +10,8 @@ import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
 import { sharedRuntimeCapabilities } from "./runtime-capabilities.mjs";
 import { withoutSecretEnvironment } from "./secret-redactor.mjs";
 import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
-import { installAntigravityRuntime, readAntigravityAuthState, readAntigravityInstall } from "./antigravity-runtime-installer.mjs";
+import { installAntigravityRuntime, readAntigravityInstall } from "./antigravity-runtime-installer.mjs";
+import { afterAntigravitySignIn, ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_KEY_NEEDED, ANTIGRAVITY_KEY_SAVED, antigravityApiKey, antigravityEnvironment, antigravityHome, antigravityIpv6Failure } from "./antigravity-auth.mjs";
 import { discoverOpenCode2ModelCatalog, discoverOpenCodeModelCatalog } from "./opencode-agent-session.mjs";
 import { resolveWindowsCommandShim, windowsCommandShimTarget } from "./windows-command-shim.mjs";
 import { harnessInstallOwner, manualUpdateRefusal, manualUpdateText, newestListed, npmInstallArgs, npmRecordedVersion, registryRelease, shownCommand } from "./harness-install-plan.mjs";
@@ -486,6 +487,8 @@ export class AgentRuntimeManager{
     // Meta's launcher would otherwise update Muse Code in the foreground, or start its updater, each time Trebell runs it (T3 Code
     // sets it too); a profile's own value wins.
     if(instance?.kind==="muse"&&env.MUSE_NO_AUTO_UPDATE==null)env.MUSE_NO_AUTO_UPDATE="1";
+    // Antigravity runs in Trebell's home for it, with the Gemini API key saved for it and no Google credential of anyone else's.
+    if(instance?.kind==="antigravity")return antigravityEnvironment(env,{home:antigravityHome(this.env),apiKey:antigravityApiKey(this.env)});
     return env;
   }
   childEnvironmentKeys(instanceOrKind=this.activeInstance()){
@@ -1034,13 +1037,11 @@ export class AgentRuntimeManager{
         return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:true,companionInstalled,message:companionInstalled?"Antigravity desktop is installed. Install the ACP runtime to use Antigravity inside Trebell Code.":"Antigravity ACP runtime is not installed"};
       }
       const install=await readAntigravityInstall({env:this.env});
+      // Antigravity is ready once a Gemini API key is saved for it (Settings saves one only once Antigravity has signed in with
+      // it); whether Google still takes the key, a session finds out (authenticated null, as for a key a probe cannot check).
       if(install?.version&&!instance.binaryPath?.trim()){
-        const auth=await readAntigravityAuthState({env:this.childEnv(instance)}),oauth=/^oauth-/.test(String(auth.methodId||""));
-        const authenticated=auth.configured?(oauth?auth.tokenPresent:null):false;
-        const message=authenticated===true?"Managed Antigravity ACP runtime is installed and signed in."
-          :authenticated===false?"Antigravity ACP is installed but needs its own sign-in before Trebell can use it."
-          :`Antigravity ACP is configured for ${auth.methodId}; authentication will be verified when a session starts.`;
-        return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated!==false,installed:true,authenticated,protocol:def.protocol,managed:true,version:String(install.version),binary:command,account:auth.methodId?{authMethod:auth.methodId}:null,message};
+        const saved=Boolean(antigravityApiKey(this.env));
+        return {id:instance.id,kind:instance.kind,name:def.name,available:saved,installed:true,authenticated:saved?null:false,protocol:def.protocol,managed:true,version:String(install.version),binary:command,account:saved?{authMethod:ANTIGRAVITY_API_KEY_METHOD,label:"Gemini API key"}:null,message:saved?ANTIGRAVITY_KEY_SAVED:ANTIGRAVITY_KEY_NEEDED};
       }
     }
     const versionResult=await this.#versionCheck(instance,{environmentId,fresh}),failure=versionResult.ok?null:versionCheckFailure(versionResult),host=Boolean(failure&&this.processSpawner(instance,environmentId));
@@ -1276,20 +1277,24 @@ export class AgentRuntimeManager{
   // Until a session has reported the account's list, T3's manifest list stands in and one throwaway local session reads the
   // real list in the background. Each launch unpacks Antigravity's bundle (about 1 GB), so listing never starts it again
   // (T3 AntigravityDriver: status checks never spawn; sessions and refreshes do).
+  // Its session signs in with the saved key when Antigravity asks for one; a refresh that ended because the machine gives Antigravity
+  // no IPv6 sockets says so with the stand-in list (#antigravityModelFailures), as nothing of Antigravity's can run there.
+  #antigravityModelFailures=new Map();
   #antigravityModels(instance,environmentId){
     const key=[instance.id,this.activeEnvironment(environmentId)?.id||"local"].join("|"),known=this.#antigravityModelLists.get(key);
     if(known)return {models:known.models,metadata:known.metadata,preferred:known.preferred,source:"session"};
     if(!this.#antigravityRefreshes.has(key)&&!this.processSpawner(instance,environmentId)){
       const refresh=(async()=>{
-        const folder=await mkdtemp(join(tmpdir(),"trebell-antigravity-models-"));
+        const folder=await mkdtemp(join(tmpdir(),"trebell-antigravity-models-")),options=this.#acpProbeOptions(instance,environmentId);
         try{
-          const setup=await withAcpProbe(this.#acpProbeOptions(instance,environmentId),async(client,initialized)=>(await acpProbeSession(client,initialized,{cwd:folder,timeoutMs:90_000})).setup);
+          const setup=await withAcpProbe(options,async(client,initialized)=>(await afterAntigravitySignIn(client,options.env,()=>acpProbeSession(client,initialized,{cwd:folder,timeoutMs:90_000}))).setup);
           this.rememberAcpSessionModels(instance,setup,{environmentId});
         }finally{await rm(folder,{recursive:true,force:true,maxRetries:10,retryDelay:200}).catch(()=>{})}
-      })().catch(()=>{});
+      })().catch(error=>{const ipv6=antigravityIpv6Failure(error);if(ipv6)this.#antigravityModelFailures.set(key,ipv6.message)});
       this.#antigravityRefreshes.set(key,refresh);
     }
-    return {...antigravitySeedCatalog(),source:"manifest"};
+    const failure=this.#antigravityModelFailures.get(key);
+    return {...antigravitySeedCatalog(),source:"manifest",...(failure?{error:failure}:{})};
   }
   // Claude Code's no-prompt capability probe (models, commands, agents, account and plan usage), run where the profile runs and
   // shared for five minutes.

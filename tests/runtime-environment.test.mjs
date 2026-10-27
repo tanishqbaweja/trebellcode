@@ -30,11 +30,12 @@ test("OpenCode receives supported upstream provider variables without inheriting
   assert.equal(env.GITHUB_TOKEN,undefined);assert.equal(env.CI_DEPLOY_TOKEN,undefined);
 });
 
-test("Antigravity receives Google authentication inputs without inheriting unrelated secrets",()=>{
+// Antigravity signs in only with the Gemini API key Trebell keeps for it, in a home of its own (antigravity-auth.mjs).
+test("Antigravity inherits no Google credential or project, nor unrelated secrets",()=>{
   const parent={PATH:"/bin",HOME:"/home/me",GOOGLE_API_KEY:"google-value",GOOGLE_CLOUD_PROJECT:"project-a",GOOGLE_APPLICATION_CREDENTIALS:"/home/me/adc.json",OPENAI_API_KEY:"other-provider",GITHUB_TOKEN:"unrelated"};
   const env=buildRuntimeEnvironment("antigravity",{parent,platform:"linux"});
-  assert.equal(env.GOOGLE_API_KEY,"google-value");assert.equal(env.GOOGLE_CLOUD_PROJECT,"project-a");assert.equal(env.GOOGLE_APPLICATION_CREDENTIALS,"/home/me/adc.json");
-  assert.equal(env.OPENAI_API_KEY,undefined);assert.equal(env.GITHUB_TOKEN,undefined);
+  assert.equal(env.GOOGLE_API_KEY,undefined);assert.equal(env.GOOGLE_CLOUD_PROJECT,undefined);assert.equal(env.GOOGLE_APPLICATION_CREDENTIALS,undefined);
+  assert.equal(env.OPENAI_API_KEY,undefined);assert.equal(env.GITHUB_TOKEN,undefined);assert.equal(env.PATH,"/bin");assert.equal(env.HOME,"/home/me");
 });
 
 test("Windows runtime environment lookup handles Path casing without copying unrelated variables",()=>{
@@ -42,9 +43,9 @@ test("Windows runtime environment lookup handles Path casing without copying unr
   assert.equal(env.PATH,"C:\\Tools");assert.equal(env.USERPROFILE,"C:\\Users\\me");assert.equal(env.CURSOR_AUTH_TOKEN,"cursor-secret");assert.equal(env.RANDOM_TOKEN,undefined);
 });
 
-test("Antigravity inherits only its explicit Google auth lane plus the OS baseline",()=>{
+test("Antigravity inherits only the OS baseline, not the person's Gemini home or key",()=>{
   const env=buildRuntimeEnvironment("antigravity",{parent:{PATH:"/bin",GEMINI_HOME:"/tmp/gemini",GEMINI_API_KEY:"gem-value",GOOGLE_CLOUD_PROJECT:"project-value",OPENAI_API_KEY:"nope",GITHUB_TOKEN:"nope"},platform:"linux"});
-  assert.equal(env.GEMINI_HOME,"/tmp/gemini");assert.equal(env.GEMINI_API_KEY,"gem-value");assert.equal(env.GOOGLE_CLOUD_PROJECT,"project-value");assert.equal(env.OPENAI_API_KEY,undefined);assert.equal(env.GITHUB_TOKEN,undefined);
+  assert.deepEqual(env,{PATH:"/bin"});
 });
 
 // The benchmark's Ruby images keep their gems under /usr/local/bundle (GEM_HOME, BUNDLE_*) and its Rust images keep rustup's
