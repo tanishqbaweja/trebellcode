@@ -84,8 +84,8 @@ function text(value){return String(value??"").trim()}
 const ANTIGRAVITY_TEXT_EXTENSIONS=new Set([".txt",".md",".mdx",".json",".jsonl",".yaml",".yml",".toml",".xml",".csv",".tsv",".js",".jsx",".mjs",".cjs",".ts",".tsx",".html",".css",".scss",".less",".py",".rs",".go",".java",".kt",".swift",".c",".h",".cc",".cpp",".hpp",".cs",".rb",".php",".sh",".bash",".zsh",".sql",".graphql",".svelte",".vue",".log",".diff",".patch",".ini",".conf"]);
 const ANTIGRAVITY_TEXT_MIME={".json":"application/json",".jsonl":"application/jsonl",".md":"text/markdown",".mdx":"text/markdown",".html":"text/html",".css":"text/css",".csv":"text/csv",".xml":"application/xml",".yaml":"application/yaml",".yml":"application/yaml"};
 const ANTIGRAVITY_IMAGE_TYPES=new Set(["image/bmp","image/jpeg","image/png","image/webp"]);
-// The composer's audio (App.jsx inputsFor), all of T3's audio types.
-const ANTIGRAVITY_AUDIO_MIME={".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"audio/mp4",".ogg":"audio/ogg",".flac":"audio/flac"};
+// The composer's audio (App.jsx inputsFor), all of T3's audio types, and T3's audio/aac, which the composer sends as a file link.
+const ANTIGRAVITY_AUDIO_MIME={".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"audio/mp4",".ogg":"audio/ogg",".flac":"audio/flac",".aac":"audio/aac"};
 const ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES=1024*1024,ANTIGRAVITY_MAX_IMAGE_BYTES=10*1024*1024,ANTIGRAVITY_MAX_AUDIO_BYTES=20*1024*1024,ANTIGRAVITY_MAX_CONTENT_BYTES=50*1024*1024;
 // An image Antigravity takes that does not fit in the message, said by its name with what to do; Antigravity is asked nothing.
 const antigravityImageTooLarge=path=>new SessionRefusalError(`The attached image "${attachmentName(path)}" is too large for one Antigravity message, which takes images up to 10 MiB and 50 MiB of attachments in all. Send it in a message of its own.`);
@@ -106,7 +106,9 @@ export async function antigravityPromptParts(parts,promptCapabilities={}){
     // An audio file keeps the line that names it (agent-relay acpPrompt), and the audio itself follows when Antigravity takes audio, as
     // T3 names every attachment in the text and adds the content after it. Base64 audio travels on one JSON-RPC line: 20 MiB of audio
     // is a line of about 27 MB.
-    const audio=part?.type==="text"?part[PROMPT_AUDIO_PATH]:null,audioType=audio?ANTIGRAVITY_AUDIO_MIME[extname(audio).toLowerCase()]:null;
+    // An .aac comes as a file link, which stays and names it; its audio follows the same way.
+    const linked=part?.type==="resource_link"?fileUriPath(part.uri):null;
+    const audio=part?.type==="text"?part[PROMPT_AUDIO_PATH]:linked&&extname(linked).toLowerCase()===".aac"?linked:null,audioType=audio?ANTIGRAVITY_AUDIO_MIME[extname(audio).toLowerCase()]:null;
     if(audioType&&can.audio===true){
       const info=await stat(audio).catch(error=>{throw unreadableAttachment("file",audio,error)});
       const bytes=info.isFile()&&fits(info.size,ANTIGRAVITY_MAX_AUDIO_BYTES)?await readFile(audio).catch(error=>{throw unreadableAttachment("file",audio,error)}):null;
