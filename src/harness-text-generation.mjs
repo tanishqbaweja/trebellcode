@@ -157,19 +157,20 @@ async function claudeText(ctx){
     abortController,...(spawnProcess?{spawnClaudeCodeProcess:spawnProcess}:{}),
   }});
   ctx.defer(()=>{abortController.abort();try{runtime?.close?.()}catch{}});
-  let result=null,usedModel=model,streamed="",signedOut=null,explained=null,rateLimited=false;const limits=new Map();
+  let result=null,usedModel=model,streamed="",signedOut=null,explained=null,rateLimited=false,blocked=null;const limits=new Map();
   for await(const message of runtime){
     if(message?.type==="system"&&message.subtype==="init"){usedModel=message.model||usedModel;continue}
-    const rejected=claudeRejectedLimit(message);if(rejected)limits.set(rejected.rateLimitType||"unknown",rejected);
+    if(message?.type==="rate_limit_event"){const rejected=claudeRejectedLimit(message);if(rejected)limits.set(rejected.rateLimitType||"unknown",rejected);continue}
     // An assistant message that carries an error is the API error the result reports, never the reply; a sign-in failure, a usage
-    // limit or an error Claude does not retry (an unknown model) names the failure, as in a Claude thread.
-    if(message?.type==="assistant"){if(message.error){if(message.error==="authentication_failed")signedOut=claudeSignedOutMessage(spawnProcess||String(env.CLAUDE_CONFIG_DIR||"")!==String(process.env.CLAUDE_CONFIG_DIR||"")?env.CLAUDE_CONFIG_DIR:"");rateLimited=message.error==="rate_limit";explained=claudeExplainedApiError(message);continue}for(const block of message.message?.content||[])if(block?.type==="text"&&block.text)streamed+=block.text;continue}
+    // limit or an error Claude does not retry (an unknown model) names the failure, as in a Claude thread, until a later reply goes through.
+    if(message?.type==="assistant"){if(message.error){if(message.error==="authentication_failed")signedOut=claudeSignedOutMessage(spawnProcess||String(env.CLAUDE_CONFIG_DIR||"")!==String(process.env.CLAUDE_CONFIG_DIR||"")?env.CLAUDE_CONFIG_DIR:"");rateLimited=message.error==="rate_limit";explained=claudeExplainedApiError(message);blocked=claudeRejectedLimit(message);continue}rateLimited=false;explained=null;blocked=null;for(const block of message.message?.content||[])if(block?.type==="text"&&block.text)streamed+=block.text;continue}
     if(message?.type==="result"){result=message;break}
   }
   if(!result)throw new Error("Claude Code ended without a result");
+  if(blocked&&!limits.has(blocked.rateLimitType||"unknown"))limits.set(blocked.rateLimitType||"unknown",blocked);
   // The user-facing failure, as a Claude thread turn reports it (CLI diagnostics are never the message).
-  const failureHint=signedOut||(claudeUsageLimited(result,rateLimited||limits.size>0)?claudeUsageLimitHint([...limits.values()]):explained);
-  const failure=claudeResultFailure(result,{failureHint});if(failure)throw new Error(failure);
+  const failureHint=signedOut||(claudeUsageLimited(result,rateLimited||limits.size>0)?claudeUsageLimitHint([...limits.values()]):null);
+  const failure=claudeResultFailure(result,{failureHint,explainedError:explained});if(failure)throw new Error(failure);
   return {text:String(result.result||streamed||""),model:usedModel||null};
 }
 

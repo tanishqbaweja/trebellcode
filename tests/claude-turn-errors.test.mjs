@@ -51,6 +51,22 @@ test("a Claude turn that fills its context says so, and one a usage window block
   assert.equal(limited.notices.length,1);assert.match(limited.notices[0],WAIT);
 });
 
+// What Claude Code sends once the context is full (T3 Code's frames that follow #19832): an invalid_request reply saying "Prompt is too
+// long", which explains itself as an API error, then a blocking_limit result.
+const promptTooLong={type:"assistant",uuid:"too-long",parent_tool_use_id:null,error:"invalid_request",message:{id:"m-too-long",content:[{type:"text",text:"Prompt is too long"}]}};
+const contextFull=message=>failed("blocking_limit",{result:"Prompt is too long",num_turns:189,user_message_uuid:message.uuid});
+
+test("the frames Claude Code sends once the context is full read as a full context, unless a rejected window makes it a usage limit",async()=>{
+  const full=await claudeTurn([{type:"rate_limit_event",rate_limit_info:{status:"allowed",rateLimitType:"five_hour"}},promptTooLong,contextFull]);
+  assert.equal(full.error?.message,CONTEXT_FULL,"not the reply's own \"Prompt is too long\"");
+  const limited=await claudeTurn([{type:"rate_limit_event",rate_limit_info:{status:"rejected",rateLimitType:"five_hour"}},promptTooLong,contextFull]);
+  assert.equal(limited.error?.message,CLAUDE_USAGE_LIMIT_HINT);
+  // An explained API error still names a request the API refused.
+  const unknownModel={...promptTooLong,uuid:"no-model",error:"model_not_found",message:{id:"m-no-model",content:[{type:"text",text:"There's an issue with the selected model (claude-gone). It may not exist or you may not have access to it."}]}};
+  const refused=await claudeTurn([unknownModel,message=>failed("api_error",{api_error_status:404,result:"API Error: 404 model not found",user_message_uuid:message.uuid})]);
+  assert.equal(refused.error?.message,"There's an issue with the selected model (claude-gone). It may not exist or you may not have access to it.");
+});
+
 test("a quick retry into a usage limit still says when it resets, from the window the blocked reply repeats",async()=>{
   const at=resetsAt(),info={status:"rejected",rateLimitType:"five_hour",resetsAt:at};
   // No rate_limit_event: Claude Code throttles an unchanged one, and only the blocked reply carries the window.
@@ -77,6 +93,8 @@ const gitText=frames=>generateTextWithHarness({runtimeManager:claudeRuntimeManag
 test("Git text through Claude Code names a full context, a usage limit with its wait and the API's own error as a thread does",async()=>{
   const prefix="Claude Code could not write the Git text: ";
   assert.equal(await gitText([failed("blocking_limit",{result:"Prompt is too long"})]),prefix+CONTEXT_FULL);
+  assert.equal(await gitText([promptTooLong,failed("blocking_limit",{result:"Prompt is too long"})]),prefix+CONTEXT_FULL,"on the frames Claude Code sends");
+  assert.equal(await gitText([{type:"rate_limit_event",rate_limit_info:{status:"rejected",rateLimitType:"five_hour"}},promptTooLong,failed("blocking_limit",{result:"Prompt is too long"})]),prefix+CLAUDE_USAGE_LIMIT_HINT);
   const info={status:"rejected",rateLimitType:"five_hour",resetsAt:resetsAt()};
   assert.match(await gitText([blockedReply(info),failed("blocking_limit")]),/^Claude Code could not write the Git text: Claude usage limit reached\. Send the message again once the 5-hour limit resets in 1h (?:29|30)m\.$/);
   assert.equal(await gitText([{type:"assistant",error:"server_error",message:{content:[{type:"text",text:"API Error: 500"}]}},failed("api_error",{api_error_status:500,result:"API Error: 500 Internal server error"})]),prefix+"API Error: 500 Internal server error");
@@ -91,4 +109,23 @@ test("a turn Claude Code answers keeps its reply, whatever the window said earli
   const session=new ClaudeAgentSession({cwd:"/repo",sdk,onUpdate:()=>{}});await session.start();
   assert.equal((await session.prompt([{type:"text",text:"go"}])).stopReason,"end_turn");
   await session.close();
+});
+
+// T3 Code's retried terminal API failures: a reply the limit blocked names the turn's failure until a later reply of the turn goes
+// through (a fallback model, say); a subagent's reply does not clear it, and a subagent's blocked reply is not the turn's.
+test("a usage limit a reply ran into no longer names the turn's failure once a later reply goes through",async()=>{
+  const at=resetsAt(),info={status:"rejected",rateLimitType:"five_hour",resetsAt:at};
+  const reply=(uuid,parent=null)=>({type:"assistant",uuid,parent_tool_use_id:parent,message:{id:"m-"+uuid,content:[{type:"text",text:"Claude could not complete this request."}]}});
+  const gaveUp=message=>failed("api_error",{result:"API Error",user_message_uuid:message.uuid});
+  const recovered=await claudeTurn([blockedReply(info),reply("ok"),gaveUp]);
+  assert.equal(recovered.error?.message,"Claude gave up after repeated API errors.","no longer a usage limit with a wait");
+  assert.equal(recovered.notices.length,1,"the notice the blocked reply gave stays");
+  const nestedReply=await claudeTurn([blockedReply(info),reply("nested-ok","toolu_agent"),gaveUp]);
+  assert.match(nestedReply.error?.message||"",/^Claude usage limit reached\. Send the message again once the 5-hour limit resets in 1h (?:29|30)m\.$/);
+  const nestedLimit=await claudeTurn([blockedReply(info,{parent_tool_use_id:"toolu_agent"}),gaveUp]);
+  assert.equal(nestedLimit.error?.message,"Claude gave up after repeated API errors.");
+  // A window Claude Code itself rejected counts for the whole turn, whatever replies follow.
+  const rejected=await claudeTurn([{type:"rate_limit_event",rate_limit_info:info},reply("ok"),gaveUp]);
+  assert.match(rejected.error?.message||"",/^Claude usage limit reached\. Send the message again once the 5-hour limit resets in 1h (?:29|30)m\.$/);
+  assert.equal(await gitText([blockedReply(info),reply("ok"),failed("api_error",{result:"API Error"})]),"Claude Code could not write the Git text: Claude gave up after repeated API errors.","Git text reads the same evidence");
 });

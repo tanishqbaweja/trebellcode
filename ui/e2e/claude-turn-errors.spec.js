@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 import { routeClaudeApp,startClaudeRelay } from "./claude-relay-harness.js";
 
 // Claude Code turn errors as a person reads them, on the real relay with Claude Code's SDK scripted: a full context says to run
-// /compact or start a new thread instead of sending them to wait for a usage reset, and a quick retry into a usage limit still says
-// when it resets, although Claude Code sends that window only on the reply the limit blocked.
+// /compact or start a new thread instead of sending them to wait for a usage reset (or showing the reply's own "Prompt is too long"),
+// a quick retry into a usage limit still says when it resets, although Claude Code sends that window only on the reply the limit
+// blocked, and a turn whose later reply got past the limit names the failure it ended on.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const CONTEXT_FULL="Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
 const failedResult=(message,terminal_reason,extra={})=>({type:"result",subtype:"success",is_error:true,terminal_reason,result:"",user_message_uuid:message.uuid,total_cost_usd:0,usage:{input_tokens:3,output_tokens:0},...extra});
@@ -21,9 +22,18 @@ test("a Claude turn that fills its context says to compact, and a quick retry in
   await page.setViewportSize({width:1280,height:800});
   const resetsAt=Math.floor(Date.now()/1000)+90*60;
   const harness=await startClaudeRelay({turn:async({message,index,emit})=>{
-    if(index===0){emit(failedResult(message,"blocking_limit",{result:"Prompt is too long"}));return}
+    // What Claude Code sends once the context is full: an invalid_request reply saying "Prompt is too long", then the result.
+    if(index===0){
+      emit({type:"assistant",uuid:"too-long",parent_tool_use_id:null,error:"invalid_request",message:{id:"m-too-long",content:[{type:"text",text:"Prompt is too long"}]}});
+      emit(failedResult(message,"blocking_limit",{result:"Prompt is too long",num_turns:189}));return;
+    }
     // No rate_limit_event: Claude Code throttles an unchanged one, and only the blocked reply repeats the rejected window.
     emit({type:"assistant",uuid:"blocked-"+index,parent_tool_use_id:null,error:"rate_limit",api_error_params:{rate_limit_info:{status:"rejected",rateLimitType:"five_hour",resetsAt}},message:{id:"m-blocked-"+index,content:[{type:"text",text:"API Error: Rate limited"}]}});
+    // The third turn gets past the limit (a reply goes through), then fails for another reason.
+    if(index===2){
+      emit({type:"assistant",uuid:"through-"+index,parent_tool_use_id:null,message:{id:"m-through-"+index,content:[{type:"text",text:"Picking the summary up on the fallback model."}]}});
+      emit(failedResult(message,"api_error",{result:"API Error"}));return;
+    }
     emit(failedResult(message,"api_error",{api_error_status:429,result:"API Error: Rate limited"}));
   }});
   try{
@@ -37,6 +47,7 @@ test("a Claude turn that fills its context says to compact, and a quick retry in
     // Soft, so that the old code also shows what the quick retry says.
     await expect.soft(errors.filter({hasText:CONTEXT_FULL}),"a full context says to compact").toBeVisible();
     await expect.soft(page.getByText("a usage limit blocked the request"),"a full context is not a usage limit").toHaveCount(0);
+    await expect.soft(errors.filter({hasText:"Prompt is too long"}),"nor the reply's own words alone").toHaveCount(0);
     await page.screenshot({animations:"disabled",path:`${auditDir}claude-context-full-error-dark-1280x800.png`});
 
     await send(page,"Try again");
@@ -48,5 +59,14 @@ test("a Claude turn that fills its context says to compact, and a quick retry in
       await notice.scrollIntoViewIfNeeded();
       await page.screenshot({animations:"disabled",path:`${auditDir}claude-usage-limit-quick-retry-${mode}-1280x800.png`});
     }
+
+    // A turn whose reply got past the limit, then failed for another reason, says that reason, not the limit's wait.
+    await send(page,"Summarize the parser module");
+    await expect(page.getByText("Picking the summary up on the fallback model.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:15_000});
+    await expect.soft(errors.filter({hasText:"Claude gave up after repeated API errors."}),"the failure the turn ended on").toBeVisible();
+    await expect.soft(errors.filter({hasText:"Send the message again once the 5-hour limit resets"}),"not the limit a later reply got past").toHaveCount(0);
+    await page.getByText("Picking the summary up on the fallback model.",{exact:true}).scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:`${auditDir}claude-limit-then-reply-error-light-1280x800.png`});
   }finally{await harness.close()}
 });
