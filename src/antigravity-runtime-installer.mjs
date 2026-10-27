@@ -1,9 +1,13 @@
-import { createWriteStream } from "node:fs";
-import { access, chmod, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createWriteStream, statfsSync } from "node:fs";
+import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { AcpClient } from "./acp-client.mjs";
+import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
+import { antigravityEnvironment, antigravityIpv6Failure } from "./antigravity-auth.mjs";
 import { trebellHome } from "./paths.mjs";
 
 // extract-zip loads with the first install, not with the server (budget B25).
@@ -13,12 +17,21 @@ const loadExtractZip=()=>extractZipModule??=import("extract-zip");
 export const ACP_REGISTRY_URL="https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 // Antigravity's sign-in and the home it runs in are antigravity-auth.mjs's.
 
+// What an install leaves free on its drive besides what it writes (T3 FREE_SPACE_MARGIN), so that it never fills the drive.
+export const ANTIGRAVITY_FREE_SPACE_MARGIN=256*1024*1024;
+// How long the new runtime has to start and answer ACP's initialize, as long as a session's start has.
+const START_CHECK_TIMEOUT_MS=90_000;
+// What Windows says when a process holds a folder Trebell renames: a running Antigravity's own folder, or one just stopped.
+const IN_USE_CODES=new Set(["EBUSY","EPERM","EACCES"]);
+
 export function antigravityRegistryTarget(platform=process.platform,arch=process.arch){
   const platformName=platform==="win32"?"windows":platform==="darwin"?"darwin":platform==="linux"?"linux":null;
   const archName=arch==="x64"?"x86_64":arch==="arm64"?"aarch64":null;
   return platformName&&archName?`${platformName}-${archName}`:null;
 }
 
+// The registry's entry for this machine. Its download is checked against the SHA-256 the registry lists beside it, so an entry
+// without one is refused, as is one with no version for the started runtime to be checked against.
 function validateDistribution(entry,target){
   const distribution=entry?.distribution?.binary?.[target];
   if(!distribution?.archive||!distribution?.cmd)throw new Error(`The ACP registry does not publish Google Antigravity for ${target}`);
@@ -26,7 +39,13 @@ function validateDistribution(entry,target){
   if(archive.protocol!=="https:"||archive.hostname!=="dl.google.com")throw new Error("Refusing an unexpected Antigravity download host from the ACP registry");
   const binaryName=basename(String(distribution.cmd).replace(/^\.\//,""));
   if(!/^agy_acp_server\.(?:exe|par)$/i.test(binaryName))throw new Error("The ACP registry returned an unexpected Antigravity executable name");
-  return {archive:archive.href,binaryName,args:Array.isArray(distribution.args)?distribution.args.map(String):[]};
+  const version=typeof entry.version==="string"?entry.version.trim():"";
+  if(!version)throw new Error("The ACP registry lists no version for Google Antigravity, so Trebell Code cannot check the runtime it would download. Nothing was installed.");
+  const sha256=typeof distribution.sha256==="string"?distribution.sha256.trim().toLowerCase():"";
+  if(!/^[0-9a-f]{64}$/.test(sha256))throw new Error(`The ACP registry lists no SHA-256 for Google Antigravity ${version} on ${target}, so Trebell Code cannot check its download. Nothing was installed.`);
+  // Antigravity's server starts its helper from its own folder: localharness_external, an .exe beside an .exe.
+  const helperName=/\.exe$/i.test(binaryName)?"localharness_external.exe":"localharness_external";
+  return {archive:archive.href,binaryName,helperName,version,sha256,args:Array.isArray(distribution.args)?distribution.args.map(String):[]};
 }
 
 async function findFile(root,name){
@@ -44,7 +63,62 @@ async function findFile(root,name){
   return null;
 }
 
-export async function installAntigravityRuntime({env=process.env,fetchImpl=globalThis.fetch,platform=process.platform,arch=process.arch,extractImpl=null}={}){
+// The bytes free to this process on the drive that holds path.
+export function freeBytesAt(path){const {bavail,bsize}=statfsSync(path);return Number(bavail)*Number(bsize)}
+// Sizes in whole MB (of 1,048,576 bytes), rounded up for what is needed and down for what is free, so that the parts add up.
+const MB=1048576,wholeMb=bytes=>Math.ceil(Math.max(0,bytes)/MB),megabytes=count=>`${count.toLocaleString("en-US")} MB`;
+// A step the drive has no room for: neededMb for its parts and the margin, against the bytes free.
+const noRoom=({version,step,neededMb,parts,free,root})=>new Error(`Google Antigravity ${version} needs ${megabytes(neededMb)} free on the drive that holds ${root} to ${step} (${parts}, and ${megabytes(ANTIGRAVITY_FREE_SPACE_MARGIN/MB)} to spare), and ${megabytes(Math.floor(Math.max(0,free)/MB))} is free there. Free some space on that drive, then try again. Nothing was installed.`);
+
+// What a started runtime said of itself, in a few plain words.
+const saidName=agent=>[agent?.name,agent?.version].map(value=>String(value??"").replace(/[\u0000-\u001f\u007f]+/g," ").trim().slice(0,80)).filter(Boolean).join(" ");
+// Why the new runtime did not start, in its error's first line and its log's last one, which says why: the line before PyInstaller's
+// own "[PYI-…:ERROR] Failed to execute script" (agy_acp_server is a PyInstaller bundle).
+function startFailure(error,version){
+  const ipv6=antigravityIpv6Failure(error);if(ipv6)return ipv6;
+  const lines=String(error?.message||error||"").split(/\r?\n/).map(line=>line.trim()).filter(Boolean),said=lines.slice(1).filter(line=>!/^\[PYI-\d+:/.test(line));
+  const reason=(said.length?`${lines[0]}: ${said.at(-1)}`:lines[0]||"it gave no reason").slice(0,500);
+  return new Error(`The downloaded Google Antigravity ${version} could not start on this machine (${reason}). Nothing was installed.`,{cause:error});
+}
+
+// The new runtime is started once, before it replaces the one in use (T3 AntigravityInstallation validate): it must answer ACP's
+// initialize as antigravity-acp at the version the registry lists. It starts as Antigravity's sessions start it, from its own folder
+// with launchEnv (the profile's launch environment), unpacking itself into a Trebell-owned temp folder that is removed once its
+// process tree is stopped (acp-client.mjs), but in a throwaway home of its own with no key: the check touches neither Antigravity's
+// home in Trebell nor a sign-in.
+async function checkRuntimeStarts({binary,args,launchEnv,version,spawnProcess}){
+  const home=await mkdtemp(join(tmpdir(),"trebell-antigravity-check-"));
+  const client=new AcpClient({command:binary,args,cwd:dirname(binary),env:antigravityEnvironment(launchEnv,{home}),runTempRoot:acpRuntimeTempRoot(launchEnv,"antigravity"),spawnProcess});
+  let agent=null;
+  try{await client.start();agent=(await client.initialize({timeoutMs:START_CHECK_TIMEOUT_MS}))?.agentInfo||null}
+  catch(error){throw startFailure(error,version)}
+  finally{await client.stop().catch(()=>{});await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:200}).catch(()=>{})}
+  if(agent?.name!=="antigravity-acp"||String(agent?.version??"").trim()!==version){
+    const expected=`Google Antigravity ${version} (antigravity-acp ${version})`,said=saidName(agent);
+    throw new Error(said?`The downloaded runtime started as ${said}, not as ${expected}, which the ACP registry lists. Nothing was installed.`
+      :`The downloaded runtime did not say which agent it is when it started, so it is not the ${expected} the ACP registry lists. Nothing was installed.`);
+  }
+}
+
+// A folder renamed just after a process that ran from it stopped: Windows can hold it a moment longer (T3 retries 10 times at
+// 100 ms). One a running process holds stays held, and the last refusal is thrown.
+async function renameSettled(from,to,platform){
+  for(let attempt=1;;attempt++){
+    try{return await rename(from,to)}
+    catch(error){if(platform!=="win32"||attempt>=10||!IN_USE_CODES.has(error?.code))throw error;await new Promise(resolve=>setTimeout(resolve,100))}
+  }
+}
+
+// Installs or updates Antigravity's ACP runtime from the registry's entry for this machine into <Trebell home>/agent-runtimes/
+// antigravity/current, leaving the runtime there unchanged unless every step passes:
+// - room: before the download, its size twice (it unpacks to at least as much) and ANTIGRAVITY_FREE_SPACE_MARGIN; before each file
+//   is unpacked, its size and the margin (freeBytes);
+// - integrity: the download, hashed as it arrives, must have the registry's SHA-256, and it must hold agy_acp_server with
+//   localharness_external beside it;
+// - a start: the new runtime answers ACP's initialize as antigravity-acp at the registry's version (checkRuntimeStarts).
+// The unpacked folder is then renamed into place, not copied. On Windows a folder a running Antigravity chat holds cannot be renamed:
+// that is said, and nothing changes.
+export async function installAntigravityRuntime({env=process.env,fetchImpl=globalThis.fetch,platform=process.platform,arch=process.arch,extractImpl=null,launchEnv=env,spawnProcess=null,freeBytes=freeBytesAt}={}){
   const target=antigravityRegistryTarget(platform,arch);if(!target)throw new Error(`Antigravity ACP is not supported on ${platform}/${arch}`);
   const extract=extractImpl||(await loadExtractZip()).default;
   const registryResponse=await fetchImpl(ACP_REGISTRY_URL,{headers:{accept:"application/json"}});
@@ -52,27 +126,52 @@ export async function installAntigravityRuntime({env=process.env,fetchImpl=globa
   const registry=await registryResponse.json();
   const entry=(registry?.agents||[]).find(item=>item?.id==="antigravity-acp");
   if(!entry)throw new Error("Google Antigravity is missing from the ACP registry");
-  const distribution=validateDistribution(entry,target);
+  const distribution=validateDistribution(entry,target),version=distribution.version;
   const root=join(trebellHome(env),"agent-runtimes","antigravity"),installId=randomUUID(),temp=join(root,`.install-${installId}`),archivePath=join(temp,"runtime.zip"),extracted=join(temp,"extracted"),ready=join(temp,"ready"),current=join(root,"current"),previous=join(root,`.previous-${installId}`);
-  await mkdir(extracted,{recursive:true});await mkdir(ready,{recursive:true});
+  // A drive whose free space cannot be read is not checked (T3 skips its check too); a full one still fails as ENOSPC, said below.
+  const freeOn=path=>{try{return freeBytes(path)}catch{return Infinity}};
+  await mkdir(extracted,{recursive:true});
   try{
     const response=await fetchImpl(distribution.archive,{redirect:"follow"});
     if(!response?.ok||!response.body)throw new Error(`Could not download Google Antigravity ACP (${response?.status||"network error"})`);
-    await pipeline(Readable.fromWeb(response.body),createWriteStream(archivePath,{mode:0o600}));
-    await extract(archivePath,{dir:extracted});
+    // Room for the download and what it unpacks to, at least as much again, from the size it says it has (a gzip-encoded download
+    // says its encoded size, about the same for a zip); each file's own size is checked again as it is unpacked.
+    const downloadMb=wholeMb(Number(response.headers?.get?.("content-length"))||0),neededMb=2*downloadMb+ANTIGRAVITY_FREE_SPACE_MARGIN/MB,free=freeOn(temp);
+    if(free<neededMb*MB){
+      try{await response.body.cancel()}catch{}
+      throw noRoom({version,step:"install",neededMb,free,root,parts:downloadMb?`its ${megabytes(downloadMb)} download and at least as much again once unpacked`:"its download, which did not say its size"});
+    }
+    const hash=createHash("sha256");
+    await pipeline(Readable.fromWeb(response.body),async function*(chunks){for await(const chunk of chunks){hash.update(chunk);yield chunk}},createWriteStream(archivePath,{mode:0o600}));
+    if(hash.digest("hex")!==distribution.sha256)throw new Error(`The Google Antigravity ${version} download does not match the SHA-256 the ACP registry lists for it. Nothing was installed.`);
+    await extract(archivePath,{dir:extracted,onEntry:item=>{
+      const fileMb=wholeMb(Number(item?.uncompressedSize)||0),neededMb=fileMb+ANTIGRAVITY_FREE_SPACE_MARGIN/MB,free=freeOn(extracted);
+      if(free<neededMb*MB)throw noRoom({version,step:`unpack ${basename(String(item?.fileName||""))||"its files"}`,neededMb,free,root,parts:`${megabytes(fileMb)} for it`});
+    }});
+    await rm(archivePath,{force:true});
     const source=await findFile(extracted,distribution.binaryName);if(!source)throw new Error(`Downloaded Antigravity archive did not contain ${distribution.binaryName}`);
-    // Keep the full sibling payload rather than only the launcher. Google's
-    // Windows/Linux ACP distributions may ship helper binaries next to the
-    // server and the launcher expects those relative paths to remain intact.
-    await cp(dirname(source),ready,{recursive:true,force:true});
-    const installedBinary=join(ready,distribution.binaryName);if(platform!=="win32")await chmod(installedBinary,0o755);
-    await writeFile(join(ready,"install.json"),JSON.stringify({runtime:"antigravity",source:"acp-registry",registryUrl:ACP_REGISTRY_URL,version:String(entry.version||"unknown"),target,archive:distribution.archive,args:distribution.args,installedAt:new Date().toISOString()},null,2),{encoding:"utf8",mode:0o600});
+    const helper=await stat(join(dirname(source),distribution.helperName)).catch(()=>null);
+    if(!helper?.isFile())throw new Error(`The Google Antigravity ${version} download has no ${distribution.helperName} beside ${distribution.binaryName}, which Antigravity needs to run. Nothing was installed.`);
+    // The server's folder with its helper and whatever else Google ships beside it (the launcher expects those relative paths),
+    // moved into place rather than copied: no second copy on the drive.
+    await rename(dirname(source),ready);
+    const installedBinary=join(ready,distribution.binaryName);
+    if(platform!=="win32")for(const name of [distribution.binaryName,distribution.helperName])await chmod(join(ready,name),0o755);
+    await checkRuntimeStarts({binary:installedBinary,args:distribution.args,launchEnv,version,spawnProcess});
+    await writeFile(join(ready,"install.json"),JSON.stringify({runtime:"antigravity",source:"acp-registry",registryUrl:ACP_REGISTRY_URL,version,target,archive:distribution.archive,sha256:distribution.sha256,args:distribution.args,installedAt:new Date().toISOString()},null,2),{encoding:"utf8",mode:0o600});
     let movedPrevious=false;
-    try{await rename(current,previous);movedPrevious=true}catch(error){if(error?.code!=="ENOENT")throw error}
-    try{await rename(ready,current)}catch(error){if(movedPrevious)await rename(previous,current).catch(()=>{});throw error}
+    try{await renameSettled(current,previous,platform);movedPrevious=true}catch(error){
+      if(error?.code==="ENOENT"){}
+      else if(platform==="win32"&&IN_USE_CODES.has(error?.code))throw new Error(`Google Antigravity ${version} was downloaded and checked, but the Antigravity runtime in use could not be replaced: a running Antigravity chat holds it. Stop your Antigravity chats, then try again. Nothing was installed.`,{cause:error});
+      else throw error;
+    }
+    try{await renameSettled(ready,current,platform)}catch(error){if(movedPrevious)await rename(previous,current).catch(()=>{});throw error}
     if(movedPrevious)await rm(previous,{recursive:true,force:true,maxRetries:5,retryDelay:100}).catch(()=>{});
-    return {ok:true,version:String(entry.version||"unknown"),target,binary:join(current,distribution.binaryName),args:distribution.args};
-  }finally{await rm(temp,{recursive:true,force:true,maxRetries:5,retryDelay:100}).catch(()=>{})}
+    return {ok:true,version,target,binary:join(current,distribution.binaryName),args:distribution.args};
+  }catch(error){
+    if(error?.code==="ENOSPC")throw new Error(`The drive that holds ${root} ran out of space while Trebell Code installed Google Antigravity ${version}. Free some space on that drive, then try again. Nothing was installed.`,{cause:error});
+    throw error;
+  }finally{await rm(temp,{recursive:true,force:true,maxRetries:10,retryDelay:100}).catch(()=>{})}
 }
 
 export async function readAntigravityInstall({env=process.env}={}){

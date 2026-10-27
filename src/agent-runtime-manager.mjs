@@ -650,8 +650,9 @@ export class AgentRuntimeManager{
   async #install(target,environmentId,instanceId=null){
     if(target.runtime==="antigravity"){
       if(this.activeEnvironment(environmentId))throw new Error("Managed Antigravity ACP installation is currently available only on the local machine");
-      const installed=await installAntigravityRuntime({env:this.env,fetchImpl:this.fetchImpl,platform:this.platform,arch:this.arch});
       const instance=this.instances().find(item=>item.kind==="antigravity"&&item.id==="antigravity-default")||defaultInstance("antigravity");
+      // The new runtime's start check launches it with the profile's own environment, as its sessions are (its home and key aside).
+      const installed=await installAntigravityRuntime({env:this.env,fetchImpl:this.fetchImpl,platform:this.platform,arch:this.arch,launchEnv:this.childEnv(instance)});
       const status=await this.probe(instance,{environmentId:null,fresh:true});
       return {ok:true,runtime:"antigravity",managed:"acp-registry",targetVersion:installed.version,status};
     }
