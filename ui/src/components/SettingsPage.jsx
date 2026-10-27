@@ -518,15 +518,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     setAgentMessageTarget(kind);
     setAuthenticatingAgent(instanceId||kind);showAgentMessage("Opening "+(definition.name||kind)+" sign in…");
     try{
+      // Each harness but Antigravity (its key form) signs in in a terminal the answer opens.
       const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action:"login",runtime:kind,instanceId:instanceId||null,environmentId:runtimeEnvironmentId||null,cwd:projectPath||null}});
-      if(result?.authenticated){
-        showAgentMessage((definition.name||kind)+" sign in verified.");
-        if(result.agentSnapshot)setAgentInfo(result.agentSnapshot);
-        else await loadAgentRuntimes();
-      }else{
-        showAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
-        if(result?.session)onOpenRuntimeAuthTerminal?.(result.session,pressed);
-      }
+      showAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
+      if(result?.session)onOpenRuntimeAuthTerminal?.(result.session,pressed);
     }catch(error){showAgentMessage(error.message,true)}
     finally{setAuthenticatingAgent(null)}
   }
