@@ -72,6 +72,33 @@ test("a compacted session's summary is not imported as a request the person sent
   assert.deepEqual(turns.map(texts),[["Now run the integration tests","All 41 integration tests pass."]]);
 });
 
+// Claude Code compacts in the middle of a turn and carries on: its chain then starts at the summary with that turn's replies, and the
+// request they answer is before the compaction, out of the chain. They are kept in a turn that opens with the compaction.
+const summary=()=>user("summary","This session is being continued from a previous conversation that ran out of context. The conversation is summarized below: the parser rewrite.",{isCompactSummary:true,is_meta:true});
+const turnItems=turn=>turn.items.map(item=>item.type==="contextCompaction"?["compaction"]:item.type==="userMessage"?["request",item.content[0].text]:["reply",item.text]);
+
+test("replies Claude Code gave after compacting in the middle of a turn are kept in a turn that opens with the compaction",()=>{
+  const turns=claudeMessagesToTurns([
+    summary(),
+    assistant("after-1",[{type:"text",text:"Picking the parser rewrite up where it stopped."},toolUse("toolu_a","npm test")]),user("result-a",toolResult("toolu_a")),
+    assistant("after-2",[{type:"text",text:"The parser rewrite is done and its tests pass."}]),
+    user("next","Now run the integration tests"),assistant("next-reply",[{type:"text",text:"All 41 integration tests pass."}]),
+  ],{createdAt:1000});
+  assert.deepEqual(turns.map(turnItems),[
+    [["compaction"],["reply","Picking the parser rewrite up where it stopped."],["reply","The parser rewrite is done and its tests pass."]],
+    [["request","Now run the integration tests"],["reply","All 41 integration tests pass."]],
+  ]);
+  assert.equal(turns[0].items[0].status,"completed");
+  assert.ok(!turns.flatMap(turn=>turn.items).some(item=>item.type==="userMessage"&&/being continued/.test(item.content[0].text)),"the summary is not the person's words");
+});
+
+test("a session whose only replies follow a compaction imports them instead of failing to import",async()=>{
+  const read=sessionMessagesFn([summary(),assistant("after-1",[{type:"text",text:"The parser rewrite is done and its tests pass."}])]),store=importer();
+  const result=await importClaudeHistory(store,candidate,{getSessionMessagesFn:read});
+  assert.equal(result.status,"imported");
+  assert.deepEqual(store.imported.turns.map(turnItems),[[["compaction"],["reply","The parser rewrite is done and its tests pass."]]]);
+});
+
 test("the import keeps a bounded amount of text, the newest turns whole and the newest one's request and latest replies",()=>{
   const MAX_IMPORTED_CHARS=8*1024*1024,long=n=>String(n).padEnd(32_000,".");
   // 12 requests of 41 messages each, every reply 32,000 characters long: 15.7M characters in all.

@@ -160,24 +160,33 @@ function messageText(message){
     return "";
   }).filter(Boolean).join("\n").trim();
 }
+// A compaction's summary, which Claude Code's chain after a compaction starts at (the SDK marks it is_meta and isCompactSummary).
+function claudeCompactSummary(message){return message?.type==="user"&&message.is_meta===true&&message.isCompactSummary===true}
 // A Claude session's latest turns, as Claude resumes it: from its newest message back, each user message with text opens a turn and
 // the assistant text after it joins that turn, up to MAX_IMPORTED_TURNS turns and MAX_IMPORTED_CHARS of text. Tool calls and
-// results have no text and take no room, and a compaction's summary (is_meta) is not a request the person sent.
+// results have no text and take no room, and a compaction's summary (is_meta) is not a request the person sent. Replies that follow
+// the summary before any request (Claude Code compacted in the middle of a turn and carried on) are kept in a turn of their own that
+// opens with the compaction, as a compaction, not as the person's words.
 export function claudeMessagesToTurns(messages,{createdAt=Date.now()}={}){
-  const list=Array.isArray(messages)?messages:[],kept=[];let opened=0,chars=0,full=false;
+  const list=Array.isArray(messages)?messages:[],kept=[];let opened=0,chars=0,full=false,replies=0;
   for(let position=list.length-1;position>=0&&opened<MAX_IMPORTED_TURNS;position--){
-    const message=list[position];if((message?.type!=="user"&&message?.type!=="assistant")||message.is_meta===true)continue;
+    const message=list[position];
+    // replies: the replies kept since the last request kept, which a compaction's summary before them opens a turn for.
+    if(claudeCompactSummary(message)){if(replies){kept.push({message,compaction:true});opened++;replies=0}continue}
+    if((message?.type!=="user"&&message?.type!=="assistant")||message.is_meta===true)continue;
     const text=messageText(message).slice(0,MAX_MESSAGE_CHARS);if(!text)continue;
     // Past the bound an older turn is left out whole; the newest keeps its request and its latest replies.
     if(full||chars+text.length>MAX_IMPORTED_CHARS){if(opened)break;full=true;if(message.type==="assistant")continue}
-    chars+=text.length;kept.push({message,text});if(message.type==="user")opened++;
+    chars+=text.length;kept.push({message,text});if(message.type==="user"){opened++;replies=0}else replies++;
   }
   const base=Math.floor((Number(createdAt)||Date.now())/1000);const turns=[];let current=null,index=0;
   const finish=()=>{if(current){current.status="completed";current.completedAt=current.startedAt;current.durationMs=0;turns.push(current);current=null}};
-  for(const {message,text} of kept.reverse()){
-    if(message.type==="user"){
+  const open=(turnId,item)=>({id:turnId,status:"completed",startedAt:base+turns.length,completedAt:base+turns.length,durationMs:0,error:null,items:[item]});
+  for(const {message,text,compaction} of kept.reverse()){
+    if(compaction){finish();const turnId="import-"+String(message.uuid||index++);current=open(turnId,{type:"contextCompaction",id:"compaction-"+turnId,status:"completed"})}
+    else if(message.type==="user"){
       finish();const turnId="import-"+String(message.uuid||index++);
-      current={id:turnId,status:"completed",startedAt:base+turns.length,completedAt:base+turns.length,durationMs:0,error:null,items:[{type:"userMessage",id:"user-"+turnId,clientId:null,content:[{type:"text",text}]}]};
+      current=open(turnId,{type:"userMessage",id:"user-"+turnId,clientId:null,content:[{type:"text",text}]});
     }else if(message.type==="assistant"&&current){
       current.items.push({type:"agentMessage",id:"assistant-"+String(message.uuid||index++),text,phase:null,memoryCitation:null,delivery:null,questions:null});
     }
