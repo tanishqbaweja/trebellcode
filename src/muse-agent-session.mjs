@@ -402,7 +402,7 @@ export class MuseAgentSession{
   modeRefusal(){
     if(!this.launched||this.dead||!this.needsRelaunch(this.permissionMode))return null;
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
-    return this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:running?.wake||running?.successor?MUSE_REPORT_BLOCKS_MODE_CHANGE:null;
+    return this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:running?.wake||running?.successor&&!running.prompted?MUSE_REPORT_BLOCKS_MODE_CHANGE:null;
   }
   // A mode's launch flags, permission profile and approval mode are fixed when its host launches (museLaunchPlan), so a mode with
   // another plan needs a new host, which resumes the conversation (T3: runtime policy changes require a fresh Muse host).

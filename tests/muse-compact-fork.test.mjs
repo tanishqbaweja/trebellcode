@@ -149,8 +149,18 @@ test("while Muse's compaction or its own report holds the host, a message in a m
   waking.session.setPermissionMode("auto");
   await assert.rejects(settlesWithin(waking.session.prompt([{type:"text",text:"In Auto now"}]),2000,"the message in Auto"),error=>error?.name==="SessionRefusalError"&&error.message===REPORT_BLOCKS_MODE);
   assert.equal(waking.muse.sent("turn/start").length,0);
-  waking.muse.notify("turn/completed",{sessionId:waking.session.sessionId,turnId:"report-1",terminal:"completed",viewCursor:"v"});
+  // Back in the host's own mode the message takes the report over; while that message's turn runs, another mode is just a running turn.
+  waking.session.setPermissionMode("supervised");
+  const message=waking.session.prompt([{type:"text",text:"In Supervised"}]);
   assert.equal((await settlesWithin(report,2000,"the report")).stopReason,"end_turn","the report ends as its own turn");
+  const {params:taken}=await waking.muse.next("turn/start");
+  waking.session.setPermissionMode("auto");
+  assert.equal(waking.session.modeRefusal(),null);
+  await assert.rejects(waking.session.prompt([{type:"text",text:"Auto again"}]),{message:"Muse Code already has a running turn."});
+  waking.session.setPermissionMode("supervised");
+  waking.muse.notify("turn/completed",{sessionId:waking.session.sessionId,turnId:"report-1",terminal:"completed",viewCursor:"v"});
+  waking.muse.notify("turn/completed",{sessionId:waking.session.sessionId,turnId:taken.commandId,terminal:"completed",viewCursor:"v"});
+  assert.equal((await settlesWithin(message,2000,"the message's turn")).stopReason,"end_turn");
   await waking.session.close();
 });
 
