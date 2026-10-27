@@ -291,12 +291,14 @@ const turnEnds=(relay,threadId)=>relay.notifications.map((item,index)=>item.meth
 const closedAt=(relay,threadId)=>relay.notifications.findIndex(item=>item.method==="thread/closed"&&item.params.threadId===threadId);
 
 test("through the relay, a workflow's rows stay in the turn that launched it, Muse's report is a turn of its own, and the idle sweep keeps the session while the workflow runs and lets it go after",{timeout:120_000},async()=>{
-  const relay=await museRelay("trebell-muse-background-",{environment:{MUSE_FAKE_WORKFLOW_MS:"400",MUSE_FAKE_REPORT_DELAY_MS:"150"},env:{TREBELL_AGENT_SESSION_IDLE_MS:"250",TREBELL_AGENT_SESSION_SWEEP_MS:"100"}});
+  // The idle limit leaves the report 700 ms to spare on a busy machine, and its delay stays three sweeps long, so a session idle since
+  // the launching turn (without the workflow's end counting as use) is swept before the report starts.
+  const relay=await museRelay("trebell-muse-background-",{environment:{MUSE_FAKE_WORKFLOW_MS:"400",MUSE_FAKE_REPORT_DELAY_MS:"300"},env:{TREBELL_AGENT_SESSION_IDLE_MS:"1000",TREBELL_AGENT_SESSION_SWEEP_MS:"100"}});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
-    // Muse reports once the workflow is done, in a turn of its own; the session was not swept while the workflow ran (2.4 s, ten idle
-    // limits), nor in the moments between the workflow's end and Muse's report (150 ms, past a sweep), as its end counts as use.
+    // Muse reports once the workflow is done, in a turn of its own; the session was not swept while the workflow ran (2.4 s, past two
+    // idle limits), nor in the moments between the workflow's end and Muse's report (300 ms, three sweeps), as its end counts as use.
     await relay.completed(thread.id,2);
     const ends=turnEnds(relay,thread.id),closed=closedAt(relay,thread.id);
     assert.ok(closed<0||closed>ends[1],"the session was kept while the workflow ran past its turn");
