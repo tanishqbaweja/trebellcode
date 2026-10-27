@@ -133,6 +133,12 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
   </div>;
 }
 const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity"];
+// What a harness's status says of a sign-in: nothing when its version check did not answer and no sign-in was read after it (a
+// Codex answer is its account read's, whatever its --version did), or when it is a Claude Code profile's with a custom API endpoint.
+// Its row shows what was found, with no Needs setup and no Sign in.
+function saysNothingOfSignIn(status,kind){
+  return Boolean((status?.versionCheckFailed&&status.authenticated==null&&kind!=="codex")||status?.account?.type==="customEndpoint")&&Boolean(status?.message);
+}
 // A setting opened from the search that is taller than the part of the page the window shows opens at its top, its heading and first
 // rows in view, and a shorter one in the middle: centred, the Keyboard shortcuts card showed rows from the middle of its list, its
 // heading far above the window. While the settings error alert is up it stands over the top of the page as it scrolls, so the part
@@ -1044,9 +1050,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           const status=runtimeStatusForKind(agentInfo,def.id,{preferSelected:selectedAgent===def.id});
           const active=selectedAgent===def.id;
           const compatibility=status?.compatibility;const incompatible=["broken","unsupported"].includes(compatibility?.status);
-          // A version check that did not answer, or a Claude Code profile with a custom API endpoint, says nothing of a sign-in: the row
-          // says what was found, with no Needs setup and no Sign in.
-          const noSignIn=Boolean(status?.versionCheckFailed||status?.account?.type==="customEndpoint")&&status?.message;
+          const noSignIn=saysNothingOfSignIn(status,def.id);
           const unverified=!noSignIn&&status?.authenticated==null&&["cursor","grok","opencode"].includes(def.id)&&status?.message;
           const statusText=incompatible?(compatibility.message||"Incompatible runtime version"):noSignIn||unverified?status.message:status?.available?status?.version||status?.message||"Ready":status?.message||"Unavailable";
           const actionText=active?(incompatible||unverified?"Needs setup":"Active"):status?.available?(incompatible||unverified?"Needs setup":"Switch"):status?.installed?"Not ready":"Not installed";
