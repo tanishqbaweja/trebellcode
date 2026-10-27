@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { stripVTControlCharacters } from "node:util";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
 import { fileUriPath } from "./file-uri.mjs";
@@ -33,6 +35,10 @@ const CLAUDE_EFFORTS=new Set(["low","medium","high","xhigh","max"]);
 const CLAUDE_IMAGE_TYPES=new Set(["image/gif","image/jpeg","image/png","image/webp"]);
 const CLAUDE_INTERRUPT_TIMEOUT_MS=10_000;
 const CLAUDE_CLOSE_TIMEOUT_MS=5_000;
+// How long a killed Claude Code has to exit before a stalled resumed conversation is not opened again (T3 Code's 572cf7427).
+const CLAUDE_EXIT_CONFIRM_MS=10_000;
+// The end of a Claude Code's stderr Trebell keeps, as the SDK keeps 2,048 characters of its own processes'.
+const CLAUDE_STDERR_TAIL=4096;
 const CLAUDE_USAGE_LIMIT_WINDOWS=Object.freeze({five_hour:"5-hour",seven_day:"7-day",seven_day_opus:"7-day Opus",seven_day_sonnet:"7-day Sonnet",seven_day_overage_included:"7-day model",overage:"overage"});
 // API errors Claude Code does not retry, whose own error message names the problem (an unknown model, a bad request, an
 // account or billing issue): that message is the turn's error, not "Claude gave up after repeated API errors."
@@ -103,6 +109,29 @@ function untilAborted(promise,signal,abortedValue){
     signal.addEventListener("abort",onAbort,{once:true});
     Promise.resolve(promise).then(value=>{signal.removeEventListener("abort",onAbort);resolve(value)},error=>{signal.removeEventListener("abort",onAbort);reject(error)});
   });
+}
+
+// Claude Code started on this machine as the SDK starts it (hidden, its three streams piped), but by Trebell, which so sees it exit and
+// keeps the end of its stderr (onStderr): the SDK's errors carry that end only for a process it started itself. Its exit reaches the
+// SDK once stderr has closed, or 200 ms after, as with the SDK's own start, so the end is all there when the exit is reported.
+function spawnLocalClaudeCode({command,args,cwd,env,signal},{spawnChild=spawn,onStderr}){
+  const child=spawnChild(command,args,{cwd,env,signal,stdio:["pipe","pipe","pipe"],windowsHide:true});
+  const exits=new EventEmitter();let code=null,signalCode=null,exited=false,drained=!child.stderr,sent=false,grace=null;
+  const deliver=()=>{if(sent)return;sent=true;clearTimeout(grace);exits.emit("exit",code,signalCode)};
+  if(child.stderr){child.stderr.setEncoding("utf8");child.stderr.on("data",onStderr);child.stderr.on("error",()=>{});child.stderr.once("close",()=>{drained=true;if(exited)deliver()})}
+  child.once("exit",(exitCode,exitSignal)=>{exited=true;code=exitCode;signalCode=exitSignal;if(drained)deliver();else{grace=setTimeout(deliver,200);grace.unref?.()}});
+  const target=event=>event==="exit"?exits:child;
+  return {
+    stdin:child.stdin,stdout:child.stdout,get killed(){return child.killed},get exitCode(){return child.exitCode},get signalCode(){return child.signalCode},
+    kill:signal=>child.kill(signal),on:(event,listener)=>{target(event).on(event,listener)},once:(event,listener)=>{target(event).once(event,listener)},off:(event,listener)=>{target(event).off(event,listener)},
+  };
+}
+// The SDK reports a process that ended by its exit and the end of its stderr; for one Trebell started, the end Trebell kept is added.
+function withStderrTail(error,proc){
+  const message=String(error?.message||"");
+  if(!proc?.stderrTail||!/^Claude Code process (?:exited with code|terminated by signal)/.test(message)||message.includes(". stderr: "))return error;
+  const tail=redactSecretText(stripVTControlCharacters(proc.stderrTail),{trim:true}).slice(-2048);
+  return tail?Object.assign(new Error(`${message}. stderr: ${tail}`),{cause:error}):error;
 }
 
 class MessageQueue{
@@ -295,8 +324,10 @@ const INVENTORY_MACHINE=1,INVENTORY_WORKSPACE=2,INVENTORY_LIVE=3;
 export class ClaudeAgentSession{
   // Each rewind's pending fork, mapped to the conversation it left (restored when Claude Code rejects the fork).
   #rewindOrigins;
-  constructor({command="claude",cwd=process.cwd(),env=process.env,permissionMode:mode="supervised",onUpdate,onPermission,onQuestion,onWakeTurn=null,version="0.0.0",spawnProcess=null,capabilityScope="",autoCompactWindow=null,forkFromSessionId=null,resumeSessionAt=null,persistedTurns=null,mcpServers={},sdk=null,capabilities=undefined,idleReleaseMs=CLAUDE_IDLE_RELEASE_MS}={}){
+  constructor({command="claude",cwd=process.cwd(),env=process.env,permissionMode:mode="supervised",onUpdate,onPermission,onQuestion,onWakeTurn=null,version="0.0.0",spawnProcess=null,capabilityScope="",autoCompactWindow=null,forkFromSessionId=null,resumeSessionAt=null,persistedTurns=null,mcpServers={},sdk=null,capabilities=undefined,idleReleaseMs=CLAUDE_IDLE_RELEASE_MS,spawnChild=spawn}={}){
     this.command=command;this.cwd=cwd;this.env=env;this.permissionMode=normalizePermissionMode(mode);this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.onWakeTurn=onWakeTurn;this.version=version;this.spawnProcess=spawnProcess;
+    // How a Claude Code on this machine is started (node's spawn; tests pass their own).
+    this.spawnChild=spawnChild;
     // Remote environments share one executable name and Claude home, so their capability probes are kept apart by environment.
     this.capabilityScope=spawnProcess?String(capabilityScope||""):"";
     this.autoCompactWindow=Number.isInteger(Number(autoCompactWindow))&&Number(autoCompactWindow)>=100_000&&Number(autoCompactWindow)<=1_000_000?Number(autoCompactWindow):null;
@@ -526,6 +557,8 @@ export class ClaudeAgentSession{
   }
   async #openLive(key,{reopen=true,opening=null}={}){
     if(opening?.stopped||this.closed)return null;
+    // The process this query starts, as Trebell sees it: whether it exited, and the end of its stderr.
+    const proc={child:null,exit:null,exited:false,stderrTail:""};
     const input=new MessageQueue(),policy=claudeQueryPolicy(this.permissionMode,this.collaborationMode),fork=this.pendingFork;
     const allowRules=[...this.sessionAllowRules],directories=[...this.additionalDirectories];
     const settings={
@@ -554,7 +587,7 @@ export class ClaudeAgentSession{
       settings,
       ...(directories.length?{additionalDirectories:directories}:{}),
       includePartialMessages:true,
-      ...(this.spawnProcess?{spawnClaudeCodeProcess:this.spawnProcess}:{}),
+      spawnClaudeCodeProcess:this.#spawner(proc),
       ...(fork
         ?{resume:fork.sourceSessionId,forkSession:true,sessionId:this.sessionId,...(fork.resumeSessionAt?{resumeSessionAt:fork.resumeSessionAt}:{})}
         :this.startedOnce?{resume:this.sessionId}:{sessionId:this.sessionId}),
@@ -563,7 +596,7 @@ export class ClaudeAgentSession{
     // resumed: the session this query asked Claude Code to resume, which it may no longer have.
     // failure: what ended the process's messages; stopped: Stop or close ended it. foregroundSubagents: the root turn's subagent calls
     // that wait on their subagent (no result yet); subagentMoves: the moves to the background steers asked for, by call.
-    const live={query:runtime,input,key,fork,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),foregroundSubagents:new Set(),subagentMoves:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,failure:null,stopped:false,pump:null};
+    const live={query:runtime,input,key,fork,proc,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),foregroundSubagents:new Set(),subagentMoves:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,failure:null,stopped:false,pump:null};
     this.live=live;
     live.pump=this.#pump(live);
     Promise.resolve(runtime.initializationResult?.()).then(init=>{
@@ -571,13 +604,35 @@ export class ClaudeAgentSession{
     },()=>{});
     if(await this.#registerMcpServers(live))return live;
     // A process that did not connect them in time is closed, and the SDK's close waits a little for it to exit. A resumed conversation
-    // then opens once more; a new one does not, since its id may already name a transcript the closed process started (T3 Code's
-    // 572cf7427). Stop or close meanwhile opens nothing: the closed process is the prompt's answer, which ends it as Stop asked.
+    // then opens once more, only once the stalled process has exited, so two Claude Codes never resume one transcript at once; a new one
+    // does not, since its id may already name a transcript the closed process started (T3 Code's 572cf7427). Stop or close meanwhile
+    // opens nothing: the closed process is the prompt's answer, which ends it as Stop asked.
     await this.#closeLive(live);
     await withTimeout(Promise.resolve().then(()=>runtime.return()),CLAUDE_CLOSE_TIMEOUT_MS).catch(()=>{});
-    if(opening?.stopped||live.stopped||this.closed)return live;
-    if(reopen&&live.resumed)return this.#openLive(key,{reopen:false,opening});
+    const stopped=()=>opening?.stopped||live.stopped||this.closed;
+    const exited=reopen&&live.resumed&&!stopped()&&await this.#exited(proc);
+    if(stopped())return live;
+    if(exited)return this.#openLive(key,{reopen:false,opening});
     throw new Error(CLAUDE_MCP_REGISTRATION_TIMED_OUT);
+  }
+  // Starts each Claude Code of a query (this machine's, or a remote one through spawnProcess) and notes when it exits.
+  #spawner(proc){
+    return options=>{
+      const child=this.spawnProcess?this.spawnProcess(options):spawnLocalClaudeCode(options,{spawnChild:this.spawnChild,onStderr:chunk=>{proc.stderrTail=(proc.stderrTail+chunk).slice(-CLAUDE_STDERR_TAIL)}});
+      proc.child=child;
+      proc.exit=new Promise(resolve=>{
+        const done=()=>{proc.exited=true;resolve()};
+        if(child.exitCode!=null||child.signalCode!=null)done();else child.once("exit",done);
+      });
+      return child;
+    };
+  }
+  // True once the process has exited: one still running after the SDK's close is killed, and is given CLAUDE_EXIT_CONFIRM_MS to exit.
+  async #exited(proc){
+    if(!proc.child)return false;
+    if(proc.exited)return true;
+    try{proc.child.kill("SIGKILL")}catch{}
+    return withTimeout(proc.exit,CLAUDE_EXIT_CONFIRM_MS).then(()=>true,()=>false);
   }
   // The thread's MCP servers, Trebell's in-process ones with them, before the first prompt, so their tools are there when the turn
   // starts. Every one goes each time: setMcpServers replaces the whole set Claude Code was given. False when Claude Code did not
@@ -598,7 +653,7 @@ export class ClaudeAgentSession{
   async #pump(live){
     let failure=null;
     try{for await(const message of {[Symbol.asyncIterator]:()=>live.query})this.#handle(live,message)}
-    catch(error){failure=error}
+    catch(error){failure=withStderrTail(error,live.proc)}
     live.closed=true;live.failure=failure;live.input.end();live.backgroundTasks=new Map();
     if(this.live===live)this.live=null;
     const turn=this.turn;

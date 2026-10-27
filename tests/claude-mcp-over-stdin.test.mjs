@@ -13,7 +13,7 @@ import * as claudeAgentSdk from "@anthropic-ai/claude-agent-sdk";
 import { ClaudeAgentSession } from "../src/claude-agent-session.mjs";
 import { createClaudeRepositoryMcp } from "../src/claude-repository-tools.mjs";
 import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
-import { claudeResult, scriptedClaudeSdk } from "./fixtures/scripted-claude-sdk.mjs";
+import { claudeResult, fakeClaudeChildren, scriptedClaudeSdk } from "./fixtures/scripted-claude-sdk.mjs";
 
 const SOURCE="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const TIMED_OUT="Claude Code did not finish connecting this thread's MCP servers within 90 seconds. Send the message again; if it keeps timing out, check the MCP servers in Settings.";
@@ -111,8 +111,9 @@ test("the query opens without MCP servers and each process gets the whole map be
 
 test("a resumed conversation whose MCP registration stalls opens once more after the stalled process is closed, and the prompt goes there",async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
-  const {sdk:base,calls}=scriptedClaudeSdk({control:{setMcpServers:(servers,call)=>calls.indexOf(call)===0?new Promise(()=>{}):{added:Object.keys(servers),removed:[],errors:{}}}});
-  const claude=new ClaudeAgentSession({cwd:"/repo",sdk:{...base,getSessionInfo:async()=>({sessionId:SOURCE})},onUpdate:()=>{},mcpServers:{"Workspace tools":WORKSPACE}});
+  const {sdk:base,calls}=scriptedClaudeSdk({spawn:true,control:{setMcpServers:(servers,call)=>calls.indexOf(call)===0?new Promise(()=>{}):{added:Object.keys(servers),removed:[],errors:{}}}});
+  const {spawnChild,children}=fakeClaudeChildren();
+  const claude=new ClaudeAgentSession({cwd:"/repo",sdk:{...base,getSessionInfo:async()=>({sessionId:SOURCE})},spawnChild,onUpdate:()=>{},mcpServers:{"Workspace tools":WORKSPACE}});
   await claude.start({providerSessionId:SOURCE});
   const prompting=claude.prompt([{type:"text",text:"Continue"}]);
   await until(()=>calls[0]?.log.length===1);
@@ -121,6 +122,7 @@ test("a resumed conversation whose MCP registration stalls opens once more after
   t.mock.timers.tick(1);
   await until(()=>calls.length===2);
   assert.equal(calls[0].closed,true,"the stalled process is closed first");
+  assert.ok(children[0].exitCode!==null||children[0].signalCode!==null,"and it exited before the next opened");
   assert.equal((await prompting).stopReason,"end_turn");
   assert.deepEqual(calls.map(call=>call.options.resume),[SOURCE,SOURCE],"both resume the conversation");
   assert.deepEqual(calls.map(call=>call.inputs.length),[0,1],"the stalled process never took the prompt");
@@ -142,8 +144,8 @@ test("a stalled MCP registration on a new conversation, or a second stall, fails
   assert.equal(calls.length,1);assert.equal(calls[0].closed,true);assert.equal(calls[0].inputs.length,0);
   await fresh.close();
   // A resumed one that stalls twice stops after its one reopen.
-  const {sdk:base,calls:resumedCalls}=scriptedClaudeSdk(stalled);
-  const resumed=new ClaudeAgentSession({cwd:"/repo",sdk:{...base,getSessionInfo:async()=>({sessionId:SOURCE})},onUpdate:()=>{},mcpServers:{"Workspace tools":WORKSPACE}});
+  const {sdk:base,calls:resumedCalls}=scriptedClaudeSdk({...stalled,spawn:true});
+  const resumed=new ClaudeAgentSession({cwd:"/repo",sdk:{...base,getSessionInfo:async()=>({sessionId:SOURCE})},spawnChild:fakeClaudeChildren().spawnChild,onUpdate:()=>{},mcpServers:{"Workspace tools":WORKSPACE}});
   await resumed.start({providerSessionId:SOURCE});
   const second=resumed.prompt([{type:"text",text:"Continue"}]).then(()=>null,error=>error);
   await until(()=>resumedCalls[0]?.log.length===1);
@@ -155,6 +157,63 @@ test("a stalled MCP registration on a new conversation, or a second stall, fails
   await resumed.close();
 });
 
+// T3 Code's "only retries after confirmed process exit": the stalled Claude Code is stuck connecting a server, so it may outlast the
+// SDK's close. One still running is killed and the conversation opens again once it exited; one whose exit is never seen is not
+// opened again, so two Claude Codes never resume one transcript at once.
+test("a stalled resumed conversation opens again only once its stalled Claude Code has exited, killed if it outlasts the close",async t=>{
+  t.mock.timers.enable({apis:["setTimeout"]});
+  const stalling=()=>scriptedClaudeSdk({spawn:true,control:{setMcpServers:(servers,call)=>call.index===0?new Promise(()=>{}):{added:Object.keys(servers),removed:[],errors:{}}}});
+  const resumedSession=(sdk,spawnChild)=>new ClaudeAgentSession({cwd:"/repo",sdk:{...sdk,getSessionInfo:async()=>({sessionId:SOURCE})},spawnChild,onUpdate:()=>{},mcpServers:{"Workspace tools":WORKSPACE}});
+  // Ignores its stdin's end, but a kill ends it.
+  {
+    const {sdk,calls}=stalling(),{spawnChild,children}=fakeClaudeChildren({exitsOnStdinEnd:false});
+    const claude=resumedSession(sdk,spawnChild);await claude.start({providerSessionId:SOURCE});
+    const prompting=claude.prompt([{type:"text",text:"Continue"}]);
+    await until(()=>calls[0]?.log.length===1);
+    t.mock.timers.tick(90_000);
+    await until(()=>children[0].signals.length>0);
+    assert.deepEqual(children[0].signals,["SIGKILL"],"killed once the close did not end it");
+    await until(()=>calls.length===2);
+    assert.equal((await prompting).stopReason,"end_turn");
+    assert.equal(children[0].signalCode,"SIGKILL");assert.deepEqual(calls.map(call=>call.inputs.length),[0,1]);
+    await claude.close();
+  }
+  // Never exits: the conversation is not opened again while it may still be running.
+  {
+    const {sdk,calls}=stalling(),{spawnChild,children}=fakeClaudeChildren({exitsOnStdinEnd:false,exitsOnKill:false});
+    const claude=resumedSession(sdk,spawnChild);await claude.start({providerSessionId:SOURCE});
+    const prompting=claude.prompt([{type:"text",text:"Continue"}]).then(()=>null,error=>error);
+    await until(()=>calls[0]?.log.length===1);
+    t.mock.timers.tick(90_000);
+    await until(()=>children[0].signals.length>0);
+    t.mock.timers.tick(9_999);await tick();
+    assert.equal(calls.length,1,"it has 10 seconds to exit");
+    t.mock.timers.tick(1);
+    assert.equal((await prompting)?.message,TIMED_OUT);
+    assert.equal(calls.length,1,"no second Claude Code on the conversation");
+    await claude.close();
+  }
+});
+
+// Claude Code that Trebell starts on this machine runs hidden, its three streams piped, and the end of its stderr is kept: the SDK's
+// error for a process it did not start itself has none, and a conversation Claude Code no longer has is told by it.
+test("Claude Code started on this machine runs hidden, and a conversation it says it no longer has on stderr is a lost session",async()=>{
+  // The real SDK starts it, writes to its stdin, reads its stdout and reports its exit: the CLI exits at once on a conversation it
+  // cannot resume, saying so on stderr. A Claude home of the test's own: the SDK is not asked for transcripts on this machine.
+  const {spawnChild:fakeSpawn,children}=fakeClaudeChildren({exitCode:1,stderr:`Error: No conversation found with session ID: ${SOURCE}\n`});
+  const spawnChild=(command,args,options)=>{const child=fakeSpawn(command,args,options);setImmediate(()=>child.exit());return child};
+  const claude=new ClaudeAgentSession({cwd:process.cwd(),command:process.execPath,env:{PATH:process.env.PATH||"",CLAUDE_CONFIG_DIR:join(tmpdir(),"trebell-claude-lost-session-fixture")},sdk:claudeAgentSdk,spawnChild,onUpdate:()=>{},capabilities:null});
+  await claude.start({providerSessionId:SOURCE});
+  const error=await claude.prompt([{type:"text",text:"Continue"}]).then(()=>null,failure=>failure);
+  assert.equal(children.length,1);
+  const {command,args,options}=children[0].started;
+  assert.equal(command,process.execPath);assert.ok(args.includes(`--resume=${SOURCE}`),args.join(" "));
+  assert.deepEqual([options.windowsHide,options.stdio],[true,["pipe","pipe","pipe"]],"hidden, its three streams piped");
+  assert.ok(error instanceof HarnessSessionLostError,String(error?.message));
+  assert.match(error.message,/^Claude Code could not resume this conversation: Claude Code process exited with code 1\. stderr: Error: No conversation found with session ID/);
+  await claude.close();
+});
+
 // Stop pressed once the 90 s are up, while the stalled process is still closing, finds no process and no turn of the prompt: the
 // opening is marked, so no other Claude Code opens and the prompt, which never reached Claude Code, ends cancelled.
 for(const resumed of [true,false])test(`Stop while a stalled MCP registration's process closes opens no other process and ends the prompt cancelled (${resumed?"a resumed":"a new"} conversation)`,async t=>{
@@ -163,7 +222,7 @@ for(const resumed of [true,false])test(`Stop while a stalled MCP registration's 
   const stalling={control:{setMcpServers:(servers,call)=>call.index===0?new Promise(()=>{}):{added:Object.keys(servers),removed:[],errors:{}},return:call=>call.index===0?new Promise(()=>{}):undefined}};
   {
     const {sdk:base,calls}=scriptedClaudeSdk(stalling);
-    const sdk={...base,query:(...args)=>{const query=base.query(...args);calls.at(-1).index=calls.length-1;return query},...(resumed?{getSessionInfo:async()=>({sessionId:SOURCE})}:{})};
+    const sdk={...base,...(resumed?{getSessionInfo:async()=>({sessionId:SOURCE})}:{})};
     const claude=new ClaudeAgentSession({cwd:"/repo",sdk,onUpdate:()=>{},mcpServers:{"Workspace tools":WORKSPACE}});
     await claude.start(resumed?{providerSessionId:SOURCE}:{});
     const prompting=claude.prompt([{type:"text",text:"Continue"}]).then(result=>result,error=>error);
