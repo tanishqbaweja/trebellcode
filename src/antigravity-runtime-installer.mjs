@@ -72,12 +72,14 @@ const noRoom=({version,step,neededMb,parts,free,root})=>new Error(`Google Antigr
 
 // What a started runtime said of itself, in a few plain words.
 const saidName=agent=>[agent?.name,agent?.version].map(value=>String(value??"").replace(/[\u0000-\u001f\u007f]+/g," ").trim().slice(0,80)).filter(Boolean).join(" ");
-// Why the new runtime did not start, in its error's first line and its log's last one, which says why: the line before PyInstaller's
-// own "[PYI-…:ERROR] Failed to execute script" (agy_acp_server is a PyInstaller bundle).
+// Why the new runtime did not start, in its error's first line and its log's last one, which says why (agy_acp_server is a PyInstaller
+// bundle): the line before PyInstaller's generic "[PYI-…:ERROR] Failed to execute script", or the loader's own line when it failed
+// itself (it could not unpack), without its "[PYI-…]" mark.
 function startFailure(error,version){
   const ipv6=antigravityIpv6Failure(error);if(ipv6)return ipv6;
-  const lines=String(error?.message||error||"").split(/\r?\n/).map(line=>line.trim()).filter(Boolean),said=lines.slice(1).filter(line=>!/^\[PYI-\d+:/.test(line));
-  const reason=(said.length?`${lines[0]}: ${said.at(-1)}`:lines[0]||"it gave no reason").slice(0,500);
+  const lines=String(error?.message||error||"").split(/\r?\n/).map(line=>line.trim()).filter(Boolean),said=lines.slice(1).filter(line=>!/^\[PYI-\d+:[A-Z]+\] Failed to execute script\b/.test(line));
+  const last=said.at(-1)?.replace(/^\[PYI-\d+:[A-Z]+\]\s*/,"");
+  const reason=(last?`${lines[0]}: ${last}`:lines[0]||"it gave no reason").slice(0,500);
   return new Error(`The downloaded Google Antigravity ${version} could not start on this machine (${reason}). Nothing was installed.`,{cause:error});
 }
 

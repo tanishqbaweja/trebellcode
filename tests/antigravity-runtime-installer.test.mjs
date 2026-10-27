@@ -174,6 +174,18 @@ test("a downloaded runtime that cannot start is refused, with the last line of w
   assert.ok(await gone(fx.current));assert.deepEqual(await leftovers(fx),[]);
 });
 
+test("a downloaded runtime whose PyInstaller loader fails says the loader's own reason, its only one",async t=>{
+  const fx=await home(t);
+  // agy_acp_server is a PyInstaller bundle: a loader that cannot unpack itself (a full or unwritable temp folder) writes only its
+  // own "[PYI-<pid>:ERROR]" lines.
+  const {error}=await install(fx,{scenario:{exitAt:"initialize",exitCode:1,stderr:"[PYI-5120:ERROR] Could not create temporary directory!\n"}});
+  assert.equal(error?.message,`The downloaded Google Antigravity ${VERSION} could not start on this machine (ACP runtime exited code=1 signal=null: Could not create temporary directory!). Nothing was installed.`);
+  // Its generic last line after a script's own reason still gives way to that reason.
+  const both=await install(fx,{scenario:{exitAt:"initialize",exitCode:1,stderr:"[PYI-5121:WARNING] Unpacking took long\nOSError: [Errno 28] No space left on device\n[PYI-5121:ERROR] Failed to execute script 'main' due to unhandled exception!\n"}});
+  assert.equal(both.error?.message,`The downloaded Google Antigravity ${VERSION} could not start on this machine (ACP runtime exited code=1 signal=null: OSError: [Errno 28] No space left on device). Nothing was installed.`);
+  assert.ok(await gone(fx.current));assert.deepEqual(await leftovers(fx),[]);
+});
+
 test("a drive without room for the download and what it unpacks to is refused before the download is read, naming how much is needed",async t=>{
   const fx=await home(t);
   const {error,download,requests}=await install(fx,{freeBytes:()=>100*MB+12345});
