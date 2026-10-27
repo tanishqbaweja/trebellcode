@@ -115,15 +115,17 @@ test("an Allow session answered after a turn in another mode began allows nothin
     const window=await fixture.window();await window.request("initialize",{clientInfo:{name:"session-late"}});
     await window.request("turn/start",{threadId,input:[],...SUPERVISED});
     const asks=()=>window.requests("item/commandExecution/requestApproval");
-    upstream.ask(...command(threadId,"cmd-late"));assert.ok(await until(()=>asks().length===1));
+    // Each answer below has reached Codex (answers()), so the server has taken it, before Codex asks its next request: those travel
+    // on two sockets, and a fixed wait between them could let the next request arrive first on a busy machine.
+    const late=upstream.ask(...command(threadId,"cmd-late"));assert.ok(await until(()=>asks().length===1));
     // The mode changes and comes back before the person answers; the late Allow session allows nothing.
     await window.request("turn/start",{threadId,input:[],...FULL});
     await window.request("turn/start",{threadId,input:[],...SUPERVISED});
-    window.answer(asks()[0],{decision:"acceptForSession"});await sleep(100);
-    upstream.ask(...command(threadId,"cmd-after"));
+    window.answer(asks()[0],{decision:"acceptForSession"});assert.ok(await until(()=>late.answers().length===1));
+    const after=upstream.ask(...command(threadId,"cmd-after"));
     assert.ok(await until(()=>asks().length===2),"the late answer did not allow the session");
     // Allowed now, then the window lets the thread go: the allowance goes with it.
-    window.answer(asks()[1],{decision:"acceptForSession"});await sleep(100);
+    window.answer(asks()[1],{decision:"acceptForSession"});assert.ok(await until(()=>after.answers().length===1));
     const answered=upstream.ask(...command(threadId,"cmd-allowed"));assert.ok(await until(()=>answered.answers().length===1));
     assert.deepEqual(answered.answers()[0].result,{decision:"acceptForSession"});
     await window.request("thread/unsubscribe",{threadId});
@@ -131,14 +133,14 @@ test("an Allow session answered after a turn in another mode began allows nothin
     assert.ok(await until(()=>asks().length===3),"an unloaded thread asks again");
     // Codex's legacy approvals name the thread conversationId and are answered approved_for_session.
     const legacy=()=>window.requests("execCommandApproval");
-    upstream.ask("execCommandApproval",{conversationId:legacyId,callId:"call-1",command:["npm","test"],cwd:fixture.home});
+    const call=upstream.ask("execCommandApproval",{conversationId:legacyId,callId:"call-1",command:["npm","test"],cwd:fixture.home});
     assert.ok(await until(()=>legacy().length===1));window.answer(legacy()[0],{decision:"approved_for_session"});
-    await sleep(100);
+    assert.ok(await until(()=>call.answers().length===1));
     const again=upstream.ask("execCommandApproval",{conversationId:legacyId,callId:"call-2",command:["npm","run","lint"],cwd:fixture.home});
     assert.ok(await until(()=>again.answers().length===1));assert.deepEqual(again.answers()[0].result,{decision:"approved_for_session"});
     assert.equal(legacy().length,1);
-    // Codex closing the thread ends it too.
-    upstream.notify("thread/closed",{threadId:legacyId});await sleep(100);
+    // Codex closing the thread ends it too: the window hears of it once the server has.
+    upstream.notify("thread/closed",{threadId:legacyId});assert.ok(await until(()=>window.notifications("thread/closed").length===1));
     upstream.ask("execCommandApproval",{conversationId:legacyId,callId:"call-3",command:["npm","run","build"],cwd:fixture.home});
     assert.ok(await until(()=>legacy().length===2),"a closed thread asks again");
   }finally{await fixture.close()}

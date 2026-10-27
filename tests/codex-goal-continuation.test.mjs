@@ -75,16 +75,19 @@ test("the server pauses an active Codex goal Codex started no turn for within 5 
     const release=upstream.hold("turn/start");
     window.request("turn/start",{threadId:sendingId,input:[{type:"text",text:"Also list the breaking changes.",textElements:[]}]}).catch(()=>{});
     assert.ok(await until(()=>upstream.calls("turn/start").length===1));
+    // The server has handled a notification once the window has it (the relay hands it on after its hooks ran), so each step waits
+    // for the window to have them all before the clock moves: a fixed wait let a late one start its 5 s on the moved clock.
+    const heard=(method,count)=>until(()=>window.notifications(method).length>=count,5000);
     mock.timers.enable({apis:["setTimeout"]});
     try{
       for(const threadId of ids)upstream.notify("turn/started",{threadId,turn:{id:threadId+"-turn-1",status:"inProgress",items:[]}});
-      await sleep(80);
+      assert.ok(await heard("turn/started",ids.length));
       for(const threadId of ids)upstream.notify("turn/completed",{threadId,turn:{id:threadId+"-turn-1",status:threadId===failedId?"failed":"completed",items:[],...(threadId===failedId?{error:{message:"The model is overloaded"}}:{})}});
-      await sleep(80);
+      assert.ok(await heard("turn/completed",ids.length),"the window has every turn's end, so the server started each wait");
       // Codex goes on with one goal at once, another is cleared within the grace; the rest get no turn.
       upstream.notify("turn/started",{threadId:busyId,turn:{id:busyId+"-turn-2",status:"inProgress",items:[]}});
       upstream.notify("thread/goal/cleared",{threadId:clearedId});
-      await sleep(80);
+      assert.ok(await heard("turn/started",ids.length+1));assert.ok(await heard("thread/goal/cleared",1));
       mock.timers.tick(4999);await sleep(80);
       assert.equal(upstream.calls("thread/goal/set").length,setsBefore,"nothing within the grace");
       mock.timers.tick(1);
@@ -107,13 +110,15 @@ test("a new Codex goal reaches every window as it ends up, never through the cle
     const writer=await fixture.window(),observer=await fixture.window();
     await writer.request("initialize",{clientInfo:{name:"goal-writer"}});await observer.request("initialize",{clientInfo:{name:"goal-observer"}});
     await writer.request("thread/goal/set",{threadId,objective:"First objective",status:"active"});
-    await sleep(100);
+    // Both windows have heard of the first goal before what they hear of the second is counted.
+    const told=(socket,objective)=>socket.notifications("thread/goal/updated").some(item=>item.params?.goal?.objective===objective);
+    assert.ok(await until(()=>told(writer,"First objective")&&told(observer,"First objective")));
     const seen=socket=>socket.received.filter(item=>item.id==null&&/^thread\/goal\//.test(item.method||"")).length;
     const marks=[seen(writer),seen(observer)];
     const replaced=(await writer.request("thread/goal/set",{threadId,objective:"Second objective",status:"paused"})).goal;
     assert.equal(replaced.objective,"Second objective");
     assert.deepEqual(upstream.requests.filter(item=>/^thread\/goal\/(set|clear)$/.test(item.method)).slice(-2).map(item=>item.method),["thread/goal/clear","thread/goal/set"],"Codex cleared and set the goal");
-    await sleep(150);
+    assert.ok(await until(()=>told(writer,"Second objective")&&told(observer,"Second objective")),"each window gets the new goal");
     // Codex tells each window of its own steps too, and one it tells after the write ended says the goal as it ended up as well.
     for(const [index,socket] of [writer,observer].entries()){
       const after=socket.received.filter(item=>item.id==null&&/^thread\/goal\//.test(item.method||"")).slice(marks[index]);
