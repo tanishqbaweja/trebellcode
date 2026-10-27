@@ -19,6 +19,15 @@ import { TerminalManager } from "../src/terminal-manager.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
+// The Muse Code installed where the tests run never starts here: each harness listing would run its `muse --version` and a 400 MB
+// read-only `muse serve` in the everyday home of the person running them. A Muse Code profile answers as not installed
+// (tests/muse-runtime.test.mjs drives a stand-in Muse Code through the same paths).
+const probeHarness=AgentRuntimeManager.prototype.probe;
+AgentRuntimeManager.prototype.probe=async function(instanceOrKind,options){
+  const kind=String((typeof instanceOrKind==="string"?instanceOrKind:instanceOrKind?.kind)||"").trim().toLowerCase();
+  if(kind!=="muse")return probeHarness.call(this,instanceOrKind,options);
+  return {id:typeof instanceOrKind==="string"?"muse-default":instanceOrKind.id,kind:"muse",name:"Muse Code",protocol:"msp",managed:false,binary:null,available:false,installed:false,authenticated:null,account:null,version:null,message:"Muse Code (muse) was not found."};
+};
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 // Waits for a condition that a host benchmarks load can take seconds to reach (a Codex app-server process starting and recording its
 // start), checking it every 50 ms, for a generous bound that still ends a wait for one that never comes.

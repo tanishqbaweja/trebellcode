@@ -164,7 +164,9 @@ test("B18: a server with Native active runs no child process before a thread ope
 // lists every module it loads (fixtures/module-load-recorder.mjs): none of these packages once it listens, nor after the requests the
 // app makes as it opens (onboarding's history scan among them), while opening a Claude Code thread, whose CLI is a stand-in
 // (fixtures/fake-claude-cli.mjs), loads the Claude Agent SDK and none of the others.
-const HARNESS_PACKAGES=["@anthropic-ai/claude-agent-sdk","@modelcontextprotocol/sdk","@opencode-ai/sdk","@opencode/client","extract-zip"];
+// Meta's Muse Code SDK too: the relay and the runtime manager import Muse Code's modules as the server starts, and those load the
+// SDK only with the first Muse Code host (muse-host.mjs loadMuseSdk).
+const HARNESS_PACKAGES=["@anthropic-ai/claude-agent-sdk","@modelcontextprotocol/sdk","@opencode-ai/sdk","@opencode/client","extract-zip","@muse-code/sdk"];
 function loadedPackages(log){
   let text="";try{text=readFileSync(log,"utf8")}catch{}
   const names=new Set();
