@@ -256,10 +256,12 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     const turn={done:false,cancelled:false,error:null,stopError:null,text:"",assistantMessageId:null,startedAt:Date.now(),completion,settle:settleTurn};
     this.activePrompt=turn;
     try{
-      // A turn Trebell ended (Stop, an event stream gone silent) does not wait on a prompt request OpenCode never answered.
+      // A turn Trebell ended (Stop, an event stream gone silent) does not wait on a prompt request OpenCode never answered. The message
+      // is OpenCode's once the request answers, the turn ended or not (onDelivered).
       const ended=turn.completion.then(()=>turn.stopError||turn.cancelled?STOPPED:new Promise(()=>{}));
-      const accepted=await Promise.race([this.client.session.prompt({sessionID:this.sessionId,text:input.text,...(input.files.length?{files:input.files}:{})}),ended]);
-      if(accepted!==STOPPED&&typeof onDelivered==="function")try{onDelivered()}catch{}
+      const posted=this.client.session.prompt({sessionID:this.sessionId,text:input.text,...(input.files.length?{files:input.files}:{})});
+      if(typeof onDelivered==="function")void posted.then(()=>{try{onDelivered()}catch{}},()=>{});
+      const accepted=await Promise.race([posted,ended]);
       await turn.completion;
       if(turn.stopError)throw turn.stopError;
       if(turn.cancelled)return {stopReason:"cancelled",providerMessageId:null,assistantMessageId:turn.assistantMessageId,raw:accepted===STOPPED?null:accepted};
