@@ -30,10 +30,12 @@ export function fakeOpenCode2Client({sessions={},overrides={},models=FAKE_OPENCO
     },
     message:{list:call("message.list",{data:[]})},
     permission:{list:call("permission.list",[]),reply:call("permission.reply",undefined)},
+    // An aborted subscription throws as @opencode/client 2.0.24's sse() does when its read is aborted: its ClientError, Transport.
     event:{subscribe:({signal,onActivity}={})=>{
       const subscription={signal,onActivity};subscriptions.push(subscription);
       return {async*[Symbol.asyncIterator](){
-        while(!signal?.aborted){
+        for(;;){
+          if(signal?.aborted)throw Object.assign(new Error("Transport: This operation was aborted"),{name:"ClientError",reason:"Transport"});
           if(queue.length){yield queue.shift();continue}
           await new Promise(resolve=>{wake=resolve;signal?.addEventListener("abort",resolve,{once:true})});
         }

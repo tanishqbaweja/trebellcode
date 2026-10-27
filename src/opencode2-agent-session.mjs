@@ -360,7 +360,11 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
           heard();if(this.closed)break;
           try{await this.#event(event)}catch(error){if(!this.closed)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:errorText(error)}})}
         }
-      }catch(error){if(!this.closed&&error?.name!=="AbortError"){if(this.activePrompt){this.activePrompt.error=errorText(error);this.activePrompt.settle?.()}this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:errorText(error)}})}}
+      }catch(error){
+        // A stream Trebell let go of itself (closed, or silent) ends with @opencode/client's Transport error, not an AbortError: it is
+        // no error of OpenCode's.
+        if(!this.closed&&!signal.aborted){if(this.activePrompt){this.activePrompt.error=errorText(error);this.activePrompt.settle?.()}this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:errorText(error)}})}
+      }
       finally{clearTimeout(timer)}
       if(silence.signal.aborted&&!this.closed)this.#silentStream();
     })();

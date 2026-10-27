@@ -24,6 +24,8 @@ test("an OpenCode 2 turn whose server sends nothing for 45 seconds ends saying s
     await expect(stopped).toBeVisible({timeout:75_000});
     await expect(stopped.locator("summary strong")).toHaveText(STOPPED);
     await expect(stopButton(page)).toHaveCount(0);
+    // Letting go of the stream is Trebell's own doing: @opencode/client's "Transport: This operation was aborted" is no error row.
+    await expect(page.locator(".tool-event.kind-error").filter({hasText:"Transport"})).toHaveCount(0);
     // Trebell stopped the run on the server too, since it could no longer follow it.
     await expect.poll(()=>fake.called("POST /api/session/ses_main/interrupt").length).toBe(1);
     await shots(page,"opencode2-silent-stream-stopped",()=>expect(stopped).toBeVisible());
