@@ -27,13 +27,25 @@ export function loadMuseSdk(){
   });
 }
 
-// The flags a host keeps for its lifetime: Read only runs without Muse's shell and file writes, and without trusting the workspace
-// (its skills and rules); every other mode trusts the workspace. Group M3 maps the other modes' sandbox and permission profiles.
-// The read-only probe host (model/list) also leaves the session log off.
+// The flags a host keeps for its lifetime (T3 museServeArgs): Read only runs without Muse's shell and file writes, and without
+// trusting the workspace (its skills and rules); every other mode trusts the workspace, and Full access also runs Muse's shell
+// without its sandbox. The read-only probe host (model/list) also leaves the session log off.
 export function museServeArgs(mode="supervised",{sessionLog=true}={}){
-  const readOnly=normalizePermissionMode(mode)==="read-only";
-  return ["serve",...(readOnly?["--disable-shell","--disable-write"]:["--trust-workspace"]),...(sessionLog?[]:["--no-session-log"])];
+  const value=normalizePermissionMode(mode);
+  return ["serve",...(value==="read-only"?["--disable-shell","--disable-write"]:["--trust-workspace",...(value==="full"?["--disable-sandbox"]:[])]),...(sessionLog?[]:["--no-session-log"])];
 }
+// The permission profile and approval mode a session starts or resumes in, by Trebell's mode, asked for explicitly: without one
+// Muse's own default may be Auto-review, where its AI reviewer decides (T3 f87dd14da musePermissionProfile, museApprovalMode). Full
+// access lets everything run; Auto is Muse's Auto-review, whose reviewer clears what it can and asks the person the rest, as
+// Cursor's --auto-review; Supervised, Auto-accept edits and Read only ask (Muse lets file reads and edits in the workspace through
+// in every mode, and a Read only host has no shell or writes to ask about).
+export function museSessionPolicy(mode="supervised"){
+  const value=normalizePermissionMode(mode);
+  if(value==="full")return {permissionProfile:":unrestricted",approvalMode:"allowAll"};
+  return {permissionProfile:value==="auto"?":auto-review":":ask-me",approvalMode:"promptUnmatched"};
+}
+// Everything a mode fixes when the host launches: a mode with another plan needs a new host (needsRelaunch).
+export function museLaunchPlan(mode="supervised"){return {args:museServeArgs(mode),...museSessionPolicy(mode)}}
 
 // The environment Muse Code runs with (T3 Code's makeMuseEnvironment): MUSE_NO_AUTO_UPDATE=1, since Meta's launcher may otherwise
 // update itself in the foreground, or start a hidden PowerShell updater, each time Trebell starts Muse Code; and no META_API_KEY,

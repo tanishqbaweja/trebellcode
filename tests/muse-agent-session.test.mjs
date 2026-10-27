@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { acpToolFrame } from "../src/acp-tool-state.mjs";
 import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
-import { MuseAgentSession, MUSE_INTERRUPT_TIMEOUT_MS, MUSE_REQUEST_TIMEOUT_MS, museDeclineChoice, museDisplayText, museInputParts, museToolUpdate } from "../src/muse-agent-session.mjs";
+import { MuseAgentSession, MUSE_INTERRUPT_TIMEOUT_MS, MUSE_REQUEST_TIMEOUT_MS, museApprovalChoices, museDisplayText, museInputParts, museToolUpdate } from "../src/muse-agent-session.mjs";
 import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSdk, museEnvironment, museExitMessage, museServeArgs, museVerbatimPath, museWorkspaceRoot, stopMuseProcessTree } from "../src/muse-host.mjs";
 import { withWorkingContext } from "../src/working-context-envelope.mjs";
 
@@ -166,12 +166,13 @@ test("Muse Code's host starts `muse serve --trust-workspace` hidden in the plain
     assert.equal(spawned[0].options.detached,false,"Windows stops the tree with taskkill; POSIX hosts lead their own process group");
     assert.equal(spawned[0].options.env.MUSE_NO_AUTO_UPDATE,"1");
     assert.equal(spawned[0].options.env.PATH,process.env.PATH||"");
-    assert.equal(session.needsRelaunch("auto"),false);
+    assert.equal(session.needsRelaunch("edits"),false);
     assert.equal(session.needsRelaunch("read-only"),true,"Read only is fixed when the host launches");
     await session.close();
     assert.deepEqual(museServeArgs("read-only"),["serve","--disable-shell","--disable-write"]);
     assert.deepEqual(museServeArgs("read-only",{sessionLog:false}),["serve","--disable-shell","--disable-write","--no-session-log"]);
-    for(const mode of ["supervised","edits","auto","full"])assert.deepEqual(museServeArgs(mode),["serve","--trust-workspace"],mode);
+    for(const mode of ["supervised","edits","auto"])assert.deepEqual(museServeArgs(mode),["serve","--trust-workspace"],mode);
+    assert.deepEqual(museServeArgs("full"),["serve","--trust-workspace","--disable-sandbox"],"Full access runs Muse's shell without its sandbox");
     const readOnly=await startSession({cwd:folder,permissionMode:"read-only",platform:"linux"});
     assert.deepEqual(readOnly.spawned[0].args,["serve","--disable-shell","--disable-write"]);
     assert.equal(readOnly.spawned[0].options.detached,true);
@@ -527,49 +528,55 @@ test("a message steers only the running turn, naming the turn it is meant for",a
   await session.close();
 });
 
-test("until approvals are mapped, a recorded approval is declined with Muse's own Reject (receipt first), and the turn says so",async()=>{
-  const {session,muse,updates}=await startSession({muse:child=>new ReplayMuse(child,"permission")});
+test("a recorded approval asks the person once with Muse's own choices, its request gets the presentation receipt, and their Reject sends Muse's abort for the stage asked",async()=>{
+  const asked=[];
+  const {session,muse,updates}=await startSession({muse:child=>new ReplayMuse(child,"permission"),options:{onPermission:request=>{asked.push(request);return "decline"}}});
   const result=await session.prompt([{type:"text",text:"Run the shell command `touch muse-declined.txt` with your shell tool once."}]);
   assert.equal(result.stopReason,"end_turn");
   assert.equal(chunks(updates),"REJECTED");
+  assert.equal(asked.length,1,"the request and its notification are asked once");
+  assert.deepEqual(asked[0].approvalOptions,[{decision:"accept",label:"Allow once"},{decision:"acceptAlways",label:"Always allow in this workspace: touch ..."},{decision:"decline",label:"Reject"}]);
+  assert.deepEqual(asked[0].params.toolCall,{toolCallId:"call_01a11a6d8ddc760a8b514b4cfbb683c7",title:"touch muse-declined.txt",kind:"execute",rawInput:{command:"touch muse-declined.txt"}});
   const decide=muse.frames.find(frame=>frame.method==="approval/decide");
-  assert.equal(decide.params.choiceId,"abort","Muse's Reject; the 'Always allow' rule is never chosen");
+  assert.equal(decide.params.choiceId,"abort","Muse's Reject; the 'Always allow' rule is never chosen for the person");
   assert.deepEqual(decide.params.requirementId,{approvalId:decide.params.approvalId,sourceIndex:0});
-  assert.match(decide.params.feedback,/Trebell declined Muse Code's request to run touch muse-declined\.txt.*Do not retry it/);
+  assert.equal("feedback" in decide.params,false);
   const receipt=muse.frames.find(frame=>frame.method===undefined&&frame.result!==undefined);
   assert.deepEqual(receipt.result,{},"the server request gets the presentation receipt");
   assert.equal(muse.frames.filter(frame=>frame.method==="approval/decide").length,1,"the request and its notification are decided once");
-  const notice=updates.find(update=>update.toolCallId===`muse-approval:${decide.params.approvalId}`);
-  assert.deepEqual([notice.sessionUpdate,notice.status,notice.title],["tool_call","failed","Trebell declined Muse Code's request to run touch muse-declined.txt: Trebell cannot answer Muse Code's approval requests yet."]);
+  assert.equal(updates.some(update=>String(update.toolCallId||"").startsWith("muse-approval:")),false,"no row of Trebell's own: the person was asked");
   assert.deepEqual(muse.unexpected,[]);
   await session.close();
 });
 
-test("until questions are mapped, Muse's questions are cancelled with a reason, and a denied choice is preferred over Reject",async()=>{
-  assert.deepEqual(museDeclineChoice([{choiceId:"allow_once",decision:"approved",scope:"once"},{choiceId:"keep_out",decision:"deniedPolicyAmendment",scope:"localPersistent"},{choiceId:"abort",decision:"abort",scope:"once"},{choiceId:"deny_session",decision:"denied",scope:"session"},{choiceId:"deny",decision:"denied",scope:"once"}]).choiceId,"deny");
-  assert.equal(museDeclineChoice([{choiceId:"keep_out",decision:"deniedPolicyAmendment",scope:"localPersistent"}]),null,"a rule is never saved on its own");
-  const {session,muse,updates}=await startSession();
+test("Muse's questions are asked in the question dialog and answered with userInput/answer, and a file approval is declined with Muse's denied choice",async()=>{
+  const choices=museApprovalChoices([{choiceId:"allow_once",decision:"approved",scope:"once"},{choiceId:"keep_out",decision:"deniedPolicyAmendment",scope:"localPersistent"},{choiceId:"abort",decision:"abort",scope:"once"},{choiceId:"deny_session",decision:"denied",scope:"session"},{choiceId:"deny",decision:"denied",scope:"once"}]);
+  assert.deepEqual([choices.get("decline").choiceId,choices.get("cancel").choiceId,choices.get("accept").choiceId],["deny","abort","allow_once"],"the narrowest Reject, never one that saves a rule");
+  assert.equal(museApprovalChoices([{choiceId:"abort",decision:"abort",scope:"once"}]).get("decline").choiceId,"abort","a shell approval's Reject is its abort");
+  const questions=[],approvals=[];
+  const {session,muse,updates}=await startSession({options:{onQuestion:request=>{questions.push(request);return {lang:["TS"]}},onPermission:request=>{approvals.push(request);return "decline"}}});
   const running=session.prompt([{type:"text",text:"go"}]);
   const {params:{commandId:turnId}}=await muse.next("turn/start");
   const sid=session.sessionId;
   const question={sessionId:sid,userInputId:"q-1",turnId,itemId:"t-1",toolCallId:"call_1",toolName:"request_user_input",viewCursor:"v",questions:[{id:"lang",header:"Language",question:"Which language should the parser use?",options:[{label:"TS"},{label:"JS"}],selection:{mode:"single"}}]};
   muse.write({jsonrpc:"2.0",id:7,method:"userInput/request",params:question});
   muse.notify("userInput/requested",question);
-  const cancel=await muse.next("userInput/cancel");
-  assert.equal(cancel.params.userInputId,"q-1");
-  assert.match(cancel.params.reason,/cannot answer Muse Code's questions yet/);
-  // A file approval offering a denied choice is declined with it; it has no feedback field.
+  const answer=await muse.next("userInput/answer");
+  assert.deepEqual({...answer.params,commandId:"C"},{sessionId:sid,userInputId:"q-1",answers:[{questionId:"lang",selectedLabel:"TS"}],commandId:"C"});
+  assert.equal(questions.length,1,"the request and its notification are asked once");
+  assert.deepEqual(questions[0].input.questions,[{id:"lang",header:"Language",question:"Which language should the parser use?",multiSelect:false,allowCustomAnswer:true,options:[{label:"TS",description:""},{label:"JS",description:""}]}]);
+  // A file approval offering a denied choice is declined with it.
   const approval={sessionId:sid,approvalId:"ap-1",turnId,itemId:"ap-1",taskId:"ap-1",toolCallId:"call_2",toolName:"write_file",rawArgs:"{}",judgeEscalated:false,protectedWrite:false,viewCursor:"v",sourceRange:{},subject:{kind:"fileAccess",access:"write",path:"../outside.txt"},currentRequirementId:{approvalId:"ap-1",sourceIndex:0},availableChoices:[{choiceId:"yes",decision:"approved",scope:"once",label:"Allow once"},{choiceId:"no",decision:"denied",scope:"once",label:"Reject"}]};
   muse.notify("approval/requested",approval);
   const decide=await muse.next("approval/decide");
   assert.equal(decide.params.choiceId,"no");
   assert.equal("feedback" in decide.params,false);
+  assert.deepEqual(approvals[0].params.toolCall,{toolCallId:"call_2",title:"../outside.txt",kind:"edit",rawInput:{path:"../outside.txt",access:"write"}});
   muse.notify("turn/completed",{sessionId:sid,viewCursor:"v",terminal:"completed",turnId});
   await running;
   await until(()=>muse.frames.some(frame=>frame.id===7&&frame.result),"the question's receipt");
-  assert.equal(muse.sent("userInput/cancel").length,1);
-  const titles=updates.filter(update=>update.sessionUpdate==="tool_call").map(update=>update.title);
-  assert.deepEqual(titles,["Trebell cancelled Muse Code's question \"Which language should the parser use?\": Trebell cannot answer Muse Code's questions yet.","Trebell declined Muse Code's request to write ../outside.txt: Trebell cannot answer Muse Code's approval requests yet."]);
+  assert.equal(muse.sent("userInput/cancel").length,0);
+  assert.deepEqual(updates.filter(update=>update.sessionUpdate==="tool_call").map(update=>update.title),[],"no row of Trebell's own: the person was asked");
   await session.close();
 });
 

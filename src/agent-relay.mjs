@@ -719,6 +719,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(isOpen(pending.holder))pending.holder.ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:owner}}));
     }
   }
+  // One approval or question its harness withdrew, having settled it itself (Muse Code's approval/resolved, its reviewer's decision
+  // among them, and userInput/settled): answered as cancelled and taken off the screen, as cancelThreadRequests takes a thread's.
+  function withdrawServerRequest(id){
+    const pending=pendingServer.get(id);if(!pending)return;
+    pendingServer.delete(id);clearTimeout(pending.timer);
+    pending.resolve(pending.method==="item/tool/requestUserInput"?{answers:{}}:{decision:"cancel"});
+    if(isOpen(pending.holder))pending.holder.ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:pending.threadId}}));
+  }
   const recoveryInFlight=new Set();
   const liveToolOutput=new Map();
   // A running tool's latest item waiting to be stored, per thread and tool call: {turnId,at,item,timer}.
@@ -1005,8 +1013,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       }
     }
     // An ACP harness whose process exited or was stopped starts again and resumes its conversation; one launched with another
-    // permission mode (Cursor's and Grok's are launch arguments) is relaunched the same way, as T3 detaches such sessions.
-    if(session instanceof AcpAgentSession){
+    // permission mode (Cursor's and Grok's are launch arguments) is relaunched the same way, as T3 detaches such sessions. So is a
+    // Muse Code session whose host died between turns, or whose mode is another host's launch flags or another session profile.
+    if(session instanceof AcpAgentSession||session instanceof MuseAgentSession){
       const accessLevel=normalizePermissionMode(permissionMode||thread.providerMeta?.permissionProfile||"supervised");
       if(session.dead||(!session.busy&&session.needsRelaunch(accessLevel))){await session.close().catch(()=>{});sessions.delete(thread.id);session=null}
       else session.setPermissionMode(accessLevel);
@@ -2189,16 +2198,18 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     wss.handleUpgrade(req,socket,head,ws=>{
       const context={
         ws,
-        // Asked of this window, or of the newest one open once this one has gone (pendingServer).
-        serverRequest(method,params,owner=params?.threadId){
+        // Asked of this window, or of the newest one open once this one has gone (pendingServer). signal: aborted when the harness
+        // withdraws the request (withdrawServerRequest).
+        serverRequest(method,params,owner=params?.threadId,signal=null){
           const id=`agent-${nextServerId++}`,holder=openContext(context);
           return new Promise((resolve,reject)=>{
             const timer=setTimeout(()=>{pendingServer.delete(id);reject(new Error(`${method} user response timed out`))},5*60_000);
             pendingServer.set(id,{resolve,reject,timer,method,params,threadId:owner?String(owner):null,holder});
             holder?.ws.send(JSON.stringify({id,method,params}));
+            if(signal?.aborted)withdrawServerRequest(id);else signal?.addEventListener?.("abort",()=>withdrawServerRequest(id),{once:true});
           });
         },
-        async permission(thread,{params,options,askUser=false,approvalOptions=null}){
+        async permission(thread,{params,options,askUser=false,approvalOptions=null,signal=null}){
           const current=threadStore.get(thread.id)||thread,turnId=current?.turns?.at(-1)?.id||null,traceData=agentPermissionTraceData({toolCall:params.toolCall,options});
           const traceBase={runtime:current?.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),environmentId:current?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,threadId:thread.id,turnId,category:"policy"};
           journal?.record?.({...traceBase,name:"permission.requested",status:"pending",data:traceData});
@@ -2221,13 +2232,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           }
           try{
             // An ACP harness's own choices (approvalOptions) are shown as the card's buttons; each answers with its decision.
-            const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:agentApprovalReason(params),toolCall:params.toolCall,options,...(Array.isArray(approvalOptions)&&approvalOptions.length?{approvalOptions}:{})}),decision=result?.decision||"decline";
+            const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:agentApprovalReason(params),toolCall:params.toolCall,options,...(Array.isArray(approvalOptions)&&approvalOptions.length?{approvalOptions}:{})},thread.id,signal),decision=result?.decision||"decline";
             journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision,policyDecision:POLICY_CONFIRM}});return decision;
           }catch(error){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"error",data:{...traceData,message:error?.message||String(error)}});throw error;
           }
         },
-        async userQuestion(thread,{input}){
+        async userQuestion(thread,{input,signal=null}){
           const questions=(input?.questions||[]).map((question,index)=>({
             id:String(question.id||`q${index+1}`),
             header:String(question.header||question.question||`Question ${index+1}`),
@@ -2240,7 +2251,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
             options:(question.options||[]).map(option=>typeof option==="string"?{label:option,description:""}:{label:String(option.label||option.value||""),description:String(option.description||""),...(option.value!=null&&String(option.value)!==""?{value:String(option.value)}:{})}),
           }));
           if(!questions.length)return {};
-          const result=await context.serverRequest("item/tool/requestUserInput",{threadId:thread.id,questions});
+          const result=await context.serverRequest("item/tool/requestUserInput",{threadId:thread.id,questions},thread.id,signal);
           const answers={};for(const [id,value] of Object.entries(result?.answers||{}))answers[id]=Array.isArray(value?.answers)?value.answers:value;
           return answers;
         },

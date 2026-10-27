@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { acpToolFrame } from "./acp-tool-state.mjs";
 import { fileUriPath } from "./file-uri.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
-import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSdk, museServeArgs, museWorkspaceRoot } from "./muse-host.mjs";
+import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSdk, museLaunchPlan, museServeArgs, museSessionPolicy, museWorkspaceRoot } from "./muse-host.mjs";
 import { resolveMuseReasoningEffort } from "./muse-model-catalog.mjs";
 import { MUSE_REASONING_EFFORTS } from "./model-reasoning-effort.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
@@ -15,10 +15,12 @@ import { runtimeInstructions } from "./runtime-instructions.mjs";
 
 export const MUSE_REQUEST_TIMEOUT_MS=30_000;
 export const MUSE_INTERRUPT_TIMEOUT_MS=30_000;
-// Every session is asked for explicitly: without a profile Muse may start in Auto-review, where an AI reviewer decides (T3
-// f87dd14da). Group M3 maps each Trebell mode to its profile and approval mode.
-const MUSE_APPROVAL_MODE="promptUnmatched";
-const MUSE_PERMISSION_PROFILE=":ask-me";
+// Muse takes at most this many characters of a person's own words in an answer (userInput/answer's freeText and note).
+export const MUSE_FREE_TEXT_LIMIT=500;
+// How often Trebell asks the person again about one approval or question whose answer Muse would not take.
+const MUSE_ASK_ATTEMPTS=3;
+// How many settled approvals and questions a session remembers, so a late copy of one is not asked again.
+const MUSE_SETTLED_LIMIT=500;
 // Meta's provider refuses "none"; the rest are MSP's efforts.
 const MUSE_EFFORTS=new Set(MUSE_REASONING_EFFORTS);
 // The model choice that lets Muse pick: the catalog's default row (T3 MUSE_DEFAULT_MODEL); the word itself never goes to Muse.
@@ -32,12 +34,12 @@ const ACTIONS=Object.freeze({
   "session/setModel":"switch to the thread's model",
   "turn/start":"start the turn","turn/steer":"take the message into the running turn","turn/interrupt":"stop the turn",
   "approval/decide":"take Trebell's answer to its request","userInput/cancel":"take Trebell's answer to its question",
+  "userInput/answer":"take the answer to its question",
 });
 
 function text(value){return typeof value==="string"?value:value==null?"":String(value)}
 function wait(ms){let timer;const promise=new Promise(resolve=>{timer=setTimeout(resolve,ms);timer?.unref?.()});return {promise,cancel:()=>clearTimeout(timer)}}
 async function within(promise,ms){const timer=wait(ms);try{return await Promise.race([Promise.resolve(promise).then(()=>true,()=>true),timer.promise.then(()=>false)])}finally{timer.cancel()}}
-function shorten(value,limit=80){const line=text(value).replace(/\s+/g," ").trim();return line.length>limit?line.slice(0,limit-1)+"…":line}
 
 // Prompt parts for turn/start and turn/steer: text as it is, images as base64 with their media type, and any other attachment as
 // a line naming the file it was saved to. An input with neither text nor an image is refused.
@@ -116,21 +118,85 @@ export function museToolUpdate(item={}){
   return {...base,kind:"other",title:detail?`${name}: ${detail}`:name,rawInput:args||(item.args?{args:text(item.args)}:{}),rawOutput:output};
 }
 
-// The choice that declines a Muse approval: Muse's own "denied" choice (the narrowest scope first), else its "abort" (shell
-// approvals offer Reject as abort). A choice that would save a rule is never taken on its own.
-export function museDeclineChoice(choices=[]){
-  const list=(Array.isArray(choices)?choices:[]).filter(choice=>choice&&typeof choice.choiceId==="string"&&choice.choiceId);
-  const rank=choice=>choice.scope==="once"?0:choice.scope==="session"?1:2;
-  return list.filter(choice=>choice.decision==="denied").sort((a,b)=>rank(a)-rank(b))[0]||list.find(choice=>choice.decision==="abort")||null;
+// The decision a Muse approval choice applies (T3 museApprovalDecision): approved once is Allow once, approvedForSession (or a rule
+// for the session) Allow for this session, a rule saved for the workspace Always allow, denied (or a rule that keeps it out)
+// Reject, and abort Cancel. A decision Muse adds later has none, and is never offered.
+export function museApprovalDecision(choice={}){
+  switch(text(choice?.decision)){
+    case "approved":return "accept";
+    case "approvedForSession":return "acceptForSession";
+    case "approvedPolicyAmendment":return choice.scope==="session"?"acceptForSession":choice.scope==="localPersistent"?"acceptAlways":null;
+    case "denied":case "deniedPolicyAmendment":return "decline";
+    case "abort":return "cancel";
+    default:return null;
+  }
 }
-function approvalTarget(params={}){
-  const subject=params.subject||{};
-  if(subject.kind==="shell"&&subject.command)return `run ${shorten(subject.command)}`;
-  if(subject.kind==="fileAccess"&&subject.path)return `${subject.access==="read"?"read":"write"} ${shorten(subject.path)}`;
-  if(subject.kind==="network"&&subject.host)return `reach ${shorten(subject.host)}`;
-  if(subject.target)return `control ${shorten(subject.target)}`;
-  return `use ${shorten(params.toolName||subject.toolName||"a tool")}`;
+// Muse's choice for each decision, the narrowest grant first: once, then the session, then saved, and a choice without a rule before
+// one that saves a rule (T3 museApprovalChoices). Shell approvals offer abort as their Reject, so abort also declines one that has
+// no denied choice.
+export function museApprovalChoices(choices=[]){
+  const chosen=new Map(),rank=choice=>(choice.scope==="once"?0:choice.scope==="session"?2:4)+(/PolicyAmendment$/.test(text(choice.decision))?1:0);
+  for(const choice of Array.isArray(choices)?choices:[]){
+    if(!choice||typeof choice.choiceId!=="string"||!choice.choiceId)continue;
+    const decision=museApprovalDecision(choice),previous=decision?chosen.get(decision):null;
+    if(decision&&(!previous||rank(choice)<rank(previous)))chosen.set(decision,choice);
+  }
+  if(!chosen.has("decline")&&chosen.has("cancel"))chosen.set("decline",chosen.get("cancel"));
+  return chosen;
 }
+// The approval card's buttons: Muse's own choices in its order and words (Allow once, Always allow in this workspace: touch ...,
+// Reject); an abort that is also the Reject shows once.
+export function museApprovalOptions(choices=[]){
+  const chosen=museApprovalChoices(choices),decline=chosen.get("decline")?.choiceId;
+  return [...chosen].filter(([decision,choice])=>decision!=="cancel"||choice.choiceId!==decline).map(([decision,choice])=>({decision,label:text(choice.label).trim()||decision}));
+}
+// The subjects Muse names (an approval's subject.kind); Trebell's policy answers no other kind for the person.
+const MUSE_SUBJECTS=new Set(["shell","fileAccess","network","unixSocket","process","tool"]);
+// What a Muse approval asks, as the relay's approval card and Trebell's policy read it (T3 publishRequest): a shell stage is a command
+// and a file read a read, other file access an edit, a network host network and anything else a tool; its title is the command,
+// path, host or target, else the tool.
+export function museApprovalToolCall(params={}){
+  const subject=params.subject&&typeof params.subject==="object"?params.subject:{},kind=text(subject.kind);
+  const title=[subject.command,subject.path,subject.host,subject.target,params.toolName,subject.toolName].map(value=>text(value).trim()).find(Boolean)||"Muse Code requests permission";
+  const rawInput=kind==="shell"?{command:text(subject.command)}
+    :kind==="fileAccess"?{path:text(subject.path),access:text(subject.access)||"write"}
+    :kind==="network"?{host:text(subject.host),...(Number.isInteger(subject.port)?{port:subject.port}:{}),...(subject.protocol?{protocol:text(subject.protocol)}:{})}
+    :{...(subject.target?{target:text(subject.target)}:{}),...(typeof params.rawArgs==="string"?{args:params.rawArgs}:{})};
+  const policyKind=kind==="shell"?"execute":kind==="fileAccess"?(subject.access==="read"?"read":"edit"):kind==="network"?"network":"other";
+  return {toolCallId:text(params.toolCallId||params.itemId||params.approvalId),title,kind:policyKind,rawInput};
+}
+// Muse's questions as the relay's question dialog asks them (T3 publishRequest): the header, question and options, several choices
+// for a multiple-selection question, and the person's own words for every one, as Muse takes a free-text answer to any question.
+// notes: what an answer to a question lacked, said beside it when Trebell asks again.
+export function museQuestions(questions=[],notes={}){
+  return (Array.isArray(questions)?questions:[]).filter(question=>question&&typeof question.id==="string"&&question.id).map(question=>{
+    const asked=text(question.question).trim()||text(question.header).trim()||"Muse Code asks a question.",note=text(notes?.[question.id]).trim();
+    return {id:question.id,header:text(question.header).trim()||"Question",question:note?`${asked} (${note})`:asked,multiSelect:question.selection?.mode==="multiple",allowCustomAnswer:true,
+      options:(Array.isArray(question.options)?question.options:[]).filter(option=>typeof option?.label==="string"&&option.label).map(option=>({label:option.label,description:text(option.description)}))};
+  });
+}
+// The person's answers as userInput/answer takes them (T3 respondToRuntimeRequest): the options chosen, by their exact labels, one
+// for a single-selection question and within its bounds for a multiple one, and the person's own words as the free-text answer, or
+// as a note beside the choices, of at most 500 characters. An answer Muse would refuse says why, by its question.
+export function museUserInputAnswers(questions=[],answers={}){
+  const out=[];
+  for(const question of Array.isArray(questions)?questions:[]){
+    if(!question||typeof question.id!=="string"||!question.id)continue;
+    const raw=answers?.[question.id],values=[...new Set((Array.isArray(raw)?raw:raw==null?[]:[raw]).map(value=>text(value).trim()).filter(Boolean))];
+    const labels=new Set((Array.isArray(question.options)?question.options:[]).map(option=>option?.label).filter(label=>typeof label==="string"));
+    const selected=values.filter(value=>labels.has(value)),own=values.filter(value=>!labels.has(value)).join("\n"),multiple=question.selection?.mode==="multiple";
+    const refuse=message=>({error:{questionId:question.id,message}});
+    if(!selected.length&&!own)return refuse("Answer this question to go on.");
+    if(own.length>MUSE_FREE_TEXT_LIMIT)return refuse(`Muse Code takes at most ${MUSE_FREE_TEXT_LIMIT} characters of your own words; the last answer had ${own.length}.`);
+    const min=Number.isInteger(question.selection?.minSelections)?question.selection.minSelections:1,max=Number.isInteger(question.selection?.maxSelections)?question.selection.maxSelections:Infinity;
+    if(!multiple&&selected.length>1)return refuse("Choose one option.");
+    if(multiple&&selected.length&&selected.length<min)return refuse(`Choose at least ${min} options.`);
+    if(multiple&&selected.length>max)return refuse(`Choose at most ${max} ${max===1?"option":"options"}.`);
+    out.push({questionId:question.id,...(selected.length?multiple?{selectedLabels:selected}:{selectedLabel:selected[0]}:{}),...(own?selected.length?{note:own}:{freeText:own}:{})});
+  }
+  return {answers:out};
+}
+const requirementKey=requirement=>JSON.stringify(requirement??null);
 
 export class MuseAgentSession{
   // modelCatalog: the list Muse Code's status check read ({models, metadata, preferred}, museModelCatalog), or null, which the
@@ -141,19 +207,20 @@ export class MuseAgentSession{
     this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.version=version;this.modelCatalog=modelCatalog;
     this.hostOptions={spawnFn,platform,stopTree,startupTimeoutMs,shutdownTimeoutMs,approvedEnvironmentKeys};this.platform=platform;this.loadSdk=loadSdk;
     this.requestTimeoutMs=requestTimeoutMs;this.interruptTimeoutMs=interruptTimeoutMs;
-    this.args=museServeArgs(this.permissionMode);this.host=null;this.connection=null;this.initializeResult=null;this.sessionSetup=null;
+    this.args=museServeArgs(this.permissionMode);this.launched=null;this.host=null;this.connection=null;this.initializeResult=null;this.sessionSetup=null;
     this.sessionId=null;this.model=null;this.wantedModel=null;this.reasoningEffort=null;this.turnRoot=null;
     this.dead=false;this.deadError=null;this.closed=false;this.activePrompt=null;
-    // Approval stages and questions already answered, approvals already resolved, and the rows shown for them.
-    this.decidedStages=new Set();this.resolvedApprovals=new Set();this.cancelledQuestions=new Set();this.noticeRows=new Set();
+    // The approvals and questions Muse asked and has not settled ("approval:<id>", "question:<id>"), and the ones it settled.
+    this.requests=new Map();this.settledRequests=new Set();
   }
 
   get busy(){return Boolean(this.activePrompt)}
   // A new host can take the conversation up again unless this one keeps its sessions in memory only.
   get resumable(){return Boolean(this.initializeResult)&&this.initializeResult.sessionDurability!=="ephemeral"}
   setPermissionMode(mode){this.permissionMode=normalizePermissionMode(mode||"supervised");return this.permissionMode}
-  // The launch flags are fixed for the host's lifetime, so a mode with other flags needs a new host.
-  needsRelaunch(mode){return JSON.stringify(museServeArgs(mode))!==JSON.stringify(this.args)}
+  // A mode's launch flags, permission profile and approval mode are fixed when its host launches (museLaunchPlan), so a mode with
+  // another plan needs a new host, which resumes the conversation (T3: runtime policy changes require a fresh Muse host).
+  needsRelaunch(mode){return JSON.stringify(museLaunchPlan(mode))!==JSON.stringify(this.launched?.plan||museLaunchPlan(this.permissionMode))}
   setReasoningEffort(effort){const value=text(effort).trim().toLowerCase();this.reasoningEffort=MUSE_EFFORTS.has(value)?value:null;return this.reasoningEffort}
 
   #catalog(){try{const catalog=typeof this.modelCatalog==="function"?this.modelCatalog():this.modelCatalog;return catalog&&typeof catalog==="object"?catalog:null}catch{return null}}
@@ -177,7 +244,7 @@ export class MuseAgentSession{
 
   async start({providerSessionId=null,model=null,reasoningEffort=undefined}={}){
     if(reasoningEffort!==undefined)this.setReasoningEffort(reasoningEffort);
-    this.args=museServeArgs(this.permissionMode);
+    const plan=museLaunchPlan(this.permissionMode);this.args=plan.args;this.launched={mode:this.permissionMode,plan};
     const host=new MuseHost({...Object.fromEntries(Object.entries(this.hostOptions).filter(([,value])=>value!==undefined)),command:this.command,args:this.args,cwd:this.cwd,env:this.env,
       onWarning:message=>this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"protocol_warning",message}})});
     this.host=host;this.dead=false;this.deadError=null;
@@ -194,7 +261,7 @@ export class MuseAgentSession{
       const modelId=this.#resolveModel(model);this.wantedModel=modelId;
       const sessionId=providerSessionId?text(providerSessionId):connection.mintCommandId();
       this.sessionId=sessionId;
-      const result=providerSessionId?await this.#resume(sessionId):await this.#command("session/start",{sessionId,workspaceRoot,providerId:"meta",...(modelId?{modelId}:{}),approvalMode:MUSE_APPROVAL_MODE,permissionProfile:MUSE_PERMISSION_PROFILE});
+      const result=providerSessionId?await this.#resume(sessionId):await this.#command("session/start",{sessionId,workspaceRoot,providerId:"meta",...(modelId?{modelId}:{}),approvalMode:plan.approvalMode,permissionProfile:plan.permissionProfile});
       if(result?.session?.sessionId!==sessionId)throw new Error("Muse Code answered with another session than the one Trebell asked for.");
       this.model=text(result.session.modelId)||modelId;
       this.sessionSetup={sessionId,models:{currentModelId:this.model,availableModels:this.model?[{modelId:this.model,name:this.model}]:[]},configOptions:[],modes:{currentModeId:"default",availableModes:[]}};
@@ -206,12 +273,14 @@ export class MuseAgentSession{
     }
   }
 
-  // A saved conversation is resumed with the profile asked for again and its approval mode set; one Muse no longer has is a lost
-  // session, which the relay continues in a fresh one with the thread's earlier messages handed over.
+  // A saved conversation is resumed with its mode's profile asked for again, then its approval mode set (a resume replays the mode
+  // it had); one Muse no longer has is a lost session, which the relay continues in a fresh one with the thread's earlier messages
+  // handed over.
   async #resume(sessionId){
+    const {permissionProfile,approvalMode}=this.launched?.plan||museSessionPolicy(this.permissionMode);
     try{
-      const result=await this.#command("session/resume",{sessionId,excludeItems:true,permissionProfile:MUSE_PERMISSION_PROFILE});
-      await this.#command("session/setApprovalMode",{sessionId,mode:MUSE_APPROVAL_MODE});
+      const result=await this.#command("session/resume",{sessionId,excludeItems:true,permissionProfile});
+      await this.#command("session/setApprovalMode",{sessionId,mode:approvalMode});
       return result;
     }catch(error){
       if(error?.kind==="sessionNotFound"||error?.kind==="notFound")throw new HarnessSessionLostError(error.message,{harness:"muse",sessionId,code:error.code,cause:error.cause||error});
@@ -283,10 +352,15 @@ export class MuseAgentSession{
     const done=new Promise((resolve,reject)=>{settle=resolve;fail=reject});
     const admitted=new Promise(resolve=>{admit=resolve});
     const turn={turnId,stopRequested:false,settled:false,items:new Map(),sent:new Map(),tools:new Set(),lastMessage:null,done,admitted,admit};
-    turn.settle=value=>{if(turn.settled)return;turn.settled=true;settle(value)};
-    turn.fail=error=>{if(turn.settled)return;turn.settled=true;fail(error)};
+    turn.settle=value=>{if(turn.settled)return;turn.settled=true;this.#endTurn();settle(value)};
+    turn.fail=error=>{if(turn.settled)return;turn.settled=true;this.#endTurn();fail(error)};
     done.catch(()=>{});
     return turn;
+  }
+  // A turn's end settles what it left open (T3 finish): the approvals and questions asked in it go, cards and dialogs included,
+  // since Muse settles them with the turn. A workflow child's approval outlives it.
+  #endTurn(){
+    this.#withdrawRequests(entry=>!entry.child);
   }
 
   // A message sent while the turn runs goes into that turn (turn/steer names the turn it is meant for), once Muse has admitted it.
@@ -302,9 +376,10 @@ export class MuseAgentSession{
 
   // Stop: turn/interrupt for the running turn once Muse has admitted it, then its turn/completed. A host that does not confirm
   // the stop within interruptTimeoutMs is stopped itself, and the next message starts it again.
+  // The turn's own approvals and questions go at once: Muse settles them as it stops the turn, so none is answered for the person.
   async cancel(){
     const turn=this.activePrompt;if(!turn||turn.settled)return;
-    turn.stopRequested=true;
+    turn.stopRequested=true;this.#withdrawRequests(entry=>!entry.child);
     if(!(await turn.admitted)||turn.settled)return;
     try{await this.#command("turn/interrupt",{sessionId:this.sessionId,turnId:turn.turnId})}catch{}
     if(turn.settled)return;
@@ -318,6 +393,7 @@ export class MuseAgentSession{
   async close(){
     if(this.closed)return;this.closed=true;
     const turn=this.activePrompt;if(turn){turn.stopRequested=true;turn.settle({stopReason:"cancelled",interrupted:true,providerMessageId:null})}
+    this.#withdrawRequests();
     await this.host?.close().catch(()=>{});
   }
 
@@ -332,62 +408,157 @@ export class MuseAgentSession{
       lost(host.exit?host.exitMessage(host.exit):"Muse Code closed its connection to Trebell unexpectedly.");
     });
   }
+  // Every approval and question the host asked goes with it, a workflow child's too.
   #lose(message,{stop=false,quiet=false}={}){
     if(this.dead||this.closed)return;
     this.dead=true;this.deadError=Object.assign(new Error(message),{code:"MUSE_HOST_LOST"});
     const turn=this.activePrompt;
     if(turn&&!turn.settled){if(turn.stopRequested)turn.settle({stopReason:"cancelled",interrupted:true,providerMessageId:null});else turn.fail(this.deadError)}
     else if(!quiet)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message}});
+    this.#withdrawRequests();
     if(stop)void this.host?.close().catch(()=>{});
   }
 
   // Muse sends a pending approval or question both as a notification and as a server request, answered with the presentation
-  // receipt {}; the decision goes out as its own command. Until group M3 shows them, every approval is declined with Muse's own
-  // choice and every question cancelled, and the turn's activity says so; nothing waits on an answer nobody can give.
+  // receipt {}; Trebell's answer goes out as a command of its own (approval/decide, userInput/answer or userInput/cancel).
   async #serverRequest(host,request){
     const params=request?.params||{};
     if(this.host===host&&params.sessionId===this.sessionId){
-      if(request.method==="approval/request"){void this.#declineApproval(params);return {}}
-      if(request.method==="userInput/request"){void this.#cancelQuestion(params);return {}}
+      if(request.method==="approval/request"){this.#approvalEvent("approval/requested",params);return {}}
+      if(request.method==="userInput/request"){this.#questionEvent("userInput/requested",params);return {}}
     }
     throw new host.sdk.MspError({code:-32601,message:`method not found: ${request?.method}`,data:{kind:"methodNotFound",retryable:false}});
   }
 
-  async #declineApproval(params){
-    const approvalId=text(params.approvalId);
-    if(!approvalId||this.resolvedApprovals.has(approvalId)||params.change?.kind==="alreadyTerminal"||!params.currentRequirementId)return;
-    const stage=approvalId+":"+JSON.stringify(params.currentRequirementId);
-    if(this.decidedStages.has(stage))return;this.decidedStages.add(stage);
-    const sentence=`Trebell declined Muse Code's request to ${approvalTarget(params)}: Trebell cannot answer Muse Code's approval requests yet.`;
-    if(params.subject)this.#notice(`muse-approval:${approvalId}`,sentence,{toolName:text(params.toolName)||null,subject:params.subject});
-    const choice=museDeclineChoice(params.availableChoices);
-    // No choice declines it: the turn is stopped rather than left waiting.
-    if(!choice)return void this.cancel();
-    await this.#command("approval/decide",{
-      sessionId:this.sessionId,approvalId,requirementId:params.currentRequirementId,choiceId:choice.choiceId,
-      ...(choice.acceptsFeedback?{feedback:`${sentence} Do not retry it; continue without it, and tell the user what it would need.`}:{}),
-    }).catch(()=>{});
+  // An approval of this session, routed by its session, a workflow child's too (T3 handleRequestEvent): asked once however many copies
+  // of it come (the request, its notification, a re-send), an update keeps its latest stage and choices, and the stage after the one
+  // decided (a staged shell command's next command) is asked in turn. An update of one Trebell never saw, and any copy of one Muse
+  // has settled, asks nothing.
+  #approvalEvent(method,params){
+    const id=text(params.approvalId);if(!id)return;
+    const key="approval:"+id;
+    if(method==="approval/resolved"||params.change?.kind==="alreadyTerminal")return this.#settleRequest(key);
+    if(this.settledRequests.has(key))return;
+    const known=this.requests.get(key);
+    if(known){known.params={...known.params,...params};return void this.#approve(known)}
+    if(method!=="approval/requested")return;
+    const entry={key,kind:"approval",id,params:{...params},child:Boolean(params.subagentOrigin),ask:null,deciding:false,decided:null,automatic:null,attempts:0};
+    this.requests.set(key,entry);void this.#approve(entry);
+  }
+  // Who answers the approval's current stage: nobody once it is decided, while Muse settles it or moves it to its next stage. In Full
+  // access a workflow child's stage is answered Allow once without asking, as Muse does not pass allowAll on to workflow children
+  // (T3 d81afa0a6, a752363b1); it is shown only when Muse refuses that answer, and never once Muse has settled it. Every other stage
+  // goes to Trebell's policy and the approval card.
+  async #approve(entry){
+    if(this.requests.get(entry.key)!==entry||entry.ask||entry.deciding)return;
+    const stage=requirementKey(entry.params.currentRequirementId);
+    if(entry.decided===stage)return;
+    if(entry.child&&this.launched?.plan.approvalMode==="allowAll"&&entry.automatic!==stage){
+      entry.automatic=stage;
+      const outcome=await this.#decide(entry,"accept");
+      if(outcome==="taken")return this.#approve(entry);
+      if(outcome==="settled"||this.requests.get(entry.key)!==entry)return;
+    }
+    return this.#askApproval(entry,{askUser:entry.automatic===stage});
+  }
+  // Asks the stage through the relay, as an ACP harness's request is asked: Trebell's policy answers what it allows or denies, and
+  // the person the rest, on the approval card with Muse's own choices. askUser: only the person answers. So it is in Auto, whose
+  // reviewer (':auto-review') has cleared what it could, as in Grok's Auto; for a protected write, a subject Trebell does not know,
+  // and a stage with no Allow once to answer for the person with. A card Muse settles meanwhile is withdrawn (signal); a window that
+  // never answers declines, rather than leave Muse waiting.
+  async #askApproval(entry,{askUser=false}={}){
+    const params=entry.params,choices=museApprovalChoices(params.availableChoices);
+    if(typeof this.onPermission!=="function")return this.#answerApproval(entry,"decline");
+    const ask=new AbortController();entry.ask=ask;
+    let decision="decline";
+    try{
+      decision=await this.onPermission({
+        method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},
+        options:(Array.isArray(params.availableChoices)?params.availableChoices:[]).filter(choice=>choice?.choiceId).map(choice=>({optionId:text(choice.choiceId),name:text(choice.label),kind:text(choice.decision)})),
+        askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||params.protectedWrite===true||!MUSE_SUBJECTS.has(text(params.subject?.kind))||!choices.has("accept"),
+        approvalOptions:museApprovalOptions(params.availableChoices),signal:ask.signal,
+      });
+    }catch{decision="decline"}
+    finally{if(entry.ask===ask)entry.ask=null}
+    if(ask.signal.aborted||this.requests.get(entry.key)!==entry)return;
+    return this.#answerApproval(entry,decision);
+  }
+  // The answer for the stage asked. Cancel (a card the relay withdrew as its thread stopped, a workflow child's among them) is
+  // Muse's abort, or its Reject. A decision Muse refuses, or no longer offers once a later stage came, is asked again on the card, a
+  // few times at most; a stage that cannot be declined stops the turn rather than leave it waiting.
+  async #answerApproval(entry,decision){
+    const choices=museApprovalChoices(entry.params.availableChoices);
+    const wanted=decision==="cancel"&&!choices.has("cancel")?"decline":["accept","acceptForSession","acceptAlways","decline","cancel"].includes(decision)?decision:"decline";
+    const outcome=await this.#decide(entry,wanted);
+    if(outcome==="taken")return this.#approve(entry);
+    if(outcome==="settled"||this.requests.get(entry.key)!==entry)return;
+    if(outcome==="missing"&&(wanted==="decline"||wanted==="cancel"))return void this.cancel();
+    if(++entry.attempts>=MUSE_ASK_ATTEMPTS)return;
+    return this.#askApproval(entry,{askUser:true});
+  }
+  // Sends the decision for the approval's current stage (approval/decide names its latest requirement), recorded first: Muse can
+  // settle the approval before it acknowledges the command (T3 decideApproval). taken: Muse took it; missing: Muse does not offer it;
+  // settled: Muse had settled the approval already; refused: Muse refused it.
+  async #decide(entry,decision){
+    const requirement=entry.params.currentRequirementId,choice=museApprovalChoices(entry.params.availableChoices).get(decision);
+    if(!choice)return "missing";
+    const stage=requirementKey(requirement);entry.decided=stage;entry.deciding=true;
+    try{await this.#command("approval/decide",{sessionId:this.sessionId,approvalId:entry.id,requirementId:requirement,choiceId:choice.choiceId});return "taken"}
+    catch(error){
+      if(entry.decided===stage)entry.decided=null;
+      return error?.kind==="approvalAlreadyResolved"||error?.kind==="approvalNotFound"?"settled":"refused";
+    }finally{entry.deciding=false}
   }
 
-  async #cancelQuestion(params){
-    const userInputId=text(params.userInputId);
-    if(!userInputId||this.cancelledQuestions.has(userInputId))return;this.cancelledQuestions.add(userInputId);
-    const question=(Array.isArray(params.questions)?params.questions:[]).map(entry=>text(entry?.question||entry?.header).trim()).find(Boolean)||"";
-    this.#notice(`muse-question:${userInputId}`,`Trebell cancelled Muse Code's question${question?` "${shorten(question)}"`:""}: Trebell cannot answer Muse Code's questions yet.`,{questions:params.questions||[]});
-    await this.#command("userInput/cancel",{sessionId:this.sessionId,userInputId,reason:"Trebell Code cannot answer Muse Code's questions yet. Continue without the answer, and tell the user what you would have asked."}).catch(()=>{});
+  // A question (T3 publishRequest): asked once in Trebell's question dialog however many copies of it come, and withdrawn when Muse
+  // settles it (userInput/settled).
+  #questionEvent(method,params){
+    const id=text(params.userInputId);if(!id)return;
+    const key="question:"+id;
+    if(method==="userInput/settled")return this.#settleRequest(key);
+    if(this.settledRequests.has(key)||this.requests.has(key))return;
+    const entry={key,kind:"question",id,params:{...params},child:false,ask:null,attempts:0};
+    this.requests.set(key,entry);void this.#askQuestion(entry);
   }
-
-  #notice(id,title,rawInput){
-    if(this.noticeRows.has(id))return;this.noticeRows.add(id);
-    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call",toolCallId:id,title,kind:"other",status:"failed",rawInput,rawOutput:title}});
+  // The answers go back as userInput/answer (T3 respondToRuntimeRequest), a dialog the person closes as userInput/cancel. An answer
+  // Muse would refuse, or refuses, is asked again saying what it lacked, a few times at most.
+  async #askQuestion(entry,notes={}){
+    const params=entry.params,questions=museQuestions(params.questions,notes);
+    if(!questions.length||typeof this.onQuestion!=="function")return this.#cancelQuestion(entry,questions.length?"Trebell Code had no window to ask the user in. Continue without the answer.":"The question had nothing to ask.");
+    const ask=new AbortController();entry.ask=ask;
+    let answers=null;
+    try{answers=await this.onQuestion({toolName:text(params.toolName)||"request_user_input",input:{questions},signal:ask.signal})}catch{answers=null}
+    finally{if(entry.ask===ask)entry.ask=null}
+    if(ask.signal.aborted||this.requests.get(entry.key)!==entry)return;
+    if(!answers||typeof answers!=="object"||!Object.keys(answers).length)return this.#cancelQuestion(entry,"The user closed the question without answering. Continue without the answer.");
+    const built=museUserInputAnswers(params.questions,answers);
+    if(built.error)return ++entry.attempts>=MUSE_ASK_ATTEMPTS?this.#cancelQuestion(entry,`The user's answer could not be sent: ${built.error.message} Continue without the answer.`):this.#askQuestion(entry,{[built.error.questionId]:built.error.message});
+    try{await this.#command("userInput/answer",{sessionId:this.sessionId,userInputId:entry.id,answers:built.answers})}
+    catch(error){
+      if(this.dead||this.requests.get(entry.key)!==entry||error?.kind==="userInputAlreadySettled"||error?.kind==="userInputNotFound"||++entry.attempts>=MUSE_ASK_ATTEMPTS)return;
+      return this.#askQuestion(entry,{[questions[0].id]:text(error?.cause?.message||error?.message)});
+    }
+  }
+  async #cancelQuestion(entry,reason){
+    if(this.requests.get(entry.key)!==entry)return;
+    await this.#command("userInput/cancel",{sessionId:this.sessionId,userInputId:entry.id,reason}).catch(()=>{});
+  }
+  // Muse settled an approval (approval/resolved: the person's answer, its reviewer's or its policy's) or a question
+  // (userInput/settled): its card or dialog goes, and a late copy of it is not asked again.
+  #settleRequest(key){
+    this.settledRequests.add(key);if(this.settledRequests.size>MUSE_SETTLED_LIMIT)this.settledRequests.delete(this.settledRequests.values().next().value);
+    const entry=this.requests.get(key);if(!entry)return;
+    this.requests.delete(key);entry.ask?.abort();
+  }
+  #withdrawRequests(which=()=>true){
+    for(const entry of [...this.requests.values()])if(which(entry)){this.requests.delete(entry.key);entry.ask?.abort()}
   }
 
   #notification(frame){
     const method=text(frame?.method),params=frame?.params;
     if(!params||typeof params!=="object"||params.sessionId!==this.sessionId)return;
-    if(method==="approval/requested"||method==="approval/updated")return void this.#declineApproval(params);
-    if(method==="approval/resolved"){this.resolvedApprovals.add(text(params.approvalId));return}
-    if(method==="userInput/requested")return void this.#cancelQuestion(params);
+    if(method==="approval/requested"||method==="approval/updated"||method==="approval/resolved")return void this.#approvalEvent(method,params);
+    if(method==="userInput/requested"||method==="userInput/settled")return void this.#questionEvent(method,params);
     const turn=this.activePrompt;if(!turn||turn.settled)return;
     if(method==="item/started"||method==="item/updated"||method==="item/completed")return this.#item(turn,params.item);
     if(method==="item/delta")return this.#delta(turn,params);
