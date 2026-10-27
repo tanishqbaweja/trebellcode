@@ -35,8 +35,8 @@ function onlyMuse(launcher){
 }
 // environment: the stand-in's switches, as the Muse Code profile's own variables. holds: what the stand-in waits to do until the test
 // has seen what it checks (release). The model list is a copy of the harness's own, which a test can take away (signOut) as a sign-out
-// does.
-async function startMuseHarness({environment={},holds=[]}={}){
+// does. relayOptions: more of the relay's options (the repository knowledge a turn gathers its context from).
+async function startMuseHarness({environment={},holds=[],relayOptions={}}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-muse-request-cases-")),repo=join(root,"muse-repo"),log=join(root,"muse.log"),models=join(root,"model-list.json");
   await mkdir(repo,{recursive:true});await copyFile(MODEL_LIST,models);
   const held=Object.fromEntries(holds.map(name=>[name,join(root,`release-${name}`)]));
@@ -50,11 +50,11 @@ async function startMuseHarness({environment={},holds=[]}={}){
   const env={...process.env,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),CLAUDE_CONFIG_DIR:join(root,"claude"),MUSE_INSTALL_DIR:"",...(windows?{LOCALAPPDATA:join(root,"AppData","Local")}:{HOME:join(root,"home")})};
   const runtimeManager=new AgentRuntimeManager({state,env,runFn:onlyMuse(launcher)}),threadStore=new AgentThreadStore(env);
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
-  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,version:"muse-request-cases-fixture"});
+  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,version:"muse-request-cases-fixture",...relayOptions});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const entries=async()=>(await readFile(log,"utf8").catch(()=>"")).split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line));
   return {
-    root,repo,runtimeManager,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,release:name=>writeFile(held[name],""),signOut:()=>rm(models,{force:true}),
+    root,repo,runtimeManager,threadStore,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,release:name=>writeFile(held[name],""),signOut:()=>rm(models,{force:true}),
     frames:async method=>(await entries()).filter(entry=>entry.frame?.method===method).map(entry=>entry.frame),
     hosts:async()=>(await entries()).filter(entry=>entry.start&&entry.start[0]==="serve"&&!entry.start.includes("--no-session-log")).map(entry=>entry.start),
     async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})},
@@ -209,5 +209,64 @@ test("a message sent in Supervised while a Full access thread's compaction runs 
     expect((await harness.frames("turn/start")).length).toBe(1);
     expect(await harness.hosts()).toEqual([["serve","--trust-workspace","--disable-sandbox"]]);
     await shoot(page,"muse-mode-change-while-compacting",alert);
+  }finally{await harness.close()}
+});
+
+test("a report Muse starts while the person's next message gathers its context shows in that message's turn, which keeps its Stop until it ends",async({page})=>{
+  test.setTimeout(90_000);
+  // The message's turn gathers its context (the repository knowledge the relay asks for) only once Muse has started its report and
+  // the report's first words show: the report starts after the message's turn has started and before the message reaches Muse.
+  const box={},live=page.locator(".agent-block .assistant-answer");
+  const repositoryKnowledge={context:async({query})=>{
+    if(!/one more thing/i.test(query))return null;
+    await box.harness.release("report_start");
+    await expect(live).toContainText("The workflow with ping and pong agents is complete.",{timeout:20_000});
+    return null;
+  }};
+  const harness=box.harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"},holds:["report_start"],relayOptions:{repositoryKnowledge}});
+  try{
+    await openMuse(page,harness);
+    await send(page,"Please run workflow ping-pong");
+    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    const stop=page.getByRole("button",{name:"Stop",exact:true});
+    await expect(stop).toHaveCount(0,{timeout:20_000});
+    await send(page,"And one more thing, hold until steered");
+    // The report and then the message's reply show in the message's turn as it runs, the report's words once, and its Stop stays.
+    await expect(live).toContainText("Muse fixture reply",{timeout:20_000});
+    await expect(live).toContainText("The workflow with ping and pong agents is complete. The rest of the report.");
+    await expect(page.locator(".history-assistant, .agent-block .assistant-answer").filter({hasText:"The workflow with ping and pong agents is complete."})).toHaveCount(1);
+    await expect(stop).toBeVisible();
+    await shoot(page,"muse-report-in-message-turn",live);
+    await expect(stop).toBeVisible();
+    await stop.click();
+    await expect(stop).toHaveCount(0,{timeout:20_000});
+    const [thread]=harness.threadStore.list();
+    await expect.poll(()=>harness.threadStore.get(thread.id).turns.map(turn=>turn.status)).toEqual(["completed","cancelled"]);
+  }finally{await harness.close()}
+});
+
+test("a message refused in Full access while a Supervised thread compacts leaves the thread in Supervised, so a workflow child's approval during the compaction shows on the card",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_COMPACT:"hold"},holds:["child_ask"]});
+  try{
+    await openMuse(page,harness);
+    await send(page,"First message");
+    await expect(reply(page,"Muse fixture reply")).toBeVisible({timeout:20_000});
+    await page.getByRole("button",{name:"Compact",exact:true}).click();
+    await expect.poll(async()=>(await harness.frames("session/compact")).length).toBe(1);
+    await page.locator("select.permission-picker").first().selectOption("full");
+    await send(page,"Now in Full access");
+    await expect(page.getByTestId("composer-alert")).toContainText("Not sent: Muse Code is still compacting this conversation",{timeout:20_000});
+    // A workflow child still running from the first turn asks to run a command: the thread is still in Supervised, so the person answers.
+    await harness.release("child_ask");
+    await expect(card(page)).toContainText("touch muse-approved.txt",{timeout:20_000});
+    await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: touch ...","Reject"]);
+    expect(await harness.frames("approval/decide")).toEqual([]);
+    const [thread]=harness.threadStore.list();
+    expect(harness.threadStore.get(thread.id).providerMeta?.permissionProfile).toBe("supervised");
+    await shoot(page,"muse-child-card-after-refused-mode",card(page));
+    await card(page).getByRole("button",{name:"Reject",exact:true}).click();
+    await expect(card(page)).toHaveCount(0,{timeout:20_000});
+    await expect.poll(async()=>(await harness.frames("approval/decide")).map(frame=>frame.params.choiceId)).toEqual(["abort"]);
   }finally{await harness.close()}
 });
