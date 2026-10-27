@@ -364,11 +364,13 @@ function terminalResultError(reason,failureHint,apiError=null){
     default:return null;
   }
 }
-// The text of an assistant error frame that explains its own failure (see CLAUDE_EXPLAINED_API_ERRORS), or null.
+// The text of an assistant error frame that explains its own failure (see CLAUDE_EXPLAINED_API_ERRORS), or null, with the secrets the
+// API's words can repeat redacted as in the result's "API Error: …" (T3 Code redacts every provider failure's message).
 export function claudeExplainedApiError(message){
   if(!CLAUDE_EXPLAINED_API_ERRORS.has(message?.error))return null;
   const blocks=Array.isArray(message.message?.content)?message.message.content:[];
-  return blocks.map(block=>block?.type==="text"?String(block.text||"").trim():"").filter(Boolean).join("\n")||null;
+  const text=blocks.map(block=>block?.type==="text"?String(block.text||"").trim():"").filter(Boolean).join("\n");
+  return text?redactApiErrorText(text)||null:null;
 }
 // "[ede_diagnostic] ..." entries are CLI-internal telemetry and never the error to show.
 function userFacingErrors(result){return (Array.isArray(result?.errors)?result.errors:[]).filter(error=>typeof error==="string"&&error.trim()&&!error.startsWith("[ede_diagnostic]"))}
