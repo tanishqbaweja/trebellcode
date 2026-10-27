@@ -375,6 +375,34 @@ test("a Claude Code, Codex or Grok Build in npm's prefix that does not start is 
   await assert.rejects(()=>fx.manager.installPlan("claude"),{message:"Trebell Code could not read the version of the Claude Code it would update: `claude --version` did not answer within 20 seconds. Nothing was installed."});
 });
 
+// Grok Build from npm (@xai-official/grok, which PATH finds through npm's launcher) whose binary does not start is reinstalled there
+// the same way, to the release npm names, and must then start.
+test("a Grok Build in npm's prefix that does not start is offered Update too, which installs @xai-official/grok there again",WINDOWS_ONLY,async t=>{
+  const root=await tempRoot(t,"npm-repair-grok"),prefix=join(root,"AppData","Roaming","npm");
+  const grok=await file(join(prefix,"node_modules","@xai-official","grok","bin","grok.exe"));
+  await file(join(prefix,"grok.cmd"),npmShim("node_modules\\@xai-official\\grok\\bin\\grok.exe"));
+  let grokVersion=null;
+  const fx=machine(root,{path:prefix,answer:(command,args)=>{
+    if(command==="npm"){
+      if(args[0]==="view")return answered("\"1.0.70\"\n");
+      if(args[0]==="install"&&args.at(-1)==="@xai-official/grok@1.0.70")grokVersion="1.0.70";
+      return answered(args[0]==="--version"?"11.0.0\n":"added 1 package in 9s\n");
+    }
+    if(command==="grok"){
+      if(args[0]==="--version")return grokVersion?answered(`grok ${grokVersion} (4220f3b224a6)\n`):exited(1,"Error: grok native binary not installed.\n");
+      return answered("You are logged in with grok.com.\n");
+    }
+    return missing(command);
+  }});
+  const realPrefix=realpathSync.native(prefix),update=statusOf(await fx.manager.snapshot({refresh:true}),"grok").update;
+  const command=shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=@xai-official/grok","@xai-official/grok@1.0.70"],"win32");
+  assert.deepEqual(update,{current:null,latest:"1.0.70",newer:true,canUpdate:true,command,binary:realpathSync.native(grok),message:null});
+  const installed=await fx.manager.install("grok");
+  assert.deepEqual([installed.method,installed.targetVersion,installed.status.version],["npm","1.0.70","grok 1.0.70 (4220f3b224a6)"]);
+  assert.deepEqual(npmCalls(fx.calls).filter(line=>line.startsWith("install")),[command.slice(4)]);
+  assert.equal(fx.calls.some(call=>call.command==="grok"&&call.args[0]==="update"),false,"Grok's own updater is not what installed it");
+});
+
 test("an update whose version check times out or fails installs nothing, for every harness",WINDOWS_ONLY,async t=>{
   const root=await tempRoot(t,"unread"),claude=await file(join(root,"home",".local","bin","claude.exe")),grok=await file(join(root,"home",".grok","bin","grok.exe"));
   const fx=machine(root,{answer:command=>command===claude?TIMED_OUT:command===grok?exited(2,"error: config file is not valid TOML\n"):missing(command)});
