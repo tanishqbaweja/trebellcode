@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { win32 } from "node:path";
+import { posix, win32 } from "node:path";
 
 // Who installed a harness binary, judged from where it is (T3 Code's maintenance resolver), and so what updates it: npm into the
 // global prefix that holds its package, or the harness's own updater for a binary its own installer put in place (Claude Code's
@@ -91,6 +91,13 @@ export function harnessInstallOwner(kind,{paths,packageName,command=kind,platfor
   if(mise)return {method:"manual",by:"mise",command:null};
   if(keg)return {method:"manual",by:"Homebrew",command:`brew upgrade ${keg.kind==="cask"?"--cask ":""}${keg.name}`};
   return {method:"manual",by:null,command:null};
+}
+// The version npm recorded for packageName in its global prefix, from the package's manifest there (<prefix>\node_modules\<package>
+// on Windows, <prefix>/lib/node_modules/<package> elsewhere), or null: none, or a prerelease Trebell's version checks cannot compare.
+export function npmRecordedVersion(prefix,packageName,{platform=process.platform,read=path=>readFileSync(path,"utf8")}={}){
+  if(!prefix||!packageName)return null;
+  const paths=platform==="win32"?win32:posix,manifest=paths.join(String(prefix),...(platform==="win32"?[]:["lib"]),"node_modules",...packageName.split("/"),"package.json");
+  try{const version=String(JSON.parse(read(manifest))?.version||"").trim();return SEMVER.test(version)?version.replace(/^v/,""):null}catch{return null}
 }
 // npm's install of packageName (at version, into prefix for an install that has one) with its install script allowed: npm 12 runs
 // no install script unless allowed, and Claude Code's puts its native binary in place (T3 allows the one package's; an older npm

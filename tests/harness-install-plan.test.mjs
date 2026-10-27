@@ -16,7 +16,7 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
-import { harnessInstallOwner, manualUpdateRefusal, manualUpdateText, newestListed, shownCommand } from "../src/harness-install-plan.mjs";
+import { harnessInstallOwner, manualUpdateRefusal, manualUpdateText, newestListed, npmRecordedVersion, shownCommand } from "../src/harness-install-plan.mjs";
 
 const WINDOWS_ENV={LOCALAPPDATA:"C:\\Users\\me\\AppData\\Local",APPDATA:"C:\\Users\\me\\AppData\\Roaming",ProgramFiles:"C:\\Program Files","ProgramFiles(x86)":"C:\\Program Files (x86)"};
 const PACKAGE={claude:"@anthropic-ai/claude-code",codex:"@openai/codex",grok:"@xai-official/grok",opencode:"opencode-ai"};
@@ -78,6 +78,11 @@ test("what updates a harness, judged from where the binary a profile runs really
   assert.equal(manualUpdateRefusal({...pnpm,by:"bun",command:"bun add -g @anthropic-ai/claude-code@latest"}),"Trebell Code does not update the Claude Code at /home/me/.local/share/pnpm/claude, installed by bun: run `bun add -g @anthropic-ai/claude-code@latest` to update it. Nothing was installed.");
   // `npm view <package>@<range> version --json` lists every version in range, in no order to rely on: the newest by version wins.
   assert.equal(newestListed('["2.0.24","2.10.0","2.2.0"]\n'),"2.10.0");assert.equal(newestListed('"1.14.19"\n'),"1.14.19");assert.equal(newestListed(""),null);
+  // The version npm recorded in its prefix, from the package's manifest: <prefix>/lib/node_modules/<package> on Linux and macOS (on
+  // Windows <prefix>\node_modules\<package>, as the tests below lay it out); a prerelease, which Trebell's checks cannot compare, is none.
+  const manifests={"/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json":'{"name":"@anthropic-ai/claude-code","version":"2.1.308"}',"/opt/tools/lib/node_modules/@openai/codex/package.json":'{"name":"@openai/codex","version":"0.162.0-alpha.17.1"}'};
+  const recorded=(prefix,name)=>npmRecordedVersion(prefix,name,{platform:"linux",read:path=>{if(!(path in manifests))throw Object.assign(new Error("ENOENT"),{code:"ENOENT"});return manifests[path]}});
+  assert.deepEqual([recorded("/usr/local","@anthropic-ai/claude-code"),recorded("/opt/tools","@openai/codex"),recorded("/usr/local","@openai/codex")],["2.1.308",null,null]);
 });
 
 const WINDOWS_ONLY={skip:process.platform!=="win32"&&"lays out Windows install folders"};
@@ -396,21 +401,24 @@ test("an OpenCode profile with a server of its own is offered Update only for a 
 });
 
 // The placeholder claude.exe an install whose script never ran leaves (F1) does not start, so its version cannot be read: when npm's
-// prefix proves who installed it, Update reinstalls it there with its install script allowed, and the binary must then start. Its
-// package needs no version, as Codex's and Grok Build's do not; a check that only ran out of time says nothing of it.
-test("a Claude Code, Codex or Grok Build in npm's prefix that does not start is offered Update, which reinstalls it there and checks it then starts",WINDOWS_ONLY,async t=>{
+// prefix proves who installed it, Update installs the version npm recorded there again, its install script allowed, and the binary
+// must then start. Its package needs no version, as Codex's and Grok Build's do not; a check that only ran out of time says nothing of
+// it. npm's newest release is not what it installs: the person's channel (Claude Code's stable, Grok Build's alpha) stays theirs.
+test("a Claude Code, Codex or Grok Build in npm's prefix that does not start is offered Update, which installs the version npm recorded there again and checks it then starts",WINDOWS_ONLY,async t=>{
   const root=await tempRoot(t,"npm-repair"),prefix=join(root,"AppData","Roaming","npm");
   const claude=await file(join(prefix,"node_modules","@anthropic-ai","claude-code","bin","claude.exe"));
+  await file(join(prefix,"node_modules","@anthropic-ai","claude-code","package.json"),JSON.stringify({name:"@anthropic-ai/claude-code",version:"2.1.308"}));
   await file(join(prefix,"claude.cmd"),npmShim("node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"));
   // npm's Codex keeps its binary in its platform package inside its own.
   const [platformPackage,triple]=process.arch==="arm64"?["codex-win32-arm64","aarch64-pc-windows-msvc"]:["codex-win32-x64","x86_64-pc-windows-msvc"];
   const codex=await file(join(prefix,"node_modules","@openai","codex","node_modules","@openai",platformPackage,"vendor",triple,"codex","codex.exe"));
+  await file(join(prefix,"node_modules","@openai","codex","package.json"),JSON.stringify({name:"@openai/codex",version:"0.163.0"}));
   await file(join(prefix,"codex.cmd"),"@ECHO off\r\nnode \"%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js\" %*\r\n");
   let claudeVersion=null,timesOut=false;
   const fx=machine(root,{answer:(command,args)=>{
     if(command==="npm"){
       if(args[0]==="view")return answered(JSON.stringify(args[1]==="@openai/codex"?"0.164.0":"2.1.320")+"\n");
-      if(args[0]==="install"&&args.at(-1)==="@anthropic-ai/claude-code@2.1.320")claudeVersion="2.1.320";
+      if(args[0]==="install"&&args.at(-1)==="@anthropic-ai/claude-code@2.1.308")claudeVersion="2.1.308";
       return answered(args[0]==="--version"?"11.0.0\n":"added 1 package in 9s\n");
     }
     if(command===claude){
@@ -424,44 +432,83 @@ test("a Claude Code, Codex or Grok Build in npm's prefix that does not start is 
   }});
   const realPrefix=realpathSync.native(prefix),listed=await fx.manager.snapshot({refresh:true});
   const reinstall=(name,version)=>shownCommand("npm",["install","-g","--prefix",realPrefix,`--allow-scripts=${name}`,`${name}@${version}`],"win32");
-  assert.deepEqual(statusOf(listed,"claude").update,{current:null,latest:"2.1.320",newer:true,canUpdate:true,command:reinstall("@anthropic-ai/claude-code","2.1.320"),binary:realpathSync.native(claude),message:null});
-  assert.deepEqual(statusOf(listed,"codex").update,{current:null,latest:"0.164.0",newer:true,canUpdate:true,command:reinstall("@openai/codex","0.164.0"),binary:realpathSync.native(codex),message:null});
+  assert.deepEqual(statusOf(listed,"claude").update,{current:null,latest:"2.1.308",newer:true,canUpdate:true,command:reinstall("@anthropic-ai/claude-code","2.1.308"),binary:realpathSync.native(claude),message:null});
+  assert.deepEqual(statusOf(listed,"codex").update,{current:null,latest:"0.163.0",newer:true,canUpdate:true,command:reinstall("@openai/codex","0.163.0"),binary:realpathSync.native(codex),message:null});
   const installed=await fx.manager.install("claude");
-  assert.deepEqual([installed.method,installed.targetVersion,installed.status.version],["npm","2.1.320","2.1.320 (Claude Code)"]);
-  assert.deepEqual(npmCalls(fx.calls).filter(line=>line.startsWith("install")),[`install -g --prefix ${realPrefix} --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.320`]);
+  assert.deepEqual([installed.method,installed.targetVersion,installed.status.version],["npm","2.1.308","2.1.308 (Claude Code)"]);
+  assert.deepEqual(npmCalls(fx.calls).filter(line=>line.startsWith("install")),[`install -g --prefix ${realPrefix} --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.308`]);
   // A reinstall after which the binary still does not start says so.
-  await assert.rejects(()=>fx.manager.install("codex"),{message:`Codex 0.164.0 was installed, but the Codex this profile runs (${codex}) did not start: spawn UNKNOWN.`});
+  await assert.rejects(()=>fx.manager.install("codex"),{message:`Codex 0.163.0 was installed, but the Codex this profile runs (${codex}) did not start: spawn UNKNOWN.`});
+  assert.deepEqual(npmCalls(fx.calls).filter(line=>line.startsWith("view")),[],"npm's newest release was never asked for");
   // One whose check only ran out of time is not reinstalled.
   timesOut=true;
   await assert.rejects(()=>fx.manager.installPlan("claude"),{message:"Trebell Code could not read the version of the Claude Code it would update: `claude --version` did not answer within 20 seconds. Nothing was installed."});
 });
 
-// Grok Build from npm (@xai-official/grok, which PATH finds through npm's launcher) whose binary does not start is reinstalled there
-// the same way, to the release npm names, and must then start.
-test("a Grok Build in npm's prefix that does not start is offered Update too, which installs @xai-official/grok there again",WINDOWS_ONLY,async t=>{
+// Grok Build from npm (@xai-official/grok, which PATH finds through npm's launcher) whose bootstrap finds no platform binary, as when
+// npm did not download its platform package, is installed there again the same way, at the version npm recorded (1.0.71 from its
+// alpha tag, never npm's older latest 1.0.70), and must then start.
+test("a Grok Build in npm's prefix that does not start is offered Update too, which installs the @xai-official/grok npm recorded there again",WINDOWS_ONLY,async t=>{
   const root=await tempRoot(t,"npm-repair-grok"),prefix=join(root,"AppData","Roaming","npm");
   const grok=await file(join(prefix,"node_modules","@xai-official","grok","bin","grok.exe"));
+  await file(join(prefix,"node_modules","@xai-official","grok","package.json"),JSON.stringify({name:"@xai-official/grok",version:"1.0.71"}));
   await file(join(prefix,"grok.cmd"),npmShim("node_modules\\@xai-official\\grok\\bin\\grok.exe"));
   let grokVersion=null;
   const fx=machine(root,{path:prefix,answer:(command,args)=>{
     if(command==="npm"){
       if(args[0]==="view")return answered("\"1.0.70\"\n");
-      if(args[0]==="install"&&args.at(-1)==="@xai-official/grok@1.0.70")grokVersion="1.0.70";
+      if(args[0]==="install"&&args.at(-1)==="@xai-official/grok@1.0.71")grokVersion="1.0.71";
       return answered(args[0]==="--version"?"11.0.0\n":"added 1 package in 9s\n");
     }
     if(command==="grok"){
-      if(args[0]==="--version")return grokVersion?answered(`grok ${grokVersion} (4220f3b224a6)\n`):exited(1,"Error: grok native binary not installed.\n");
+      if(args[0]==="--version")return grokVersion?answered(`grok ${grokVersion} (4220f3b224a6)\n`):exited(1,"@xai-official/grok: no platform binary installed for win32-x64.\n  Expected sibling package @xai-official/grok-win32-x64.\n");
       return answered("You are logged in with grok.com.\n");
     }
     return missing(command);
   }});
   const realPrefix=realpathSync.native(prefix),update=statusOf(await fx.manager.snapshot({refresh:true}),"grok").update;
-  const command=shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=@xai-official/grok","@xai-official/grok@1.0.70"],"win32");
-  assert.deepEqual(update,{current:null,latest:"1.0.70",newer:true,canUpdate:true,command,binary:realpathSync.native(grok),message:null});
+  const command=shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=@xai-official/grok","@xai-official/grok@1.0.71"],"win32");
+  assert.deepEqual(update,{current:null,latest:"1.0.71",newer:true,canUpdate:true,command,binary:realpathSync.native(grok),message:null});
   const installed=await fx.manager.install("grok");
-  assert.deepEqual([installed.method,installed.targetVersion,installed.status.version],["npm","1.0.70","grok 1.0.70 (4220f3b224a6)"]);
+  assert.deepEqual([installed.method,installed.targetVersion,installed.status.version],["npm","1.0.71","grok 1.0.71 (4220f3b224a6)"]);
   assert.deepEqual(npmCalls(fx.calls).filter(line=>line.startsWith("install")),[command.slice(4)]);
   assert.equal(fx.calls.some(call=>call.command==="grok"&&call.args[0]==="update"),false,"Grok's own updater is not what installed it");
+});
+
+// A --version that fails for the harness's own reasons says nothing of its install, which no reinstall mends: a Grok Build in npm's
+// prefix whose config file is not valid TOML, or a Claude Code there stopped by a signal, is offered no Update and installs nothing,
+// as before; nor is a placeholder whose version npm did not record (no package manifest), which Trebell cannot install again.
+test("a harness in npm's prefix whose check fails for its own reasons, not its install's, is offered no reinstall, nor one whose version npm did not record",WINDOWS_ONLY,async t=>{
+  const root=await tempRoot(t,"npm-no-repair"),prefix=join(root,"AppData","Roaming","npm");
+  const grok=await file(join(prefix,"node_modules","@xai-official","grok","bin","grok.exe"));
+  await file(join(prefix,"node_modules","@xai-official","grok","package.json"),JSON.stringify({name:"@xai-official/grok",version:"1.0.70"}));
+  await file(join(prefix,"grok.cmd"),npmShim("node_modules\\@xai-official\\grok\\bin\\grok.exe"));
+  const claude=await file(join(prefix,"node_modules","@anthropic-ai","claude-code","bin","claude.exe"));
+  await file(join(prefix,"node_modules","@anthropic-ai","claude-code","package.json"),JSON.stringify({name:"@anthropic-ai/claude-code",version:"2.1.312"}));
+  await file(join(prefix,"claude.cmd"),npmShim("node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"));
+  const fx=machine(root,{path:prefix,answer:(command,args)=>{
+    if(command==="npm")return answered(args[0]==="view"?"\"1.0.70\"\n":"11.0.0\n");
+    if(command==="grok")return exited(2,"error: config file is not valid TOML\n");
+    if(command===claude)return {ok:false,code:null,signal:"SIGKILL",error:null,stdout:"",stderr:""};
+    return missing(command);
+  }});
+  const listed=await fx.manager.snapshot({refresh:true});
+  for(const [kind,binary,said] of [["grok",grok,"Grok Build is installed but `grok --version` exited with code 2: error: config file is not valid TOML"],["claude",claude,"Claude Code is installed but `claude --version` was stopped by SIGKILL."]]){
+    const status=statusOf(listed,kind);
+    assert.deepEqual([status.installed,status.versionCheckFailed,status.message],[true,true,said],kind);
+    assert.deepEqual(status.update,{current:null,latest:null,newer:false,canUpdate:false,command:null,binary:realpathSync.native(binary),message:null},kind);
+  }
+  await assert.rejects(()=>fx.manager.installPlan("grok"),{message:"Trebell Code could not read the version of the Grok Build it would update: `grok --version` exited with code 2: error: config file is not valid TOML. Nothing was installed."});
+  await assert.rejects(()=>fx.manager.installPlan("claude"),{message:"Trebell Code could not read the version of the Claude Code it would update: `claude --version` was stopped by SIGKILL. Nothing was installed."});
+  assert.deepEqual(npmCalls(fx.calls),[],"npm was not asked for anything");
+  // The placeholder's own words, but no version npm recorded: nothing to install again.
+  const bare=join(root,"bare","npm"),placeholder=await file(join(bare,"node_modules","@anthropic-ai","claude-code","bin","claude.exe"));
+  await file(join(bare,"claude.cmd"),npmShim("node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"));
+  const unrecorded=machine(root,{instances:[{id:"claude-default",kind:"claude",binaryPath:placeholder,environment:{}}],answer:(command,args)=>command==="npm"?answered(args[0]==="view"?"\"2.1.312\"\n":"11.0.0\n"):command===placeholder?exited(1,"Error: claude native binary not installed.\n"):missing(command)});
+  const offered=statusOf(await unrecorded.manager.snapshot({refresh:true}),"claude").update;
+  assert.deepEqual([offered.current,offered.latest,offered.newer,offered.canUpdate],[null,null,false,false]);
+  await assert.rejects(()=>unrecorded.manager.installPlan("claude"),{message:"Trebell Code could not read the version of the Claude Code it would update: `claude --version` exited with code 1: Error: claude native binary not installed. Nothing was installed."});
+  assert.deepEqual(npmCalls(unrecorded.calls),[]);
 });
 
 test("an update whose version check times out or fails installs nothing, for every harness",WINDOWS_ONLY,async t=>{
