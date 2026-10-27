@@ -15,6 +15,8 @@
 //   MUSE_FAKE_COMPACT      how session/compact goes: unset, its compaction item ends compacted MUSE_FAKE_COMPACT_MS (50) ms later;
 //                          "noop" Muse has nothing to compact (no_compactable_history); "hold" the compaction runs until the host ends.
 //                          A session with no turn yet is refused (missing_run) whatever it says
+//   MUSE_FAKE_CHILD_ASK_HOLD  a file: once it is there, a workflow child still running from the session's last turn asks to run
+//                          `touch muse-approved.txt`, as "child approval" asks it, whether a turn runs or not
 // A turn whose message says one of these runs as T3's recorded sessions (muse_permission) and Muse 1.4.13's schema shape them:
 //   "ask approval"      asks to run `touch muse-approved.txt` (approval/request and approval/requested, with Muse's own choices),
 //                       settles it with the choice decided, and replies APPROVED, ALWAYS ALLOWED or REJECTED
@@ -262,7 +264,11 @@ function compactSession(params){
 const answers={
   initialize:params=>({serverInfo:{name:"muse",version:"1.4.13"},userAgent:"muse-build/1.4.13 (serve; fake)",museHome:"~/.local/share/muse",platformFamily:process.platform==="win32"?"windows":"unix",platformOs:process.platform==="win32"?"windows":process.platform,schema:{version:1,fingerprint:"sha256:7fddaf646dbc317e5fcac0785e135eb04df14fbb0db1863089dfd6da21730e5b"},grantedCapabilities:[...(params?.capabilities?.requestedCapabilities||[])],experimentalApi:false,sessionDurability:argv.includes("--no-session-log")?"ephemeral":"durable",sandboxAvailability:"unavailable"}),
   "model/list":()=>catalog(),
-  "session/start":params=>{const state={modelId:params.modelId||"muse-spark-1.2",workspaceRoot:params.workspaceRoot};sessions.set(params.sessionId,state);return {session:sessionRecord(params.sessionId,state),viewCursor:`v:${params.sessionId}:${++cursor}`}},
+  "session/start":params=>{
+    const state={modelId:params.modelId||"muse-spark-1.2",workspaceRoot:params.workspaceRoot};sessions.set(params.sessionId,state);
+    if(process.env.MUSE_FAKE_CHILD_ASK_HOLD)later(process.env.MUSE_FAKE_CHILD_ASK_HOLD,0,()=>askApproval(params.sessionId,state.lastTurnId||"background",false,{child:true}));
+    return {session:sessionRecord(params.sessionId,state),viewCursor:`v:${params.sessionId}:${++cursor}`};
+  },
   "session/resume":params=>{
     if(process.env.MUSE_FAKE_FORGET&&fs.existsSync(process.env.MUSE_FAKE_FORGET))throw Object.assign(new Error(`session ${params.sessionId} not found`),{code:-32020,kind:"sessionNotFound"});
     const state=sessions.get(params.sessionId)||{modelId:process.env.MUSE_FAKE_RESUMED_MODEL||"muse-spark-1.2",workspaceRoot:null};state.resumed=true;sessions.set(params.sessionId,state);return {session:sessionRecord(params.sessionId,state),history:{mode:"none",items:null},pendingRequests:[],viewCursor:`v:${params.sessionId}:${++cursor}`};

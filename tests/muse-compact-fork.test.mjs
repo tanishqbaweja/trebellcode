@@ -234,6 +234,28 @@ test("through the relay, a message refused in Full access while Muse writes its 
   }finally{await relay.close();await rm(holds,{recursive:true,force:true})}
 });
 
+test("through the relay, a message refused in Full access while a Supervised thread compacts leaves the thread in Supervised: a workflow child's approval during the compaction goes to the person on the card",{timeout:90_000},async()=>{
+  const holds=await mkdtemp(join(tmpdir(),"trebell-muse-child-ask-")),ask=join(holds,"child-ask");
+  const relay=await museRelay("trebell-muse-compact-mode-policy-",{environment:{MUSE_FAKE_COMPACT:"hold",MUSE_FAKE_CHILD_ASK_HOLD:ask}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"supervised"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"First message"}],permissionProfile:"supervised"});
+    await relay.completed(thread.id,1);
+    const compacting=relay.rpc("thread/compact/start",{threadId:thread.id});compacting.catch(()=>{});
+    await eventually(async()=>(await relay.frames("session/compact")).length===1,"the compaction to reach Muse");
+    await assert.rejects(relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Now in Full access"}],permissionProfile:"full"}),{message:COMPACTION_BLOCKS_MODE});
+    await writeFile(ask,"");
+    const asked=()=>relay.requests.some(request=>request.method==="item/tool/requestApproval");
+    await eventually(async()=>asked()||(await relay.frames("approval/decide")).length>0,"the child's approval to be asked or answered");
+    assert.deepEqual((await relay.frames("approval/decide")).map(frame=>frame.params.choiceId),[],"nothing answered for the person");
+    assert.equal(asked(),true,"the approval card");
+    assert.equal(relay.threadStore.get(thread.id).providerMeta?.permissionProfile,"supervised","the thread keeps the mode its host runs");
+    relay.respond(relay.requests.find(request=>request.method==="item/tool/requestApproval"),{decision:"decline"});
+    await eventually(async()=>(await relay.frames("approval/decide")).length===1,"the person's answer to reach Muse");
+    assert.deepEqual((await relay.frames("approval/decide")).map(frame=>frame.params.choiceId),["abort"],"the person's Reject");
+  }finally{await relay.close();await rm(holds,{recursive:true,force:true})}
+});
+
 test("a fork's handed-over history tells the model the thread is a fork in a new session, and a lost conversation's keeps its words",()=>{
   const turns=[{id:"t1",status:"completed",items:[{type:"userMessage",id:"u1",content:[{type:"text",text:"Remember the word pelican"}]},{type:"agentMessage",id:"a1",text:"Noted."}]}];
   const fork=threadHistoryHandoff(turns,{harness:"Muse Code",fork:true});
