@@ -1513,14 +1513,14 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   // window answers it (onServerRequestAnswered).
   const codexApprovalAllowances=new WeakMap();
   // The files each Codex file change in progress touches, from its item/started, by thread, turn and item, until the item or its
-  // turn completes: Codex's approval request for it names none (codexFileChanges). They go to the policy as the paths asked for,
-  // and to the window's card (trebellFileChanges).
+  // turn completes: Codex's approval request for it names none (codexFileChanges). They go to the policy as the paths asked for, every
+  // one of them, and to the window's card (trebellFileChanges), the first 200 of them.
   const codexFileChangeItems=new Map(),fileChangeKey=(threadId,turnId,itemId)=>[threadId,turnId,itemId].map(value=>String(value??"")).join("\0");
   function noteCodexFileChanges(message){
     const params=message?.params||{},item=params.item,threadId=String(params.threadId||"");if(!threadId)return;
     if((message.method==="item/started"||message.method==="item/completed")&&item?.type==="fileChange"&&item.id!=null){
       const key=fileChangeKey(threadId,params.turnId,item.id);codexFileChangeItems.delete(key);
-      if(message.method==="item/started")codexFileChangeItems.set(key,codexFileChanges(item.changes).slice(0,200));
+      if(message.method==="item/started")codexFileChangeItems.set(key,codexFileChanges(item.changes));
       while(codexFileChangeItems.size>500)codexFileChangeItems.delete(codexFileChangeItems.keys().next().value);
       return;
     }
@@ -1530,7 +1530,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   }
   function codexApprovalFiles(message){
     const params=message?.params||{};
-    if(message?.method==="applyPatchApproval")return codexFileChanges(params.fileChanges).slice(0,200);
+    if(message?.method==="applyPatchApproval")return codexFileChanges(params.fileChanges);
     return message?.method==="item/fileChange/requestApproval"?codexFileChangeItems.get(fileChangeKey(params.threadId,params.turnId,params.itemId))||[]:[];
   }
   function resolveCodexServerApproval(message){
@@ -3380,12 +3380,12 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     transformClientMessage:message=>transformCodexClientMessage(message),
     handleServerRequest:async message=>resolveCodexServerRequest(message),
     // A file change's card names the files it touches (trebellFileChanges), which Codex's request leaves out, each from the thread's
-    // workspace when it is inside it.
+    // workspace when it is inside it: the first 200, and how many more there are (trebellFileChangesMore).
     transformServerRequest:message=>{
       if(message?.method!=="item/fileChange/requestApproval"&&message?.method!=="applyPatchApproval")return message;
       const files=codexApprovalFiles(message);if(!files.length)return message;
       const workspace=state.threadMeta(approvalThreadId(message.params))?.cwd||null,shown=path=>path&&workspaceFilePath(workspace,path);
-      return {...message,params:{...message.params,trebellFileChanges:files.map(file=>({...file,path:shown(file.path),movePath:shown(file.movePath)}))}};
+      return {...message,params:{...message.params,trebellFileChanges:files.slice(0,200).map(file=>({...file,path:shown(file.path),movePath:shown(file.movePath)})),...(files.length>200?{trebellFileChangesMore:files.length-200}:{})}};
     },
     // The person's "Allow session" allows the request's kind in its thread and mode from here (codex-session-approvals.mjs).
     onServerRequestAnswered:(message,{method,params})=>{
