@@ -275,9 +275,10 @@ export function openCodeCommandHolder(prefix,{platform=process.platform,packageN
   return (index>=0?parts.slice(index+1,parts[index+1]?.startsWith("@")?index+3:index+2).join("/"):"")||target;
 }
 // Why npm cannot update OpenCode's packageName in prefix while the opencode command there is holder's, with the forced install that
-// would, its install script allowed (npm 12 runs none unless allowed, and OpenCode's puts its binary in place).
+// would, its install script allowed (npm 12 runs none unless allowed, and OpenCode's puts its binary in place) and kept to the line
+// (npm installs the newest <line>.x, never a 3.x that has become the package's latest).
 function openCodeHolderRefusal(prefix,holder,packageName,line,platform=process.platform){
-  return `npm cannot update ${packageName} in ${prefix}: the opencode command there runs ${holder}, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode ${line}.x, uninstall ${holder}, or run \`${shownCommand("npm",[...npmInstallArgs(packageName,null,prefix),"--force"],platform)}\` yourself (the opencode command then runs OpenCode ${line}.x).`;
+  return `npm cannot update ${packageName} in ${prefix}: the opencode command there runs ${holder}, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode ${line}.x, uninstall ${holder}, or run \`${shownCommand("npm",[...npmInstallArgs(packageName,String(line),prefix),"--force"],platform)}\` yourself (the opencode command then runs OpenCode ${line}.x).`;
 }
 export function runtimeCompatibility(kind,version){
   const policy=RUNTIME_COMPATIBILITY[normalizeAgentRuntime(kind)];if(!policy)return null;

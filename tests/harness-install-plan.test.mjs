@@ -257,9 +257,14 @@ test("an OpenCode 2.x from npm updates @opencode/cli in its own prefix to the ne
   await writeFile(shim,npmShim("node_modules\\opencode-ai\\bin\\opencode.exe"),"utf8");
   const before=fx.calls.length;
   await assert.rejects(()=>fx.manager.installPlan("opencode"),/^Error: npm cannot update @opencode\/cli in .*: the opencode command there runs opencode-ai, and npm does not replace another package's command\. Trebell Code changes neither install\. To update OpenCode 2\.x, uninstall opencode-ai/);
-  // The forced install it names lets npm 12 run OpenCode's install script, which puts its binary in place, into that prefix.
-  await assert.rejects(()=>fx.manager.installPlan("opencode"),{message:`npm cannot update @opencode/cli in ${realPrefix}: the opencode command there runs opencode-ai, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode 2.x, uninstall opencode-ai, or run \`${shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=@opencode/cli","@opencode/cli","--force"],"win32")}\` yourself (the opencode command then runs OpenCode 2.x).`});
+  // The forced install it names lets npm 12 run OpenCode's install script, which puts its binary in place, into that prefix, and
+  // keeps to the 2.x line: npm installs the newest 2.x, never a 3.0 that has become @opencode/cli's latest.
+  const refusal=`npm cannot update @opencode/cli in ${realPrefix}: the opencode command there runs opencode-ai, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode 2.x, uninstall opencode-ai, or run \`${shownCommand("npm",["install","-g","--prefix",realPrefix,"--allow-scripts=@opencode/cli","@opencode/cli@2","--force"],"win32")}\` yourself (the opencode command then runs OpenCode 2.x).`;
+  await assert.rejects(()=>fx.manager.installPlan("opencode"),{message:refusal});
   assert.deepEqual(npmCalls(fx.calls.slice(before)),[]);
+  // Settings' note says it once a newer 2.x is out.
+  const noted=statusOf(await fx.manager.snapshot({refresh:true}),"opencode").update;
+  assert.deepEqual([noted.current,noted.latest,noted.newer,noted.canUpdate,noted.message],["2.0.24","2.10.1",true,false,`OpenCode 2.10.1 is available. ${refusal}`]);
   // OpenCode's own installer keeps a 2.x in its line too: `opencode upgrade` to the newest 2.x, and nothing to a 3.x.
   const native=await file(join(root,"home",".opencode","bin","opencode.exe"));
   const own=machine(root,{instances:[{id:"opencode-default",kind:"opencode",binaryPath:native,environment:{}}],latest:{"@opencode/cli":"2.2.0"},answer:command=>command===native?answered("2.0.24\n"):missing(command)});
