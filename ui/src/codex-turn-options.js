@@ -30,20 +30,20 @@ export function codexModelChoices({settings={},provider="",model="",metadata={},
   };
 }
 
-// T3 PROVIDER_SEND_TURN_MAX_INPUT_CHARS: attachment lines that would push the text past it are left out.
+// T3 PROVIDER_SEND_TURN_MAX_INPUT_CHARS, the composer's limit on the typed text (App.jsx MAX_COMPOSER_CHARS).
 export const CODEX_MAX_INPUT_CHARS=120_000;
 const IMAGE=/\.(png|jpe?g|gif|webp|bmp)$/i,AUDIO=/\.(mp3|wav|m4a|ogg|flac)$/i;
 function fileName(path){return String(path||"").split(/[\\/]/).pop()||"attachment"}
 
 // T3 providerMessageTextWithAttachmentPaths: every attachment is named in the prompt with the path it is saved at, so
-// Codex reads it with its own tools; images and audio also go as native items.
-export function codexTurnInput(text,paths=[],{displayName=fileName,maxChars=CODEX_MAX_INPUT_CHARS}={}){
+// Codex reads it with its own tools; images and audio also go as native items. The lines follow the text whatever its length:
+// a file has no item of its own, so a line left out would be a file Codex never sees (T3 550f119c3).
+export function codexTurnInput(text,paths=[],{displayName=fileName}={}){
   let body=String(text??"");const media=[];
   for(const path of Array.isArray(paths)?paths:[]){
     const value=String(path||"");if(!value)continue;
     const image=IMAGE.test(value),line=`[Attached ${image?"image":"file"} "${displayName(value)}" is saved at: ${value}]`;
-    const candidate=body?`${body}\n\n${line}`:line;
-    if(candidate.length<=maxChars)body=candidate;
+    body=body?`${body}\n\n${line}`:line;
     if(image)media.push({type:"localImage",path:value});
     else if(AUDIO.test(value))media.push({type:"localAudio",path:value});
   }

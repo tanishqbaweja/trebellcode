@@ -34,9 +34,12 @@ test("Codex attachments are named with their saved paths in the prompt, and imag
   assert.equal(input.some(item=>item.type==="mention"),false,"Codex reads a mention item's file as nothing; the path line replaces it");
   assert.deepEqual(codexTurnInput("Hi",[]),[{type:"text",text:"Hi",textElements:[]}]);
   assert.equal(codexTurnInput("",["C:\\x\\notes.txt"])[0].text,'[Attached file "notes.txt" is saved at: C:\\x\\notes.txt]');
-  // A line that would push the prompt past T3's input limit is left out; the image item still goes.
-  const long="x".repeat(CODEX_MAX_INPUT_CHARS-10),capped=codexTurnInput(long,["H:/a/big.png"]);
-  assert.equal(capped[0].text,long);assert.deepEqual(capped[1],{type:"localImage",path:"H:/a/big.png"});
+  // The input limit never hides an attachment (T3 550f119c3): a prompt at it still names its files, and the image item still goes.
+  const long="x".repeat(CODEX_MAX_INPUT_CHARS-10),[full,image]=codexTurnInput(long,["H:/a/spec.pdf","H:/a/big.png"]);
+  assert.ok(full.text.startsWith(long));
+  assert.equal(full.text.slice(long.length),'\n\n[Attached file "spec.pdf" is saved at: H:/a/spec.pdf]\n\n[Attached image "big.png" is saved at: H:/a/big.png]');
+  assert.deepEqual(image,{type:"localImage",path:"H:/a/big.png"});
+  assert.deepEqual(splitCodexAttachmentText(full.text).paths,["H:/a/spec.pdf","H:/a/big.png"]);
 });
 
 test("a queued Codex follow-up is edited as the draft it was, with its attachments back",()=>{

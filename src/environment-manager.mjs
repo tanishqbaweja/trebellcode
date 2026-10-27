@@ -5,6 +5,7 @@ import { createReadStream } from "node:fs";
 import { lstat, readFile, readdir, stat } from "node:fs/promises";
 import { basename, join, resolve, posix } from "node:path";
 import { trebellHome } from "./paths.mjs";
+import { unreadableAttachment } from "./prompt-attachments.mjs";
 import { buildRuntimeEnvironment, CREDENTIAL_SETTING_WORDS } from "./runtime-environment.mjs";
 
 const MAX_OUTPUT=2*1024*1024;
@@ -625,10 +626,10 @@ export class EnvironmentManager {
 
   async prepareAttachment(id,localPath){
     const requested=resolve(String(localPath||""));
-    const info=await stat(requested);
-    if(!info.isFile())throw new Error("Attachment path is not a file");
     const lower=requested.toLowerCase();
     const image=/\.(png|jpe?g|gif|webp|bmp|svg)$/.test(lower);
+    const info=await stat(requested).catch(error=>{throw unreadableAttachment(image?"image":"file",requested,error)});
+    if(!info.isFile())throw new Error("Attachment path is not a file");
     const maxBytes=image?10*1024*1024:50*1024*1024;
     if(info.size>maxBytes)throw new Error(`${image?"Image":"Attachment"} is larger than ${Math.round(maxBytes/1024/1024)} MB`);
     const profile=id?this.get(id):null;
@@ -654,8 +655,10 @@ export class EnvironmentManager {
     const profile=id?this.get(id):null;
     let size;
     if(!profile||profile.type==="local"){
-      const resolved=resolve(requested);const info=await stat(resolved);if(!info.isFile())throw new Error("Attachment path is not a file");size=info.size;
-      return {path:resolved,size,image:/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(resolved),environmentId:profile?.id||null};
+      // A file gone since it was attached is refused by its name, not with Node's bare error.
+      const resolved=resolve(requested),image=/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(resolved);
+      const info=await stat(resolved).catch(error=>{throw unreadableAttachment(image?"image":"file",resolved,error)});if(!info.isFile())throw new Error("Attachment path is not a file");size=info.size;
+      return {path:resolved,size,image,environmentId:profile?.id||null};
     }
     const result=await this.execute(profile.id,{command:`if [ -f ${quotePosix(requested)} ]; then wc -c < ${quotePosix(requested)}; else exit 44; fi`,cwd:"",timeoutMs:12000});
     if(result.exitCode!==0)throw new Error(result.stderr||`Attachment does not exist in ${profile.name}`);

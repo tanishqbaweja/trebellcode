@@ -11,7 +11,8 @@ import { isSessionRefusal } from "./session-refusal.mjs";
 import { threadHistoryHandoff } from "./thread-history-handoff.mjs";
 import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
-import { OpenCode2AgentSession, withPromptImagePath } from "./opencode2-agent-session.mjs";
+import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
+import { unreadableAttachment, withPromptImagePath } from "./prompt-attachments.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { MuseAgentSession } from "./muse-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
@@ -183,7 +184,8 @@ async function acpPrompt(input=[]){
     if(item?.type==="text")out.push({type:"text",text:String(item.text||"")});
     else if(item?.type==="localImage"){
       const mime=IMAGE_MIME[extname(String(item.path||"")).toLowerCase()]||"image/png";
-      const data=await readFile(item.path);
+      // An image whose saved file is gone is refused by its name, not with Node's bare error.
+      const data=await readFile(item.path).catch(error=>{throw unreadableAttachment("image",item.path,error)});
       // OpenCode 2 reads an attached image from its saved file, which the part keeps out of what the other harnesses are sent.
       out.push(withPromptImagePath({type:"image",mimeType:mime,data:data.toString("base64")},item.path));
     }else if(item?.type==="mention"){
@@ -199,8 +201,9 @@ async function acpPrompt(input=[]){
 }
 
 // Every harness gets its working context fenced the same way (working-context-envelope.mjs), Trebell Native on every provider.
-export async function contextualAgentPrompt(input=[],additionalContext={}){
-  const prompt=await acpPrompt(input);
+// parts: the message's own parts when they are built already (turn/start reads a message's files before its turn exists).
+export async function contextualAgentPrompt(input=[],additionalContext={},{parts=null}={}){
+  const prompt=parts||await acpPrompt(input);
   for(const item of prompt)attachNativePromptProvenance(item,{kind:"user_input"});
   return withWorkingContext(prompt,Object.entries(additionalContext||{}));
 }
@@ -2105,6 +2108,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         if(typeof nativeModelContextWindow==="function")try{contextWindow=await nativeModelContextWindow({provider:requestedProvider||thread.providerMeta?.modelProvider||null,model:params.model||thread.model||null,thread:threadStore.get(thread.id)||thread})}catch(error){log("Native model context metadata unavailable: "+(error?.message||String(error)))}
         session.setContextWindow(contextWindow);
       }
+      // The message's files are read before its turn exists: one Trebell cannot read refuses the send by its name, the draft kept,
+      // and leaves no turn running behind it.
+      const messageParts=await acpPrompt(params.input||[]);
       if(send?.stopped)throw stoppedBeforeTurn();
       // An earlier turn that failed and still waits on its harness's recheck ends before this one starts.
       endFailureWait(thread.id);
@@ -2123,7 +2129,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const asked=params.clientUserMessageId?turn.items?.find(item=>item?.type==="userMessage"):null;if(asked)emit("item/completed",{threadId:thread.id,turnId:turn.id,item:{...asked,clientId:String(params.clientUserMessageId)},completedAtMs:Date.now()});
       // A fresh session that took over a lost conversation is handed the thread's earlier messages (the turn's own goes as the request).
       const input=params.input||[],durable=await withDurableContext(thread.id,params.additionalContext||{},textOfInput(input)),pending=pendingHistoryHandoff(thread.id,turn.id,{excludeTurnId:turn.id});
-      const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context});
+      const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context},{parts:messageParts});
       const selectedAgent=Object.prototype.hasOwnProperty.call(params,"agent")?(params.agent||null):(thread.agent||null);
       if(selectedAgent!==thread.agent)threadStore.update(thread.id,{agent:selectedAgent});
       const promptOptions={messageId:randomUUID(),agent:selectedAgent,...handoffDelivery(thread.id,turn.id,pending)};

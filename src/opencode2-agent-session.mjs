@@ -5,6 +5,7 @@ import { fileUri, fileUriPath } from "./file-uri.mjs";
 import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeReadOutput, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
+import { PROMPT_IMAGE_PATH } from "./prompt-attachments.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 
 const STOPPED=Symbol("opencode2-stopped");
@@ -30,13 +31,6 @@ function v2Action(permission){const value=String(permission||"*");return value==
 function v2Rules(mode,{repositoryMcp=null,grants=[]}={}){
   const rules=openCodePermissionRules(mode,{allowedTools:repositoryMcp?.name?[`${repositoryMcp.name}_*`]:[]});
   return [...rules.map(rule=>({action:v2Action(rule.permission),resource:String(rule.pattern||"*"),effect:rule.action==="allow"?"allow":rule.action==="deny"?"deny":"ask"})),...(Array.isArray(grants)?grants:[])];
-}
-// The file a pasted image was saved to, which the relay keeps on its prompt part (acpPrompt). A symbol keeps it out of what the ACP
-// harnesses, Claude Code, Muse Code and Trebell Native are sent.
-export const PROMPT_IMAGE_PATH=Symbol.for("trebell.prompt.image-path");
-export function withPromptImagePath(part,path){
-  if(part&&typeof part==="object"&&path)Object.defineProperty(part,PROMPT_IMAGE_PATH,{value:String(path),enumerable:false,configurable:true});
-  return part;
 }
 // OpenCode 2 takes an attachment as a URI it reads itself ({uri, name}), and refuses the whole prompt when one is missing (T3 Code). A
 // PNG, JPEG, GIF or WebP image whose saved file is there goes that way, and every attachment is named by its saved path, which the agent
