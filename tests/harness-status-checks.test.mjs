@@ -14,7 +14,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
-import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
+import { AgentRuntimeManager, withProbeAdvice } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
 
@@ -363,15 +363,17 @@ async function startRelay(t,options){
   t.after(async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()))});
   return {rpc,turn};
 }
-// The SDK's Query as the Claude session drives it: each user message is answered with one reply.
-function fakeClaudeSdk(){
+// The SDK's Query as the Claude session drives it: each user message is answered with one reply, unless claude.failing holds the
+// error the CLI process ends with on the next message (as a Claude Code that cannot run exits).
+function fakeClaudeSdk(claude={failing:null}){
   const query=({prompt,options})=>{
-    const items=[],waiters=[];let done=false;
-    const push=value=>{const waiter=waiters.shift();if(waiter)waiter({value,done:false});else items.push(value)};
-    const end=()=>{done=true;for(const waiter of waiters.splice(0))waiter({value:undefined,done:true})};
+    const items=[],waiters=[];let done=false,failure=null;
+    const push=value=>{const waiter=waiters.shift();if(waiter)waiter.resolve({value,done:false});else items.push(value)};
+    const end=(error=null)=>{if(done)return;done=true;failure=error;for(const waiter of waiters.splice(0))error?waiter.reject(error):waiter.resolve({value:undefined,done:true})};
     void (async()=>{
       let index=0;
       for await(const message of prompt){
+        if(claude.failing){end(claude.failing);return}
         if(index===0)push({type:"system",subtype:"init",session_id:options.sessionId||options.resume,model:"claude-test",permissionMode:options.permissionMode,tools:[],mcp_servers:[],slash_commands:[],agents:[],capabilities:[]});
         const id="msg-"+index++;
         push({type:"assistant",uuid:"assistant-"+id,parent_tool_use_id:null,message:{id,content:[{type:"text",text:"PELICAN"}]}});
@@ -379,7 +381,7 @@ function fakeClaudeSdk(){
       }
       end();
     })();
-    const next=()=>items.length?Promise.resolve({value:items.shift(),done:false}):done?Promise.resolve({value:undefined,done:true}):new Promise(resolve=>waiters.push(resolve));
+    const next=()=>items.length?Promise.resolve({value:items.shift(),done:false}):done?(failure?Promise.reject(failure):Promise.resolve({value:undefined,done:true})):new Promise((resolve,reject)=>waiters.push({resolve,reject}));
     return {next,return:()=>{end();return Promise.resolve({value:undefined,done:true})},[Symbol.asyncIterator](){return this},async interrupt(){},close(){end()},async setPermissionMode(){},initializationResult:async()=>({commands:[],agents:[],models:[]})};
   };
   return {query,getSessionInfo:async id=>({sessionId:id}),forkSession:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
@@ -399,4 +401,20 @@ test("a chat starts on a Claude Code whose --version did not answer in time, and
   assert.deepEqual([status.available,status.authenticated,status.version],[true,true,"2.1.310 (Claude Code)"]);
   const asked=fx.calls.length;await fx.manager.probe("claude");
   assert.equal(fx.calls.length,asked,"a ready answer is kept as before");
+});
+
+test("a chat that fails on a Claude Code whose --version failed says, after the harness's own words, what that check did",async t=>{
+  // A broken install: its --version exits with Node's error, and the SDK's session error carries no stderr of its own.
+  const fx=await localHarness(t,"claude",args=>args[0]==="--version"?exited(1,"Error: Cannot find module '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js'\n    at Module._resolveFilename (node:internal/modules/cjs/loader:1207:15)\n"):answered("unexpected"));
+  const CHECK="Claude Code is installed but `claude --version` exited with code 1: Error: Cannot find module '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js'";
+  const claude={failing:null},threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(fx.home,"trebell-home")});
+  const relay=await startRelay(t,{runtimeManager:fx.manager,threadStore,state:fx.state,claudeSdk:fakeClaudeSdk(claude)});
+  const {thread}=await relay.rpc("thread/start",{cwd:fx.home});
+  claude.failing=new Error("Claude Code process exited with code 1");
+  const turn=await relay.turn(thread.id);
+  assert.deepEqual([turn.status,turn.error?.message],["failed","Claude Code process exited with code 1. "+CHECK]);
+  // As a Git text failure reads it too: the check's words once, after the harness's own.
+  assert.equal(withProbeAdvice("Claude Code process exited with code 1",{available:true,authenticated:null,versionCheckFailed:true,message:CHECK}),"Claude Code process exited with code 1. "+CHECK);
+  assert.equal(withProbeAdvice(CHECK,{available:true,authenticated:null,versionCheckFailed:true,message:CHECK}),CHECK,"advice the message already has adds none");
+  assert.equal(withProbeAdvice("Rate limited.",{available:true,authenticated:null,message:"Claude Code is installed, but Trebell could not verify its authentication status."}),"Rate limited.","an unread sign-in adds nothing, as before");
 });

@@ -54,7 +54,8 @@ const keptProbeAnswer=value=>Boolean(value?.available)&&!(value.authenticated==n
 // A harness failure's message, with the advice of a probe answer that the harness cannot run or is not signed in after it ('Run
 // `claude auth login` and try again.'): the harness's own words stay. A ready answer, or advice the message already has, adds none.
 export function withProbeAdvice(message,status){
-  const said=String(message||"").trim(),advice=status&&(status.available===false||status.authenticated===false)?String(status.message||"").trim():"";
+  // So does one whose version check did not answer (versionCheckFailed): its words are all a failed chat has of why.
+  const said=String(message||"").trim(),advice=status&&(status.available===false||status.authenticated===false||status.versionCheckFailed)?String(status.message||"").trim():"";
   if(!advice||said.includes(advice))return message;
   return said?`${/[.!?…]$/.test(said)?said:said+"."} ${advice}`:advice;
 }
