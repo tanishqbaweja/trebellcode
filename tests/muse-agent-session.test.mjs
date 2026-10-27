@@ -479,7 +479,7 @@ test("tools map as T3's museToolPresentation does: an edit keeps its exact old a
   assert.deepEqual([shell.kind,shell.title,shell.rawOutput,shell.exitCode],["execute","git status","clean",0]);
   const other=museToolUpdate(item({tool:"read_file",args:"{\"path\":\"a.txt\"",status:"inProgress"}));
   assert.deepEqual([other.kind,other.title,other.status,other.rawInput],["other","read_file","in_progress",{args:"{\"path\":\"a.txt\""}],"arguments still streaming stay as text");
-  assert.equal(museToolUpdate(item({kind:"subagent",tool:undefined,objective:"Review the diff"})).title,"Review the diff");
+  assert.equal(museToolUpdate(item({kind:"subagent",tool:undefined,objective:"Review the diff"})).title,"Subagent · Review the diff");
 });
 
 test("Stop interrupts the running turn and waits for Muse's turn/completed: a recorded interrupted turn ends as a stop the person asked for",async()=>{

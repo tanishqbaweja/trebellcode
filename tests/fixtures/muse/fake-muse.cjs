@@ -22,6 +22,12 @@
 //   "retry"             schedules a retry of its model request (turn/retryScheduled), then replies
 //   "quota"             fails as Meta's quota refusal relayed by Muse does (a 429 naming the quota and its reset)
 //   "exit when idle"    replies, completes, and then the host exits with code 1, as a Muse that crashed between turns
+// And as T3's recorded subagent_v2 and muse_workflow sessions run them, with the token usage and context those reported:
+//   "spawn subagent"    keeps a todo list and runs a subagent (role "hello agent"), whose child session replies on its own turn, and
+//                       whose result is ready MUSE_FAKE_SUBAGENT_MS (200) ms later; two model steps report their tokens
+//   "run workflow"      launches the ping-pong workflow and completes the turn while it runs; its agents ping and pong run
+//                       MUSE_FAKE_WORKFLOW_MS (300) ms apart, pong failing on its budget, and MUSE_FAKE_REPORT_DELAY_MS (0) ms after
+//                       the workflow has completed Muse starts a report turn of its own
 const fs=require("node:fs"),readline=require("node:readline");
 const log=entry=>{if(process.env.MUSE_FAKE_LOG)fs.appendFileSync(process.env.MUSE_FAKE_LOG,JSON.stringify(entry)+"\n")};
 const argv=process.argv.slice(2);
@@ -55,6 +61,8 @@ function startTurn(sessionId,params){
   notify("turn/started",sessionId,{turnId,commandId:turnId});
   notify("item/completed",sessionId,{item:{itemId:turnId+"-user",kind:"userMessage",turnId,revision:1,status:"completed",text:words}});
   notify("item/started",sessionId,{item:{itemId:turn.itemId,kind:"agentMessage",turnId,revision:1,status:"inProgress",text:""}});
+  if(/spawn subagent/i.test(words))return spawnSubagent(sessionId,turnId,turn);
+  if(/run workflow/i.test(words))return runWorkflow(sessionId,turnId,turn);
   if(/ask approval|reviewer decides/i.test(words))return askApproval(sessionId,turnId,/reviewer decides/i.test(words));
   if(/ask question/i.test(words))return askQuestion(sessionId,turnId);
   if(/quota/i.test(words))return setTimeout(()=>{running.delete(turnId);notify("turn/completed",sessionId,{turnId,terminal:"failed",reason:QUOTA_REFUSAL,error:{kind:"modelError",message:QUOTA_REFUSAL,retryable:true}})},20);
@@ -66,6 +74,54 @@ function startTurn(sessionId,params){
   const hold=process.env.MUSE_FAKE_HOLD==="1"||(params.input||[]).some(part=>part.type==="text"&&/hold until steered/i.test(part.text));
   if(!hold)setTimeout(()=>complete(sessionId,turnId),20);
   if(/exit when idle/i.test(words))setTimeout(()=>{process.stderr.write("panic: the model stream went away\n");process.exit(1)},300);
+}
+// A model step's tokens and the context they leave, as Muse 1.4.13 reports them (session/tokenUsage, session/contextUsage).
+function usageStep(sessionId,turnId,{prompt,output,cacheRead=0,reasoning=0,used=prompt+output}){
+  notify("session/tokenUsage",sessionId,{turnId,modelId:"muse-spark-1.3",usage:{inputTokens:prompt,outputTokens:output,cachedTokens:cacheRead,cacheWriteTokens:0,cacheReadTokens:cacheRead,reasoningTokens:reasoning},promptTokens:prompt,totalTokens:prompt+output,sourceRange:{},cumulative:{promptTokens:prompt,outputTokens:output,totalTokens:prompt+output}});
+  notify("session/contextUsage",sessionId,{windowTokens:1007997,usedTokens:used,pressure:"normal",sourceRange:{}});
+}
+function spawnSubagent(sessionId,turnId,turn){
+  const agent=(revision,fields)=>({itemId:turnId+"-agent",kind:"subagent",turnId,revision,status:"inProgress",fallbackText:"Subagent: Reply with exactly: Hello",subagentId:"subagent-1",agentPath:"main/hello agent/1",depth:1,role:"hello agent",objective:"Reply with exactly: Hello",...fields});
+  const todos=items=>notify("session/todoListChanged",sessionId,{items,revision:1,sourceTool:"write_todos",sourceRange:{}});
+  todos([{text:" Spawn the hello agent ",status:"inProgress"},{text:"Read its result",status:"pending"},{text:"Discarded step",status:"cancelled"},{text:"  ",status:"pending"}]);
+  usageStep(sessionId,turnId,{prompt:32900,output:129,reasoning:36});
+  notify("item/started",sessionId,{item:agent(1,{controlStatus:"accepted"})});
+  notify("item/updated",sessionId,{item:agent(2,{controlStatus:"running",childSessionId:turnId+"-child"})});
+  // The child session's own reply carries its own turn, and is not the turn's.
+  notify("item/started",sessionId,{item:{itemId:turnId+"-child-reply",kind:"agentMessage",turnId:turnId+"-child",revision:1,status:"inProgress",text:"Hello from the child session"}});
+  setTimeout(()=>{
+    notify("item/updated",sessionId,{item:agent(3,{controlStatus:"resultReady",childSessionId:turnId+"-child",durationMs:1810,result:{summary:"Hello",text:"Hello",evidenceRefs:[],artifactRefs:[]}})});
+    todos([{text:"Spawn the hello agent",status:"completed"},{text:"Read its result",status:"completed"}]);
+    usageStep(sessionId,turnId,{prompt:33144,output:123,cacheRead:32625,reasoning:7});
+    reply(sessionId,turn,"Hello");complete(sessionId,turnId);
+  },Number(process.env.MUSE_FAKE_SUBAGENT_MS||200));
+}
+function runWorkflow(sessionId,turnId,turn){
+  const step=Number(process.env.MUSE_FAKE_WORKFLOW_MS||300),itemId=turnId+"-workflow";let revision=0;
+  const workflow=(children,fields={})=>({itemId,kind:"workflow",turnId,revision:++revision,status:"inProgress",fallbackText:"Workflow: model-chosen generated workflow",workflowRunId:"workflow-run-"+turnId,entryId:"ping-pong",scriptId:"generated.workflow.ping-pong",triggerSource:"guidanceAuto",children,stopAvailable:true,...fields});
+  const launch=(rev,status,extra={})=>({itemId:turnId+"-launch",kind:"toolCall",turnId,revision:rev,status,tool:"workflow",callId:"call_"+turnId,args:"{\"name\":\"ping-pong\"}",...extra});
+  usageStep(sessionId,turnId,{prompt:33474,output:1531,reasoning:1333});
+  notify("item/started",sessionId,{item:launch(1,"inProgress")});
+  notify("item/completed",sessionId,{item:launch(2,"completed",{visibleOutput:"{\"status\":\"launched\",\"entryId\":\"ping-pong\"}"})});
+  notify("item/started",sessionId,{item:workflow([])});
+  reply(sessionId,turn,"Started the ping-pong workflow.");complete(sessionId,turnId);
+  const ping={childId:itemId+"-ping",attempt:1},pong={childId:itemId+"-pong",attempt:1},pingDone={...ping,status:"terminal",terminal:"completed",durationMs:2360};
+  const revisions=[[{...ping,status:"scheduled",label:"ping"}],[{...ping,status:"started"}],[{...ping,status:"started"},{...pong,status:"scheduled",label:"pong"}],[pingDone,{...pong,status:"started"}],
+    [pingDone,{...pong,status:"terminal",terminal:"completed",failureKind:"budget_exhausted",durationMs:2639}]];
+  revisions.forEach((children,index)=>setTimeout(()=>notify("item/updated",sessionId,{item:workflow(children)}),step*(index+1)));
+  setTimeout(()=>{
+    notify("item/completed",sessionId,{item:workflow(revisions.at(-1),{status:"completed",finalSummary:"{\"status\":\"ok\"}",durationMs:3616,stopAvailable:false})});
+    setTimeout(()=>reportTurn(sessionId,turnId+"-report"),Number(process.env.MUSE_FAKE_REPORT_DELAY_MS||0));
+  },step*(revisions.length+1));
+}
+// The turn Muse starts itself to report on work that finished, with an id of its own.
+function reportTurn(sessionId,turnId){
+  const turn={itemId:turnId+"-reply",text:""};running.set(turnId,turn);
+  notify("turn/started",sessionId,{turnId,commandId:turnId});
+  notify("item/started",sessionId,{item:{itemId:turn.itemId,kind:"agentMessage",turnId,revision:1,status:"inProgress",text:""}});
+  reply(sessionId,turn,"The workflow with ping and pong agents is complete.");
+  usageStep(sessionId,turnId,{prompt:36716,output:262,cacheRead:33393,reasoning:238});
+  setTimeout(()=>complete(sessionId,turnId),20);
 }
 const QUOTA_REFUSAL="API error 429: All credentials for model muse-wonder-1.0-contributor are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2031-05-04T10:45:52Z.) (after 10 provider attempts)";
 // The approval Muse asks before running `touch muse-approved.txt` (T3's recorded muse_permission), and how it settles.

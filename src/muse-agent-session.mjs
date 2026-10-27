@@ -11,7 +11,8 @@ import { runtimeInstructions } from "./runtime-instructions.mjs";
 
 // Muse Code sessions and turns over the Muse Session Protocol (T3 Code's MuseAdapter): a session is started or resumed on Trebell's
 // own host (muse-host.mjs), each prompt is a turn/start the turn's id is minted for, and Muse's item events come back as the
-// ACP-shaped updates the relay reads (replies, reasoning summaries, commands, file edits, web searches).
+// ACP-shaped updates the relay reads (replies, reasoning summaries, commands, file edits, web searches, subagents and workflows, and
+// the todo list as a plan). A turn Muse starts itself is a turn of its own (onWakeTurn).
 
 export const MUSE_REQUEST_TIMEOUT_MS=30_000;
 export const MUSE_INTERRUPT_TIMEOUT_MS=30_000;
@@ -25,6 +26,14 @@ export const MUSE_SIGNED_OUT_MESSAGE="Muse Code is signed out. Sign in with muse
 export const MUSE_VIEW_GAP_MESSAGE="Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. The next message starts it again.";
 // A host that did not grant session MCP servers is refused when Trebell has servers for the session (T3 d6f47ff97).
 export const MUSE_SESSION_MCP_MESSAGE="This Muse Code build cannot take Trebell's MCP servers into its sessions. Update Muse Code to a version that supports session MCP servers.";
+const ITEM_EVENTS=new Set(["item/started","item/updated","item/completed"]);
+// Work that runs on past the turn that started it (T3 observedChildren): Muse's subagents and workflows.
+const WORK_KINDS=new Set(["subagent","workflow"]);
+// How many ended Muse turns a session remembers, so a late copy of one's turn/started starts no turn of its own.
+const MUSE_ENDED_TURNS_LIMIT=200;
+// Work that has said nothing for this long holds the host no more (T3 DEFAULT_MAX_IDLE_PIN_MS, as Claude Code's background work):
+// a workflow gone silent, or one whose end never reached Trebell.
+export const MUSE_MAX_IDLE_PIN_MS=4*60*60_000;
 // Meta's provider refuses "none"; the rest are MSP's efforts.
 const MUSE_EFFORTS=new Set(MUSE_REASONING_EFFORTS);
 // The model choice that lets Muse pick: the catalog's default row (T3 MUSE_DEFAULT_MODEL); the word itself never goes to Muse.
@@ -44,6 +53,8 @@ const ACTIONS=Object.freeze({
 function text(value){return typeof value==="string"?value:value==null?"":String(value)}
 function wait(ms){let timer;const promise=new Promise(resolve=>{timer=setTimeout(resolve,ms);timer?.unref?.()});return {promise,cancel:()=>clearTimeout(timer)}}
 async function within(promise,ms){const timer=wait(ms);try{return await Promise.race([Promise.resolve(promise).then(()=>true,()=>true),timer.promise.then(()=>false)])}finally{timer.cancel()}}
+// Whether a Muse turn's events are the turn's: its own, or a turn it took in (T3 owns).
+const owns=(turn,turnId)=>turnId===turn.turnId||turn.joined.has(turnId);
 
 // Prompt parts for turn/start and turn/steer: text as it is, images as base64 with their media type, and any other attachment as
 // a line naming the file it was saved to. An input with neither text nor an image is refused.
@@ -70,6 +81,40 @@ export function museToolStatus(item={}){
   if(item.status==="inProgress")return "in_progress";
   if(item.status==="completed"&&!(item.kind==="compaction"&&item.outcome&&item.outcome!=="compacted"))return "completed";
   return "failed";
+}
+// A row's status as T3 reads Muse's work (itemStatus): a subagent whose result is ready is done, though Muse's item still runs.
+export function museWorkStatus(item={}){
+  return item.kind==="subagent"&&item.status==="inProgress"&&item.controlStatus==="resultReady"?"completed":museToolStatus(item);
+}
+// Work of a turn that holds Muse's host while it runs, its turn ended or not: a subagent or a workflow still running, or a command
+// Muse sent to the background (background) still running. Closing the host ends it all.
+function runningWork(item){return (WORK_KINDS.has(item?.kind)||item?.kind==="toolCall"&&item.background===true)&&museWorkStatus(item)==="in_progress"}
+// A title's first line, at most 72 characters (T3 subagentThreadTitle).
+function clip(value){const line=text(value).trim().split(/\r?\n/)[0].trim();return line.length>72?line.slice(0,71)+"…":line}
+function failureDetail(item,status){return status==="failed"?text(item.failureReason)||`Muse Code reported ${item.status||"a failure"}.`:""}
+export function museWorkflowTitle(item={}){const name=clip(item.entryId);return name?`Workflow ${name}`:"Workflow"}
+
+// A workflow's agents (T3 publishWorkflowAgents): a row each, after the workflow's own, by child id, as Muse re-sends every child
+// with its latest attempt on each change. Scheduled is pending; a completed attempt is done unless it names a failure kind; any other
+// end fails it; one with no end of its own ends as its workflow did. labels: each child's last label, which later revisions leave out.
+export function museWorkflowAgentUpdates(item={},labels=new Map()){
+  const workflow=museWorkflowTitle(item),ended=museToolStatus(item);
+  const children=new Map((Array.isArray(item.children)?item.children:[]).filter(child=>child&&typeof child.childId==="string"&&child.childId).map(child=>[child.childId,child]));
+  return [...children.values()].map((child,index)=>{
+    const id=`${text(item.itemId)}:agent:${child.childId}`,label=clip(child.label);if(label)labels.set(id,label);
+    const terminal=text(child.terminal),reason=text(child.failureReason)||text(child.failureKind);
+    const status=terminal?(terminal==="completed"&&!text(child.failureKind)?"completed":"failed"):ended!=="in_progress"?ended:child.status==="scheduled"?"pending":"in_progress";
+    const detail=status!=="failed"?"":reason||(terminal?`Muse Code reported ${terminal}.`:"The workflow ended before this agent finished.");
+    const name=`${workflow} · ${labels.get(id)||`agent ${index+1}`}`;
+    return {toolCallId:id,status,kind:"other",title:detail?`${name}: ${detail}`:name,rawInput:{workflow:text(item.entryId),agent:labels.get(id)||null,attempt:Number.isInteger(child.attempt)?child.attempt:null},rawOutput:reason};
+  });
+}
+
+// Muse's todo list (session/todoListChanged, replaced whole each time) as the turn's plan (T3): its steps in order, pending, in
+// progress or done, without the ones Muse cancelled or left blank. An empty list clears the plan.
+export function musePlanEntries(items=[]){
+  return (Array.isArray(items)?items:[]).filter(item=>item&&typeof item.text==="string"&&item.text.trim()&&item.status!=="cancelled")
+    .map(item=>({content:item.text.trim(),status:item.status==="completed"?"completed":item.status==="inProgress"?"in_progress":"pending"}));
 }
 
 // Trebell's MCP servers for a Muse session (T3 d6f47ff97): the repository tools (trebell_repository) and the person's own servers,
@@ -103,10 +148,18 @@ function hitsText(results){return results.map(hit=>[hit.title&&hit.url?`${hit.ti
 // (an ACP diff) or Muse's patch; a web search lists its hits and a fetched page its text; anything else is a tool row with its
 // arguments. Muse's tool arguments are model-written JSON, which may not parse while they stream.
 export function museToolUpdate(item={}){
+  // A subagent's row (T3 publishNativeSubagent): titled by its role, else its objective, which is its prompt, with its result. A
+  // workflow's: titled by its entry, with its final summary.
+  if(WORK_KINDS.has(item.kind)){
+    const status=museWorkStatus(item),detail=failureDetail(item,status),subagent=item.kind==="subagent";
+    const name=subagent?`Subagent · ${clip(item.role)||clip(item.objective)||"Muse Code agent"}`:museWorkflowTitle(item);
+    const result=subagent?text(item.result?.text??item.result?.summary):text(item.finalSummary??(status==="in_progress"?item.fallbackText:""));
+    const rawInput=subagent?{...(item.objective?{objective:text(item.objective)}:{}),...(item.role?{role:text(item.role)}:{})}:item.entryId?{workflow:text(item.entryId)}:{};
+    return {toolCallId:text(item.itemId),status,kind:"other",title:detail?`${name}: ${detail}`:name,rawInput,rawOutput:[detail,result].filter(Boolean).join("\n")};
+  }
   const args=jsonObject(item.args),arg=(...keys)=>{for(const key of keys)if(typeof args?.[key]==="string")return args[key];return undefined};
-  const tool=text(item.tool||item.kind)||"tool",status=museToolStatus(item);
-  const name=item.kind==="subagent"?item.objective||item.role||"Muse agent":item.kind==="workflow"?item.entryId||"Workflow":tool;
-  const detail=status==="failed"?item.failureReason||`Muse Code reported ${item.status||"a failure"}.`:"";
+  const tool=text(item.tool||item.kind)||"tool",status=museToolStatus(item),name=tool;
+  const detail=failureDetail(item,status);
   const body=item.visibleOutput??item.result?.summary??item.text??(Array.isArray(item.summary)?item.summary.join("\n"):undefined)??item.finalSummary??item.fallbackText??item.objective??"";
   const output=detail?[detail,text(body)].filter(Boolean).join("\n"):text(body);
   const base={toolCallId:text(item.itemId),status};
@@ -260,11 +313,11 @@ export class MuseAgentSession{
   // modelCatalog: the list Muse Code's status check read ({models, metadata, preferred}, museModelCatalog), or null, which the
   // thread's model and Thinking level are resolved against before each turn. env: the profile's (AgentRuntimeManager.childEnv), and
   // approvedEnvironmentKeys the names its profile approves (a META_API_KEY reaches Muse only with its name there, museEnvironment).
-  // mcpServers: the MCP servers the session gets, as the ACP harnesses get them (the relay's trebell_repository and the person's own,
-  // museMcpServers).
-  constructor({command="muse",cwd,env=undefined,approvedEnvironmentKeys=[],permissionMode="supervised",onUpdate,onPermission=null,onQuestion=null,mcpServers=[],version="0.0.0",modelCatalog=()=>null,spawnFn=undefined,platform=process.platform,loadSdk=loadMuseSdk,stopTree=undefined,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,requestTimeoutMs=MUSE_REQUEST_TIMEOUT_MS,interruptTimeoutMs=MUSE_INTERRUPT_TIMEOUT_MS}={}){
+  // onWakeTurn: told of a turn Muse starts itself, with the promise its end settles (the relay's startWakeTurn). mcpServers: the MCP
+  // servers the session gets, as the ACP harnesses get them (the relay's trebell_repository and the person's own, museMcpServers).
+  constructor({command="muse",cwd,env=undefined,approvedEnvironmentKeys=[],permissionMode="supervised",onUpdate,onPermission=null,onQuestion=null,onWakeTurn=null,mcpServers=[],version="0.0.0",modelCatalog=()=>null,spawnFn=undefined,platform=process.platform,loadSdk=loadMuseSdk,stopTree=undefined,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,requestTimeoutMs=MUSE_REQUEST_TIMEOUT_MS,interruptTimeoutMs=MUSE_INTERRUPT_TIMEOUT_MS,now=()=>Date.now()}={}){
     this.command=command;this.cwd=resolve(cwd||process.cwd());this.env=env;this.permissionMode=normalizePermissionMode(permissionMode||"supervised");
-    this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.version=version;this.modelCatalog=modelCatalog;
+    this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.onWakeTurn=onWakeTurn;this.version=version;this.modelCatalog=modelCatalog;
     this.mcpServers=Array.isArray(mcpServers)?mcpServers:[];
     this.hostOptions={spawnFn,platform,stopTree,startupTimeoutMs,shutdownTimeoutMs,approvedEnvironmentKeys};this.platform=platform;this.loadSdk=loadSdk;
     this.requestTimeoutMs=requestTimeoutMs;this.interruptTimeoutMs=interruptTimeoutMs;
@@ -275,9 +328,16 @@ export class MuseAgentSession{
     this.requests=new Map();this.settledRequests=new Set();
     // Muse's last readable usage report (usage/changed), which a turn the quota stopped reads its reset from.
     this.subscriptionUsage=null;
+    // The work still running that a turn started (runningWork), by item, with its turn, whose rows it settles after the turn ended,
+    // and when any of it was last heard of (its end too, which the relay's idle sweep counts as use); and the Muse turns that ended.
+    this.observed=new Map();this.workHeardAt=0;this.now=now;this.endedTurns=new Set();this.ready=false;
   }
 
   get busy(){return Boolean(this.activePrompt)}
+  // Work Muse runs past the turn that started it (T3 hasPendingBackgroundWork): a subagent, a workflow or a command in the background
+  // still running, unless none of it has been heard of for MUSE_MAX_IDLE_PIN_MS, or a turn Muse started itself. They run in this
+  // host, so the relay's idle sweep keeps the session meanwhile.
+  get pendingBackgroundWork(){return this.observed.size>0&&this.now()-this.workHeardAt<MUSE_MAX_IDLE_PIN_MS||Boolean(this.activePrompt?.wake&&!this.activePrompt.settled)}
   // A new host can take the conversation up again unless this one keeps its sessions in memory only.
   get resumable(){return Boolean(this.initializeResult)&&this.initializeResult.sessionDurability!=="ephemeral"}
   setPermissionMode(mode){this.permissionMode=normalizePermissionMode(mode||"supervised");return this.permissionMode}
@@ -332,6 +392,8 @@ export class MuseAgentSession{
       if(result?.session?.sessionId!==sessionId)throw new Error("Muse Code answered with another session than the one Trebell asked for.");
       this.model=text(result.session.modelId)||modelId;
       this.sessionSetup={sessionId,models:{currentModelId:this.model,availableModels:this.model?[{modelId:this.model,name:this.model}]:[]},configOptions:[],modes:{currentModeId:"default",availableModes:[]}};
+      // A turn Muse starts itself is one of the session's from here (#turnStarted).
+      this.ready=true;
       return {initialize:this.initializeResult,session:this.sessionSetup};
     }catch(error){
       // The host has no session of Trebell's then; a resume that found none closes nothing on Muse's side.
@@ -383,9 +445,18 @@ export class MuseAgentSession{
   async prompt(parts,{onDelivered=null}={}){
     if(!this.connection||!this.sessionId)throw new Error("Muse Code session is not started.");
     if(this.dead)throw this.deadError||new Error("Muse Code stopped.");
-    if(this.activePrompt)throw new Error("Muse Code already has a running turn.");
+    // A message sent while Muse's own report turn runs takes that turn over (T3: a user turn takes a held report turn): the report
+    // ends in Trebell, the rest of Muse's turn is this one's, and Stop ends both. Muse runs the message after it (ifBusy queue).
+    const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
+    if(running&&!running.wake)throw new Error("Muse Code already has a running turn.");
     const input=museInputParts(parts),displayText=museDisplayText(parts);
-    const turn=this.#newTurn(this.connection.mintCommandId());this.activePrompt=turn;
+    const turn=this.#newTurn(this.connection.mintCommandId());
+    if(running){
+      for(const id of [running.turnId,...running.joined])turn.joined.add(id);
+      for(const id of running.endedJoined)turn.endedJoined.add(id);
+      running.handOver({stopReason:"end_turn",providerMessageId:null,raw:{turnId:running.turnId}});
+    }
+    this.activePrompt=turn;
     try{
       let ack;
       try{
@@ -414,21 +485,44 @@ export class MuseAgentSession{
     }finally{if(this.activePrompt===turn)this.activePrompt=null}
   }
 
-  #newTurn(turnId){
+  // wake: a turn Muse started itself (#turnStarted). joined: Muse's turns this one took in (its report turn, a turn Muse started
+  // meanwhile), endedJoined the ones of those that ended. rows: what each subagent's and workflow's row last showed; labels: workflow
+  // agents' labels.
+  #newTurn(turnId,{wake=false}={}){
     let settle,fail,admit;
     const done=new Promise((resolve,reject)=>{settle=resolve;fail=reject});
     const admitted=new Promise(resolve=>{admit=resolve});
-    const turn={turnId,stopRequested:false,settled:false,items:new Map(),sent:new Map(),tools:new Set(),lastMessage:null,done,admitted,admit};
-    turn.settle=value=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,false);settle(value)};
-    turn.fail=error=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,true);fail(error)};
+    const turn={turnId,wake,joined:new Set(),endedJoined:new Set(),rows:new Map(),labels:new Map(),
+      stopRequested:false,settled:false,items:new Map(),sent:new Map(),tools:new Set(),lastMessage:null,done,admitted,admit};
+    turn.settle=value=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,value?.stopReason==="cancelled"?"cancelled":"completed");settle(value)};
+    turn.fail=error=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,"failed");fail(error)};
+    // A report turn a message took over ends in Trebell, while Muse's turn goes on in the message's (prompt).
+    turn.handOver=value=>{if(turn.settled)return;turn.settled=true;settle(value)};
     done.catch(()=>{});
     return turn;
   }
-  // A turn's end settles what it left open (T3 finish): a failed turn's running tools end failed, and the approvals and questions
-  // asked in it go, cards and dialogs included, since Muse settles them with the turn. A workflow child's approval outlives it.
-  #endTurn(turn,failed){
-    if(failed)for(const item of turn.items.values())if(item.status==="inProgress"&&turn.tools.has(item.itemId))this.onUpdate?.({sessionId:this.sessionId,update:{...acpToolFrame(museToolUpdate({...item,status:"failed",failureReason:text(item.failureReason)||"The turn ended before this finished."})),sessionUpdate:"tool_call_update"}});
+  // A turn's end settles what it left open (T3 finish): a failed turn's running tools end failed; a stopped or failed turn's subagents
+  // and workflows end with it, while a completed turn's run on, their rows settled by their own later events; and the approvals and
+  // questions asked in it go, cards and dialogs included, since Muse settles them with the turn. A workflow child's approval outlives
+  // it, and so does a command Muse sent to the background.
+  #endTurn(turn,how){
+    for(const id of [turn.turnId,...turn.joined])this.#rememberEnded(id);
+    for(const item of turn.items.values()){
+      if(WORK_KINDS.has(item.kind)){
+        if(how==="completed"||!runningWork(item))continue;
+        this.observed.delete(item.itemId);
+        this.#publish(turn,{...item,status:"failed",failureReason:text(item.failureReason)||(how==="cancelled"?"Stopped with its turn.":"The turn ended before this finished.")});
+      }else if(how==="failed"&&item.status==="inProgress"&&item.background!==true&&turn.tools.has(item.itemId))this.#row(turn,museToolUpdate({...item,status:"failed",failureReason:text(item.failureReason)||"The turn ended before this finished."}));
+    }
     this.#withdrawRequests(entry=>!entry.child);
+  }
+  #rememberEnded(turnId){if(!turnId)return;this.endedTurns.add(turnId);if(this.endedTurns.size>MUSE_ENDED_TURNS_LIMIT)this.endedTurns.delete(this.endedTurns.values().next().value)}
+  // The work still running that ended turns left (T3 settleObservedChildren) ends with the host, each row in the turn that started it.
+  #settleObserved(reason){
+    for(const [itemId,owner] of [...this.observed]){
+      this.observed.delete(itemId);
+      const item=owner.items.get(itemId);if(item)this.#publish(owner,{...item,status:"failed",failureReason:text(item.failureReason)||reason});
+    }
   }
 
   // A message sent while the turn runs goes into that turn (turn/steer names the turn it is meant for), once Muse has admitted it.
@@ -449,6 +543,9 @@ export class MuseAgentSession{
     const turn=this.activePrompt;if(!turn||turn.settled)return;
     turn.stopRequested=true;this.#withdrawRequests(entry=>!entry.child);
     if(!(await turn.admitted)||turn.settled)return;
+    // Muse runs a turn this one took in first, so Stop ends it too (T3 interruptTurn).
+    for(const id of turn.joined)if(!turn.endedJoined.has(id)&&!turn.settled)try{await this.#command("turn/interrupt",{sessionId:this.sessionId,turnId:id})}catch{}
+    if(turn.settled)return;
     try{await this.#command("turn/interrupt",{sessionId:this.sessionId,turnId:turn.turnId})}catch{}
     if(turn.settled)return;
     const timer=wait(this.interruptTimeoutMs);
@@ -461,6 +558,7 @@ export class MuseAgentSession{
   async close(){
     if(this.closed)return;this.closed=true;
     const turn=this.activePrompt;if(turn){turn.stopRequested=true;turn.settle({stopReason:"cancelled",interrupted:true,providerMessageId:null})}
+    this.#settleObserved("Muse Code stopped before this finished.");
     this.#withdrawRequests();
     await this.host?.close().catch(()=>{});
   }
@@ -483,6 +581,7 @@ export class MuseAgentSession{
     const turn=this.activePrompt;
     if(turn&&!turn.settled){if(turn.stopRequested)turn.settle({stopReason:"cancelled",interrupted:true,providerMessageId:null});else turn.fail(this.deadError)}
     else if(!quiet)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message}});
+    this.#settleObserved(message);
     this.#withdrawRequests();
     if(stop)void this.host?.close().catch(()=>{});
   }
@@ -632,16 +731,45 @@ export class MuseAgentSession{
     if(method==="view/gap")return void this.#lose(MUSE_VIEW_GAP_MESSAGE,{stop:true});
     if(method==="approval/requested"||method==="approval/updated"||method==="approval/resolved")return void this.#approvalEvent(method,params);
     if(method==="userInput/requested"||method==="userInput/settled")return void this.#questionEvent(method,params);
+    // An item of work a turn that ended left running settles its row in that turn (T3 observedChildren).
+    const itemId=ITEM_EVENTS.has(method)?text(params.item?.itemId):method==="item/delta"?text(params.itemId):"",owner=itemId?this.observed.get(itemId):null;
+    if(owner?.settled)return ITEM_EVENTS.has(method)?this.#item(owner,params.item):this.#delta(owner,params);
+    if(method==="turn/started")return void this.#turnStarted(text(params.turnId));
     const turn=this.activePrompt;if(!turn||turn.settled)return;
-    if(method==="item/started"||method==="item/updated"||method==="item/completed")return this.#item(turn,params.item);
+    if(ITEM_EVENTS.has(method))return this.#item(turn,params.item);
     if(method==="item/delta")return this.#delta(turn,params);
-    if(method==="turn/retryScheduled"&&(!params.turnId||params.turnId===turn.turnId))return void this.#retryScheduled(params);
-    if(method==="turn/completed"&&params.turnId===turn.turnId)return this.#completed(turn,params);
+    const turnId=text(params.turnId),ours=!turnId||owns(turn,turnId);
+    if(method==="session/todoListChanged")return void this.#todos(turn,params);
+    if(method==="turn/retryScheduled"&&ours)return void this.#retryScheduled(params);
+    if(method==="turn/completed"&&turnId===turn.turnId)return this.#completed(turn,params);
+    // A turn this one took in ending does not end this one; its own does (T3).
+    if(method==="turn/completed"&&turn.joined.has(turnId))return void this.#joinedCompleted(turn,turnId);
+    // A queued turn Muse will never run (turn/unqueued) ended unrun.
+    if(method==="turn/unqueued"&&turnId===turn.turnId)return turn.settle({stopReason:"cancelled",interrupted:turn.stopRequested,providerMessageId:null,raw:params});
   }
+  // A turn Muse starts itself (T3's wake): one that starts while Trebell's turn runs joins it, so its events are that turn's and Stop
+  // ends it too; one while none runs, the report Muse writes once its background work finished, is a turn of its own in Trebell
+  // (onWakeTurn) until it ends or a message takes it over (prompt). A copy of a turn that ended starts nothing.
+  #turnStarted(turnId){
+    if(!turnId||this.endedTurns.has(turnId))return;
+    const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
+    if(running){if(!owns(running,turnId))running.joined.add(turnId);return}
+    if(!this.ready||this.closed||this.dead||typeof this.onWakeTurn!=="function")return;
+    const turn=this.#newTurn(turnId,{wake:true});turn.admit(true);this.activePrompt=turn;
+    turn.done.then(()=>{},()=>{}).then(()=>{if(this.activePrompt===turn)this.activePrompt=null});
+    try{this.onWakeTurn(turn.done)}catch{}
+  }
+  // A turn this one took in ended: Stop no longer ends it.
+  #joinedCompleted(turn,turnId){turn.endedJoined.add(turnId);this.#rememberEnded(turnId)}
   // The latest usage report a quota stop reads its reset from.
   #usageChanged(params){
     const usage=museSubscriptionUsage(params);
     if(usage)this.subscriptionUsage=usage;else this.#skipped("usage/changed","it names no readable usage windows");
+  }
+  // Muse's todo list as the turn's plan (musePlanEntries).
+  #todos(turn,params){
+    if(!Array.isArray(params.items))return this.#skipped("session/todoListChanged","it names no todo list");
+    this.#emit(turn,{sessionUpdate:"plan",entries:musePlanEntries(params.items)});
   }
   // Muse retrying the turn's model request: the turn's retry row, as Native's wait for the network shows, and the turn goes on.
   #retryScheduled(params){
@@ -652,14 +780,19 @@ export class MuseAgentSession{
   // An informational notice Trebell cannot read is skipped with a log line, and the session goes on (T3 INFORMATIONAL_NOTIFICATIONS).
   #skipped(method,reason){this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"protocol_warning",dropped:true,method,reason,message:`Trebell skipped Muse Code's ${method}: ${reason}.`}})}
 
-  // Items keep their highest revision: an older one arriving late is ignored. Items of other turns are not this turn's.
+  // Items keep their highest revision: an older one arriving late is ignored. Items of other turns are not this turn's, but those of
+  // a turn it took in are. Work that runs on past its turn is followed until it ends (observed).
   #item(turn,item){
     if(!item||typeof item!=="object"||!item.itemId)return;
-    if(item.turnId&&item.turnId!==turn.turnId)return;
+    if(item.turnId&&!owns(turn,item.turnId))return;
     const previous=turn.items.get(item.itemId);
     if(previous&&Number(previous.revision)>=Number(item.revision))return;
     const current={...item,...(Array.isArray(item.summary)?{summary:[...item.summary]}:{})};
-    turn.items.set(item.itemId,current);this.#publish(turn,current);
+    turn.items.set(item.itemId,current);
+    // Each word from that work, its end too, is the session's latest activity (workHeardAt).
+    if(this.observed.has(current.itemId)||runningWork(current))this.workHeardAt=this.now();
+    if(runningWork(current))this.observed.set(current.itemId,turn);else this.observed.delete(current.itemId);
+    this.#publish(turn,current);
   }
   // Deltas append to an open item by field: text to a reply, summary.N to part N of a reasoning summary, output to a command.
   #delta(turn,params){
@@ -669,6 +802,7 @@ export class MuseAgentSession{
     else if(field==="output"||field==="visibleOutput")item.visibleOutput=text(item.visibleOutput)+delta;
     else if(/^summary\.\d+$/.test(field)){const index=Number(field.slice(8));if(index>=100)return;const summary=[...(item.summary||[])];summary[index]=text(summary[index])+delta;item.summary=summary}
     else return;
+    if(this.observed.get(item.itemId)===turn)this.workHeardAt=this.now();
     this.#publish(turn,item);
   }
   #publish(turn,item){
@@ -677,9 +811,20 @@ export class MuseAgentSession{
     if(item.kind==="agentMessage")return this.#stream(turn,item,"agent_message_chunk",text(item.text));
     // A reasoning item's summary parts, or the provider's own reasoning text where it sends that instead.
     if(item.kind==="reasoning")return this.#stream(turn,item,"agent_thought_chunk",(Array.isArray(item.summary)?item.summary:[]).map(text).filter(Boolean).join("\n\n")||text(item.text));
-    const first=!turn.tools.has(item.itemId);turn.tools.add(item.itemId);
-    this.onUpdate?.({sessionId:this.sessionId,update:{...acpToolFrame(museToolUpdate(item)),sessionUpdate:first?"tool_call":"tool_call_update"}});
+    this.#row(turn,museToolUpdate(item),{work:WORK_KINDS.has(item.kind)});
+    // A workflow's agents follow its own row (T3 publishWorkflowAgents).
+    if(item.kind==="workflow")for(const update of museWorkflowAgentUpdates(item,turn.labels))this.#row(turn,update,{work:true});
   }
+  // One row's update: tool_call the first time, tool_call_update after. A subagent's or a workflow's goes only when it shows something
+  // new, as Muse re-sends them whole on each change, and one that settled keeps the end it had (T3 keeps each one's first end time).
+  #row(turn,update,{work=false}={}){
+    const frame=acpToolFrame(update),id=frame.toolCallId;
+    if(work){const shown=JSON.stringify([frame.status,frame.title,frame.rawOutput]);if(turn.rows.get(id)===shown)return;turn.rows.set(id,shown)}
+    const first=!turn.tools.has(id);turn.tools.add(id);
+    this.#emit(turn,{...frame,sessionUpdate:first?"tool_call":"tool_call_update"});
+  }
+  // A turn's updates name it (turnKey): the relay keeps a row of a turn that ended in that turn, not in the thread's last one.
+  #emit(turn,update){this.onUpdate?.({sessionId:this.sessionId,turnKey:turn.turnId,update})}
   // The text an item has that has not been sent yet: what a delta added, or on item/completed what the final text has beyond what
   // streamed. A later reply of the turn starts a paragraph of its own.
   #stream(turn,item,type,full){
@@ -689,22 +834,22 @@ export class MuseAgentSession{
     turn.sent.set(item.itemId,full);
     let value=chunk;
     if(type==="agent_message_chunk"){if(!sent&&turn.lastMessage&&turn.lastMessage!==item.itemId&&!/^\s*\n/.test(chunk))value="\n\n"+chunk;turn.lastMessage=item.itemId}
-    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:type,content:{type:"text",text:value},messageId:item.itemId}});
+    this.#emit(turn,{sessionUpdate:type,content:{type:"text",text:value},messageId:item.itemId});
   }
   // turn/completed settles the prompt: completed ends the turn, cancelled is a stop (interrupted when the person asked for it), and
   // failed fails it with Muse's own error. A stop the subscription quota made says the Muse Code usage limit was reached and when it
   // resets (usageLimit, resetAt), as Claude Code's and Grok's limits do, Muse's own words kept as its detail; a turn Muse could not
   // run signed out says how to sign in.
   #completed(turn,params){
-    const terminal=text(params.terminal);
-    if(terminal==="completed")return turn.settle({stopReason:"end_turn",providerMessageId:null,raw:params});
-    if(terminal==="cancelled")return turn.settle({stopReason:"cancelled",interrupted:turn.stopRequested,providerMessageId:null,raw:params});
+    const terminal=text(params.terminal),raw=params;
+    if(terminal==="completed")return turn.settle({stopReason:"end_turn",providerMessageId:null,raw});
+    if(terminal==="cancelled")return turn.settle({stopReason:"cancelled",interrupted:turn.stopRequested,providerMessageId:null,raw});
     const error=params.error&&typeof params.error==="object"?params.error:{},detail=text(error.message)||text(params.reason),code=text(error.kind)||"MUSE_TURN_FAILED";
     if(museUsageLimited(error,detail)){
       const resetAt=museUsageLimitResetAt(this.subscriptionUsage,Date.now(),{quota:error.quota,message:detail});
-      return turn.fail(Object.assign(new Error(museUsageLimitMessage(resetAt)),{code,usageLimit:true,resetAt,detail,raw:params}));
+      return turn.fail(Object.assign(new Error(museUsageLimitMessage(resetAt)),{code,usageLimit:true,resetAt,detail,raw}));
     }
-    if(code==="authRequired")return turn.fail(Object.assign(new Error(MUSE_SIGNED_OUT_MESSAGE),{code,detail,raw:params}));
-    turn.fail(Object.assign(new Error(detail||"Muse Code could not finish the turn."),{code,raw:params}));
+    if(code==="authRequired")return turn.fail(Object.assign(new Error(MUSE_SIGNED_OUT_MESSAGE),{code,detail,raw}));
+    turn.fail(Object.assign(new Error(detail||"Muse Code could not finish the turn."),{code,raw}));
   }
 }

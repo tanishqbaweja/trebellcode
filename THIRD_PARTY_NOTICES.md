@@ -22,8 +22,10 @@ Local modifications: none; Trebell does not patch or bundle a modified copy of t
 
 ## T3 Code recorded Muse sessions
 
-The test fixtures in `tests/fixtures/muse/` (`simple`, `multi_turn`, `turn_interrupt` and `permission`) are frames from
-T3 Code's recorded Muse Code transcripts (`apps/server/src/orchestration-v2/testkit/fixtures/*/muse_transcript.ndjson`).
+The test fixtures in `tests/fixtures/muse/` (`simple`, `multi_turn`, `turn_interrupt`, `permission`, `workflow`, `subagent`
+and `subagent_interrupt`) are frames from T3 Code's recorded Muse Code transcripts
+(`apps/server/src/orchestration-v2/testkit/fixtures/*/muse_transcript.ndjson`: `workflow` from `muse_workflow`, `subagent` from
+`subagent_v2` and `subagent_interrupt` from `muse_subagent_interrupt`).
 
 Upstream: https://github.com/pingdotgg/t3code (revision `d6fb62ac3f2ab54a100202f5aea1428cfda977cd`)  
 License: MIT License, Copyright (c) 2026 T3 Tools Inc.

@@ -54,6 +54,8 @@ import { dirname, join } from "node:path";
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
 const TOOL_WRITE_MS=500;
+// How many harness turns the relay remembers the Trebell turn of (harnessTurnId).
+const HARNESS_TURN_LIMIT=1000;
 const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_process","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
 const RETIRED_NATIVE_TOOL_NAMESPACES=new Set(["trebell_device"]);
 // ACP harnesses, OpenCode and Muse Code run processes per thread; reopening one of their threads does not start them (see
@@ -918,15 +920,18 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     try{return usedSession(await run)}finally{if(sessionStarts.get(thread.id)===run)sessionStarts.delete(thread.id)}
   }
   // The sessions the sweep may let go: an ACP or OpenCode harness's, but not one it keeps until its thread closes (see sessionLeftWork
-  // above), whose harness ran a tool that can outlive its turn or can neither load nor resume a conversation. An ACP session's
-  // capabilities are known from its start, before it enters sessions.
-  const sweptSession=session=>(session instanceof OpenCodeAgentSession||session instanceof AcpAgentSession&&session.resumable)&&!sessionLeftWork.has(session);
-  function keepSession(session){if(sessionLeftWork.has(session))return;sessionLeftWork.add(session);armSessionSweep()}
+  // above), whose harness ran a tool that can outlive its turn or can neither load nor resume a conversation, and a Muse Code one that
+  // can resume its conversation. An ACP session's capabilities are known from its start, before it enters sessions.
+  const sweptSession=session=>(session instanceof OpenCodeAgentSession||(session instanceof AcpAgentSession||session instanceof MuseAgentSession)&&session.resumable)&&!sessionLeftWork.has(session);
+  // Muse Code says itself while work outlives its turn (MuseAgentSession.pendingBackgroundWork), so no tool keeps its session for good.
+  function keepSession(session){if(sessionLeftWork.has(session)||session instanceof MuseAgentSession)return;sessionLeftWork.add(session);armSessionSweep()}
   function sweepIdleSessions(){
     const now=Date.now();
     for(const [threadId,session] of sessions){
-      if(!sweptSession(session)||session.busy||session.activePrompt||threadRequests.has(threadId))continue;
-      if(now-(sessionUsed.get(session)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
+      // A Muse Code session whose workflows, subagents or background commands still run is kept: they run in its host (T3). Its idle
+      // time runs from its last use or the last word from that work, its end too, after which Muse reports on it in a turn of its own.
+      if(!sweptSession(session)||session.busy||session.activePrompt||session.pendingBackgroundWork||threadRequests.has(threadId))continue;
+      if(now-Math.max(sessionUsed.get(session)||0,Number(session.workHeardAt)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
       if(waitsOn(threadId))continue;
       sessions.delete(threadId);releaseSession(session,error=>log("Could not close an idle harness session: "+(error?.message||String(error))));
       // The windows hear it as Codex tells them of a thread it unloads: what they keep of the thread's turns (the Stops they sent,
@@ -1176,9 +1181,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           ?new OpenCode2AgentSession({...common,version:status.version,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp})
           :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp})))
       // Muse Code through Meta's SDK on a `muse serve` of Trebell's own, the thread's model and Thinking level resolved against the
-      // list its status check read, with the MCP servers the ACP harnesses get.
+      // list its status check read, with the MCP servers the ACP harnesses get and the report turns Muse starts itself as wake turns.
       :instance.kind==="muse"
-      ?new MuseAgentSession({...common,command:runtimeManager.executable(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys,modelCatalog:()=>runtimeManager.museModelCatalog?.(instance)||null,mcpServers:acpMcpServers})
+      ?new MuseAgentSession({...common,command:runtimeManager.executable(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys,modelCatalog:()=>runtimeManager.museModelCatalog?.(instance)||null,mcpServers:acpMcpServers,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context)})
       :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),argsForPermission:mode=>runtimeManager.acpArgs(instance,mode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,runTempRoot:instance.kind==="antigravity"&&!remoteIo?acpRuntimeTempRoot(runtimeManager.childEnv(instance),"antigravity"):null,attachmentsDir:instance.kind==="antigravity"&&!remoteIo?join(trebellHome(runtimeManager.env||process.env),"attachments"):null,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
     let runtime=create(),started,lost=null;
     // A Cursor thread runs in the Plan mode it last ran in until a turn names another (also after a restart).
@@ -1435,6 +1440,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(!session||session.__liveTurnId!==turnId)return;dropNativeDraft(session,threadId,"turn_end");delete session.__liveTurnId;
   }
 
+  // The Trebell turn a harness's own turn came with, from the first update that named it (params.turnKey): a Muse Code workflow or
+  // subagent runs on past its turn, and its later rows go to that turn, not the thread's last one.
+  const harnessTurns=new Map();
+  function harnessTurnId(threadId,key,turnId){
+    const id=threadId+"\0"+key,known=harnessTurns.get(id);if(known)return known;
+    harnessTurns.set(id,turnId);if(harnessTurns.size>HARNESS_TURN_LIMIT)harnessTurns.delete(harnessTurns.keys().next().value);
+    return turnId;
+  }
   // A message an ACP harness's connection dropped as one Trebell could not handle (acp-client.mjs, told once for each kind) goes to the
   // thread's trace and the server's log by its method and reason only, as T3 logs one it cannot decode; the turn goes on without it.
   function droppedAcpMessage(threadId,warning){
@@ -1450,8 +1463,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // Also before the thread's first turn, as during a session's start.
     if(draftType==="protocol_warning")return droppedAcpMessage(threadId,params.update);
     // A chunk needs only the last turn's id and status; reading the stored thread for each one read and parsed all of its history.
-    const update=params?.update||{};const lastTurn=lastTurnOf(threadId);if(!lastTurn)return;const turnId=lastTurn.id||null;
+    const update=params?.update||{};const lastTurn=lastTurnOf(threadId);if(!lastTurn)return;
     const type=update.sessionUpdate;
+    // A harness that names its own turn (params.turnKey, Muse Code's) keeps a tool row of a turn that ended in that turn (harnessTurnId).
+    const keyedTurn=params?.turnKey&&lastTurn.id?harnessTurnId(threadId,String(params.turnKey),lastTurn.id):null;
+    const turnId=keyedTurn&&(type==="tool_call"||type==="tool_call_update")?keyedTurn:lastTurn.id||null;
     if(type==="tool_call"||type==="tool_call_update"){endReasoning(threadId);if(!SETTLED_TOOL_KINDS.has(update.kind)){const live=sessions.get(threadId);if(live)keepSession(live)}}
     if(type==="agent_message_chunk"){
       const session=sessions.get(threadId),text=agentTextAfterToolCall(session,update.content?.type==="text"?update.content.text||"":"");

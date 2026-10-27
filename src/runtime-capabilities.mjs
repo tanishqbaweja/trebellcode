@@ -49,9 +49,9 @@ const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   // revert cuts the thread and starts a fresh session (T3's ACP rollbackThread, canRollbackThread for both).
   grok:Object.freeze({fork:"runtime",rewind:true,compaction:true,mcpInjection:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
   antigravity:Object.freeze({fork:"runtime",rewind:true,mcpInjection:true,clientFilesystem:true,detachedTasks:true,multiModelFanout:true,delegation:true,videoAttachments:false}),
-  // Muse Code takes a message into its running turn (turn/steer) and Trebell's MCP servers into its sessions (T3). Its compaction,
-  // fork, revert, usage, context and background work come with the Muse groups that map them.
-  muse:Object.freeze({steering:true,mcpInjection:true}),
+  // Muse Code takes a message into its running turn (turn/steer) and Trebell's MCP servers into its sessions, and reports the work it
+  // runs past a turn (T3). Its compaction, fork, revert, usage and context come with the Muse groups that map them.
+  muse:Object.freeze({steering:true,mcpInjection:true,detachedTasks:true}),
 });
 
 export function sharedRuntimeCapabilities(kind){

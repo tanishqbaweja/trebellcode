@@ -11,9 +11,11 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
-// Muse Code as the person meets it in Trebell: an MCP server saved in Settings for Muse Code reaching its session beside Trebell's
-// repository tools. Behind the page run the real agent relay and runtime manager on the stand-in Muse Code
-// (tests/fixtures/muse/fake-muse.cjs), which records what Trebell sends it.
+// Muse Code's work as the person meets it in Trebell: a subagent's row and the todo list as the turn's plan while the turn runs, a
+// workflow's agents in the turn that launched it with Muse's report on it as a turn of its own, and an MCP server saved in Settings for
+// Muse Code reaching its session beside Trebell's repository tools. Behind the page run the real agent relay and runtime manager on
+// the stand-in Muse Code (tests/fixtures/muse/fake-muse.cjs), which runs its subagent and its workflow as T3's recorded Muse sessions
+// do and records what Trebell sends it.
 const auditDir=fileURLToPath(new URL("../../visual-audit/muse-sessions/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const FAKE_MUSE=fileURLToPath(new URL("../../tests/fixtures/muse/fake-muse.cjs",import.meta.url));
 const MODEL_LIST=fileURLToPath(new URL("../../tests/fixtures/muse/model-list-1.4.13.json",import.meta.url));
@@ -88,6 +90,56 @@ async function send(page,text){
   await composer.click();await page.keyboard.type(text);await page.keyboard.press("Enter");
 }
 const reply=(page,text)=>page.locator(".history-assistant").filter({hasText:text});
+// A step of an activity card by its title: a string is a part of it, a pattern the whole of it.
+const row=(scope,title)=>scope.locator(".tool-event").filter({has:(scope.page?.()||scope).locator("summary strong",{hasText:title})});
+
+test("a Muse Code subagent and its todo list show as the running turn's row and plan, and both settle when its result is ready",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_SUBAGENT_MS:"6000"}});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Please spawn subagent and keep a todo list");
+    // While the subagent runs: its row, titled by its role, and Muse's todo list as the plan, without the cancelled and blank steps.
+    const live=page.locator(".agent-block .activity-card");
+    await expect(row(live,"Subagent · hello agent")).toHaveClass(/status-running/,{timeout:20_000});
+    await expect(row(live,"Spawn the hello agent")).toHaveClass(/status-running/);
+    await expect(row(live,"Read its result")).toHaveClass(/status-pending/);
+    await expect(live).not.toContainText("Discarded step");
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await live.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-subagent-running-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    // Its result is ready: the turn replies, and the row and the plan are done.
+    await expect(reply(page,"Hello")).toBeVisible({timeout:20_000});
+    await expect(row(page,"Subagent · hello agent")).toHaveClass(/status-done/);
+    await expect(row(page,"Spawn the hello agent")).toHaveClass(/status-done/);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`muse-subagent-done-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
+
+test("a Muse Code workflow's agents settle in the turn that launched it, and Muse's report on it comes as a turn of its own",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"500"}});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Please run workflow ping-pong");
+    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    // Muse reports once the workflow is done, in a turn with no message of the person's.
+    await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
+    await expect(page.locator(".user-row")).toHaveCount(1);
+    const launched=page.locator(".turn-card").first().locator(".activity-card");
+    if(await launched.getAttribute("data-state")!=="open")await launched.locator(".activity-card-head").click();
+    await expect(row(launched,"Workflow ping-pong")).toHaveCount(3);
+    await expect(row(launched,/^Workflow ping-pong$/)).toHaveClass(/status-done/);
+    await expect(row(launched,/^Workflow ping-pong · ping$/)).toHaveClass(/status-done/);
+    await expect(row(launched,/^Workflow ping-pong · pong: budget_exhausted$/)).toHaveClass(/status-error/);
+    // The report turn has no steps of the workflow's.
+    await expect(page.locator(".activity-card").filter({hasText:"Workflow ping-pong"})).toHaveCount(1);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await launched.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-report-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
 
 test("Settings lists MCP servers for Muse Code, and one saved there reaches Muse's session as an optional server beside Trebell's repository tools",async({page})=>{
   test.setTimeout(90_000);
