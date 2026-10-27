@@ -678,7 +678,22 @@ export class AcpAgentSession{
     // Any update but session metadata while a prompt runs is the harness at work on it, so the prompt is in its conversation. It is
     // told before the update goes on, so the delivery is recorded ahead of the turn's first step.
     if(this.activePrompt&&!METADATA_UPDATES.has(type))this.#promptTaken(this.activePrompt);
-    this.onUpdate?.(this.#decorate(params,update,type));
+    // A tool frame joins its call's state only once the relay has taken it: one the relay throws on is dropped whole (acp-client.mjs),
+    // as T3 drops an update it cannot decode, so the call's next updates do not bring its fields back and are not dropped for them.
+    const tool=this.#toolState(update,type);
+    this.onUpdate?.(tool?{...params,update:{...acpToolFrame(tool.merged),sessionUpdate:type}}:this.#decorate(params,update,type));
+    if(tool)this.#keepTool(tool.id,tool.merged);
+  }
+
+  // A tool frame merged into its call's last state (T3 mergeToolCallState); null for any other update and for a frame with no call id.
+  #toolState(update,type){
+    if(type!=="tool_call"&&type!=="tool_call_update")return null;
+    const id=text(update.toolCallId);
+    return id?{id,merged:mergeAcpToolUpdate(this.tools.get(id),update)}:null;
+  }
+  #keepTool(id,merged){
+    this.tools.delete(id);this.tools.set(id,merged);
+    if(this.tools.size>TOOL_STATE_LIMIT)this.tools.delete(this.tools.keys().next().value);
   }
 
   // Each Cursor reply message is read on its own for a lost-connection dump (T3 656f3f409): a tool call, a thought or a plan ends
@@ -691,13 +706,6 @@ export class AcpAgentSession{
   }
 
   #decorate(params,update,type){
-    if(type==="tool_call"||type==="tool_call_update"){
-      const id=text(update.toolCallId);if(!id)return params;
-      const merged=mergeAcpToolUpdate(this.tools.get(id),update);
-      this.tools.delete(id);this.tools.set(id,merged);
-      if(this.tools.size>TOOL_STATE_LIMIT)this.tools.delete(this.tools.keys().next().value);
-      return {...params,update:{...acpToolFrame(merged),sessionUpdate:type}};
-    }
     if(type==="available_commands_update")return {...params,update:{...update,commands:this.#rememberCommands(acpCommandsFromAvailable(update.availableCommands,this.runtime))}};
     if(type==="config_option_update"&&this.runtime==="opencode")return {...params,update:{...update,agents:acpModeAgents(this.sessionSetup)}};
     return params;
