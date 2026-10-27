@@ -23,7 +23,12 @@
 //   "read outside"      asks to read outside-notes.txt beside the workspace folder (a fileAccess read, as Muse asks one outside the
 //                       workspace), and replies READ IT or REJECTED
 //   "child approval"    a workflow child (subagentOrigin, its own run) asks to run the same command while the turn waits until it
-//                       is stopped; the child's approval outlives the turn
+//                       is stopped or the child's approval is settled; the child's approval outlives the turn
+//   "protected child"   a workflow child asks to write .muse/settings.json, a protected write that offers Allow once and Reject only
+//   "staged approval"   asks to run `touch a.txt && rm b.txt` stage by stage: `touch a.txt` first, and once the file MUSE_FAKE_STAGE_HOLD
+//                       names is there (else MUSE_FAKE_STAGE_MS, 300 ms, later) Muse's reviewer moves the approval on to `rm b.txt`
+//                       (approval/updated, reviewCompleted) with that stage's own choices, a saved rule keeping it out among them; a
+//                       decision for a stage the approval moved past is refused as stale (-32053); replies STAGE DECIDED: <choice>
 //   "ask question"      asks which approach to take (userInput/request and userInput/requested), settles it with the answer and
 //                       replies ANSWERED with it, or NO ANSWER for a cancel
 //   "retry"             schedules a retry of its model request (turn/retryScheduled), then replies MUSE_FAKE_RETRY_MS (400) ms later,
@@ -85,6 +90,8 @@ function startTurn(sessionId,params,{usage=null}={}){
   if(/ask approval|reviewer decides/i.test(words))return askApproval(sessionId,turnId,/reviewer decides/i.test(words));
   if(/read outside/i.test(words))return askApproval(sessionId,turnId,false,{read:true});
   if(/child approval/i.test(words))return askApproval(sessionId,turnId,false,{child:true});
+  if(/protected child/i.test(words))return askApproval(sessionId,turnId,false,{child:true,protectedWrite:true});
+  if(/staged approval/i.test(words))return askApproval(sessionId,turnId,false,{staged:true});
   if(/ask question/i.test(words))return askQuestion(sessionId,turnId);
   if(/dev server in the background/i.test(words))return runInBackground(sessionId,turnId,turn);
   if(/quota/i.test(words))return setTimeout(()=>{running.delete(turnId);notify("turn/completed",sessionId,{turnId,terminal:"failed",reason:QUOTA_REFUSAL,error:{kind:"modelError",message:QUOTA_REFUSAL,retryable:true}})},20);
@@ -179,26 +186,38 @@ const approvals=new Map(),questions=new Map();
 const SHELL_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"allow_local_prefix",label:"Always allow in this workspace: touch ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: touch ..."},{choiceId:"abort",label:"Reject",decision:"abort",scope:"once",acceptsFeedback:true}];
 // A file read outside the workspace: Muse reads its workspace unasked, and asks with Allow once or Reject for a file beyond it.
 const READ_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"deny",label:"Reject",decision:"denied",scope:"once"}];
+// A staged shell command's second stage, `rm b.txt`, with its own rules: one saved to allow it, one saved to keep it out.
+const RM_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"allow_local_prefix_rm",label:"Always allow in this workspace: rm ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: rm ..."},{choiceId:"deny_once",label:"Reject",decision:"denied",scope:"once"},{choiceId:"deny_local_prefix_rm",label:"Always reject in this workspace: rm ...",decision:"deniedPolicyAmendment",scope:"localPersistent",rulePreview:"Always reject in this workspace: rm ..."}];
 let nextRequest=900;
-function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false}={}){
+function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false,protectedWrite=false,staged=false}={}){
   // A workflow child's approval names the child's own run as its turn, and its origin.
   const turnId=child?parentTurnId+"-child-run":parentTurnId,origin=child?{subagentOrigin:{subagentId:"agent-7",childRunId:turnId,childSessionId:parentTurnId+"-child-session"}}:{};
   const approvalId=turnId+"-approval",requirement={approvalId,sourceIndex:0},workspaceRoot=sessions.get(sessionId)?.workspaceRoot||"";
-  const outside=read?require("node:path").resolve(workspaceRoot||process.cwd(),"..","outside-notes.txt"):"",choices=read?READ_CHOICES:SHELL_CHOICES;
-  const params={sessionId,approvalId,turnId,taskId:approvalId,itemId:approvalId,toolCallId:"call_"+approvalId,toolName:read?"read_file":"bash",rawArgs:JSON.stringify(read?{file_path:outside}:{command:"touch muse-approved.txt"}),viewCursor:`v:${sessionId}:${++cursor}`,sourceRange:{},
-    subject:read?{kind:"fileAccess",access:"read",path:outside,toolName:"read_file"}:{kind:"shell",command:"touch muse-approved.txt",workspaceRoot,stages:[{requirementId:requirement,position:1,totalStages:1,argv:["touch","muse-approved.txt"],argvComplete:true,resolution:{kind:"unresolved"},suggestedPrefix:{argvPrefix:["touch"],label:"Always allow in this workspace: touch ..."}}]},
-    currentRequirementId:requirement,availableChoices:choices,protectedWrite:false,judgeEscalated:false,...origin};
-  approvals.set(approvalId,{sessionId,turnId,settled:false,choices,read});
+  const outside=read?require("node:path").resolve(workspaceRoot||process.cwd(),"..","outside-notes.txt"):"",choices=read||protectedWrite?READ_CHOICES:SHELL_CHOICES;
+  const command=staged?"touch a.txt && rm b.txt":"touch muse-approved.txt",stage=(index,argv)=>({requirementId:{approvalId,sourceIndex:index},position:index+1,totalStages:staged?2:1,argv,argvComplete:true,resolution:{kind:"unresolved"},suggestedPrefix:{argvPrefix:[argv[0]],label:`Always allow in this workspace: ${argv[0]} ...`}});
+  const subject=read?{kind:"fileAccess",access:"read",path:outside,toolName:"read_file"}:protectedWrite?{kind:"fileAccess",access:"write",path:".muse/settings.json",toolName:"write_file"}
+    :{kind:"shell",command,workspaceRoot,stages:staged?[stage(0,["touch","a.txt"]),stage(1,["rm","b.txt"])]:[stage(0,["touch","muse-approved.txt"])]};
+  const params={sessionId,approvalId,turnId,taskId:approvalId,itemId:approvalId,toolCallId:"call_"+approvalId,toolName:read?"read_file":protectedWrite?"write_file":"bash",rawArgs:JSON.stringify(read?{file_path:outside}:protectedWrite?{file_path:".muse/settings.json"}:{command}),viewCursor:`v:${sessionId}:${++cursor}`,sourceRange:{},
+    subject,currentRequirementId:requirement,availableChoices:choices,protectedWrite,judgeEscalated:false,...origin};
+  approvals.set(approvalId,{sessionId,turnId,parentTurnId,settled:false,choices,requirement,read,staged});
   write({jsonrpc:"2.0",id:++nextRequest,method:"approval/request",params});
   notify("approval/requested",sessionId,{...params,emittedAtMs:Date.now()});
   if(reviewer)later(process.env.MUSE_FAKE_REVIEW_HOLD,Number(process.env.MUSE_FAKE_REVIEW_MS||300),()=>settleApproval(approvalId,{decision:"approved",resolvedBy:"llmJudge"}));
+  // Muse's reviewer moves a staged command on to its next stage, with that stage's own choices.
+  if(staged)later(process.env.MUSE_FAKE_STAGE_HOLD,Number(process.env.MUSE_FAKE_STAGE_MS||300),()=>{
+    const approval=approvals.get(approvalId);if(!approval||approval.settled)return;
+    approval.requirement={approvalId,sourceIndex:1};approval.choices=RM_CHOICES;
+    notify("approval/updated",sessionId,{approvalId,subject,currentRequirementId:approval.requirement,availableChoices:RM_CHOICES,change:{kind:"reviewCompleted"},sourceRange:{}});
+  });
 }
-function settleApproval(approvalId,{decision,resolvedBy="user",commandId=null}){
+function settleApproval(approvalId,{decision,resolvedBy="user",commandId=null,choiceId=null}){
   const approval=approvals.get(approvalId);if(!approval||approval.settled)return false;
   approval.settled=true;
-  notify("approval/resolved",approval.sessionId,{approvalId,itemId:approvalId,turnId:approval.turnId,decision,policyResult:decision==="abort"||decision==="denied"?"deny":"allow",resolvedBy,...(commandId?{decidedByCommandId:commandId}:{}),stageEvidence:[],sourceRange:{}});
-  const turn=running.get(approval.turnId);
-  if(turn)setTimeout(()=>{reply(approval.sessionId,turn,resolvedBy==="llmJudge"?"THE REVIEWER ALLOWED IT":decision==="abort"||decision==="denied"?"REJECTED":decision==="approvedPolicyAmendment"?"ALWAYS ALLOWED":approval.read?"READ IT":"APPROVED");complete(approval.sessionId,approval.turnId)},20);
+  notify("approval/resolved",approval.sessionId,{approvalId,itemId:approvalId,turnId:approval.turnId,decision,policyResult:decision==="abort"||decision==="denied"||decision==="deniedPolicyAmendment"?"deny":"allow",resolvedBy,...(commandId?{decidedByCommandId:commandId}:{}),stageEvidence:[],sourceRange:{}});
+  // A workflow child's approval answers in the turn that waits on the child, while it still runs.
+  const turnId=running.has(approval.turnId)?approval.turnId:approval.parentTurnId,turn=running.get(turnId);
+  const said=approval.staged?`STAGE DECIDED: ${choiceId}`:resolvedBy==="llmJudge"?"THE REVIEWER ALLOWED IT":decision==="abort"||decision==="denied"?"REJECTED":decision==="approvedPolicyAmendment"?"ALWAYS ALLOWED":approval.read?"READ IT":"APPROVED";
+  if(turn)setTimeout(()=>{reply(approval.sessionId,turn,said);complete(approval.sessionId,turnId)},20);
   return true;
 }
 function askQuestion(sessionId,turnId){
@@ -263,9 +282,11 @@ const answers={
     const approval=approvals.get(params.approvalId);
     if(!approval)throw Object.assign(new Error(`approval ${params.approvalId} not found`),{code:-32050,kind:"approvalNotFound"});
     if(approval.settled)throw Object.assign(new Error(`approval ${params.approvalId} is already resolved`),{code:-32051,kind:"approvalAlreadyResolved"});
-    const choice=(approval.choices||SHELL_CHOICES).find(item=>item.choiceId===params.choiceId);
-    if(!choice||JSON.stringify(params.requirementId)!==JSON.stringify({approvalId:params.approvalId,sourceIndex:0}))throw Object.assign(new Error(`choice ${params.choiceId} is not offered`),{code:-32052,kind:"approvalChoiceInvalid"});
-    setImmediate(()=>settleApproval(params.approvalId,{decision:choice.decision,commandId:params.commandId}));
+    // Meta's race guard: a decision names the stage it is for, and one for a stage the approval moved past is stale.
+    if(JSON.stringify(params.requirementId)!==JSON.stringify(approval.requirement))throw Object.assign(new Error(`requirement ${JSON.stringify(params.requirementId)} is stale`),{code:-32053,kind:"approvalRequirementStale"});
+    const choice=approval.choices.find(item=>item.choiceId===params.choiceId);
+    if(!choice)throw Object.assign(new Error(`choice ${params.choiceId} is not offered`),{code:-32052,kind:"approvalChoiceInvalid"});
+    setImmediate(()=>settleApproval(params.approvalId,{decision:choice.decision,commandId:params.commandId,choiceId:choice.choiceId}));
     return {commandId:params.commandId,status:"accepted",approvalId:params.approvalId,terminal:true};
   },
   "userInput/answer":params=>{
