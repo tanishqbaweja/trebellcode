@@ -9,14 +9,16 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 // Antigravity row says it needs one and where to get one, its Sign in opens the key form, which says why Trebell offers no Google
 // sign-in, and the key typed there goes to the server's sign-in and is never shown again. A sign-in that fails (Google out of reach)
 // is said in the form; one that works closes it, says so and takes the harness list it answers with, without asking for the list
-// again. Once a key is saved the form offers Remove key. The harness lists are the server's own reading (AgentRuntimeManager's
-// snapshot of a managed Antigravity install in a home of the test's own); /api/agent-runtime-auth is the test's, saving the key as
-// the server does once Antigravity has signed in with it.
+// again. Once a key is saved the row says so, its button changes the key, and the form offers Remove key; the line under the list says
+// which Antigravity chats a new or removed key stopped. The harness lists are the server's own reading (AgentRuntimeManager's snapshot
+// of a managed Antigravity install in a home of the test's own); /api/agent-runtime-auth is the test's, saving the key as the server
+// does once Antigravity has signed in with it.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/antigravity-sign-in/",import.meta.url));mkdirSync(shots,{recursive:true});
 const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
 const missing=command=>({ok:false,code:null,error:`spawn ${command} ENOENT`,stdout:"",stderr:""});
 const KEY="AIzaSyE2eFixtureKeyForTrebell0123456789";
 const NEEDED="Antigravity needs a Gemini API key. Create one in Google AI Studio (aistudio.google.com/apikey), then add it to Antigravity in Settings.";
+const SAVED="1.4.3 · Gemini API key saved.";
 const UNREACHABLE="Google did not answer Antigravity's sign-in with the Gemini API key within 5 minutes. Antigravity does not fall back to IPv4 when IPv6 fails, so a network whose IPv6 does not work is the likeliest reason: check that this machine reaches Google, then sign in again.";
 async function switchMode(page,mode){
   if(await page.locator("html").getAttribute("data-mode")!==mode)await page.locator("[data-testid=appearance-toggle]:visible").first().click();
@@ -26,8 +28,10 @@ const harnessRow=(page,name)=>page.locator(".agent-runtime-option").filter({has:
 const said=row=>row.locator("button").first().locator("small");
 const action=row=>row.locator("button").first().locator("em");
 
-test("Antigravity signs in with a Gemini API key typed in Settings, which is never shown again, and says why a sign-in failed",async({page})=>{
-  test.setTimeout(120_000);
+// Settings' Agents & models over a managed Antigravity install in a home of the test's own (savedKey: a key saved before the page
+// opens, as after a restart). Each sign-in is answered as plan says: "held" waits for release() and is refused, "refuse" is refused,
+// anything else saves the key; answers carry stopped (the server's stoppedChats) when it is set.
+async function openSettings(page,{savedKey=null}={}){
   await page.setViewportSize({width:1280,height:900});
   const home=mkdtempSync(join(tmpdir(),"trebell-e2e-agy-key-")),trebell=join(home,"trebell");
   // A managed Antigravity install (its install.json and executable); no other harness is on this machine.
@@ -35,6 +39,7 @@ test("Antigravity signs in with a Gemini API key typed in Settings, which is nev
   for(const name of ["agy_acp_server.exe","agy_acp_server.par"])writeFileSync(join(current,name),"fixture");
   writeFileSync(join(current,"install.json"),JSON.stringify({runtime:"antigravity",version:"1.4.3"}));
   const saveKey=key=>writeFileSync(join(trebell,"harness-secrets.json"),JSON.stringify(key?{"antigravity.geminiApiKey":key}:{}));
+  if(savedKey)saveKey(savedKey);
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   const manager=new AgentRuntimeManager({state:{settings:()=>settings},env:{PATH:"/usr/bin",HOME:home,USERPROFILE:home,TREBELL_HOME:trebell},runFn:async command=>missing(command)});
   const native=(await manager.snapshot()).statuses.find(item=>item.kind==="native");
@@ -48,27 +53,31 @@ test("Antigravity signs in with a Gemini API key typed in Settings, which is nev
   await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
-  let listings=0;
-  await page.route(/\/api\/agent-runtimes$/,async route=>{if(route.request().method()!=="GET")return route.continue();listings++;return json(route,await manager.snapshot())});
-  // The sign-in: each answer as the server gives it. A held answer waits for release().
-  const posts=[];let plan=[],release=null;
+  const fx={home,posts:[],plan:[],stopped:null,release:null,listings:0};
+  await page.route(/\/api\/agent-runtimes$/,async route=>{if(route.request().method()!=="GET")return route.continue();fx.listings++;return json(route,await manager.snapshot())});
   await page.route(/\/api\/agent-runtime-auth$/,async route=>{
-    const body=route.request().postDataJSON();posts.push(body);
-    if(body.action==="remove-key"){saveKey(null);return json(route,{ok:true,authenticated:false,agentSnapshot:await manager.snapshot()})}
-    const next=plan.shift();
-    if(next==="held")await new Promise(resolve=>{release=resolve});
+    const body=route.request().postDataJSON();fx.posts.push(body);
+    const stopped=fx.stopped==null?{}:{stoppedChats:fx.stopped};
+    if(body.action==="remove-key"){saveKey(null);return json(route,{ok:true,authenticated:false,...stopped,agentSnapshot:await manager.snapshot()})}
+    const next=fx.plan.shift();
+    if(next==="held")await new Promise(resolve=>{fx.release=resolve});
     if(next==="refuse"||next==="held")return json(route,{ok:false,error:UNREACHABLE},400);
     saveKey(body.apiKey);
-    return json(route,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:"antigravity-default",methodId:"gemini-api-key",methodName:"Gemini API key"},agentSnapshot:await manager.snapshot()});
+    return json(route,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:"antigravity-default",methodId:"gemini-api-key",methodName:"Gemini API key"},...stopped,agentSnapshot:await manager.snapshot()});
   });
   // Get a key opens Google AI Studio in a new tab: the tabs asked for are kept instead.
   await page.addInitScript(()=>{window.__opened=[];window.open=(...args)=>{window.__opened.push(args[0]);return null}});
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  return {...fx,fx,antigravity:harnessRow(page,"Antigravity"),form:page.getByTestId("antigravity-key-form"),close:()=>rmSync(home,{recursive:true,force:true,maxRetries:10,retryDelay:200})};
+}
+
+test("Antigravity signs in with a Gemini API key typed in Settings, which is never shown again, and says why a sign-in failed",async({page})=>{
+  test.setTimeout(120_000);
+  const settings=await openSettings(page),{fx,antigravity,form}=settings;
   try{
-    await page.goto("/");
-    await expect(page.getByTestId("composer")).toBeVisible();
-    await page.getByRole("button",{name:"Settings",exact:true}).click();
-    await page.getByRole("button",{name:/Agents & models/}).click();
-    const antigravity=harnessRow(page,"Antigravity"),form=page.getByTestId("antigravity-key-form");
     // Without a key: why it is not ready and where to get one, and Sign in.
     await expect(said(antigravity)).toHaveText(NEEDED);
     await expect(action(antigravity)).toHaveText("Not ready");
@@ -92,36 +101,41 @@ test("Antigravity signs in with a Gemini API key typed in Settings, which is nev
     await field.click();
     await page.keyboard.type(KEY,{delay:5});
     await expect(save).toBeEnabled();
-    // Google out of reach: the form waits while Antigravity starts, then says why, and the key stays in the field to try again.
-    plan=["held"];
+    // Google out of reach: the form waits while Antigravity starts, its button saying so, then says why, and the key stays in the
+    // field to try again.
+    fx.plan=["held"];
     await page.keyboard.press("Enter");
-    await expect(form.getByRole("button",{name:"Checking key…"})).toBeDisabled();
+    await expect(form.getByRole("button",{name:"Starting Antigravity…"})).toBeDisabled();
+    await expect(form.getByRole("button",{name:/Checking/})).toHaveCount(0);
     await expect(form.getByRole("status")).toHaveText("Antigravity is starting with the key. This takes about half a minute, and up to 5 minutes on a slow network.");
     await expect(field).toBeDisabled();
     await page.screenshot({animations:"disabled",path:shots+"key-checking-dark-1280.png"});
-    release();
+    // The held sign-in has reached the test's answer before it is let go.
+    await expect.poll(()=>typeof fx.release).toBe("function");
+    fx.release();
     await expect(form.getByRole("alert")).toHaveText(UNREACHABLE);
     await expect(field).toBeEnabled();await expect(field).toHaveValue(KEY);
     await form.scrollIntoViewIfNeeded();
     await page.screenshot({animations:"disabled",path:shots+"key-unreachable-dark-1280.png"});
-    expect(posts).toEqual([{action:"login",runtime:"antigravity",instanceId:"antigravity-default",apiKey:KEY}]);
+    expect(fx.posts).toEqual([{action:"login",runtime:"antigravity",instanceId:"antigravity-default",apiKey:KEY}]);
     // Tried again, it signs in: the form closes, the line under the list says so, and the row takes the list the answer brought.
-    const listingsBefore=listings;
+    const listingsBefore=fx.listings;
     await save.click();
     await expect(form).toHaveCount(0);
     await expect(page.getByTestId("agent-runtime-message")).toHaveText(" · Gemini API key saved, and Antigravity opened a session with it. Google checks the key with the first chat message.");
-    await expect(said(antigravity)).toHaveText("1.4.3");
+    await expect(said(antigravity)).toHaveText(SAVED);
     await expect(action(antigravity)).toHaveText("Switch");
-    expect(listings-listingsBefore,"the harness list came with the answer").toBe(0);
-    expect(posts.at(-1)).toEqual({action:"login",runtime:"antigravity",instanceId:"antigravity-default",apiKey:KEY});
+    expect(fx.listings-listingsBefore,"the harness list came with the answer").toBe(0);
+    expect(fx.posts.at(-1)).toEqual({action:"login",runtime:"antigravity",instanceId:"antigravity-default",apiKey:KEY});
     expect(await page.evaluate(key=>document.body.innerText.includes(key)||[...document.querySelectorAll("input")].some(input=>input.value.includes(key)),KEY),"the key is nowhere on the page").toBe(false);
     for(const mode of ["dark","light"]){
       await switchMode(page,mode);await antigravity.scrollIntoViewIfNeeded();
       await page.screenshot({animations:"disabled",path:shots+`key-saved-${mode}-1280.png`});
     }
     await switchMode(page,"dark");
-    // Sign in again: the form says a key is saved without showing it, and offers Remove key and Google AI Studio.
-    await signIn.click();
+    // Change key: the form says a key is saved without showing it, and offers Remove key and Google AI Studio.
+    const changeKey=antigravity.getByRole("button",{name:"Change key",exact:true});
+    await changeKey.click();
     await expect(field).toBeFocused();await expect(field).toHaveValue("");await expect(field).toHaveAttribute("placeholder","Saved key ••••••••");
     await form.getByRole("button",{name:"Get a key in Google AI Studio"}).click();
     expect(await page.evaluate(()=>window.__opened)).toEqual(["https://aistudio.google.com/apikey"]);
@@ -130,13 +144,57 @@ test("Antigravity signs in with a Gemini API key typed in Settings, which is nev
     // Escape in the field closes the form; Remove key takes the key out, and the row says a key is needed again.
     await field.press("Escape");
     await expect(form).toHaveCount(0);
-    await signIn.click();
+    await changeKey.click();
     await form.getByRole("button",{name:"Remove key"}).click();
     await expect(form).toHaveCount(0);
     await expect(page.getByTestId("agent-runtime-message")).toHaveText(" · Antigravity: Gemini API key removed.");
     await expect(said(antigravity)).toHaveText(NEEDED);
-    expect(posts.at(-1)).toEqual({action:"remove-key",runtime:"antigravity",instanceId:"antigravity-default"});
-  }finally{
-    rmSync(home,{recursive:true,force:true,maxRetries:10,retryDelay:200});
-  }
+    await expect(antigravity.getByRole("button",{name:"Sign in",exact:true})).toBeVisible();
+    expect(fx.posts.at(-1)).toEqual({action:"remove-key",runtime:"antigravity",instanceId:"antigravity-default"});
+  }finally{settings.close()}
+});
+
+test("once a Gemini API key is saved, as after a restart, the Antigravity row says so beside its version and its button changes the key",async({page})=>{
+  test.setTimeout(90_000);
+  const settings=await openSettings(page,{savedKey:KEY}),{antigravity,form}=settings;
+  try{
+    await expect(said(antigravity)).toHaveText(SAVED);
+    await expect(action(antigravity)).toHaveText("Switch");
+    await expect(antigravity.getByRole("button",{name:"Sign in",exact:true})).toHaveCount(0);
+    const changeKey=antigravity.getByRole("button",{name:"Change key",exact:true});
+    await expect(changeKey).toBeEnabled();
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);await antigravity.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`row-key-saved-${mode}-1280.png`});
+    }
+    await changeKey.click();
+    await expect(form.getByLabel("Antigravity · Gemini API key")).toHaveAttribute("placeholder","Saved key ••••••••");
+    await expect(form.getByRole("button",{name:"Remove key"})).toBeVisible();
+  }finally{settings.close()}
+});
+
+test("a key saved or removed says which Antigravity chats it stopped, since each ran on the key it started with",async({page})=>{
+  test.setTimeout(90_000);
+  const settings=await openSettings(page,{savedKey:KEY}),{fx,antigravity,form}=settings;
+  try{
+    // The row's key button (its own test checks its name).
+    const message=page.getByTestId("agent-runtime-message"),keyButton=antigravity.getByRole("button",{name:/^(Change key|Sign in)$/});
+    // Another key: the one chat open on the earlier key was stopped, and goes on with the new key.
+    fx.stopped=1;
+    await keyButton.click();
+    await form.getByLabel("Antigravity · Gemini API key").fill("AIzaSyE2eFixtureKeyForTrebellSecond0001");
+    await form.getByRole("button",{name:"Save key and sign in"}).click();
+    await expect(form).toHaveCount(0);
+    await expect(message).toHaveText(" · Gemini API key saved, and Antigravity opened a session with it. Google checks the key with the first chat message. The Antigravity chat open on the earlier key was stopped, and goes on with this key at the next message.");
+    await switchMode(page,"light");await message.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+"key-changed-chat-stopped-light-1280.png"});
+    await switchMode(page,"dark");
+    // Removed while two chats ran on it.
+    fx.stopped=2;
+    await keyButton.click();
+    await form.getByRole("button",{name:"Remove key"}).click();
+    await expect(message).toHaveText(" · Gemini API key removed. The 2 Antigravity chats open on it were stopped.");
+    await message.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:shots+"key-removed-chats-stopped-dark-1280.png"});
+  }finally{settings.close()}
 });
