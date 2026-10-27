@@ -14,7 +14,8 @@ test("OpenCode 2 waits for a specifically selected model when a cold provider ca
   const complete={data:[...partial.data,{providerID:"opencode",id:"big-pickle"}]};
   const client={model:{list:async()=>++calls<3?partial:complete}};
   const result=await waitForOpenCode2Models(client,{directory:"/repo"},{requiredModel:"opencode/big-pickle",timeoutMs:100,intervalMs:1});
-  assert.equal(calls,3);
+  // The third read lists the model, and a fourth that agrees with it settles the list.
+  assert.equal(calls,4);
   assert.equal(result.data.some(model=>openCode2ModelId(model)==="opencode/big-pickle"),true);
 });
 

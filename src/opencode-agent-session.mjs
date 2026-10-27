@@ -314,13 +314,28 @@ export function openCode2ModelId(model){
   return modelID?`${providerID}/${modelID}`:"";
 }
 function openCode2Variants(model){return (Array.isArray(model?.variants)?model.variants:[]).map(item=>String(item?.id||"").trim()).filter(value=>OPENCODE_VARIANT.test(value))}
-export async function waitForOpenCode2Models(client,location,{timeoutMs=15_000,intervalMs=250,requiredModel=null}={}){
-  const deadline=Date.now()+timeoutMs,wanted=String(requiredModel||"").trim();let result=await client.model.list({location});
-  const ready=value=>Array.isArray(value?.data)&&value.data.length>0&&(!wanted||value.data.some(model=>openCode2ModelId(model)===wanted));
-  while(!ready(result)&&Date.now()<deadline){
-    await new Promise(resolve=>setTimeout(resolve,intervalMs));result=await client.model.list({location});
+// What two reads of OpenCode 2's model list compare (T3 Code's catalogFingerprint): each model's provider, id, name, variants and
+// whether it is enabled, in no particular order.
+const openCode2CatalogFingerprint=models=>models.map(model=>JSON.stringify([String(model?.providerID??""),String(model?.id??""),String(model?.name??""),model?.enabled!==false,(Array.isArray(model?.variants)?model.variants:[]).map(item=>String(item?.id??"")).sort()])).sort().join("\n");
+// A cold OpenCode 2 server can list part of its catalog at first (T3 Code's makeOpenCode2ModelLoader), so a list counts once two reads
+// in a row, intervalMs apart, list the same models. A list with models (and with requiredModel, at a session's start) is waited for at
+// most timeoutMs, and one that agrees with it settleMs more, within timeoutMs; the latest list with models stands then, settled false.
+// A read that fails after a list with models leaves that list; one that fails before it fails the wait.
+export async function waitForOpenCode2Models(client,location,{timeoutMs=15_000,settleMs=5_000,intervalMs=250,requiredModel=null}={}){
+  const wanted=String(requiredModel||"").trim();let deadline=Date.now()+timeoutMs,latest=null,previous=null;
+  const listed=value=>Array.isArray(value?.data)&&value.data.length>0&&(!wanted||value.data.some(model=>openCode2ModelId(model)===wanted));
+  for(;;){
+    let result;
+    try{result=await client.model.list({location})}catch(error){if(latest)return {...latest,settled:false};throw error}
+    if(listed(result)){
+      const fingerprint=openCode2CatalogFingerprint(result.data);
+      if(fingerprint===previous)return {...result,settled:true};
+      if(!latest)deadline=Math.min(deadline,Date.now()+settleMs);
+      latest=result;previous=fingerprint;
+    }else previous=null;
+    if(Date.now()>=deadline)return {...(latest||result),settled:false};
+    await new Promise(resolve=>setTimeout(resolve,intervalMs));
   }
-  return result;
 }
 export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null}={}){
   const {OpenCode:OpenCode2}=await loadOpenCode2Client();
@@ -341,12 +356,15 @@ export async function discoverOpenCode2ModelCatalog({command="opencode",cwd=proc
       return {id,providerID,name:trimmedText(model.name)||id,providerName:providerNames.get(providerID)||providerID,context:Number(model.limit?.context)||0,variants};
     }).filter(item=>item.id);
     const preferred=openCode2ModelId(defaultResult?.data)||rows[0]?.id||null,ordered=preferred?[rows.find(item=>item.id===preferred),...rows.filter(item=>item.id!==preferred)].filter(Boolean):rows;
+    const pending=rows.length&&modelResult?.settled===false?["models"]:[];
     return {
       models:ordered.map(item=>item.id),
       metadata:ordered.map(item=>({id:item.id,name:item.name,provider:"opencode",agent:"OpenCode",upstreamProvider:item.providerName,...(item.context?{contextWindow:item.context}:{}),...(item.variants.length?{reasoningEfforts:item.variants,defaultReasoningEffort:inferOpenCodeDefaultVariant(item.providerID,item.variants)}:{})})),
       preferred,
       connectedProviders:[...new Set(ordered.map(item=>item.providerID).filter(Boolean))],
       inventory:{commands:Array.isArray(commands)?commands:[],skills:Array.isArray(skills)?skills:[],agents:openCodePrimaryAgents((Array.isArray(agents)?agents:[]).map(agent=>({...agent,name:agent?.name||agent?.id})))},
+      // A model list that was still changing when the wait ended is pending: a later read lists the rest.
+      ...(pending.length?{pending}:{}),
       source:"live-connected-v2",
     };
   }finally{server.close?.()}
