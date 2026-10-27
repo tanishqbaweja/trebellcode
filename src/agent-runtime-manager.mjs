@@ -16,6 +16,7 @@ import { resolveWindowsCommandShim, windowsCommandShimTarget } from "./windows-c
 import { codexAccountStatus, readCodexAccount } from "./codex-account-probe.mjs";
 import { remoteCodexHomeSetup } from "./environment-app-server.mjs";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
+import { CLAUDE_CAPABILITIES_TTL_MS } from "./claude-capabilities.mjs";
 import { defaultAcpClientCapabilities } from "./acp-client.mjs";
 import { acpProbeSession, acpSessionModelCatalog, antigravityModelCatalog, antigravitySeedCatalog, cursorModelCatalog, GROK_INITIALIZE_META, grokModelCatalog, withAcpProbe } from "./acp-model-catalog.mjs";
 import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
@@ -997,8 +998,9 @@ export class AgentRuntimeManager{
     }
     if(instance.kind==="claude"){
       // The models Claude Code itself lists in its initialize answer, "default" (its own default model) first, as T3 Code reads them.
+      // A probe of the last five minutes lists them, also one whose plan usage read failed: the Usage card reads that again.
       let probe;
-      try{probe=await this.claudeCapabilities(instance,{environmentId})}
+      try{probe=await this.claudeCapabilities(instance,{environmentId,maxAgeMs:CLAUDE_CAPABILITIES_TTL_MS})}
       catch(error){return {models:[],metadata:[],source:"unavailable",error:"Claude Code could not list its models: "+(error?.message||String(error))}}
       const catalog=claudeModelCatalog(probe);
       // The same probe's slash commands and agents fill the composer's menus before a new chat's first message (T3 Code's
@@ -1098,9 +1100,9 @@ export class AgentRuntimeManager{
   }
   // Claude Code's no-prompt capability probe (models, commands, agents, account and plan usage), run where the profile runs and
   // shared for five minutes.
-  claudeCapabilities(instance,{environmentId=undefined,cwd=null,includeUsage=true,fresh=false}={}){
+  claudeCapabilities(instance,{environmentId=undefined,cwd=null,includeUsage=true,fresh=false,maxAgeMs=undefined}={}){
     const profile=this.activeEnvironment(environmentId),spawnProcess=this.processSpawner(instance,environmentId);
-    return this.claudeCapabilitiesCache.load({command:this.executable(instance,{environmentId}),cwd,env:this.childEnv(instance),spawnProcess,scope:spawnProcess?String(profile?.id||""):"",includeUsage},{fresh});
+    return this.claudeCapabilitiesCache.load({command:this.executable(instance,{environmentId}),cwd,env:this.childEnv(instance),spawnProcess,scope:spawnProcess?String(profile?.id||""):"",includeUsage},{fresh,maxAgeMs});
   }
   async usageLimits(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;

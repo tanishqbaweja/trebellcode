@@ -94,20 +94,26 @@ function keptClaudeProbe(value,env){
 // One cache per Claude home, executable, working folder and environment (scope names a remote one): each holds the latest
 // probe, reused for five minutes when it is kept (keptClaudeProbe), and concurrent readers share the probe in flight. A probe
 // that is not kept counts as expired at once, so the Usage card fills in at the next refresh after a passing failure or a
-// sign-in. peek's maxAgeMs is how old an answer the caller accepts; by default, what load would reuse.
+// sign-in. maxAgeMs is how old an answer the caller accepts; by default, the entry's own window. The model list, which a failed
+// usage read leaves as it was, takes five minutes (the probe's models and commands do not expire with its usage), and a probe that
+// fails puts back the answer it was to replace.
 export function createClaudeCapabilitiesCache({probe=probeClaudeCapabilities,ttlMs=CLAUDE_CAPABILITIES_TTL_MS,now=()=>Date.now()}={}){
   const entries=new Map();
   const keyOf=({command,cwd,env,spawnProcess,scope})=>[String(command||""),String(env?.CLAUDE_CONFIG_DIR||""),String(cwd||""),spawnProcess?"remote:"+String(scope||""):"local"].join("\0");
+  const current=(entry,maxAgeMs)=>Boolean(entry?.value)&&now()-entry.at<(maxAgeMs??entry.ttl);
   return {
     peek(input={},{maxAgeMs}={}){
       const entry=entries.get(keyOf(input));
-      return entry?.value&&now()-entry.at<(maxAgeMs??entry.ttl)?entry.value:null;
+      return current(entry,maxAgeMs)?entry.value:null;
     },
-    load(input={},{fresh=false}={}){
+    load(input={},{fresh=false,maxAgeMs}={}){
       const key=keyOf(input),entry=entries.get(key);
+      // A caller with its own window takes an answer within it at once, even while a probe for another caller runs.
+      if(!fresh&&maxAgeMs!=null&&current(entry,maxAgeMs))return Promise.resolve(entry.value);
       if(entry?.pending)return entry.pending;
-      if(!fresh&&entry?.value&&now()-entry.at<entry.ttl)return Promise.resolve(entry.value);
-      const pending=probe(input).then(value=>{entries.set(key,{value,at:now(),ttl:keptClaudeProbe(value,input.env)?ttlMs:0});return value},error=>{if(entries.get(key)?.pending===pending)entries.delete(key);throw error});
+      if(!fresh&&current(entry))return Promise.resolve(entry.value);
+      const previous=entry?.value?{value:entry.value,at:entry.at,ttl:entry.ttl}:null;
+      const pending=probe(input).then(value=>{entries.set(key,{value,at:now(),ttl:keptClaudeProbe(value,input.env)?ttlMs:0});return value},error=>{if(entries.get(key)?.pending===pending){if(previous)entries.set(key,previous);else entries.delete(key)}throw error});
       entries.set(key,{...(entry||{}),pending});
       return pending;
     },
