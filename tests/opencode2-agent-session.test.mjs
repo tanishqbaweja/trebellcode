@@ -108,3 +108,48 @@ test("an OpenCode 2 attachment whose file is gone, or one for a server of the pr
     assert.deepEqual(external.called("session.prompt")[1],{sessionID:"ses_main",text:"Only words"});
   }finally{await remote.session.close()}
 });
+
+test("an OpenCode 2 retry shows as the turn's retry row, with the model, the retry, the wait and the provider's reason, and the turn goes on",async()=>{
+  const fake=fakeOpenCode2(),{session,updates}=await startedSession(fake);
+  try{
+    const turn=session.prompt([{type:"text",text:"Hello"}]);
+    await eventually(()=>fake.called("session.prompt").length===1);
+    // OpenCode counts the first request as attempt 1: attempt 2 is the first retry, 30 s after OpenCode scheduled it.
+    const created=Date.now()-5_000;
+    fake.emit({type:"session.retry.scheduled",created,data:{sessionID:"ses_main",assistantMessageID:"msg_a1",attempt:2,at:created+30_000,error:{type:"provider.rate-limit",message:"429 Too Many Requests"}}});
+    await eventually(()=>notices(updates).length===1);
+    assert.deepEqual(notices(updates),[{sessionUpdate:"runtime_error",willRetry:true,message:"429 Too Many Requests. OpenCode retries opencode/big-pickle in 30 s (retry 1)."}]);
+    fake.emit({type:"session.text.started",data:{sessionID:"ses_main",assistantMessageID:"msg_a1",ordinal:0}});
+    fake.emit({type:"session.text.delta",data:{sessionID:"ses_main",assistantMessageID:"msg_a1",delta:"Hello there."}});
+    ended(fake);
+    const result=await turn;
+    assert.equal(result.stopReason,"end_turn");assert.equal(fake.called("session.interrupt").length,0,"a retry that comes soon is waited for");
+    assert.equal(notices(updates).length,1);
+  }finally{await session.close()}
+});
+
+test("an OpenCode 2 retry hours away, or a subagent's, ends the turn with the provider's reason and stops the run",async()=>{
+  const fake=fakeOpenCode2({sessions:{ses_child:{id:"ses_child",parentID:"ses_main"}}}),{session,updates}=await startedSession(fake);
+  try{
+    const turn=session.prompt([{type:"text",text:"Hello"}]);
+    await eventually(()=>fake.called("session.prompt").length===1);
+    const created=Date.now();
+    fake.emit({type:"session.retry.scheduled",created,data:{sessionID:"ses_main",assistantMessageID:"msg_a1",attempt:2,at:created+3*3_600_000,error:{type:"provider.quota",message:"Usage limit reached."}}});
+    await assert.rejects(turn,{message:"Usage limit reached. OpenCode would retry opencode/big-pickle only in about 3 hours, so Trebell stopped the turn. Try again later or choose another model."});
+    await eventually(()=>fake.called("session.interrupt").length===1);
+    assert.deepEqual(fake.called("session.interrupt"),[{sessionID:"ses_main"}]);
+    assert.equal(notices(updates).length,0,"a retry Trebell does not wait for is not shown as one");
+
+    // A subagent's retry that comes soon shows too; one past the retry limit stops both runs.
+    const second=session.prompt([{type:"text",text:"Delegate it"}]);
+    await eventually(()=>fake.called("session.prompt").length===2);
+    const soon=Date.now();
+    fake.emit({type:"session.retry.scheduled",created:soon,data:{sessionID:"ses_child",assistantMessageID:"msg_c1",attempt:3,at:soon+8_000,error:{type:"provider.overloaded",message:"Provider is overloaded"}}});
+    await eventually(()=>notices(updates).length===1);
+    assert.equal(notices(updates)[0].message,"A subagent's model request failed: Provider is overloaded. OpenCode retries it in 8 s (retry 2).");
+    fake.emit({type:"session.retry.scheduled",created:soon,data:{sessionID:"ses_child",assistantMessageID:"msg_c1",attempt:7,at:soon+8_000,error:{type:"provider.overloaded",message:"Provider is overloaded"}}});
+    await assert.rejects(second,{message:"A subagent's model request failed: Provider is overloaded. OpenCode kept retrying (attempt 6), so Trebell stopped the turn. Try again later or choose another model."});
+    await eventually(()=>fake.called("session.interrupt").length===3);
+    assert.deepEqual(fake.called("session.interrupt").slice(1).map(input=>input.sessionID).sort(),["ses_child","ses_main"]);
+  }finally{await session.close()}
+});

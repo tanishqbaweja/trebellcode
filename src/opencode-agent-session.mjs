@@ -501,6 +501,13 @@ export function openCodeRetryStop(status,{now=Date.now(),model=null,limits=OPENC
   const plan=wait>limits.waitMs?`OpenCode would retry${target} only in ${describeWait(wait)}`:`OpenCode kept retrying${target} (attempt ${attempt})`;
   return `${reason}. ${plan}, so Trebell stopped the turn. Try again later or choose another model.`;
 }
+// A retry Trebell waits for is the turn's retry row (an `error` with willRetry, which reads recovered once the turn goes on): what
+// failed, which model OpenCode sends the request to again, in how long, and which retry that is (T3 Code's provider retry item).
+export function openCodeRetryNotice({message=null,model=null,retry=1,waitMs=0,subagent=false}={}){
+  const reason=String(openCodeErrorText(message)||"The model provider request failed").replace(/[\s.]+$/,"");
+  const seconds=Math.max(1,Math.round((Number(waitMs)||0)/1000)),count=Math.max(1,Math.floor(Number(retry)||1));
+  return subagent?`A subagent's model request failed: ${reason}. OpenCode retries it in ${seconds} s (retry ${count}).`:`${reason}. OpenCode retries ${model||"the model"} in ${seconds} s (retry ${count}).`;
+}
 
 // Events of a subagent's (child) session that hold this session's turn until Trebell answers or stops them.
 const SUBAGENT_EVENTS=new Set(["permission.asked","permission.updated","question.asked","session.status"]);
@@ -813,7 +820,9 @@ export class OpenCodeAgentSession{
   // A retry in a subagent's session holds this turn as well; that session is stopped together with this one.
   #retryScheduled(status,sessionID=this.sessionId){
     const turn=this.activePrompt;if(!turn||turn.done||turn.cancelled||turn.stopError)return;
-    const own=sessionID===this.sessionId,reason=openCodeRetryStop(status,{model:own?turn.model:null});if(!reason)return;
+    const own=sessionID===this.sessionId,reason=openCodeRetryStop(status,{model:own?turn.model:null});
+    // OpenCode 1.x counts its retries from 1; next is when it sends the request again.
+    if(!reason){this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",willRetry:true,message:openCodeRetryNotice({message:status?.message,model:own?turn.model:null,retry:status?.attempt,waitMs:Number(status?.next)-Date.now(),subagent:!own})}});return}
     this.#stopPrompt(turn,{error:new Error(own?reason:`A subagent's model request failed: ${reason}`)});
     for(const id of own?[this.sessionId]:[sessionID,this.sessionId])void Promise.resolve(this.client?.session?.abort?.({path:{id},query:{directory:this.cwd}})).catch(()=>{});
   }

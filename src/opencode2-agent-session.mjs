@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { fileUri, fileUriPath } from "./file-uri.mjs";
-import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2ModelId, openCodePermissionDisposition, openCodePermissionRules, openCodePrimaryAgents, openCodeRefusal, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
+import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2ModelId, openCodePermissionDisposition, openCodePermissionRules, openCodePrimaryAgents, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
@@ -179,12 +179,14 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
     let settleTurn=()=>{};const completion=new Promise(resolve=>{settleTurn=resolve});
     const input=await openCode2PromptInput(parts,{external:Boolean(this.serverUrl)});
-    const turn={done:false,cancelled:false,error:null,text:"",assistantMessageId:null,startedAt:Date.now(),completion,settle:settleTurn};
+    // stopError: why Trebell ended the turn itself (a retry it will not wait for).
+    const turn={done:false,cancelled:false,error:null,stopError:null,text:"",assistantMessageId:null,startedAt:Date.now(),completion,settle:settleTurn};
     this.activePrompt=turn;
     try{
       const accepted=await this.client.session.prompt({sessionID:this.sessionId,text:input.text,...(input.files.length?{files:input.files}:{})});
       if(typeof onDelivered==="function")try{onDelivered()}catch{}
       await turn.completion;
+      if(turn.stopError)throw turn.stopError;
       if(turn.cancelled)return {stopReason:"cancelled",providerMessageId:null,assistantMessageId:turn.assistantMessageId,raw:accepted};
       if(turn.error)throw new Error(turn.error);
       const messages=await this.client.message.list({sessionID:this.sessionId,order:"desc",limit:20}).catch(()=>({data:[]}));
@@ -286,6 +288,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(sessionID&&!(await this.#belongs(sessionID)))return;
     const turn=this.activePrompt;
     if(event.type==="permission.asked")return await this.#permission(data);
+    if(event.type==="session.retry.scheduled")return this.#retry(event,sessionID);
     if(event.type==="session.text.delta"&&turn&&sessionID===this.sessionId){
       const delta=String(data.delta||"");if(!delta)return;turn.text+=delta;turn.assistantMessageId=String(data.assistantMessageID||turn.assistantMessageId||"")||null;
       this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:delta}}});return;
@@ -304,5 +307,16 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(event.type==="session.execution.succeeded"&&turn&&sessionID===this.sessionId){turn.settle?.();return}
     if(event.type==="session.execution.failed"&&turn&&sessionID===this.sessionId){turn.error=errorText(data.error);turn.settle?.();return}
     if(event.type==="session.execution.interrupted"&&turn&&sessionID===this.sessionId){turn.cancelled=true;turn.settle?.();return}
+  }
+  // A retry OpenCode schedules for this turn's request, or a subagent's, shows while Trebell waits for it (openCodeRetryNotice); one that
+  // is hours away, or past OPENCODE_RETRY_LIMITS, ends the turn with the provider's reason (openCodeRetryStop), as OpenCode 1.x's does.
+  #retry(event,sessionID){
+    const turn=this.activePrompt;if(!turn||turn.done||turn.cancelled||turn.stopError)return;
+    // OpenCode 2 counts the first request as attempt 1, so its first retry is attempt 2; the wait runs from when it was scheduled (T3).
+    const data=event?.data||{},own=sessionID===this.sessionId,retry=Math.max(1,Math.floor(Number(data.attempt)||0)-1),created=Number(event?.created)||Date.now();
+    const reason=openCodeRetryStop({type:"retry",attempt:retry,next:Number(data.at),message:data.error},{now:created,model:own?this.model:null});
+    if(!reason){this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",willRetry:true,message:openCodeRetryNotice({message:data.error,model:own?this.model:null,retry,waitMs:Number(data.at)-created,subagent:!own})}});return}
+    turn.stopError=new Error(own?reason:`A subagent's model request failed: ${reason}`);turn.settle?.();
+    for(const id of own?[this.sessionId]:[sessionID,this.sessionId])void Promise.resolve(this.client?.session?.interrupt?.({sessionID:id})).catch(()=>{});
   }
 }

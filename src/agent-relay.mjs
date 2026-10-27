@@ -1574,7 +1574,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // an errored session), and its open approval or question cards are withdrawn.
       const runtimeSession=sessions.get(threadId);
       if(runtimeSession instanceof AcpAgentSession&&runtimeSession.dead){sessions.delete(threadId);releaseSession(runtimeSession);cancelThreadRequests(threadId)}
-      emit("error",{threadId,turnId,message:update.message||"Agent runtime stopped"});
+      // A harness retrying its turn's request itself (OpenCode's provider retries) goes on: the window shows the turn's retry row.
+      emit("error",{threadId,turnId,message:update.message||"Agent runtime stopped",...(update.willRetry===true?{willRetry:true}:{})});
     }
   }
 

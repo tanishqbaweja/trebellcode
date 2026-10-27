@@ -11,7 +11,7 @@ import { startFakeOpenCode2,writeFakeOpenCode2Serve } from "../../tests/fixtures
 import { keepThreadMeta } from "./test-home.js";
 
 // OpenCode 2 turns as a person sees them: a screenshot pasted into the chat reaches OpenCode as a file it reads (it refused the whole
-// message before). The real agent relay runs the real OpenCode 2 session and @opencode/client
+// message before), and a provider retry shows as the turn's retry row and then reads recovered. The real agent relay runs the real OpenCode 2 session and @opencode/client
 // against a stand-in for `opencode serve` (tests/fixtures/fake-opencode2-server.mjs), which answers as OpenCode 2.0.24 does.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
@@ -100,5 +100,32 @@ test("a screenshot sent to an OpenCode 2 thread reaches OpenCode as a file it re
     expect(prompted.files[0].uri).toMatch(/^file:\/\/\/.*red-square\.png$/);expect(prompted.files[0].name).toMatch(/red-square\.png$/);
     expect(prompted.text).toMatch(/What does this screenshot show\?\n\[Attached image ".*red-square\.png" is saved at: .*red-square\.png\]$/);
     await shots(page,"opencode2-image-answered",()=>expect(answer).toBeVisible());
+  });
+});
+
+test("an OpenCode 2 provider retry shows as the turn's retry row, then reads recovered once OpenCode answers",async({page})=>{
+  test.setTimeout(90_000);
+  let release=()=>{};const back=new Promise(resolve=>{release=resolve});
+  const ANSWER="Hello again, the provider answered after one retry.";
+  await openCode2App(page,async({sessionID,emit,reply:keep})=>{
+    const created=Date.now();
+    emit({type:"session.retry.scheduled",created,data:{sessionID,assistantMessageID:"msg_a1",attempt:2,at:created+30_000,error:{type:"provider.rate-limit",message:"429 Too Many Requests"}}});
+    await back;keep(ANSWER);reply(emit,sessionID,ANSWER);
+  },async()=>{
+    await send(page,"Say hello");
+    const row=page.locator(".tool-event.kind-retry"),card=page.getByTestId("activity-card").filter({has:row});
+    await expect(row).toBeVisible({timeout:20_000});
+    await expect(row.locator("summary strong")).toHaveText("Retrying: 429 Too Many Requests. OpenCode retries opencode/big-pickle in 30 s (retry 1).");
+    await expect(row.locator("summary em")).toHaveText("retrying");await expect(row).toHaveClass(/status-running/);
+    await expect(card.locator(".activity-card-failed")).toHaveCount(0);await expect(page.locator(".tool-event.kind-error")).toHaveCount(0);
+    await expect(stopButton(page),"the turn goes on while OpenCode retries").toBeVisible();
+    await shots(page,"opencode2-retry-waiting",()=>expect(row).toBeVisible());
+    release();
+    await expect(page.locator(".assistant-message-text").filter({hasText:ANSWER})).toBeVisible({timeout:20_000});
+    await expect(row.locator("summary strong")).toHaveText("Recovered after retrying");await expect(row.locator("summary em")).toHaveText("recovered");
+    await expect(row).toHaveClass(/status-done/);await expect(stopButton(page)).toHaveCount(0);
+    await row.locator("summary").click();
+    await expect(row.locator(".tool-event-body pre")).toHaveText("429 Too Many Requests. OpenCode retries opencode/big-pickle in 30 s (retry 1).");
+    await shots(page,"opencode2-retry-recovered",()=>expect(row).toBeVisible());
   });
 });

@@ -71,3 +71,19 @@ test("an image sent to OpenCode 2 through the relay reaches it as a file it read
   assert.deepEqual(prompted.files,[{uri:fileUri(shot),name:"shot.png"}]);
   assert.ok(prompted.text.endsWith(`What does this show?\n[Attached image "shot.png" is saved at: ${shot}]`),prompted.text);
 });
+
+test("an OpenCode 2 retry reaches the window as a retrying error of the turn, and the turn then completes",async t=>{
+  let release=()=>{};const gate=new Promise(resolve=>{release=resolve});
+  const relay=await openCode2Relay(t,{serverUrl:true,onPrompt:async({sessionID,emit,reply})=>{
+    const created=Date.now();emit({type:"session.retry.scheduled",created,data:{sessionID,assistantMessageID:"msg_a1",attempt:2,at:created+30_000,error:{type:"provider.rate-limit",message:"429 Too Many Requests"}}});
+    await gate;reply("Hello.");text(emit,sessionID,"Hello.");succeeded(emit,sessionID);
+  }});
+  await relay.rpc("turn/start",{threadId:relay.threadId,input:[{type:"text",text:"Say hello"}]});
+  const error=await eventually(()=>relay.messages.find(message=>message.method==="error")?.params);
+  const turnId=relay.threadStore.get(relay.threadId).turns.at(-1).id;
+  assert.deepEqual(error,{threadId:relay.threadId,turnId,message:"429 Too Many Requests. OpenCode retries opencode/big-pickle in 30 s (retry 1).",willRetry:true});
+  release();
+  const completed=await relay.completed();
+  assert.equal(completed.turn.status,"completed");
+  assert.equal(relay.messages.filter(message=>message.method==="error").length,1);
+});
