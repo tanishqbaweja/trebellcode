@@ -155,6 +155,31 @@ test("a stalled MCP registration on a new conversation, or a second stall, fails
   await resumed.close();
 });
 
+// Stop pressed once the 90 s are up, while the stalled process is still closing, finds no process and no turn of the prompt: the
+// opening is marked, so no other Claude Code opens and the prompt, which never reached Claude Code, ends cancelled.
+for(const resumed of [true,false])test(`Stop while a stalled MCP registration's process closes opens no other process and ends the prompt cancelled (${resumed?"a resumed":"a new"} conversation)`,async t=>{
+  t.mock.timers.enable({apis:["setTimeout"]});
+  // The stalled process takes its time to exit: the SDK's return() waits on it.
+  const stalling={control:{setMcpServers:(servers,call)=>call.index===0?new Promise(()=>{}):{added:Object.keys(servers),removed:[],errors:{}},return:call=>call.index===0?new Promise(()=>{}):undefined}};
+  {
+    const {sdk:base,calls}=scriptedClaudeSdk(stalling);
+    const sdk={...base,query:(...args)=>{const query=base.query(...args);calls.at(-1).index=calls.length-1;return query},...(resumed?{getSessionInfo:async()=>({sessionId:SOURCE})}:{})};
+    const claude=new ClaudeAgentSession({cwd:"/repo",sdk,onUpdate:()=>{},mcpServers:{"Workspace tools":WORKSPACE}});
+    await claude.start(resumed?{providerSessionId:SOURCE}:{});
+    const prompting=claude.prompt([{type:"text",text:"Continue"}]).then(result=>result,error=>error);
+    await until(()=>calls[0]?.log.length===1);
+    t.mock.timers.tick(90_000);
+    await until(()=>calls[0].closed);
+    await claude.cancel();
+    t.mock.timers.tick(5_000);
+    const outcome=await prompting;
+    assert.equal(outcome?.stopReason,"cancelled",`${resumed?"resumed":"new"}: ${outcome?.message||""}`);
+    assert.equal(calls.length,1,`${resumed?"resumed":"new"}: no other Claude Code opened after Stop`);
+    assert.equal(calls[0].inputs.length,0,"the prompt never reached Claude Code");
+    await claude.close();
+  }
+});
+
 test("Claude Code that exits while it registers the servers ends the prompt as it would have, a conversation it lost as a lost session",async()=>{
   const lost=new Error(`Claude Code process exited with code 1. stderr: No conversation found with session ID: ${SOURCE}`);
   const {sdk:base}=scriptedClaudeSdk({control:{setMcpServers:(servers,call)=>{call.end(lost);return new Promise(()=>{})}}});

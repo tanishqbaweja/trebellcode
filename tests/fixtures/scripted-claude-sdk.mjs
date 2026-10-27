@@ -2,9 +2,9 @@
 // messages fed by the streaming-input prompt. Claude Code reports its session (init) as it takes the first message in, and
 // turn({message,index,options,emit,signal,call}) runs for each user message in turn, a "now" message at once as Claude Code takes a
 // steer into the running turn; signal aborts once the query closes (Stop, close). init adds to the init frame (or is a function of
-// the options); control answers the Query's control requests by name (setMcpServers, setPermissionMode, backgroundTasks). Each call
-// logs its inputs and control requests in order; call.emit sends a frame of its own and call.end(error) ends the stream, as a CLI
-// that exits.
+// the options); control answers the Query's control requests by name (setMcpServers, setPermissionMode, backgroundTasks), and
+// control.return(call) is what the Query's return() waits on (the SDK waits there for the CLI to exit). Each call logs its inputs and
+// control requests in order; call.emit sends a frame of its own and call.end(error) ends the stream, as a CLI that exits.
 export function scriptedClaudeSdk({turn=({message,emit})=>emit(claudeResult(message)),init=null,control={}}={}){
   const calls=[];
   const query=({prompt,options})=>{
@@ -27,7 +27,7 @@ export function scriptedClaudeSdk({turn=({message,emit})=>emit(claudeResult(mess
     const answer=(name,args,otherwise)=>{call.log.push([name,...args]);return control[name]?control[name](...args,call):otherwise};
     return {
       next:()=>items.length?Promise.resolve({value:items.shift(),done:false}):done?(failure?Promise.reject(failure):Promise.resolve({value:undefined,done:true})):new Promise((resolve,reject)=>waiters.push({resolve,reject})),
-      return:()=>{call.closed=true;end();return Promise.resolve({value:undefined,done:true})},
+      return:()=>{call.closed=true;end();return Promise.resolve(control.return?.(call)).then(()=>({value:undefined,done:true}))},
       [Symbol.asyncIterator](){return this},
       async interrupt(){},close(){call.closed=true;end()},
       async setPermissionMode(mode){return answer("setPermissionMode",[mode],undefined)},

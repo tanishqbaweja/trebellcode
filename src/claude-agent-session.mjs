@@ -308,7 +308,8 @@ export class ClaudeAgentSession{
     this.idleReleaseMs=Math.max(1,Number(idleReleaseMs)||CLAUDE_IDLE_RELEASE_MS);
     this.helperSharesRuntime=!this.spawnProcess&&String(this.env.CLAUDE_CONFIG_DIR||"")===String(process.env.CLAUDE_CONFIG_DIR||"");
     this.sessionId=null;this.model=null;this.reasoningEffort=null;this.serviceTier=null;this.collaborationMode="default";this.agent=null;
-    this.closed=false;this.startedOnce=false;this.persistedTurns=persistedTurns;this.promptOpening=false;
+    // opening: the prompt opening its process, which Stop and close mark stopped.
+    this.closed=false;this.startedOnce=false;this.persistedTurns=persistedTurns;this.opening=null;
     // A fork or rewind that has not run yet: the first query resumes the source at the cursor into this session's new id.
     this.pendingFork=forkFromSessionId?{sourceSessionId:forkFromSessionId,targetSessionId:null,resumeSessionAt:resumeSessionAt||null}:null;
     this.live=null;this.turn=null;this.idleTimer=null;this.tools=new Map();
@@ -363,23 +364,31 @@ export class ClaudeAgentSession{
     // Trebell's own refusals (SessionRefusalError): Claude Code is not asked, so it did not fail.
     if(this.closed)throw new SessionRefusalError("Claude session is closed");
     // A prompt still opening its query counts as running, so two prompts never share one turn.
-    if(this.promptOpening||(this.turn&&!this.turn.settled))throw new SessionRefusalError("Claude Code is still running a turn. Stop it or wait for it to finish first.");
+    if(this.opening||(this.turn&&!this.turn.settled))throw new SessionRefusalError("Claude Code is still running a turn. Stop it or wait for it to finish first.");
     const content=claudeUserContent(parts);
-    this.promptOpening=true;
+    // Stop or close while the prompt opens its process (registering the MCP servers, closing a process that stalled there or one whose
+    // launch policy changed) can find no process and no turn: it marks the opening, and the prompt never reaches Claude Code.
+    const opening={stopped:false};this.opening=opening;
     try{
       this.agent=agent||null;
-      const live=await this.#ensureLive();
+      const live=await this.#ensureLive(opening);
       // Fresh for every offer: Claude acknowledges a prompt whose uuid its transcript already holds without running a turn.
       const promptUuid=UUID.test(String(messageId||""))?String(messageId):randomUUID();
       const turn=this.#newTurn({promptUuid,live});
       turn.onDelivered=typeof onDelivered==="function"?onDelivered:null;
       this.turn=turn;clearTimeout(this.idleTimer);
+      if(opening.stopped||!live){
+        turn.cancelRequested=true;
+        if(live&&!live.closed){live.stopped=true;await this.#closeLive(live)}
+        if(!turn.settled)this.#finishTurn(turn);
+        return turn.promise;
+      }
       // A process that ended while it opened (it exited, or Stop or close ended it) ends the turn as its pump would have.
       if(live.closed){turn.cancelRequested=live.stopped;turn.queryError=live.failure;this.#finishTurn(turn);return turn.promise}
       live.input.push({type:"user",message:{role:"user",content},parent_tool_use_id:null,uuid:promptUuid});
       if(live.sawInit)this.#delivered(turn);
       return turn.promise;
-    }finally{this.promptOpening=false}
+    }finally{if(this.opening===opening)this.opening=null}
   }
   #delivered(turn){
     const notify=turn?.onDelivered;if(!notify)return;
@@ -421,6 +430,7 @@ export class ClaudeAgentSession{
   // Stop, as T3 Code's interruptTurn: interrupt the running turn, then end the process (and with it any background work).
   async cancel(){
     const turn=this.turn&&!this.turn.settled?this.turn:null,live=this.live;
+    if(this.opening)this.opening.stopped=true;
     if(turn)turn.cancelRequested=true;
     if(live)live.stopped=true;
     if(turn&&live&&!live.closed)await withTimeout(live.query.interrupt(),CLAUDE_INTERRUPT_TIMEOUT_MS).catch(()=>{});
@@ -455,6 +465,7 @@ export class ClaudeAgentSession{
   }
   async close(){
     if(this.closed)return;this.closed=true;clearTimeout(this.idleTimer);
+    if(this.opening)this.opening.stopped=true;
     const turn=this.turn&&!this.turn.settled?this.turn:null;if(turn)turn.cancelRequested=true;
     if(this.live)this.live.stopped=true;
     await this.#closeLive();
@@ -490,7 +501,8 @@ export class ClaudeAgentSession{
       sessionId:this.sessionId,fork:this.pendingFork?.resumeSessionAt||null,
     });
   }
-  async #ensureLive(){
+  // opening: the prompt's (see prompt); null once Stop or close ended the opening before a process was started for it.
+  async #ensureLive(opening=null){
     if(!this.sdk)await this.#loadSdk();
     const key=this.#queryKey(),live=this.live;
     if(live&&!live.closed&&live.key===key){
@@ -501,6 +513,7 @@ export class ClaudeAgentSession{
       try{await live.query.setPermissionMode(live.openedPermissionMode);live.permissionMode=live.openedPermissionMode;return live}catch{}
       // Full access that cannot come back (bypass turned off since the process opened) leaves Plan for Manual.
       if(live.openedPermissionMode==="bypassPermissions"){try{await live.query.setPermissionMode("default");live.permissionMode="default";return live}catch{}}
+      if(opening?.stopped)return null;
       // A process that cannot leave Plan is replaced, never while background work runs in it, which that would end.
       if(live.backgroundTasks.size)throw new SessionRefusalError(CLAUDE_PLAN_STUCK);
       await this.#closeLive(live);
@@ -509,9 +522,10 @@ export class ClaudeAgentSession{
       if(live.backgroundTasks.size)throw new SessionRefusalError(CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE);
       await this.#closeLive(live);
     }
-    return this.#openLive(this.#queryKey());
+    return this.#openLive(this.#queryKey(),{opening});
   }
-  async #openLive(key,{reopen=true}={}){
+  async #openLive(key,{reopen=true,opening=null}={}){
+    if(opening?.stopped||this.closed)return null;
     const input=new MessageQueue(),policy=claudeQueryPolicy(this.permissionMode,this.collaborationMode),fork=this.pendingFork;
     const allowRules=[...this.sessionAllowRules],directories=[...this.additionalDirectories];
     const settings={
@@ -558,10 +572,11 @@ export class ClaudeAgentSession{
     if(await this.#registerMcpServers(live))return live;
     // A process that did not connect them in time is closed, and the SDK's close waits a little for it to exit. A resumed conversation
     // then opens once more; a new one does not, since its id may already name a transcript the closed process started (T3 Code's
-    // 572cf7427).
+    // 572cf7427). Stop or close meanwhile opens nothing: the closed process is the prompt's answer, which ends it as Stop asked.
     await this.#closeLive(live);
     await withTimeout(Promise.resolve().then(()=>runtime.return()),CLAUDE_CLOSE_TIMEOUT_MS).catch(()=>{});
-    if(reopen&&live.resumed&&!this.closed)return this.#openLive(key,{reopen:false});
+    if(opening?.stopped||live.stopped||this.closed)return live;
+    if(reopen&&live.resumed)return this.#openLive(key,{reopen:false,opening});
     throw new Error(CLAUDE_MCP_REGISTRATION_TIMED_OUT);
   }
   // The thread's MCP servers, Trebell's in-process ones with them, before the first prompt, so their tools are there when the turn
