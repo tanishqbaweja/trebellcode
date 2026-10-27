@@ -829,8 +829,9 @@ export class ClaudeAgentSession{
     const compactFailed=turn.compactFailure&&(turn.compact||(usageLimited&&result.local_command==="compact"))?turn.compactFailure.message||failureHint||CLAUDE_COMPACT_FAILED:null;
     const failure=claudeResultFailure(result,{failureHint,explainedError:turn.apiErrorText})||compactFailed;
     if(failure){
-      // A process that failed to authenticate keeps its stale credentials: the next prompt starts a fresh one.
-      if(turn.authFailure&&live)void this.#closeLive(live);
+      // A process that failed to authenticate keeps its stale credentials: the next prompt starts a fresh one. The kept capability probe
+      // goes too, which would show the account and its plan usage for up to five minutes more.
+      if(turn.authFailure){if(live)void this.#closeLive(live);this.capabilities?.drop?.(this.#probeInput(null))}
       return turn.reject(Object.assign(new Error(failure),{raw,...failedIds}));
     }
     // Claude Code repeats a notice that ended the prompt (a hook dropped it) as the result's text, which is no answer.

@@ -113,9 +113,20 @@ export function createClaudeCapabilitiesCache({probe=probeClaudeCapabilities,ttl
       if(entry?.pending)return entry.pending;
       if(!fresh&&current(entry))return Promise.resolve(entry.value);
       const previous=entry?.value?{value:entry.value,at:entry.at,ttl:entry.ttl}:null;
-      const pending=probe(input).then(value=>{entries.set(key,{value,at:now(),ttl:keptClaudeProbe(value,input.env)?ttlMs:0});return value},error=>{if(entries.get(key)?.pending===pending){if(previous)entries.set(key,previous);else entries.delete(key)}throw error});
+      // A probe that was running when its answers were dropped (drop) is not kept, nor does its failure put back what it was to replace.
+      const pending=probe(input).then(value=>{const dropped=entries.get(key)?.dropped===pending;entries.set(key,{value,at:now(),ttl:keptClaudeProbe(value,input.env)&&!dropped?ttlMs:0});return value},error=>{const held=entries.get(key);if(held?.pending===pending){if(previous&&held.dropped!==pending)entries.set(key,previous);else entries.delete(key)}throw error});
       entries.set(key,{...(entry||{}),pending});
       return pending;
+    },
+    // Forgets the answers kept for this executable and Claude home where it runs, every folder's: a sign-out its probe did not see
+    // (`claude auth status` finds it signed out, or a turn failed to authenticate) shows at the next read instead of up to five minutes
+    // later. A probe still running stays for the readers that wait on it, but its answer is not kept.
+    drop(input={}){
+      const [command,home,,where]=keyOf({...input,cwd:""}).split("\0");
+      for(const [key,entry] of entries){
+        const parts=key.split("\0");if(parts[0]!==command||parts[1]!==home||parts[3]!==where)continue;
+        if(entry.pending)entries.set(key,{pending:entry.pending,dropped:entry.pending});else entries.delete(key);
+      }
     },
     clear(){entries.clear()},
   };

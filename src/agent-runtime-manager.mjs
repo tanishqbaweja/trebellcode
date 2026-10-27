@@ -790,6 +790,9 @@ export class AgentRuntimeManager{
     // Muse Code's model list is read again with it: a failed turn may be a sign-out.
     if(instance.kind==="muse")this.#museCatalogDue(instance);
     const pending=this.probe(instance,{environmentId,fresh:true}),settled=()=>{if(this.#rechecks.get(key)===pending)this.#rechecks.delete(key)};
+    // A Claude Code found signed out forgets its kept capability probe, whose account and plan usage the Usage card would show for up
+    // to five minutes more: the next Refresh asks Claude Code again.
+    if(instance.kind==="claude")pending.then(value=>{if(value?.authenticated===false)this.dropClaudeCapabilities(instance,{environmentId})},()=>{});
     this.#rechecks.set(key,pending);pending.then(settled,settled);
     return pending;
   }
@@ -1103,6 +1106,11 @@ export class AgentRuntimeManager{
   claudeCapabilities(instance,{environmentId=undefined,cwd=null,includeUsage=true,fresh=false,maxAgeMs=undefined}={}){
     const profile=this.activeEnvironment(environmentId),spawnProcess=this.processSpawner(instance,environmentId);
     return this.claudeCapabilitiesCache.load({command:this.executable(instance,{environmentId}),cwd,env:this.childEnv(instance),spawnProcess,scope:spawnProcess?String(profile?.id||""):"",includeUsage},{fresh,maxAgeMs});
+  }
+  // The probes kept for this profile where it runs (every folder's) go, so the next read asks Claude Code again.
+  dropClaudeCapabilities(instance,{environmentId=undefined}={}){
+    const profile=this.activeEnvironment(environmentId),spawnProcess=this.processSpawner(instance,environmentId);
+    this.claudeCapabilitiesCache.drop?.({command:this.executable(instance,{environmentId}),env:this.childEnv(instance),spawnProcess,scope:spawnProcess?String(profile?.id||""):""});
   }
   async usageLimits(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
