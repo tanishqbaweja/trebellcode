@@ -13,9 +13,10 @@ const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent
 const MAX_CODEX_SCAN_FILES=240;
 const MAX_CODEX_SCAN_BYTES=1024*1024;
 const MAX_CLAUDE_SESSIONS=80;
-const MAX_CLAUDE_MESSAGES=240;
 const MAX_IMPORTED_TURNS=120;
 const MAX_MESSAGE_CHARS=32_000;
+// The text one imported Claude session keeps in all, its messages' text counted from its newest message back.
+const MAX_IMPORTED_CHARS=8*1024*1024;
 
 function pathKey(value){
   const normalized=resolve(String(value||"")).replace(/[\\/]+$/,"");
@@ -149,11 +150,21 @@ function messageText(message){
     return "";
   }).filter(Boolean).join("\n").trim();
 }
+// A Claude session's latest turns, as Claude resumes it: from its newest message back, each user message with text opens a turn and
+// the assistant text after it joins that turn, up to MAX_IMPORTED_TURNS turns and MAX_IMPORTED_CHARS of text. Tool calls and
+// results have no text and take no room, and a compaction's summary (is_meta) is not a request the person sent.
 export function claudeMessagesToTurns(messages,{createdAt=Date.now()}={}){
+  const list=Array.isArray(messages)?messages:[],kept=[];let opened=0,chars=0,full=false;
+  for(let position=list.length-1;position>=0&&opened<MAX_IMPORTED_TURNS;position--){
+    const message=list[position];if((message?.type!=="user"&&message?.type!=="assistant")||message.is_meta===true)continue;
+    const text=messageText(message).slice(0,MAX_MESSAGE_CHARS);if(!text)continue;
+    // Past the bound an older turn is left out whole; the newest keeps its request and its latest replies.
+    if(full||chars+text.length>MAX_IMPORTED_CHARS){if(opened)break;full=true;if(message.type==="assistant")continue}
+    chars+=text.length;kept.push({message,text});if(message.type==="user")opened++;
+  }
   const base=Math.floor((Number(createdAt)||Date.now())/1000);const turns=[];let current=null,index=0;
   const finish=()=>{if(current){current.status="completed";current.completedAt=current.startedAt;current.durationMs=0;turns.push(current);current=null}};
-  for(const message of (messages||[]).slice(0,MAX_CLAUDE_MESSAGES)){
-    const text=messageText(message).slice(0,MAX_MESSAGE_CHARS);if(!text)continue;
+  for(const {message,text} of kept.reverse()){
     if(message.type==="user"){
       finish();const turnId="import-"+String(message.uuid||index++);
       current={id:turnId,status:"completed",startedAt:base+turns.length,completedAt:base+turns.length,durationMs:0,error:null,items:[{type:"userMessage",id:"user-"+turnId,clientId:null,content:[{type:"text",text}]}]};
@@ -161,13 +172,14 @@ export function claudeMessagesToTurns(messages,{createdAt=Date.now()}={}){
       current.items.push({type:"agentMessage",id:"assistant-"+String(message.uuid||index++),text,phase:null,memoryCitation:null,delivery:null,questions:null});
     }
   }
-  finish();return turns.slice(-MAX_IMPORTED_TURNS);
+  finish();return turns;
 }
 export async function importClaudeHistory(agentThreads,candidate,{getSessionMessagesFn=null}={}){
   const existing=agentThreads.findProviderSession?.("claude",candidate.providerSessionId);
   if(existing)return {status:"skipped",reason:"already_imported",thread:existing};
   const read=getSessionMessagesFn||(await loadClaudeAgentSdk()).getSessionMessages;
-  const messages=await read(candidate.providerSessionId,{dir:candidate.cwd,limit:MAX_CLAUDE_MESSAGES,offset:0,includeSystemMessages:false});
+  // The whole session: the SDK parses all of it whatever is asked, and its limit counts from the start, tool records too.
+  const messages=await read(candidate.providerSessionId,{dir:candidate.cwd,includeSystemMessages:false});
   const turns=claudeMessagesToTurns(messages,{createdAt:candidate.createdAt||candidate.updatedAt});
   if(!turns.length)throw new Error("Claude session has no visible user/assistant history to import");
   const thread=agentThreads.importHistory({
