@@ -10,9 +10,9 @@ import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
 // A Cursor turn whose reply holds U+2028 (LINE SEPARATOR), which JSON.stringify leaves raw, and which sends between its reply's two
-// parts a plan with a null entry that the relay cannot map. readline split the reply's first line there, so the reply lost that
-// part, and the plan's throw was an unhandled rejection, which ends a Trebell server. Now the reply shows whole and the plan is
-// dropped with a warning.
+// parts a plan with a null entry, which the relay's plan mapping threw on. readline split the reply's first line there, so the reply
+// lost that part, and the plan's throw was an unhandled rejection, which ends a Trebell server. Now the reply shows whole and the plan
+// is taken without its null entry.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const LS=String.fromCharCode(0x2028);
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});

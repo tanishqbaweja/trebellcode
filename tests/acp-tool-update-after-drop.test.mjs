@@ -27,7 +27,8 @@ test("a tool frame the relay throws on stays out of its call's state, and a fram
   assert.deepEqual(of("read-1")[1],{sessionUpdate:"tool_call_update",toolCallId:"read-1",title:"Read notes.txt",kind:"read",status:"completed",locations:[{path:"notes.txt"}]},"a frame the relay took is merged into the next");
 });
 
-test("through the relay, a tool call whose first frame the relay cannot map shows from its next update, and the turn goes on",{timeout:60000},async t=>{
+// The relay now maps such a frame (it leaves the location out, agent-relay-acp-entries.test.mjs), so through the relay nothing is dropped.
+test("through the relay, a tool call whose first frame has a location that is no object shows and finishes, and the turn goes on",{timeout:60000},async t=>{
   const fx=await scriptedAcp(t,{...CURSOR,prompts:[{steps:[
     step({sessionUpdate:"tool_call",toolCallId:"delete-1",kind:"delete",locations:[null]}),
     step({sessionUpdate:"tool_call_update",toolCallId:"delete-1",status:"completed"}),

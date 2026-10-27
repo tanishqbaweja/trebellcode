@@ -10,11 +10,12 @@ import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { EventJournal } from "../../src/event-journal.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
-// A Cursor tool call whose first frame the relay cannot map (a location that is no object) and whose next update it can. The frame is
-// dropped with a warning (acp-client.mjs), and it no longer joins the call's state, as T3 drops an update it cannot decode: the update
-// shows the call in the turn's card. Kept in that state, the frame's fields went with the update, which the relay dropped as well, so
-// the call never showed. The drop is listed in the thread's Execution trace by its method and reason, as T3 logs one it cannot decode;
-// the warning reached no one before.
+// A Cursor tool call whose first frame has a location that is no object. The relay leaves that location out (agent-relay.mjs
+// acpEntries): the call shows in the turn's card from that frame, by its title, as it names no file. An update the relay fails on while it
+// handles it is dropped with a warning (acp-client.mjs), and it does not join the call's state, as T3 drops an update it cannot decode:
+// the next update shows the call. The drop is listed in the thread's Execution trace by its method and reason, as T3 logs one it cannot
+// decode; the warning reached no one before. The relay no longer fails on this frame, so the trace test's journal refuses it instead.
+const TRACE_REFUSED="The trace could not take this event";
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 
@@ -73,7 +74,9 @@ async function cursorThread(page,{name,traces=false}){
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-dropped-")),fixture=join(root,"fake-cursor.mjs");
   await writeFile(fixture,FAKE_CURSOR,"utf8");
   const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env),journal=traces?new EventJournal(env):null;
-  const relayOptions=journal?{journal}:{};
+  // The journal refuses the event of the call's first frame once, which the relay then fails on.
+  let refused=false;
+  const relayOptions=journal?{journal:{record:entry=>journal.record(entry),recordProtocol:event=>{if(!refused&&event?.method==="item/started"&&event.params?.item?.id==="delete-notes"){refused=true;throw new Error(TRACE_REFUSED)}return journal.recordProtocol(event)}}}:{};
   const seed=threadStore.create({runtime:"cursor",cwd:root,providerSessionId:"",model:"default",name});
   const instance={id:"cursor-default",kind:"cursor",displayName:"Cursor",enabled:true};
   const runtimeManager={
@@ -114,7 +117,7 @@ async function sendAndWait(page,name,message){
   await expect(page.locator(".history-assistant-body").last().getByText(/^done/),"the turn shows as done").toBeVisible();
 }
 
-test("a Cursor tool call whose first frame Trebell cannot map shows in the turn's card from its next update",async({page})=>{
+test("a Cursor tool call whose only location is no object shows in the turn's card by its title",async({page})=>{
   test.setTimeout(60_000);
   const thread=await cursorThread(page,{name:"Old notes"});
   try{
@@ -142,7 +145,9 @@ test("the thread's Execution trace lists a Cursor update Trebell dropped, by its
     const turnId=thread.threadStore.get(thread.seed.id).turns.at(-1).id;
     await expect(row.locator("p"),"the drop names the thread and the turn it came in").toHaveText(new RegExp(`^cursor · .*thread ${thread.seed.id.slice(0,12)} · turn ${String(turnId).slice(0,12)}$`));
     const data=JSON.parse(await row.locator("pre").textContent());
-    expect(data.method).toBe("session/update");expect(data.reason).toMatch(/Cannot read properties of null \(reading 'path'\)/);
+    expect(data.method).toBe("session/update");expect(data.reason).toBe(TRACE_REFUSED);
+    // The dropped frame left the call's state as it was: its next update showed it.
+    await expect(page.locator(".agent-block .tool-event").filter({hasText:"Delete old-notes.txt"})).toContainText("done");
     expect(JSON.stringify(data),"none of the update's values").not.toMatch(/old-notes|delete-notes/);
     await panelShots(page,row,"acp-dropped-update-trace");
   }finally{await thread.close()}

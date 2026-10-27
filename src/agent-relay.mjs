@@ -204,15 +204,21 @@ export async function contextualAgentPrompt(input=[],additionalContext={}){
   return withWorkingContext(prompt,Object.entries(additionalContext||{}));
 }
 
+// A tool's locations and a plan's entries are lists of objects; an entry that is not one (null, a string) is left out, not the update.
+const acpEntries=list=>(Array.isArray(list)?list:[]).filter(entry=>entry&&typeof entry==="object"&&!Array.isArray(entry));
 function acpToolItem(update){
-  const id=String(update.toolCallId||randomUUID());
+  const id=String(update.toolCallId||randomUUID()),locations=acpEntries(update.locations);
   const status=update.status==="completed"?"completed":update.status==="failed"?"failed":"inProgress";
-  if(update.namespace)return {type:"dynamicToolCall",id,namespace:String(update.namespace),tool:String(update.tool||update.title||update.kind||"tool"),arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations:update.locations||[],rawOutput:update.rawOutput};
+  if(update.namespace)return {type:"dynamicToolCall",id,namespace:String(update.namespace),tool:String(update.tool||update.title||update.kind||"tool"),arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations,rawOutput:update.rawOutput};
   // ACP sessions merge each tool update into the tool's last state and normalize its output (acp-tool-state.mjs): aggregatedOutput and
   // exitCode for commands, changes with paths and text for diffs.
-  if(update.kind==="execute")return {type:"commandExecution",id,command:update.title||"Command",cwd:"",processId:null,source:"agent",status,commandActions:[],aggregatedOutput:typeof update.rawOutput==="string"?update.rawOutput:typeof update.aggregatedOutput==="string"?update.aggregatedOutput:null,exitCode:Number.isInteger(update.exitCode)?update.exitCode:null,durationMs:null,rawInput:update.rawInput,locations:update.locations||[]};
-  if(update.kind==="edit"||update.kind==="delete"||update.kind==="move")return {type:"fileChange",id,status,changes:Array.isArray(update.changes)&&update.changes.length?update.changes:(update.locations||[]).map(location=>({path:location.path||location.uri||"",kind:update.kind})),rawInput:update.rawInput,rawOutput:update.rawOutput};
-  return {type:"dynamicToolCall",id,namespace:"agent",tool:update.title||update.kind||"tool",arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations:update.locations||[],rawOutput:update.rawOutput};
+  if(update.kind==="execute")return {type:"commandExecution",id,command:update.title||"Command",cwd:"",processId:null,source:"agent",status,commandActions:[],aggregatedOutput:typeof update.rawOutput==="string"?update.rawOutput:typeof update.aggregatedOutput==="string"?update.aggregatedOutput:null,exitCode:Number.isInteger(update.exitCode)?update.exitCode:null,durationMs:null,rawInput:update.rawInput,locations};
+  if(update.kind==="edit"||update.kind==="delete"||update.kind==="move"){
+    const changes=Array.isArray(update.changes)&&update.changes.length?update.changes:locations.map(location=>({path:location.path||location.uri||"",kind:update.kind}));
+    // A file change whose locations were all left out names no file: it shows as the call it is, by its title.
+    if(changes.length||update.locations==null||(Array.isArray(update.locations)&&!update.locations.length))return {type:"fileChange",id,status,changes,rawInput:update.rawInput,rawOutput:update.rawOutput};
+  }
+  return {type:"dynamicToolCall",id,namespace:"agent",tool:update.title||update.kind||"tool",arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations,rawOutput:update.rawOutput};
 }
 
 export function agentToolLifecycle(update,previousOutput=""){
@@ -228,7 +234,7 @@ export function agentToolLifecycle(update,previousOutput=""){
   return {item,terminal,output,outputDelta};
 }
 
-function planSteps(update){return (update.entries||update.plan||[]).map(entry=>({step:entry.content||entry.step||entry.text||"Plan step",status:entry.status==="in_progress"?"inProgress":entry.status||"pending",priority:entry.priority||null}))}
+function planSteps(update){return acpEntries(update.entries||update.plan).map(entry=>({step:entry.content||entry.step||entry.text||"Plan step",status:entry.status==="in_progress"?"inProgress":entry.status||"pending",priority:entry.priority||null}))}
 export function acpPlanEvent(update={}){
   const type=String(update.sessionUpdate||"");
   if(type==="plan_removed")return {planId:update.planId||null,plan:[]};

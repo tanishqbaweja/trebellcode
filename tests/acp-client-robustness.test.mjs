@@ -1,5 +1,5 @@
 // What an ACP client cannot handle no longer ends the server (T3 559c4b1f2, one malformed session update no longer ends the session):
-// an update a listener throws on, such as the relay's plan mapping on a null entry, or a JSON line that is not a message, such as
+// an update a listener throws on, such as the relay's plan mapping did on a null entry, or a JSON line that is not a message, such as
 // null, is dropped with one warning for each kind, without the update's values, and the client reads on. The throw was an unhandled
 // rejection, which Node's default turns into the end of a Trebell server.
 import test from "node:test";
@@ -20,7 +20,7 @@ test("an update a listener throws on is dropped with one warning for its kind, t
       send({jsonrpc:"2.0",id:m.id,result:{stopReason:"end_turn"}});
     }
   `);
-  // A listener that reads every plan entry, as the relay's plan mapping does, throws on a null entry.
+  // A listener that reads every plan entry, as the relay's plan mapping did, throws on a null entry.
   client.on("sessionUpdate",params=>{const update=params.update;if(update.sessionUpdate==="plan")update.entries.map(entry=>entry.content);updates.push(update)});
   client.on("notification",message=>notifications.push(message.params.update.sessionUpdate));
   await client.start();
@@ -48,17 +48,19 @@ test("a JSON line that is not a message, such as null, is dropped with a warning
   assert.deepEqual(warnings.map(warning=>[warning.message,warning.raw]),["null","42","[1,2]",JSON.stringify("text")].map(raw=>["ACP stdout contained JSON that is not a JSON-RPC message",raw]));
 });
 
-// Through the relay, as in a Trebell server: Cursor's plan update with a null entry, which the relay's plan mapping throws on, was an
-// unhandled rejection that ends the server; the update is dropped, and the rest of the turn, its reply with a line separator in it
-// too, reaches the thread. The drop goes to the thread's trace and to the server's log, by its method and reason, as T3 logs one it
-// cannot decode: the warning reached no one.
-test("a thread's turn goes on past an update the relay cannot map, its reply keeps its line separator, and the drop is in the thread's trace",{timeout:60000},async t=>{
+// Through the relay, as in a Trebell server: an update the relay throws on while it handles it was an unhandled rejection that ends the
+// server; the update is dropped, and the rest of the turn, its reply with a line separator in it too, reaches the thread. The drop goes
+// to the thread's trace and to the server's log, by its method and reason, as T3 logs one it cannot decode: the warning reached no one.
+// The relay maps Cursor's plan with a null entry by leaving that entry out (agent-relay-acp-entries.test.mjs), so here the trace refuses
+// the plan the relay shows, which throws in the relay as its mapping did.
+const TRACE_REFUSED="The trace could not take this event";
+test("a thread's turn goes on past an update the relay cannot handle, its reply keeps its line separator, and the drop is in the thread's trace",{timeout:60000},async t=>{
   const rejections=unhandledRejections(t);
   const chunk=text=>({update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text}}});
   const fx=await scriptedAcp(t,{initialize:{protocolVersion:1,agentCapabilities:{loadSession:true}},sessionNew:{sessionId:"cursor-session",configOptions:[select("mode","mode","agent",["agent","plan","ask"]),select("model","model","default",[["default","Auto"]])]},prompts:[
     {steps:[chunk(`Read the file${LS}and the notes.`),{update:{sessionUpdate:"plan",entries:[null]}},{update:{sessionUpdate:"plan",entries:[null]}},chunk(" Both are fine.")]},
   ]});
-  const logged=[],recorded=[],journal={record:entry=>{recorded.push(entry);return entry},recordProtocol:()=>null,list:()=>[]};
+  const logged=[],recorded=[],journal={record:entry=>{recorded.push(entry);return entry},recordProtocol:event=>{if(event?.method==="turn/plan/updated")throw new Error(TRACE_REFUSED);return null},list:()=>[]};
   const {rpc,next,threadStore}=await acpRelay(t,"cursor",fx,{log:message=>logged.push(String(message)),journal});
   const started=await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"});
   const completed=next(message=>message.method==="turn/completed");
@@ -72,7 +74,7 @@ test("a thread's turn goes on past an update the relay cannot map, its reply kee
   assert.equal(dropped.length,1,"the drop is in the thread's trace, once for its kind");
   const [entry]=dropped;
   assert.deepEqual({threadId:entry.threadId,turnId:entry.turnId,runtime:entry.runtime,category:entry.category,status:entry.status,method:entry.data.method},{threadId:started.thread.id,turnId:turn.id,runtime:"cursor",category:"protocol",status:"warning",method:"session/update"});
-  assert.match(entry.data.reason,/^TypeError: Cannot read properties of null|^Cannot read properties of null/);
+  assert.equal(entry.data.reason,TRACE_REFUSED);
   assert.deepEqual(logged.filter(line=>line.includes("Dropped an ACP")),[`Cursor: Dropped an ACP session/update notification that Trebell could not handle: ${entry.data.reason}`],"and in the server's log");
   assert.doesNotMatch(JSON.stringify([dropped,logged]),/Both are fine|Read the file|entries/,"neither carries the update's values");
 });
