@@ -121,6 +121,65 @@ test("/compact waits for no running Muse Code turn: it is refused while one runs
   await session.close();
 });
 
+// A message in another host's mode while Muse's own work holds this host (muse-agent-session.mjs, worded as Claude Code's refusal of a
+// change that would end its background work).
+const COMPACTION_BLOCKS_MODE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
+const REPORT_BLOCKS_MODE="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
+test("while Muse's compaction or its own report holds the host, a message in a mode another host serves is refused with nothing sent, and one in the host's own mode still goes",async()=>{
+  const {session,muse}=await startSession({permissionMode:"full",muse:child=>new FakeMuse(child,{handlers:{"session/compact":compactHandler({end:null})}})});
+  const compacting=session.compact();compacting.catch(()=>{});
+  await muse.next("session/compact");
+  // The relay keeps a busy session and hands it the thread's new mode (startSession): the message is refused, never run with Full
+  // access's unsandboxed host and allowAll.
+  session.setPermissionMode("supervised");
+  await assert.rejects(settlesWithin(session.prompt([{type:"text",text:"Go on in Supervised"}]),2000,"the message in Supervised"),error=>error?.name==="SessionRefusalError"&&error.message===COMPACTION_BLOCKS_MODE);
+  assert.equal(muse.sent("turn/start").length,0,"no turn on the Full access host");
+  // In the host's own mode Muse queues the message behind its compaction.
+  session.setPermissionMode("full");
+  const turn=session.prompt([{type:"text",text:"Go on"}]);
+  const start=await muse.next("turn/start");
+  muse.notify("turn/completed",{sessionId:session.sessionId,turnId:start.params.commandId,terminal:"completed"});
+  assert.equal((await settlesWithin(turn,2000,"the turn")).stopReason,"end_turn");
+  await session.close();
+  // The report Muse writes itself once its work is done holds the host too: a message in another mode does not take it over.
+  let report=null;
+  const waking=await startSession({permissionMode:"supervised",options:{onWakeTurn:promise=>{report=promise}}});
+  waking.muse.notify("turn/started",{sessionId:waking.session.sessionId,turnId:"report-1",viewCursor:"v"});
+  await until(()=>report,"the report turn");
+  waking.session.setPermissionMode("auto");
+  await assert.rejects(settlesWithin(waking.session.prompt([{type:"text",text:"In Auto now"}]),2000,"the message in Auto"),error=>error?.name==="SessionRefusalError"&&error.message===REPORT_BLOCKS_MODE);
+  assert.equal(waking.muse.sent("turn/start").length,0);
+  waking.muse.notify("turn/completed",{sessionId:waking.session.sessionId,turnId:"report-1",terminal:"completed",viewCursor:"v"});
+  assert.equal((await settlesWithin(report,2000,"the report")).stopReason,"end_turn","the report ends as its own turn");
+  await waking.session.close();
+});
+
+test("through the relay, a message sent in Supervised while a Full access thread's compaction runs never runs on the Full access host, and after Stop it starts Muse Code in Supervised",{timeout:90_000},async()=>{
+  const relay=await museRelay("trebell-muse-compact-mode-",{environment:{MUSE_FAKE_COMPACT:"hold"}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"full"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"First message"}],permissionProfile:"full"});
+    await relay.completed(thread.id,1);
+    const compacting=relay.rpc("thread/compact/start",{threadId:thread.id});compacting.catch(()=>{});
+    await eventually(async()=>(await relay.frames("session/compact")).length===1,"the compaction to reach Muse");
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Now in Supervised"}],permissionProfile:"supervised"});
+    await relay.completed(thread.id,2);
+    const refused=relay.threadStore.get(thread.id).turns.at(-1);
+    assert.deepEqual([refused.status,refused.error?.message],["failed",COMPACTION_BLOCKS_MODE]);
+    assert.equal((await relay.frames("turn/start")).length,1,"no turn/start reached the Full access host");
+    assert.deepEqual((await relay.hosts()).map(entry=>entry.start),[["serve","--trust-workspace","--disable-sandbox"]]);
+    // Stop ends the compaction with its host; the next message starts Muse Code for Supervised and resumes the conversation there.
+    await relay.rpc("turn/interrupt",{threadId:thread.id});
+    await assert.rejects(compacting,{message:MUSE_COMPACTION_STOPPED});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Supervised after the stop"}],permissionProfile:"supervised"});
+    await relay.completed(thread.id,3);
+    assert.equal(relay.threadStore.get(thread.id).turns.at(-1).status,"completed");
+    assert.deepEqual((await relay.hosts()).map(entry=>entry.start),[["serve","--trust-workspace","--disable-sandbox"],["serve","--trust-workspace"]]);
+    const resume=(await relay.frames("session/resume")).at(-1),mode=(await relay.frames("session/setApprovalMode")).at(-1);
+    assert.deepEqual([resume?.params.permissionProfile,mode?.params.mode],[":ask-me","promptUnmatched"]);
+  }finally{await relay.close()}
+});
+
 test("a fork's handed-over history tells the model the thread is a fork in a new session, and a lost conversation's keeps its words",()=>{
   const turns=[{id:"t1",status:"completed",items:[{type:"userMessage",id:"u1",content:[{type:"text",text:"Remember the word pelican"}]},{type:"agentMessage",id:"a1",text:"Noted."}]}];
   const fork=threadHistoryHandoff(turns,{harness:"Muse Code",fork:true});

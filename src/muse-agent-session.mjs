@@ -8,6 +8,7 @@ import { MUSE_REASONING_EFFORTS } from "./model-reasoning-effort.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
+import { SessionRefusalError } from "./session-refusal.mjs";
 
 // Muse Code sessions and turns over the Muse Session Protocol (T3 Code's MuseAdapter): a session is started or resumed on Trebell's
 // own host (muse-host.mjs), each prompt is a turn/start the turn's id is minted for, and Muse's item events come back as the
@@ -53,6 +54,10 @@ const ACTIONS=Object.freeze({
 // Trebell's words for a conversation with nothing to compact (session/compact's noop, or a session with no turn yet, missing_run).
 export const MUSE_NOTHING_TO_COMPACT="There is no Muse Code conversation history to compact yet.";
 export const MUSE_COMPACTION_STOPPED="Muse Code's context compaction was stopped before it finished.";
+// A message in a mode this Muse Code host was not launched for, while Muse's own work holds the host (as Claude Code's background
+// work blocks a change that would end it).
+export const MUSE_COMPACTION_BLOCKS_MODE_CHANGE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
+export const MUSE_REPORT_BLOCKS_MODE_CHANGE="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
 // Why Muse did not compact, from its own durable words (compaction_unavailable, summarizer_failed), as a sentence.
 function compactionFailure(reason){const words=text(reason).trim().replaceAll("_"," ");return `Muse Code could not compact the conversation${words?`: ${words}`:""}.`}
 
@@ -495,6 +500,10 @@ export class MuseAgentSession{
     // ends in Trebell, the rest of Muse's turn is this one's, and Stop ends both. Muse runs the message after it (ifBusy queue).
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
     if(running&&!running.wake)throw new Error("Muse Code already has a running turn.");
+    // A mode's launch flags, profile and approvals are its host's (museLaunchPlan), and the relay relaunches for another mode between
+    // turns. While Muse's own work holds this host (a compaction, or the report it writes) no host is relaunched, so a message in a mode
+    // this host was not launched for is refused rather than run with the old mode's sandbox, profile and approvals.
+    if(this.launched&&this.needsRelaunch(this.permissionMode))throw new SessionRefusalError(this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:running?MUSE_REPORT_BLOCKS_MODE_CHANGE:"Muse Code's host was started for another mode, so the message was not sent. Send it again to start Muse Code in this mode.");
     const input=museInputParts(parts),displayText=museDisplayText(parts);
     const turn=this.#newTurn(this.connection.mintCommandId());
     if(running){
