@@ -332,6 +332,18 @@ test("a Claude Code profile with a custom API endpoint is not called signed out;
   assert.deepEqual([host.available,host.authenticated],[false,false]);
 });
 
+test("a Claude Code profile with a custom API endpoint keeps its answer for a minute, as a ready one, instead of asking at every poll",async t=>{
+  // Only a session can check the endpoint's credentials, so `claude auth status` (a Claude Code launch) has nothing new to say.
+  let clock=1_000_000;
+  const fx=await localHarness(t,"claude",args=>args[0]==="auth"?{...exited(1,""),stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"})}:answered("2.1.311 (Claude Code)\n"),{env:{ANTHROPIC_BASE_URL:"https://gateway.example"},now:()=>clock});
+  const first=await fx.manager.probe("claude");
+  assert.deepEqual([first.available,first.authenticated,first.account.type],[true,null,"customEndpoint"]);
+  for(const step of [5_000,5_000,49_000]){clock+=step;await fx.manager.probe("claude")}
+  assert.deepEqual(fx.calls.map(call=>call.args),["--version","auth status"],"Settings' 5-s poll, the page load and chat starts reused it");
+  clock+=1_001;await fx.manager.probe("claude");
+  assert.deepEqual(fx.calls.map(call=>call.args),["--version","auth status","auth status"],"a minute on it is read again");
+});
+
 // The relay over its socket, as a window speaks to it: rpc requests, and a send settled as turn/completed reports it.
 async function startRelay(t,options){
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(server,{version:"test",...options});

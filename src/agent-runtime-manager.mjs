@@ -699,7 +699,8 @@ export class AgentRuntimeManager{
   // One answer per profile and environment: callers that ask while it runs share it, and later ones reuse a ready answer for
   // PROBE_REUSE_MS. An answer that the harness cannot run is not kept (nor one that found no sign-in, keptProbeAnswer), but one
   // that may start although its version check did not answer (versionCheckFailed) is: the page load, Settings' poll and every chat
-  // start wait for the check, so a hung CLI costs its wait once a minute, not on each of them. And a
+  // start wait for the check, so a hung CLI costs its wait once a minute, not on each of them. So is a Claude Code profile with a
+  // custom API endpoint, whose sign-in only a session can check (`claude auth status` has nothing new to say). And a
   // caller that joined one that cannot run asks again (or joins a probe started after it asked): a thread start refuses on it, and
   // the person may just have signed in outside Trebell, or the check timed out under load. fresh starts a new one, which the next
   // callers share. Each caller gets its own copy.
@@ -717,7 +718,7 @@ export class AgentRuntimeManager{
     const pending=this.#probeNow(instance,{environmentId,fresh});this.#probes.set(key,{pending,owner});
     try{
       const value=await pending;
-      if(this.#probes.get(key)?.pending===pending){if(value?.available&&(value.versionCheckFailed||keptProbeAnswer(value)))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
+      if(this.#probes.get(key)?.pending===pending){if(value?.available&&(value.versionCheckFailed||value.account?.type==="customEndpoint"||keptProbeAnswer(value)))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
       return structuredClone(value);
     }catch(error){
       if(this.#probes.get(key)?.pending===pending)this.#probes.delete(key);
