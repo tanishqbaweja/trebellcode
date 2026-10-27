@@ -39,7 +39,7 @@ const MUSE_EFFORTS=new Set(MUSE_REASONING_EFFORTS);
 // The model choice that lets Muse pick: the catalog's default row (T3 MUSE_DEFAULT_MODEL); the word itself never goes to Muse.
 const MUSE_DEFAULT_MODEL="default";
 // Items with rows of their own elsewhere (todo lists, questions, workflows) unless they failed, and Muse's housekeeping: the user's
-// own message, the reminder children every model step runs, and compactions (group M5).
+// own message, the reminder children every model step runs, and compactions, whose end settles /compact (compact).
 const OWN_ROW_TOOLS=new Set(["write_todos","request_user_input","workflow"]);
 const SKIPPED_KINDS=new Set(["userMessage","reminderChild","compaction"]);
 const ACTIONS=Object.freeze({
@@ -48,7 +48,13 @@ const ACTIONS=Object.freeze({
   "turn/start":"start the turn","turn/steer":"take the message into the running turn","turn/interrupt":"stop the turn",
   "approval/decide":"take Trebell's answer to its request","userInput/cancel":"take Trebell's answer to its question",
   "userInput/answer":"take the answer to its question",
+  "session/compact":"compact the conversation",
 });
+// Trebell's words for a conversation with nothing to compact (session/compact's noop, or a session with no turn yet, missing_run).
+export const MUSE_NOTHING_TO_COMPACT="There is no Muse Code conversation history to compact yet.";
+export const MUSE_COMPACTION_STOPPED="Muse Code's context compaction was stopped before it finished.";
+// Why Muse did not compact, from its own durable words (compaction_unavailable, summarizer_failed), as a sentence.
+function compactionFailure(reason){const words=text(reason).trim().replaceAll("_"," ");return `Muse Code could not compact the conversation${words?`: ${words}`:""}.`}
 
 function text(value){return typeof value==="string"?value:value==null?"":String(value)}
 function wait(ms){let timer;const promise=new Promise(resolve=>{timer=setTimeout(resolve,ms);timer?.unref?.()});return {promise,cancel:()=>clearTimeout(timer)}}
@@ -361,9 +367,11 @@ export class MuseAgentSession{
     // and when any of it was last heard of (its end too, which the relay's idle sweep counts as use); the Muse turns that ended; the
     // latest session/contextUsage ({usedTokens, windowTokens}) and the turn that ran last.
     this.observed=new Map();this.workHeardAt=0;this.now=now;this.endedTurns=new Set();this.context=null;this.lastTurn=null;this.ready=false;
+    // The /compact under way (compact), until its compaction item ends.
+    this.compaction=null;
   }
 
-  get busy(){return Boolean(this.activePrompt)}
+  get busy(){return Boolean(this.activePrompt||this.compaction)}
   // Work Muse runs past the turn that started it (T3 hasPendingBackgroundWork): a subagent, a workflow or a command in the background
   // still running, unless none of it has been heard of for MUSE_MAX_IDLE_PIN_MS, or a turn Muse started itself. They run in this
   // host, so the relay's idle sweep keeps the session meanwhile.
@@ -569,11 +577,50 @@ export class MuseAgentSession{
     return {accepted:true,pending:0,providerMessageId:null};
   }
 
+  // /compact (T3 compactThread): session/compact, a command whose answer is admission only. Accepted, the compaction runs in Muse as an
+  // item of its own (kind compaction), whose end settles it: compacted, or why not. A conversation with nothing to compact (noop, or a
+  // session with no turn yet) says so, and the session goes on. Muse has no stop for a compaction, so Stop stops the host meanwhile
+  // (cancel), and the next message starts Muse Code again (T3 closes the host too).
+  async compact(){
+    if(!this.connection||!this.sessionId)throw new Error("Muse Code session is not started.");
+    if(this.dead)throw this.deadError||new Error("Muse Code stopped.");
+    if(this.activePrompt&&!this.activePrompt.settled)throw new Error("Stop the running Muse Code turn before compacting its context.");
+    if(this.compaction)return this.compaction.done;
+    let resolveDone,rejectDone;
+    const done=new Promise((resolve,reject)=>{resolveDone=resolve;rejectDone=reject});done.catch(()=>{});
+    const end=then=>value=>{if(compaction.settled)return;compaction.settled=true;if(this.compaction===compaction)this.compaction=null;then(value)};
+    const compaction={done,settled:false,settle:null,fail:null};compaction.settle=end(resolveDone);compaction.fail=end(rejectDone);
+    this.compaction=compaction;
+    try{
+      const answer=await this.#command("session/compact",{sessionId:this.sessionId});
+      const status=text(answer?.status);
+      if(status==="noop")compaction.fail(new Error(MUSE_NOTHING_TO_COMPACT));
+      else if(status!=="accepted")compaction.fail(new Error(`Muse Code answered the compaction with ${status?`a status Trebell does not know (${status})`:"no status"}.`));
+    }catch(error){
+      const reason=text(error?.cause?.data?.reason);
+      compaction.fail(error?.kind==="commandRejected"&&reason?new Error(reason==="missing_run"?MUSE_NOTHING_TO_COMPACT:compactionFailure(reason)):error);
+    }
+    return done;
+  }
+  // The compaction's item ends it: compacted, nothing compacted (noop), stopped, or failed with Muse's reason. Its start shows nothing
+  // more than the row Compact put up. One Muse ran on its own (trigger auto) is not the /compact asked for.
+  #compactionItem(item){
+    const compaction=this.compaction;if(!compaction||item.trigger==="auto"||item.status==="inProgress")return;
+    const outcome=text(item.outcome);
+    if(item.status==="completed"&&(!outcome||outcome==="compacted"))return compaction.settle({compacted:true});
+    if(outcome==="noop")return compaction.fail(new Error(MUSE_NOTHING_TO_COMPACT));
+    if(item.status==="cancelled"||outcome==="cancelled")return compaction.fail(new Error(MUSE_COMPACTION_STOPPED));
+    compaction.fail(new Error(compactionFailure(item.reason||item.failureReason)));
+  }
+
   // Stop: turn/interrupt for the running turn once Muse has admitted it, then its turn/completed. A host that does not confirm
   // the stop within interruptTimeoutMs is stopped itself, and the next message starts it again.
   // The turn's own approvals and questions go at once: Muse settles them as it stops the turn, so none is answered for the person.
   async cancel(){
-    const turn=this.activePrompt;if(!turn||turn.settled)return;
+    const turn=this.activePrompt;
+    // A compaction under way with no turn running: its host is stopped, since Muse has no stop for one (compact).
+    if((!turn||turn.settled)&&this.compaction){this.compaction.fail(new Error(MUSE_COMPACTION_STOPPED));return void this.#lose(MUSE_COMPACTION_STOPPED,{stop:true,quiet:true})}
+    if(!turn||turn.settled)return;
     turn.stopRequested=true;this.#withdrawRequests(entry=>!entry.child);
     if(!(await turn.admitted)||turn.settled)return;
     // Muse runs a turn this one took in first, so Stop ends it too (T3 interruptTurn).
@@ -591,6 +638,7 @@ export class MuseAgentSession{
   async close(){
     if(this.closed)return;this.closed=true;
     const turn=this.activePrompt;if(turn){turn.stopRequested=true;turn.settle({stopReason:"cancelled",interrupted:true,providerMessageId:null})}
+    this.compaction?.fail(new Error("Muse Code stopped before it finished compacting the conversation."));
     this.#settleObserved("Muse Code stopped before this finished.");
     this.#withdrawRequests();
     await this.host?.close().catch(()=>{});
@@ -611,9 +659,10 @@ export class MuseAgentSession{
   #lose(message,{stop=false,quiet=false}={}){
     if(this.dead||this.closed)return;
     this.dead=true;this.deadError=Object.assign(new Error(message),{code:"MUSE_HOST_LOST"});
-    const turn=this.activePrompt;
+    // A compaction under way ends with the host's reason, which its own request reports.
+    const turn=this.activePrompt,compaction=this.compaction;compaction?.fail(this.deadError);
     if(turn&&!turn.settled){if(turn.stopRequested)turn.settle({stopReason:"cancelled",interrupted:true,providerMessageId:null});else turn.fail(this.deadError)}
-    else if(!quiet)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message}});
+    else if(!quiet&&!compaction)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message}});
     this.#settleObserved(message);
     this.#withdrawRequests();
     if(stop)void this.host?.close().catch(()=>{});
@@ -766,6 +815,8 @@ export class MuseAgentSession{
     if(method==="userInput/requested"||method==="userInput/settled")return void this.#questionEvent(method,params);
     // The thread's context meter, whichever turn runs (T3).
     if(method==="session/contextUsage")return void this.#contextUsage(params);
+    // The /compact under way, whose item names the turn whose context it compacts, not a turn of Trebell's (T3).
+    if(this.compaction&&ITEM_EVENTS.has(method)&&params.item?.kind==="compaction")return void this.#compactionItem(params.item);
     // An item of work a turn that ended left running settles its row in that turn (T3 observedChildren).
     const itemId=ITEM_EVENTS.has(method)?text(params.item?.itemId):method==="item/delta"?text(params.itemId):"",owner=itemId?this.observed.get(itemId):null;
     if(owner?.settled)return ITEM_EVENTS.has(method)?this.#item(owner,params.item):this.#delta(owner,params);

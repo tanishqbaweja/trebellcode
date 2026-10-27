@@ -12,6 +12,9 @@
 //                          for a malformed settings file (3: Muse could not load its settings)
 //   MUSE_FAKE_FORGET       a file: while it is there, session/resume answers that the session was not found, as Muse does for a
 //                          session its store no longer has
+//   MUSE_FAKE_COMPACT      how session/compact goes: unset, its compaction item ends compacted MUSE_FAKE_COMPACT_MS (50) ms later;
+//                          "noop" Muse has nothing to compact (no_compactable_history); "hold" the compaction runs until the host ends.
+//                          A session with no turn yet is refused (missing_run) whatever it says
 // A turn whose message says one of these runs as T3's recorded sessions (muse_permission) and Muse 1.4.13's schema shape them:
 //   "ask approval"      asks to run `touch muse-approved.txt` (approval/request and approval/requested, with Muse's own choices),
 //                       settles it with the choice decided, and replies APPROVED, ALWAYS ALLOWED or REJECTED
@@ -57,6 +60,7 @@ function complete(sessionId,turnId,terminal="completed"){
 }
 function startTurn(sessionId,params){
   const state=sessions.get(sessionId),turnId=params.commandId,turn={itemId:turnId+"-reply",text:""};running.set(turnId,turn);
+  if(state)state.lastTurnId=turnId;
   const words=(params.input||[]).filter(part=>part.type==="text").map(part=>part.text).at(-1)||"";
   notify("turn/started",sessionId,{turnId,commandId:turnId});
   notify("item/completed",sessionId,{item:{itemId:turnId+"-user",kind:"userMessage",turnId,revision:1,status:"completed",text:words}});
@@ -162,6 +166,20 @@ function settleQuestion(userInputId,{outcome,answers=[],reason=null,commandId=nu
   if(turn)setTimeout(()=>{reply(question.sessionId,turn,outcome==="answered"?`ANSWERED: ${said}`:"NO ANSWER");complete(question.sessionId,question.turnId)},20);
   return true;
 }
+// /compact: the ack admits it, and the compaction runs as an item of its own (kind compaction, trigger manual) of the latest turn,
+// as Muse 1.4.13's schema shapes it (SessionCompactResult, Item.outcome). A session with no turn to compact is refused, as Muse
+// 1.4.13 refuses one live (commandRejected, reason missing_run); a resumed one has the turns it had.
+function compactSession(params){
+  const mode=process.env.MUSE_FAKE_COMPACT||"",state=sessions.get(params.sessionId);
+  if(!state?.lastTurnId&&!state?.resumed)throw Object.assign(new Error(`session/compact command ${params.commandId} rejected: missing_run`),{code:-32030,kind:"commandRejected",reason:"missing_run"});
+  if(mode==="noop")return {commandId:params.commandId,status:"noop",reason:"no_compactable_history"};
+  const item=(revision,status,extra={})=>({itemId:params.commandId+"-compaction",kind:"compaction",turnId:state.lastTurnId||null,revision,status,trigger:"manual",fallbackText:"Context compaction",...extra});
+  setImmediate(()=>{
+    notify("item/started",params.sessionId,{item:item(1,"inProgress")});
+    if(mode!=="hold")setTimeout(()=>notify("item/completed",params.sessionId,{item:item(2,"completed",{outcome:"compacted"})}),Number(process.env.MUSE_FAKE_COMPACT_MS||50));
+  });
+  return {commandId:params.commandId,status:"accepted"};
+}
 
 const answers={
   initialize:params=>({serverInfo:{name:"muse",version:"1.4.13"},userAgent:"muse-build/1.4.13 (serve; fake)",museHome:"~/.local/share/muse",platformFamily:process.platform==="win32"?"windows":"unix",platformOs:process.platform==="win32"?"windows":process.platform,schema:{version:1,fingerprint:"sha256:7fddaf646dbc317e5fcac0785e135eb04df14fbb0db1863089dfd6da21730e5b"},grantedCapabilities:[...(params?.capabilities?.requestedCapabilities||[])],experimentalApi:false,sessionDurability:argv.includes("--no-session-log")?"ephemeral":"durable",sandboxAvailability:"unavailable"}),
@@ -169,7 +187,7 @@ const answers={
   "session/start":params=>{const state={modelId:params.modelId||"muse-spark-1.2",workspaceRoot:params.workspaceRoot};sessions.set(params.sessionId,state);return {session:sessionRecord(params.sessionId,state),viewCursor:`v:${params.sessionId}:${++cursor}`}},
   "session/resume":params=>{
     if(process.env.MUSE_FAKE_FORGET&&fs.existsSync(process.env.MUSE_FAKE_FORGET))throw Object.assign(new Error(`session ${params.sessionId} not found`),{code:-32020,kind:"sessionNotFound"});
-    const state=sessions.get(params.sessionId)||{modelId:process.env.MUSE_FAKE_RESUMED_MODEL||"muse-spark-1.2",workspaceRoot:null};sessions.set(params.sessionId,state);return {session:sessionRecord(params.sessionId,state),history:{mode:"none",items:null},pendingRequests:[],viewCursor:`v:${params.sessionId}:${++cursor}`};
+    const state=sessions.get(params.sessionId)||{modelId:process.env.MUSE_FAKE_RESUMED_MODEL||"muse-spark-1.2",workspaceRoot:null};state.resumed=true;sessions.set(params.sessionId,state);return {session:sessionRecord(params.sessionId,state),history:{mode:"none",items:null},pendingRequests:[],viewCursor:`v:${params.sessionId}:${++cursor}`};
   },
   "session/setApprovalMode":params=>({commandId:params.commandId,applyOutcome:"noop"}),
   "session/setModel":params=>{
@@ -178,6 +196,7 @@ const answers={
     const state=sessions.get(params.sessionId);if(state)state.modelId=modelId;
     return {commandId:params.commandId,status:"accepted"};
   },
+  "session/compact":params=>compactSession(params),
   "turn/start":params=>{setImmediate(()=>startTurn(params.sessionId,params));return {commandId:params.commandId,status:"accepted",turnId:params.commandId,startedNewTurn:true,disposition:"started"}},
   "turn/steer":params=>{
     const turn=running.get(params.expectedTurnId);if(!turn)throw Object.assign(new Error("no running turn"),{code:-32030,kind:"commandRejected"});
@@ -215,5 +234,5 @@ readline.createInterface({input:process.stdin}).on("line",line=>{
   const answer=answers[frame.method];
   if(!answer)return write({jsonrpc:"2.0",id:frame.id,error:{code:-32601,message:`method not found: ${frame.method}`,data:{kind:"methodNotFound",retryable:false}}});
   try{write({jsonrpc:"2.0",id:frame.id,result:answer(frame.params||{})})}
-  catch(error){write({jsonrpc:"2.0",id:frame.id,error:{code:error.code??-32000,message:error.message,data:{kind:error.kind||"internal",retryable:false}}})}
+  catch(error){write({jsonrpc:"2.0",id:frame.id,error:{code:error.code??-32000,message:error.message,data:{kind:error.kind||"internal",retryable:false,...(error.reason?{reason:error.reason}:{})}}})}
 }).on("close",()=>process.exit(0));

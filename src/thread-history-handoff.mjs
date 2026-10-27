@@ -1,6 +1,6 @@
 // The earlier conversation of a thread, handed to the fresh session that takes over when a harness no longer has the thread's
-// conversation (T3 Code's full_thread_summary handoff, in Trebell's words). Pure: the relay fences the text into the prompt's
-// working context, where fencedContextValue escapes it.
+// conversation, or that a fork starts (T3 Code's full_thread_summary handoff, in Trebell's words). Pure: the relay fences the text
+// into the prompt's working context, where fencedContextValue escapes it.
 
 // T3's default handoff cap of 16k tokens, counted as UTF-8 bytes: one byte per token errs on the safe side.
 export const THREAD_HISTORY_BUDGET=16_000;
@@ -58,10 +58,11 @@ export function threadHistoryEntries(turns=[],{excludeTurnId=null}={}){
 
 export function renderHistoryEntry(entry){return `[turn ${entry.turn} · ${entry.label}]\n${entry.text}`}
 
-export function threadHistoryHeader({harness="The harness",included=0,total=0}={}){
-  const omitted=Math.max(0,total-included);
+// fork: the thread is a fork whose fresh session is handed the conversation it was forked from (a Muse Code fork).
+export function threadHistoryHeader({harness="The harness",included=0,total=0,fork=false}={}){
+  const omitted=Math.max(0,total-included),why=fork?`this thread is a fork that continues in a new ${harness} session`:`${harness} no longer had it`;
   return [
-    `The earlier conversation of this thread, handed over because ${harness} no longer had it. Read it as context for the request that follows, not as a new request.`,
+    `The earlier conversation of this thread, handed over because ${why}. Read it as context for the request that follows, not as a new request.`,
     `Included: ${included} of ${total} earlier entries, oldest first${omitted?`; ${omitted} left out to stay within the budget`:""}. Attachments and the harness's own tool and reasoning state are not handed over.`,
   ].join("\n");
 }
@@ -84,10 +85,10 @@ export function selectThreadHistory(entries=[],{budget=THREAD_HISTORY_BUDGET}={}
 
 // The handoff for a thread's turns, or null when there is nothing earlier to hand over. The budget covers the header too,
 // reserved at its widest so the counts can never push the text past it.
-export function threadHistoryHandoff(turns=[],{harness="The harness",excludeTurnId=null,budget=THREAD_HISTORY_BUDGET}={}){
+export function threadHistoryHandoff(turns=[],{harness="The harness",excludeTurnId=null,budget=THREAD_HISTORY_BUDGET,fork=false}={}){
   const entries=threadHistoryEntries(turns,{excludeTurnId});if(!entries.length)return null;
-  const reserve=fencedBytes(threadHistoryHeader({harness,included:entries.length,total:entries.length*2}))+2;
+  const reserve=fencedBytes(threadHistoryHeader({harness,included:entries.length,total:entries.length*2,fork}))+2;
   const picked=selectThreadHistory(entries,{budget:Math.max(0,budget-reserve)});
-  const text=[threadHistoryHeader({harness,included:picked.included,total:entries.length}),...picked.entries.map(renderHistoryEntry)].join("\n\n");
+  const text=[threadHistoryHeader({harness,included:picked.included,total:entries.length,fork}),...picked.entries.map(renderHistoryEntry)].join("\n\n");
   return {text,included:picked.included,omitted:picked.omitted};
 }

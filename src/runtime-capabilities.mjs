@@ -50,8 +50,9 @@ const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   grok:Object.freeze({fork:"runtime",rewind:true,compaction:true,mcpInjection:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
   antigravity:Object.freeze({fork:"runtime",rewind:true,mcpInjection:true,clientFilesystem:true,detachedTasks:true,multiModelFanout:true,delegation:true,videoAttachments:false}),
   // Muse Code takes a message into its running turn (turn/steer), Trebell's MCP servers into its sessions, and reports its tokens,
-  // context and the work it runs past a turn (T3). Its compaction, fork and revert come with the Muse groups that map them.
-  muse:Object.freeze({steering:true,mcpInjection:true,usageReporting:true,contextReporting:true,detachedTasks:true}),
+  // context and the work it runs past a turn (T3). It compacts with session/compact, and a fork is a thread whose next message starts
+  // a fresh Muse Code session with the earlier messages handed over; it has no rewind (T3: rollback unavailable), as Cursor has none.
+  muse:Object.freeze({fork:true,compaction:true,steering:true,mcpInjection:true,usageReporting:true,contextReporting:true,detachedTasks:true}),
 });
 
 export function sharedRuntimeCapabilities(kind){

@@ -523,8 +523,9 @@ export function agentThreadResumePayload(thread,{excludeTurns=false}={}){
   };
 }
 
-export function materializeAgentFork(threadStore,source,{runtime,providerSessionId,providerMeta=null,excludeTurns=false}={}){
-  if(!threadStore||!source?.id||!providerSessionId)throw new Error("Fork materialization requires a source thread and provider session");
+// freshSession: the fork has no harness session yet, and its next message starts a fresh one (Muse Code) on the source's profile.
+export function materializeAgentFork(threadStore,source,{runtime,providerSessionId,providerMeta=null,excludeTurns=false,freshSession=false}={}){
+  if(!threadStore||!source?.id||!providerSessionId&&!freshSession)throw new Error("Fork materialization requires a source thread and provider session");
   const created=threadStore.create({
     runtime:runtime||source.runtime,
     cwd:source.cwd,
@@ -535,7 +536,7 @@ export function materializeAgentFork(threadStore,source,{runtime,providerSession
     preview:source.preview||null,
     providerMeta:providerMeta||source.providerMeta||null,
   });
-  const stored=threadStore.update(created.id,{turns:source.turns||[],forkedFromId:source.id,status:{type:"idle"},archived:false});
+  const stored=threadStore.update(created.id,{turns:source.turns||[],forkedFromId:source.id,status:{type:"idle"},archived:false,...(freshSession&&source.runtimeInstanceId?{runtimeInstanceId:source.runtimeInstanceId}:{})});
   return {stored,thread:excludeTurns?{...stored,turns:[],historyMode:"paginated"}:stored};
 }
 
@@ -1240,7 +1241,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const thread=threadStore.get(threadId);if(!thread)return null;
     const carrier=handoffTurns.get(threadId);if(carrier!==turnId&&thread.turns.some(turn=>turn?.id===carrier&&turn.status==="inProgress"))return null;
     handoffTurns.set(threadId,turnId);
-    const history=threadHistoryHandoff(thread.turns,{harness:runtimeHarnessLabel(thread.runtime),excludeTurnId});
+    const history=threadHistoryHandoff(thread.turns,{harness:runtimeHarnessLabel(thread.runtime),excludeTurnId,fork:Boolean(meta.providerMeta.historyHandoff.fork)});
     return {history,context:history?{"trebell.thread_history":{kind:"application",value:history.text}}:{}};
   }
   // The prompt options that tell when the prompt carrying a waiting handoff reached the harness.
@@ -1249,7 +1250,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // happened, in Trebell's words. It is not a failure.
   function sessionHandoffItem(turnId,handoff,history){
     const harness=runtimeHarnessLabel(handoff.runtime),included=history?.included||0,omitted=history?.omitted||0;
-    const title=`${harness} no longer had this conversation, so it continues in a new session`+(included?` with the earlier messages handed over${omitted?`, except ${omitted} that did not fit`:""}.`:omitted?"; the earlier messages were too long to hand over.":".");
+    // A fork that starts a session of its own (thread/fork for Muse Code) is no lost conversation.
+    const title=(handoff.fork?`This fork continues in a new ${harness} session`:`${harness} no longer had this conversation, so it continues in a new session`)+(included?` with the earlier messages handed over${omitted?`, except ${omitted} that did not fit`:""}.`:omitted?"; the earlier messages were too long to hand over.":".");
     return {type:"sessionHandoff",id:`session-handoff-${turnId}`,status:"completed",title,runtime:handoff.runtime,harness,previousSessionId:handoff.previousSessionId||null,sessionId:handoff.sessionId||null,reason:handoff.reason||null,handedOver:{included,omitted}};
   }
   function deliverHistoryHandoff(threadId,turnId,history){
@@ -1999,6 +2001,17 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const materialized=materializeAgentFork(threadStore,source,{runtime:"native",providerSessionId,providerMeta,excludeTurns:Boolean(params.excludeTurns)});
         emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
       }
+      // Muse Code refuses a fork of its completed turns (T3: InvalidCut; Muse 1.4.13 answers forkBoundaryInvalid), so a Muse Code fork
+      // is a thread of Trebell's own whose next message starts a fresh Muse Code session on the source's profile, handed the earlier
+      // messages through the history handoff (T3: a new session with a copy of the conversation context). No Muse Code starts for the
+      // fork itself.
+      if(source.runtime==="muse"){
+        if(source.status?.type==="active")throw new Error("Stop the running Muse Code turn before forking this thread.");
+        const {setup:_setup,historyHandoff:_handoff,...kept}=source.providerMeta||{};
+        const providerMeta={...kept,historyHandoff:{status:"pending",runtime:"muse",fork:true,forkedFromThreadId:source.id,previousSessionId:source.providerSessionId||null,sessionId:null,reason:"forked",at:Date.now()}};
+        const materialized=materializeAgentFork(threadStore,source,{runtime:"muse",providerSessionId:"",freshSession:true,providerMeta,excludeTurns:Boolean(params.excludeTurns)});
+        emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
+      }
       const runtimeSession=sessions.get(source.id)||await ensureSession(source,context,{});
       let fork,forkSource=source;
       // OpenCode gives every copied message a new ID: the forked thread's turns point at their copies, so they can still be rewound.
@@ -2146,6 +2159,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         emit("thread/compacted",{threadId:thread.id,compaction:{id:compaction.id,throughTurnId:compaction.throughTurnId,createdAt:compaction.createdAt}});return {ok:true,compaction};
       }
       if(session instanceof OpenCodeAgentSession||session instanceof ClaudeAgentSession){await session.compact();emit("thread/compacted",{threadId:thread.id});return {ok:true}}
+      // Muse Code compacts with session/compact, settled once its compaction item ends (T3 compactThread); a conversation with nothing
+      // to compact says so, and the thread goes on. A host that stopped since its last turn (a Stop during a compaction) starts again.
+      if(session instanceof MuseAgentSession){await (session.dead?await ensureSession(thread,context,{}):session).compact();emit("thread/compacted",{threadId:thread.id});return {ok:true}}
       // Grok compacts with its own /compact command, run as a turn (T3 compactThread); a completed one adds the compaction item.
       // OpenCode in a remote environment runs on its ACP server, which answers /compact by summarizing the session, as the
       // local OpenCode server's compaction does (T3's OpenCode compactThread also sends /compact).
@@ -2190,6 +2206,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const updated=threadStore.update(thread.id,{turns:thread.turns.slice(0,index),providerSessionId:"",status:{type:"idle"}});
         emit("thread/reverted",{threadId:thread.id,thread:updated});return {thread:updated};
       }
+      // Muse Code has no conversation rewind (T3: rollback unavailable, and a fork of an earlier turn is refused), as Cursor has none:
+      // the thread stays as it is, and no Muse Code starts to say so.
+      if(thread.runtime==="muse")throw Object.assign(new Error("Muse Code cannot rewind its conversation, so this thread cannot go back to an earlier message."),{code:-32601});
       const session=sessions.get(thread.id)||await ensureSession(thread,context,{});
       if(session instanceof OpenCodeAgentSession){
         const turn=thread.turns?.find(item=>item.id===params.beforeTurnId);const providerMessageId=turn?.providerMessageId||turn?.items?.find(item=>item.providerMessageId)?.providerMessageId;if(!providerMessageId)throw new Error("This OpenCode turn does not have a provider message checkpoint yet");
