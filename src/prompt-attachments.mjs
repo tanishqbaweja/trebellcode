@@ -2,13 +2,16 @@ import { SessionRefusalError } from "./session-refusal.mjs";
 
 // The files a message carries, as the relay hands them to a harness's session (agent-relay acpPrompt).
 
-// An image part keeps the file it was saved to, out of what harnesses are sent: OpenCode 2 reads an attached image from its file.
+// An image part keeps the file it was saved to and an audio file's path line the file it names, both out of what harnesses are sent:
+// OpenCode 2 reads an attached image from its file, and Antigravity's session sends audio as content when Antigravity takes it.
 export const PROMPT_IMAGE_PATH=Symbol.for("trebell.prompt.image-path");
+export const PROMPT_AUDIO_PATH=Symbol.for("trebell.prompt.audio-path");
 function withPath(part,key,path){
   if(part&&typeof part==="object"&&path)Object.defineProperty(part,key,{value:String(path),enumerable:false,configurable:true});
   return part;
 }
 export const withPromptImagePath=(part,path)=>withPath(part,PROMPT_IMAGE_PATH,path);
+export const withPromptAudioPath=(part,path)=>withPath(part,PROMPT_AUDIO_PATH,path);
 
 // The name a person attached a file under: Trebell saves uploads and pastes as <time>-<id>-<name> (gui-server), and the composer
 // shows them without that prefix (App.jsx attachmentDisplayName).

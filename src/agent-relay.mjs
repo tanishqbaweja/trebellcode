@@ -12,7 +12,7 @@ import { threadHistoryHandoff } from "./thread-history-handoff.mjs";
 import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
 import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
-import { unreadableAttachment, withPromptImagePath } from "./prompt-attachments.mjs";
+import { unreadableAttachment, withPromptAudioPath, withPromptImagePath } from "./prompt-attachments.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { MuseAgentSession } from "./muse-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
@@ -192,9 +192,9 @@ async function acpPrompt(input=[]){
       out.push({type:"resource_link",uri:fileUri(item.path),name:String(item.name||item.path||"file")});
     }else if(item?.type==="localAudio"){
       // Audio is named by its saved path, as T3 Code names every attachment it does not send as content, and the harness opens it
-      // with its own tools.
+      // with its own tools. The line keeps the file for Antigravity's session, which sends it as audio when Antigravity takes audio.
       const path=String(item.path||"");
-      out.push({type:"text",text:`[Attached audio "${basename(path)}" is saved at: ${path}]`});
+      out.push(withPromptAudioPath({type:"text",text:`[Attached audio "${basename(path)}" is saved at: ${path}]`},path));
     }
   }
   return out;

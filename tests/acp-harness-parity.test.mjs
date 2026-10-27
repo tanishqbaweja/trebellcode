@@ -128,6 +128,9 @@ const GROK={initialize:{protocolVersion:1,agentCapabilities:{loadSession:true,se
 const CURSOR_SETUP={sessionId:"cursor-session",models:{currentModelId:"default",availableModels:[{modelId:"default",name:"Auto"},{modelId:"claude-opus-5",name:"Claude Opus 5"}]},configOptions:[select("mode","mode","agent",["agent","plan","ask"]),select("model","model","default",[["default","Auto"],["claude-opus-5","Claude Opus 5"]])]};
 const CURSOR={initialize:{protocolVersion:1,agentCapabilities:{loadSession:true}},sessionNew:CURSOR_SETUP};
 const ANTIGRAVITY={initialize:{protocolVersion:1,agentCapabilities:{sessionCapabilities:{resume:{}}}},sessionNew:{sessionId:"agy-session",models:{currentModelId:"gemini-3.8-flash-high",availableModels:[{modelId:"gemini-3.8-flash-high",name:"Gemini 3.8 Flash (High)"},{modelId:"gemini-3.1-pro-high",name:"Gemini 3.1 Pro (High)"}]},configOptions:[select("mode","mode","default",["default","auto_edit","yolo"]),select("model","model","gemini-3.8-flash-high",[["gemini-3.8-flash-high","Gemini 3.8 Flash (High)"],["gemini-3.1-pro-high","Gemini 3.1 Pro (High)"]])]}};
+// Antigravity as it advertises itself (1.2.1's and 1.4.3's initialize, read live): images, audio and embedded context, which decide
+// what its attachments go as (antigravityPromptParts).
+const ANTIGRAVITY_CONTENT={...ANTIGRAVITY,initialize:{...ANTIGRAVITY.initialize,agentCapabilities:{...ANTIGRAVITY.initialize.agentCapabilities,promptCapabilities:{image:true,audio:true,embeddedContext:true}}}};
 
 test("approval answers keep to the request: allow-once first, reject-once only, and T3's choices per harness",()=>{
   const grokOptions=[{kind:"allow_once",optionId:"allow-once",name:"Allow once"},{kind:"allow_always",optionId:"allow-edits-session",name:"Allow edits"},{kind:"allow_always",optionId:"allow-always",name:"Always"},{kind:"reject_once",optionId:"reject-once",name:"Reject"}];
@@ -473,7 +476,7 @@ test("only Antigravity is offered the client's files and no harness its terminal
 });
 
 test("Antigravity is granted Trebell's attachments folder, its client files stay inside the roots through links, and text attachments are embedded",async t=>{
-  const fx=await scenario(t,root=>({...ANTIGRAVITY,prompts:[{steps:[
+  const fx=await scenario(t,root=>({...ANTIGRAVITY_CONTENT,prompts:[{steps:[
     {request:{method:"fs/read_text_file",params:{sessionId:"$sessionId",path:join(root,"attachments","1-ab-pasted-context.txt")}}},
     {request:{method:"fs/read_text_file",params:{sessionId:"$sessionId",path:join(root,"outside","secret.txt")}}},
     {request:{method:"fs/read_text_file",params:{sessionId:"$sessionId",path:join(root,"work","link","secret.txt")}}},
@@ -494,7 +497,7 @@ test("Antigravity is granted Trebell's attachments folder, its client files stay
   assert.deepEqual(requested(log,"session/new")[0].params.additionalDirectories,[attachments],"the attachments folder is granted, as T3 grants it");
   const sent=requested(log,"session/prompt")[0].params.prompt;
   assert.deepEqual(sent[1],{type:"resource",resource:{uri:pathToFileURL(pasted).href,mimeType:"text/plain",text:"The secret word is PERIWINKLE.\n"}},"the pasted text goes as embedded content");
-  assert.deepEqual(sent[2],{type:"resource_link",uri:pathToFileURL(pdf).href,name:"2-cd-report.pdf"},"other files stay links");
+  assert.deepEqual(sent[2],{type:"resource_link",uri:pathToFileURL(pdf).href,name:"2-cd-report.pdf",mimeType:"application/pdf"},"a PDF stays a link, as a document (T3)");
   const replies=log.filter(entry=>entry.reply==="fs/read_text_file").map(entry=>entry.message);
   assert.deepEqual(replies[0],{content:"The secret word is PERIWINKLE.\n"},"a file in the attachments folder is served");
   assert.equal(replies[1].error?.code,-32602,"a file outside the workspace and the attachments folder is refused");
@@ -755,7 +758,7 @@ test("an Antigravity revert cuts the thread and the next turn starts a fresh Ant
 });
 
 test("an Antigravity turn's pasted text reaches it as embedded content, in a session granted Trebell's attachments folder",async t=>{
-  const fx=await scenario(t,{...ANTIGRAVITY,prompts:[{}]});
+  const fx=await scenario(t,{...ANTIGRAVITY_CONTENT,prompts:[{}]});
   const {rpc,next}=await relayHarness(t,"antigravity",fx);
   const attachments=join(fx.root,"home","attachments"),pasted=join(attachments,"1-ab-pasted-context.txt");
   await mkdir(attachments,{recursive:true});await writeFile(pasted,"crash report line\n","utf8");
