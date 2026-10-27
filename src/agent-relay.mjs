@@ -1323,9 +1323,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // A Claude Code turn that failed after its prompt reached the transcript keeps its ids, so a later turn can be edited.
       if(error?.providerMessageId||error?.userMessageId)threadStore.updateTurn(thread.id,turn.id,{...(error.providerMessageId?{providerMessageId:error.providerMessageId}:{}),...(error.userMessageId?{providerUserMessageId:error.userMessageId}:{})});
       persistUsage(null);persistModelTurns(error?.nativeModelTurns);
-      // A Cursor turn that ended in Cursor's lost-connection dump keeps its reply, the dump with it, as a turn that completes keeps its
-      // reply and T3 keeps a failed turn's messages: the thread opened again shows what Cursor wrote before the connection went.
-      if(error?.code==="CURSOR_TRANSPORT_FAILURE"){const assistant=String(session.__assistant||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}}
+      // A Cursor turn that ended in Cursor's lost-connection dump keeps what Cursor wrote before it as its reply, as a turn that completes
+      // keeps its reply. The dump (the failure's last message) is the turn's error, not its answer (cursor-transport-failure.mjs), so a
+      // turn that wrote nothing before it keeps no reply and ends with that error alone.
+      if(error?.code==="CURSOR_TRANSPORT_FAILURE"){const said=String(session.__assistant||""),dump=String(error.dump||""),assistant=dump&&said.endsWith(dump)?said.slice(0,said.length-dump.length).trim():"";if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}}
       const fail=message=>{const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:turn.id,message});emit("turn/completed",{threadId:thread.id,turn:completed})};
       // A turn its harness failed asks the harness again before it ends (harnessFailureMessage); one the person stopped did not fail.
       const harness=sessionHarnesses.get(session);

@@ -438,9 +438,10 @@ export class AcpAgentSession{
       // next ordinary prompt carries them again; a compaction that came during this prompt took the ones it carried.
       if(compacting&&result?.stopReason!=="cancelled"&&result?.stopReason!=="refusal")this.#compacted();
       else if(!command&&this.compactions===compactions){this.runtimeContextSent=true;this.runtimeContextModel=model}
-      // Cursor streams a lost backend connection as the reply and ends the turn normally (T3 CursorTransportFailure).
+      // Cursor streams a lost backend connection as the reply and ends the turn normally (T3 CursorTransportFailure). The failure
+      // carries that last message, the dump with its stack lines, so the relay keeps as the turn's reply only what came before it.
       const failure=active.transport?.failure;
-      if(failure&&result?.stopReason!=="cancelled")throw Object.assign(new Error(failure),{code:"CURSOR_TRANSPORT_FAILURE"});
+      if(failure&&result?.stopReason!=="cancelled")throw Object.assign(new Error(failure),{code:"CURSOR_TRANSPORT_FAILURE",dump:active.message||""});
       return result;
     }catch(error){
       if(active.cancelled&&(this.dead||!this.client||this.client.closed))return {stopReason:"cancelled"};
@@ -701,11 +702,12 @@ export class AcpAgentSession{
 
   // Each Cursor reply message is read on its own for a lost-connection dump (T3 656f3f409): a tool call, a thought or a plan ends
   // the message before it, so the next text starts a new one, and the end of the prompt reads only the last. Session metadata ends none.
+  // The message's text is kept beside its detector (active.message) for a failure to carry.
   #watchCursorMessage(active,type,update){
     if(CURSOR_MESSAGE_BREAKS.has(type)){active.messageEnded=true;return}
     if(type!=="agent_message_chunk"||update.content?.type!=="text")return;
-    if(active.messageEnded){active.transport=new CursorTransportFailure();active.messageEnded=false}
-    active.transport.push(update.content.text);
+    if(active.messageEnded){active.transport=new CursorTransportFailure();active.message="";active.messageEnded=false}
+    active.transport.push(update.content.text);active.message=(active.message||"")+String(update.content.text??"");
   }
 
   #decorate(params,update,type){
