@@ -1,3 +1,4 @@
+import { claudeUsageResponseToLimits } from "./agent-usage-limits.mjs";
 import { hasClaudeManagedMcpConfig } from "./claude-managed-mcp.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
@@ -74,21 +75,39 @@ export async function probeClaudeCapabilities({command,cwd=null,env={},spawnProc
   }
 }
 
+// Claude Code answers signed out with tokenSource "none" and no API key, email or plan (T3 Code's claudeAuthStatus). Another API
+// backend (Bedrock, Vertex, a gateway) or a custom ANTHROPIC_BASE_URL signs in where these fields cannot show it.
+function claudeProbeSignedOut(account,env={}){
+  if(!account||typeof account!=="object"||account.tokenSource!=="none")return false;
+  if(account.apiProvider!==undefined&&account.apiProvider!=="firstParty")return false;
+  if((account.apiKeySource&&account.apiKeySource!=="none")||account.email||account.subscriptionType)return false;
+  let endpoint=null;try{endpoint=new URL(String(env?.ANTHROPIC_BASE_URL||"").trim())}catch{}
+  return !(endpoint&&/^https?:$/.test(endpoint.protocol)&&endpoint.hostname&&endpoint.hostname!=="api.anthropic.com");
+}
+// A probe is reused only when it read what it was asked for from a signed-in account (T3 Code's ClaudeDriver): one whose usage
+// read failed (what the Usage card says it could not read) and one Claude answered signed out are asked again next time.
+function keptClaudeProbe(value,env){
+  if(value?.usageError||(value?.usage&&claudeUsageResponseToLimits(value.usage).unavailable?.reason==="probeFailed"))return false;
+  return !claudeProbeSignedOut(value?.account,env);
+}
+
 // One cache per Claude home, executable, working folder and environment (scope names a remote one): each holds the latest
-// probe for five minutes, and concurrent readers share the probe in flight.
+// probe, reused for five minutes when it is kept (keptClaudeProbe), and concurrent readers share the probe in flight. A probe
+// that is not kept counts as expired at once, so the Usage card fills in at the next refresh after a passing failure or a
+// sign-in. peek's maxAgeMs is how old an answer the caller accepts; by default, what load would reuse.
 export function createClaudeCapabilitiesCache({probe=probeClaudeCapabilities,ttlMs=CLAUDE_CAPABILITIES_TTL_MS,now=()=>Date.now()}={}){
   const entries=new Map();
   const keyOf=({command,cwd,env,spawnProcess,scope})=>[String(command||""),String(env?.CLAUDE_CONFIG_DIR||""),String(cwd||""),spawnProcess?"remote:"+String(scope||""):"local"].join("\0");
   return {
-    peek(input={},{maxAgeMs=ttlMs}={}){
+    peek(input={},{maxAgeMs}={}){
       const entry=entries.get(keyOf(input));
-      return entry?.value&&now()-entry.at<maxAgeMs?entry.value:null;
+      return entry?.value&&now()-entry.at<(maxAgeMs??entry.ttl)?entry.value:null;
     },
     load(input={},{fresh=false}={}){
       const key=keyOf(input),entry=entries.get(key);
       if(entry?.pending)return entry.pending;
-      if(!fresh&&entry?.value&&now()-entry.at<ttlMs)return Promise.resolve(entry.value);
-      const pending=probe(input).then(value=>{entries.set(key,{value,at:now()});return value},error=>{if(entries.get(key)?.pending===pending)entries.delete(key);throw error});
+      if(!fresh&&entry?.value&&now()-entry.at<entry.ttl)return Promise.resolve(entry.value);
+      const pending=probe(input).then(value=>{entries.set(key,{value,at:now(),ttl:keptClaudeProbe(value,input.env)?ttlMs:0});return value},error=>{if(entries.get(key)?.pending===pending)entries.delete(key);throw error});
       entries.set(key,{...(entry||{}),pending});
       return pending;
     },
