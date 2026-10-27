@@ -14,6 +14,7 @@ export const MUSE_SHUTDOWN_TIMEOUT_MS=10_000;
 // How long the frames Muse wrote last have to arrive once its process has exited, while a tool it started may hold its output.
 export const MUSE_EXIT_DRAIN_MS=1_000;
 const MUSE_SIGTERM_GRACE_MS=2_000;
+const MUSE_GROUP_POLL_MS=50;
 const MUSE_KILL_WAIT_MS=3_000;
 const MUSE_SCHEMA_VERSION=1;
 
@@ -92,13 +93,16 @@ async function within(promise,ms){
   try{return await Promise.race([Promise.resolve(promise).then(()=>true,()=>true),timer.promise.then(()=>false)])}finally{timer.cancel()}
 }
 
-// Stops a host's whole process tree: taskkill /T /F on Windows while the launcher still runs (cmd.exe waits for PowerShell, which
-// waits for muse-bin, so the tree hangs off it), as AcpClient.stop does; elsewhere SIGTERM to the process group the host leads,
-// then SIGKILL once its grace has passed. A launcher that has exited is left alone, as AcpClient.stop leaves one: Windows may have
-// given its pid to another process by then, whose tree taskkill would end, and its own tree is no longer found from that pid.
-export async function stopMuseProcessTree(child,{platform=process.platform,exited=null,graceMs=MUSE_SIGTERM_GRACE_MS,spawnFn=spawn}={}){
-  if(!child?.pid||child.exitCode!=null||child.signalCode!=null)return;
+// Stops a host's whole process tree. On Windows: taskkill /T /F while the launcher still runs (cmd.exe waits for PowerShell, which
+// waits for muse-bin, so the tree hangs off it), as AcpClient.stop does; a launcher that has exited is left alone, as AcpClient.stop
+// leaves one: Windows may have given its pid to another process by then, whose tree taskkill would end. Elsewhere: SIGTERM to the
+// process group the host leads, then SIGKILL once its grace has passed while any of it is left. No other process takes the group's
+// id while one of its processes lives, so it still reaches a tool Muse started that holds its output once Muse has exited, as Meta's
+// SDK reaches one.
+export async function stopMuseProcessTree(child,{platform=process.platform,graceMs=MUSE_SIGTERM_GRACE_MS,spawnFn=spawn}={}){
+  if(!child?.pid)return;
   if(platform==="win32"){
+    if(child.exitCode!=null||child.signalCode!=null)return;
     await new Promise(resolve=>{
       let settled=false;const done=()=>{if(settled)return;settled=true;resolve()};
       try{const killer=spawnFn("taskkill",["/PID",String(child.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});killer.once("exit",done);killer.once("error",done);wait(MUSE_KILL_WAIT_MS).promise.then(done)}catch{done()}
@@ -106,8 +110,10 @@ export async function stopMuseProcessTree(child,{platform=process.platform,exite
     return;
   }
   const signal=name=>{try{process.kill(-child.pid,name)}catch{try{child.kill(name)}catch{}}};
+  // The host itself, or any process of its group (ESRCH: none is left).
+  const left=()=>{if(child.exitCode==null&&child.signalCode==null)return true;try{process.kill(-child.pid,0);return true}catch(error){return error?.code!=="ESRCH"}};
   signal("SIGTERM");
-  if(!(await within(exited||new Promise(()=>{}),graceMs)))signal("SIGKILL");
+  for(const deadline=Date.now()+graceMs;left();await wait(MUSE_GROUP_POLL_MS).promise)if(Date.now()>=deadline)return void signal("SIGKILL");
 }
 
 export class MuseHost{
@@ -119,7 +125,7 @@ export class MuseHost{
     this.stderrTail="";this.exit=null;this.closing=false;this.#closing=null;
     let settle;this.exited=new Promise(resolve=>{settle=resolve});this.#settleExit=settle;
   }
-  #closing;#settleExit;#shutdownDeadline=null;
+  #closing;#settleExit;#shutdownDeadline=null;#outputHeld=false;
 
   get pid(){return this.child?.pid??null}
   exitMessage(exit=this.exit){return museExitMessage(exit||{},this.stderrTail,{command:this.command,environment:this.env})}
@@ -175,7 +181,7 @@ export class MuseHost{
     // The frames Muse wrote last get MUSE_EXIT_DRAIN_MS to arrive; then its exit stands, and Trebell lets go of its ends of the
     // pipes, which ends the connection.
     let drain=null;
-    child.once("exit",(code,signal)=>{drain=setTimeout(()=>{settle({code,signal});this.#releasePipes(child)},MUSE_EXIT_DRAIN_MS);drain.unref?.()});
+    child.once("exit",(code,signal)=>{drain=setTimeout(()=>{this.#outputHeld=true;settle({code,signal});this.#releasePipes(child)},MUSE_EXIT_DRAIN_MS);drain.unref?.()});
     child.once("close",(code,signal)=>{clearTimeout(drain);settle({code,signal})});
     child.stdout.setEncoding("utf8");child.stderr.setEncoding("utf8");
     child.stderr.on("data",chunk=>{this.stderrTail=appendAcpStderrTail(this.stderrTail,chunk)});
@@ -204,7 +210,8 @@ export class MuseHost{
   #releasePipes(child){for(const stream of [child.stdin,child.stdout,child.stderr])try{stream?.destroy()}catch{}}
 
   // Closes the connection, which ends Muse's input: Muse winds down and frees the session's writer lease. A host still running
-  // shutdownTimeoutMs later has its whole process tree stopped.
+  // shutdownTimeoutMs later has its whole process tree stopped. So, on Linux and macOS, has one that exited while a process it
+  // started still held its output: that process is still in the host's process group.
   close(){return this.#closing??=this.#shutdown()}
   async #shutdown(){
     this.closing=true;
@@ -213,9 +220,9 @@ export class MuseHost{
     try{
       if(this.connection)void this.connection.close().catch(()=>{});else this.#endInput();
       const exited=await Promise.race([this.exited.then(()=>true),deadline.promise.then(()=>false)]);
-      if(!exited){
-        await this.stopTree(child,{platform:this.platform,exited:this.exited});
-        await within(this.exited,MUSE_KILL_WAIT_MS);
+      if(!exited||(this.#outputHeld&&this.platform!=="win32")){
+        await this.stopTree(child,{platform:this.platform});
+        if(!exited)await within(this.exited,MUSE_KILL_WAIT_MS);
       }
     }finally{
       deadline.cancel();
