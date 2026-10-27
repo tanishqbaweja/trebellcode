@@ -1,5 +1,6 @@
 import { reasoningHistoryMessage } from "./reasoning-text.js";
 import { splitCodexAttachmentText } from "./codex-turn-options.js";
+import { withoutCodexGoalStart } from "../../src/codex-goal-start.mjs";
 
 export function messageText(item){
   if(typeof item?.text==="string")return item.text;
@@ -9,12 +10,13 @@ export function messageText(item){
 
 // A message the person sent, as its bubble shows it again: the files Codex names after its text (codexTurnInput) come off the text,
 // and those its input carries as items (an image, audio or a file, as the agent relay keeps them) join them, so the message names
-// the files that went with it as it did when it was sent; null for a message with neither text nor files.
+// the files that went with it as it did when it was sent; null for a message with neither text nor files. A Codex goal's first
+// message reads as the objective the person typed (codex-goal-start.mjs).
 const FILE_INPUTS=new Set(["localImage","localAudio","mention"]);
 function userHistoryMessage(item,turnId,checkpointByTurn){
   const {text,paths}=splitCodexAttachmentText(messageText(item).trim());
   for(const entry of Array.isArray(item.content)?item.content:[])if(FILE_INPUTS.has(entry?.type)&&entry.path&&!String(entry.path).includes("://"))paths.push(String(entry.path));
-  const attachments=[...new Set(paths)],shown=text.trim();
+  const attachments=[...new Set(paths)],shown=withoutCodexGoalStart(text.trim());
   return shown||attachments.length?{id:item.id,role:"user",text:shown,turnId,checkpointId:checkpointByTurn[turnId]?.id||null,...(attachments.length?{attachments}:{})}:null;
 }
 

@@ -15,7 +15,7 @@ export const sleep=ms=>new Promise(resolve=>realSetTimeout(resolve,ms));
 export async function until(check,ms=3000){const end=Date.now()+ms;while(!check()&&Date.now()<end)await sleep(10);return check()}
 
 async function fakeCodex(port){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),requests=[],answers=new Map(),goals=new Map(),sockets=new Set(),holds=new Map();let nextId=9000,turns=0;
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),requests=[],answers=new Map(),goals=new Map(),sockets=new Set(),holds=new Map(),fixed=new Map();let nextId=9000,turns=0;
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   const send=value=>{for(const ws of sockets)if(ws.readyState===1)ws.send(JSON.stringify(value))};
   const notify=(method,params)=>send({method,params});
@@ -31,6 +31,7 @@ async function fakeCodex(port){
   });
   function answer(ws,message){
     const params=message.params||{},reply=result=>{if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,result}))},now=Math.floor(Date.now()/1000);
+    if(fixed.has(message.method))return reply(fixed.get(message.method));
     if(message.method==="thread/goal/get")return reply({goal:goals.get(params.threadId)||null});
     if(message.method==="thread/goal/set"){
       const previous=goals.get(params.threadId)||null;
@@ -48,6 +49,8 @@ async function fakeCodex(port){
     connected:()=>sockets.size>0,
     // The next request of the method waits for release() before it is answered.
     hold(method){let release=()=>{};holds.set(method,new Promise(resolve=>{release=resolve}));return ()=>release()},
+    // Every request of the method is answered with result from now on.
+    answerWith(method,result){fixed.set(method,result)},
     // A server request as Codex sends it; answers() gives what came back for it.
     ask(method,params){const id=nextId++;send({id,method,params});return {id,answers:()=>answers.get(String(id))||[]}},
     async close(){for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))},

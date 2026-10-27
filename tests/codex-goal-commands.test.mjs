@@ -19,7 +19,7 @@ function codexWindow({running=false,goal=null,endAfterMs=20,turnEnds=true,stopFa
   const deps={
     agentRuntime:"codex",agentRuntimeLabel:"Codex",currentProject:null,projectPath:null,models:["gpt-test"],model:"gpt-test",attachments:[],contextChips:[],
     runtimeCapabilities:{},running,rpc,activeThread:{id:"goal-thread"},activeThreadRef:{current:{id:"goal-thread"}},
-    async startTurn(text,paths,model,thread,cwd,focus,options={}){log.push(["startTurn",{text,goalPatch:options.goalPatch||null,goalResume:Boolean(options.goalResume)}])},
+    async startTurn(text,paths,model,thread,cwd,focus,options={}){log.push(["startTurn",{text,...(options.inputText?{inputText:options.inputText}:{}),goalPatch:options.goalPatch||null,goalResume:Boolean(options.goalResume)}])},
     async stop(){
       log.push(["stop"]);if(stopFails)throw new Error(stopFails);
       if(current?.status==="active")current={...current,status:"paused"};
@@ -34,7 +34,7 @@ function codexWindow({running=false,goal=null,endAfterMs=20,turnEnds=true,stopFa
 test("a new Codex goal's first turn asks for the work toward it, and the Goal panel keeps the objective as written",async()=>{
   const app=codexWindow();
   assert.equal(await runSlashCommand(app.deps,"/goal Make the login tests pass"),true);
-  assert.deepEqual(app.log,[["startTurn",{text:"Start working toward this goal: Make the login tests pass",goalPatch:{objective:"Make the login tests pass",status:"active"},goalResume:false}]]);
+  assert.deepEqual(app.log,[["startTurn",{text:"Make the login tests pass",inputText:"Start working toward this goal: Make the login tests pass",goalPatch:{objective:"Make the login tests pass",status:"active"},goalResume:false}]]);
 });
 
 test("/goal with an objective sent while a turn runs stops that turn and sets and starts the goal once it has ended",async()=>{

@@ -76,6 +76,7 @@ import { cleanupDelegationWorktree, createDelegationWorktree } from "./delegatio
 import { codexFileChanges, resolveCodexApprovalByPolicy, workspaceFilePath } from "./codex-policy-adapter.mjs";
 import { allowsSession, approvalThreadId, createCodexSessionApprovals, sessionApprovalKind, sessionApprovalResult } from "./codex-session-approvals.mjs";
 import { CODEX_GOAL_CONTINUATION_GRACE_MS, createCodexGoalContinuations } from "./codex-goal-continuation.mjs";
+import { withoutCodexGoalStart } from "./codex-goal-start.mjs";
 import { resolveRecipeExecution } from "./recipes.mjs";
 import { runProjectHooks, verificationHookSteps } from "./project-hooks.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
@@ -3366,6 +3367,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   }
 
   const terminalWs=terminals?.attachWebSocket(server);
+  // A Codex thread as the windows list it: one whose first message began a goal shows the objective, as its message does.
+  const codexListedThread=thread=>{const preview=thread&&typeof thread.preview==="string"?withoutCodexGoalStart(thread.preview):null;return preview!=null&&preview!==thread.preview?{...thread,preview}:thread};
   const relay=attachCodexRelay(server,{
     // A mock server runs no Codex: its requests go to the app-server port it was given, where a test's stand-in answers. A real one
     // has no such fallback, since a program on a fixed port is not this Trebell's Codex.
@@ -3445,13 +3448,19 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     // Codex's goal notifications reach the renderer with Trebell's guidance and budget figures added; a finished turn
     // checks the budgets only Trebell tracks.
     // A thread whose own app-server died: its resumes name the death until its next turn (noteCodexAppServerExit).
+    // A thread a Codex goal's first message began is listed by its objective, as the person typed it (codex-goal-start.mjs).
     transformServerResponse:(message,{requestMethod,requestParams})=>{
+      const result=message?.result,listed=codexListedThread(result?.thread),page=Array.isArray(result?.data)?result.data.map(codexListedThread):null;
+      if(listed!==result?.thread)message={...message,result:{...result,thread:listed}};
+      if(page&&page.some((thread,index)=>thread!==result.data[index]))message={...message,result:{...message.result,data:page}};
       if(requestMethod!=="thread/resume"||!message?.result?.thread)return message;
       const exit=codexAppServerExits.get(String(requestParams?.threadId||message.result.thread.id||""));
       return exit?{...message,result:{...message.result,trebellAppServerExit:exit}}:message;
     },
     transformServerMessage:(message,{requestUpstream,connected})=>{
-      const params=message.params||{},threadId=params.threadId?String(params.threadId):"";if(!threadId)return message;
+      const params=message.params||{},threadId=params.threadId?String(params.threadId):"";
+      if(message.method==="thread/started"&&params.thread){const listed=codexListedThread(params.thread);return listed===params.thread?message:{...message,params:{...params,thread:listed}}}
+      if(!threadId)return message;
       // A goal Trebell is writing reaches the windows as it ends up (setCodexGoal), not through the steps Codex says it took.
       if((message.method==="thread/goal/updated"||message.method==="thread/goal/cleared")&&codexGoalWrites.has(threadId))return false;
       if(message.method==="thread/goal/updated"&&params.goal)return {...message,params:{...params,goal:mirrorCodexGoal(threadId,params.goal)}};

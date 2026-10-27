@@ -175,7 +175,9 @@ test("/goal sent while a Codex turn runs stops that turn and starts the goal, wh
     await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("active");
     expect(codex.sent("thread/goal/set").map(params=>[params.objective||null,params.status||null])).toEqual([["Ship the release notes","paused"],[null,"active"]]);
     await expect(composer).toHaveValue("");await expect(stop).toBeVisible();
-    await expect(page.locator(".user-bubble").last()).toContainText("Start working toward this goal: Ship the release notes");
+    // The person's message is the objective they typed: only Codex got the goal start before it.
+    await expect(page.locator(".user-bubble").last()).toContainText("Ship the release notes");
+    await expect(page.locator(".user-bubble").last()).not.toContainText("Start working toward this goal");
     await expect(page.getByTestId("composer-alert")).toHaveCount(0);
     // The Goal panel keeps the objective as written.
     await page.getByRole("button",{name:"Thread goal",exact:true}).click();

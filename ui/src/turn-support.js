@@ -16,6 +16,7 @@ import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repai
 import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
 import { askTerminalKeyboard } from "./terminal-keyboard.js";
 import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
+import { CODEX_GOAL_START } from "../../src/codex-goal-start.mjs";
 
 export { repositoryContextEntries } from "./context-provenance.js";
 
@@ -206,9 +207,9 @@ export async function continueInterruptedTurns({client,recovery,showActionError}
   }
 }
 
-// The first turn of a Codex goal asks for the work (T3 runGoalCommand): sent alone, the objective reads like a statement, and the
-// model echoed it back. The Goal panel keeps the objective as written.
-export const CODEX_GOAL_START="Start working toward this goal: ";
+// The first turn of a Codex goal asks for the work (codex-goal-start.mjs): Codex gets CODEX_GOAL_START before the objective, while the
+// person's message, its checkpoint and the Goal panel keep the objective as written.
+export { CODEX_GOAL_START };
 // A goal command that stops the turn running (T3 goalCommandStopsActiveRun) stops it as Stop does: an active goal is paused first,
 // so Codex starts no further turn of it. waitForEnd: the command starts a turn, which waits for the stopped one's turn/completed,
 // or 10 s, after which Codex says why should it refuse the start.
@@ -229,7 +230,7 @@ async function runCodexGoalCommand(deps,command){
   try{
     if(command?.type==="set"){
       if(running&&threadId)await stopForGoal(deps,threadId,{waitForEnd:true});
-      await startTurn(CODEX_GOAL_START+command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"}});
+      await startTurn(command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"},inputText:CODEX_GOAL_START+command.objective});
       return;
     }
     if(!threadId||!rpc){note("No goal is set.");return}
