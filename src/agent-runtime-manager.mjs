@@ -437,6 +437,13 @@ export class AgentRuntimeManager{
     if(instance?.kind==="antigravity")return join(trebellHome(this.env),"agent-runtimes","antigravity","current",this.platform==="win32"?"agy_acp_server.exe":"agy_acp_server.par");
     const discovered=runtimeExecutableCandidates(instance?.kind,{env:this.env,platform:this.platform}).find(candidate=>existsSync(candidate));
     if(discovered)return resolveWindowsCommandShim(discovered,{platform:this.platform});
+    // An OpenCode only PATH names (nvm-windows, another npm prefix) runs the opencode.exe behind npm's launcher itself, as T3 does,
+    // when the launcher is exactly npm's for a native binary: started through cmd.exe, the opencode.exe escapes the kill-on-close
+    // job of the process that started it, so its servers outlived a Trebell that was killed or crashed.
+    if(instance?.kind==="opencode"&&this.platform==="win32"){
+      const found=commandOnPath(def.command,{env:this.childEnv(instance),platform:this.platform}),target=found&&windowsCommandShimTarget(found,{platform:this.platform,exact:true});
+      if(target)return target;
+    }
     return def?.command||null;
   }
   childEnv(instance){
