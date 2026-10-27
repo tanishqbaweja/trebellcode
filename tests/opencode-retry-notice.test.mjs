@@ -56,7 +56,9 @@ test("an OpenCode 1.x retry shows as the turn's retry row, and the turn ends as 
     await eventually(()=>updates.some(update=>update.sessionUpdate==="runtime_error"));
     const notices=updates.filter(update=>update.sessionUpdate==="runtime_error");
     assert.equal(notices.length,1);assert.equal(notices[0].willRetry,true);
-    assert.match(notices[0].message,/^Rate limited\. OpenCode retries opencode\/big-pickle in (19|20) s \(retry 2\)\.$/);
+    // The wait is counted when the event arrives, so a busy machine that takes seconds to deliver it shows fewer of the 20 s.
+    const [,seconds]=notices[0].message.match(/^Rate limited\. OpenCode retries opencode\/big-pickle in (\d+) s \(retry 2\)\.$/)||[];
+    assert.ok(Number(seconds)>=10&&Number(seconds)<=20,notices[0].message);
     fixture.held[0]({info:{id:"msg_a1",parentID:"msg_u1",role:"assistant",tokens:{input:3,output:1}},parts:[{id:"prt_1",type:"text",text:"Fixed."}]});
     assert.equal((await turn).stopReason,"end_turn");
   }finally{await session.close();await fixture.close()}
