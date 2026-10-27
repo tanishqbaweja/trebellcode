@@ -1,7 +1,6 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import * as codexCatalog from "../../src/codex-model-catalog.mjs";
 import { routeCodexApp, startCodexHarness } from "./codex-history-harness.js";
 
 // A person whose Codex config runs Fast (service_tier = "fast" in config.toml) saw the Speed picker read Standard while Codex ran each
@@ -15,11 +14,13 @@ const json=(route,value)=>route.fulfill({status:200,contentType:"application/jso
 // model has the priority tier, named Fast; only gpt-6-luna is Fast by its own default.
 const fast={id:"priority",name:"Fast",description:"Faster responses"};
 const row=(id,displayName,defaultServiceTier=null)=>({id,model:id,displayName,hidden:false,isDefault:false,supportedReasoningEfforts:[{reasoningEffort:"medium",description:""},{reasoningEffort:"high",description:""}],defaultReasoningEffort:"medium",serviceTiers:[fast],defaultServiceTier});
-const ROWS=[row("gpt-6.1-sol","GPT-6.1 Sol"),row("gpt-6-astra","GPT-6 Astra"),row("gpt-6-luna","GPT-6 Luna","priority")];
-// The model list the app's server answers with: Codex's rows with the configured tier applied (config/read's service_tier).
-function modelList(serviceTier){
-  const models=codexCatalog.withConfiguredCodexServiceTier(ROWS,serviceTier).map(item=>({...item,name:item.displayName,provider:"codex",agent:"Codex",reasoningEfforts:item.supportedReasoningEfforts,defaultReasoningEffort:item.defaultReasoningEffort}));
-  return {models:models.map(item=>item.id),defaultModel:codexCatalog.preferredCodexDefaultModel(ROWS),metadata:{provider:"codex",agentRuntime:"codex",source:"codex-model-list",models},scope:{agentRuntime:"codex",provider:"openai"}};
+// The model list Trebell's server answers with for that config: those rows with the configured Fast as each one's default tier, as
+// written here. That the server builds it from config/read's service_tier is tests/codex-configured-service-tier.test.mjs's check,
+// against a fake Codex CLI; this spec checks the window's side, which the change left as it was, with such a list.
+const LISTED=[row("gpt-6.1-sol","GPT-6.1 Sol","priority"),row("gpt-6-astra","GPT-6 Astra","priority"),row("gpt-6-luna","GPT-6 Luna","priority")];
+function modelList(){
+  const models=LISTED.map(item=>({...item,name:item.displayName,provider:"codex",agent:"Codex",reasoningEfforts:item.supportedReasoningEfforts,defaultReasoningEffort:item.defaultReasoningEffort}));
+  return {models:models.map(item=>item.id),defaultModel:"gpt-6-astra",metadata:{provider:"codex",agentRuntime:"codex",source:"codex-model-list",models},scope:{agentRuntime:"codex",provider:"openai"}};
 }
 
 async function toggleMode(page){
@@ -46,7 +47,7 @@ test("with the person's Codex config on Fast the Speed picker reads Fast while n
     emit({method:"turn/started",params:{threadId,turn:{...turn,items:[]}}});
     const item={id:"agent-"+turn.id,type:"agentMessage",text};turn.items.push(item);emit({method:"item/completed",params:{threadId,turnId:turn.id,item}});finish("completed");
   };
-  const listed=modelList("fast");
+  const listed=modelList();
   const harness=await startCodexHarness(thread,[answer("Release checks pass at the speed Codex runs."),answer("Release checks pass at Standard.")]);
   try{
     await routeCodexApp(page,harness,thread);
