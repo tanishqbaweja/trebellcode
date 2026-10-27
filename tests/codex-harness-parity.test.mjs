@@ -32,7 +32,7 @@ test("Trebell runs the user's installed Codex, never the package it depends on i
 });
 
 test("Codex readiness is its own account/read answer, as in T3's provider probe",()=>{
-  assert.deepEqual(codexAccountStatus({account:{type:"chatgpt",email:"a@b.c",planType:"pro"},requiresOpenaiAuth:true}),{ready:true,authenticated:true,authType:"chatgpt",label:"ChatGPT Pro 20x",message:"Signed in with ChatGPT Pro 20x"});
+  assert.deepEqual(codexAccountStatus({account:{type:"chatgpt",email:"a@b.c",planType:"pro"},requiresOpenaiAuth:true}),{ready:true,authenticated:true,authType:"chatgpt",label:"ChatGPT Pro 200",message:"Signed in with ChatGPT Pro 200"});
   assert.equal(codexAccountStatus({account:{type:"apiKey"}}).label,"OpenAI API key");
   assert.deepEqual(codexAccountStatus({account:null,requiresOpenaiAuth:true}),{ready:false,authenticated:false,authType:null,label:null,message:"Codex CLI is not authenticated. Run codex login and try again."});
   const ollama=codexAccountStatus({account:null,requiresOpenaiAuth:false});

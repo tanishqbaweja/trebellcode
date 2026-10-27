@@ -7,15 +7,17 @@ import { TREBELL_VERSION } from "./version.mjs";
 
 export const CODEX_ACCOUNT_PROBE_TIMEOUT_MS = 20_000;
 
+// ChatGPT's own plan names (T3 codexPlanLabel): Pro is Pro 200, its lighter and larger tiers Pro 100 and Pro 500, and Team is now
+// Business, beside Business Premium.
 const PLAN_LABELS = Object.freeze({
   free: "ChatGPT Free",
   go: "ChatGPT Go",
   plus: "ChatGPT Plus",
-  pro: "ChatGPT Pro 20x",
-  prolite: "ChatGPT Pro 5x",
-  promax: "ChatGPT Pro Max",
-  team: "ChatGPT Team",
-  self_serve_business_prolite: "ChatGPT Business",
+  pro: "ChatGPT Pro 200",
+  prolite: "ChatGPT Pro 100",
+  promax: "ChatGPT Pro 500",
+  team: "ChatGPT Business",
+  self_serve_business_prolite: "ChatGPT Business Premium",
   self_serve_business_usage_based: "ChatGPT Business",
   business: "ChatGPT Business",
   ent26: "ChatGPT Enterprise",
