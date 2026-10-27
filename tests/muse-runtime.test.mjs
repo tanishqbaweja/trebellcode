@@ -59,6 +59,8 @@ async function museFixture(prefix,{environment={},models=true,env:extraEnv={}}={
   const env={...process.env,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),CLAUDE_CONFIG_DIR:join(root,"claude"),MUSE_INSTALL_DIR:"",...install.env,...extraEnv};
   const state=museState(environmentVars);
   const manager=new AgentRuntimeManager({state,env,runFn:onlyMuse(install.launcher)});
+  // Meta's channel manifest is not read from here: the update reading of Settings' listings finds it unavailable.
+  manager.fetchImpl=async()=>new Response("unavailable",{status:503});
   return {root,log,launcher:install.launcher,env,state,manager,close:()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})};
 }
 
@@ -317,7 +319,8 @@ test("Muse Code signs in with `muse login` in a Trebell terminal, offers Meta's 
   try{
     assert.deepEqual(fixture.manager.authCommand("muse"),{runtime:"muse",instanceId:"muse-default",name:"Muse Code",command:fixture.launcher,args:["login"]});
     assert.equal(fixture.manager.installable("muse"),null);
-    await assert.rejects(()=>fixture.manager.install("muse"),/Muse Code is not installable from Trebell Code/);
+    // Trebell updates only a Muse Code that Meta's launcher runs (muse-updates.test.mjs), and this one is not.
+    await assert.rejects(()=>fixture.manager.install("muse"),/^Error: Trebell Code updates Muse Code only through Meta's launcher, which Meta's installer puts in place, and .+ is not it: update it the way you installed it\. Nothing was installed\.$/);
     // Settings' harness list, with every harness answering as not installed (nothing on this machine is started).
     for(const [platform,command] of [["win32","irm https://dev.meta.ai/install.ps1 | iex"],["linux","curl -fsSL https://dev.meta.ai/install.sh | sh"],["darwin","curl -fsSL https://dev.meta.ai/install.sh | sh"]]){
       assert.equal(museInstallCommand(platform),command);

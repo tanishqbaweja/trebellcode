@@ -71,7 +71,8 @@ function followInstall(kind){
 // its request ends with the page, and is not the install's answer.
 let pageLeaving=false;
 if(typeof window!=="undefined"){window.addEventListener("pagehide",()=>{pageLeaving=true});window.addEventListener("pageshow",()=>{pageLeaving=false})}
-const installedText=(label,status)=>status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.";
+// Muse Code's status says nothing of its sign-in (a turn checks it): one that lists its models is ready.
+const installedText=(label,status)=>status?.installed&&!(status?.authenticated||status?.kind==="muse"&&status.available)?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.";
 // A shortcut or condition being typed is a draft. It is saved when the field is left or Enter is pressed, and only once it can work,
 // so a half-typed "Ctrl+" or "threadOpen &&" never replaces the one in use. A draft that cannot work stays in the field, marked
 // invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited. A saved

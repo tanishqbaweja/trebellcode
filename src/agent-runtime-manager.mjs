@@ -24,6 +24,7 @@ import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { acpCommandsFromAvailable } from "./acp-agent-session.mjs";
 import { readMuseModelCatalog } from "./muse-model-catalog.mjs";
 import { museSubscriptionUsage, museUsageLimits } from "./muse-subscription-usage.mjs";
+import { compareMuseVersions, isMuseLauncher, latestMuseRelease, MUSE_CHANNELS, museChannel, museChannelUrl, museUpdateEnvironment, museUpdateRefusal, museUpdateText } from "./muse-maintenance.mjs";
 
 const RUNTIMES=Object.freeze({
   native:{id:"native",name:"Trebell Native",protocol:"native",command:null,multipleInstances:false,managed:true},
@@ -79,6 +80,8 @@ const UPDATABLE=new Set(["codex","claude","opencode","grok"]);
 // The npm package of the release line a harness's version is in: OpenCode 2.x is @opencode/cli, and Grok Build @xai-official/grok,
 // whose latest is what `grok update` installs (T3 Grok driver).
 const npmPackageFor=(kind,version)=>kind==="opencode"&&parsedSemver(version)?.major===2?"@opencode/cli":kind==="grok"?"@xai-official/grok":INSTALLABLE_PACKAGES[kind]||null;
+// Two releases of a harness in order: Muse Code's by its own versions (X.Y.Z-R<revision>), every other's by X.Y.Z.
+const releaseOrder=(kind,a,b)=>kind==="muse"?compareMuseVersions(a,b):compareSemver(parsedSemver(a),parsedSemver(b));
 // Muse Code runs where Trebell runs; a WSL or SSH environment has no Muse Code of Trebell's.
 const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Switch to the local environment to use it.";
 // A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start makes one)
@@ -593,8 +596,9 @@ export class AgentRuntimeManager{
   // way and how the last one of each harness ended (installs()), so a window that did not start one (another tab, or the window
   // reloaded, which forgets the install it started) says Installing… on its row and can wait for its answer (waitForInstall).
   #installing=new Map();#installEnded=new Map();
-  // What install() takes: a harness Trebell installs, and Grok Build, which it only updates (with `grok update`).
-  #installTarget(kind){const runtime=normalizeAgentRuntime(kind);return this.installable(runtime)||(runtime==="grok"?{runtime,updateOnly:true}:null)}
+  // What install() takes: a harness Trebell installs, and Grok Build and Muse Code, which it only updates (with `grok update`, and
+  // through Meta's launcher).
+  #installTarget(kind){const runtime=normalizeAgentRuntime(kind);return this.installable(runtime)||(runtime==="grok"||runtime==="muse"?{runtime,updateOnly:true}:null)}
   // instanceId: the profile whose binary an update is for (the row's), else the harness's default profile.
   async install(kind,{environmentId=undefined,id=null,instanceId=null}={}){
     const target=this.#installTarget(kind);const normalized=normalizeAgentRuntime(kind);
@@ -630,13 +634,13 @@ export class AgentRuntimeManager{
     }
     const plan=await this.installPlan(target.runtime,{environmentId,instanceId}),def=RUNTIMES[target.runtime];
     const result={runtime:target.runtime,packageName:plan.packageName,method:plan.method,targetVersion:plan.targetVersion,...(plan.compatibility?{compatibility:plan.compatibility}:{})};
-    if(plan.installedVersion&&plan.targetVersion&&compareSemver(parsedSemver(plan.installedVersion),parsedSemver(plan.targetVersion))>=0)return {ok:true,...result,status:await this.probe(plan.instance,{environmentId,fresh:true}),output:`${def.name} ${plan.installedVersion} is already the newest ${target.runtime==="opencode"?`OpenCode ${parsedSemver(plan.installedVersion).major}.x`:def.name} release.`};
+    if(plan.installedVersion&&plan.targetVersion&&releaseOrder(target.runtime,plan.installedVersion,plan.targetVersion)>=0)return {ok:true,...result,status:await this.probe(plan.instance,{environmentId,fresh:true}),output:`${def.name} ${plan.installedVersion} is already the newest ${target.runtime==="opencode"?`OpenCode ${parsedSemver(plan.installedVersion).major}.x`:def.name} release.`};
     // An updater can download a few hundred MB (Claude Code's native binary): T3 gives one 5 minutes.
     const ran=await this.#runCommand(plan.command,plan.args,{timeoutMs:300_000,environmentId,env:plan.env||null});
     if(!ran.ok)throw new Error((ran.stderr||ran.stdout||(`Could not ${plan.installedVersion?"update":"install"} ${def.name}`)).trim().slice(-2000));
     // The binary this profile runs must start and report what was installed, a pinned version or, after the harness's own updater,
     // another version than before (T3 25f8fcb18): an update that left it where it was is said, not shown as ready.
-    const status=await this.probe(plan.instance,{environmentId,fresh:true}),running=parsedSemver(status.version)?.raw||null;
+    const status=await this.probe(plan.instance,{environmentId,fresh:true}),running=target.runtime==="muse"?parseMuseVersion(status.version):parsedSemver(status.version)?.raw||null;
     const where=status.binary||plan.binary||def.command,named=plan.targetVersion&&plan.pinned?`${def.name} ${plan.targetVersion}`:def.name;
     if(!status.installed||!running){const said=String(status.message||"no answer").trim();throw new Error(`${named} was installed, but the ${def.name} this profile runs (${where}) did not start: ${/[.!?…]$/.test(said)?said:said+"."}`)}
     if(plan.pinned&&plan.targetVersion&&running!==plan.targetVersion)throw new Error(`${named} was installed, but the ${def.name} this profile runs (${where}) still reports ${running}.`);
@@ -665,10 +669,11 @@ export class AgentRuntimeManager{
   // OpenCode 2.x and a host's Grok Build are refused, saying how to update them. An SSH or WSL host's harness is npm's there.
   async installPlan(kind,{environmentId=undefined,instanceId=null}={}){
     const runtime=normalizeAgentRuntime(kind),def=RUNTIMES[runtime],instance=this.#installInstance(runtime,instanceId),remote=Boolean(this.processSpawner(instance,environmentId));
+    if(runtime==="muse"&&remote)throw new Error(MUSE_LOCAL_ONLY);
     const checked=await this.#run(instance,["--version"],{timeoutMs:versionCheckTimeoutMs(runtime),environmentId});
     // A check that did not answer for any reason but a command that is not there says nothing of which install is there: planned as
     // if none were, the update would put a separate copy beside it (an OpenCode 1.x beside a 2.x), which the next start prefers.
-    const failure=checked.ok?null:versionCheckFailure(checked),said=(checked.stdout||checked.stderr||"").trim().split(/\r?\n/)[0]||"",installed=checked.ok?parsedSemver(said)?.raw||null:null;
+    const failure=checked.ok?null:versionCheckFailure(checked),said=(checked.stdout||checked.stderr||"").trim().split(/\r?\n/)[0]||"",installed=checked.ok?(runtime==="muse"?parseMuseVersion(said):parsedSemver(said)?.raw||null):null;
     if((failure&&failure!=="missing")||(checked.ok&&!installed)){
       const reason=failure==="spawn"?runtimeProbeFailure(def,checked):failure==="timeout"?`\`${def.command} --version\` did not answer within ${versionCheckTimeoutMs(runtime)/1000} seconds.`:failure?`\`${def.command} --version\` ${versionCheckEnded(checked)}`:`\`${def.command} --version\` printed no version: ${said.slice(0,200)}`;
       throw new Error(`Trebell Code could not read the version of the ${def.name} it would update: ${/[.!?…]$/.test(reason)?reason:reason+"."} Nothing was installed.`);
@@ -685,6 +690,7 @@ export class AgentRuntimeManager{
       const args=npmInstallArgs(packageName,targetVersion);
       return {instance,method:"npm",binary:null,installedVersion:null,targetVersion,packageName,...(compatibility?{compatibility}:{}),pinned:Boolean(targetVersion),command:"npm",args,shown:shownCommand("npm",args,remote?"linux":this.platform)};
     }
+    if(runtime==="muse")return this.#museUpdatePlan(instance,installed);
     const packageName=npmPackageFor(runtime,installed),line=parsedSemver(installed).major;
     if(remote&&runtime==="opencode"&&line===2)throw new Error(`This OpenCode is ${installed}. Trebell Code supports OpenCode 2.x but will not replace it with the separate OpenCode 1.x npm package. Update this 2.x install with opencode upgrade or the package manager that installed it.`);
     if(remote&&runtime==="grok")throw new Error("Trebell Code updates Grok Build only on this machine: update the one in the selected environment the way you installed it. Nothing was installed.");
@@ -709,6 +715,37 @@ export class AgentRuntimeManager{
       :{command:owner.binary,args:runtime==="opencode"?["upgrade",targetVersion]:owner.args,env:{...this.childEnv(instance),...(owner.env||{})},pinned:runtime==="opencode"};
     return {instance,method:owner.method,binary:owner.real,installedVersion:installed,targetVersion,packageName,...(compatibility?{compatibility}:{}),...step,shown:shownCommand(step.command,step.args,remote?"linux":this.platform)};
   }
+  // Muse Code's update (T3 museMaintenance), from installed, the version the profile's Muse Code answered: Meta's launcher, run with its
+  // update on, synchronous and due, installs the newest release of its channel (read again now) before it answers --version, and the
+  // version must then have moved. A Muse Code that Meta's launcher does not run is the person's to update.
+  async #museUpdatePlan(instance,installed){
+    const launcher=this.#museLauncher(instance),env=this.childEnv(instance),channel=museChannel(env);
+    if(!launcher.updates)throw new Error(museUpdateRefusal(launcher.real||RUNTIMES.muse.command));
+    if(!MUSE_CHANNELS.includes(channel))throw new Error(`This Muse Code runs on the channel ${channel} (MUSE_CHANNEL), which Meta does not publish: Meta's launcher runs only on muse-stable or muse-canary. Nothing was installed.`);
+    const targetVersion=await this.#latestRelease(museChannelUrl(channel),{fresh:true,read:()=>latestMuseRelease(this.fetchImpl,channel)});
+    if(!targetVersion)throw new Error(`Trebell Code could not read the newest Muse Code release from ${museChannelUrl(channel)}. Nothing was installed.`);
+    return {instance,method:"launcher",binary:launcher.real,installedVersion:installed,targetVersion,packageName:null,pinned:false,command:launcher.binary,args:["--version"],env:museUpdateEnvironment(env),shown:museUpdateText(launcher.binary,env,this.platform)};
+  }
+  // The Muse Code a local profile runs (the file it names, else the one Trebell starts, else muse on PATH), its real path, and whether
+  // it is Meta's launcher, which updates it (isMuseLauncher).
+  #museLauncher(instance){
+    const found=commandOnPath(String(instance?.binaryPath||"").trim()||this.executable(instance)||RUNTIMES.muse.command,{env:this.childEnv(instance),platform:this.platform});
+    if(!found)return {binary:null,real:null,updates:false};
+    let real=found;try{real=(this.platform==="win32"?realpathSync.native:realpathSync)(found)}catch{}
+    return {binary:found,real,updates:isMuseLauncher(real,{platform:this.platform})};
+  }
+  // What Settings says of a newer Muse Code release (T3 enrichMuseSnapshot), as #updateAdvisory says it of the others: the newest
+  // release of the profile's channel beside the version it runs, an update that Meta's launcher runs, or how to update one it does not.
+  async #museUpdateAdvisory(instance,status,{wait=false}={}){
+    if(!status?.installed||this.processSpawner(instance))return null;
+    const current=parseMuseVersion(status.version),env=this.childEnv(instance),channel=museChannel(env);
+    const latest=current?await this.#latestRelease(museChannelUrl(channel),{wait,read:()=>latestMuseRelease(this.fetchImpl,channel)}):null;
+    const newer=Boolean(latest&&compareMuseVersions(current,latest)<0),launcher=this.#museLauncher(instance);
+    const advisory={current,latest,newer,canUpdate:false,command:null,binary:launcher.real,message:null};
+    if(!current)return advisory;
+    if(!launcher.updates)return {...advisory,message:newer?manualUpdateText({name:RUNTIMES.muse.name,latest,binary:launcher.real||RUNTIMES.muse.command}):null};
+    return {...advisory,canUpdate:true,command:museUpdateText(launcher.binary,env,this.platform)};
+  }
   // OpenCode's own plan, as installPlan gives it for the OpenCode default profile.
   openCodeInstallPlan({environmentId=undefined}={}){return this.installPlan("opencode",{environmentId})}
   // Who installed the binary a local profile runs (harnessInstallOwner), with what it runs as (binary) and its real path (real), or
@@ -726,14 +763,15 @@ export class AgentRuntimeManager{
     return {...harnessInstallOwner(instance.kind,{paths:{found,binary,real},packageName:npmPackageFor(instance.kind,version),command:RUNTIMES[instance.kind].command,platform:this.platform,env:this.env,codexHome,grokHome}),binary,real};
   }
   #releases=new Map();
-  // The newest release npm's registry names for a package (T3 fetchNpmLatestVersion), kept an hour once read and a minute when it
-  // could not be read (T3 ProviderLatestVersions); reads at once share one. wait:false answers from what is kept and reads nothing.
-  async #latestRelease(packageName,{wait=true,fresh=false}={}){
+  // The newest release npm's registry names for a package (T3 fetchNpmLatestVersion), or the one read gives (Muse Code's channel,
+  // kept by its URL), kept an hour once read and a minute when it could not be read (T3 ProviderLatestVersions); reads at once share
+  // one. wait:false answers from what is kept and reads nothing.
+  async #latestRelease(packageName,{wait=true,fresh=false,read=()=>registryRelease(this.fetchImpl,packageName)}={}){
     const kept=this.#releases.get(packageName);
     if(!fresh&&kept?.pending)return wait?await kept.pending:kept.version;
     if(!fresh&&kept&&this.now()<kept.until)return kept.version;
     if(!wait)return kept?.version??null;
-    const entry={pending:registryRelease(this.fetchImpl,packageName),version:kept?.version??null};this.#releases.set(packageName,entry);
+    const entry={pending:read(),version:kept?.version??null};this.#releases.set(packageName,entry);
     const version=await entry.pending;
     if(this.#releases.get(packageName)===entry)this.#releases.set(packageName,{version,until:this.now()+(version?3_600_000:60_000)});
     return version;
@@ -743,6 +781,7 @@ export class AgentRuntimeManager{
   // runs), message (how the person updates one Trebell does not), command}. Only a harness Trebell updates has one, when it is there
   // and not an OpenCode on a server of its own. wait reads the registry when its last answer is gone (Settings' own listing).
   async #updateAdvisory(instance,status,{wait=false}={}){
+    if(instance?.kind==="muse")return this.#museUpdateAdvisory(instance,status,{wait});
     if(!UPDATABLE.has(instance?.kind)||!status?.installed||(instance.kind==="opencode"&&instance.serverUrl))return null;
     // A version its --version check did not give (Codex's from its account read) is no version an update could start from: the
     // update's own check would not answer either.
