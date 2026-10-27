@@ -103,8 +103,12 @@ export function shownCommand(command,args=[],platform=process.platform){
   const quote=word=>/^[\w./:\\@=+,-]+$/.test(word)?word:platform==="win32"?`"${word}"`:`'${word.replaceAll("'","'\\''")}'`;
   return [command,...args].map(word=>quote(String(word))).join(" ");
 }
-// Who installed a binary, said in Settings and in a refused update: the tool and, when it is known, the command that updates it.
-function installedBy(by,command){return command?`installed by ${by}: run \`${command}\` to update it`:`installed by ${by}: update it with ${by}`}
+// Who installed a binary, said in Settings and in a refused update: the tool and, when it is known, the command that updates it
+// (pnpm takes --allow-build from 10.4 on, and an older pnpm refuses an option it does not know).
+function installedBy(by,command){
+  if(!command)return `installed by ${by}: update it with ${by}`;
+  return `installed by ${by}: run \`${command}\` to update it${command.includes(" --allow-build=")?" (pnpm 10.4 or later; on an older pnpm, leave out --allow-build)":""}`;
+}
 // What Settings says of a newer release that Trebell does not install itself (T3 96d354ae8): the release, the file the profile runs,
 // and who installed it with its command when they are known.
 export function manualUpdateText({name,latest,binary,by=null,command=null}){
