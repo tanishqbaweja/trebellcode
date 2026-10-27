@@ -23,10 +23,10 @@ async function fakeMuseInstall(root){
   if(!windows)await chmod(launcher,0o755);
   return {launcher,env:windows?{LOCALAPPDATA:join(root,"AppData","Local")}:{HOME:join(root,"home")}};
 }
-// extra: more settings (the person's MCP servers).
-function museState(environment={},extra={}){
+// extra: more settings (the person's MCP servers); usage: the usage records the relay keeps of each turn (recordUsage).
+function museState(environment={},extra={},usage=[]){
   const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment}],...extra},meta=new Map();
-  return {settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
+  return {settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},recordUsage:entry=>{usage.push(entry);return entry}};
 }
 // The status checks' CLI runs for the stand-in only: any other CLI answers as not installed, so nothing installed here is started.
 function onlyMuse(launcher){
@@ -45,9 +45,9 @@ const entries=async log=>(await readFile(log,"utf8").catch(()=>"")).split(/\r?\n
 // env: more of the server's own environment (the idle sweep's timings); settings: more settings; relayOptions: more of the relay's
 // options (a context engine, which gives each thread Trebell's repository tools).
 export async function museRelay(prefix,{environment={},answer=()=>undefined,env:serverEnv={},settings={},relayOptions={}}={}){
-  const root=await mkdtemp(join(tmpdir(),prefix)),log=join(root,"muse.log"),install=await fakeMuseInstall(root);
+  const root=await mkdtemp(join(tmpdir(),prefix)),log=join(root,"muse.log"),install=await fakeMuseInstall(root),usage=[];
   const env={...process.env,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),CLAUDE_CONFIG_DIR:join(root,"claude"),MUSE_INSTALL_DIR:"",...install.env,...serverEnv};
-  const state=museState({MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,...environment},settings);
+  const state=museState({MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,...environment},settings,usage);
   const manager=new AgentRuntimeManager({state,env,runFn:onlyMuse(install.launcher)}),threadStore=new AgentThreadStore(env);
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});
   const relay=attachAgentRelay(server,{runtimeManager:manager,threadStore,terminals:{},state,version:"1.6.0-test",...relayOptions});
@@ -71,7 +71,7 @@ export async function museRelay(prefix,{environment={},answer=()=>undefined,env:
   const completed=async(threadId,count)=>eventually(()=>notifications.filter(item=>item.method==="turn/completed"&&item.params.threadId===threadId).length>=count,`turn ${count} to complete`);
   const close=async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})};
   return {
-    root,log,launcher:install.launcher,env,state,manager,threadStore,rpc,notifications,requests,respond,completed,close,
+    root,log,launcher:install.launcher,env,state,manager,threadStore,rpc,notifications,requests,respond,completed,close,usage,
     hosts:async()=>(await entries(log)).filter(entry=>entry.start&&entry.start[0]==="serve"&&!entry.start.includes("--no-session-log")),
     frames:async method=>(await entries(log)).filter(entry=>entry.frame?.method===method).map(entry=>entry.frame),
     reply:threadId=>threadStore.get(threadId).turns.at(-1).items.filter(item=>item.type==="agentMessage").map(item=>item.text).join(""),

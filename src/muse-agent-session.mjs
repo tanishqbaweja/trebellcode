@@ -11,8 +11,8 @@ import { runtimeInstructions } from "./runtime-instructions.mjs";
 
 // Muse Code sessions and turns over the Muse Session Protocol (T3 Code's MuseAdapter): a session is started or resumed on Trebell's
 // own host (muse-host.mjs), each prompt is a turn/start the turn's id is minted for, and Muse's item events come back as the
-// ACP-shaped updates the relay reads (replies, reasoning summaries, commands, file edits, web searches, subagents and workflows, and
-// the todo list as a plan). A turn Muse starts itself is a turn of its own (onWakeTurn).
+// ACP-shaped updates the relay reads (replies, reasoning summaries, commands, file edits, web searches, subagents and workflows, the
+// todo list as a plan, token usage and the context meter). A turn Muse starts itself is a turn of its own (onWakeTurn).
 
 export const MUSE_REQUEST_TIMEOUT_MS=30_000;
 export const MUSE_INTERRUPT_TIMEOUT_MS=30_000;
@@ -115,6 +115,35 @@ export function museWorkflowAgentUpdates(item={},labels=new Map()){
 export function musePlanEntries(items=[]){
   return (Array.isArray(items)?items:[]).filter(item=>item&&typeof item.text==="string"&&item.text.trim()&&item.status!=="cancelled")
     .map(item=>({content:item.text.trim(),status:item.status==="completed"?"completed":item.status==="inProgress"?"in_progress":"pending"}));
+}
+
+// Muse's token counts as Trebell keeps OpenAI-style usage (T3 usage.ts: Muse's cache counters are subsets of input, reasoning of
+// output): input the counted-once prompt tokens with cache reads and writes inside it, reasoning inside output, and the total input
+// plus output, so nothing is counted twice. Muse's cost is an estimate of its own, and none is kept.
+export function museTurnUsage({input=0,output=0,cacheRead=0,cacheWrite=0,reasoning=0}={}){
+  const count=value=>Math.max(0,Math.trunc(Number(value)||0)),inputTokens=count(input),outputTokens=count(output);
+  return {inputTokens,cachedInputTokens:Math.min(inputTokens,count(cacheRead)),cacheWriteInputTokens:Math.min(inputTokens,count(cacheWrite)),outputTokens,reasoningOutputTokens:Math.min(outputTokens,count(reasoning)),totalTokens:inputTokens+outputTokens};
+}
+// One of Muse's token counters (TokenUsage: session/tokenUsage's usage, turn/completed's usage), or null for one Trebell cannot read.
+function museTokenCounts(usage){
+  const whole=value=>Number.isInteger(value)&&value>=0,optional=value=>whole(value)?value:0;
+  if(!usage||typeof usage!=="object"||!whole(usage.inputTokens)||!whole(usage.outputTokens))return null;
+  return {input:usage.inputTokens,output:usage.outputTokens,cacheRead:optional(usage.cacheReadTokens??usage.cachedTokens),cacheWrite:optional(usage.cacheWriteTokens),reasoning:optional(usage.reasoningTokens)};
+}
+
+// usage/changed is the account's and names no session (T3): the last readable report of each Muse home (each holds its own sign-in),
+// by the home its host named, for the Usage page's subscription windows. latestMuseSubscriptionUsage() without a home is the newest
+// report of any.
+const subscriptionReports=new Map();
+export function rememberMuseSubscriptionUsage(usage,{museHome=""}={}){
+  if(!usage||typeof usage!=="object")return;
+  const home=text(museHome);subscriptionReports.delete(home);subscriptionReports.set(home,{...usage,window:{...usage.window},weekly:{...usage.weekly}});
+  while(subscriptionReports.size>16)subscriptionReports.delete(subscriptionReports.keys().next().value);
+}
+export function latestMuseSubscriptionUsage({museHome=null}={}){
+  const reports=museHome==null?[...subscriptionReports.values()]:[subscriptionReports.get(text(museHome))].filter(Boolean);
+  const latest=reports.reduce((best,report)=>!best||report.observedAtMs>best.observedAtMs?report:best,null);
+  return latest?{...latest,window:{...latest.window},weekly:{...latest.weekly}}:null;
 }
 
 // Trebell's MCP servers for a Muse session (T3 d6f47ff97): the repository tools (trebell_repository) and the person's own servers,
@@ -329,8 +358,9 @@ export class MuseAgentSession{
     // Muse's last readable usage report (usage/changed), which a turn the quota stopped reads its reset from.
     this.subscriptionUsage=null;
     // The work still running that a turn started (runningWork), by item, with its turn, whose rows it settles after the turn ended,
-    // and when any of it was last heard of (its end too, which the relay's idle sweep counts as use); and the Muse turns that ended.
-    this.observed=new Map();this.workHeardAt=0;this.now=now;this.endedTurns=new Set();this.ready=false;
+    // and when any of it was last heard of (its end too, which the relay's idle sweep counts as use); the Muse turns that ended; the
+    // latest session/contextUsage ({usedTokens, windowTokens}) and the turn that ran last.
+    this.observed=new Map();this.workHeardAt=0;this.now=now;this.endedTurns=new Set();this.context=null;this.lastTurn=null;this.ready=false;
   }
 
   get busy(){return Boolean(this.activePrompt)}
@@ -454,9 +484,9 @@ export class MuseAgentSession{
     if(running){
       for(const id of [running.turnId,...running.joined])turn.joined.add(id);
       for(const id of running.endedJoined)turn.endedJoined.add(id);
-      running.handOver({stopReason:"end_turn",providerMessageId:null,raw:{turnId:running.turnId}});
+      running.handOver({stopReason:"end_turn",providerMessageId:null,raw:this.#result(running,{turnId:running.turnId})});
     }
-    this.activePrompt=turn;
+    this.activePrompt=turn;this.lastTurn=turn;
     try{
       let ack;
       try{
@@ -486,13 +516,13 @@ export class MuseAgentSession{
   }
 
   // wake: a turn Muse started itself (#turnStarted). joined: Muse's turns this one took in (its report turn, a turn Muse started
-  // meanwhile), endedJoined the ones of those that ended. rows: what each subagent's and workflow's row last showed; labels: workflow
-  // agents' labels.
+  // meanwhile), endedJoined the ones of those that ended. usage: the token counts of its model steps; joinedUsage what turn/completed
+  // added up for the turns it took in. rows: what each subagent's and workflow's row last showed; labels: workflow agents' labels.
   #newTurn(turnId,{wake=false}={}){
     let settle,fail,admit;
     const done=new Promise((resolve,reject)=>{settle=resolve;fail=reject});
     const admitted=new Promise(resolve=>{admit=resolve});
-    const turn={turnId,wake,joined:new Set(),endedJoined:new Set(),rows:new Map(),labels:new Map(),
+    const turn={turnId,wake,joined:new Set(),endedJoined:new Set(),usage:{steps:0,reported:false,input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0},joinedUsage:null,rows:new Map(),labels:new Map(),
       stopRequested:false,settled:false,items:new Map(),sent:new Map(),tools:new Set(),lastMessage:null,done,admitted,admit};
     turn.settle=value=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,value?.stopReason==="cancelled"?"cancelled":"completed");settle(value)};
     turn.fail=error=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,"failed");fail(error)};
@@ -517,6 +547,9 @@ export class MuseAgentSession{
     this.#withdrawRequests(entry=>!entry.child);
   }
   #rememberEnded(turnId){if(!turnId)return;this.endedTurns.add(turnId);if(this.endedTurns.size>MUSE_ENDED_TURNS_LIMIT)this.endedTurns.delete(this.endedTurns.values().next().value)}
+  // What a turn's end gives the relay (raw): Muse's own params, with the turn's tokens in Trebell's shape (museTurnUsage) when Muse
+  // reported any, never Muse's raw counters, which the relay would read as Trebell's.
+  #result(turn,params={}){const raw={...params};delete raw.usage;if(turn.usage.steps||turn.usage.reported)raw.usage=museTurnUsage(turn.usage);return raw}
   // The work still running that ended turns left (T3 settleObservedChildren) ends with the host, each row in the turn that started it.
   #settleObserved(reason){
     for(const [itemId,owner] of [...this.observed]){
@@ -731,6 +764,8 @@ export class MuseAgentSession{
     if(method==="view/gap")return void this.#lose(MUSE_VIEW_GAP_MESSAGE,{stop:true});
     if(method==="approval/requested"||method==="approval/updated"||method==="approval/resolved")return void this.#approvalEvent(method,params);
     if(method==="userInput/requested"||method==="userInput/settled")return void this.#questionEvent(method,params);
+    // The thread's context meter, whichever turn runs (T3).
+    if(method==="session/contextUsage")return void this.#contextUsage(params);
     // An item of work a turn that ended left running settles its row in that turn (T3 observedChildren).
     const itemId=ITEM_EVENTS.has(method)?text(params.item?.itemId):method==="item/delta"?text(params.itemId):"",owner=itemId?this.observed.get(itemId):null;
     if(owner?.settled)return ITEM_EVENTS.has(method)?this.#item(owner,params.item):this.#delta(owner,params);
@@ -739,13 +774,14 @@ export class MuseAgentSession{
     if(ITEM_EVENTS.has(method))return this.#item(turn,params.item);
     if(method==="item/delta")return this.#delta(turn,params);
     const turnId=text(params.turnId),ours=!turnId||owns(turn,turnId);
+    if(method==="session/tokenUsage"&&ours)return void this.#tokenUsage(turn,params);
     if(method==="session/todoListChanged")return void this.#todos(turn,params);
     if(method==="turn/retryScheduled"&&ours)return void this.#retryScheduled(params);
     if(method==="turn/completed"&&turnId===turn.turnId)return this.#completed(turn,params);
     // A turn this one took in ending does not end this one; its own does (T3).
-    if(method==="turn/completed"&&turn.joined.has(turnId))return void this.#joinedCompleted(turn,turnId);
+    if(method==="turn/completed"&&turn.joined.has(turnId))return void this.#joinedCompleted(turn,turnId,params);
     // A queued turn Muse will never run (turn/unqueued) ended unrun.
-    if(method==="turn/unqueued"&&turnId===turn.turnId)return turn.settle({stopReason:"cancelled",interrupted:turn.stopRequested,providerMessageId:null,raw:params});
+    if(method==="turn/unqueued"&&turnId===turn.turnId)return turn.settle({stopReason:"cancelled",interrupted:turn.stopRequested,providerMessageId:null,raw:this.#result(turn,params)});
   }
   // A turn Muse starts itself (T3's wake): one that starts while Trebell's turn runs joins it, so its events are that turn's and Stop
   // ends it too; one while none runs, the report Muse writes once its background work finished, is a turn of its own in Trebell
@@ -755,16 +791,56 @@ export class MuseAgentSession{
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
     if(running){if(!owns(running,turnId))running.joined.add(turnId);return}
     if(!this.ready||this.closed||this.dead||typeof this.onWakeTurn!=="function")return;
-    const turn=this.#newTurn(turnId,{wake:true});turn.admit(true);this.activePrompt=turn;
+    const turn=this.#newTurn(turnId,{wake:true});turn.admit(true);this.activePrompt=turn;this.lastTurn=turn;
     turn.done.then(()=>{},()=>{}).then(()=>{if(this.activePrompt===turn)this.activePrompt=null});
     try{this.onWakeTurn(turn.done)}catch{}
   }
-  // A turn this one took in ended: Stop no longer ends it.
-  #joinedCompleted(turn,turnId){turn.endedJoined.add(turnId);this.#rememberEnded(turnId)}
-  // The latest usage report a quota stop reads its reset from.
+  // A turn this one took in ended: Stop no longer ends it, and its totals count toward this turn's.
+  #joinedCompleted(turn,turnId,params){
+    turn.endedJoined.add(turnId);this.#rememberEnded(turnId);
+    const counts=museTokenCounts(params.usage);if(!counts)return;
+    const sum=turn.joinedUsage||(turn.joinedUsage={input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0});
+    for(const key of Object.keys(sum))sum[key]+=counts[key];
+  }
+  // The latest usage report a quota stop reads its reset from, also kept for the Usage page by the Muse home it is of.
   #usageChanged(params){
     const usage=museSubscriptionUsage(params);
-    if(usage)this.subscriptionUsage=usage;else this.#skipped("usage/changed","it names no readable usage windows");
+    if(!usage)return this.#skipped("usage/changed","it names no readable usage windows");
+    this.subscriptionUsage=usage;rememberMuseSubscriptionUsage(usage,{museHome:text(this.initializeResult?.museHome)});
+  }
+  // A model step's tokens (session/tokenUsage, T3): its counted-once prompt tokens count as the turn's input, and its output, cache and
+  // reasoning counts as the turn's too.
+  #tokenUsage(turn,params){
+    const counts=museTokenCounts(params.usage);
+    if(!counts||!Number.isInteger(params.promptTokens)||params.promptTokens<0)return this.#skipped("session/tokenUsage","it names no readable token counts");
+    const usage=turn.usage;usage.steps++;usage.input+=params.promptTokens;
+    for(const key of ["output","cacheRead","cacheWrite","reasoning"])usage[key]+=counts[key];
+    this.#emitUsage(turn);
+  }
+  // What Muse's context holds of the model's window (session/contextUsage, T3), shown with the tokens of the turn running or last run.
+  #contextUsage(params){
+    if(!Number.isInteger(params.usedTokens)||params.usedTokens<0)return this.#skipped("session/contextUsage","it names no readable context size");
+    this.context={usedTokens:params.usedTokens,windowTokens:Number.isInteger(params.windowTokens)&&params.windowTokens>0?params.windowTokens:this.context?.windowTokens??null};
+    const turn=this.lastTurn;if(turn&&(turn.usage.steps||turn.usage.reported))this.#emitUsage(turn);
+  }
+  // The turn's totals once it ends (T3): input as its steps counted it, else as turn/completed adds it up, and the output, cache and
+  // reasoning counts turn/completed adds up for it and for the turns it took in. A Muse that sends none keeps its steps' counts.
+  #finalUsage(turn,params){
+    const counts=museTokenCounts(params.usage),usage=turn.usage;
+    if(counts){
+      const joined=turn.joinedUsage||{input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0};
+      if(!usage.steps)usage.input=counts.input+joined.input;
+      for(const key of ["output","cacheRead","cacheWrite","reasoning"])usage[key]=Math.max(usage[key],counts[key]+joined[key]);
+      usage.reported=true;
+    }
+    if(usage.steps||usage.reported)this.#emitUsage(turn);
+  }
+  // The turn's tokens as a usage_update in Trebell's shape (museTurnUsage), with the context meter's numbers: the model's window (size)
+  // and what the context holds (contextTokens), which the relay shows as the last request's input.
+  #emitUsage(turn){
+    const usage=museTurnUsage(turn.usage),context=this.context;
+    this.#emit(turn,{sessionUpdate:"usage_update",usage:{input_tokens:usage.inputTokens,output_tokens:usage.outputTokens,cache_read_input_tokens:usage.cachedInputTokens,cache_write_input_tokens:usage.cacheWriteInputTokens,reasoning_tokens:usage.reasoningOutputTokens},
+      used:usage.totalTokens,size:context?.windowTokens||0,...(context?{contextTokens:context.usedTokens}:{})});
   }
   // Muse's todo list as the turn's plan (musePlanEntries).
   #todos(turn,params){
@@ -841,7 +917,8 @@ export class MuseAgentSession{
   // resets (usageLimit, resetAt), as Claude Code's and Grok's limits do, Muse's own words kept as its detail; a turn Muse could not
   // run signed out says how to sign in.
   #completed(turn,params){
-    const terminal=text(params.terminal),raw=params;
+    this.#finalUsage(turn,params);
+    const terminal=text(params.terminal),raw=this.#result(turn,params);
     if(terminal==="completed")return turn.settle({stopReason:"end_turn",providerMessageId:null,raw});
     if(terminal==="cancelled")return turn.settle({stopReason:"cancelled",interrupted:turn.stopRequested,providerMessageId:null,raw});
     const error=params.error&&typeof params.error==="object"?params.error:{},detail=text(error.message)||text(params.reason),code=text(error.kind)||"MUSE_TURN_FAILED";

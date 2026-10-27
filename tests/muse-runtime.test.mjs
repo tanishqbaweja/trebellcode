@@ -71,8 +71,8 @@ test("Muse Code is a runtime kind of its own, never read as Codex, with profiles
   assert.equal(manager.instances().find(item=>item.id==="muse-default").kind,"muse");
   assert.equal(manager.upsertInstance({id:"muse-work",kind:"muse",displayName:"Muse work"}).kind,"muse","a second Muse Code profile is kept as Muse Code");
   assert.equal(manager.capabilities("muse").steering,true);
-  for(const now of ["mcpInjection","detachedTasks"])assert.equal(manager.capabilities("muse")[now],true,now);
-  for(const later of ["fork","rewind","compaction","usageReporting","contextReporting"])assert.equal(manager.capabilities("muse")[later],false,later);
+  for(const now of ["mcpInjection","usageReporting","contextReporting","detachedTasks"])assert.equal(manager.capabilities("muse")[now],true,now);
+  for(const later of ["fork","rewind","compaction"])assert.equal(manager.capabilities("muse")[later],false,later);
 });
 
 test("Muse Code is found where Meta's installers put it, without a PATH entry: MUSE_INSTALL_DIR, else %LOCALAPPDATA%\\Programs\\muse or ~/.local/bin",async()=>{

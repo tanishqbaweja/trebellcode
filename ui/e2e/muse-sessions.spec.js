@@ -11,11 +11,11 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
-// Muse Code's work as the person meets it in Trebell: a subagent's row and the todo list as the turn's plan while the turn runs, a
-// workflow's agents in the turn that launched it with Muse's report on it as a turn of its own, and an MCP server saved in Settings for
-// Muse Code reaching its session beside Trebell's repository tools. Behind the page run the real agent relay and runtime manager on
-// the stand-in Muse Code (tests/fixtures/muse/fake-muse.cjs), which runs its subagent and its workflow as T3's recorded Muse sessions
-// do and records what Trebell sends it.
+// Muse Code's work as the person meets it in Trebell: a subagent's row and the todo list as the turn's plan while the turn runs, the
+// composer's context meter, a workflow's agents in the turn that launched it with Muse's report on it as a turn of its own, and an
+// MCP server saved in Settings for Muse Code reaching its session beside Trebell's repository tools. Behind the page run the real
+// agent relay and runtime manager on the stand-in Muse Code (tests/fixtures/muse/fake-muse.cjs), which runs its subagent and its
+// workflow as T3's recorded Muse sessions do and records what Trebell sends it.
 const auditDir=fileURLToPath(new URL("../../visual-audit/muse-sessions/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const FAKE_MUSE=fileURLToPath(new URL("../../tests/fixtures/muse/fake-muse.cjs",import.meta.url));
 const MODEL_LIST=fileURLToPath(new URL("../../tests/fixtures/muse/model-list-1.4.13.json",import.meta.url));
@@ -93,7 +93,7 @@ const reply=(page,text)=>page.locator(".history-assistant").filter({hasText:text
 // A step of an activity card by its title: a string is a part of it, a pattern the whole of it.
 const row=(scope,title)=>scope.locator(".tool-event").filter({has:(scope.page?.()||scope).locator("summary strong",{hasText:title})});
 
-test("a Muse Code subagent and its todo list show as the running turn's row and plan, and both settle when its result is ready",async({page})=>{
+test("a Muse Code subagent and its todo list show as the running turn's row and plan, and the composer's context meter shows what Muse's context holds of its window",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startMuseHarness({environment:{MUSE_FAKE_SUBAGENT_MS:"6000"}});
   try{
@@ -109,10 +109,13 @@ test("a Muse Code subagent and its todo list show as the running turn's row and 
     await expect(live).not.toContainText("Discarded step");
     for(const mode of ["dark","light"]){await switchMode(page,mode);await live.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-subagent-running-${mode}-1280x800.png`})}
     await switchMode(page,"dark");
-    // Its result is ready: the turn replies, and the row and the plan are done.
+    // Its result is ready: the turn replies, the row is done, and the meter reads the context Muse reported of its window.
     await expect(reply(page,"Hello")).toBeVisible({timeout:20_000});
     await expect(row(page,"Subagent · hello agent")).toHaveClass(/status-done/);
     await expect(row(page,"Spawn the hello agent")).toHaveClass(/status-done/);
+    const meter=page.locator(".composer-context");
+    await expect(meter).toContainText("3% · 33,267/1,007,997");
+    await expect(meter).toHaveAttribute("title","Context 3% · 33,267 input · 66,296 total");
     for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`muse-subagent-done-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });
