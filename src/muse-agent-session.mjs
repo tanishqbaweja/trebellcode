@@ -98,8 +98,10 @@ export function museWorkStatus(item={}){
   return item.kind==="subagent"&&item.status==="inProgress"&&item.controlStatus==="resultReady"?"completed":museToolStatus(item);
 }
 // Work of a turn that holds Muse's host while it runs, its turn ended or not: a subagent or a workflow still running, or a command
-// Muse sent to the background (background) still running. Closing the host ends it all.
-function runningWork(item){return (WORK_KINDS.has(item?.kind)||item?.kind==="toolCall"&&item.background===true)&&museWorkStatus(item)==="in_progress"}
+// Muse sent to the background (background), whose tool call may settle as it goes there: MSP tells its end apart, as an item of its own
+// (backgroundTerminalCompletion) naming the call, and until that end the command runs (endedCalls: the calls whose end came). Closing
+// the host ends it all.
+function runningWork(item,endedCalls=null){return WORK_KINDS.has(item?.kind)?museWorkStatus(item)==="in_progress":item?.kind==="toolCall"&&item.background===true&&!endedCalls?.has(text(item.callId))}
 // A title's first line, at most 72 characters (T3 subagentThreadTitle).
 function clip(value){const line=text(value).trim().split(/\r?\n/)[0].trim();return line.length>72?line.slice(0,71)+"…":line}
 function failureDetail(item,status){return status==="failed"?text(item.failureReason)||`Muse Code reported ${item.status||"a failure"}.`:""}
@@ -380,6 +382,8 @@ export class MuseAgentSession{
     // and when any of it was last heard of (its end too, which the relay's idle sweep counts as use); the Muse turns that ended; the
     // latest session/contextUsage ({usedTokens, windowTokens}) and the turn that ran last.
     this.observed=new Map();this.workHeardAt=0;this.now=now;this.endedTurns=new Set();this.context=null;this.lastTurn=null;this.ready=false;
+    // The calls of the commands Muse sent to the background whose end it told (backgroundTerminalCompletion).
+    this.endedCalls=new Set();
     // The /compact under way (compact), until its compaction item ends.
     this.compaction=null;
   }
@@ -886,6 +890,8 @@ export class MuseAgentSession{
     if(method==="session/contextUsage")return void this.#contextUsage(params);
     // The /compact under way, whose item names the turn whose context it compacts, not a turn of Trebell's (T3).
     if(this.compaction&&ITEM_EVENTS.has(method)&&params.item?.kind==="compaction")return void this.#compactionItem(params.item);
+    // The end of a command Muse sent to the background, whichever turn runs (#backgroundEnded).
+    if(ITEM_EVENTS.has(method)&&params.item?.kind==="backgroundTerminalCompletion")return void this.#backgroundEnded(params.item);
     // An item of work a turn that ended left running settles its row in that turn (T3 observedChildren).
     const itemId=ITEM_EVENTS.has(method)?text(params.item?.itemId):method==="item/delta"?text(params.itemId):"",owner=itemId?this.observed.get(itemId):null;
     if(owner?.settled)return ITEM_EVENTS.has(method)?this.#item(owner,params.item):this.#delta(owner,params);
@@ -987,9 +993,22 @@ export class MuseAgentSession{
     const current={...item,...(Array.isArray(item.summary)?{summary:[...item.summary]}:{})};
     turn.items.set(item.itemId,current);
     // Each word from that work, its end too, is the session's latest activity (workHeardAt).
-    if(this.observed.has(current.itemId)||runningWork(current))this.workHeardAt=this.now();
-    if(runningWork(current))this.observed.set(current.itemId,turn);else this.observed.delete(current.itemId);
+    if(this.observed.has(current.itemId)||runningWork(current,this.endedCalls))this.workHeardAt=this.now();
+    if(runningWork(current,this.endedCalls))this.observed.set(current.itemId,turn);else this.observed.delete(current.itemId);
     this.#publish(turn,current);
+  }
+  // The end of a command Muse sent to the background (backgroundTerminalCompletion, naming its call): the command holds the host no
+  // more, its end counts as use, and its row, in the turn that started it, settles with how it ended and what it said last. The end
+  // shows no row of its own.
+  #backgroundEnded(item){
+    const done=item.backgroundTerminalCompletion,callId=text(done?.toolCallId);if(!callId)return;
+    this.endedCalls.add(callId);if(this.endedCalls.size>MUSE_SETTLED_LIMIT)this.endedCalls.delete(this.endedCalls.values().next().value);
+    for(const [itemId,owner] of [...this.observed]){
+      const call=owner.items.get(itemId);if(call?.kind!=="toolCall"||text(call.callId)!==callId)continue;
+      this.observed.delete(itemId);this.workHeardAt=this.now();
+      const status=text(done.terminalStatus)==="completed"?"completed":text(done.terminalStatus)||"failed",ended={...call,status,...(typeof done.output==="string"&&done.output?{visibleOutput:done.output}:{})};
+      owner.items.set(itemId,ended);this.#publish(owner,ended);
+    }
   }
   // Deltas append to an open item by field: text to a reply, summary.N to part N of a reasoning summary, output to a command.
   #delta(turn,params){

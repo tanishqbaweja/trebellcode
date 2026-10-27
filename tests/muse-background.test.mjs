@@ -236,6 +236,27 @@ test("a workflow still running when its turn completed settles its rows in that 
   await session.close();
 });
 
+test("a command Muse sends to the background holds the host until Muse tells its end (backgroundTerminalCompletion), whether its tool call settles as it goes there or only then, and its row settles with that end in the turn that ran it",async()=>{
+  for(const settlesFirst of [true,false]){
+    const fixture=await workSession(),{session,seen}=fixture,sid=session.sessionId;
+    const {running,turnId}=await runningTurn(fixture,"Start the dev server");
+    const call=(revision,status,extra={})=>({itemId:"dev",kind:"toolCall",turnId,revision,status,tool:"bash",callId:"call_dev",args:"{\"command\":\"npm run dev\"}",...extra});
+    fixture.muse.write(itemFrame("item/started",sid,call(1,"inProgress")));
+    fixture.muse.write(itemFrame("item/updated",sid,call(2,"inProgress",{background:true,backgroundInitiator:"timeout"})));
+    if(settlesFirst)fixture.muse.write(itemFrame("item/completed",sid,call(3,"completed",{background:true,backgroundInitiator:"timeout",visibleOutput:"Running in the background."})));
+    complete(fixture,turnId);await running;
+    assert.equal(session.pendingBackgroundWork,true,settlesFirst?"its call settled as it went to the background, and the command runs":"its call and the command run");
+    const end={itemId:"dev-finished",kind:"backgroundTerminalCompletion",turnId,revision:1,status:"completed",backgroundTerminalCompletion:{command:"npm run dev",output:"Dev server stopped.",outputTruncated:false,terminalStatus:"completed",toolCallId:"call_dev"}};
+    fixture.muse.write(itemFrame("item/started",sid,end));fixture.muse.write(itemFrame("item/completed",sid,{...end,revision:2}));
+    await until(()=>!session.pendingBackgroundWork,"the command's end to let the host go");
+    const rows=rowsOf(seen,"dev");
+    assert.deepEqual([rows.at(-1).status,rows.at(-1).rawOutput],["completed","Dev server stopped."],settlesFirst?"settled first":"settled at its end");
+    assert.ok(seen.filter(entry=>entry.update.toolCallId==="dev").every(entry=>entry.turnKey===turnId),"its row stays in the turn that ran it");
+    assert.equal(rowsOf(seen,"dev-finished").length,0,"its end shows no row of its own");
+    await session.close();
+  }
+});
+
 test("work that has said nothing for four hours holds the host no more, and each word from it renews that (T3's maximum idle pin)",async()=>{
   let clock=1_800_000_000_000;
   const fixture=await workSession({options:{now:()=>clock}}),{session}=fixture,{running,turnId,sid}=await runningTurn(fixture);
@@ -337,5 +358,24 @@ test("through the relay, a message sent while Muse's report turn runs takes it o
     const records=new Map(relay.usage.map(entry=>[entry.turnId,entry.usage]));
     assert.deepEqual(["inputTokens","outputTokens"].map(key=>records.get(report.id)?.[key]),[36716,262]);
     assert.deepEqual(["inputTokens","outputTokens"].map(key=>records.get(turn.id)?.[key]),[600,30]);
+  }finally{await relay.close()}
+});
+
+test("through the relay, the idle sweep keeps a Muse Code session while a command Muse sent to the background runs, though its tool call settled as it went there, and lets it go once Muse tells the command's end, its row settled in the turn that ran it",{timeout:120_000},async()=>{
+  const relay=await museRelay("trebell-muse-background-command-",{environment:{MUSE_FAKE_BACKGROUND_MS:"1500"},env:{TREBELL_AGENT_SESSION_IDLE_MS:"300",TREBELL_AGENT_SESSION_SWEEP_MS:"100"}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run the dev server in the background"}]});
+    await relay.completed(thread.id,1);
+    // The command runs on for 1.5 s, five idle limits, and the session is kept meanwhile.
+    const endOf=()=>relay.notifications.findIndex(item=>item.method==="item/completed"&&item.params.item?.aggregatedOutput==="Dev server stopped.");
+    await eventually(()=>endOf()>=0,"the command's end");
+    const closed=closedAt(relay,thread.id);
+    assert.ok(closed<0||closed>endOf(),"the session was kept while the command ran in the background");
+    const [launched]=relay.threadStore.get(thread.id).turns;
+    const row=launched.items.find(item=>item.type==="commandExecution"&&item.command==="npm run dev");
+    assert.deepEqual([row?.status,row?.aggregatedOutput],["completed","Dev server stopped."],"its row settled in the turn that ran it");
+    // With the command ended, the idle session is let go.
+    await eventually(()=>closedAt(relay,thread.id)>endOf(),"the idle session to be let go");
   }finally{await relay.close()}
 });

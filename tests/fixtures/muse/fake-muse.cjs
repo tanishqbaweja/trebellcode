@@ -30,6 +30,9 @@
 //   "quota"             fails as Meta's quota refusal relayed by Muse does (a 429 naming the quota and its reset)
 //   "signed out"        fails as a turn Muse could not run without a sign-in does (authRequired)
 //   "exit when idle"    replies, completes, and then the host exits with code 1, as a Muse that crashed between turns
+//   "dev server in the background"  runs `npm run dev`, which Muse sends to the background (its tool call goes there, item/updated
+//                       with background true, then settles), completes the turn, and MUSE_FAKE_BACKGROUND_MS (1500) ms later tells the
+//                       command's end as an item of its own naming the call (backgroundTerminalCompletion, MSP 1.4.13)
 // And as T3's recorded subagent_v2 and muse_workflow sessions run them, with the token usage and context those reported:
 //   "spawn subagent"    keeps a todo list and runs a subagent (role "hello agent"), whose child session replies on its own turn, and
 //                       whose result is ready MUSE_FAKE_SUBAGENT_MS (200) ms later; two model steps report their tokens
@@ -80,6 +83,7 @@ function startTurn(sessionId,params,{usage=null}={}){
   if(/read outside/i.test(words))return askApproval(sessionId,turnId,false,{read:true});
   if(/child approval/i.test(words))return askApproval(sessionId,turnId,false,{child:true});
   if(/ask question/i.test(words))return askQuestion(sessionId,turnId);
+  if(/dev server in the background/i.test(words))return runInBackground(sessionId,turnId,turn);
   if(/quota/i.test(words))return setTimeout(()=>{running.delete(turnId);notify("turn/completed",sessionId,{turnId,terminal:"failed",reason:QUOTA_REFUSAL,error:{kind:"modelError",message:QUOTA_REFUSAL,retryable:true}})},20);
   if(/signed out/i.test(words))return setTimeout(()=>{running.delete(turnId);notify("turn/completed",sessionId,{turnId,terminal:"failed",reason:"not logged in",error:{kind:"authRequired",message:"not logged in: run /login to add an API key",retryable:false}})},20);
   if(/retry/i.test(words)){
@@ -130,6 +134,19 @@ function runWorkflow(sessionId,turnId,turn){
     notify("item/completed",sessionId,{item:workflow(revisions.at(-1),{status:"completed",finalSummary:"{\"status\":\"ok\"}",durationMs:3616,stopAvailable:false})});
     setTimeout(()=>reportTurn(sessionId,turnId+"-report"),Number(process.env.MUSE_FAKE_REPORT_DELAY_MS||0));
   },step*(revisions.length+1));
+}
+// A command Muse sends to the background: the call's item goes there (background true) and settles, and the command's end comes
+// later as an item of its own that names the call.
+function runInBackground(sessionId,turnId,turn){
+  const callId="call_"+turnId+"-dev",call=(revision,status,extra={})=>({itemId:turnId+"-dev",kind:"toolCall",turnId,revision,status,tool:"bash",callId,args:JSON.stringify({command:"npm run dev"}),...extra});
+  notify("item/started",sessionId,{item:call(1,"inProgress")});
+  notify("item/updated",sessionId,{item:call(2,"inProgress",{background:true,backgroundInitiator:"timeout"})});
+  notify("item/completed",sessionId,{item:call(3,"completed",{background:true,backgroundInitiator:"timeout",visibleOutput:"Running in the background."})});
+  reply(sessionId,turn,"The dev server runs in the background.");complete(sessionId,turnId);
+  setTimeout(()=>{
+    const finished={itemId:turnId+"-dev-finished",kind:"backgroundTerminalCompletion",turnId,revision:1,status:"completed",backgroundTerminalCompletion:{command:"npm run dev",output:"Dev server stopped.",outputTruncated:false,terminalStatus:"completed",toolCallId:callId}};
+    notify("item/started",sessionId,{item:finished});notify("item/completed",sessionId,{item:{...finished,revision:2}});
+  },Number(process.env.MUSE_FAKE_BACKGROUND_MS||1500));
 }
 // The turn Muse starts itself to report on work that finished, with an id of its own.
 const heldReports=new Map();
