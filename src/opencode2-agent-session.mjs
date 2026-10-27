@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { fileUri, fileUriPath } from "./file-uri.mjs";
-import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
+import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
@@ -100,6 +100,9 @@ function errorText(error){
   if(!error)return "OpenCode request failed";
   return String(error?.message||error?.data?.message||error?._tag||error).slice(0,2000);
 }
+// Trebell's repository tools are an MCP server of the session's folder, which OpenCode drops when it evicts an idle folder, so it is
+// added again before every turn; adding an unchanged config keeps its connection (T3 Code).
+const MCP_ADD_TIMEOUT_MS=5_000;
 function permissionDecision(value){return value==="accept"||value==="acceptForSession"?"once":"reject"}
 function permissionTitle(data){
   const action=String(data?.action||"tool"),resources=(Array.isArray(data?.resources)?data.resources:[]).map(String).filter(Boolean);
@@ -136,18 +139,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     this.client=clientFor(OpenCode,this.server);
     await this.client.server.info();
     const location={directory:this.cwd};
-    if(this.repositoryMcp){
-      const config=this.repositoryMcp.openCode||{};
-      try{
-        await this.client.mcp.add({server:String(this.repositoryMcp.name),location,config:{
-          type:"local",command:Array.isArray(config.command)?config.command.map(String):[String(this.repositoryMcp.command),...(this.repositoryMcp.args||[])],
-          ...(config.environment?{environment:Object.fromEntries(Object.entries(config.environment).map(([key,value])=>[key,String(value)]))}:{}),
-          disabled:config.enabled===false,
-          ...(Number(config.timeout)>0?{timeout:{startup:Number(config.timeout)}}:{}),
-        }});
-        this.repositoryMcpStatus=[{name:String(this.repositoryMcp.name),configured:true,status:"connected"}];
-      }catch(error){this.repositoryMcpStatus=[{name:String(this.repositoryMcp.name),configured:false,error:errorText(error)}]}
-    }
+    await this.#addRepositoryMcp();
     // The commands (OpenCode lists MCP prompts among them, which can take long), skills and agents hold up nothing: the composer gets
     // them, and a turn's agent its id, whenever OpenCode lists them.
     const [commands,skills,agents]=openCode2InventoryReads(this.client,location,{listMs:null}),announce=openCodeListsAsListed(this,{commands,skills,agents},{agents:openCode2PrimaryAgents});
@@ -188,6 +180,21 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     return {initialize:this.initializeResult,session:this.sessionSetup};
   }
 
+  // A turn whose add fails goes on without the repository tools, and the session's MCP status says why.
+  async #addRepositoryMcp(){
+    if(!this.repositoryMcp)return;
+    const name=String(this.repositoryMcp.name),config=this.repositoryMcp.openCode||{};
+    try{
+      await openCode2Within(MCP_ADD_TIMEOUT_MS,`OpenCode did not add Trebell's repository tools within ${MCP_ADD_TIMEOUT_MS/1000} seconds.`,signal=>this.client.mcp.add({server:name,location:{directory:this.cwd},config:{
+        type:"local",command:Array.isArray(config.command)?config.command.map(String):[String(this.repositoryMcp.command),...(this.repositoryMcp.args||[])],
+        ...(config.environment?{environment:Object.fromEntries(Object.entries(config.environment).map(([key,value])=>[key,String(value)]))}:{}),
+        disabled:config.enabled===false,
+        ...(Number(config.timeout)>0?{timeout:{startup:Number(config.timeout)}}:{}),
+      }},{signal}));
+      this.repositoryMcpStatus=[{name,configured:true,status:"connected"}];
+    }catch(error){this.repositoryMcpStatus=[{name,configured:false,error:errorText(error)}]}
+    if(this.sessionSetup)this.sessionSetup.trebellRepositoryMcp=this.repositoryMcpStatus[0];
+  }
   #selection(){
     const selected=modelRef(this.model);if(!selected)return null;
     const variants=this.modelVariants.get(this.model)||[],variant=this.variant&&variants.includes(this.variant)?this.variant:null;
@@ -215,7 +222,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   async prompt(parts,{agent=null,onDelivered=null}={}){
     if(!this.client||!this.sessionId)throw new Error("OpenCode session is not started.");
     if(this.activePrompt)throw new Error("OpenCode already has a running turn.");
-    await this.#applySelection();await this.#applyPermissionRules();
+    await this.#addRepositoryMcp();await this.#applySelection();await this.#applyPermissionRules();
     if(agent){const agentId=this.agentIds.get(String(agent))||String(agent);await this.client.session.switchAgent({sessionID:this.sessionId,agent:agentId})}
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
     let settleTurn=()=>{};const completion=new Promise(resolve=>{settleTurn=resolve});

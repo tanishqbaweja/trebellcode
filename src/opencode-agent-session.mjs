@@ -151,6 +151,12 @@ export async function startOpenCode2Server({command="opencode",cwd,env=process.e
 function createOpenCode2Client(OpenCode2,server){
   return OpenCode2.make({baseUrl:server.url,headers:{Authorization:openCode2Authorization(server.password)}});
 }
+// A request to an OpenCode 2 server that must answer within ms (signal => request): past that it is cancelled and fails with message.
+export async function openCode2Within(ms,message,request){
+  const controller=new AbortController();let timer;
+  const late=new Promise((_,reject)=>{timer=setTimeout(()=>{reject(new Error(message));controller.abort()},ms)});
+  try{return await Promise.race([Promise.resolve().then(()=>request(controller.signal)),late])}finally{clearTimeout(timer)}
+}
 
 // OpenCode 1.x answers POST /session/{id}/message (and /summarize) only once the whole turn has finished. Node's fetch (undici) stops
 // waiting for response headers after 300 seconds, so every OpenCode turn longer than five minutes failed in Trebell while OpenCode went
