@@ -195,6 +195,46 @@ test("a stalled resumed conversation opens again only once its stalled Claude Co
   }
 });
 
+// The same for a Claude Code started through spawnProcess (another environment's), which the SDK starts through its spawn hook as it
+// would its own. Each process started notes how the first one stood then, so a second one started beside a stalled one that still
+// runs shows; and while the stalled one never exits, no second one starts.
+const stallingFirstRegistration=()=>scriptedClaudeSdk({spawn:true,control:{setMcpServers:(servers,call)=>call.index===0?new Promise(()=>{}):{added:Object.keys(servers),removed:[],errors:{}}}});
+function spawnedElsewhere(fake){
+  const firstAtStart=[];
+  return {firstAtStart,spawnProcess:({command,args,cwd,env,signal})=>{const first=fake.children[0];firstAtStart.push(first?{exitCode:first.exitCode,signalCode:first.signalCode}:null);return fake.spawnChild(command,args,{cwd,env,signal})}};
+}
+const resumedElsewhere=(sdk,spawnProcess)=>new ClaudeAgentSession({cwd:"/repo",sdk,spawnProcess,onUpdate:()=>{},mcpServers:{"Workspace tools":WORKSPACE}});
+test("a stalled resumed conversation on a Claude Code started through spawnProcess opens again only once that process has exited, killed if it outlasts the close",async t=>{
+  t.mock.timers.enable({apis:["setTimeout"]});
+  // Ignores the close, but a kill ends it.
+  const {sdk,calls}=stallingFirstRegistration(),fake=fakeClaudeChildren({exitsOnStdinEnd:false}),{firstAtStart,spawnProcess}=spawnedElsewhere(fake);
+  const claude=resumedElsewhere(sdk,spawnProcess);await claude.start({providerSessionId:SOURCE});
+  const prompting=claude.prompt([{type:"text",text:"Continue"}]);
+  await until(()=>calls[0]?.log.length===1);
+  t.mock.timers.tick(90_000);
+  await until(()=>calls.length===2);
+  assert.deepEqual(firstAtStart[1],{exitCode:null,signalCode:"SIGKILL"},"the next Claude Code started once the stalled one had exited, killed");
+  assert.deepEqual(fake.children[0].signals,["SIGKILL"],"killed once the close did not end it");
+  assert.equal((await prompting).stopReason,"end_turn");
+  assert.deepEqual(calls.map(call=>call.options.resume),[SOURCE,SOURCE]);assert.deepEqual(calls.map(call=>call.inputs.length),[0,1]);
+  await claude.close();
+});
+test("a stalled resumed conversation on a Claude Code started through spawnProcess that never exits is not opened again, and the prompt says what did not finish",async t=>{
+  t.mock.timers.enable({apis:["setTimeout"]});
+  const {sdk,calls}=stallingFirstRegistration(),fake=fakeClaudeChildren({exitsOnStdinEnd:false,exitsOnKill:false}),{spawnProcess}=spawnedElsewhere(fake);
+  const claude=resumedElsewhere(sdk,spawnProcess);await claude.start({providerSessionId:SOURCE});
+  const prompting=claude.prompt([{type:"text",text:"Continue"}]).then(result=>result,error=>error);
+  await until(()=>calls[0]?.log.length===1);
+  t.mock.timers.tick(90_000);
+  await until(()=>calls.length>1||fake.children[0].signals.length>0);
+  assert.equal(calls.length,1,"no second Claude Code while the stalled one runs");
+  assert.deepEqual([fake.children[0].exitCode,fake.children[0].signalCode],[null,null],"it still runs");
+  t.mock.timers.tick(10_000);
+  assert.equal((await prompting)?.message,TIMED_OUT);
+  assert.equal(calls.length,1,"no second Claude Code on the conversation");
+  await claude.close();
+});
+
 // Claude Code that Trebell starts on this machine runs hidden, its three streams piped, and the end of its stderr is kept: the SDK's
 // error for a process it did not start itself has none, and a conversation Claude Code no longer has is told by it.
 test("Claude Code started on this machine runs hidden, and a conversation it says it no longer has on stderr is a lost session",async()=>{
