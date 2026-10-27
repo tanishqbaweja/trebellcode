@@ -31,7 +31,7 @@ export default function AntigravityKeyForm({saved=false,instanceId=null,onAnswer
     <label>Antigravity · Gemini API key<input ref={field} type="password" autoComplete="off" spellCheck={false} value={key} disabled={Boolean(busy)} onChange={event=>setKey(event.target.value)} onKeyDown={event=>{if(event.key==="Enter"){event.preventDefault();if(!event.repeat)send("login")}else if(event.key==="Escape"&&!busy){event.preventDefault();onClose?.()}}} placeholder={saved?"Saved key ••••••••":"Paste a Gemini API key"}/></label>
     <p>Trebell Code runs Antigravity on a Gemini API key from Google AI Studio, billed to that key: the route Google recommends for third-party apps. A Google account's sign-in through a third-party app falls under Google's Antigravity terms, so Trebell Code does not offer it.</p>
     <div className="provider-key-actions">
-      <button className="setting-action" onClick={()=>send("login")} disabled={!key.trim()||Boolean(busy)} aria-busy={busy==="login"?"true":undefined}>{busy==="login"?"Checking key…":"Save key and sign in"}</button>
+      <button className="setting-action" onClick={()=>send("login")} disabled={!key.trim()||Boolean(busy)} aria-busy={busy==="login"?"true":undefined}>{busy==="login"?"Starting Antigravity…":"Save key and sign in"}</button>
       {saved&&<button onClick={()=>send("remove-key")} disabled={Boolean(busy)}>{busy==="remove-key"?"Removing…":"Remove key"}</button>}
       <button onClick={()=>openWebLink(AI_STUDIO_KEYS)}>Get a key in Google AI Studio</button>
       <button onClick={onClose} disabled={Boolean(busy)}>Close</button>
