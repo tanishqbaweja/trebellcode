@@ -82,7 +82,8 @@ test("Muse's usage report (usage/changed, the account's) is kept by the Muse hom
   fixture.muse.notify("usage/changed",report);
   await until(()=>muse.latestMuseSubscriptionUsage?.({museHome:"H:\\homes\\work\\.local\\share\\muse"}),"the kept report");
   assert.deepEqual(muse.latestMuseSubscriptionUsage({museHome:"H:\\homes\\work\\.local\\share\\muse"}),report);
-  muse.rememberMuseSubscriptionUsage({...report,observedAtMs:4102444800000,tier:"high"},{museHome:"elsewhere"});
+  // A report observed now, which any later one supersedes (the store is the process's: other tests in it read it too).
+  muse.rememberMuseSubscriptionUsage({...report,observedAtMs:Date.now()+1,tier:"high"},{museHome:"elsewhere"});
   assert.equal(muse.latestMuseSubscriptionUsage().tier,"high","the newest report of any home");
   assert.equal(muse.latestMuseSubscriptionUsage({museHome:"nowhere"}),null,"none observed yet");
   await fixture.session.close();
