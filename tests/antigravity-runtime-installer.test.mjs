@@ -14,9 +14,9 @@ import { access, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { crc32 } from "node:zlib";
+import { crc32, deflateRawSync } from "node:zlib";
 import extractZip from "extract-zip";
-import { ACP_REGISTRY_URL, antigravityRegistryTarget, installAntigravityRuntime, readAntigravityInstall } from "../src/antigravity-runtime-installer.mjs";
+import { ACP_REGISTRY_URL, antigravityRegistryTarget, installAntigravityRuntime, readAntigravityInstall, zipUnpackedBytes } from "../src/antigravity-runtime-installer.mjs";
 
 const AGY=fileURLToPath(new URL("./fixtures/antigravity-acp-agent.mjs",import.meta.url)),SCRIPTED=fileURLToPath(new URL("./fixtures/scripted-acp-agent.mjs",import.meta.url));
 const ARCHIVE="https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-fixture-windows-x86_64.zip",MB=1048576;
@@ -34,14 +34,15 @@ test("Antigravity ACP registry target matches supported platform/architecture na
   assert.equal(antigravityRegistryTarget("freebsd","x64"),null);
 });
 
-// A zip of the files given ({name: text}), stored uncompressed, as extract-zip reads one.
-function zipOf(files){
+// A zip of the files given ({name: text or bytes}), stored uncompressed, or deflated (deflate) as Google's archives are, as
+// extract-zip reads one.
+function zipOf(files,{deflate=false}={}){
   const parts=[],directory=[];let offset=0;
   for(const [name,text] of Object.entries(files)){
-    const data=Buffer.from(text),fileName=Buffer.from(name),crc=crc32(data);
-    const local=Buffer.alloc(30);local.writeUInt32LE(0x04034b50,0);local.writeUInt16LE(20,4);local.writeUInt32LE(crc,14);local.writeUInt32LE(data.length,18);local.writeUInt32LE(data.length,22);local.writeUInt16LE(fileName.length,26);
-    const central=Buffer.alloc(46);central.writeUInt32LE(0x02014b50,0);central.writeUInt16LE(20,4);central.writeUInt16LE(20,6);central.writeUInt32LE(crc,16);central.writeUInt32LE(data.length,20);central.writeUInt32LE(data.length,24);central.writeUInt16LE(fileName.length,28);central.writeUInt32LE(offset,42);
-    parts.push(local,fileName,data);directory.push(central,fileName);offset+=30+fileName.length+data.length;
+    const data=Buffer.from(text),stored=deflate?deflateRawSync(data):data,method=deflate?8:0,fileName=Buffer.from(name),crc=crc32(data);
+    const local=Buffer.alloc(30);local.writeUInt32LE(0x04034b50,0);local.writeUInt16LE(20,4);local.writeUInt16LE(method,8);local.writeUInt32LE(crc,14);local.writeUInt32LE(stored.length,18);local.writeUInt32LE(data.length,22);local.writeUInt16LE(fileName.length,26);
+    const central=Buffer.alloc(46);central.writeUInt32LE(0x02014b50,0);central.writeUInt16LE(20,4);central.writeUInt16LE(20,6);central.writeUInt16LE(method,10);central.writeUInt32LE(crc,16);central.writeUInt32LE(stored.length,20);central.writeUInt32LE(data.length,24);central.writeUInt16LE(fileName.length,28);central.writeUInt32LE(offset,42);
+    parts.push(local,fileName,stored);directory.push(central,fileName);offset+=30+fileName.length+stored.length;
   }
   const centralBytes=Buffer.concat(directory),end=Buffer.alloc(22),count=Object.keys(files).length;
   end.writeUInt32LE(0x06054b50,0);end.writeUInt16LE(count,8);end.writeUInt16LE(count,10);end.writeUInt32LE(centralBytes.length,12);end.writeUInt32LE(offset,16);
@@ -63,8 +64,8 @@ async function stopProcess(child){
 
 // One install into the home: the registry lists entry fields (version, sha256, ...) over a windows-x86_64 entry for the zip of files,
 // whose download says its size; the new runtime's start runs agent (with scenario or initialize) in place of agy_acp_server.exe.
-async function install(fx,{files=RUNTIME,version=VERSION,entry={},scenario={},agent=AGY,initialize=null,freeBytes=()=>64*1024*MB,extractImpl=extractZip}={}){
-  const bytes=zipOf(files),requests=[],download={read:false,cancelled:false},launches=[],stamp=Date.now()+"-"+Math.random().toString(36).slice(2);
+async function install(fx,{files=RUNTIME,deflate=false,version=VERSION,entry={},scenario={},agent=AGY,initialize=null,freeBytes=()=>64*1024*MB,extractImpl=extractZip}={}){
+  const bytes=zipOf(files,{deflate}),requests=[],download={read:false,cancelled:false},launches=[],stamp=Date.now()+"-"+Math.random().toString(36).slice(2);
   const scenarioPath=join(fx.root,`scenario-${stamp}.json`),logPath=join(fx.root,`agent-${stamp}.jsonl`);
   await writeFile(scenarioPath,JSON.stringify(agent===SCRIPTED?{initialize}:scenario));
   const registry={agents:[{id:"antigravity-acp",version,distribution:{binary:{"windows-x86_64":{archive:ARCHIVE,cmd:"./agy_acp_server.exe",sha256:sha256(bytes),...entry}}}}]};
@@ -194,6 +195,47 @@ test("a drive without room for the download and what it unpacks to is refused be
   assert.deepEqual(requests,[ACP_REGISTRY_URL,ARCHIVE]);
   assert.equal(download.read,false,"the download's body was not read");assert.equal(download.cancelled,true,"the download was cancelled");
   assert.ok(await gone(fx.current));assert.deepEqual(await leftovers(fx),[]);
+});
+
+test("a download that unpacks to more than the drive has room for is refused once it is in, before any file is written, naming all the install needs",async t=>{
+  const fx=await home(t);
+  // A deflated archive of about 5 KB that unpacks to 5 MB, as Google's unpack to 1.8 (Windows) to 3.5 (macOS) times their size.
+  const files={...RUNTIME,"data.bin":Buffer.alloc(5*MB-30)},extracted=[];
+  const extractImpl=async(archive,options)=>{extracted.push(archive);return extractZip(archive,options)};
+  // Room for the download and as much again, as the size the download says allows for, but not for what it unpacks to: the drive
+  // has 200 MB once the download is in.
+  let reads=0;
+  const short=await install(fx,{files,deflate:true,extractImpl,freeBytes:()=>reads++===0?64*1024*MB:200*MB+4321});
+  assert.equal(short.error?.message,`Google Antigravity ${VERSION} needs 262 MB free on the drive that holds ${fx.runtimes} to install (its 1 MB download and the 5 MB it unpacks to, and 256 MB to spare), and 200 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
+  assert.deepEqual(extracted,[],"no file was written: the sizes come from the archive's central directory");
+  assert.equal(short.launches.length,0);assert.ok(await gone(fx.current));assert.deepEqual(await leftovers(fx),[]);
+  // 259 MB free passes the estimate before the download (twice its 1 MB and 256 MB), and the whole amount is still named after it.
+  const close=await install(fx,{files,deflate:true,extractImpl,freeBytes:()=>259*MB});
+  assert.equal(close.error?.message,`Google Antigravity ${VERSION} needs 262 MB free on the drive that holds ${fx.runtimes} to install (its 1 MB download and the 5 MB it unpacks to, and 256 MB to spare), and 259 MB is free there. Free some space on that drive, then try again. Nothing was installed.`);
+  assert.deepEqual(extracted,[]);
+  // With room for it all, it installs.
+  const room=await install(fx,{files,deflate:true,extractImpl,freeBytes:()=>262*MB});
+  assert.equal(room.error,null,String(room.error?.message));assert.equal(extracted.length,1);
+  assert.equal((await stat(join(fx.current,"data.bin"))).size,5*MB-30);
+});
+
+test("what a zip unpacks to is read from its central directory, ZIP64's records and sizes too",async t=>{
+  const fx=await home(t),plain=join(fx.root,"plain.zip"),zip64=join(fx.root,"zip64.zip");
+  await writeFile(plain,zipOf({...RUNTIME,"data.bin":Buffer.alloc(3*MB)},{deflate:true}));
+  assert.equal(await zipUnpackedBytes(plain),3*MB+30);
+  // One entry of 5 GB (named in its ZIP64 extra field), counted through the ZIP64 end record its locator names.
+  const name=Buffer.from("agy_acp_server.exe"),data=Buffer.from("stand-in"),big=5*1024*MB;
+  const local=Buffer.alloc(30);local.writeUInt32LE(0x04034b50,0);local.writeUInt16LE(45,4);local.writeUInt32LE(data.length,18);local.writeUInt32LE(data.length,22);local.writeUInt16LE(name.length,26);
+  const extra=Buffer.alloc(20);extra.writeUInt16LE(1,0);extra.writeUInt16LE(16,2);extra.writeBigUInt64LE(BigInt(big),4);extra.writeBigUInt64LE(BigInt(data.length),12);
+  const central=Buffer.alloc(46);central.writeUInt32LE(0x02014b50,0);central.writeUInt16LE(45,4);central.writeUInt16LE(45,6);central.writeUInt32LE(0xffffffff,20);central.writeUInt32LE(0xffffffff,24);central.writeUInt16LE(name.length,28);central.writeUInt16LE(extra.length,30);
+  const records=Buffer.concat([local,name,data]),directory=Buffer.concat([central,name,extra]),directoryAt=records.length,zip64End=directoryAt+directory.length;
+  const end64=Buffer.alloc(56);end64.writeUInt32LE(0x06064b50,0);end64.writeBigUInt64LE(44n,4);end64.writeUInt16LE(45,12);end64.writeUInt16LE(45,14);end64.writeBigUInt64LE(1n,24);end64.writeBigUInt64LE(1n,32);end64.writeBigUInt64LE(BigInt(directory.length),40);end64.writeBigUInt64LE(BigInt(directoryAt),48);
+  const locator=Buffer.alloc(20);locator.writeUInt32LE(0x07064b50,0);locator.writeBigUInt64LE(BigInt(zip64End),8);locator.writeUInt32LE(1,16);
+  const end=Buffer.alloc(22);end.writeUInt32LE(0x06054b50,0);end.writeUInt16LE(0xffff,8);end.writeUInt16LE(0xffff,10);end.writeUInt32LE(0xffffffff,12);end.writeUInt32LE(0xffffffff,16);
+  await writeFile(zip64,Buffer.concat([records,directory,end64,locator,end]));
+  assert.equal(await zipUnpackedBytes(zip64),big);
+  await writeFile(join(fx.root,"not.zip"),"not a zip");
+  await assert.rejects(zipUnpackedBytes(join(fx.root,"not.zip")),/no zip central directory/);
 });
 
 test("a drive that runs short while the download unpacks is refused before the file that would not fit, naming how much it needs",async t=>{

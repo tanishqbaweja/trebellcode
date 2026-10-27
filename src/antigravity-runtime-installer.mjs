@@ -1,5 +1,5 @@
 import { createWriteStream, statfsSync } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -17,7 +17,7 @@ const loadExtractZip=()=>extractZipModule??=import("extract-zip");
 export const ACP_REGISTRY_URL="https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 // Antigravity's sign-in and the home it runs in are antigravity-auth.mjs's.
 
-// What an install leaves free on its drive besides what it writes (T3 FREE_SPACE_MARGIN), so that it never fills the drive.
+// What an install leaves free on its drive besides the download and the files it unpacks there (T3 FREE_SPACE_MARGIN).
 export const ANTIGRAVITY_FREE_SPACE_MARGIN=256*1024*1024;
 // How long the new runtime has to start and answer ACP's initialize, as long as a session's start has.
 const START_CHECK_TIMEOUT_MS=90_000;
@@ -65,6 +65,36 @@ async function findFile(root,name){
 
 // The bytes free to this process on the drive that holds path.
 export function freeBytesAt(path){const {bavail,bsize}=statfsSync(path);return Number(bavail)*Number(bsize)}
+
+// The bytes a zip unpacks to: the sizes its central directory lists, ZIP64's too, read from the end of the file (the registry lists
+// no sizes, and Google's archives unpack to 1.8 to 3.5 times their own).
+export async function zipUnpackedBytes(path){
+  const file=await open(path,"r");
+  try{
+    const {size}=await file.stat(),tailSize=Math.min(size,22+65_535+20),tail=Buffer.alloc(tailSize);
+    await file.read(tail,0,tailSize,size-tailSize);
+    let end=-1;for(let at=tailSize-22;at>=0&&end<0;at--)if(tail.readUInt32LE(at)===0x06054b50)end=at;
+    if(end<0)throw new Error("The download has no zip central directory");
+    let count=tail.readUInt16LE(end+10),length=tail.readUInt32LE(end+12),offset=tail.readUInt32LE(end+16);
+    if(count===0xffff||length===0xffffffff||offset===0xffffffff){
+      // ZIP64: the locator just before the end record names the ZIP64 end record, which holds the whole count, size and offset.
+      if(end<20||tail.readUInt32LE(end-20)!==0x07064b50)throw new Error("The download's ZIP64 locator is missing");
+      const record=Buffer.alloc(56);await file.read(record,0,56,Number(tail.readBigUInt64LE(end-12)));
+      if(record.readUInt32LE(0)!==0x06064b50)throw new Error("The download's ZIP64 end record is missing");
+      count=Number(record.readBigUInt64LE(32));length=Number(record.readBigUInt64LE(40));offset=Number(record.readBigUInt64LE(48));
+    }
+    const directory=Buffer.alloc(length);await file.read(directory,0,length,offset);
+    let total=0;
+    for(let at=0,entry=0;entry<count;entry++){
+      if(directory.readUInt32LE(at)!==0x02014b50)throw new Error("The download's zip central directory is damaged");
+      let bytes=directory.readUInt32LE(at+24);const nameLength=directory.readUInt16LE(at+28),extraLength=directory.readUInt16LE(at+30),commentLength=directory.readUInt16LE(at+32);
+      // A size too large for 32 bits is in the entry's ZIP64 extra field (id 1), uncompressed size first.
+      if(bytes===0xffffffff)for(let extra=at+46+nameLength,stop=extra+extraLength;extra+4<=stop;extra+=4+directory.readUInt16LE(extra+2))if(directory.readUInt16LE(extra)===1){bytes=Number(directory.readBigUInt64LE(extra+4));break}
+      total+=bytes;at+=46+nameLength+extraLength+commentLength;
+    }
+    return total;
+  }finally{await file.close()}
+}
 // Sizes in whole MB (of 1,048,576 bytes), rounded up for what is needed and down for what is free, so that the parts add up.
 const MB=1048576,wholeMb=bytes=>Math.ceil(Math.max(0,bytes)/MB),megabytes=count=>`${count.toLocaleString("en-US")} MB`;
 // A step the drive has no room for: neededMb for its parts and the margin, against the bytes free.
@@ -113,8 +143,9 @@ async function renameSettled(from,to,platform){
 
 // Installs or updates Antigravity's ACP runtime from the registry's entry for this machine into <Trebell home>/agent-runtimes/
 // antigravity/current, leaving the runtime there unchanged unless every step passes:
-// - room: before the download, its size twice (it unpacks to at least as much) and ANTIGRAVITY_FREE_SPACE_MARGIN; before each file
-//   is unpacked, its size and the margin (freeBytes);
+// - room: before the download, its size twice (it unpacks to at least as much) and ANTIGRAVITY_FREE_SPACE_MARGIN; once it is in,
+//   what its central directory says it unpacks to and the margin, before any file is written; before each file is unpacked, its
+//   size and the margin (freeBytes);
 // - integrity: the download, hashed as it arrives, must have the registry's SHA-256, and it must hold agy_acp_server with
 //   localharness_external beside it;
 // - a start: the new runtime answers ACP's initialize as antigravity-acp at the registry's version (checkRuntimeStarts).
@@ -146,6 +177,14 @@ export async function installAntigravityRuntime({env=process.env,fetchImpl=globa
     const hash=createHash("sha256");
     await pipeline(Readable.fromWeb(response.body),async function*(chunks){for await(const chunk of chunks){hash.update(chunk);yield chunk}},createWriteStream(archivePath,{mode:0o600}));
     if(hash.digest("hex")!==distribution.sha256)throw new Error(`The Google Antigravity ${version} download does not match the SHA-256 the ACP registry lists for it. Nothing was installed.`);
+    // Room for what it unpacks to, as its central directory lists it, before any file is written: the install needs the download,
+    // its files and the margin at once. Named whole, with what is free as the drive shows it once the download has gone again, so
+    // freeing what is named lets the next install through. An archive whose sizes cannot be read is left to the checks below.
+    const unpacked=await zipUnpackedBytes(archivePath).catch(()=>null);
+    if(unpacked!=null){
+      const downloaded=(await stat(archivePath)).size,free=freeOn(temp);
+      if(free<unpacked+ANTIGRAVITY_FREE_SPACE_MARGIN)throw noRoom({version,step:"install",neededMb:wholeMb(downloaded)+wholeMb(unpacked)+ANTIGRAVITY_FREE_SPACE_MARGIN/MB,free:free+downloaded,root,parts:`its ${megabytes(wholeMb(downloaded))} download and the ${megabytes(wholeMb(unpacked))} it unpacks to`});
+    }
     await extract(archivePath,{dir:extracted,onEntry:item=>{
       const fileMb=wholeMb(Number(item?.uncompressedSize)||0),neededMb=fileMb+ANTIGRAVITY_FREE_SPACE_MARGIN/MB,free=freeOn(extracted);
       if(free<neededMb*MB)throw noRoom({version,step:`unpack ${basename(String(item?.fileName||""))||"its files"}`,neededMb,free,root,parts:`${megabytes(fileMb)} for it`});
