@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { codexAppServerEnvironment } from "../src/gui-server.mjs";
+import { remoteEnvironmentCommand } from "../src/environment-manager.mjs";
 import { buildRuntimeEnvironment, TOOLCHAIN_ENVIRONMENT_KEYS } from "../src/runtime-environment.mjs";
 
 const PROXY_NAMES=["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","NO_PROXY","http_proxy","https_proxy","all_proxy","no_proxy"];
@@ -89,6 +90,30 @@ test("a Claude Code profile that runs on Amazon Bedrock from the shell reads sig
   assert.deepEqual([status.installed,status.available,status.authenticated],[true,true,true],status.message);
   const auth=calls.find(call=>call.args==="auth status");
   assert.deepEqual([auth.env.CLAUDE_CODE_USE_BEDROCK,auth.env.AWS_REGION,auth.env.AWS_PROFILE,auth.env.AWS_SECRET_ACCESS_KEY],["1","us-east-1","bedrock-dev",undefined]);
+});
+
+// A host's harness gets its listed names through env -i as NAME="${NAME-}", the host's own value or an empty one where the host sets
+// none, so the cloud-provider and model names stay with Claude Code on this machine: on a host, an empty ANTHROPIC_MODEL or
+// AWS_PROFILE is not an unset one.
+test("a Claude Code on an SSH or WSL host gets the names it always had, not the cloud-provider and model names as empty variables",async()=>{
+  const OPTIONAL=["CLAUDE_CODE_USE_BEDROCK","CLAUDE_CODE_SKIP_VERTEX_AUTH","AWS_REGION","AWS_PROFILE","ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION","ANTHROPIC_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES","CLOUD_ML_REGION","GOOGLE_APPLICATION_CREDENTIALS","ANTHROPIC_FOUNDRY_RESOURCE"];
+  const profile={id:"ssh-claude",type:"ssh",cwd:"/srv/app"},sent=[];
+  const environments={get:id=>id===profile.id?profile:null,spawnArgv:()=>{throw new Error("nothing is started on the host")},
+    executeArgv:async(_id,{command,args,environmentNames})=>{sent.push(remoteEnvironmentCommand([command,...args].join(" "),environmentNames));return args[0]==="auth"?{exitCode:0,stdout:JSON.stringify({loggedIn:true}),stderr:""}:{exitCode:0,stdout:"2.1.311 (Claude Code)\n",stderr:""}}};
+  const manager=new AgentRuntimeManager({state:{settings:()=>({activeEnvironmentId:profile.id})},environments,platform:"linux",env:{PATH:"/usr/bin",HOME:"/home/me",CLAUDE_CODE_USE_BEDROCK:"1",AWS_PROFILE:"bedrock-dev"}});
+  await manager.probe("claude");
+  assert.equal(sent.length,2,"its version and sign-in checks");
+  for(const command of sent){
+    for(const name of OPTIONAL)assert.equal(command.includes(`${name}="\${${name}-}"`),false,`${name} in ${command.slice(0,80)}`);
+    for(const name of ["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","ANTHROPIC_BASE_URL","PATH","HOME"])assert.ok(command.includes(`${name}="\${${name}-}"`),name);
+  }
+  // Its sessions there get the same names, and a name the profile approves goes as any approved name does.
+  const names=manager.childEnvironmentKeys({id:"claude-default",kind:"claude"});
+  assert.deepEqual(OPTIONAL.filter(name=>names.includes(name)),[]);
+  assert.ok(manager.childEnvironmentKeys({id:"claude-bedrock",kind:"claude",approvedEnvironmentKeys:["AWS_PROFILE"]}).includes("AWS_PROFILE"));
+  // On this machine Claude Code still gets the ones Trebell's environment sets, and no empty one.
+  const local=buildRuntimeEnvironment("claude",{parent:{PATH:"/usr/bin",CLAUDE_CODE_USE_BEDROCK:"1",AWS_REGION:"us-east-1",ANTHROPIC_MODEL:""},platform:"linux"});
+  assert.deepEqual(local,{PATH:"/usr/bin",CLAUDE_CODE_USE_BEDROCK:"1",AWS_REGION:"us-east-1"});
 });
 
 test("Native's command environment is what it was, with and without the toolchain: no proxy, no Claude Code switch",()=>{

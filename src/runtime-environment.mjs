@@ -6,29 +6,34 @@ const BASELINE_KEYS=Object.freeze([
   "SSL_CERT_FILE","SSL_CERT_DIR","NODE_EXTRA_CA_CERTS","NO_COLOR","FORCE_COLOR",
 ]);
 
+// What runs Claude Code on a cloud provider (code.claude.com/docs/en/env-vars): the switch for Amazon Bedrock (and its Mantle
+// endpoint), Claude Platform on AWS, Google Cloud's Agent Platform (Vertex AI) and Microsoft Foundry, each one's gateway switch, the
+// region, profile, project, workspace, resource and endpoint names they read, where the AWS and Google sign-ins keep their files, and
+// the model each alias resolves to (a Foundry deployment is named only there). The providers' secrets (AWS_ACCESS_KEY_ID,
+// AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_BEARER_TOKEN_BEDROCK, ANTHROPIC_AWS_API_KEY, ANTHROPIC_FOUNDRY_API_KEY,
+// ANTHROPIC_FOUNDRY_AUTH_TOKEN, ANTHROPIC_CUSTOM_HEADERS) pass only when the profile approves them. These pass to a Claude Code on
+// this machine where Trebell's environment sets them (LOCAL_RUNTIME_KEYS), not to one on an SSH or WSL host: a host's harness gets
+// each of its runtime names through env -i, empty where the host sets none, and an empty ANTHROPIC_MODEL or AWS_PROFILE is not an
+// unset one. A profile can list any of them, as any name.
+const CLAUDE_PROVIDER_KEYS=Object.freeze([
+  "CLAUDE_CODE_USE_BEDROCK","CLAUDE_CODE_USE_MANTLE","CLAUDE_CODE_USE_ANTHROPIC_AWS","CLAUDE_CODE_USE_VERTEX","CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_SKIP_BEDROCK_AUTH","CLAUDE_CODE_SKIP_MANTLE_AUTH","CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH","CLAUDE_CODE_SKIP_VERTEX_AUTH","CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+  "AWS_REGION","AWS_DEFAULT_REGION","AWS_PROFILE","AWS_CONFIG_FILE","AWS_SHARED_CREDENTIALS_FILE","ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
+  "ANTHROPIC_BEDROCK_REGION_PREFIX","ANTHROPIC_BEDROCK_SERVICE_TIER","ANTHROPIC_BEDROCK_BASE_URL","ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+  "ANTHROPIC_AWS_WORKSPACE_ID","ANTHROPIC_AWS_BASE_URL","ANTHROPIC_VERTEX_PROJECT_ID","CLOUD_ML_REGION","ANTHROPIC_VERTEX_BASE_URL",
+  "GOOGLE_APPLICATION_CREDENTIALS","ANTHROPIC_FOUNDRY_RESOURCE","ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_MODEL","ANTHROPIC_DEFAULT_MODEL","ANTHROPIC_SMALL_FAST_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL_NAME","ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL_NAME","ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL","ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME","ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
+  "ANTHROPIC_DEFAULT_FABLE_MODEL","ANTHROPIC_DEFAULT_FABLE_MODEL_NAME","ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES",
+]);
+
 const RUNTIME_KEYS=Object.freeze({
   native:Object.freeze([]),
   codex:Object.freeze(["CODEX_HOME","OPENAI_API_KEY","OPENAI_BASE_URL","OPENAI_ORG_ID","OPENAI_PROJECT_ID","CODEX_API_KEY"]),
-  // Claude Code's own credentials and endpoint, then what runs it on a cloud provider (code.claude.com/docs/en/env-vars): the switch
-  // for Amazon Bedrock (and its Mantle endpoint), Claude Platform on AWS, Google Cloud's Agent Platform (Vertex AI) and Microsoft
-  // Foundry, each one's gateway switch, the region, profile, project, workspace, resource and endpoint names they read, where the AWS
-  // and Google sign-ins keep their files, and the model each alias resolves to (a Foundry deployment is named only there). The
-  // providers' secrets (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_BEARER_TOKEN_BEDROCK, ANTHROPIC_AWS_API_KEY,
-  // ANTHROPIC_FOUNDRY_API_KEY, ANTHROPIC_FOUNDRY_AUTH_TOKEN, ANTHROPIC_CUSTOM_HEADERS) pass only when the profile approves them.
-  claude:Object.freeze([
-    "ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","ANTHROPIC_BASE_URL",
-    "CLAUDE_CODE_USE_BEDROCK","CLAUDE_CODE_USE_MANTLE","CLAUDE_CODE_USE_ANTHROPIC_AWS","CLAUDE_CODE_USE_VERTEX","CLAUDE_CODE_USE_FOUNDRY",
-    "CLAUDE_CODE_SKIP_BEDROCK_AUTH","CLAUDE_CODE_SKIP_MANTLE_AUTH","CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH","CLAUDE_CODE_SKIP_VERTEX_AUTH","CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
-    "AWS_REGION","AWS_DEFAULT_REGION","AWS_PROFILE","AWS_CONFIG_FILE","AWS_SHARED_CREDENTIALS_FILE","ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
-    "ANTHROPIC_BEDROCK_REGION_PREFIX","ANTHROPIC_BEDROCK_SERVICE_TIER","ANTHROPIC_BEDROCK_BASE_URL","ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
-    "ANTHROPIC_AWS_WORKSPACE_ID","ANTHROPIC_AWS_BASE_URL","ANTHROPIC_VERTEX_PROJECT_ID","CLOUD_ML_REGION","ANTHROPIC_VERTEX_BASE_URL",
-    "GOOGLE_APPLICATION_CREDENTIALS","ANTHROPIC_FOUNDRY_RESOURCE","ANTHROPIC_FOUNDRY_BASE_URL",
-    "ANTHROPIC_MODEL","ANTHROPIC_DEFAULT_MODEL","ANTHROPIC_SMALL_FAST_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL_NAME","ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL_NAME","ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL","ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME","ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
-    "ANTHROPIC_DEFAULT_FABLE_MODEL","ANTHROPIC_DEFAULT_FABLE_MODEL_NAME","ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES",
-  ]),
+  // Claude Code's own credentials and endpoint; on this machine also what runs it on a cloud provider (CLAUDE_PROVIDER_KEYS).
+  claude:Object.freeze(["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","ANTHROPIC_BASE_URL"]),
   cursor:Object.freeze(["CURSOR_API_KEY","CURSOR_AUTH_TOKEN","CURSOR_API_ENDPOINT"]),
   grok:Object.freeze([
     "XAI_API_KEY","GROK_AUTH","GROK_HOME","GROK_OIDC_ISSUER","GROK_OIDC_CLIENT_ID",
@@ -134,6 +139,8 @@ function proxyCarriesCredentials(value){return carriesCredentials(value)||PROXY_
 // Name families a harness reads whole: Claude Code's region for each model on Google Cloud's Agent Platform, one more with each model
 // (VERTEX_REGION_CLAUDE_4_6_SONNET, VERTEX_REGION_CLAUDE_5_5_OPUS), each a region's name.
 const RUNTIME_KEY_PREFIXES=Object.freeze({claude:Object.freeze(["VERTEX_REGION_CLAUDE_"])});
+// The names a harness on this machine gets beside its runtime names, and a host's does not (see CLAUDE_PROVIDER_KEYS).
+const LOCAL_RUNTIME_KEYS=Object.freeze({claude:CLAUDE_PROVIDER_KEYS});
 
 function keyName(value){return String(value||"").trim()}
 function validName(value){return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)}
@@ -168,7 +175,7 @@ function parentLookup(parent,{caseInsensitive=false}={}){
 // git, diagnostics and transports keep what they had; a harness on a remote host forwards only runtimeEnvironmentKeys' names.
 export function buildRuntimeEnvironment(kind,{parent={},approved=[],overrides={},platform=process.platform,toolchain=false}={}){
   const env={},caseInsensitive=platform==="win32",lookup=parentLookup(parent,{caseInsensitive}),runtime=String(kind||"").toLowerCase(),harness=runtime!=="native";
-  for(const name of runtimeEnvironmentKeys(kind,{approved})){
+  for(const name of new Set([...runtimeEnvironmentKeys(kind,{approved}),...(LOCAL_RUNTIME_KEYS[runtime]||[])])){
     const value=lookup(name);
     if(value!=null&&String(value)!=="")env[name]=String(value);
   }
