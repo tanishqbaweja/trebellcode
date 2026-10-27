@@ -44,7 +44,8 @@
 //                       whose result is ready MUSE_FAKE_SUBAGENT_MS (200) ms later; two model steps report their tokens
 //   "run workflow"      launches the ping-pong workflow and completes the turn while it runs; its agents ping and pong run
 //                       MUSE_FAKE_WORKFLOW_MS (300) ms apart, pong failing on its budget, and MUSE_FAKE_REPORT_DELAY_MS (0) ms after
-//                       the workflow has completed Muse starts a report turn of its own. With MUSE_FAKE_REPORT_HOLD "1" the report
+//                       the workflow has completed, or once the file MUSE_FAKE_REPORT_START_HOLD names is there, Muse starts a report
+//                       turn of its own. With MUSE_FAKE_REPORT_HOLD "1" the report
 //                       holds after its first sentence until a message comes, which Muse queues behind it (ifBusy queue): the report
 //                       then says the rest of its reply and ends, its turn/completed adding up the report's tokens, and the message's
 //                       turn runs, reporting its own
@@ -142,7 +143,7 @@ function runWorkflow(sessionId,turnId,turn){
   revisions.forEach((children,index)=>setTimeout(()=>notify("item/updated",sessionId,{item:workflow(children)}),step*(index+1)));
   setTimeout(()=>{
     notify("item/completed",sessionId,{item:workflow(revisions.at(-1),{status:"completed",finalSummary:"{\"status\":\"ok\"}",durationMs:3616,stopAvailable:false})});
-    setTimeout(()=>reportTurn(sessionId,turnId+"-report"),Number(process.env.MUSE_FAKE_REPORT_DELAY_MS||0));
+    later(process.env.MUSE_FAKE_REPORT_START_HOLD,Number(process.env.MUSE_FAKE_REPORT_DELAY_MS||0),()=>reportTurn(sessionId,turnId+"-report"));
   },step*(revisions.length+1));
 }
 // A command Muse sends to the background: the call's item goes there (background true) and settles, and the command's end comes

@@ -2088,7 +2088,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // An earlier turn that failed and still waits on its harness's recheck ends before this one starts.
       endFailureWait(thread.id);
       // A message that takes over the report Muse Code writes itself ends the report's turn first, with its own reply and tokens, so the
-      // thread and the window show this turn running after it (MuseAgentSession.takeOverWake).
+      // thread and the window show this turn running after it (MuseAgentSession.takeOverWake). The message's Muse turn is made here, so
+      // a report Muse starts while this turn gathers its context joins it rather than starting a turn of its own after it.
       if(session instanceof MuseAgentSession&&session.takeOverWake())await wakeSettlements.get(session)?.catch(()=>{});
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),inputFiles:fileInputs(params.input),status:"inProgress"});session.__assistant="";
       if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;

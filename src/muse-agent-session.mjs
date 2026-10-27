@@ -397,12 +397,13 @@ export class MuseAgentSession{
   get resumable(){return Boolean(this.initializeResult)&&this.initializeResult.sessionDurability!=="ephemeral"}
   setPermissionMode(mode){this.permissionMode=normalizePermissionMode(mode||"supervised");return this.permissionMode}
   // Why a message cannot go now in the session's mode, or null: the mode needs another host (needsRelaunch), and Muse's own work holds
-  // this one, a compaction or the report Muse writes, which a relaunch would stop. The relay refuses such a message before its turn
-  // starts, so the person keeps their draft; prompt refuses it too.
+  // this one, a compaction or the report Muse writes (also one a message's turn took in before the message went), which a relaunch
+  // would stop. The relay refuses such a message before its turn starts, so the person keeps their draft; prompt refuses it too.
   modeRefusal(){
     if(!this.launched||this.dead||!this.needsRelaunch(this.permissionMode))return null;
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
-    return this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:running?.wake||running?.successor&&!running.prompted?MUSE_REPORT_BLOCKS_MODE_CHANGE:null;
+    const report=running?.wake||running?.successor&&!running.prompted&&[...running.joined].some(id=>!running.endedJoined.has(id));
+    return this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:report?MUSE_REPORT_BLOCKS_MODE_CHANGE:null;
   }
   // A mode's launch flags, permission profile and approval mode are fixed when its host launches (museLaunchPlan), so a mode with
   // another plan needs a new host, which resumes the conversation (T3: runtime policy changes require a fresh Muse host).
@@ -551,16 +552,21 @@ export class MuseAgentSession{
     }finally{if(this.activePrompt===turn)this.activePrompt=null}
   }
 
+  // The relay asks for the turn of a message it is about to start (agent-relay turn/start), before it starts the message's turn in the
+  // thread and gathers the message's context; prompt then sends the message in it. From here a report Muse starts itself joins the
+  // message's turn (T3 adds a held report turn to the user turn), so it never becomes a turn of its own after the message's.
   // A message sent while Muse's own report turn runs takes that turn over (T3: a user turn takes a held report turn, approvals
   // included). The report ends in Trebell with what it said so far and its tokens, its cards stay to answer, and the turn that takes it
   // over is the session's from here on, so nothing Muse sends meanwhile is lost: the rest of Muse's turn is the message's, Stop ends
-  // both, and Muse runs the message after it (ifBusy queue). The relay asks for it before it starts the message's turn, so the report's
-  // turn has ended in the thread first (agent-relay turn/start); prompt then sends the message. False when no report runs, or when
-  // the message needs another host, which prompt refuses.
+  // both, and Muse runs the message after it (ifBusy queue). True then, and the relay waits for the report's turn to end in the thread
+  // first. False otherwise; no turn is made when another turn runs, or when the message needs another host, which prompt refuses.
   takeOverWake(){
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
-    if(!running?.wake||!this.connection||this.dead||this.closed||(this.launched&&this.needsRelaunch(this.permissionMode)))return false;
+    if(running&&!running.wake||!this.connection||this.dead||this.closed||(this.launched&&this.needsRelaunch(this.permissionMode)))return false;
     const turn=this.#newTurn(this.connection.mintCommandId());turn.successor=true;
+    this.activePrompt=turn;this.lastTurn=turn;
+    turn.done.then(()=>{},()=>{}).then(()=>{if(this.activePrompt===turn)this.activePrompt=null});
+    if(!running)return false;
     for(const id of [running.turnId,...running.joined])turn.joined.add(id);
     for(const id of running.endedJoined)turn.endedJoined.add(id);
     // The report's tokens so far are its own turn's: its turn/completed counts toward this turn only past them.
@@ -569,8 +575,6 @@ export class MuseAgentSession{
     for(const [id,item] of running.items)if(item.kind==="agentMessage"||item.kind==="reasoning")turn.items.set(id,item);
     for(const [id,said] of running.sent)turn.sent.set(id,said);
     turn.lastMessage=running.lastMessage;
-    this.activePrompt=turn;this.lastTurn=turn;
-    turn.done.then(()=>{},()=>{}).then(()=>{if(this.activePrompt===turn)this.activePrompt=null});
     running.handOver({stopReason:"end_turn",providerMessageId:null,raw:this.#result(running,{turnId:running.turnId})});
     return true;
   }
