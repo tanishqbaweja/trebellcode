@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { createGuiServer } from "../src/gui-server.mjs";
+import { hydrateLoginShellEnvironment } from "../src/login-shell-environment.mjs";
 import { parseFirefoxProfiles, readFirefoxCookieDatabase } from "./firefox-import.mjs";
 import { chromiumCookieDatabase, discoverHeliumProfiles, readHeliumProfileCookies } from "./chromium-import.mjs";
 import { DEFAULT_SNAPSHOT_CONFIG, normalizeSnapshotConfig } from "./snapshot-config.mjs";
@@ -20,6 +21,10 @@ if(explicitTrebellHome)app.setPath("userData",join(explicitTrebellHome,"desktop"
 
 let windowRef=null;
 let gui=null;
+// The login shell's PATH and JAVA_HOME being read into process.env as the app starts (login-shell-environment.mjs), and the GUI
+// server's start while it is on its way: the window's start and a Dock click can both ask for it before it is up.
+let loginShellRead=null;
+let guiStart=null;
 // quitting: windows now close for real instead of hiding to the tray. shutdownCleaned: the shutdown cleanup (agent browser,
 // tray, shortcut, GUI server with its terminals and app-servers) has run, so before-quit lets the quit through. They are
 // separate because the tray's Quit sets quitting first, and the cleanup must still run for it.
@@ -787,8 +792,11 @@ function guiServerOptions(){
 
 async function startGuiServer(){
   if(gui)return gui;
-  gui=await createGuiServer(guiServerOptions());
-  return gui;
+  guiStart??=(async()=>{
+    try{await loginShellRead;gui=await createGuiServer(guiServerOptions());return gui}
+    finally{guiStart=null}
+  })();
+  return guiStart;
 }
 
 async function recoverAfterFailedUpdateInstall(){
@@ -873,6 +881,9 @@ const lock=app.requestSingleInstanceLock();
 if(!lock){
   app.quit();
 }else{
+  // Opened from the Dock, Finder or a launcher, the app has launchd's or the session's bare PATH: the login shell's is read while
+  // Electron starts (at most two seconds, macOS and Linux only), and the harness CLIs are looked for on it.
+  loginShellRead=hydrateLoginShellEnvironment(process.env,{log:message=>console.warn(message)}).catch(error=>console.warn("Trebell could not read PATH from the login shell:",error));
   // A second launch brings the window back, also from the tray (close to tray, or a --background start), as the tray's Show does.
   app.on("second-instance",()=>{
     if(windowRef){

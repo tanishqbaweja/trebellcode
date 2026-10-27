@@ -106,6 +106,13 @@ const CREDENTIAL_SETTING=new RegExp("(?:"+CREDENTIAL_SETTING_WORDS.join("|")+")[
 const CONNECT_USERINFO=/(?:^|[ \t\n\r\v\f:=,;])[^ \t\n\r\v\f/\\:=,;@]+\/[^ \t\n\r\v\f/\\@]+@/;
 export function carriesCredentials(value){const text=String(value??"");return URL_USERINFO.test(text)||CREDENTIAL_SETTING.test(text)||CONNECT_USERINFO.test(text)}
 
+// The proxy an external harness reaches its API through, as the person's terminal gives it: both spellings, as curl, Go and Rust read
+// the lower-case ones (curl reads http_proxy only that way). A proxy that holds a user name or password (http://user:pass@proxy:8080,
+// or user:pass@proxy:8080 with no scheme, as curl takes it) passes only when the profile approves its name.
+export const PROXY_ENVIRONMENT_KEYS=Object.freeze(["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","NO_PROXY","http_proxy","https_proxy","all_proxy","no_proxy"]);
+const PROXY_USERINFO=/^\s*(?:[a-z][a-z0-9+.-]*:\/\/)?[^\s/?#@]+@/i;
+function proxyCarriesCredentials(value){return carriesCredentials(value)||PROXY_USERINFO.test(String(value))}
+
 function keyName(value){return String(value||"").trim()}
 function validName(value){return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)}
 
@@ -133,19 +140,28 @@ function parentLookup(parent,{caseInsensitive=false}={}){
 }
 
 // toolchain adds TOOLCHAIN_ENVIRONMENT_KEYS, for the commands Native runs for the model. A name already set keeps that value;
-// a toolchain value that carries credentials is left out.
+// a toolchain value that carries credentials is left out. An external harness (every kind but native) always gets them, and the
+// proxy variables, as its CLI gets them in the person's terminal: the builds it runs find their toolchains (JAVA_HOME, an activated
+// virtualenv, GOPATH, CARGO_HOME), and its requests go out through the proxy the network needs. Native's commands and Trebell's
+// git, diagnostics and transports keep what they had; a harness on a remote host forwards only runtimeEnvironmentKeys' names.
 export function buildRuntimeEnvironment(kind,{parent={},approved=[],overrides={},platform=process.platform,toolchain=false}={}){
-  const env={},caseInsensitive=platform==="win32",lookup=parentLookup(parent,{caseInsensitive});
+  const env={},caseInsensitive=platform==="win32",lookup=parentLookup(parent,{caseInsensitive}),runtime=String(kind||"").toLowerCase(),harness=runtime!=="native";
   for(const name of runtimeEnvironmentKeys(kind,{approved})){
     const value=lookup(name);
     if(value!=null&&String(value)!=="")env[name]=String(value);
   }
-  if(toolchain){
+  if(toolchain||harness){
     const fold=name=>caseInsensitive?name.toLowerCase():name,set=new Set(Object.keys(env).map(fold));
     for(const name of TOOLCHAIN_ENVIRONMENT_KEYS){
       if(set.has(fold(name)))continue;
       const value=lookup(name);
       if(value!=null&&String(value)!==""&&!carriesCredentials(value))env[name]=String(value);
+    }
+    // On Windows a name is one variable whatever its case: HTTPS_PROXY and https_proxy are the same one, given once.
+    if(harness)for(const name of PROXY_ENVIRONMENT_KEYS){
+      if(set.has(fold(name)))continue;
+      const value=lookup(name);
+      if(value!=null&&String(value)!==""&&!proxyCarriesCredentials(value)){env[name]=String(value);set.add(fold(name))}
     }
   }
   for(const [name,value] of Object.entries(overrides||{})){
