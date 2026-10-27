@@ -711,12 +711,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // requests as cancelled and takes them off the screen, and refuses the app tool calls it waits on (Native's browser, desktop and
   // delegation tools, which the app runs), so none is asked again of a window that opens later (T3 settles a session's pending
   // approvals and user input when its turn is interrupted or the process exits).
-  function cancelThreadRequests(threadId){
+  // stop: a Stop, which leaves a request no turn owns (runless: a Muse Code workflow child's approval) waiting for the person.
+  function cancelThreadRequests(threadId,{stop=false}={}){
     const owner=String(threadId||""),cancelled={"item/tool/requestApproval":{decision:"cancel"},"item/tool/requestUserInput":{answers:{}},"mcpServer/elicitation/request":{action:"cancel"}};
     if(!owner)return;
     for(const [id,pending] of [...pendingServer]){
       const answer=Object.prototype.hasOwnProperty.call(cancelled,pending.method)?cancelled[pending.method]:null;
-      if(pending.threadId!==owner||(!answer&&pending.method!=="item/tool/call"))continue;
+      if(pending.threadId!==owner||(!answer&&pending.method!=="item/tool/call")||(stop&&pending.runless))continue;
       pendingServer.delete(id);clearTimeout(pending.timer);
       if(answer)pending.resolve(answer);else pending.reject(new Error("The turn ended before the app answered this tool call."));
       if(isOpen(pending.holder))pending.holder.ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:owner}}));
@@ -2112,7 +2113,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // Stop answers a harness's waiting approvals, questions and form requests as cancelled and withdraws their cards, for Claude Code,
       // OpenCode and Trebell Native as for the ACP harnesses (T3 cancels every pending runtime request of an interrupted run). A Native
       // turn ends only once the tool it runs returns, and a tool waiting on its approval returns only once that is answered.
-      cancelThreadRequests(params.threadId);
+      cancelThreadRequests(params.threadId,{stop:true});
       return {ok:true};
     }
     if(method==="turn/steer"){
@@ -2241,19 +2242,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const context={
         ws,
         // Asked of this window, or of the newest one open once this one has gone (pendingServer). signal: aborted when the harness
-        // withdraws the request (withdrawServerRequest).
-        serverRequest(method,params,owner=params?.threadId,signal=null){
+        // withdraws the request (withdrawServerRequest). runless: no turn owns it, so Stop leaves it waiting (cancelThreadRequests).
+        serverRequest(method,params,owner=params?.threadId,signal=null,{runless=false}={}){
           const id=`agent-${nextServerId++}`,holder=openContext(context);
           return new Promise((resolve,reject)=>{
             const timer=setTimeout(()=>{pendingServer.delete(id);reject(new Error(`${method} user response timed out`))},5*60_000);
-            pendingServer.set(id,{resolve,reject,timer,method,params,threadId:owner?String(owner):null,holder});
+            pendingServer.set(id,{resolve,reject,timer,method,params,threadId:owner?String(owner):null,holder,runless:Boolean(runless)});
             holder?.ws.send(JSON.stringify({id,method,params}));
             if(signal?.aborted)withdrawServerRequest(id);else signal?.addEventListener?.("abort",()=>withdrawServerRequest(id),{once:true});
           });
         },
         // outsideReadsAsk: the harness asks the person before it reads outside the workspace (Muse Code), so such a read is the person's
         // to answer, as T3 shows it: the workspace boundary refuses what a harness would do unasked.
-        async permission(thread,{params,options,askUser=false,approvalOptions=null,signal=null,outsideReadsAsk=false}){
+        async permission(thread,{params,options,askUser=false,approvalOptions=null,signal=null,outsideReadsAsk=false,runless=false}){
           const current=threadStore.get(thread.id)||thread,turnId=current?.turns?.at(-1)?.id||null,traceData=agentPermissionTraceData({toolCall:params.toolCall,options});
           const traceBase={runtime:current?.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),environmentId:current?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,threadId:thread.id,turnId,category:"policy"};
           journal?.record?.({...traceBase,name:"permission.requested",status:"pending",data:traceData});
@@ -2277,7 +2278,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           }
           try{
             // An ACP harness's own choices (approvalOptions) are shown as the card's buttons; each answers with its decision.
-            const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:agentApprovalReason(params),toolCall:params.toolCall,options,...(Array.isArray(approvalOptions)&&approvalOptions.length?{approvalOptions}:{})},thread.id,signal),decision=result?.decision||"decline";
+            const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:agentApprovalReason(params),toolCall:params.toolCall,options,...(Array.isArray(approvalOptions)&&approvalOptions.length?{approvalOptions}:{})},thread.id,signal,{runless}),decision=result?.decision||"decline";
             journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision,policyDecision:POLICY_CONFIRM}});return decision;
           }catch(error){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"error",data:{...traceData,message:error?.message||String(error)}});throw error;

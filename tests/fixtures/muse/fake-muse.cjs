@@ -22,6 +22,8 @@
 //                       llmJudge)
 //   "read outside"      asks to read outside-notes.txt beside the workspace folder (a fileAccess read, as Muse asks one outside the
 //                       workspace), and replies READ IT or REJECTED
+//   "child approval"    a workflow child (subagentOrigin, its own run) asks to run the same command while the turn waits until it
+//                       is stopped; the child's approval outlives the turn
 //   "ask question"      asks which approach to take (userInput/request and userInput/requested), settles it with the answer and
 //                       replies ANSWERED with it, or NO ANSWER for a cancel
 //   "retry"             schedules a retry of its model request (turn/retryScheduled), then replies
@@ -71,6 +73,7 @@ function startTurn(sessionId,params){
   if(/run workflow/i.test(words))return runWorkflow(sessionId,turnId,turn);
   if(/ask approval|reviewer decides/i.test(words))return askApproval(sessionId,turnId,/reviewer decides/i.test(words));
   if(/read outside/i.test(words))return askApproval(sessionId,turnId,false,{read:true});
+  if(/child approval/i.test(words))return askApproval(sessionId,turnId,false,{child:true});
   if(/ask question/i.test(words))return askQuestion(sessionId,turnId);
   if(/quota/i.test(words))return setTimeout(()=>{running.delete(turnId);notify("turn/completed",sessionId,{turnId,terminal:"failed",reason:QUOTA_REFUSAL,error:{kind:"modelError",message:QUOTA_REFUSAL,retryable:true}})},20);
   if(/retry/i.test(words)){
@@ -137,12 +140,14 @@ const SHELL_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approve
 // A file read outside the workspace: Muse reads its workspace unasked, and asks with Allow once or Reject for a file beyond it.
 const READ_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"deny",label:"Reject",decision:"denied",scope:"once"}];
 let nextRequest=900;
-function askApproval(sessionId,turnId,reviewer,{read=false}={}){
+function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false}={}){
+  // A workflow child's approval names the child's own run as its turn, and its origin.
+  const turnId=child?parentTurnId+"-child-run":parentTurnId,origin=child?{subagentOrigin:{subagentId:"agent-7",childRunId:turnId,childSessionId:parentTurnId+"-child-session"}}:{};
   const approvalId=turnId+"-approval",requirement={approvalId,sourceIndex:0},workspaceRoot=sessions.get(sessionId)?.workspaceRoot||"";
   const outside=read?require("node:path").resolve(workspaceRoot||process.cwd(),"..","outside-notes.txt"):"",choices=read?READ_CHOICES:SHELL_CHOICES;
   const params={sessionId,approvalId,turnId,taskId:approvalId,itemId:approvalId,toolCallId:"call_"+approvalId,toolName:read?"read_file":"bash",rawArgs:JSON.stringify(read?{file_path:outside}:{command:"touch muse-approved.txt"}),viewCursor:`v:${sessionId}:${++cursor}`,sourceRange:{},
     subject:read?{kind:"fileAccess",access:"read",path:outside,toolName:"read_file"}:{kind:"shell",command:"touch muse-approved.txt",workspaceRoot,stages:[{requirementId:requirement,position:1,totalStages:1,argv:["touch","muse-approved.txt"],argvComplete:true,resolution:{kind:"unresolved"},suggestedPrefix:{argvPrefix:["touch"],label:"Always allow in this workspace: touch ..."}}]},
-    currentRequirementId:requirement,availableChoices:choices,protectedWrite:false,judgeEscalated:false};
+    currentRequirementId:requirement,availableChoices:choices,protectedWrite:false,judgeEscalated:false,...origin};
   approvals.set(approvalId,{sessionId,turnId,settled:false,choices,read});
   write({jsonrpc:"2.0",id:++nextRequest,method:"approval/request",params});
   notify("approval/requested",sessionId,{...params,emittedAtMs:Date.now()});

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as host from "../src/muse-host.mjs";
 import * as muse from "../src/muse-agent-session.mjs";
 import { FakeMuse, ReplayMuse, chunks, mspError, settle, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
-import { museRelay } from "./fixtures/muse/relay-harness.mjs";
+import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 
 // Muse Code's access modes, approvals and questions (T3 f87dd14da, d81afa0a6, a752363b1): each Trebell mode as Muse's launch flags,
 // permission profile and approval mode; Muse's approvals as Trebell's approval card with Muse's own choices, answered through
@@ -484,6 +484,26 @@ test("through the relay, Muse's question opens Trebell's question dialog, and th
     const [answer]=await relay.frames("userInput/answer");
     assert.deepEqual(answer.params.answers,[{questionId:"approach",selectedLabel:"Small",note:"Keep the tests focused"}]);
     assert.equal(relay.reply(thread.id),"ANSWERED: Small — Keep the tests focused");
+  }finally{await relay.close()}
+});
+
+test("through the relay, Stop leaves a workflow child's approval card waiting for the person with nothing sent to Muse for it, and the person's later Allow once reaches Muse (T3 keeps a runless request)",{timeout:120_000},async()=>{
+  const relay=await museRelay("trebell-muse-child-stop-");
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run the workflow whose child approval waits"}]});
+    await eventually(()=>relay.requests.some(request=>request.method==="item/tool/requestApproval"),"the child's card");
+    const card=relay.requests.find(request=>request.method==="item/tool/requestApproval");
+    await relay.rpc("turn/interrupt",{threadId:thread.id});
+    await relay.completed(thread.id,1);
+    assert.equal(relay.threadStore.get(thread.id).turns.at(-1).status,"cancelled");
+    await new Promise(resolve=>setTimeout(resolve,300));
+    assert.equal(relay.notifications.some(item=>item.method==="serverRequest/resolved"&&item.params.requestId===card.id),false,"the child's card stays on the screen");
+    assert.deepEqual(await relay.frames("approval/decide"),[],"Muse is told nothing for it");
+    relay.respond(card,{decision:"accept"});
+    await eventually(async()=>(await relay.frames("approval/decide")).length===1,"the person's answer");
+    const [decide]=await relay.frames("approval/decide");
+    assert.deepEqual([decide.params.approvalId.endsWith("-child-run-approval"),decide.params.choiceId],[true,"allow_once"]);
   }finally{await relay.close()}
 });
 

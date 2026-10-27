@@ -747,6 +747,8 @@ export class MuseAgentSession{
         options:(Array.isArray(params.availableChoices)?params.availableChoices:[]).filter(choice=>choice?.choiceId).map(choice=>({optionId:text(choice.choiceId),name:text(choice.label),kind:text(choice.decision)})),
         askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||personOnly(params)||!choices.has("accept")||read,
         approvalOptions:museApprovalOptions(params.availableChoices),signal:ask.signal,...(read?{outsideReadsAsk:true}:{}),
+        // A workflow child's approval belongs to no turn of Trebell's: Stop leaves its card waiting (T3 keeps a runless request).
+        ...(entry.child?{runless:true}:{}),
       });
     }catch{decision="decline"}
     finally{if(entry.ask===ask)entry.ask=null}
