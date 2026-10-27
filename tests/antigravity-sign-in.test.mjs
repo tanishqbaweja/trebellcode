@@ -47,13 +47,15 @@ test("Antigravity signs in with the Gemini API key method and opens its one sess
   await assert.rejects(stat(created.params.cwd),{code:"ENOENT"},"the throwaway folder is gone once the sign-in has ended");
 });
 
-test("a sign-in Antigravity never answers ends after 5 minutes saying it could not reach Google, often for broken IPv6",async t=>{
-  const fx=await standIn(t,{authenticate:"hang"});
+test("a sign-in Antigravity never answers ends after 5 minutes saying it could not reach Google, often for broken IPv6",{timeout:60_000},async t=>{
+  // The stand-in starts 3 s late, as an Antigravity can on a busy machine.
+  const fx=await standIn(t,{authenticate:"hang",startDelayMs:3000});
   t.mock.timers.enable({apis:["setTimeout","Date"],now:Date.now()});
   let settled=null;
   const signing=signIn(fx).then(()=>{settled="signed in"},error=>{settled=error});
-  // The stand-in has the authenticate request before the clock moves.
-  for(let wait=0;!(await fx.log()).some(entry=>entry.method==="authenticate");wait++){assert.ok(wait<20_000,"authenticate was never sent");await turn()}
+  // The stand-in has the authenticate request before the clock moves: waited for by the real clock, which the fake timers leave
+  // alone (performance.now), not by a count of event-loop turns, which a fast machine runs through sooner than Antigravity starts.
+  for(const deadline=performance.now()+30_000;!(await fx.log()).some(entry=>entry.method==="authenticate");){assert.ok(performance.now()<deadline,"authenticate was never sent");await turn()}
   t.mock.timers.tick(299_999);for(let i=0;i<20;i++)await turn();
   assert.equal(settled,null,"still waiting a moment before 5 minutes");
   t.mock.timers.tick(1);
