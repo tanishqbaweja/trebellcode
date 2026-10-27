@@ -123,20 +123,23 @@ function runtimeProbeFailure(def,result={}){
 // Windows start or while Defender scans them, and an OpenCode behind its npm shim several seconds.
 const VERSION_CHECK_TIMEOUT_MS=Object.freeze({claude:20_000,codex:20_000,opencode:10_000});
 const versionCheckTimeoutMs=kind=>VERSION_CHECK_TIMEOUT_MS[kind]||6000;
-// Why a --version did not answer: "missing" only when its command is not there (Node's ENOENT, cmd.exe's "is not recognized", a
-// shell's "command not found", or the 127 a shell or env exits with then), "timeout" when it ran out of time, "exit" when it ran and
-// exited with an error, and "spawn" when it could not start (spawn EINVAL for a launcher Node cannot run).
+// Why a --version did not answer: "missing" only when its command is not there (the spawn's own ENOENT, cmd.exe's "is not
+// recognized" line, or the 127 a shell or env exits with then), never for an ENOENT or "command not found" that a CLI which ran
+// printed itself; "timeout" when it ran out of time; "spawn" when it could not start (spawn EINVAL for a launcher Node cannot run);
+// and "exit" when it ran and ended with an error code, or was stopped by a signal (a crash, the OOM killer).
 function versionCheckFailure(result={}){
-  if(result.code===127||/ENOENT|not recognized as an internal or external command|command not found/i.test(String(result.error||"")+"\n"+String(result.stderr||"")))return "missing";
-  if(result.error==="probe timed out")return "timeout";
-  return Number.isInteger(result.code)?"exit":"spawn";
+  const error=String(result.error||"");
+  if(result.code===127||/\bENOENT\b/.test(error)||/is not recognized as an internal or external command/i.test(String(result.stderr||"")))return "missing";
+  if(error==="probe timed out")return "timeout";
+  return error?"spawn":"exit";
 }
-// What a harness whose --version timed out or exited with an error says: that it is installed, and what its check did.
+// What a harness whose --version timed out, exited with an error or was stopped says: that it is installed, and what its check did.
 function versionCheckMessage(def,kind,command,result){
   const name=def?.command||String(command||"").split(/[\\/]/).pop().replace(/\.(?:exe|cmd|bat)$/i,"")||kind;
   if(versionCheckFailure(result)==="timeout")return `${def.name} is installed but did not answer \`${name} --version\` within ${versionCheckTimeoutMs(kind)/1000} seconds.`;
   const said=stripAnsi(String(result.stderr||result.stdout||"")).split(/\r?\n/).map(line=>line.trim()).find(Boolean);
-  return `${def.name} is installed but \`${name} --version\` exited with code ${result.code}${said?": "+said:"."}`.slice(0,500);
+  const ended=Number.isInteger(result.code)?`exited with code ${result.code}`:`was stopped${result.signal?" by "+result.signal:""}`;
+  return `${def.name} is installed but \`${name} --version\` ${ended}${said?": "+said:"."}`.slice(0,500);
 }
 // A Claude Code profile that runs through a router or gateway: an http(s) ANTHROPIC_BASE_URL whose host is not api.anthropic.com.
 function claudeCustomEndpoint(env={}){
@@ -251,10 +254,11 @@ async function run(command,args=[],{env=process.env,cwd=process.cwd(),timeoutMs=
     try{
       child=spawn(command,args,{cwd,env,windowsHide:true,stdio:["ignore","pipe","pipe"]});
     }catch(error){return resolve({ok:false,code:null,error:error.message,stdout:"",stderr:""})}
-    const finish=(code,error=null)=>{if(settled)return;settled=true;clearTimeout(timer);resolve({ok:code===0,code,error:error?.message||null,stdout,stderr})};
+    // signal: what stopped a process that ended without an exit code (code is null then).
+    const finish=(code,error=null,signal=null)=>{if(settled)return;settled=true;clearTimeout(timer);resolve({ok:code===0,code,signal,error:error?.message||null,stdout,stderr})};
     child.stdout?.on("data",chunk=>{stdout+=String(chunk);if(stdout.length>512_000)stdout=stdout.slice(-512_000)});
     child.stderr?.on("data",chunk=>{stderr+=String(chunk);if(stderr.length>512_000)stderr=stderr.slice(-512_000)});
-    child.once("error",error=>{if(!timedOut)finish(null,error)});child.once("exit",code=>{if(!timedOut)finish(code)});
+    child.once("error",error=>{if(!timedOut)finish(null,error)});child.once("exit",(code,signal)=>{if(!timedOut)finish(code,null,signal)});
     const timer=setTimeout(()=>{timedOut=true;void terminateProcessTree(child).finally(()=>finish(null,new Error("probe timed out")))},timeoutMs);
   });
 }

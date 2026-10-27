@@ -107,6 +107,21 @@ test("only a command that is not there reads not installed; one that cannot star
   assert.deepEqual([launcher.installed,launcher.available,launcher.message],[true,false,"Claude Code launcher could not start on this system. Reinstall or update the CLI, then refresh."]);
 });
 
+test("a --version a signal stopped reads installed and may start, and what a CLI that ran printed never makes it not installed",async t=>{
+  const cases=[
+    // A crash, or the OOM killer, ends the check with a signal and no exit code.
+    ["claude",{ok:false,code:null,signal:"SIGKILL",error:null,stdout:"",stderr:""},[true,true,true,"Claude Code is installed but `claude --version` was stopped by SIGKILL."]],
+    // A CLI that ran and exited with an ENOENT of its own (a file it could not open) or a "command not found" of a command it ran.
+    ["claude",exited(1,"Error: ENOENT: no such file or directory, open '/home/me/.claude/settings.json'\n    at Object.openSync (node:fs:573:18)\n"),[true,true,true,"Claude Code is installed but `claude --version` exited with code 1: Error: ENOENT: no such file or directory, open '/home/me/.claude/settings.json'"]],
+    ["cursor",exited(1,"sh: 1: git: command not found\nError: could not read the repository\n"),[true,true,true,"Cursor is installed but `cursor-agent --version` exited with code 1: sh: 1: git: command not found"]],
+    // The command itself not being there: a shell's 127 (the spawn's ENOENT and cmd.exe's line are in the test above).
+    ["claude",exited(127,"/bin/sh: 1: claude: command not found\n"),[false,false,undefined,"Claude Code executable was not found."]],
+  ];
+  const read=[];
+  for(const [kind,result] of cases){const status=await (await localHarness(t,kind,()=>result)).manager.probe(kind);read.push([status.installed,status.available,status.versionCheckFailed,status.message])}
+  assert.deepEqual(read,cases.map(([,,expected])=>expected));
+});
+
 test("on a host a failed version check reads unavailable as before, with the budgets of this machine",async()=>{
   // ssh's own failures (a host it cannot reach) end a check as a slow or failing CLI does, and are no answer of the harness's.
   let answer={exitCode:null,timedOut:true,stdout:"",stderr:""};
