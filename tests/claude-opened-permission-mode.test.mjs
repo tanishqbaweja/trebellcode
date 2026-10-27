@@ -29,6 +29,22 @@ test("in Auto on a model without Auto, the mode Claude Code fell back to stands:
   await claude.close();
 });
 
+// An administrator's disableBypassPermissionsMode: Claude Code opens a Full access thread in a lower mode and says so at init. Every
+// request it forwards then asks (claude-forwarded-approvals), and the process is not restarted before each prompt to ask for bypass again.
+test("Full access an administrator turned off stands at the mode Claude Code opened in: follow-ups share its process and keep its background work",async()=>{
+  const {sdk,calls}=scriptedClaudeSdk({init:{permissionMode:"default"},control:{setPermissionMode:mode=>{if(mode==="bypassPermissions")throw new Error("Bypass permissions mode is disabled by your organization")}}});
+  const claude=session(sdk,"full");await claude.start();
+  await claude.prompt([{type:"text",text:"Start the watcher"}]);
+  assert.equal(calls[0].options.permissionMode,"bypassPermissions","Full access was asked for");
+  calls[0].emit({type:"system",subtype:"background_tasks_changed",tasks:[{task_id:"bg-1",description:"npm run watch"}]});await tick();
+  assert.equal((await claude.prompt([{type:"text",text:"And now the tests"}])).stopReason,"end_turn");
+  await claude.prompt([{type:"text",text:"Once more"}]);
+  assert.equal(calls.length,1,"one process for every follow-up");assert.equal(calls[0].closed,false,"its background work goes on");
+  assert.deepEqual(modes(calls[0]),[],"nothing asks for bypass again");
+  assert.equal(claude.live.openedPermissionMode,"default","the mode Claude Code opened in");
+  await claude.close();
+});
+
 test("a process Claude switched to Plan goes back to the mode it opened in before the next prompt, and Full access that cannot goes to Manual",async()=>{
   const {sdk,calls}=scriptedClaudeSdk({turn:intoPlan});
   const edits=session(sdk,"edits");await edits.start();
