@@ -625,6 +625,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     }:{id:null,name:"Local machine",type:"local"},effectiveSettings:state.projectSettings(project.path,project.environmentId).effective};
   }
   const agentRuntimes=new AgentRuntimeManager({state,env,environments,fetchImpl,...(offlineE2E?{runFn:offlineE2eHarnessRun,claudeCapabilitiesCache:offlineE2eClaudeCapabilities}:{})});
+  // Settings' Antigravity sign-in that runs, whichever window asked: one at a time (/api/agent-runtime-auth).
+  let antigravitySignIn=null;
   const codexThreadModels=new Map();
   // As state: one sqlite connection for the agent threads, closed in close(). The server is the only writer of them.
   const agentThreads=new AgentThreadStore(env,{keepConnection:true});
@@ -2060,10 +2062,14 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           // An Antigravity chat's process keeps the key it started with: a key removed, or another one saved, stops the chats open on the
           // key before (the relay's closeRuntimeSessions), and the answer says how many (stoppedChats).
           const signedIn={ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:ANTIGRAVITY_API_KEY_METHOD,methodName:"Gemini API key"}};
+          // One sign-in at a time (T3: "already in progress"): a second would start another Antigravity, and a key removed meanwhile
+          // would come back once the running one saved its key.
+          if(antigravitySignIn)throw new Error(action==="remove-key"?"Antigravity is signing in with a Gemini API key, which it saves once it is signed in. Remove the key once that sign-in has ended.":"Antigravity is already signing in with a Gemini API key, which can take up to 5 minutes. Try again once that sign-in has ended.");
           if(action==="remove-key"){saveAntigravityApiKey(null,{env:agentRuntimes.env});const stoppedChats=await agentRelay?.closeRuntimeSessions?.("antigravity")||0;return json(res,200,{ok:true,authenticated:false,stoppedChats,agentSnapshot:await agentRuntimes.snapshot()})}
           if(mock)return json(res,200,{...signedIn,agentSnapshot:await agentRuntimes.snapshot()});
           if(environmentId)throw new Error("Antigravity ACP sign-in is currently supported on the local machine only.");
-          const {changed}=await signInAntigravityProfile(agentRuntimes,instance,{apiKey:body.apiKey,version:TREBELL_VERSION});
+          const signingIn=antigravitySignIn=signInAntigravityProfile(agentRuntimes,instance,{apiKey:body.apiKey,version:TREBELL_VERSION});
+          let changed;try{({changed}=await signingIn)}finally{if(antigravitySignIn===signingIn)antigravitySignIn=null}
           const stoppedChats=changed?await agentRelay?.closeRuntimeSessions?.("antigravity")||0:0;
           return json(res,200,{...signedIn,stoppedChats,agentSnapshot:await agentRuntimes.snapshot()});
         }
