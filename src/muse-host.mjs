@@ -2,6 +2,7 @@ import { realpath } from "node:fs/promises";
 import spawn from "cross-spawn";
 import { appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "./acp-client.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
+import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys } from "./runtime-environment.mjs";
 
 // Muse Code's host: Trebell starts the person's own `muse serve`, which speaks the Muse Session Protocol (MSP, NDJSON JSON-RPC over
 // its stdio), and drives it through Meta's SDK (@muse-code/sdk) over a bare Connection on that stdio, as the SDK's docs advise for
@@ -33,9 +34,20 @@ export function museServeArgs(mode="supervised",{sessionLog=true}={}){
   return ["serve",...(readOnly?["--disable-shell","--disable-write"]:["--trust-workspace"]),...(sessionLog?[]:["--no-session-log"])];
 }
 
-// MUSE_NO_AUTO_UPDATE=1, as T3 Code sets it: Meta's launcher may otherwise update itself in the foreground, or start a hidden
-// PowerShell updater, each time Trebell starts Muse Code.
-export function museEnvironment(env=process.env){return {...env,MUSE_NO_AUTO_UPDATE:"1"}}
+// The environment Muse Code runs with (T3 Code's makeMuseEnvironment): MUSE_NO_AUTO_UPDATE=1, since Meta's launcher may otherwise
+// update itself in the foreground, or start a hidden PowerShell updater, each time Trebell starts Muse Code; and no META_API_KEY,
+// matched by its name in any case and its value never read, unless the profile approves that name (approved, the profile's
+// approvedEnvironmentKeys): Muse prefers a key to the person's own `muse login`, so one set for something else (Native on Meta's
+// API) would bill them per token in place of their subscription.
+export function museEnvironment(env=process.env,{approved=[]}={}){
+  const keep=normalizeApprovedEnvironmentKeys(approved).some(name=>name.toUpperCase()==="META_API_KEY"),out={};
+  for(const name of Object.keys(env||{}))if(keep||name.toUpperCase()!=="META_API_KEY")out[name]=env[name];
+  out.MUSE_NO_AUTO_UPDATE="1";
+  return out;
+}
+// What a host started without an environment runs with: what a Muse Code profile gets of Trebell's own (runtime-environment.mjs),
+// so no other harness's key reaches Muse either.
+function inheritedMuseEnvironment(){return buildRuntimeEnvironment("muse",{parent:process.env})}
 
 export function museInitializeParams(version="0.0.0",requestedCapabilities=["sessionMcp"]){
   return {clientInfo:{name:"trebell_code",title:"Trebell Code",version:String(version||"0.0.0")},capabilities:{requestedCapabilities:[...requestedCapabilities]}};
@@ -99,8 +111,9 @@ export async function stopMuseProcessTree(child,{platform=process.platform,exite
 }
 
 export class MuseHost{
-  constructor({command="muse",args=museServeArgs(),cwd=process.cwd(),env=process.env,spawnFn=spawn,platform=process.platform,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,stopTree=stopMuseProcessTree,onWarning=null}={}){
-    this.command=command;this.args=[...args];this.cwd=cwd;this.env=museEnvironment(env);this.spawnFn=spawnFn;this.platform=platform;
+  // env: the profile's (AgentRuntimeManager.childEnv), approvedEnvironmentKeys the names its profile approves.
+  constructor({command="muse",args=museServeArgs(),cwd=process.cwd(),env=null,approvedEnvironmentKeys=[],spawnFn=spawn,platform=process.platform,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,stopTree=stopMuseProcessTree,onWarning=null}={}){
+    this.command=command;this.args=[...args];this.cwd=cwd;this.env=museEnvironment(env??inheritedMuseEnvironment(),{approved:approvedEnvironmentKeys});this.spawnFn=spawnFn;this.platform=platform;
     this.startupTimeoutMs=startupTimeoutMs;this.shutdownTimeoutMs=shutdownTimeoutMs;this.stopTree=stopTree;this.onWarning=onWarning;
     this.sdk=null;this.child=null;this.connection=null;this.initializeResult=null;this.fingerprintWarning=null;
     this.stderrTail="";this.exit=null;this.closing=false;this.#closing=null;

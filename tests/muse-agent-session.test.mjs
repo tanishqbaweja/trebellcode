@@ -12,7 +12,7 @@ import { pathToFileURL } from "node:url";
 import { acpToolFrame } from "../src/acp-tool-state.mjs";
 import { HarnessSessionLostError } from "../src/harness-session-lost.mjs";
 import { MuseAgentSession, MUSE_INTERRUPT_TIMEOUT_MS, MUSE_REQUEST_TIMEOUT_MS, museDeclineChoice, museDisplayText, museInputParts, museToolUpdate } from "../src/muse-agent-session.mjs";
-import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSdk, museExitMessage, museServeArgs, museVerbatimPath, museWorkspaceRoot, stopMuseProcessTree } from "../src/muse-host.mjs";
+import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSdk, museEnvironment, museExitMessage, museServeArgs, museVerbatimPath, museWorkspaceRoot, stopMuseProcessTree } from "../src/muse-host.mjs";
 import { withWorkingContext } from "../src/working-context-envelope.mjs";
 
 // Muse Code is driven through Meta's SDK (@muse-code/sdk, a real Connection) over a fake `muse serve`: a child whose stdio carries
@@ -160,6 +160,35 @@ test("Muse Code's host starts `muse serve --trust-workspace` hidden in the plain
     assert.equal(readOnly.spawned[0].options.detached,true);
     await readOnly.session.close();
   }finally{await rm(folder,{recursive:true,force:true})}
+});
+
+test("Muse Code never gets a META_API_KEY its profile did not approve, matched in any case and its value never read, and a host started without an environment gets a Muse profile's",async()=>{
+  for(const key of ["META_API_KEY","meta_api_key","Meta_Api_Key"]){
+    const source={PATH:"/bin",MUSE_CHANNEL:"muse-stable"};let reads=0;
+    Object.defineProperty(source,key,{enumerable:true,get:()=>{reads++;return "meta-key-of-trebells-environment"}});
+    assert.deepEqual(museEnvironment(source),{PATH:"/bin",MUSE_CHANNEL:"muse-stable",MUSE_NO_AUTO_UPDATE:"1"},key);
+    assert.equal(reads,0,"the key's value is never read");
+    assert.ok(Object.keys(source).includes(key),"the environment given is left as it was");
+    assert.equal(museEnvironment(source,{approved:["meta_api_key"]})[key],"meta-key-of-trebells-environment","a profile that approves the key keeps it");
+  }
+  // A session hands the approval to its host: the key reaches Muse only with it.
+  const plain=await startSession({options:{env:{PATH:"/bin",META_API_KEY:"meta-key-of-trebells-environment"}}});
+  assert.equal("META_API_KEY" in plain.spawned[0].options.env,false);
+  await plain.session.close();
+  const approved=await startSession({options:{env:{PATH:"/bin",META_API_KEY:"meta-key-of-trebells-environment"},approvedEnvironmentKeys:["META_API_KEY"]}});
+  assert.equal(approved.spawned[0].options.env.META_API_KEY,"meta-key-of-trebells-environment");
+  await approved.session.close();
+  // Without an environment, a host gets what a Muse Code profile gets of Trebell's own: no other harness's key, and no META_API_KEY.
+  const saved={META_API_KEY:process.env.META_API_KEY,TREBELL_FIXTURE_OTHER_API_KEY:process.env.TREBELL_FIXTURE_OTHER_API_KEY};
+  process.env.META_API_KEY="meta-key-of-trebells-environment";process.env.TREBELL_FIXTURE_OTHER_API_KEY="another-harness-key";
+  try{
+    const host=new MuseHost({command:"muse"});
+    assert.equal(Object.keys(host.env).some(name=>/^(?:META_API_KEY|TREBELL_FIXTURE_OTHER_API_KEY)$/i.test(name)),false);
+    assert.equal(host.env.MUSE_NO_AUTO_UPDATE,"1");
+    assert.ok(Object.keys(host.env).some(name=>name.toUpperCase()==="PATH"),"what Muse needs to run is there");
+    const session=new MuseAgentSession({command:"muse",cwd:process.cwd(),onUpdate:()=>{}});
+    assert.equal(session.env,undefined,"a session without an environment leaves it to its host");
+  }finally{for(const [name,value] of Object.entries(saved))if(value===undefined)delete process.env[name];else process.env[name]=value}
 });
 
 test("initialize names Trebell Code and asks for session MCP servers; a schema fingerprint other than the SDK's is logged, not refused",async()=>{

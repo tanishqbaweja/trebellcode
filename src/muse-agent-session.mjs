@@ -134,11 +134,12 @@ function approvalTarget(params={}){
 
 export class MuseAgentSession{
   // modelCatalog: the list Muse Code's status check read ({models, metadata, preferred}, museModelCatalog), or null, which the
-  // thread's model and Thinking level are resolved against before each turn.
-  constructor({command="muse",cwd,env=process.env,permissionMode="supervised",onUpdate,onPermission=null,onQuestion=null,version="0.0.0",modelCatalog=()=>null,spawnFn=undefined,platform=process.platform,loadSdk=loadMuseSdk,stopTree=undefined,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,requestTimeoutMs=MUSE_REQUEST_TIMEOUT_MS,interruptTimeoutMs=MUSE_INTERRUPT_TIMEOUT_MS}={}){
+  // thread's model and Thinking level are resolved against before each turn. env: the profile's (AgentRuntimeManager.childEnv), and
+  // approvedEnvironmentKeys the names its profile approves (a META_API_KEY reaches Muse only with its name there, museEnvironment).
+  constructor({command="muse",cwd,env=undefined,approvedEnvironmentKeys=[],permissionMode="supervised",onUpdate,onPermission=null,onQuestion=null,version="0.0.0",modelCatalog=()=>null,spawnFn=undefined,platform=process.platform,loadSdk=loadMuseSdk,stopTree=undefined,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,requestTimeoutMs=MUSE_REQUEST_TIMEOUT_MS,interruptTimeoutMs=MUSE_INTERRUPT_TIMEOUT_MS}={}){
     this.command=command;this.cwd=resolve(cwd||process.cwd());this.env=env;this.permissionMode=normalizePermissionMode(permissionMode||"supervised");
     this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.version=version;this.modelCatalog=modelCatalog;
-    this.hostOptions={spawnFn,platform,stopTree,startupTimeoutMs,shutdownTimeoutMs};this.platform=platform;this.loadSdk=loadSdk;
+    this.hostOptions={spawnFn,platform,stopTree,startupTimeoutMs,shutdownTimeoutMs,approvedEnvironmentKeys};this.platform=platform;this.loadSdk=loadSdk;
     this.requestTimeoutMs=requestTimeoutMs;this.interruptTimeoutMs=interruptTimeoutMs;
     this.args=museServeArgs(this.permissionMode);this.host=null;this.connection=null;this.initializeResult=null;this.sessionSetup=null;
     this.sessionId=null;this.model=null;this.wantedModel=null;this.reasoningEffort=null;this.turnRoot=null;

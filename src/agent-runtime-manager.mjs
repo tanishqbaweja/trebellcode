@@ -946,7 +946,7 @@ export class AgentRuntimeManager{
     const cached=this.#museCatalogs.get(instance.id),current=cached?.key===key?cached:null;
     if(current?.pending)return await current.pending;
     if(current&&!fresh){if(current.error)throw current.error;return current.value}
-    const pending=readMuseModelCatalog({command,env:this.childEnv(instance),cwd:process.cwd()}),entry={key,pending,value:cached?.value||null};
+    const pending=readMuseModelCatalog({command,env:this.childEnv(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys,cwd:process.cwd()}),entry={key,pending,value:cached?.value||null};
     this.#museCatalogs.set(instance.id,entry);
     try{
       const value=await pending;

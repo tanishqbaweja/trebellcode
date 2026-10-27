@@ -216,8 +216,8 @@ test("Muse Code runs only on this machine: a WSL or SSH environment answers so, 
 
 // The relay with the real runtime manager on the stand-in Muse Code: a thread started on Muse Code, its turns' models and Thinking
 // levels, a model Muse refuses, the catalog default, steering, and a thread reopened without starting Muse.
-async function museRelay(prefix,{environment={}}={}){
-  const fixture=await museFixture(prefix,{environment});
+async function museRelay(prefix,{environment={},env={}}={}){
+  const fixture=await museFixture(prefix,{environment,env});
   const threadStore=new AgentThreadStore(fixture.env);
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});
   const relay=attachAgentRelay(server,{runtimeManager:fixture.manager,threadStore,terminals:{},state:fixture.state,version:"1.6.0-test"});
@@ -271,6 +271,20 @@ test("a Muse Code thread runs on Muse Code: the turn takes the composer's Thinki
     assert.equal(relay.threadStore.get(thread.id).model,"muse-spark-1.2");
     assert.equal((await hosts(relay.log)).filter(entry=>entry.start.includes("--trust-workspace")).length,1,"every turn ran on the thread's one host");
   }finally{await relay.close()}
+});
+
+test("Trebell's own META_API_KEY reaches the hosts of a Muse Code thread and of its model list only when the profile approves it",{timeout:90_000},async()=>{
+  for(const approved of [false,true]){
+    const relay=await museRelay(approved?"trebell-muse-key-approved-":"trebell-muse-key-",{env:{META_API_KEY:"meta-key-in-trebells-env"}});
+    try{
+      if(approved)relay.state.settings().agentRuntimeInstances[0].approvedEnvironmentKeys=["META_API_KEY"];
+      const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
+      await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello Muse"}]});
+      await relay.completed(thread.id,1);
+      const started=await hosts(relay.log);
+      assert.deepEqual(started.map(entry=>[entry.start.includes("--no-session-log")?"model list":"thread",entry.env.META_API_KEY]),[["model list",approved?"set":null],["thread",approved?"set":null]],approved?"approved":"not approved");
+    }finally{await relay.close()}
+  }
 });
 
 test("a message sent while a Muse Code turn runs steers that turn, and a Muse Code thread reopened later starts no Muse Code",{timeout:60_000},async()=>{
