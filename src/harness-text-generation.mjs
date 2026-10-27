@@ -261,7 +261,8 @@ async function openCodeText(ctx){
   const cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx),env=runtimeManager.childEnv(instance);
   const server=await (ctx.deps.openCodeServer||startOpenCodeServer)({command:runtimeManager.executable(instance,{environmentId}),cwd,env,serverUrl:instance.serverUrl||null});
   ctx.defer(()=>server?.close?.());ctx.check();
-  const client=createClient({baseUrl:server.url,directory:cwd});
+  // A server Trebell started with the profile's OPENCODE_SERVER_PASSWORD answers only its clients that send it (startOpenCodeServer).
+  const client=createClient({baseUrl:server.url,directory:cwd,headers:server.headers});
   const providers=checkedOpenCodeProviders(openCodeData(await client.provider.list({query:{directory:cwd}}),"provider list"));ctx.check();
   // The thread's model when OpenCode has it; otherwise the model OpenCode itself would pick: configured, then recently used, then a
   // connected provider's default (the recent list is read only for the server Trebell started here).
@@ -271,7 +272,7 @@ async function openCodeText(ctx){
   const session=openCodeData(await client.session.create({query:{directory:cwd},body:{title:"Trebell Git text",permission:OPENCODE_GIT_TEXT_PERMISSION}}),"session create");
   const sessionId=String(session?.id||"");if(!sessionId)throw new Error("OpenCode did not create the Git text session");
   ctx.defer(async()=>{await within(client.session.abort({path:{id:sessionId},query:{directory:cwd}}),1500);await client.session.delete({path:{id:sessionId},query:{directory:cwd}})});ctx.check();
-  const refusals=refuseOpenCodeAsks({client,v2Client:createV2Client({baseUrl:server.url,directory:cwd}),directory:cwd,sessionId});
+  const refusals=refuseOpenCodeAsks({client,v2Client:createV2Client({baseUrl:server.url,directory:cwd,headers:server.headers}),directory:cwd,sessionId});
   let result;
   try{
     await refusals.ready;ctx.check();

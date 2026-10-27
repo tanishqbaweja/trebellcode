@@ -76,8 +76,19 @@ function stopProcessTree(child){
   }
   try{child.kill()}catch{}
 }
+// A managed 1.x server takes OPENCODE_SERVER_PASSWORD (and OPENCODE_SERVER_USERNAME, else "opencode") from the profile's environment and
+// then answers only Basic auth with them, so each of its clients sends them (T3 Code's resolveOpenCodeServerPassword). A server of the
+// profile's own (serverUrl) is not sent this machine's password.
+export function openCodeServerHeaders(env={}){
+  const password=String(env?.OPENCODE_SERVER_PASSWORD||"");if(!password)return {};
+  return {Authorization:`Basic ${Buffer.from(`${String(env?.OPENCODE_SERVER_USERNAME||"")||"opencode"}:${password}`,"utf8").toString("base64")}`};
+}
+// The 1.x SDK client of a server startServer gave.
+export function openCodeClientOptions(server,directory){
+  const headers=server?.headers||{};return {baseUrl:server.url,directory,...(Object.keys(headers).length?{headers}:{})};
+}
 async function startServer({command="opencode",cwd,env=process.env,serverUrl=null}={}){
-  if(serverUrl)return {url:serverUrl,close(){}};
+  if(serverUrl)return {url:serverUrl,headers:{},close(){}};
   const port=await freePort();const args=["serve","--hostname=127.0.0.1",`--port=${port}`];
   const child=spawn(command,args,{cwd,env,windowsHide:true,stdio:["ignore","pipe","pipe"]});
   // Only the recent output is kept: it is just for startup errors, and the server lives as long as the session.
@@ -89,7 +100,7 @@ async function startServer({command="opencode",cwd,env=process.env,serverUrl=nul
       child.stdout?.on("data",chunk=>{keep(chunk);const match=output.match(SERVER_LISTENING);if(match)finish(null,match[1])});
       child.stderr?.on("data",keep);child.once("error",error=>finish(error));child.once("exit",code=>finish(new Error(`OpenCode server exited with code ${code}. ${startupLog(output)}`)));
     });
-    return {url,child,close(){stopProcessTree(child)}};
+    return {url,child,headers:openCodeServerHeaders(env),close(){stopProcessTree(child)}};
   }catch(error){
     // A server that did not come up (a timeout, or a version Trebell cannot talk to) is not left running.
     stopProcessTree(child);throw error;
@@ -244,7 +255,7 @@ async function openCodeInventory(client,v2Client,directory){
 export async function discoverOpenCodeModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null,readText}={}){
   const [{createOpencodeClient},{createOpencodeClient:createOpencodeV2Client}]=await loadOpenCodeClients();
   const server=await startServer({command,cwd,env,serverUrl});
-  const client=createOpencodeClient({baseUrl:server.url,directory:cwd}),v2Client=createOpencodeV2Client({baseUrl:server.url,directory:cwd});
+  const client=createOpencodeClient(openCodeClientOptions(server,cwd)),v2Client=createOpencodeV2Client(openCodeClientOptions(server,cwd));
   try{
     const providers=checkedOpenCodeProviders(unwrap(await client.provider.list({query:{directory:cwd}}),"provider list"));
     const [preferences,inventory]=await Promise.all([openCodeModelPreferences({client,directory:cwd,env,localState:!serverUrl,readText}),openCodeInventory(client,v2Client,cwd)]);
@@ -521,8 +532,8 @@ export class OpenCodeAgentSession{
     // A session closed while its server started had no server to stop then, so it stops it now.
     if(this.closed){this.server.close?.();throw new Error("OpenCode was stopped while it started.")}
     this.server.child?.once?.("exit",(code,signal)=>{this.serverExit={code,signal}});
-    this.client=createOpencodeClient({baseUrl:this.server.url,directory:this.cwd});
-    this.v2Client=createOpencodeV2Client({baseUrl:this.server.url,directory:this.cwd});
+    this.client=createOpencodeClient(openCodeClientOptions(this.server,this.cwd));
+    this.v2Client=createOpencodeV2Client(openCodeClientOptions(this.server,this.cwd));
     if(this.repositoryMcp)this.repositoryMcpStatus=await configureOpenCodeMcpServers(this.client,{cwd:this.cwd,servers:[{name:this.repositoryMcp.name,config:this.repositoryMcp.openCode}]});
     const providers=checkedOpenCodeProviders(unwrap(await this.client.provider.list({query:{directory:this.cwd}}),"provider list"));
     let catalog=connectedOpenCodeModels(providers);
