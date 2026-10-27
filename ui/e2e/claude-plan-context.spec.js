@@ -9,8 +9,11 @@ import { routeClaudeApp,startClaudeRelay } from "./claude-relay-harness.js";
 // Claude's to-do list (TodoWrite) and task list (TaskCreate, TaskUpdate) show as the turn's plan and update as Claude works, and after
 // a restart the list goes on from the one Claude Code keeps.
 // The composer's meter says how full Claude's context window is: its latest request's prompt against the window Claude Code reports.
+// A hook's reason for dropping the prompt shows once as a row of its turn instead of as the answer, and a Compact whose compaction
+// failed says why instead of reading compacted.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const TODOS=[{content:"Read the release checklist",status:"in_progress",activeForm:"Reading the release checklist"},{content:"Update the changelog",status:"pending",activeForm:"Updating the changelog"},{content:"Tag the release",status:"pending",activeForm:"Tagging the release"}];
+const REASON="Prompt dropped by a hook: Deploys are frozen until Monday.";
 const WINDOW={rawMaxTokens:200_000,maxTokens:200_000,totalTokens:20_000,percentage:10,isAutoCompactEnabled:true};
 
 async function openThread(page,title){
@@ -189,4 +192,62 @@ test("the composer's meter says how full Claude's context window is: its latest 
     await expect(page.getByText("Summarized the parser.",{exact:true})).toBeVisible({timeout:15_000});
     await expect(context).toContainText(`16% · ${k32}/${k200} · $0.08`);
   }finally{firstSeen.open();secondSeen.open();compactedSeen.open();await harness.close()}
+});
+
+test("a hook's reason for dropping a Claude prompt shows once in its turn, and a Compact whose compaction failed says why instead of reading compacted",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startClaudeRelay({turn:async({message,emit})=>{
+    const said=message.message.content.map(part=>part.text||"").join("");
+    if(said==="/compact"){
+      emit({type:"system",subtype:"status",status:"compacting",session_id:"s",uuid:randomUUID()});
+      emit({type:"system",subtype:"status",status:null,compact_result:"failed",compact_error:"Not enough messages to compact.",session_id:"s",uuid:randomUUID()});
+      emit({type:"result",subtype:"success",is_error:false,result:"",local_command:"compact",user_message_uuid:message.uuid,total_cost_usd:0,usage:{input_tokens:0,output_tokens:0}});
+      return;
+    }
+    if(said.includes("Deploy to production")){
+      // A UserPromptSubmit hook blocked the prompt: Claude Code warns with its reason and repeats it as the result's text.
+      emit({type:"system",subtype:"informational",content:"Started in the background: agent-1",level:"info",session_id:"s",uuid:randomUUID()});
+      emit({type:"system",subtype:"informational",content:REASON,level:"warning",prevent_continuation:true,session_id:"s",uuid:randomUUID()});
+      emit({type:"result",subtype:"success",is_error:false,result:REASON,num_turns:0,user_message_uuid:message.uuid,total_cost_usd:0,usage:{input_tokens:0,output_tokens:0}});
+    }
+  }});
+  // The relay's answer to Compact, which comes after everything the compaction sent (a compacted thread among it).
+  let compactRequest=null,compactAnswered;const compactAnswer=new Promise(resolve=>{compactAnswered=resolve});
+  page.on("websocket",socket=>{
+    const read=payload=>{try{return JSON.parse(String(payload))}catch{return null}};
+    socket.on("framesent",({payload})=>{const message=read(payload);if(message?.method==="thread/compact/start")compactRequest=message.id});
+    socket.on("framereceived",({payload})=>{const message=read(payload);if(compactRequest!=null&&message?.id===compactRequest&&!message.method)compactAnswered(message)});
+  });
+  try{
+    harness.seedThread("Deploy",{permissionProfile:"supervised"});
+    await routeClaudeApp(page,harness,{permissionMode:"supervised"});
+    await page.goto("/");await openThread(page,"Deploy");
+
+    await send(page,"Deploy to production");
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:15_000});
+    const card=page.getByTestId("activity-card").last();
+    await expect(card).toBeVisible({timeout:15_000});
+    if(await card.getAttribute("data-state")==="closed")await card.locator(".activity-card-head").click();
+    const notice=card.locator("details.tool-event").filter({has:page.locator("strong",{hasText:REASON})});
+    // Soft, so that the old code also shows what Compact says.
+    await expect.soft(notice,"the hook's reason, as a finished row of the turn").toBeVisible();
+    await expect.soft(notice.locator("em")).toHaveText("done");
+    await expect.soft(page.locator(".history-assistant").filter({hasText:REASON}),"not as Claude's answer too").toHaveCount(0);
+    await expect.soft(page.getByText("Started in the background: agent-1"),"an info line stays out").toHaveCount(0);
+    await page.screenshot({animations:"disabled",path:`${auditDir}claude-hook-dropped-prompt-notice-dark-1280x800.png`});
+
+    await page.locator(".composer-context .context-compact-btn").click();
+    const failed=page.getByText("Context compaction failed: Not enough messages to compact.",{exact:true});
+    await expect.soft(failed,"the failure says why").toBeVisible({timeout:15_000});
+    for(const mode of ["dark","light"]){
+      if(mode==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      await page.screenshot({animations:"disabled",path:`${auditDir}claude-compaction-failed-${mode}-1280x800.png`});
+    }
+    // The relay refuses the compaction instead of reporting the thread compacted, which the window would have said.
+    const answer=await compactAnswer;
+    expect.soft(answer.error?.message,"the relay's answer is the failure").toBe("Not enough messages to compact.");
+    await expect(page.getByText("Context compacted",{exact:true}),"never reported compacted").toHaveCount(0);
+    await expect(failed).toBeVisible();
+  }finally{await harness.close()}
 });

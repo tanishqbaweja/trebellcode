@@ -40,6 +40,7 @@ const CLAUDE_SUBAGENT_TOOLS=new Set(["Agent","Task"]);
 // one task list per Claude session, the root's and its subagents' alike, shown as the thread's plan as a TodoWrite list is.
 const CLAUDE_TASK_TOOLS=new Set(["TaskCreate","TaskUpdate","TaskList"]);
 const CLAUDE_TASK_STATUSES=new Set(["pending","in_progress","completed"]);
+export const CLAUDE_COMPACT_FAILED="Claude Code could not compact its context.";
 const CLAUDE_EFFORTS=new Set(["low","medium","high","xhigh","max"]);
 const CLAUDE_IMAGE_TYPES=new Set(["image/gif","image/jpeg","image/png","image/webp"]);
 const CLAUDE_INTERRUPT_TIMEOUT_MS=10_000;
@@ -260,6 +261,8 @@ export function claudeSessionPermissionUpdates(toolName,suggestions){
 }
 // Claude Code's own text for a request (its prompt sentence, subtitle, reason or ask rule) can carry its renderer's terminal escapes.
 function plainText(value){return typeof value==="string"?stripVTControlCharacters(value).trim():""}
+// A notice's text as the result that repeats it gives it (T3 Code's normalizeClaudeResultText).
+function noticeKey(value){return plainText(String(value??"")).replace(/\s+/g," ")}
 // The approval prompt as T3 Code's ClaudeAdapter builds it: the CLI's own prompt sentence, else the tool with its command, path
 // or input, so the person sees what they approve, then why Claude Code asks (its decisionReason) when the sentence does not say it.
 export function claudePermissionPrompt(toolName,input,options={}){
@@ -476,8 +479,8 @@ export class ClaudeAgentSession{
   }
 
   // onDelivered: told once Claude Code has the prompt: queued to a process whose session started, or that process reporting its
-  // session (init) after taking the prompt in.
-  async prompt(parts,{messageId=null,agent=null,onDelivered=null}={}){
+  // session (init) after taking the prompt in. compact: the prompt is compact()'s /compact.
+  async prompt(parts,{messageId=null,agent=null,onDelivered=null,compact=false}={}){
     // Trebell's own refusals (SessionRefusalError): Claude Code is not asked, so it did not fail.
     if(this.closed)throw new SessionRefusalError("Claude session is closed");
     // A prompt still opening its query counts as running, so two prompts never share one turn.
@@ -492,7 +495,7 @@ export class ClaudeAgentSession{
       // Fresh for every offer: Claude acknowledges a prompt whose uuid its transcript already holds without running a turn.
       const promptUuid=UUID.test(String(messageId||""))?String(messageId):randomUUID();
       const turn=this.#newTurn({promptUuid,live});
-      turn.onDelivered=typeof onDelivered==="function"?onDelivered:null;
+      turn.onDelivered=typeof onDelivered==="function"?onDelivered:null;turn.compact=compact===true;
       this.turn=turn;clearTimeout(this.idleTimer);
       // A prompt that never reaches Claude Code (its opening stopped, or its process ended first) is in no transcript, so its turn ends
       // with no ids: an Edit from here would resume at one, and a later session start would take the thread for one Claude Code has.
@@ -557,7 +560,8 @@ export class ClaudeAgentSession{
     await this.#closeLive(live);
     if(turn&&!turn.settled)this.#finishTurn(turn);
   }
-  async compact(){return this.prompt([{type:"text",text:"/compact"}])}
+  // Rejects, with Claude Code's reason, when the compaction failed (#finishTurn), so the relay never reports it compacted.
+  async compact(){return this.prompt([{type:"text",text:"/compact"}],{compact:true})}
   async fork({upToMessageId=null}={}){
     const targetSessionId=randomUUID(),sourceSessionId=this.pendingFork?.sourceSessionId||this.sessionId;
     // A thread whose first prompt never ran has no transcript to copy: the fork starts its own conversation.
@@ -769,6 +773,9 @@ export class ClaudeAgentSession{
       authFailure:false,rateLimited:false,apiErrorText:null,rejectedLimits:new Map(),blockedLimit:null,announcedLimits:new Set(),settled:false,promise,resolve,reject,
       // requests: the usage of the turn's root requests, by message id.
       requests:new Map(),
+      // notices: the texts of Claude Code's notices the turn showed; compact: compact() asked for it; compactFailure: its compaction's
+      // latest status, once one failed ({message}).
+      notices:new Set(),compact:false,compactFailure:null,
     };
   }
   // Output Claude produces on its own while no prompt runs (a background task or agent finished): a turn of its own.
@@ -816,13 +823,18 @@ export class ClaudeAgentSession{
     const limits=[...turn.rejectedLimits.values()],blocked=turn.blockedLimit;
     if(blocked&&!turn.rejectedLimits.has(blocked.rateLimitType||"unknown"))limits.push(blocked);
     const failureHint=turn.authFailure?claudeSignedOutMessage(this.helperSharesRuntime?"":this.env.CLAUDE_CONFIG_DIR):usageLimited?claudeUsageLimitHint(limits):null;
-    const failure=claudeResultFailure(result,{failureHint,explainedError:turn.apiErrorText});
+    // Claude Code ends a /compact whose compaction failed with a success result. compact()'s fails with Claude Code's reason, so the relay
+    // never reports it compacted; a /compact sent as a message fails once the usage limit stopped it (T3 Code's 499c9ee68), and otherwise
+    // the session's status says why.
+    const compactFailed=turn.compactFailure&&(turn.compact||(usageLimited&&result.local_command==="compact"))?turn.compactFailure.message||failureHint||CLAUDE_COMPACT_FAILED:null;
+    const failure=claudeResultFailure(result,{failureHint,explainedError:turn.apiErrorText})||compactFailed;
     if(failure){
       // A process that failed to authenticate keeps its stale credentials: the next prompt starts a fresh one.
       if(turn.authFailure&&live)void this.#closeLive(live);
       return turn.reject(Object.assign(new Error(failure),{raw,...failedIds}));
     }
-    if(!turn.emittedText&&result.result)this.#emitText(turn,String(result.result),null);
+    // Claude Code repeats a notice that ended the prompt (a hook dropped it) as the result's text, which is no answer.
+    if(!turn.emittedText&&result.result&&!turn.notices.has(noticeKey(result.result)))this.#emitText(turn,String(result.result),null);
     return turn.resolve({stopReason:"end_turn",...ids,raw});
   }
 
@@ -900,8 +912,16 @@ export class ClaudeAgentSession{
       });
       return;
     }
-    if(type==="system"&&subtype==="status"){this.#publishInventory({},{status:message.status??null,permissionMode:message.permissionMode,compactResult:message.compact_result});return}
+    if(type==="system"&&subtype==="status"){
+      // Claude Code's reason for a compaction that failed goes with the result (provider-session-status.js shows it), and its turn keeps
+      // it for the /compact that fails with it (#finishTurn).
+      const compactError=message.compact_result==="failed"?redactApiErrorText(plainText(message.compact_error))||null:null,turn=this.#liveTurn(live);
+      if(turn&&message.compact_result!==undefined)turn.compactFailure=message.compact_result==="failed"?{message:compactError}:null;
+      this.#publishInventory({},{status:message.status??null,permissionMode:message.permissionMode,compactResult:message.compact_result,...(compactError?{compactError}:{})});
+      return;
+    }
     if(type==="system"&&subtype==="compact_boundary"){this.#compacted(live,message);return}
+    if(type==="system"&&(subtype==="model_refusal_fallback"||(subtype==="informational"&&message.level!=="info"))){this.#notice(live,message);return}
     if(type==="system"&&subtype==="commands_changed"){if(Array.isArray(message.commands))this.#publishInventory({commands:message.commands});return}
     if(type==="system"&&subtype==="background_tasks_changed"){this.#backgroundTasks(live,message);return}
     if(type==="rate_limit_event"){this.#rateLimit(message);return}
@@ -1060,6 +1080,14 @@ export class ClaudeAgentSession{
       if(entry.value&&this.meter.context&&this.live===live&&!this.closed)this.#emitMeter(live);
     },()=>{if(live.closed&&this.contextWindows.get(model)===entry)this.contextWindows.delete(model)});
     return null;
+  }
+  #liveTurn(live){return this.turn&&this.turn.live===live&&!this.turn.settled?this.turn:null}
+  // Claude Code's own notice (a hook's reason for dropping the prompt, a switch to the fallback model after a refusal), shown as a
+  // finished row of its turn, as the usage-limit notice is; the result's text that repeats it is no answer (T3 Code's e51c0d677).
+  #notice(live,message){
+    const turn=this.#liveTurn(live),text=plainText(message.content);if(!turn||!text)return;
+    turn.notices.add(noticeKey(text));
+    this.#emit({sessionUpdate:"tool_call",toolCallId:`claude-notice:${message.uuid||randomUUID()}`,title:text,kind:"other",status:"completed",rawInput:{},rawOutput:message});
   }
   #backgroundTasks(live,message){
     const next=new Map();
