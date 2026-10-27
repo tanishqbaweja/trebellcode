@@ -608,7 +608,11 @@ test("the process-tree stop leaves a launcher that has exited alone, and stops a
 
 test("a command Muse does not answer within 30 s stops the host",async()=>{
   assert.equal(MUSE_REQUEST_TIMEOUT_MS,30_000);
-  const {session,muse}=await startSession({options:{requestTimeoutMs:40}});
+  // Only the turn's own command races the short bound: the session starts on the default one, and is answered here more slowly than
+  // that bound, as a loaded machine may answer it.
+  const slowStart=params=>new Promise(resolve=>realSetTimeout(()=>resolve(DEFAULT_HANDLERS["session/start"](params)),100));
+  const {session,muse}=await startSession({muse:child=>new FakeMuse(child,{handlers:{"session/start":slowStart}})});
+  session.requestTimeoutMs=40;
   muse.handlers["turn/start"]=()=>undefined;
   await assert.rejects(session.prompt([{type:"text",text:"go"}]),/did not answer within 0 seconds when asked to start the turn, so Trebell stopped it/);
   assert.equal(session.dead,true);
