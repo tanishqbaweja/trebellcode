@@ -3379,13 +3379,17 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     upstreamToken:url=>[...codexAppServers.values()].find(item=>item.targetUrl===url)?.wsToken||null,
     transformClientMessage:message=>transformCodexClientMessage(message),
     handleServerRequest:async message=>resolveCodexServerRequest(message),
-    // A file change's card names the files it touches (trebellFileChanges), which Codex's request leaves out, each from the thread's
-    // workspace when it is inside it: the first 200, and how many more there are (trebellFileChangesMore).
+    // A card whose "Allow session" allows its kind for the rest of the thread's session says which (trebellSessionScope, command or
+    // fileChange; codex-session-approvals.mjs). A file change's card names the files it touches (trebellFileChanges), which Codex's
+    // request leaves out, each from the thread's workspace when it is inside it: the first 200, and how many more there are
+    // (trebellFileChangesMore).
     transformServerRequest:message=>{
-      if(message?.method!=="item/fileChange/requestApproval"&&message?.method!=="applyPatchApproval")return message;
-      const files=codexApprovalFiles(message);if(!files.length)return message;
+      const scope=message?.params&&typeof message.params==="object"?codexApprovalAllowances.get(message.params)?.kind||null:null;
+      const asked=scope?{...message,params:{...message.params,trebellSessionScope:scope}}:message;
+      if(message?.method!=="item/fileChange/requestApproval"&&message?.method!=="applyPatchApproval")return asked;
+      const files=codexApprovalFiles(message);if(!files.length)return asked;
       const workspace=state.threadMeta(approvalThreadId(message.params))?.cwd||null,shown=path=>path&&workspaceFilePath(workspace,path);
-      return {...message,params:{...message.params,trebellFileChanges:files.slice(0,200).map(file=>({...file,path:shown(file.path),movePath:shown(file.movePath)})),...(files.length>200?{trebellFileChangesMore:files.length-200}:{})}};
+      return {...asked,params:{...asked.params,trebellFileChanges:files.slice(0,200).map(file=>({...file,path:shown(file.path),movePath:shown(file.movePath)})),...(files.length>200?{trebellFileChangesMore:files.length-200}:{})}};
     },
     // The person's "Allow session" allows the request's kind in its thread and mode from here (codex-session-approvals.mjs).
     onServerRequestAnswered:(message,{method,params})=>{
