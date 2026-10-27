@@ -642,9 +642,14 @@ export class AgentRuntimeManager{
     const plan=await this.installPlan(target.runtime,{environmentId,instanceId}),def=RUNTIMES[target.runtime];
     const result={runtime:target.runtime,packageName:plan.packageName,method:plan.method,targetVersion:plan.targetVersion,...(plan.compatibility?{compatibility:plan.compatibility}:{})};
     if(plan.installedVersion&&plan.targetVersion&&releaseOrder(target.runtime,plan.installedVersion,plan.targetVersion)>=0)return {ok:true,...result,status:await this.probe(plan.instance,{environmentId,fresh:true}),output:`${def.name} ${plan.installedVersion} is already the newest ${target.runtime==="opencode"?`OpenCode ${parsedSemver(plan.installedVersion).major}.x`:def.name} release.`};
-    // An updater can download a few hundred MB (Claude Code's native binary): T3 gives one 5 minutes.
-    const ran=await this.#runCommand(plan.command,plan.args,{timeoutMs:300_000,environmentId,env:plan.env||null});
-    if(!ran.ok)throw new Error((ran.stderr||ran.stdout||(`Could not ${plan.installedVersion?"update":"install"} ${def.name}`)).trim().slice(-2000));
+    // An updater can download a few hundred MB (Claude Code's native binary): T3 gives one 5 minutes. Meta's launcher downloads the
+    // whole muse-bin before it answers, bounding each request of its own, so it gets half an hour.
+    const minutes=target.runtime==="muse"?30:5,ran=await this.#runCommand(plan.command,plan.args,{timeoutMs:minutes*60_000,environmentId,env:plan.env||null});
+    if(!ran.ok){
+      // An updater stopped when its time ran out is said as such (Meta's launcher then leaves its staging file in its folder).
+      if(ran.error==="probe timed out"||ran.error==="command timed out")throw new Error(`The ${plan.installedVersion?"update":"install"} did not finish within ${minutes} minutes, so Trebell Code stopped it.${target.runtime==="muse"&&plan.binary?` Meta's launcher may have left a partial download (a .muse-update file) in ${dirname(plan.binary)}, which can be deleted.`:""}`);
+      throw new Error((ran.stderr||ran.stdout||ran.error||(`Could not ${plan.installedVersion?"update":"install"} ${def.name}`)).trim().slice(-2000));
+    }
     // The binary this profile runs must start and report what was installed, a pinned version or, after the harness's own updater,
     // another version than before (T3 25f8fcb18): an update that left it where it was is said, not shown as ready.
     const status=await this.probe(plan.instance,{environmentId,fresh:true}),running=target.runtime==="muse"?parseMuseVersion(status.version):parsedSemver(status.version)?.raw||null;

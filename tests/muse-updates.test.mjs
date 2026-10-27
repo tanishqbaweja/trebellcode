@@ -117,6 +117,20 @@ test("a channel that cannot be read leaves no newer release known and installs n
   assert.deepEqual([fx.fetched,fx.updateRuns()],[[],[]]);
 });
 
+// Meta's launcher downloads the whole muse-bin (about 419 MB) before it answers, bounding each of its own requests: its update gets
+// half an hour, not the 5 minutes of the other updaters. Stopped then, the launcher never removes its staging file, so the failure
+// says the update ran out of time and where a partial download may be left, instead of only that Muse Code could not be updated.
+test("Muse Code's update has half an hour, and one that runs out of time says so and where it may have left a partial download",WINDOWS_ONLY,async t=>{
+  const fx=await museMachine(t),limits=[],run=fx.manager.runFn;
+  fx.manager.runFn=async(command,args,options)=>{
+    if(options?.env?.MUSE_SYNC_UPDATE!=="1")return run(command,args,options);
+    limits.push(options.timeoutMs);
+    return {ok:false,code:null,signal:null,error:"probe timed out",stdout:"",stderr:"\r  12% Complete (50.3 MB of 419.0 MB)   "};
+  };
+  await assert.rejects(()=>fx.manager.install("muse"),{message:`The update did not finish within 30 minutes, so Trebell Code stopped it. Meta's launcher may have left a partial download (a .muse-update file) in ${dirname(realpathSync.native(fx.launcher))}, which can be deleted.`});
+  assert.deepEqual(limits,[1_800_000]);
+});
+
 test("Trebell does not install a Muse Code that is not there, nor update one in a WSL or SSH environment",WINDOWS_ONLY,async t=>{
   const fx=await museMachine(t);
   fx.settings.agentRuntimeInstances[0].binaryPath=join(fx.root,"nowhere","muse.cmd");
