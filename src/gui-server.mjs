@@ -37,7 +37,7 @@ import { agentPermissionModeFromStart, attachAgentRelay } from "./agent-relay.mj
 import { NATIVE_REPLY_STREAM } from "./native-agent-session.mjs";
 import { nativeStreamOptions } from "./native-reply-streaming.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
-import { codexAppServerToken } from "./codex-app-server-auth.mjs";
+import { codexAppServerToken, codexUpstreamToken } from "./codex-app-server-auth.mjs";
 import { extendConnectAttemptTimeout } from "./connect-attempt-timeout.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
@@ -3377,9 +3377,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     // A thread's app-server that is released leaves the pool before it is stopped, and one started in its place has another URL; one
     // that died is still there.
     targetLive:({key,url})=>codexAppServers.get(key)?.targetUrl===url,
-    // The token of the app-server Trebell started at that address (startAppServer); one it did not start, a remote host's or a mock
-    // server's stand-in, has none.
-    upstreamToken:url=>[...codexAppServers.values()].find(item=>item.targetUrl===url)?.wsToken||null,
+    // The token of the app-server Trebell started for the connection's route (startAppServer; codexUpstreamToken): its pool entry, or
+    // the catalog app-server for the base route. One it did not start, a remote host's or a mock server's stand-in, has none.
+    upstreamToken:(url,route)=>codexUpstreamToken(codexAppServers,{key:route?.key,url},appServer),
     transformClientMessage:message=>transformCodexClientMessage(message),
     handleServerRequest:async message=>resolveCodexServerRequest(message),
     // A card whose "Allow session" allows its kind for the rest of the thread's session says which (trebellSessionScope, command or

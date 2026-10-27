@@ -15,3 +15,14 @@ export async function codexAppServerToken({env=process.env,quote=false}={}){
   await writeFile(path,token,{encoding:"utf8",mode:0o600});
   return {token,path,args:["--ws-auth","capability-token","--ws-token-file",quote&&/[\s&()^|<>]/.test(path)?`"${path}"`:path],release:()=>rm(path,{force:true}).catch(()=>{})};
 }
+
+// The token the relay sends to the app-server a connection's route goes to ({key, url}): the pool entry the route names (servers, by
+// pool key: a thread's or the catalog's app-server) while it is at the route's address, else the catalog app-server the base route
+// points at (base). An app-server that died stays in the pool until its thread is used again, and the OS can give its port to a newer
+// one: found by its address alone, it lent that newer one its own token, which was refused with 401.
+export function codexUpstreamToken(servers,route,base=null){
+  const url=route?.url||null;if(!url)return null;
+  const pooled=route.key!=null?servers?.get?.(route.key):null;
+  if(pooled?.targetUrl===url)return pooled.wsToken||null;
+  return base?.targetUrl===url?base.wsToken||null:null;
+}
