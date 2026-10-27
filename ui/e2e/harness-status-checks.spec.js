@@ -14,6 +14,7 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 //   Cursor's exits with an error;
 // - Grok prints its logged-out line once, as it does for an access token it then refreshes;
 // - Codex is not there.
+// A check that did not answer, and a gateway, say nothing of a sign-in, so those rows show what was found and offer no Sign in.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/harness-status-checks/",import.meta.url));mkdirSync(shots,{recursive:true});
 const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
 const answered=stdout=>({ok:true,code:0,error:null,stdout,stderr:""});
@@ -40,7 +41,7 @@ async function switchMode(page,mode){
   await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
 }
 
-test("Settings shows a slow, hung or failing harness CLI as installed, and Grok signed in after its token refresh",async({page,request})=>{
+test("Settings shows a slow, hung or failing harness CLI as installed with what its check did and no Sign in, a gateway profile as one, and Grok signed in after its token refresh",async({page,request})=>{
   test.setTimeout(90_000);
   await page.setViewportSize({width:1280,height:800});
   const home=mkdtempSync(join(tmpdir(),"trebell-e2e-status-checks-"));
@@ -57,17 +58,25 @@ test("Settings shows a slow, hung or failing harness CLI as installed, and Grok 
     const row=name=>page.locator(".agent-runtime-option").filter({has:page.locator("strong",{hasText:new RegExp("^"+name+"$")})});
     const said=name=>row(name).locator("button").first().locator("small");
     const action=name=>row(name).locator("button").first().locator("em");
-    // Claude Code: its version once it answered, and a switch to it is offered; it is installed, so Update, not Install.
-    await expect(said("Claude Code")).toHaveText("2.1.310 (Claude Code)");
+    const signIn=name=>row(name).getByRole("button",{name:"Sign in",exact:true});
+    // Claude Code answered once it had time, and runs through a gateway: the row says so and offers a switch, and no Sign in, as
+    // `claude auth login` has nothing to do with the gateway's credentials. It is installed, so Update, not Install.
+    await expect(said("Claude Code")).toHaveText("Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts.");
     await expect(action("Claude Code")).toHaveText("Switch");
     await expect(row("Claude Code").getByRole("button",{name:"Update",exact:true})).toBeVisible();
     await expect(row("Claude Code").getByRole("button",{name:"Install",exact:true})).toHaveCount(0);
-    // OpenCode and Cursor: installed, with what their check did, never "not installed"; OpenCode waits for its version.
+    await expect(signIn("Claude Code")).toHaveCount(0);
+    // Cursor's check exited with an error: what it said, and a switch, with neither Needs setup nor Sign in, as nothing is known of
+    // its sign-in.
+    await expect(said("Cursor")).toHaveText("Cursor is installed but `cursor-agent --version` exited with code 1: Error: Cannot find module 'index.js'");
+    await expect(action("Cursor")).toHaveText("Switch");
+    await expect(signIn("Cursor")).toHaveCount(0);
+    // OpenCode's never answered: installed, never "not installed", but not ready until its version picks its client; Update, no
+    // Sign in.
     await expect(said("OpenCode")).toHaveText("OpenCode is installed but did not answer `opencode --version` within 10 seconds. Trebell Code needs its version (1.x or 2.x) to start it.");
     await expect(action("OpenCode")).toHaveText("Not ready");
     await expect(row("OpenCode").getByRole("button",{name:"Update",exact:true})).toBeVisible();
-    await expect(said("Cursor")).toHaveText("Cursor is installed but `cursor-agent --version` exited with code 1: Error: Cannot find module 'index.js'");
-    await expect(action("Cursor")).not.toHaveText(/Not installed|Not ready/);
+    await expect(signIn("OpenCode")).toHaveCount(0);
     // Grok: its second `grok models` read the refreshed sign-in.
     await expect(said("Grok Build")).toHaveText("grok 1.0.41 (4220f3b224a6)");
     await expect(action("Grok Build")).toHaveText("Switch");
