@@ -16,14 +16,14 @@ const CATALOG=museModelCatalog(JSON.parse(readFileSync(new URL("./fixtures/muse/
 const PROMPT="Write one Git commit subject for the current change.\n\nDiff:\n+login form";
 const ACCEPTED=params=>({commandId:params.commandId,status:"accepted",turnId:params.commandId,startedNewTurn:true,disposition:"started"});
 
-function museManager({catalog=CATALOG}={}){
+function museManager({catalog=CATALOG,recheck={available:true}}={}){
   const calls={probes:0,rechecks:0};
   return {
     calls,
     definitions:()=>[{id:"muse",name:"Muse Code",protocol:"msp"}],
     activeInstance:()=>({id:"muse-default",kind:"muse"}),
     probe:async()=>{calls.probes++;return {available:true}},
-    recheck:async()=>{calls.rechecks++;return {available:true}},
+    recheck:async()=>{calls.rechecks++;return recheck},
     executable:()=>"muse",
     childEnv:()=>({PATH:process.env.PATH||"",META_API_KEY:"a-key-the-profile-did-not-approve"}),
     processSpawner:()=>null,remoteIo:()=>null,runtimeCwd:cwd=>cwd,
@@ -31,9 +31,9 @@ function museManager({catalog=CATALOG}={}){
   };
 }
 // One Git text request on a fake host. turn(params, fake) answers turn/start (undefined: no answer) and plays the turn's events.
-async function museText({turn=null,models=["muse-wonder-1.0"],catalog=CATALOG,signal=null,timeoutMs=undefined}={}){
+async function museText({turn=null,models=["muse-wonder-1.0"],catalog=CATALOG,recheck=undefined,signal=null,timeoutMs=undefined}={}){
   const child=fakeChild(),muse=new FakeMuse(child,{handlers:turn?{"turn/start":(params,fake)=>turn(params,fake)}:{}}),hosts=[],spawned=[];
-  const manager=museManager({catalog});
+  const manager=museManager({catalog,...(recheck?{recheck}:{})});
   const deps={museHost:options=>{hosts.push(options);return new MuseHost({...options,stopTree:fakeStop,spawnFn:(command,args,spawnOptions)=>{spawned.push({command,args,options:spawnOptions});return child}})}};
   const result=generateTextWithHarness({runtimeManager:manager,prompt:PROMPT,cwd:process.cwd(),models,version:"1.6.0",deps,signal,...(timeoutMs?{timeoutMs}:{})});
   result.catch(()=>{});
@@ -174,6 +174,10 @@ test("Muse Code's Git text says Muse Code is signed out for a turn it could not 
   const signedOut=await museText({turn:(params,fake)=>{turnEvents(fake,params,completed(params,"failed",{error:{kind:"authRequired",message:"not logged in: run /login to add an API key"}}));return ACCEPTED(params)}});
   await assert.rejects(signedOut.result,{message:"Muse Code could not write the Git text: Muse Code is signed out. Sign in with muse login, then try again."});
   assert.equal(signedOut.manager.calls.rechecks,1,"a failed request checks Muse Code again, as a failed turn does");
+  // The check finds Muse Code signed out too (no models listed): the message still says once how to sign in.
+  const unlisted=await museText({recheck:{available:false,message:"Muse Code listed no models. Sign in with muse login, then press Refresh."},turn:(params,fake)=>{turnEvents(fake,params,completed(params,"failed",{error:{kind:"authRequired",message:"not logged in: run /login to add an API key"}}));return ACCEPTED(params)}});
+  await assert.rejects(unlisted.result,{message:"Muse Code could not write the Git text: Muse Code is signed out. Sign in with muse login, then try again."});
+  assert.equal(unlisted.manager.calls.rechecks,1);
   const refused=await museText({turn:(params,fake)=>{turnEvents(fake,params,completed(params,"failed",{error:{kind:"modelError",message:"model muse-wonder-1.0 is not available on this plan"}}));return ACCEPTED(params)}});
   await assert.rejects(refused.result,/Muse Code could not write the Git text: model muse-wonder-1\.0 is not available on this plan/);
 });

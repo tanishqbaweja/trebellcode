@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as muse from "../src/muse-agent-session.mjs";
 import { itemFrame, settle, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
@@ -233,4 +235,25 @@ test("through the relay, Muse retrying the turn's request is the turn's retry ro
     assert.equal(failed.status,"failed");
     assert.match(failed.error.message,new RegExp("^Muse Code usage limit reached\\. Send the message again after it resets at "+local("2031-05-04T10:45:52Z").replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\."));
   }finally{await relay.close()}
+});
+
+test("through the relay, a turn Muse could not run signed out says once how to sign in, though the check after it finds that Muse Code now lists no models",{timeout:120_000},async()=>{
+  const lists=await mkdtemp(join(tmpdir(),"trebell-muse-models-")),models=join(lists,"model-list.json");
+  await copyFile(fileURLToPath(new URL("./fixtures/muse/model-list-1.4.13.json",import.meta.url)),models);
+  const relay=await museRelay("trebell-muse-signed-out-",{environment:{MUSE_FAKE_MODELS:models}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello Muse"}]});
+    await relay.completed(thread.id,1);
+    // Signed out since: Muse lists no models any more, and its next turn cannot run.
+    await rm(models);
+    const {turn}=await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Now I am signed out"}]});
+    await relay.completed(thread.id,2);
+    const failed=relay.threadStore.get(thread.id).turns.at(-1);
+    assert.equal(failed.status,"failed");
+    assert.equal(failed.error.message,muse.MUSE_SIGNED_OUT_MESSAGE,"one sign-in instruction");
+    assert.equal(relay.notifications.filter(item=>item.method==="error"&&item.params.turnId===turn.id).at(-1)?.params.message,muse.MUSE_SIGNED_OUT_MESSAGE);
+    const status=await relay.manager.probe("muse");
+    assert.deepEqual([status.available,status.message],[false,"Muse Code listed no models. Sign in with muse login, then press Refresh."],"the check after the failure still ran, so the next poll shows it");
+  }finally{await relay.close();await rm(lists,{recursive:true,force:true})}
 });

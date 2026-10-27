@@ -985,12 +985,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // once the close has begun, so the harness already knows its turn is ending when their answers reach it.
   function closeSession(session,threadId){const closed=session.close();cancelThreadRequests(threadId);return closed}
   // The message a harness failure shows: the harness's own, and after it the advice of an answer that the harness cannot run or is
-  // not signed in (withProbeAdvice); a check that still finds it ready leaves the message as it was.
+  // not signed in (withProbeAdvice); a check that still finds it ready leaves the message as it was, and so does a failure that says
+  // itself the harness is signed out and how to sign in (signedOut, Muse Code's), whose check still runs for the next poll.
   async function harnessFailureMessage(harness,error){
     let wake,status=null;const reset=new Promise(resolve=>{wake=resolve});resetWaits.add(wake);
     try{status=await Promise.race([runtimeManager.recheck(harness.instance,{environmentId:harness.environmentId}),reset])}catch{}
     finally{resetWaits.delete(wake)}
-    return withProbeAdvice(error?.message,status);
+    return error?.signedOut===true?error.message:withProbeAdvice(error?.message,status);
   }
   // The same failure with another message: its code and the rest of what it carries go with it.
   function withMessage(error,message){

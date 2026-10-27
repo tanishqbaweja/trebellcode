@@ -1006,7 +1006,8 @@ export class MuseAgentSession{
       const resetAt=museUsageLimitResetAt(this.subscriptionUsage,Date.now(),{quota:error.quota,message:detail});
       return turn.fail(Object.assign(new Error(museUsageLimitMessage(resetAt)),{code,usageLimit:true,resetAt,detail,raw}));
     }
-    if(code==="authRequired")return turn.fail(Object.assign(new Error(MUSE_SIGNED_OUT_MESSAGE),{code,detail,raw}));
+    // signedOut: the message says how to sign in, so the relay's check after it adds no second sign-in advice.
+    if(code==="authRequired")return turn.fail(Object.assign(new Error(MUSE_SIGNED_OUT_MESSAGE),{code,detail,raw,signedOut:true}));
     turn.fail(Object.assign(new Error(detail||"Muse Code could not finish the turn."),{code,raw}));
   }
 }

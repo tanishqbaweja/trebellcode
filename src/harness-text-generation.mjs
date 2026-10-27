@@ -399,7 +399,8 @@ async function museText(ctx){
       const answer=[...replies.values()].findLast(reply=>!reply.retracted);
       return answer?.truncated?fail("Muse Code cut its reply short, so Trebell did not use it. Try again."):settle.resolve(String(answer?.text??""));
     }
-    if(error.kind==="authRequired")return fail("Muse Code is signed out. Sign in with muse login, then try again.");
+    // It says how to sign in, so the check after a failed request adds no second sign-in advice (signedOut).
+    if(error.kind==="authRequired")return settle.reject(Object.assign(new Error("Muse Code is signed out. Sign in with muse login, then try again."),{signedOut:true}));
     fail(said(error.message)||said(params.reason)||(terminal==="cancelled"?"Muse Code cancelled the Git text request.":`Muse Code ended the turn ${terminal||"without an answer"}.`));
   });
   connection.onServerRequest(async request=>{
@@ -459,9 +460,10 @@ export async function generateTextWithHarness({runtimeManager,instance=null,prom
     if(EXPECTED_CODES.has(error?.code))throw error;
     // A harness that failed is asked again once, as the relay asks after a failed session (AgentRuntimeManager.recheck): the probe
     // answer it started on is kept for a minute and may be one it no longer gives (a sign-out outside Trebell). The next poll reads
-    // what the check finds, and an answer that the harness cannot run or is not signed in adds its advice after the harness's words.
+    // what the check finds, and an answer that the harness cannot run or is not signed in adds its advice after the harness's words,
+    // unless those words already say it is signed out and how to sign in (signedOut, Muse Code's).
     const status=kind!=="codex"&&typeof runtimeManager?.recheck==="function"?await runtimeManager.recheck(target,{environmentId}).catch(()=>null):null;
-    const detail=withProbeAdvice(String(error?.message||error||"unknown error").trim().slice(0,1500),status);
+    const said=String(error?.message||error||"unknown error").trim().slice(0,1500),detail=error?.signedOut===true?said:withProbeAdvice(said,status);
     throw Object.assign(new Error(`${name} could not write the Git text: ${detail}`),{code:"HARNESS_TEXT_FAILED",cause:error});
   }finally{
     closed=true;clearTimeout(timer);signal?.removeEventListener?.("abort",onAbort);

@@ -28,6 +28,7 @@
 //                       replies ANSWERED with it, or NO ANSWER for a cancel
 //   "retry"             schedules a retry of its model request (turn/retryScheduled), then replies
 //   "quota"             fails as Meta's quota refusal relayed by Muse does (a 429 naming the quota and its reset)
+//   "signed out"        fails as a turn Muse could not run without a sign-in does (authRequired)
 //   "exit when idle"    replies, completes, and then the host exits with code 1, as a Muse that crashed between turns
 // And as T3's recorded subagent_v2 and muse_workflow sessions run them, with the token usage and context those reported:
 //   "spawn subagent"    keeps a todo list and runs a subagent (role "hello agent"), whose child session replies on its own turn, and
@@ -76,6 +77,7 @@ function startTurn(sessionId,params){
   if(/child approval/i.test(words))return askApproval(sessionId,turnId,false,{child:true});
   if(/ask question/i.test(words))return askQuestion(sessionId,turnId);
   if(/quota/i.test(words))return setTimeout(()=>{running.delete(turnId);notify("turn/completed",sessionId,{turnId,terminal:"failed",reason:QUOTA_REFUSAL,error:{kind:"modelError",message:QUOTA_REFUSAL,retryable:true}})},20);
+  if(/signed out/i.test(words))return setTimeout(()=>{running.delete(turnId);notify("turn/completed",sessionId,{turnId,terminal:"failed",reason:"not logged in",error:{kind:"authRequired",message:"not logged in: run /login to add an API key",retryable:false}})},20);
   if(/retry/i.test(words)){
     notify("turn/retryScheduled",sessionId,{turnId,attempt:1,nextAttempt:2,maxAttempts:3,reason:"429 Too Many Requests",retryDelayMs:2000,errorKind:"rateLimited",httpStatus:429,system:"meta",sourceRange:{}});
     return setTimeout(()=>{reply(sessionId,turn,"Muse fixture reply after a retry.");complete(sessionId,turnId)},Number(process.env.MUSE_FAKE_RETRY_MS||400));
