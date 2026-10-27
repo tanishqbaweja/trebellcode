@@ -321,6 +321,47 @@ test("an OpenCode profile with a server of its own is offered Update only for a 
   assert.deepEqual([current.current,current.latest,current.newer,current.message],["1.18.30","1.18.30",false,null]);
 });
 
+// The placeholder claude.exe an install whose script never ran leaves (F1) does not start, so its version cannot be read: when npm's
+// prefix proves who installed it, Update reinstalls it there with its install script allowed, and the binary must then start. Its
+// package needs no version, as Codex's and Grok Build's do not; a check that only ran out of time says nothing of it.
+test("a Claude Code, Codex or Grok Build in npm's prefix that does not start is offered Update, which reinstalls it there and checks it then starts",WINDOWS_ONLY,async t=>{
+  const root=await tempRoot(t,"npm-repair"),prefix=join(root,"AppData","Roaming","npm");
+  const claude=await file(join(prefix,"node_modules","@anthropic-ai","claude-code","bin","claude.exe"));
+  await file(join(prefix,"claude.cmd"),npmShim("node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"));
+  // npm's Codex keeps its binary in its platform package inside its own.
+  const [platformPackage,triple]=process.arch==="arm64"?["codex-win32-arm64","aarch64-pc-windows-msvc"]:["codex-win32-x64","x86_64-pc-windows-msvc"];
+  const codex=await file(join(prefix,"node_modules","@openai","codex","node_modules","@openai",platformPackage,"vendor",triple,"codex","codex.exe"));
+  await file(join(prefix,"codex.cmd"),"@ECHO off\r\nnode \"%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js\" %*\r\n");
+  let claudeVersion=null,timesOut=false;
+  const fx=machine(root,{answer:(command,args)=>{
+    if(command==="npm"){
+      if(args[0]==="view")return answered(JSON.stringify(args[1]==="@openai/codex"?"0.164.0":"2.1.320")+"\n");
+      if(args[0]==="install"&&args.at(-1)==="@anthropic-ai/claude-code@2.1.320")claudeVersion="2.1.320";
+      return answered(args[0]==="--version"?"11.0.0\n":"added 1 package in 9s\n");
+    }
+    if(command===claude){
+      if(timesOut)return TIMED_OUT;
+      if(args[0]==="--version")return claudeVersion?answered(claudeVersion+" (Claude Code)\n"):exited(1,"Error: claude native binary not installed.\n");
+      return answered(JSON.stringify({loggedIn:true}));
+    }
+    // A placeholder Windows cannot start.
+    if(command===codex)return {ok:false,code:null,error:"spawn UNKNOWN",stdout:"",stderr:""};
+    return missing(command);
+  }});
+  const realPrefix=realpathSync.native(prefix),listed=await fx.manager.snapshot({refresh:true});
+  const reinstall=(name,version)=>shownCommand("npm",["install","-g","--prefix",realPrefix,`--allow-scripts=${name}`,`${name}@${version}`],"win32");
+  assert.deepEqual(statusOf(listed,"claude").update,{current:null,latest:"2.1.320",newer:true,canUpdate:true,command:reinstall("@anthropic-ai/claude-code","2.1.320"),binary:realpathSync.native(claude),message:null});
+  assert.deepEqual(statusOf(listed,"codex").update,{current:null,latest:"0.164.0",newer:true,canUpdate:true,command:reinstall("@openai/codex","0.164.0"),binary:realpathSync.native(codex),message:null});
+  const installed=await fx.manager.install("claude");
+  assert.deepEqual([installed.method,installed.targetVersion,installed.status.version],["npm","2.1.320","2.1.320 (Claude Code)"]);
+  assert.deepEqual(npmCalls(fx.calls).filter(line=>line.startsWith("install")),[`install -g --prefix ${realPrefix} --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.320`]);
+  // A reinstall after which the binary still does not start says so.
+  await assert.rejects(()=>fx.manager.install("codex"),{message:`Codex 0.164.0 was installed, but the Codex this profile runs (${codex}) did not start: spawn UNKNOWN.`});
+  // One whose check only ran out of time is not reinstalled.
+  timesOut=true;
+  await assert.rejects(()=>fx.manager.installPlan("claude"),{message:"Trebell Code could not read the version of the Claude Code it would update: `claude --version` did not answer within 20 seconds. Nothing was installed."});
+});
+
 test("an update whose version check times out or fails installs nothing, for every harness",WINDOWS_ONLY,async t=>{
   const root=await tempRoot(t,"unread"),claude=await file(join(root,"home",".local","bin","claude.exe")),grok=await file(join(root,"home",".grok","bin","grok.exe"));
   const fx=machine(root,{answer:command=>command===claude?TIMED_OUT:command===grok?exited(2,"error: config file is not valid TOML\n"):missing(command)});

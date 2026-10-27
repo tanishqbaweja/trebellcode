@@ -77,6 +77,9 @@ const INSTALLABLE_PACKAGES=Object.freeze({
 });
 // The harnesses Trebell updates through whatever installed the binary a profile runs, or says how to (T3's provider maintenance).
 const UPDATABLE=new Set(["codex","claude","opencode","grok"]);
+// Those whose npm package needs no version, so one in npm's prefix that does not start (a placeholder its skipped install script
+// never replaced) can be installed there again: OpenCode's line names its package.
+const REINSTALLABLE=new Set(["codex","claude","grok"]);
 // The npm package of the release line a harness's version is in: OpenCode 2.x is @opencode/cli, and Grok Build @xai-official/grok,
 // whose latest is what `grok update` installs (T3 Grok driver).
 const npmPackageFor=(kind,version)=>kind==="opencode"&&parsedSemver(version)?.major===2?"@opencode/cli":kind==="grok"?"@xai-official/grok":INSTALLABLE_PACKAGES[kind]||null;
@@ -678,6 +681,14 @@ export class AgentRuntimeManager{
     // A check that did not answer for any reason but a command that is not there says nothing of which install is there: planned as
     // if none were, the update would put a separate copy beside it (an OpenCode 1.x beside a 2.x), which the next start prefers.
     const failure=checked.ok?null:versionCheckFailure(checked),said=(checked.stdout||checked.stderr||"").trim().split(/\r?\n/)[0]||"",installed=checked.ok?(runtime==="muse"?parseMuseVersion(said):parsedSemver(said)?.raw||null):null;
+    // One that could not start or ran and failed in the npm prefix that holds it (F1's placeholder) is installed there again, to the
+    // release npm names and its install script allowed; a check that only ran out of time says nothing of it.
+    const broken=!remote&&REINSTALLABLE.has(runtime)&&(failure==="spawn"||failure==="exit")?this.#installOwner(instance,null):null;
+    if(broken?.method==="npm"&&broken.prefix){
+      const packageName=npmPackageFor(runtime,null);await this.#npmReady(environmentId);
+      const targetVersion=await this.#npmRelease(packageName,{environmentId}),args=npmInstallArgs(packageName,targetVersion,broken.prefix);
+      return {instance,method:"npm",binary:broken.real,installedVersion:null,targetVersion,packageName,pinned:Boolean(targetVersion),command:"npm",args,shown:shownCommand("npm",args,this.platform)};
+    }
     if((failure&&failure!=="missing")||(checked.ok&&!installed)){
       const reason=failure==="spawn"?runtimeProbeFailure(def,checked):failure==="timeout"?`\`${def.command} --version\` did not answer within ${versionCheckTimeoutMs(runtime)/1000} seconds.`:failure?`\`${def.command} --version\` ${versionCheckEnded(checked)}`:`\`${def.command} --version\` printed no version: ${said.slice(0,200)}`;
       throw new Error(`Trebell Code could not read the version of the ${def.name} it would update: ${/[.!?…]$/.test(reason)?reason:reason+"."} Nothing was installed.`);
@@ -805,8 +816,9 @@ export class AgentRuntimeManager{
         if(!parseMuseVersion(said))return;
         const channel=museChannel(this.childEnv(instance));return void this.#latestRelease(museChannelUrl(channel),{...started,read:()=>latestMuseRelease(this.fetchImpl,channel)});
       }
-      const version=UPDATABLE.has(instance.kind)?parsedSemver(said)?.raw:null,release=version?this.#releaseRead(instance,version):null;
-      if(release)void this.#latestRelease(release.key,{...started,read:release.read});
+      // One whose last check could not start it or failed may be reinstalled (#updateAdvisory), which needs the release too.
+      const version=UPDATABLE.has(instance.kind)?parsedSemver(said)?.raw:null,broken=REINSTALLABLE.has(instance.kind)&&["spawn","exit"].includes(this.#versionFailures.get(instance.id));
+      const release=version||broken?this.#releaseRead(instance,version):null;if(release)void this.#latestRelease(release.key,{...started,read:release.read});
     }catch{}
   }
   // What Settings says of a newer release of the harness a profile runs (T3's version advisory): {current, latest (null when it could
@@ -823,10 +835,13 @@ export class AgentRuntimeManager{
     if(remote&&instance.kind==="grok")return null;
     const packageName=npmPackageFor(instance.kind,current),line=parsedSemver(current)?.major;
     const owner=remote?{method:"npm",prefix:null,binary:null,real:null}:this.#installOwner(instance,current);
-    const release=current?this.#releaseRead(instance,current,owner):null,found=release?await this.#latestRelease(release.key,{wait:waitMs!=null,waitMs,read:release.read}):null;
+    // One in npm's prefix that could not start or ran and failed has its reinstall there (installPlan) as its update.
+    const broken=!current&&!remote&&REINSTALLABLE.has(instance.kind)&&["spawn","exit"].includes(this.#versionFailures.get(instance.id))&&owner.method==="npm"&&Boolean(owner.prefix);
+    const release=current||broken?this.#releaseRead(instance,current,owner):null,found=release?await this.#latestRelease(release.key,{wait:waitMs!=null,waitMs,read:release.read}):null;
     // An OpenCode's newest release counts within its own line.
-    const latest=found&&(instance.kind!=="opencode"||parsedSemver(found)?.major===line)?found:null,newer=Boolean(latest&&compareSemver(parsedSemver(current),parsedSemver(latest))<0);
+    const latest=found&&(instance.kind!=="opencode"||parsedSemver(found)?.major===line)?found:null,newer=Boolean(latest&&current&&compareSemver(parsedSemver(current),parsedSemver(latest))<0);
     const advisory={current,latest,newer,canUpdate:false,command:null,binary:owner.real,message:null};
+    if(broken&&latest)return {...advisory,newer:true,canUpdate:true,command:shownCommand("npm",npmInstallArgs(packageName,latest,owner.prefix),this.platform)};
     if(!current)return advisory;
     if(remote&&instance.kind==="opencode"&&line===2)return {...advisory,message:newer?`OpenCode ${latest} is available. Update this 2.x install with \`opencode upgrade\` or the package manager that installed it.`:null};
     if(owner.method==="manual")return {...advisory,command:owner.command,message:newer?manualUpdateText({name:def.name,latest,binary:owner.real||def.command,by:owner.by,command:owner.command}):null};
@@ -942,6 +957,9 @@ export class AgentRuntimeManager{
     return pending;
   }
   #versions=new Map();
+  // How each profile's last --version that ran ended (versionCheckFailure, null when it answered), which the update reading of one
+  // whose version could not be read goes by.
+  #versionFailures=new Map();
   // A local binary's --version answer, kept until the file changes (its path, modification time and size). A launcher script can
   // start a newer build without changing itself (Cursor's starts the newest folder in versions beside it), so its folder and that
   // folder are part of the key. Remote profiles and failed checks are not kept.
@@ -960,6 +978,7 @@ export class AgentRuntimeManager{
     if(!fresh&&cached?.signature===signature)return cached.result;
     const result=await this.#run(instance,["--version"],{timeoutMs:versionCheckTimeoutMs(instance.kind),environmentId});
     if(signature&&result.ok)this.#versions.set(instance.id,{signature,result});
+    this.#versionFailures.set(instance.id,result.ok?null:versionCheckFailure(result));
     return result;
   }
   async #probeNow(instance,{environmentId=undefined,fresh=false}={}){
