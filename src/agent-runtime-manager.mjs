@@ -1328,11 +1328,17 @@ export class AgentRuntimeManager{
   async snapshot({fresh=true,refresh=false}={}){
     if(refresh)this.#museCatalogDue();
     // Each status of a harness Trebell updates says whether a newer release is out and how it is updated (update). Settings' own
-    // listing reads each newest release whose last answer is gone, beside the status checks where it can, and waits for one only
-    // RELEASE_WAIT_MS after its read began: one that answers later is the next listing's. The other listings use the last answers.
+    // listing reads each newest release whose last answer is gone, beside the status checks where it can, else as soon as its check
+    // ends, and waits for one once every check has ended, only RELEASE_WAIT_MS after its read began: one that answers while a slower
+    // check runs is in this listing, one that answers later the next listing's. The other listings use the last answers.
     const instances=this.instances(),waitMs=refresh?RELEASE_WAIT_MS:null;if(refresh)for(const instance of instances)this.#startReleaseRead(instance);
-    const statuses=await Promise.all(instances.map(async instance=>{
-      const status=await this.probe(instance,{fresh}),update=await this.#updateAdvisory(instance,status,{waitMs}).catch(()=>null);
+    const checked=await Promise.all(instances.map(async instance=>{
+      const status=await this.probe(instance,{fresh});
+      if(refresh)void this.#updateAdvisory(instance,status,{waitMs:0}).catch(()=>null);
+      return status;
+    }));
+    const statuses=await Promise.all(instances.map(async(instance,index)=>{
+      const status=checked[index],update=await this.#updateAdvisory(instance,status,{waitMs}).catch(()=>null);
       return update?{...status,update}:status;
     }));
     const publicInstances=instances.map(instance=>{

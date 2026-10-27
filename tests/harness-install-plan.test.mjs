@@ -312,6 +312,27 @@ test("a harness whose status check is slow still shows its newest release on Set
   assert.deepEqual([update.current,update.latest,update.newer],["2.1.300","2.1.320",true]);
 });
 
+// A read that answers while the listing still waits for a slower check (OpenCode's server, Muse Code's host, a cold start) is in
+// that listing: no read gives up while the list is held by a check anyway, and none holds it longer.
+test("a newest release that answers while another harness's status check still runs shows on that listing",WINDOWS_ONLY,async t=>{
+  const root=await tempRoot(t,"slower-check"),claude=await file(join(root,"home",".local","bin","claude.exe")),grok=await file(join(root,"home",".grok","bin","grok.exe"));
+  const later=(ms,value)=>new Promise(resolve=>setTimeout(()=>resolve(value),ms));
+  // The registry names Claude Code's newest release after 2.5 s, past the 1.5 s a listing waits for a read; Grok Build's check takes 4 s.
+  const fetchImpl=async url=>{
+    const name=decodeURIComponent(String(url).split("/").slice(3,-1).join("/")),claudeCode=name==="@anthropic-ai/claude-code";
+    return later(claudeCode?2500:0,new Response(JSON.stringify({version:claudeCode?"2.1.320":"1.0.41"}),{status:200,headers:{"content-type":"application/json"}}));
+  };
+  const fx=machine(root,{fetchImpl,answer:(command,args)=>{
+    if(command===claude)return answered(args[0]==="--version"?"2.1.300 (Claude Code)\n":JSON.stringify({loggedIn:true}));
+    if(command===grok)return args[0]==="--version"?later(4000,answered("grok 1.0.41 (4220f3b224a6)\n")):answered("You are logged in with grok.com.\n");
+    return missing(command);
+  }});
+  const started=Date.now(),listed=await fx.manager.snapshot({refresh:true}),took=Date.now()-started,update=statusOf(listed,"claude").update;
+  assert.deepEqual([update.current,update.latest,update.newer,update.canUpdate],["2.1.300","2.1.320",true,true],"Claude Code's release came while Grok Build's check ran");
+  assert.deepEqual([statusOf(listed,"grok").version,statusOf(listed,"grok").update.newer],["grok 1.0.41 (4220f3b224a6)",false]);
+  assert.ok(took<5500,`the list answered once Grok Build's check had, in ${took} ms`);
+});
+
 // An OpenCode profile on a server of its own still runs this machine's opencode, whose version its row shows and its Update installs:
 // Settings offers that Update only for a newer release of it, as for any other profile, never for every listing.
 test("an OpenCode profile with a server of its own is offered Update only for a newer release of the opencode it runs here",WINDOWS_ONLY,async t=>{
