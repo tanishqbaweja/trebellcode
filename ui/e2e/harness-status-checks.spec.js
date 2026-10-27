@@ -60,10 +60,11 @@ test("Settings shows a slow, hung or failing harness CLI as installed with what 
     const action=name=>row(name).locator("button").first().locator("em");
     const signIn=name=>row(name).getByRole("button",{name:"Sign in",exact:true});
     // Claude Code answered once it had time, and runs through a gateway: the row says so and offers a switch, and no Sign in, as
-    // `claude auth login` has nothing to do with the gateway's credentials. It is installed, so Update, not Install.
+    // `claude auth login` has nothing to do with the gateway's credentials. It is installed, so no Install; and no Update either, as
+    // this list knows of no newer release (it read no registry), and a binary in a folder of its own is not Trebell's to update.
     await expect(said("Claude Code")).toHaveText("Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts.");
     await expect(action("Claude Code")).toHaveText("Switch");
-    await expect(row("Claude Code").getByRole("button",{name:"Update",exact:true})).toBeVisible();
+    await expect(row("Claude Code").getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
     await expect(row("Claude Code").getByRole("button",{name:"Install",exact:true})).toHaveCount(0);
     await expect(signIn("Claude Code")).toHaveCount(0);
     // Cursor's check exited with an error: what it said, and a switch, with neither Needs setup nor Sign in, as nothing is known of
@@ -71,11 +72,11 @@ test("Settings shows a slow, hung or failing harness CLI as installed with what 
     await expect(said("Cursor")).toHaveText("Cursor is installed but `cursor-agent --version` exited with code 1: Error: Cannot find module 'index.js'");
     await expect(action("Cursor")).toHaveText("Switch");
     await expect(signIn("Cursor")).toHaveCount(0);
-    // OpenCode's never answered: installed, never "not installed", but not ready until its version picks its client; Update, no
-    // Sign in.
+    // OpenCode's never answered: installed, never "not installed", but not ready until its version picks its client; no Sign in, and
+    // no Update, as Trebell installs nothing over an OpenCode whose version it cannot read.
     await expect(said("OpenCode")).toHaveText("OpenCode is installed but did not answer `opencode --version` within 10 seconds. Trebell Code needs its version (1.x or 2.x) to start it.");
     await expect(action("OpenCode")).toHaveText("Not ready");
-    await expect(row("OpenCode").getByRole("button",{name:"Update",exact:true})).toBeVisible();
+    await expect(row("OpenCode").getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
     await expect(signIn("OpenCode")).toHaveCount(0);
     // Grok: its second `grok models` read the refreshed sign-in.
     await expect(said("Grok Build")).toHaveText("grok 1.0.41 (4220f3b224a6)");

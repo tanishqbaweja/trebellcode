@@ -449,18 +449,20 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       setAgentInfo(result);setInstanceDraft(null);showAgentMessage("Runtime profile removed.");
     }catch(error){showAgentMessage(error.message,true)}
   }
-  // verb: what the button said, Install or Update, which the question's button says again.
-  async function installAgentRuntime(kind,verb="Install"){
-    const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind);if(!definition?.installable)return;
+  // verb: what the button said, Install or Update, which the question's button says again. status: the row's, whose update names the
+  // newer release and the command that installs it, for the profile it is about.
+  async function installAgentRuntime(kind,verb="Install",status=null){
+    const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind),update=status?.update;if(!definition?.installable&&!update)return;
     const label=definition.name||kind;const packageName=definition.packageName||"the official package";
     const confirmation=kind==="antigravity"
       ?"Install or update "+label+" ACP runtime on this machine?\n\nTrebell will download Google's published Antigravity ACP runtime through the official Agent Client Protocol registry."
+      :update?"Update "+label+" to "+update.latest+" in the selected environment?\n\nTrebell will run: "+update.command
       :"Install or update "+label+" in the selected environment?\n\nTrebell will run: "+(definition.installCommand||"npm install -g "+packageName);
     // One install of a harness at a time, also from a Settings page opened while one runs.
     if(!await askConfirm(confirmation,{confirm:verb+" "+label,tone:"primary"})||agentInstalls.running.includes(kind))return;
     const id=newInstallId();handledInstalls.add(id);keepTabInstall(kind,id);followInstall(kind);
     showAgentMessage("");keepAgentInstalls({running:[...agentInstalls.running,kind],note:null});
-    await answerInstall(kind,id,()=>api("/api/agent-runtimes",{method:"POST",body:{action:"install",runtime:kind,environmentId:settings.activeEnvironmentId||null,id}}),verb);
+    await answerInstall(kind,id,()=>api("/api/agent-runtimes",{method:"POST",body:{action:"install",runtime:kind,environmentId:settings.activeEnvironmentId||null,id,instanceId:status?.id||null}}),verb);
   }
   // What an install did, said on its row with the harness list its answer brings (agentInstalls). request is the install pressed here,
   // or the wait for one this window did not start (install-wait), whose waited:false answer is the harness list once that one has
@@ -1056,9 +1058,12 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           const statusText=incompatible?(compatibility.message||"Incompatible runtime version"):noSignIn||unverified?status.message:status?.available?status?.version||status?.message||"Ready":status?.message||"Unavailable";
           const actionText=active?(incompatible||unverified?"Needs setup":"Active"):status?.available?(incompatible||unverified?"Needs setup":"Switch"):status?.installed?"Not ready":"Not installed";
           const installing=installs.running.includes(def.id),installNote=installs.note?.kind===def.id?installs.note:null;
+          // Install for a harness that is not there. Update only for a newer release that Trebell installs itself (the status's update
+          // reading), else the update's note says how; a harness with no update reading (Antigravity's runtime) offers it as before.
+          const update=status?.update,verb=status?.installed?(update?update.canUpdate&&update.newer:def.installable)&&"Update":def.installable&&"Install";
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(def.id,status.id)}>
             <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em className={"is-"+String(actionText).toLowerCase().replace(/\s+/g,"-")}>{actionText}</em>
-          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installing} onClick={()=>installAgentRuntime(def.id,status?.installed?"Update":"Install")}>{installing?"Installing…":status?.installed?"Update":"Install"}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}{installNote&&<p ref={installNoteRef} className={installNote.error?"agent-runtime-option-error":"agent-runtime-option-note"} role={installNote.error?"alert":"status"}>{installNote.text}</p>}</div>;
+          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{(verb||installing)&&<button className="agent-runtime-install" disabled={installing} onClick={()=>installAgentRuntime(def.id,verb,status)}>{installing?"Installing…":verb}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}{update?.message&&<p className="agent-runtime-option-note">{update.message}</p>}{installNote&&<p ref={installNoteRef} className={installNote.error?"agent-runtime-option-error":"agent-runtime-option-note"} role={installNote.error?"alert":"status"}>{installNote.text}</p>}</div>;
         })}</div>
         {settingDrawn["agents-profiles"]&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>

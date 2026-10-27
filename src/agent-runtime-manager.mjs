@@ -13,6 +13,7 @@ import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys, runtimeEnvir
 import { installAntigravityRuntime, readAntigravityAuthState, readAntigravityInstall } from "./antigravity-runtime-installer.mjs";
 import { discoverOpenCode2ModelCatalog, discoverOpenCodeModelCatalog } from "./opencode-agent-session.mjs";
 import { resolveWindowsCommandShim, windowsCommandShimTarget } from "./windows-command-shim.mjs";
+import { harnessInstallOwner, manualUpdateRefusal, manualUpdateText, newestListed, npmInstallArgs, registryRelease, shownCommand } from "./harness-install-plan.mjs";
 import { codexAccountStatus, readCodexAccount } from "./codex-account-probe.mjs";
 import { remoteCodexHomeSetup } from "./environment-app-server.mjs";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
@@ -67,18 +68,22 @@ const ACP_MODEL_LIST_REUSE_MS=30*60_000;
 const INSTALLABLE_PACKAGES=Object.freeze({
   codex:"@openai/codex",
   claude:"@anthropic-ai/claude-code",
-  // OpenCode 1.x ships as opencode-ai and 2.x as @opencode/cli (T3 openCodeUpdateFor). Trebell Code's OpenCode harness speaks the
-  // 1.x server API, so it installs and updates 1.x only, and never moves an install between the two: 2.x converts OpenCode's shared
-  // database in place.
+  // OpenCode 1.x ships as opencode-ai and 2.x as @opencode/cli (T3 openCodeUpdateFor). A new OpenCode is 1.x, and an update keeps
+  // an install in its own line (npmPackageFor): Trebell never moves one between the two, as 2.x converts OpenCode's shared database
+  // in place.
   opencode:"opencode-ai",
 });
+// The harnesses Trebell updates through whatever installed the binary a profile runs, or says how to (T3's provider maintenance).
+const UPDATABLE=new Set(["codex","claude","opencode","grok"]);
+// The npm package of the release line a harness's version is in: OpenCode 2.x is @opencode/cli, and Grok Build @xai-official/grok,
+// whose latest is what `grok update` installs (T3 Grok driver).
+const npmPackageFor=(kind,version)=>kind==="opencode"&&parsedSemver(version)?.major===2?"@opencode/cli":kind==="grok"?"@xai-official/grok":INSTALLABLE_PACKAGES[kind]||null;
 // Muse Code runs where Trebell runs; a WSL or SSH environment has no Muse Code of Trebell's.
 const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Switch to the local environment to use it.";
 // A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start makes one)
 // reuses the last read of the same binary and version, and makes one only when there is none.
 const OPENCODE_CATALOG_REUSE_MS=10_000;
 const OPENCODE_STATUS_TIMEOUT_MS=20_000;
-const OPENCODE_NPM_REGISTRY_LATEST="https://registry.npmjs.org/opencode-ai/latest";
 
 const RUNTIME_COMPATIBILITY=Object.freeze({
   opencode:Object.freeze({
@@ -233,24 +238,21 @@ export function commandOnPath(command,{env=process.env,platform=process.platform
 }
 // A local binary's files (its path, modification time and size) as a version check or a probe answer saw them; null for none.
 const binarySignature=paths=>paths?.length?JSON.stringify(paths.map(path=>{try{const info=statSync(path);return [path,info.mtimeMs,info.size]}catch{return [path,null]}})):null;
-// Who installed the OpenCode at a real path, judged from the path as T3 Code judges an update (openCodeUpdateFor): OpenCode's own
-// installer keeps it in ~/.opencode/bin and updates it with `opencode upgrade`; npm keeps a global opencode-ai in
-// <prefix>/node_modules/opencode-ai beside its opencode shims on Windows, and in <prefix>/lib/node_modules/opencode-ai elsewhere. Any
-// other path (OpenCode 2.x's @opencode/cli, another package manager, a project's node_modules) is not Trebell's to update.
+// Who installed the OpenCode 1.x at a real path, judged from the path as T3 Code judges an update (openCodeUpdateFor, through
+// harnessInstallOwner): OpenCode's own installer keeps it in ~/.opencode/bin and updates it with `opencode upgrade`; npm keeps a
+// global opencode-ai in <prefix>/node_modules/opencode-ai beside its opencode shims on Windows, and in
+// <prefix>/lib/node_modules/opencode-ai elsewhere. Any other path (2.x's @opencode/cli, another package manager, a project's
+// node_modules) is not opencode-ai's.
 export function openCodeInstallOwner(path,{platform=process.platform,exists=existsSync}={}){
-  const raw=String(path||""),lower=raw.replaceAll("\\","/").toLowerCase();
-  if(/\/\.opencode\/bin\/opencode(?:\.exe)?$/.test(lower))return {method:"native"};
-  const segment=platform==="win32"?"/node_modules/opencode-ai/":"/lib/node_modules/opencode-ai/",index=lower.lastIndexOf(segment);
-  if(index<0||lower.slice(0,index).includes("/node_modules/"))return null;
-  const prefix=index===0?"/":raw.slice(0,index);
-  if(platform==="win32"&&!["opencode.cmd","opencode"].some(name=>exists(win32.join(prefix,name))))return null;
-  return {method:"npm",prefix};
+  const owner=harnessInstallOwner("opencode",{paths:{real:String(path||"")},packageName:INSTALLABLE_PACKAGES.opencode,command:"opencode",platform,exists,read:()=>""});
+  return owner.method==="native"?{method:"native"}:owner.method==="npm"?{method:"npm",prefix:owner.prefix}:null;
 }
 // npm leaves a command another package installed alone (EEXIST, unless forced), so it cannot update opencode-ai while the opencode
-// command in its prefix runs something else, such as OpenCode 2.x's @opencode/cli. Returns that package (or file), or null.
-export function openCodeCommandHolder(prefix,{platform=process.platform,read=path=>readFileSync(path,"utf8"),readLink=readlinkSync}={}){
+// command in its prefix runs something else, such as OpenCode 2.x's @opencode/cli (nor packageName @opencode/cli while it runs
+// opencode-ai). Returns that package (or file), or null.
+export function openCodeCommandHolder(prefix,{platform=process.platform,packageName="opencode-ai",read=path=>readFileSync(path,"utf8"),readLink=readlinkSync}={}){
   const windows=platform==="win32",paths=windows?win32:posix,root=String(prefix||"");
-  const own=paths.join(root,windows?"node_modules":"lib/node_modules","opencode-ai").toLowerCase()+paths.sep;
+  const own=paths.join(root,windows?"node_modules":"lib/node_modules",...packageName.split("/")).toLowerCase()+paths.sep;
   let target=null;
   if(windows)target=windowsCommandShimTarget(win32.join(root,"opencode.cmd"),{platform,allowScripts:true,read,exists:()=>true});
   else{
@@ -260,6 +262,10 @@ export function openCodeCommandHolder(prefix,{platform=process.platform,read=pat
   if(!target||target.toLowerCase().startsWith(own))return null;
   const parts=paths.relative(root,target).split(/[\\/]/),index=parts[0]===".."?-1:parts.indexOf("node_modules");
   return (index>=0?parts.slice(index+1,parts[index+1]?.startsWith("@")?index+3:index+2).join("/"):"")||target;
+}
+// Why npm cannot update OpenCode's packageName in prefix while the opencode command there is holder's.
+function openCodeHolderRefusal(prefix,holder,packageName,line){
+  return `npm cannot update ${packageName} in ${prefix}: the opencode command there runs ${holder}, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode ${line}.x, uninstall ${holder}, or run npm install -g ${packageName} --force yourself (the opencode command then runs OpenCode ${line}.x).`;
 }
 export function runtimeCompatibility(kind,version){
   const policy=RUNTIME_COMPATIBILITY[normalizeAgentRuntime(kind)];if(!policy)return null;
@@ -539,13 +545,15 @@ export class AgentRuntimeManager{
     if(value.result&&codexAccountStatus(value.result.account).ready)this.#codexAccounts.set(key,{at:Date.now(),value});else this.#codexAccounts.delete(key);
     return value;
   }
-  async #runCommand(command,args,{timeoutMs=120000,cwd=null,environmentId=undefined}={}){
+  // An install's own commands (npm, a harness's updater) where the profile runs: here with env (Trebell's own by default), through
+  // the manager's runner as its CLI checks go.
+  async #runCommand(command,args,{timeoutMs=120000,cwd=null,environmentId=undefined,env=null}={}){
     const profile=this.activeEnvironment(environmentId);
     if(profile&&profile.type!=="local"&&this.environments){
       const result=await this.environments.executeArgv(profile.id,{command,args,cwd:cwd||profile.cwd||"",timeoutMs,maxOutput:4*1024*1024});
       return {ok:result.exitCode===0,code:result.exitCode,error:result.timedOut?"command timed out":null,stdout:result.stdout||"",stderr:result.stderr||""};
     }
-    return run(command,args,{env:this.env,cwd:cwd||process.cwd(),timeoutMs});
+    return this.runFn(command,args,{env:env||this.env,cwd:cwd||process.cwd(),timeoutMs});
   }
   installable(kind){
     const runtime=normalizeAgentRuntime(kind);const packageName=INSTALLABLE_PACKAGES[runtime]||null;
@@ -584,8 +592,11 @@ export class AgentRuntimeManager{
   // way and how the last one of each harness ended (installs()), so a window that did not start one (another tab, or the window
   // reloaded, which forgets the install it started) says Installing… on its row and can wait for its answer (waitForInstall).
   #installing=new Map();#installEnded=new Map();
-  async install(kind,{environmentId=undefined,id=null}={}){
-    const target=this.installable(kind);const normalized=normalizeAgentRuntime(kind);
+  // What install() takes: a harness Trebell installs, and Grok Build, which it only updates (with `grok update`).
+  #installTarget(kind){const runtime=normalizeAgentRuntime(kind);return this.installable(runtime)||(runtime==="grok"?{runtime,updateOnly:true}:null)}
+  // instanceId: the profile whose binary an update is for (the row's), else the harness's default profile.
+  async install(kind,{environmentId=undefined,id=null,instanceId=null}={}){
+    const target=this.#installTarget(kind);const normalized=normalizeAgentRuntime(kind);
     if(!target)throw new Error((RUNTIMES[normalized]?.name||String(kind||"Harness"))+" is not installable from Trebell Code");
     const running=this.#installing.get(target.runtime);
     if(running){
@@ -593,7 +604,7 @@ export class AgentRuntimeManager{
       error.code="install-running";error.installId=running.id;throw error;
     }
     const entry={id:String(id||"")||randomUUID(),startedAt:Date.now(),done:null};
-    entry.done=this.#install(target,environmentId);this.#installing.set(target.runtime,entry);
+    entry.done=this.#install(target,environmentId,instanceId);this.#installing.set(target.runtime,entry);
     try{
       const value=await entry.done;this.#installEnded.set(target.runtime,{id:entry.id,ok:true,error:null,endedAt:Date.now()});return value;
     }catch(error){
@@ -606,9 +617,9 @@ export class AgentRuntimeManager{
   }
   // The answer of the install of this harness on its way, as install() gives it (a failure rejects with its error), or null when none runs.
   waitForInstall(kind){
-    const runtime=this.installable(kind)?.runtime;return runtime?this.#installing.get(runtime)?.done||null:null;
+    const runtime=this.#installTarget(kind)?.runtime;return runtime?this.#installing.get(runtime)?.done||null:null;
   }
-  async #install(target,environmentId){
+  async #install(target,environmentId,instanceId=null){
     if(target.runtime==="antigravity"){
       if(this.activeEnvironment(environmentId))throw new Error("Managed Antigravity ACP installation is currently available only on the local machine");
       const installed=await installAntigravityRuntime({env:this.env,fetchImpl:this.fetchImpl,platform:this.platform,arch:this.arch});
@@ -616,87 +627,139 @@ export class AgentRuntimeManager{
       const status=await this.probe(instance,{environmentId:null,fresh:true});
       return {ok:true,runtime:"antigravity",managed:"acp-registry",targetVersion:installed.version,status};
     }
-    if(target.runtime==="opencode")return await this.#installOpenCode(environmentId);
-    const npm=await this.#runCommand("npm",["--version"],{timeoutMs:8000,environmentId});
-    if(!npm.ok)throw new Error("npm is required to install this harness in the selected environment. Install Node.js/npm there first.");
-    let packageSpec=target.packageName,targetVersion=null,compatibility=null;
-    if(RUNTIME_COMPATIBILITY[target.runtime]){
-      const viewed=await this.#runCommand("npm",["view",target.packageName,"version","--json"],{timeoutMs:20_000,environmentId});
-      if(!viewed.ok)throw new Error((viewed.stderr||viewed.stdout||"Could not determine the compatible runtime version").trim().slice(-1000));
-      try{targetVersion=String(JSON.parse(String(viewed.stdout||"").trim()))}catch{targetVersion=String(viewed.stdout||"").trim().replace(/^["']|["']$/g,"")}
-      compatibility=runtimeCompatibility(target.runtime,targetVersion);
-      if(!targetVersion||!compatibility||["broken","unsupported","unknown"].includes(compatibility.status)){
-        throw new Error(compatibility?.message||("Trebell could not verify that "+targetVersion+" is compatible. Update was not installed."));
-      }
-      packageSpec=target.packageName+"@"+targetVersion;
-    }
-    const result=await this.#runCommand("npm",["install","-g",packageSpec],{timeoutMs:180000,environmentId});
-    if(!result.ok)throw new Error((result.stderr||result.stdout||("Could not install "+target.packageName)).trim().slice(-2000));
-    const instances=this.instances();
-    const instance=instances.find(item=>item.kind===target.runtime&&item.id===target.runtime+"-default")||instances.find(item=>item.kind===target.runtime)||defaultInstance(target.runtime);
-    const status=await this.probe(instance,{environmentId,fresh:true});
-    return {ok:true,runtime:target.runtime,packageName:target.packageName,targetVersion,compatibility,status,output:(result.stdout||result.stderr||"").trim().slice(-2000)};
-  }
-  // What installing or updating OpenCode runs, decided without changing anything (T3 openCodeUpdateFor): an OpenCode from its own
-  // installer updates with `opencode upgrade <version>`, npm's global opencode-ai through npm into the same prefix, and a machine (or
-  // remote environment) without OpenCode gets opencode-ai through npm. The target is the newest opencode-ai release, which must be a
-  // supported 1.x. OpenCode 2.x, and an OpenCode Trebell cannot tell who installed, are left alone.
-  async openCodeInstallPlan({environmentId=undefined}={}){
-    const instances=this.instances();
-    const instance=instances.find(item=>item.kind==="opencode"&&item.id==="opencode-default")||instances.find(item=>item.kind==="opencode")||defaultInstance("opencode");
-    const checked=await this.#run(instance,["--version"],{timeoutMs:versionCheckTimeoutMs("opencode"),environmentId});
-    // A check that did not answer for any reason but a command that is not there says nothing of which OpenCode is there: planned as
-    // if none were, the update would put a separate OpenCode 1.x beside a 2.x or an installer's copy, which the next start prefers.
-    const failure=checked.ok?null:versionCheckFailure(checked);
-    if(failure&&failure!=="missing"){
-      const reason=failure==="spawn"?runtimeProbeFailure(RUNTIMES.opencode,checked):failure==="timeout"?`\`opencode --version\` did not answer within ${versionCheckTimeoutMs("opencode")/1000} seconds.`:`\`opencode --version\` ${versionCheckEnded(checked)}`;
-      throw new Error(`Trebell Code could not read the version of the OpenCode it would update: ${/[.!?…]$/.test(reason)?reason:reason+"."} Nothing was installed.`);
-    }
-    const installed=checked.ok?runtimeCompatibility("opencode",(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null):null;
-    if(installed?.version?.startsWith("2."))throw new Error(`This OpenCode is ${installed.version}. Trebell Code supports OpenCode 2.x but will not replace it with the separate OpenCode 1.x npm package. Update this 2.x install with opencode upgrade or the package manager that installed it.`);
-    const local=checked.ok&&!this.processSpawner(instance,environmentId)?this.#openCodeInstall(instance):null;
-    if(local&&!local.owner)throw new Error(`Trebell Code updates an OpenCode installed by npm (opencode-ai) or by OpenCode's own installer, and could not tell how ${local.binary} was installed. Update it the way you installed it.`);
-    const holder=local?.owner.method==="npm"?openCodeCommandHolder(local.owner.prefix,{platform:this.platform}):null;
-    if(holder)throw new Error(`npm cannot update opencode-ai in ${local.owner.prefix}: the opencode command there runs ${holder}, and npm does not replace another package's command. Trebell Code changes neither install. To update OpenCode 1.x, uninstall ${holder}, or run npm install -g opencode-ai --force yourself (the opencode command then runs OpenCode 1.x).`);
-    const native=local?.owner.method==="native";
-    let targetVersion=null;
-    if(native){
-      let latest=null;
-      try{const response=await this.fetchImpl(OPENCODE_NPM_REGISTRY_LATEST,{headers:{accept:"application/json"},signal:AbortSignal.timeout(15_000)});if(response?.ok)latest=await response.json()}catch{}
-      targetVersion=typeof latest?.version==="string"?latest.version.trim():null;
-      if(!targetVersion)throw new Error("Trebell Code could not read the newest OpenCode release from the npm registry. Nothing was installed.");
-    }else{
-      const npm=await this.#runCommand("npm",["--version"],{timeoutMs:8000,environmentId});
-      if(!npm.ok)throw new Error("npm is required to install this harness in the selected environment. Install Node.js/npm there first.");
-      const viewed=await this.#runCommand("npm",["view",INSTALLABLE_PACKAGES.opencode,"version","--json"],{timeoutMs:20_000,environmentId});
-      if(!viewed.ok)throw new Error((viewed.stderr||viewed.stdout||"Could not determine the compatible runtime version").trim().slice(-1000));
-      try{targetVersion=String(JSON.parse(String(viewed.stdout||"").trim()))}catch{targetVersion=String(viewed.stdout||"").trim().replace(/^["']|["']$/g,"")}
-    }
-    const compatibility=runtimeCompatibility("opencode",targetVersion);
-    if(!targetVersion||!compatibility?.version||["broken","unsupported","unknown"].includes(compatibility.status))throw new Error(compatibility?.message||("Trebell could not verify that OpenCode "+targetVersion+" is compatible. Nothing was installed."));
-    // npm 12 skips install scripts unless allowed, and opencode-ai's script puts its binary in place (T3 allows that one package's).
-    const step=native
-      ?{command:local.binary,args:["upgrade",compatibility.version]}
-      :{command:"npm",args:["install","-g",...(local?["--prefix",local.owner.prefix]:[]),"--allow-scripts="+INSTALLABLE_PACKAGES.opencode,INSTALLABLE_PACKAGES.opencode+"@"+compatibility.version]};
-    return {instance,method:native?"native":"npm",binary:local?.binary||null,installedVersion:installed?.version||null,targetVersion:compatibility.version,compatibility,...step};
-  }
-  async #installOpenCode(environmentId){
-    const plan=await this.openCodeInstallPlan({environmentId});
-    const result={runtime:"opencode",packageName:INSTALLABLE_PACKAGES.opencode,method:plan.method,targetVersion:plan.targetVersion,compatibility:plan.compatibility};
-    if(plan.installedVersion===plan.targetVersion)return {ok:true,...result,status:await this.probe(plan.instance,{environmentId,fresh:true}),output:`OpenCode ${plan.targetVersion} is already the newest OpenCode 1.x release.`};
-    const ran=await this.#runCommand(plan.command,plan.args,{timeoutMs:180_000,environmentId});
-    if(!ran.ok)throw new Error((ran.stderr||ran.stdout||("Could not install OpenCode "+plan.targetVersion)).trim().slice(-2000));
-    // The OpenCode this profile runs must now report the version installed.
+    const plan=await this.installPlan(target.runtime,{environmentId,instanceId}),def=RUNTIMES[target.runtime];
+    const result={runtime:target.runtime,packageName:plan.packageName,method:plan.method,targetVersion:plan.targetVersion,...(plan.compatibility?{compatibility:plan.compatibility}:{})};
+    if(plan.installedVersion&&plan.targetVersion&&compareSemver(parsedSemver(plan.installedVersion),parsedSemver(plan.targetVersion))>=0)return {ok:true,...result,status:await this.probe(plan.instance,{environmentId,fresh:true}),output:`${def.name} ${plan.installedVersion} is already the newest ${target.runtime==="opencode"?`OpenCode ${parsedSemver(plan.installedVersion).major}.x`:def.name} release.`};
+    // An updater can download a few hundred MB (Claude Code's native binary): T3 gives one 5 minutes.
+    const ran=await this.#runCommand(plan.command,plan.args,{timeoutMs:300_000,environmentId,env:plan.env||null});
+    if(!ran.ok)throw new Error((ran.stderr||ran.stdout||(`Could not ${plan.installedVersion?"update":"install"} ${def.name}`)).trim().slice(-2000));
+    // The binary this profile runs must start and report what was installed, a pinned version or, after the harness's own updater,
+    // another version than before (T3 25f8fcb18): an update that left it where it was is said, not shown as ready.
     const status=await this.probe(plan.instance,{environmentId,fresh:true}),running=parsedSemver(status.version)?.raw||null;
-    if(running!==plan.targetVersion)throw new Error(`OpenCode ${plan.targetVersion} was installed, but the OpenCode this profile runs (${status.binary||plan.binary||"opencode"}) ${running?"still reports "+running:"did not start: "+(status.message||"no answer")}.`);
+    const where=status.binary||plan.binary||def.command,named=plan.targetVersion&&plan.pinned?`${def.name} ${plan.targetVersion}`:def.name;
+    if(!status.installed||!running){const said=String(status.message||"no answer").trim();throw new Error(`${named} was installed, but the ${def.name} this profile runs (${where}) did not start: ${/[.!?…]$/.test(said)?said:said+"."}`)}
+    if(plan.pinned&&plan.targetVersion&&running!==plan.targetVersion)throw new Error(`${named} was installed, but the ${def.name} this profile runs (${where}) still reports ${running}.`);
+    if(!plan.pinned&&plan.installedVersion&&running===plan.installedVersion)throw new Error(`\`${[String(plan.command).split(/[\\/]/).pop(),...plan.args].join(" ")}\` finished, but the ${def.name} this profile runs (${where}) still reports ${running}.`);
     return {ok:true,...result,status,output:(ran.stdout||ran.stderr||"").trim().slice(-2000)};
   }
-  // Where the OpenCode a local profile runs really is, and who installed it there.
-  #openCodeInstall(instance){
-    const command=this.executable(instance),found=commandOnPath(command,{env:this.childEnv(instance),platform:this.platform});
-    let binary=found?resolveWindowsCommandShim(found,{platform:this.platform}):null;
-    if(binary)try{binary=realpathSync(binary)}catch{}
-    return {binary:binary||command,owner:binary?openCodeInstallOwner(binary,{platform:this.platform}):null};
+  // The profile an install or update is for: the one asked for, else the harness's default profile.
+  #installInstance(kind,instanceId=null){
+    const instances=this.instances();
+    return instances.find(item=>item.kind===kind&&instanceId&&item.id===instanceId)||instances.find(item=>item.kind===kind&&item.id===kind+"-default")||instances.find(item=>item.kind===kind)||defaultInstance(kind);
+  }
+  async #npmReady(environmentId){
+    const npm=await this.#runCommand("npm",["--version"],{timeoutMs:8000,environmentId});
+    if(!npm.ok)throw new Error("npm is required to install this harness in the selected environment. Install Node.js/npm there first.");
+  }
+  // The newest release npm installs where it runs (`npm view`), in range when one is given.
+  async #npmRelease(packageName,{environmentId,range=null}){
+    const viewed=await this.#runCommand("npm",["view",range?`${packageName}@${range}`:packageName,"version","--json"],{timeoutMs:20_000,environmentId});
+    if(!viewed.ok)throw new Error((viewed.stderr||viewed.stdout||"Could not determine the compatible runtime version").trim().slice(-1000));
+    return newestListed(viewed.stdout);
+  }
+  // What installing or updating a harness runs, decided without changing anything (T3 Code's maintenance resolver). One that is not
+  // there gets its npm package (OpenCode the newest supported 1.x). One that is updates through what installed the binary the profile
+  // runs (harnessInstallOwner): npm into its own prefix, or its own updater, to the newest release of its own line (an OpenCode 1.x
+  // stays 1.x and a 2.x 2.x, the newest below 3.0.0). An install no updater is proven for, a version Trebell cannot read, a host's
+  // OpenCode 2.x and a host's Grok Build are refused, saying how to update them. An SSH or WSL host's harness is npm's there.
+  async installPlan(kind,{environmentId=undefined,instanceId=null}={}){
+    const runtime=normalizeAgentRuntime(kind),def=RUNTIMES[runtime],instance=this.#installInstance(runtime,instanceId),remote=Boolean(this.processSpawner(instance,environmentId));
+    const checked=await this.#run(instance,["--version"],{timeoutMs:versionCheckTimeoutMs(runtime),environmentId});
+    // A check that did not answer for any reason but a command that is not there says nothing of which install is there: planned as
+    // if none were, the update would put a separate copy beside it (an OpenCode 1.x beside a 2.x), which the next start prefers.
+    const failure=checked.ok?null:versionCheckFailure(checked),said=(checked.stdout||checked.stderr||"").trim().split(/\r?\n/)[0]||"",installed=checked.ok?parsedSemver(said)?.raw||null:null;
+    if((failure&&failure!=="missing")||(checked.ok&&!installed)){
+      const reason=failure==="spawn"?runtimeProbeFailure(def,checked):failure==="timeout"?`\`${def.command} --version\` did not answer within ${versionCheckTimeoutMs(runtime)/1000} seconds.`:failure?`\`${def.command} --version\` ${versionCheckEnded(checked)}`:`\`${def.command} --version\` printed no version: ${said.slice(0,200)}`;
+      throw new Error(`Trebell Code could not read the version of the ${def.name} it would update: ${/[.!?…]$/.test(reason)?reason:reason+"."} Nothing was installed.`);
+    }
+    if(!installed){
+      const packageName=INSTALLABLE_PACKAGES[runtime];
+      if(!packageName)throw new Error(`${def.name} is not installed, and Trebell Code only updates it: install it, then refresh.`);
+      await this.#npmReady(environmentId);
+      let targetVersion=null,compatibility=null;
+      if(runtime==="opencode"){
+        targetVersion=await this.#npmRelease(packageName,{environmentId});compatibility=runtimeCompatibility("opencode",targetVersion);
+        if(!targetVersion||!compatibility?.version||["broken","unsupported","unknown"].includes(compatibility.status))throw new Error(compatibility?.message||("Trebell could not verify that OpenCode "+targetVersion+" is compatible. Nothing was installed."));
+      }
+      const args=npmInstallArgs(packageName,targetVersion);
+      return {instance,method:"npm",binary:null,installedVersion:null,targetVersion,packageName,...(compatibility?{compatibility}:{}),pinned:Boolean(targetVersion),command:"npm",args,shown:shownCommand("npm",args,remote?"linux":this.platform)};
+    }
+    const packageName=npmPackageFor(runtime,installed),line=parsedSemver(installed).major;
+    if(remote&&runtime==="opencode"&&line===2)throw new Error(`This OpenCode is ${installed}. Trebell Code supports OpenCode 2.x but will not replace it with the separate OpenCode 1.x npm package. Update this 2.x install with opencode upgrade or the package manager that installed it.`);
+    if(remote&&runtime==="grok")throw new Error("Trebell Code updates Grok Build only on this machine: update the one in the selected environment the way you installed it. Nothing was installed.");
+    const owner=remote?{method:"npm",prefix:null,binary:null,real:null}:this.#installOwner(instance,installed);
+    if(owner.method==="manual")throw new Error(manualUpdateRefusal({name:def.name,binary:owner.real||def.command,by:owner.by,command:owner.command}));
+    const holder=owner.method==="npm"&&owner.prefix&&runtime==="opencode"?openCodeCommandHolder(owner.prefix,{platform:this.platform,packageName}):null;
+    if(holder)throw new Error(openCodeHolderRefusal(owner.prefix,holder,packageName,line));
+    let targetVersion;
+    if(owner.method==="npm"){await this.#npmReady(environmentId);targetVersion=await this.#npmRelease(packageName,{environmentId,range:packageName==="@opencode/cli"?">=2.0.0 <3.0.0":null})}
+    else{
+      targetVersion=await this.#latestRelease(packageName,{fresh:true});
+      if(!targetVersion)throw new Error(`Trebell Code could not read the newest ${def.name} release from the npm registry. Nothing was installed.`);
+    }
+    let compatibility=null;
+    if(runtime==="opencode"){
+      compatibility=runtimeCompatibility("opencode",targetVersion);
+      if(!targetVersion||!compatibility?.version||["broken","unsupported","unknown"].includes(compatibility.status))throw new Error(compatibility?.message||("Trebell could not verify that OpenCode "+targetVersion+" is compatible. Nothing was installed."));
+      if(parsedSemver(targetVersion).major!==line)throw new Error(`The newest OpenCode release, ${targetVersion}, is not an OpenCode ${line}.x like the one this profile runs (${installed}), and Trebell Code updates an OpenCode only within its own line (2.x converts OpenCode's shared database in place). Nothing was installed.`);
+    }
+    // The harness's own updater runs as the profile runs it, Codex's with CODEX_HOME at the shared home whose standalone tree it keeps.
+    const step=owner.method==="npm"?{command:"npm",args:npmInstallArgs(packageName,targetVersion,owner.prefix),pinned:true}
+      :{command:owner.binary,args:runtime==="opencode"?["upgrade",targetVersion]:owner.args,env:{...this.childEnv(instance),...(owner.env||{})},pinned:runtime==="opencode"};
+    return {instance,method:owner.method,binary:owner.real,installedVersion:installed,targetVersion,packageName,...(compatibility?{compatibility}:{}),...step,shown:shownCommand(step.command,step.args,remote?"linux":this.platform)};
+  }
+  // OpenCode's own plan, as installPlan gives it for the OpenCode default profile.
+  openCodeInstallPlan({environmentId=undefined}={}){return this.installPlan("opencode",{environmentId})}
+  // Who installed the binary a local profile runs (harnessInstallOwner), with what it runs as (binary) and its real path (real), or
+  // no one when no such file is there.
+  #installOwner(instance,version){
+    const env=this.childEnv(instance),configured=String(instance?.binaryPath||"").trim();
+    // The file the profile names, else the one Trebell starts (a known install folder, Codex's lookup), else the command on PATH.
+    const found=commandOnPath(configured||this.executable(instance)||RUNTIMES[instance.kind]?.command,{env,platform:this.platform});
+    if(!found)return {method:"manual",by:null,command:null,binary:null,real:null};
+    // Windows' own reading of the real path also gives the file's name as it is spelled (PATH's lookup spells it as PATHEXT does).
+    const binary=resolveWindowsCommandShim(found,{platform:this.platform});let real=binary;try{real=(this.platform==="win32"?realpathSync.native:realpathSync)(binary)}catch{}
+    const user=String(this.env.USERPROFILE||this.env.HOME||"").trim()||homedir();
+    const codexHome=instance.kind==="codex"?resolveCodexHomeLayout({homePath:instance.homePath,shadowHomePath:instance.shadowHomePath,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")}).sharedHomePath:null;
+    const grokHome=instance.kind==="grok"?String(env.GROK_HOME||"").trim()||join(user,".grok"):null;
+    return {...harnessInstallOwner(instance.kind,{paths:{found,binary,real},packageName:npmPackageFor(instance.kind,version),command:RUNTIMES[instance.kind].command,platform:this.platform,env:this.env,codexHome,grokHome}),binary,real};
+  }
+  #releases=new Map();
+  // The newest release npm's registry names for a package (T3 fetchNpmLatestVersion), kept an hour once read and a minute when it
+  // could not be read (T3 ProviderLatestVersions); reads at once share one. wait:false answers from what is kept and reads nothing.
+  async #latestRelease(packageName,{wait=true,fresh=false}={}){
+    const kept=this.#releases.get(packageName);
+    if(!fresh&&kept?.pending)return wait?await kept.pending:kept.version;
+    if(!fresh&&kept&&this.now()<kept.until)return kept.version;
+    if(!wait)return kept?.version??null;
+    const entry={pending:registryRelease(this.fetchImpl,packageName),version:kept?.version??null};this.#releases.set(packageName,entry);
+    const version=await entry.pending;
+    if(this.#releases.get(packageName)===entry)this.#releases.set(packageName,{version,until:this.now()+(version?3_600_000:60_000)});
+    return version;
+  }
+  // What Settings says of a newer release of the harness a profile runs (T3's version advisory): {current, latest (null when npm's
+  // registry could not be read), newer, canUpdate (Trebell runs the update: command, what it runs), binary (the file the profile
+  // runs), message (how the person updates one Trebell does not), command}. Only a harness Trebell updates has one, when it is there
+  // and not an OpenCode on a server of its own. wait reads the registry when its last answer is gone (Settings' own listing).
+  async #updateAdvisory(instance,status,{wait=false}={}){
+    if(!UPDATABLE.has(instance?.kind)||!status?.installed||(instance.kind==="opencode"&&instance.serverUrl))return null;
+    // A version its --version check did not give (Codex's from its account read) is no version an update could start from: the
+    // update's own check would not answer either.
+    const def=RUNTIMES[instance.kind],remote=Boolean(this.processSpawner(instance)),current=status.versionCheckFailed?null:parsedSemver(status.version)?.raw||null;
+    if(remote&&instance.kind==="grok")return null;
+    const packageName=npmPackageFor(instance.kind,current),line=parsedSemver(current)?.major,found=current?await this.#latestRelease(packageName,{wait}):null;
+    // An OpenCode's newest release counts within its own line.
+    const latest=found&&(instance.kind!=="opencode"||parsedSemver(found)?.major===line)?found:null,newer=Boolean(latest&&compareSemver(parsedSemver(current),parsedSemver(latest))<0);
+    const owner=remote?{method:"npm",prefix:null,binary:null,real:null}:this.#installOwner(instance,current);
+    const advisory={current,latest,newer,canUpdate:false,command:null,binary:owner.real,message:null};
+    if(!current)return advisory;
+    if(remote&&instance.kind==="opencode"&&line===2)return {...advisory,message:newer?`OpenCode ${latest} is out. Update this 2.x install with \`opencode upgrade\` or the package manager that installed it.`:null};
+    if(owner.method==="manual")return {...advisory,command:owner.command,message:newer?manualUpdateText({name:def.name,latest,binary:owner.real||def.command,by:owner.by,command:owner.command}):null};
+    const holder=owner.method==="npm"&&owner.prefix&&instance.kind==="opencode"?openCodeCommandHolder(owner.prefix,{platform:this.platform,packageName}):null;
+    if(holder)return {...advisory,message:newer?`OpenCode ${latest} is out. ${openCodeHolderRefusal(owner.prefix,holder,packageName,line)}`:null};
+    const args=owner.method==="npm"?npmInstallArgs(packageName,latest,owner.prefix):instance.kind==="opencode"?["upgrade",...(latest?[latest]:[])]:owner.args;
+    const command=shownCommand(owner.method==="npm"?"npm":owner.binary,args,remote?"linux":this.platform)+(owner.env?.CODEX_HOME?` (with CODEX_HOME set to ${owner.env.CODEX_HOME})`:"");
+    return {...advisory,canUpdate:true,command};
   }
   #openCodeCatalogs=new Map();
   // OpenCode's own answer for a profile (its connected models and providers, and its commands, skills and agents), from one managed
@@ -1153,12 +1216,18 @@ export class AgentRuntimeManager{
   // refresh (Settings' own listing) also reads Muse Code's model lists again, which the mutations' listings reuse.
   async snapshot({fresh=true,refresh=false}={}){
     if(refresh)this.#museCatalogDue();
-    const instances=this.instances();const statuses=await Promise.all(instances.map(instance=>this.probe(instance,{fresh})));
+    // Each status of a harness Trebell updates says whether a newer release is out and how it is updated (update): Settings' own
+    // listing reads npm's registry when its last answer is gone, and the other listings use the last one.
+    const instances=this.instances();const statuses=await Promise.all(instances.map(async instance=>{
+      const status=await this.probe(instance,{fresh}),update=await this.#updateAdvisory(instance,status,{wait:refresh}).catch(()=>null);
+      return update?{...status,update}:status;
+    }));
     const publicInstances=instances.map(instance=>{
       const {environment,...safe}=instance;
       return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys)};
     });
-    const installCommand=id=>id==="muse"?museInstallCommand(this.platform):id==="opencode"?"npm install -g "+INSTALLABLE_PACKAGES.opencode+" (OpenCode 1.x), or opencode upgrade for an OpenCode from its own installer":INSTALLABLE_PACKAGES[id]?"npm install -g "+INSTALLABLE_PACKAGES[id]:null;
+    // What a new install runs; an update says its own command in its status's update.
+    const installCommand=id=>id==="muse"?museInstallCommand(this.platform):INSTALLABLE_PACKAGES[id]?shownCommand("npm",npmInstallArgs(INSTALLABLE_PACKAGES[id]),this.platform)+(id==="opencode"?" (OpenCode 1.x)":""):null;
     const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,installCommand:installCommand(def.id),canAuthenticate:["codex","claude","cursor","grok","opencode","antigravity","muse"].includes(def.id)}));
     const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),capabilities:this.capabilities(active),definitions,instances:publicInstances,statuses,installs:this.installs()};
   }

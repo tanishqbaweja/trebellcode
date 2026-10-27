@@ -319,7 +319,7 @@ test("runtime profile compatibility follows continuation identity instead of dis
 
 test("runtime installer uses only official allowlisted packages in the selected environment", async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-agent-install-"));
-  const env={...process.env,TREBELL_HOME:home};const calls=[];
+  const env={...process.env,TREBELL_HOME:home};const calls=[];let claudeThere=false;
   try{
     const state=new TrebellStateStore(env);state.updateSettings({activeEnvironmentId:"ssh-fixture"});
     const environments={
@@ -327,8 +327,8 @@ test("runtime installer uses only official allowlisted packages in the selected 
       executeArgv:async(id,{command,args})=>{
         calls.push({id,command,args:[...args]});
         if(command==="npm"&&args[0]==="--version")return {exitCode:0,stdout:"11.0.0\n",stderr:""};
-        if(command==="npm"&&args[0]==="install")return {exitCode:0,stdout:"installed\n",stderr:""};
-        if(command==="claude"&&args[0]==="--version")return {exitCode:0,stdout:"claude 2.0.0\n",stderr:""};
+        if(command==="npm"&&args[0]==="install"){claudeThere=true;return {exitCode:0,stdout:"installed\n",stderr:""}}
+        if(command==="claude"&&args[0]==="--version")return claudeThere?{exitCode:0,stdout:"claude 2.0.0\n",stderr:""}:{exitCode:127,stdout:"",stderr:"sh: 1: claude: not found\n"};
         if(command==="claude"&&args[0]==="auth")return {exitCode:0,stdout:JSON.stringify({loggedIn:false}),stderr:""};
         return {exitCode:1,stdout:"",stderr:"unexpected command"};
       },
@@ -338,14 +338,15 @@ test("runtime installer uses only official allowlisted packages in the selected 
     assert.equal(installed.packageName,"@anthropic-ai/claude-code");
     assert.equal(installed.status.installed,true);assert.equal(installed.status.authenticated,false);
     assert.equal(installed.status.message,"Claude Code is not authenticated. Run `claude auth login` and try again.");
-    assert.equal(calls.some(call=>call.command==="npm"&&call.args.join(" ")==="install -g @anthropic-ai/claude-code"),true);
+    // npm 12 runs no install script unless allowed, and Claude Code's puts its native binary in place.
+    assert.equal(calls.some(call=>call.command==="npm"&&call.args.join(" ")==="install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code"),true);
     await assert.rejects(()=>manager.install("cursor"),/not installable/i);
     const snapshot=await manager.snapshot();
     assert.equal(snapshot.definitions.find(item=>item.id==="claude").installable,true);
-    // OpenCode 1.x is the opencode-ai package; @opencode/cli is OpenCode 2.x, which Trebell Code does not run.
+    // A new OpenCode is 1.x, the opencode-ai package; @opencode/cli is OpenCode 2.x, which an update of a 2.x keeps.
     assert.equal(snapshot.definitions.find(item=>item.id==="opencode").packageName,"opencode-ai");
-    assert.match(snapshot.definitions.find(item=>item.id==="opencode").installCommand,/^npm install -g opencode-ai .*opencode upgrade/);
-    assert.equal(snapshot.definitions.find(item=>item.id==="claude").installCommand,"npm install -g @anthropic-ai/claude-code");
+    assert.equal(snapshot.definitions.find(item=>item.id==="opencode").installCommand,"npm install -g --allow-scripts=opencode-ai opencode-ai (OpenCode 1.x)");
+    assert.equal(snapshot.definitions.find(item=>item.id==="claude").installCommand,"npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code");
     assert.equal(snapshot.definitions.find(item=>item.id==="cursor").installable,false);
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
@@ -406,7 +407,7 @@ test("OpenCode compatibility blocks known-broken managed updates and pins verifi
 test("a second install of a harness asked for while one runs is refused, and the next once it has ended runs",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-install-once-"));const env={...process.env,TREBELL_HOME:home};
   // OpenCode's npm install runs until release(); fail is the error the next one ends with.
-  const installs=[],held=[],release=()=>{for(const resolve of held.splice(0))resolve()};let installed="1.14.10",fail="";
+  const installs=[],held=[],release=()=>{for(const resolve of held.splice(0))resolve()};let installed="1.14.10",fail="",claudeThere=false;
   try{
     const state=new TrebellStateStore(env);state.updateSettings({activeEnvironmentId:"ssh-fixture"});
     const environments={
@@ -415,14 +416,15 @@ test("a second install of a harness asked for while one runs is refused, and the
         if(command==="npm"&&args[0]==="--version")return {exitCode:0,stdout:"11.0.0\n",stderr:""};
         if(command==="npm"&&args[0]==="view")return {exitCode:0,stdout:JSON.stringify("1.14.19")+"\n",stderr:""};
         if(command==="npm"&&args[0]==="install"){
-          const spec=args.at(-1);installs.push(spec);if(!spec.startsWith("opencode-ai@"))return {exitCode:0,stdout:"installed\n",stderr:""};
+          const spec=args.at(-1);installs.push(spec);if(!spec.startsWith("opencode-ai@")){claudeThere=true;return {exitCode:0,stdout:"installed\n",stderr:""}}
           await new Promise(resolve=>held.push(resolve));
           if(fail){const stderr=fail;fail="";return {exitCode:1,stdout:"",stderr}}
           installed=spec.split("@").at(-1);return {exitCode:0,stdout:"installed\n",stderr:""};
         }
         if(command==="opencode"&&args[0]==="--version")return {exitCode:0,stdout:"opencode "+installed+"\n",stderr:""};
         if(command==="opencode"&&args[0]==="auth")return {exitCode:0,stdout:"— 1 credentials\n",stderr:""};
-        if(command==="claude"&&args[0]==="--version")return {exitCode:0,stdout:"claude 2.0.0\n",stderr:""};
+        // Claude Code is not there until npm installs it.
+        if(command==="claude"&&args[0]==="--version")return claudeThere?{exitCode:0,stdout:"claude 2.0.0\n",stderr:""}:{exitCode:127,stdout:"",stderr:"sh: 1: claude: not found\n"};
         if(command==="claude"&&args[0]==="auth")return {exitCode:0,stdout:JSON.stringify({loggedIn:true}),stderr:""};
         return {exitCode:1,stdout:"",stderr:"unexpected command"};
       },

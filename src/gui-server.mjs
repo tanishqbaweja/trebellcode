@@ -1937,7 +1937,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
             return json(res,200,{status:await agentRuntimes.probe(instance)});
           }
           if(body.action==="install"){
-            const installed=await agentRuntimes.install(body.runtime,{environmentId:Object.prototype.hasOwnProperty.call(body,"environmentId")?body.environmentId:undefined,id:typeof body.id==="string"?body.id.slice(0,100):null});
+            // instanceId: the profile whose row was pressed, whose binary an update is for.
+            const installed=await agentRuntimes.install(body.runtime,{environmentId:Object.prototype.hasOwnProperty.call(body,"environmentId")?body.environmentId:undefined,id:typeof body.id==="string"?body.id.slice(0,100):null,instanceId:typeof body.instanceId==="string"?body.instanceId.slice(0,200):null});
             const snapshot=await agentRuntimes.snapshot();
             const active=installed.runtime===snapshot.selectedRuntime;
             return json(res,200,{installed,...snapshot,...(active?await runtimeRefreshPayload(req,{agentSnapshot:snapshot}):{})});
