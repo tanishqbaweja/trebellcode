@@ -968,12 +968,13 @@ export class OpenCodeAgentSession{
     this.subagentSessions.set(key,false);return false;
   }
   // OpenCode's question tool waits for an answer. Questions go to Trebell's question prompt; without an answer the request is dismissed
-  // so the model carries on instead of waiting forever.
+  // so the model carries on instead of waiting forever. A question whose custom flag is false takes only its options (OpenCode's
+  // default lets the person type an answer of their own too).
   async #question(p){
     const requestID=String(p.id||""),questions=Array.isArray(p.questions)?p.questions:[];
     let answers=null;
     if(this.onQuestion&&questions.length){
-      const input={questions:questions.map((item,index)=>({id:`q${index+1}`,header:String(item?.header||""),question:String(item?.question||""),multiSelect:Boolean(item?.multiple),options:(Array.isArray(item?.options)?item.options:[]).map(option=>({label:String(option?.label||""),description:String(option?.description||"")}))}))};
+      const input={questions:questions.map((item,index)=>({id:`q${index+1}`,header:String(item?.header||""),question:String(item?.question||""),multiSelect:Boolean(item?.multiple),...(item?.custom===false?{allowCustomAnswer:false}:{}),options:(Array.isArray(item?.options)?item.options:[]).map(option=>({label:String(option?.label||""),description:String(option?.description||"")}))}))};
       try{
         const reply=await this.onQuestion({toolName:"question",input});
         answers=input.questions.map(question=>{const value=reply?.[question.id];return (Array.isArray(value)?value:value==null?[]:[value]).map(item=>String(item??"").trim()).filter(Boolean)});
