@@ -1,9 +1,10 @@
 // A harness's status check (AgentRuntimeManager probe) as Settings, a harness switch and a chat start read it:
 // - each CLI's --version gets T3's budget (Claude Code 20 s, OpenCode 10 s, the others 6 s), and on this machine one that runs
 //   out of time or exits with an error reads installed, never "not installed" (only a command that is not there does);
-// - Claude Code, Cursor, Grok and Antigravity may then start, their answer kept for a minute as a ready one is; an OpenCode is not
-//   ready without its version, which picks the client that talks to it; and Codex's account read, which has 20 s of its own,
-//   decides after a check that ran out of time (one that exited with an error is not ready);
+// - Claude Code, Cursor, Grok and Antigravity may then start; an OpenCode is not ready without its version, which picks the client
+//   that talks to it; each of these answers is kept for a minute, as a ready one is, so a hung CLI costs its wait once a minute; and
+//   Codex's account read, which has 20 s of its own, decides after a check that ran out of time (one that exited with an error is
+//   not ready);
 // - Grok's checks run with its updater off, and its sessions keep their environment;
 // - a logged-out `grok models` is read once more, as Grok refreshes an expired token in the same process;
 // - a Claude Code profile with a custom API endpoint is not called signed out.
@@ -11,7 +12,7 @@
 // Grok and for Codex's app-server: no real harness is started or signed in.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +20,9 @@ import { WebSocket } from "ws";
 import { AgentRuntimeManager, withProbeAdvice } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
+import { createGuiServer } from "../src/gui-server.mjs";
+import { generateTextWithHarness } from "../src/harness-text-generation.mjs";
+import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 // What the manager's run() gives: an answer, a check it stopped at its timeout, and a command that exited with an error.
 const answered=stdout=>({ok:true,code:0,error:null,stdout,stderr:""});
@@ -107,14 +111,63 @@ test("an OpenCode whose --version does not answer or fails is installed but not 
   const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(fx.home,"trebell-home")});
   const relay=await startRelay(t,{runtimeManager:fx.manager,threadStore,state:fx.state});
   await assert.rejects(Promise.race([relay.rpc("thread/start",{cwd:fx.home}),new Promise((_resolve,reject)=>setTimeout(()=>reject(new Error("the start was not refused within 20 s")),20_000))]),error=>error.message===SLOW);
-  assert.deepEqual(fx.calls.map(call=>[call.args,call.timeoutMs]),Array(4).fill(["--version",10_000]),"each check asked its version again, and nothing else ran");
+  assert.deepEqual(fx.calls.map(call=>[call.args,call.timeoutMs]),Array(2).fill(["--version",10_000]),"the switch asked its version again, the model list and the chat took the answer kept for a minute, and nothing else ran");
   // One that exits with an error, and a profile that uses an OpenCode server of its own, read the same.
   version=()=>exited(1,"Error: Cannot find module '@opencode/cli-win32-x64'\n");
-  const failed=await fx.manager.probe("opencode");
+  const failed=await fx.manager.probe("opencode",{fresh:true});
   assert.deepEqual([failed.installed,failed.available,failed.message],[true,false,"OpenCode is installed but `opencode --version` exited with code 1: Error: Cannot find module '@opencode/cli-win32-x64'. Trebell Code needs its version (1.x or 2.x) to start it."]);
   const external=await localHarness(t,"opencode",()=>TIMED_OUT,{instance:{serverUrl:"http://127.0.0.1:4096"}});
   const served=await external.manager.probe("opencode");
   assert.deepEqual([served.installed,served.available,served.message],[true,false,SLOW]);
+});
+
+test("an OpenCode whose --version did not answer costs that wait once a minute: the page load, Settings' poll, a chat start, Git text and the model list reuse its answer",async t=>{
+  // A hung `opencode --version` holds each check for its whole 10 s, and each of these callers waits for a check. They take the
+  // answer of the check they joined, or the one kept for a minute, as for the other harnesses. Settings' Refresh and a switch ask
+  // again at once, as does the first check a minute on.
+  let clock=1_000_000;
+  const fx=await localHarness(t,"opencode",args=>args[0]==="--version"?TIMED_OUT:answered("unexpected"),{now:()=>clock});
+  const SLOW="OpenCode is installed but did not answer `opencode --version` within 10 seconds. Trebell Code needs its version (1.x or 2.x) to start it.";
+  const [refreshed,polled]=await Promise.all([fx.manager.probe("opencode",{fresh:true}),fx.manager.probe("opencode")]);
+  assert.deepEqual([refreshed.message,polled.message,fx.calls.length],[SLOW,SLOW,1],"a poll that came while Settings' Refresh ran took the answer of its check");
+  clock+=59_000;
+  const shown=(await fx.manager.probe("opencode")).message,listed=(await fx.manager.models("opencode")).error;
+  const written=await generateTextWithHarness({runtimeManager:fx.manager,prompt:"Write a commit subject.",cwd:fx.home}).then(()=>"written",error=>error.message);
+  assert.deepEqual([shown,listed,written,fx.calls.length],[SLOW,SLOW,SLOW,1],"the page load, the poll, a chat start, the model list and Git text within the minute waited for no check");
+  clock+=1_001;await fx.manager.probe("opencode");
+  assert.equal(fx.calls.length,2,"a minute on, the check asks again");
+  await fx.manager.probe("opencode",{fresh:true});
+  assert.equal(fx.calls.length,3,"Settings' Refresh asks again within the minute");
+  assert.deepEqual(fx.calls.map(call=>[call.args,call.timeoutMs]),Array(3).fill(["--version",10_000]),"nothing but its version was asked");
+});
+
+async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+test("through the GUI server, the page load and Settings' poll answer at once after an OpenCode's --version ran out of time, instead of each waiting 10 s for another check",async t=>{
+  // An OpenCode of the test's own whose --version never answers: each launch notes its arguments in a log, then waits until the check
+  // stops it. Its launcher has a folder of its own, as the folder of a launcher script is part of the binary its answer is kept for.
+  const home=await mkdtemp(join(tmpdir(),"trebell-status-opencode-reads-")),bin=join(home,"bin"),log=join(home,"launches.log"),windows=process.platform==="win32";
+  let gui=null;t.after(async()=>{await gui?.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})});
+  const fixture=join(home,"opencode-hangs.mjs"),launcher=join(bin,windows?"opencode.cmd":"opencode");
+  await mkdir(bin);
+  await writeFile(fixture,String.raw`
+import { appendFileSync } from "node:fs";
+appendFileSync(process.env.TREBELL_STATUS_LOG,process.argv.slice(2).join(" ")+"\n");
+setInterval(()=>{},1000);
+`,"utf8");
+  await writeFile(launcher,windows?["@echo off",`"${process.execPath}" "${fixture}" %*`,""].join("\r\n"):`#!/bin/sh\nexec "${process.execPath}" "${fixture}" "$@"\n`,"utf8");
+  if(!windows)await chmod(launcher,0o755);
+  const env={PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,COMSPEC:process.env.COMSPEC,TEMP:home,TMP:home,HOME:home,USERPROFILE:home,TREBELL_HOME:join(home,"trebell"),CODEX_HOME:join(home,"codex-home"),CLAUDE_CONFIG_DIR:join(home,"claude-config")};
+  new TrebellStateStore(env).updateSettings({agentRuntime:"opencode",agentRuntimeInstanceId:"opencode-default",agentRuntimeInstances:[{id:"opencode-default",kind:"opencode",binaryPath:launcher,environment:{TREBELL_STATUS_LOG:log}}]});
+  gui=await createGuiServer({port:await freePort(),mock:true,env});
+  const SLOW="OpenCode is installed but did not answer `opencode --version` within 10 seconds. Trebell Code needs its version (1.x or 2.x) to start it.";
+  const read=async path=>{const started=Date.now(),body=await (await fetch(gui.url+path)).json();return [body.agentRuntimeStatus?.message,Date.now()-started]};
+  assert.equal((await read("/api/bootstrap"))[0],SLOW,"the window's first load waited for the check");
+  for(const path of ["/api/runtime","/api/bootstrap","/api/runtime"]){
+    const [message,ms]=await read(path);
+    assert.equal(message,SLOW,path);
+    assert.ok(ms<5000,`${path} took ${ms} ms: it waited for another check`);
+  }
+  assert.deepEqual((await readFile(log,"utf8")).trim().split(/\r?\n/),["--version"],"one launch, which its check stopped");
 });
 
 test("a harness whose --version exits with an error reads installed and may start, with what it said",async t=>{
@@ -174,12 +227,13 @@ test("on a host a failed version check reads unavailable as before, with the bud
 
 // A `codex app-server` as a signed-in Codex runs one, standing in for Codex here: a node script behind a launcher of the test's own,
 // which answers initialize (its version in its user agent) and account/read, and ends with its input.
-async function codexAppServerLauncher(home){
+// account: what account/read answers with (null: a Codex with no sign-in, whose model provider needs OpenAI's).
+async function codexAppServerLauncher(home,{account={type:"chatgpt",planType:"plus"}}={}){
   const windows=process.platform==="win32",fixture=join(home,"codex-app-server.mjs"),launcher=join(home,windows?"codex.cmd":"codex");
   await writeFile(fixture,String.raw`
 import readline from "node:readline";
 readline.createInterface({input:process.stdin}).on("line",line=>{const m=JSON.parse(line);if(m.id===undefined)return;
-  const result=m.method==="initialize"?{userAgent:"codex_cli_rs/0.162.0 (fixture)"}:m.method==="account/read"?{account:{type:"chatgpt",planType:"plus"},requiresOpenaiAuth:true}:{};
+  const result=m.method==="initialize"?{userAgent:"codex_cli_rs/0.162.0 (fixture)"}:m.method==="account/read"?${JSON.stringify({account,requiresOpenaiAuth:true})}:{};
   process.stdout.write(JSON.stringify({id:m.id,result})+"\n");
 });
 `,"utf8");
@@ -206,6 +260,18 @@ test("Codex gets 6 s to answer --version, as one that runs out of time leaves th
   const missing=await manager.probe("codex",{fresh:true});
   assert.deepEqual([missing.installed,missing.available],[false,false]);
   assert.match(missing.message,/^Codex CLI was not found\./);
+});
+
+test("a Codex whose --version ran out of time and whose account read finds no sign-in is asked again at the next check",async t=>{
+  // Its answer is the account read's, which says sign-in is required: a sign-in in the person's own terminal shows at the next check.
+  const home=await tempHome(t,"codex-signed-out"),binaryPath=await codexAppServerLauncher(home,{account:null}),calls=[];
+  const runFn=async(_command,args)=>{calls.push(args.join(" "));return TIMED_OUT};
+  const env={PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,COMSPEC:process.env.COMSPEC,TEMP:home,TMP:home,HOME:home,USERPROFILE:home,CODEX_HOME:join(home,"codex-home"),TREBELL_HOME:join(home,"trebell")};
+  const manager=new AgentRuntimeManager({state:memoryState({agentRuntimeInstances:[{id:"codex-default",kind:"codex",binaryPath}]}),env,runFn});
+  const status=await manager.probe("codex");
+  assert.deepEqual([status.installed,status.available,status.authenticated,status.versionCheckFailed,status.message],[true,false,false,true,"Codex CLI is not authenticated. Run codex login and try again."]);
+  await manager.probe("codex");
+  assert.deepEqual(calls,["--version","--version"],"the next check asked again");
 });
 
 test("OpenCode gets 10 s to answer --version, in its status check and in its install plan",async()=>{

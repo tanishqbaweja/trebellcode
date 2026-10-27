@@ -147,6 +147,10 @@ function versionCheckMessage(def,kind,command,result){
   if(versionCheckFailure(result)==="timeout")return `${def.name} is installed but did not answer \`${name} --version\` within ${versionCheckTimeoutMs(kind)/1000} seconds.`;
   return `${def.name} is installed but \`${name} --version\` ${versionCheckEnded(result)}`.slice(0,500);
 }
+// An answer whose --version did not answer and that says nothing of a sign-in: asking again only waits for the whole check again, so
+// probe keeps it, an OpenCode's too, which cannot start without its version. (A Codex one that found no sign-in is asked again: its
+// account read answered it.)
+const versionCheckOnly=value=>Boolean(value?.versionCheckFailed)&&value.authenticated==null;
 // A Claude Code profile that runs through a router or gateway: an http(s) ANTHROPIC_BASE_URL whose host is not api.anthropic.com.
 function claudeCustomEndpoint(env={}){
   let url=null;try{url=new URL(String(env?.ANTHROPIC_BASE_URL||"").trim())}catch{}
@@ -699,18 +703,19 @@ export class AgentRuntimeManager{
   #probes=new Map();
   // One answer per profile and environment: callers that ask while it runs share it, and later ones reuse a ready answer for
   // PROBE_REUSE_MS. An answer that the harness cannot run is not kept (nor one that found no sign-in, keptProbeAnswer), but one
-  // that may start although its version check did not answer (versionCheckFailed) is: the page load, Settings' poll and every chat
-  // start wait for the check, so a hung CLI costs its wait once a minute, not on each of them. So is a Claude Code profile with a
-  // custom API endpoint, whose sign-in only a session can check (`claude auth status` has nothing new to say). And a
-  // caller that joined one that cannot run asks again (or joins a probe started after it asked): a thread start refuses on it, and
-  // the person may just have signed in outside Trebell, or the check timed out under load. fresh starts a new one, which the next
-  // callers share. Each caller gets its own copy.
+  // whose version check did not answer is (versionCheckFailed when it may start, versionCheckOnly when it is an OpenCode's, which
+  // cannot start without its version): the page load, Settings' poll, every chat start, Git text and the model list wait for the
+  // check, so a hung CLI costs its wait once a minute, not on each of them, and Settings' Refresh or a switch asks again at once. So
+  // is a Claude Code profile with a custom API endpoint, whose sign-in only a session can check (`claude auth status` has nothing new
+  // to say). And a caller that joined another answer that cannot run asks again (or joins a probe started after it asked): a thread
+  // start refuses on it, and the person may just have signed in outside Trebell, or its check timed out under load. fresh starts a
+  // new one, which the next callers share. Each caller gets its own copy.
   async probe(instanceOrKind,{environmentId=undefined,fresh=false}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="native")return this.#probeNow(instance,{environmentId});
     const key=this.#probeKey(instance,environmentId),owner=this.#probeOwner(instance,environmentId),cached=this.#probes.get(key);
     if(!fresh&&cached?.pending){
-      const value=await cached.pending;if(value?.available)return structuredClone(value);
+      const value=await cached.pending;if(value?.available||versionCheckOnly(value))return structuredClone(value);
       const next=this.#probes.get(key);if(next?.pending&&next.pending!==cached.pending)return structuredClone(await next.pending);
     }else if(!fresh&&cached&&this.now()-cached.at<PROBE_REUSE_MS&&binarySignature(cached.binary)===cached.signature)return structuredClone(cached.value);
     // A local binary replaced since (npm i -g, the harness's own updater) makes its version check due, so its answer is not kept
@@ -719,7 +724,7 @@ export class AgentRuntimeManager{
     const pending=this.#probeNow(instance,{environmentId,fresh});this.#probes.set(key,{pending,owner});
     try{
       const value=await pending;
-      if(this.#probes.get(key)?.pending===pending){if(value?.available&&(value.versionCheckFailed||value.account?.type==="customEndpoint"||keptProbeAnswer(value)))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
+      if(this.#probes.get(key)?.pending===pending){if(value?.available&&(value.versionCheckFailed||value.account?.type==="customEndpoint"||keptProbeAnswer(value))||versionCheckOnly(value))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
       return structuredClone(value);
     }catch(error){
       if(this.#probes.get(key)?.pending===pending)this.#probes.delete(key);
@@ -807,7 +812,7 @@ export class AgentRuntimeManager{
     // (withProbeAdvice). Its sign-in is not read, and the answer is kept for a minute (probe). On a host (SSH, WSL) a
     // failed check is unavailable as before: ssh's own failures (a host it cannot reach) are no answer of the harness's. OpenCode
     // is not ready without its version: its 1.x and 2.x servers each speak only their own client, which the relay, Git text and its
-    // model list choose by that version, so it is asked again at the next check.
+    // model list choose by that version. Its answer is kept for a minute too (probe).
     if(!host&&(failure==="timeout"||failure==="exit")){
       const versionless=instance.kind==="opencode",said=versionCheckMessage(def,instance.kind,command,versionResult);
       return {id:instance.id,kind:instance.kind,name:def.name,available:!versionless,installed:true,authenticated:null,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version:null,account:null,versionCheckFailed:true,message:versionless?`${/[.!?…]$/.test(said)?said:said+"."} Trebell Code needs its version (1.x or 2.x) to start it.`:said};
