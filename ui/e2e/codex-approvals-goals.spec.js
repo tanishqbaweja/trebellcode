@@ -22,6 +22,12 @@ async function fakeCodex(thread){
   const send=value=>{for(const ws of sockets)if(ws.readyState===1)ws.send(JSON.stringify(value))};
   const notify=(method,params)=>send({method,params});
   const running=()=>turns.some(turn=>turn.status==="inProgress");
+  // A compaction runs as a turn of its own, with its contextCompaction item, until finishCompaction() ends it.
+  const startCompaction=threadId=>{
+    const turn={id:"codex-turn-"+(turns.length+1),threadId,status:"inProgress",input:[],compaction:true};turns.push(turn);
+    notify("turn/started",{threadId,turn:{id:turn.id,status:"inProgress",items:[]}});
+    notify("item/started",{threadId,turnId:turn.id,item:{type:"contextCompaction",id:"compaction-"+turn.id,status:"inProgress"}});
+  };
   wss.on("connection",ws=>{
     sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
     ws.on("message",raw=>{
@@ -48,6 +54,7 @@ async function fakeCodex(thread){
         if(turn){turn.status="interrupted";notify("turn/completed",{threadId:turn.threadId,turn:{id:turn.id,status:"interrupted",items:[]}})}
         return reply({});
       }
+      if(message.method==="thread/compact/start"){reply({});startCompaction(params.threadId);return}
       if(["thread/turns/list","thread/items/list","thread/attachment/list","thread/timeline/list","thread/queue/list","threadSection/list","thread/loaded/list"].includes(message.method))return reply({data:[],nextCursor:null});
       if(["skills/list","collaborationMode/list","experimentalFeature/list","permissionProfile/list","mcpServerStatus/list","app/list","hooks/list"].includes(message.method))return reply({data:[]});
       if(message.method==="thread/unsubscribe")return reply({status:"unsubscribed"});
@@ -56,9 +63,15 @@ async function fakeCodex(thread){
   });
   const port=await freePort();await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {
-    port,requests,turns,goals,notify,
+    port,requests,turns,goals,notify,startCompaction,
     sent:method=>requests.filter(item=>item.method===method).map(item=>item.params||{}),
     ask(method,params){const id=nextId++;send({id,method,params});return {id,answers:()=>answers.get(String(id))||[]}},
+    finishCompaction(){
+      const turn=turns.find(item=>item.compaction&&item.status==="inProgress");if(!turn)return false;turn.status="completed";
+      notify("item/completed",{threadId:turn.threadId,turnId:turn.id,item:{type:"contextCompaction",id:"compaction-"+turn.id,status:"completed"}});
+      notify("thread/compacted",{threadId:turn.threadId,turnId:turn.id});
+      notify("turn/completed",{threadId:turn.threadId,turn:{id:turn.id,status:"completed",items:[]}});return true;
+    },
     async close(){for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>http.close(resolve))},
   };
 }
@@ -115,7 +128,9 @@ test("after Allow session the thread's next command runs without asking: only th
     const first=codex.ask("item/commandExecution/requestApproval",{threadId:thread.id,turnId:"turn-1",itemId:"cmd-1",command:"npm test",cwd:harness.cwd,startedAtMs:Date.now()});
     await expect(card(page)).toHaveCount(1);await expect(card(page)).toContainText("Command needs approval");await expect(card(page)).toContainText("npm test");
     await shoot(page,"first-command",()=>expect(card(page)).toBeVisible());
-    await card(page).getByRole("button",{name:"Allow session",exact:true}).click();
+    // Its Allow session is named for what it allows: every later command of the thread's session.
+    await expect(card(page).getByRole("button",{name:"Allow session",exact:true})).toHaveCount(0);
+    await card(page).getByRole("button",{name:"Allow commands this session",exact:true}).click();
     await expect.poll(()=>first.answers()).toEqual([{decision:"acceptForSession"}]);
     await expect(card(page)).toHaveCount(0);
     // The next command in the thread: Trebell answers it as allowed for the session, and no card comes for it.
@@ -127,6 +142,8 @@ test("after Allow session the thread's next command runs without asking: only th
     await expect(card(page)).toHaveCount(1);await expect(card(page)).toContainText("Network access needs approval");
     await expect(page.getByText("npm run lint")).toHaveCount(0);
     await shoot(page,"after-allow-session",()=>expect(card(page)).toContainText("registry.npmjs.org"));
+    // Allow session covers no more than this request here: the button keeps its plain name.
+    await expect(card(page).getByRole("button",{name:"Allow session",exact:true})).toBeVisible();
     await card(page).getByRole("button",{name:"Deny",exact:true}).click();
     await expect.poll(()=>network.answers()).toEqual([{decision:"decline"}]);
     await expect(card(page)).toHaveCount(0);
@@ -156,6 +173,54 @@ test("a Codex file-change approval's card names the files it adds, edits, moves 
     await card(page).getByRole("button",{name:"Allow once",exact:true}).click();
     await expect.poll(()=>asked.answers()).toEqual([{decision:"accept"}]);
     await expect(card(page)).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+test("a Codex file change of more than 200 files lists 200 on its card, says how many more, and its Allow session covers edits",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,"Rename everywhere");const {codex,thread,cwd}=harness;
+  try{
+    const changes=Array.from({length:203},(_,index)=>({path:join(cwd,"src","module-"+String(index).padStart(3,"0")+".js"),kind:{type:"update",move_path:null},diff:""}));
+    codex.notify("item/started",{threadId:thread.id,turnId:"turn-1",item:{type:"fileChange",id:"codemod-1",status:"inProgress",changes}});
+    const asked=codex.ask("item/fileChange/requestApproval",{threadId:thread.id,turnId:"turn-1",itemId:"codemod-1",startedAtMs:Date.now()});
+    await expect(card(page)).toHaveCount(1);
+    const files=card(page).getByTestId("approval-files");
+    await expect.poll(async()=>(await files.innerText()).split("\n").length).toBe(201);
+    const lines=(await files.innerText()).split("\n");
+    expect(lines[0]).toBe("Edit "+join("src","module-000.js"));expect(lines[199]).toBe("Edit "+join("src","module-199.js"));expect(lines[200]).toBe("…and 3 more files");
+    await files.evaluate(element=>{element.scrollTop=element.scrollHeight});
+    await shoot(page,"file-change-more-files",()=>expect(files).toContainText("…and 3 more files"));
+    await card(page).getByRole("button",{name:"Allow edits this session",exact:true}).click();
+    await expect.poll(()=>asked.answers()).toEqual([{decision:"acceptForSession"}]);
+    await expect(card(page)).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+// The compaction is another window's /compact, as this window hears of it: Codex runs it as a turn of its own. (This window's own
+// /compact keeps its composer's next send until the compaction has ended.)
+test("/goal sent while Codex compacts the thread lets the compaction end, then starts the goal",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,"Release compaction");const {codex,thread}=harness;
+  try{
+    const composer=page.getByTestId("composer");
+    codex.startCompaction(thread.id);
+    await expect(page.getByText("Compacting context").first()).toBeVisible();await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
+    await composer.click();await page.keyboard.type("/goal Ship the release notes",{delay:8});await page.keyboard.press("Enter");
+    // The send waits, its draft held, while the compaction runs: nothing stops the compaction, and no goal is written yet. (A check
+    // that something does not happen: a moment passes first.)
+    await expect(composer).toHaveAttribute("placeholder",/^Sending/);
+    await page.waitForTimeout(1500);
+    expect(codex.sent("turn/interrupt")).toEqual([]);expect(codex.sent("thread/goal/set")).toEqual([]);
+    await shoot(page,"goal-waits-for-compaction",()=>expect(page.getByText("Compacting context").first()).toBeVisible());
+    expect(codex.finishCompaction()).toBe(true);
+    // Once it has ended, the goal is set and its first turn starts; the compaction ended as it should.
+    await expect.poll(()=>codex.turns.filter(turn=>!turn.compaction).length).toBe(1);
+    expect(codex.turns.find(turn=>turn.compaction).status).toBe("completed");
+    expect(codex.turns.find(turn=>!turn.compaction).input.filter(item=>item.type==="text").map(item=>item.text)).toEqual(["Start working toward this goal: Ship the release notes"]);
+    await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("active");
+    expect(codex.sent("turn/interrupt")).toEqual([]);
+    await expect(composer).toHaveValue("");
+    await expect(page.locator(".user-bubble").last()).toContainText("Ship the release notes");
   }finally{await harness.close()}
 });
 
