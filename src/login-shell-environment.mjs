@@ -78,8 +78,11 @@ export function readLoginShellEnvironment({env=process.env,shell=loginShell(env)
   });
 }
 
-// Puts what the login shell set into env (the desktop app's process.env, which the GUI server and every harness start from): its
-// PATH ahead of the inherited one, mise's record along with that PATH, and its JAVA_HOME where none is set. Resolves what was read.
+// Puts what the login shell set into env (the desktop app's process.env, which the GUI server starts from, and each harness from the
+// names runtime-environment.mjs passes it): its PATH ahead of the inherited one, mise's record along with that PATH, and its JAVA_HOME
+// where none is set. mise's record reaches what takes the whole environment (the terminal drawer's shell), and a harness only when its
+// profile lists __MISE_DIFF, as it can encode the values of mise's [env], secrets among them; a CLI started through a `mise x` wrapper
+// of the same name needs it, or mise rebuilds PATH with that wrapper first and it starts itself again. Resolves what was read.
 export async function hydrateLoginShellEnvironment(env=process.env,{platform=process.platform,...options}={}){
   if(platform!=="darwin"&&platform!=="linux")return {};
   const shell=await readLoginShellEnvironment({env,...options});

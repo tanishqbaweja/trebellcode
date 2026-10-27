@@ -2,19 +2,20 @@ import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// A runtime profile's editor says what its harness starts with: a harness now gets the person's proxy and toolchain variables
-// (runtime-environment.mjs), so the editor no longer says that only the baseline, the runtime's credentials and the approved names
-// pass, and it tells the person that a proxy or toolchain value holding a password or token needs its name listed. Codex is the
-// harness here because the server makes it active without its CLI (offline E2E has none); every harness's editor says the same.
+// A runtime profile's editor says what its harness starts with: a harness on this computer now gets the person's proxy and toolchain
+// variables (runtime-environment.mjs), one on an SSH or WSL environment only the baseline, its runtime's names and the approved
+// ones, so the editor says both; and it tells the person that a proxy or toolchain value holding a password or token needs its name
+// listed, as mise's __MISE_DIFF does (a CLI started through a mise x wrapper needs it, and it can hold the secrets mise sets). Codex is
+// the harness here because the server makes it active without its CLI (offline E2E has none); every harness's editor says the same.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/harness-environment/",import.meta.url));mkdirSync(shots,{recursive:true});
-const SAID="Trebell passes only a safe OS baseline, your proxy and toolchain variables (HTTPS_PROXY, JAVA_HOME and the like), this runtime's own variables, and the names listed here.";
-const APPROVE="A proxy or toolchain value that holds a password or token passes only when its name is listed.";
+const SAID="Trebell passes only a safe OS baseline, this runtime's own variables and the names listed here, and to a harness on this computer (not on an SSH or WSL environment) also your proxy and toolchain variables (HTTPS_PROXY, JAVA_HOME and the like).";
+const APPROVE="A proxy or toolchain value that holds a password or token passes only when its name is listed, as does mise's __MISE_DIFF, which can hold mise's secrets and which a CLI started through a mise x wrapper needs.";
 async function switchMode(page,mode){
   if(await page.locator("html").getAttribute("data-mode")!==mode)await page.locator("[data-testid=appearance-toggle]:visible").first().click();
   await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
 }
 
-test("a harness profile's editor says the harness gets the proxy and toolchain variables, and which values need their names listed",async({page,request})=>{
+test("a harness profile's editor says a harness on this computer gets the proxy and toolchain variables, and which values need their names listed",async({page,request})=>{
   test.setTimeout(90_000);
   await page.setViewportSize({width:1280,height:800});
   const before=await (await request.get("/api/settings")).json();

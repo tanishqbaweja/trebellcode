@@ -116,6 +116,14 @@ test("a Claude Code on an SSH or WSL host gets the names it always had, not the 
   assert.deepEqual(local,{PATH:"/usr/bin",CLAUDE_CODE_USE_BEDROCK:"1",AWS_REGION:"us-east-1"});
 });
 
+// The login shell's __MISE_DIFF (login-shell-environment.mjs) can encode the values of mise's [env], secrets among them: a harness
+// gets it only when its profile lists the name, as Settings' profile editor says.
+test("mise's __MISE_DIFF reaches a harness only when its profile lists it",()=>{
+  const parent={PATH:"/opt/mise/installs/claude/bin:/usr/bin",HOME:"/home/me",__MISE_DIFF:"eAFLzs8rSc0rUcjMS0nNy0vMS0nVyUoszkzNzwMAqesL4A"};
+  for(const kind of HARNESSES)assert.equal(buildRuntimeEnvironment(kind,{parent,platform:"darwin"}).__MISE_DIFF,undefined,kind);
+  assert.equal(buildRuntimeEnvironment("claude",{parent,approved:["__MISE_DIFF"],platform:"darwin"}).__MISE_DIFF,parent.__MISE_DIFF);
+});
+
 test("Native's command environment is what it was, with and without the toolchain: no proxy, no Claude Code switch",()=>{
   const parent=parentWith({CLAUDE_CODE_USE_BEDROCK:"1",AWS_REGION:"us-east-1",VERTEX_REGION_CLAUDE_4_6_SONNET:"europe-west1",http_proxy:"http://proxy:3128"});
   assert.deepEqual(buildRuntimeEnvironment("native",{parent,platform:"linux"}),{PATH:"/usr/local/bin:/usr/bin",HOME:"/home/me",LANG:"en_US.UTF-8"});
