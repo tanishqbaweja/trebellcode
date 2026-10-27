@@ -51,6 +51,15 @@ export function codexDefaultServiceTier(metadata={}){
   return wanted&&codexServiceTierOptions(metadata).some(option=>option.id===wanted)?wanted:CODEX_STANDARD_SERVICE_TIER;
 }
 
+// The tier of this model that the person's Codex config runs new threads at (config/read's service_tier, as T3
+// applyConfiguredCodexServiceTier reads it: Codex's "fast" is the model's "priority" tier), or null when the model lists none such.
+// The catalog gives it as the model's default tier, so the Speed picker shows it while nothing is picked, and no turn sends it.
+export function codexConfiguredServiceTier(metadata={},serviceTier=null){
+  const wanted=normalizeRuntimeModelServiceTier("codex",serviceTier);if(!wanted)return null;
+  if(wanted===CODEX_STANDARD_SERVICE_TIER)return CODEX_STANDARD_SERVICE_TIER;
+  return codexServiceTierOptions(metadata).find(option=>option.id===wanted||(wanted==="fast"&&option.id==="priority"))?.id||null;
+}
+
 // The Speed picker shows the tier the turn sends, else the tier Codex runs without one.
 export function codexServiceTierPickerValue(configured,metadata={},custom=null){
   return codexServiceTierForTurn({configured,custom,metadata})||codexDefaultServiceTier(metadata);

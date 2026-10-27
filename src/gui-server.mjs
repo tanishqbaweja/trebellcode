@@ -55,7 +55,7 @@ import { RepositoryKnowledgeService } from "./repository-knowledge-service.mjs";
 import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, parseRepositoryToolArguments, repositoryDynamicToolNamespace, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
 import { EventJournal, NOISY_METHOD } from "./event-journal.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
-import { preferredCodexDefaultModel } from "./codex-model-catalog.mjs";
+import { preferredCodexDefaultModel, withConfiguredCodexServiceTier } from "./codex-model-catalog.mjs";
 import { codexGoalRecord, codexGoalSetParams, codexGoalStatus } from "./codex-goal.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
 import { recordCodexRecoveryItemEvidence, staleCodexRecoveryState } from "./codex-recovery-evidence.mjs";
@@ -1744,6 +1744,11 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       await client.connect();
       const account=await client.request("account/read",{}).catch(()=>null);
       if(account?.requiresOpenaiAuth&&!account?.account)throw new Error("Codex is not authenticated. Run codex login or use Sign in from Agents & models.");
+      // The tier the person's own Codex config runs new threads at (config/read for no folder, so no project's layers, as T3 reads
+      // it), read beside the model list: each model that lists it takes it as its default tier, which the Speed picker shows while
+      // nothing is picked (withConfiguredCodexServiceTier). A Codex that cannot say within 3 s leaves the list as Codex gave it.
+      let tierTimer=null;
+      const configuredTier=Promise.race([client.request("config/read",{includeLayers:false}).then(answer=>answer?.config?.service_tier??null,()=>null),new Promise(resolve=>{tierTimer=setTimeout(resolve,3000,null)})]).finally(()=>clearTimeout(tierTimer));
       const rows=[],seen=new Set();let cursor=null;
       for(let page=0;page<20;page++){
         const result=await client.request("model/list",cursor?{cursor}:{});
@@ -1752,8 +1757,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         }
         const next=String(result?.nextCursor||"").trim();if(!next||next===cursor)break;cursor=next;
       }
-      const models=rows.map(row=>String(row.id||row.model));
-      const metadata=rows.map(row=>({
+      const models=rows.map(row=>String(row.id||row.model)),serviceTier=await configuredTier;
+      const metadata=withConfiguredCodexServiceTier(rows,serviceTier).map(row=>({
         ...row,id:String(row.id||row.model),name:String(row.displayName||row.id||row.model),provider:"codex",agent:"Codex",
         reasoningEfforts:Array.isArray(row.supportedReasoningEfforts)?row.supportedReasoningEfforts:undefined,
         defaultReasoningEffort:row.defaultReasoningEffort||null,
