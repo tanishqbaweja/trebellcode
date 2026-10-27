@@ -100,9 +100,13 @@ const npmPackageFor=(kind,version)=>kind==="opencode"&&parsedSemver(version)?.ma
 const releaseOrder=(kind,a,b)=>kind==="muse"?compareMuseVersions(a,b):compareSemver(parsedSemver(a),parsedSemver(b));
 // Muse Code runs where Trebell runs; a WSL or SSH environment has no Muse Code of Trebell's.
 const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Switch to the local environment to use it.";
-// A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start makes one)
-// reuses the last read of the same binary and version, and makes one only when there is none.
+// A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start and the
+// window's poll make one) reuses the last read of the same binary and version that was complete (openCodeCatalogComplete) until a fresh
+// check (Settings' listing and Refresh, a sign-in's follow-up, a switch, an install, a failed turn's recheck) reads again, and one that
+// was not for OPENCODE_INCOMPLETE_REUSE_MS: each read starts an `opencode serve`. (T3 Code checks such an OpenCode again on its
+// five-minute health interval.)
 const OPENCODE_CATALOG_REUSE_MS=10_000;
+const OPENCODE_INCOMPLETE_REUSE_MS=5*60_000;
 const OPENCODE_STATUS_TIMEOUT_MS=20_000;
 // How long after it began Settings' harness list waits for a newest-release read still on its way (T3 publishes the list first and
 // the release after it): a registry or an npm that does not answer never holds the list back for longer.
@@ -243,12 +247,25 @@ export function parseOpenCodeAuthList(output){
   const connected=(Number.isFinite(credentials)?credentials:0)+(Number.isFinite(environment)?environment:0);
   return {connected,authenticated:known&&connected>0?true:null};
 }
-// T3 Code's OpenCode status message, from the connected providers OpenCode's server lists.
-export function openCodeStatusMessage(connected,{external=false}={}){
-  const count=Math.max(0,Number(connected)||0);
-  if(count>0)return `${count} upstream provider${count===1?"":"s"} connected through ${external?"the configured OpenCode server":"OpenCode"}.`;
+// T3 Code's OpenCode status message, from the connected providers OpenCode's server lists and the models it lists for them.
+export function openCodeStatusMessage(connected,{external=false,models=null}={}){
+  const count=Math.max(0,Number(connected)||0),where=external?"the configured OpenCode server":"OpenCode";
+  if(count>0&&models===0)return `${count} upstream provider${count===1?" is":"s are"} connected through ${where}, but it lists no models yet. Press Refresh to check again.`;
+  if(count>0)return `${count} upstream provider${count===1?"":"s"} connected through ${where}.`;
   return external?"Connected to the configured OpenCode server, but it did not report any connected upstream providers.":"OpenCode is available, but it did not report any connected upstream providers.";
 }
+// OpenCode is ready once upstream providers are connected and it lists models for them (T3 Code). Its answer is complete, and kept, when
+// nothing in it is pending either: a command, skill or agent list that timed out or failed, or an OpenCode 2 model list still changing.
+const openCodeCatalogReady=catalog=>Boolean(catalog?.connectedProviders?.length&&catalog?.models?.length);
+const openCodeCatalogComplete=catalog=>openCodeCatalogReady(catalog)&&!catalog?.pending?.length;
+// A profile's own OpenCode server that refused the password: a 401 or 403 said as a status, or Unauthorized or Forbidden. The digits alone
+// are not one, as a port or a path can hold them (http://127.0.0.1:4010); T3 Code reads them as strictly.
+export function openCodeServerRefused(error){
+  const text=String(error?.message||error||"");
+  return /\b(?:unauthorized|forbidden)\b/i.test(text)||/\b(?:unexpected)?status(?:\s+code)?(?:\s*[:=]\s*|\s+)(?:401|403)\b/i.test(text)||/\bhttp(?:\/\d(?:\.\d)?)?\s+(?:401|403)\b/i.test(text);
+}
+// OpenCode's own answer for a profile, from its 1.x or 2.x server: its version chooses the client, as it does for the relay and Git text.
+function readOpenCodeCatalog({version=null,...options}={}){return (String(version||"").startsWith("2.")?discoverOpenCode2ModelCatalog:discoverOpenCodeModelCatalog)(options)}
 // Where a command runs from, as cross-spawn finds it: the path itself, or the first match on PATH (with PATHEXT on Windows).
 export function commandOnPath(command,{env=process.env,platform=process.platform,exists=existsSync}={}){
   const value=String(command||"").trim();if(!value)return null;
@@ -882,30 +899,33 @@ export class AgentRuntimeManager{
     return {...advisory,canUpdate:true,command};
   }
   #openCodeCatalogs=new Map();
+  // How a profile's catalog is read (readOpenCodeCatalog); tests stand in for OpenCode here.
+  openCodeCatalogReader=readOpenCodeCatalog;
   // OpenCode's own answer for a profile (its connected models and providers, and its commands, skills and agents), from one managed
-  // server or the profile's server, kept per binary and version. Readers at the same time share one read; a failed read is not kept.
-  async #openCodeCatalog(instance,{version=null,reuseMs=OPENCODE_CATALOG_REUSE_MS}={}){
+  // server or the profile's server, kept per binary and version: a complete one for reuseMs, one that is not for incompleteMs. Readers
+  // at the same time share one read; a failed read is not kept.
+  async #openCodeCatalog(instance,{version=null,reuseMs=OPENCODE_CATALOG_REUSE_MS,incompleteMs=reuseMs}={}){
     const command=this.executable(instance),key=[instance.id,command,instance.serverUrl||"",version||""].join("|"),cached=this.#openCodeCatalogs.get(key);
     if(cached?.pending)return await cached.pending;
-    if(cached&&Date.now()-cached.at<reuseMs)return cached.value;
-    const discover=String(version||"").startsWith("2.")?discoverOpenCode2ModelCatalog:discoverOpenCodeModelCatalog;
-    const pending=discover({command,cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null});
+    if(cached&&this.now()-cached.at<(cached.complete?reuseMs:incompleteMs))return cached.value;
+    const pending=Promise.resolve().then(()=>this.openCodeCatalogReader({version,command,cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null}));
     this.#openCodeCatalogs.set(key,{pending});
     try{
       const value=await pending;
-      const emptyV2=String(version||"").startsWith("2.")&&!(Array.isArray(value?.models)&&value.models.length);
-      if(emptyV2)this.#openCodeCatalogs.delete(key);else this.#openCodeCatalogs.set(key,{at:Date.now(),value});return value;
+      if(this.#openCodeCatalogs.get(key)?.pending===pending)this.#openCodeCatalogs.set(key,{at:this.now(),value,complete:openCodeCatalogComplete(value)});
+      return value;
     }catch(error){
       if(this.#openCodeCatalogs.get(key)?.pending===pending)this.#openCodeCatalogs.delete(key);
       throw error;
     }
   }
-  // A status check's provider list: the last one read for this binary and version, or a new read, which may take this long.
-  async #openCodeStatusCatalog(instance,version){
+  // A status check's provider list: the last complete one read for this binary and version, one that is not if it was read within
+  // OPENCODE_INCOMPLETE_REUSE_MS, or a new read (always for a fresh check), which may take this long.
+  async #openCodeStatusCatalog(instance,version,{fresh=false}={}){
     let timer;
     try{
       return await Promise.race([
-        this.#openCodeCatalog(instance,{version,reuseMs:Number.POSITIVE_INFINITY}),
+        this.#openCodeCatalog(instance,{version,...(fresh?{reuseMs:0}:{reuseMs:Number.POSITIVE_INFINITY,incompleteMs:OPENCODE_INCOMPLETE_REUSE_MS})}),
         new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error(`OpenCode did not answer within ${OPENCODE_STATUS_TIMEOUT_MS/1000} seconds.`)),OPENCODE_STATUS_TIMEOUT_MS);timer.unref?.()}),
       ]);
     }finally{clearTimeout(timer)}
@@ -1097,14 +1117,18 @@ export class AgentRuntimeManager{
       }
     }else if(instance.kind==="opencode"&&!this.processSpawner(instance,environmentId)){
       const versionLine=(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null,compatibility=runtimeCompatibility("opencode",versionLine);
-      const unavailable=message=>({id:instance.id,kind:instance.kind,name:def.name,available:false,installed:true,authenticated:null,protocol:def.protocol,managed:false,binary:command,version:versionLine,account:null,message,...(compatibility?{compatibility}:{})});
+      const unavailable=(message,fields={})=>({id:instance.id,kind:instance.kind,name:def.name,available:false,installed:true,authenticated:null,protocol:def.protocol,managed:false,binary:command,version:versionLine,account:null,message,...(compatibility?{compatibility}:{}),...fields});
       if(compatibility?.status==="unsupported")return unavailable(compatibility.message);
-      // T3 Code's status check: the upstream providers OpenCode's matching 1.x/2.x server adapter reports connected.
+      // T3 Code's status check: the upstream providers OpenCode's matching 1.x/2.x server adapter reports connected, ready once it lists
+      // models for them.
       let catalog;
-      try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null)}
-      catch(error){return unavailable(("OpenCode could not list its providers: "+(error?.message||String(error))).slice(0,500))}
-      const connected=Array.isArray(catalog?.connectedProviders)?catalog.connectedProviders.length:0;
-      authenticated=connected>0?true:null;account={connectedProviders:connected};message=openCodeStatusMessage(connected,{external:Boolean(instance.serverUrl)});
+      try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null,{fresh})}
+      catch(error){
+        if(instance.serverUrl&&openCodeServerRefused(error))return unavailable("The configured OpenCode server rejected the password. Check this profile's server URL and the OPENCODE_SERVER_PASSWORD in its environment.",{authenticated:false});
+        return unavailable(("OpenCode could not list its providers: "+(error?.message||String(error))).slice(0,500));
+      }
+      const connected=Array.isArray(catalog?.connectedProviders)?catalog.connectedProviders.length:0,models=Array.isArray(catalog?.models)?catalog.models.length:0;
+      authenticated=openCodeCatalogReady(catalog)?true:null;account={connectedProviders:connected};message=openCodeStatusMessage(connected,{external:Boolean(instance.serverUrl),models});
     }else if(instance.kind==="opencode"&&!instance.serverUrl){
       const auth=await this.#run(instance,["auth","list"],{timeoutMs:10_000,environmentId});
       if(auth.ok){
