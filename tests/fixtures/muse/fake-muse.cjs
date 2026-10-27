@@ -48,7 +48,8 @@
 //                       turn of its own. With MUSE_FAKE_REPORT_HOLD "1" the report
 //                       holds after its first sentence until a message comes, which Muse queues behind it (ifBusy queue): the report
 //                       then says the rest of its reply and ends, its turn/completed adding up the report's tokens, and the message's
-//                       turn runs, reporting its own
+//                       turn runs, reporting its own. With MUSE_FAKE_REPORT_COMMAND "1" the held report also runs `npm test`, which
+//                       ends once the message comes, before the rest of the report
 const fs=require("node:fs"),readline=require("node:readline");
 const log=entry=>{if(process.env.MUSE_FAKE_LOG)fs.appendFileSync(process.env.MUSE_FAKE_LOG,JSON.stringify(entry)+"\n")};
 const argv=process.argv.slice(2);
@@ -161,12 +162,15 @@ function runInBackground(sessionId,turnId,turn){
 }
 // The turn Muse starts itself to report on work that finished, with an id of its own.
 const heldReports=new Map();
+// The command a held report runs (MUSE_FAKE_REPORT_COMMAND).
+const reportCheck=(turnId,revision,status,extra={})=>({itemId:turnId+"-check",kind:"toolCall",turnId,revision,status,tool:"bash",callId:"call_"+turnId+"-check",args:JSON.stringify({command:"npm test"}),...extra});
 function reportTurn(sessionId,turnId){
   const turn={itemId:turnId+"-reply",text:""};running.set(turnId,turn);
   notify("turn/started",sessionId,{turnId,commandId:turnId});
   notify("item/started",sessionId,{item:{itemId:turn.itemId,kind:"agentMessage",turnId,revision:1,status:"inProgress",text:""}});
   reply(sessionId,turn,"The workflow with ping and pong agents is complete.");
   usageStep(sessionId,turnId,{prompt:36716,output:262,cacheRead:33393,reasoning:238});
+  if(process.env.MUSE_FAKE_REPORT_HOLD==="1"&&process.env.MUSE_FAKE_REPORT_COMMAND==="1")notify("item/started",sessionId,{item:reportCheck(turnId,1,"inProgress")});
   if(process.env.MUSE_FAKE_REPORT_HOLD==="1")return void heldReports.set(sessionId,{turnId,turn});
   setTimeout(()=>complete(sessionId,turnId),20);
 }
@@ -175,6 +179,7 @@ function reportTurn(sessionId,turnId){
 function releaseReport(sessionId,params){
   const {turnId,turn}=heldReports.get(sessionId);heldReports.delete(sessionId);
   setTimeout(()=>{
+    if(process.env.MUSE_FAKE_REPORT_COMMAND==="1")notify("item/completed",sessionId,{item:reportCheck(turnId,2,"completed",{visibleOutput:"All 12 tests passed."})});
     reply(sessionId,turn," The rest of the report.");
     usageStep(sessionId,turnId,{prompt:100,output:10});
     complete(sessionId,turnId,"completed",{inputTokens:36816,outputTokens:272,cachedTokens:33393,cacheReadTokens:33393,cacheWriteTokens:0,reasoningTokens:238});

@@ -384,6 +384,8 @@ export class MuseAgentSession{
     this.observed=new Map();this.workHeardAt=0;this.now=now;this.endedTurns=new Set();this.context=null;this.lastTurn=null;this.ready=false;
     // The calls of the commands Muse sent to the background whose end it told (backgroundTerminalCompletion).
     this.endedCalls=new Set();
+    // The rows a report left open when a message took it over (a command it still runs), followed in the report's turn until they end.
+    this.openRows=new Set();
     // The /compact under way (compact), until its compaction item ends.
     this.compaction=null;
   }
@@ -571,8 +573,12 @@ export class MuseAgentSession{
     for(const id of running.endedJoined)turn.endedJoined.add(id);
     // The report's tokens so far are its own turn's: its turn/completed counts toward this turn only past them.
     turn.recorded.set(running.turnId,{...running.usage});if(running.joinedUsage)turn.joinedUsage={...running.joinedUsage};
-    // What the report was saying goes on here from where it stopped (its replies and reasoning); its rows and work stay its own.
-    for(const [id,item] of running.items)if(item.kind==="agentMessage"||item.kind==="reasoning")turn.items.set(id,item);
+    // What the report was saying goes on here from where it stopped (its replies and reasoning). Its rows stay its own: its work, and a
+    // row still open (a command it runs), which settles in the report's turn as its work's rows do (observed, openRows).
+    for(const [id,item] of running.items){
+      if(item.kind==="agentMessage"||item.kind==="reasoning")turn.items.set(id,item);
+      else if(item.status==="inProgress"&&running.tools.has(id)&&!this.observed.has(id)){this.observed.set(id,running);this.openRows.add(id);this.workHeardAt=this.now()}
+    }
     for(const [id,said] of running.sent)turn.sent.set(id,said);
     turn.lastMessage=running.lastMessage;
     running.handOver({stopReason:"end_turn",providerMessageId:null,raw:this.#result(running,{turnId:running.turnId})});
@@ -619,7 +625,7 @@ export class MuseAgentSession{
   // The work still running that ended turns left (T3 settleObservedChildren) ends with the host, each row in the turn that started it.
   #settleObserved(reason){
     for(const [itemId,owner] of [...this.observed]){
-      this.observed.delete(itemId);
+      this.observed.delete(itemId);this.openRows.delete(itemId);
       const item=owner.items.get(itemId);if(item)this.#publish(owner,{...item,status:"failed",failureReason:text(item.failureReason)||reason});
     }
   }
@@ -1004,9 +1010,11 @@ export class MuseAgentSession{
     if(previous&&Number(previous.revision)>=Number(item.revision))return;
     const current={...item,...(Array.isArray(item.summary)?{summary:[...item.summary]}:{})};
     turn.items.set(item.itemId,current);
-    // Each word from that work, its end too, is the session's latest activity (workHeardAt).
+    // Each word from that work, its end too, is the session's latest activity (workHeardAt). A row a report left open (openRows) is
+    // followed the same way until it ends.
     if(this.observed.has(current.itemId)||runningWork(current,this.endedCalls))this.workHeardAt=this.now();
-    if(runningWork(current,this.endedCalls))this.observed.set(current.itemId,turn);else this.observed.delete(current.itemId);
+    if(runningWork(current,this.endedCalls)||this.openRows.has(current.itemId)&&current.status==="inProgress")this.observed.set(current.itemId,turn);
+    else{this.observed.delete(current.itemId);this.openRows.delete(current.itemId)}
     this.#publish(turn,current);
   }
   // The end of a command Muse sent to the background (backgroundTerminalCompletion, naming its call): the command holds the host no

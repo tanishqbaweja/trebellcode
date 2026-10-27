@@ -182,6 +182,45 @@ test("a report a message takes over goes on in the message's turn from where it 
   await session.close();
 });
 
+test("a command the report still runs when a message takes the report over stays the report's: its row goes on and settles in the report's turn, shown once, and nothing of it goes to the message's turn",async()=>{
+  const fixture=await workSession(),{session,seen,wakes}=fixture,sid=session.sessionId;
+  fixture.muse.write(event("turn/started",sid,{turnId:REPORT,commandId:REPORT}));
+  await until(()=>wakes.length===1,"the report turn");
+  const check=(revision,status,extra={})=>({itemId:"report-check",kind:"toolCall",turnId:REPORT,revision,status,tool:"bash",callId:"call_check",args:"{\"command\":\"npm test\"}",...extra});
+  fixture.muse.write(itemFrame("item/started",sid,check(1,"inProgress")));
+  await until(()=>rowsOf(seen,"report-check").length===1,"the command's row in the report");
+  const message=session.prompt([{type:"text",text:"And this"}]);
+  assert.equal((await settlesWithin(wakes[0],5000,"the report turn")).stopReason,"end_turn","the report ends in Trebell");
+  const {params:start}=await fixture.muse.next("turn/start");
+  // The command goes on after the takeover: its output, then its end.
+  fixture.muse.write(event("item/delta",sid,{itemId:"report-check",field:"output",delta:"12 tests"}));
+  fixture.muse.write(itemFrame("item/updated",sid,check(2,"inProgress",{visibleOutput:"12 tests passed"})));
+  fixture.muse.write(itemFrame("item/completed",sid,check(3,"completed",{visibleOutput:"12 tests passed",exitCode:0})));
+  await until(()=>rowsOf(seen,"report-check").at(-1)?.status==="completed","the command's end");
+  const entries=seen.filter(entry=>entry.update.toolCallId==="report-check");
+  assert.deepEqual(entries.map(entry=>[entry.turnKey,entry.update.sessionUpdate]),[[REPORT,"tool_call"],[REPORT,"tool_call_update"],[REPORT,"tool_call_update"],[REPORT,"tool_call_update"]],"one row, the report's, from its start to its end");
+  assert.deepEqual(entries.map(entry=>entry.update.rawOutput),["","12 tests","12 tests passed","12 tests passed"]);
+  complete(fixture,REPORT);complete(fixture,start.commandId);
+  assert.equal((await settlesWithin(message,5000,"the message's turn")).stopReason,"end_turn");
+  assert.equal(seen.some(entry=>entry.turnKey===start.commandId&&entry.update.toolCallId),false,"no row in the message's turn");
+  assert.equal(session.pendingBackgroundWork,false,"nothing of it holds the host");
+  await session.close();
+  // One still running when the host stops fails in the report's turn.
+  const second=await workSession(),sid2=second.session.sessionId;
+  second.muse.write(event("turn/started",sid2,{turnId:REPORT,commandId:REPORT}));
+  await until(()=>second.wakes.length===1,"the second report turn");
+  second.muse.write(itemFrame("item/started",sid2,{...check(1,"inProgress")}));
+  await until(()=>rowsOf(second.seen,"report-check").length===1,"the second command's row");
+  const next=second.session.prompt([{type:"text",text:"And that"}]);
+  await second.muse.next("turn/start");
+  assert.equal(second.session.pendingBackgroundWork,true,"the command runs on in the host");
+  second.child.exit(1);
+  await assert.rejects(next,/Muse Code exited unexpectedly/);
+  const last=second.seen.filter(entry=>entry.update.toolCallId==="report-check").at(-1);
+  assert.deepEqual([last.turnKey,last.update.status],[REPORT,"failed"]);
+  await second.session.close();
+});
+
 test("a report Muse starts after the relay asked for a message's turn and before the message went joins that turn, as no turn of its own, and Stop before the message went ends both",async()=>{
   for(const stop of [false,true]){
     const fixture=await workSession(),{session,seen,wakes}=fixture,sid=session.sessionId;
@@ -396,6 +435,24 @@ test("through the relay, a message sent while Muse's report turn runs takes it o
     const records=new Map(relay.usage.map(entry=>[entry.turnId,entry.usage]));
     assert.deepEqual(["inputTokens","outputTokens"].map(key=>records.get(report.id)?.[key]),[36716,262]);
     assert.deepEqual(["inputTokens","outputTokens"].map(key=>records.get(turn.id)?.[key]),[600,30]);
+  }finally{await relay.close()}
+});
+
+test("through the relay, a command Muse's report still runs when a message takes the report over settles in the report's turn, and the message's turn has no row of it",{timeout:120_000},async()=>{
+  const relay=await museRelay("trebell-muse-takeover-command-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_COMMAND:"1"}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
+    await relay.completed(thread.id,1);
+    const isCheck=item=>item?.type==="commandExecution"&&item.command==="npm test";
+    await eventually(()=>relay.notifications.some(item=>item.method==="item/started"&&isCheck(item.params.item)),"the report's command");
+    const report=relay.threadStore.get(thread.id).turns[1];
+    const {turn}=await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"And one more thing"}]});
+    await eventually(()=>relay.notifications.some(item=>item.method==="turn/completed"&&item.params.turn?.id===turn.id),"the message's turn to end");
+    const [,storedReport,message]=relay.threadStore.get(thread.id).turns;
+    assert.deepEqual(storedReport.items.filter(isCheck).map(item=>[item.status,item.aggregatedOutput]),[["completed","All 12 tests passed."]],"the command's one row settled in the report's turn");
+    assert.equal(message.items.some(isCheck),false,"no row of it in the message's turn");
+    assert.ok(relay.notifications.filter(item=>/^item\//.test(item.method)&&isCheck(item.params.item)).every(item=>item.params.turnId===report.id),"every update of its row named the report's turn");
   }finally{await relay.close()}
 });
 
