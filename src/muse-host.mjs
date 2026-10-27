@@ -10,6 +10,8 @@ import { normalizePermissionMode } from "./permission-policy.mjs";
 
 export const MUSE_STARTUP_TIMEOUT_MS=20_000;
 export const MUSE_SHUTDOWN_TIMEOUT_MS=10_000;
+// How long the frames Muse wrote last have to arrive once its process has exited, while a tool it started may hold its output.
+export const MUSE_EXIT_DRAIN_MS=1_000;
 const MUSE_SIGTERM_GRACE_MS=2_000;
 const MUSE_KILL_WAIT_MS=3_000;
 const MUSE_SCHEMA_VERSION=1;
@@ -80,13 +82,14 @@ async function within(promise,ms){
 
 // Stops a host's whole process tree: taskkill /T /F on Windows while the launcher still runs (cmd.exe waits for PowerShell, which
 // waits for muse-bin, so the tree hangs off it), as AcpClient.stop does; elsewhere SIGTERM to the process group the host leads,
-// then SIGKILL once its grace has passed.
-export async function stopMuseProcessTree(child,{platform=process.platform,exited=null,graceMs=MUSE_SIGTERM_GRACE_MS}={}){
-  if(!child?.pid)return;
+// then SIGKILL once its grace has passed. A launcher that has exited is left alone, as AcpClient.stop leaves one: Windows may have
+// given its pid to another process by then, whose tree taskkill would end, and its own tree is no longer found from that pid.
+export async function stopMuseProcessTree(child,{platform=process.platform,exited=null,graceMs=MUSE_SIGTERM_GRACE_MS,spawnFn=spawn}={}){
+  if(!child?.pid||child.exitCode!=null||child.signalCode!=null)return;
   if(platform==="win32"){
     await new Promise(resolve=>{
       let settled=false;const done=()=>{if(settled)return;settled=true;resolve()};
-      try{const killer=spawn("taskkill",["/PID",String(child.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});killer.once("exit",done);killer.once("error",done);wait(MUSE_KILL_WAIT_MS).promise.then(done)}catch{done()}
+      try{const killer=spawnFn("taskkill",["/PID",String(child.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});killer.once("exit",done);killer.once("error",done);wait(MUSE_KILL_WAIT_MS).promise.then(done)}catch{done()}
     });
     return;
   }
@@ -154,7 +157,13 @@ export class MuseHost{
     // process both settle exited, the first one winning. An error from a process still running (a signal it refused) does not.
     const settle=exit=>{if(this.exit)return;this.exit=exit;this.#settleExit(exit)};
     child.on("error",error=>{if(child.pid===undefined||child.exitCode!=null)settle({code:null,signal:null,error})});
-    child.once("close",(code,signal)=>settle({code,signal}));
+    // The end of the process is its raw exit (T3 1aa717967): 'close' waits for every holder of its stdout and stderr, and a tool
+    // Muse started (agent-browser and its Chrome, a background terminal) inherits them and can hold them long after Muse has gone.
+    // The frames Muse wrote last get MUSE_EXIT_DRAIN_MS to arrive; then its exit stands, and Trebell lets go of its ends of the
+    // pipes, which ends the connection.
+    let drain=null;
+    child.once("exit",(code,signal)=>{drain=setTimeout(()=>{settle({code,signal});this.#releasePipes(child)},MUSE_EXIT_DRAIN_MS);drain.unref?.()});
+    child.once("close",(code,signal)=>{clearTimeout(drain);settle({code,signal})});
     child.stdout.setEncoding("utf8");child.stderr.setEncoding("utf8");
     child.stderr.on("data",chunk=>{this.stderrTail=appendAcpStderrTail(this.stderrTail,chunk)});
     child.stderr.on("error",()=>{});
@@ -179,6 +188,7 @@ export class MuseHost{
     };
   }
   #endInput(){const stdin=this.child?.stdin;if(stdin&&!stdin.destroyed&&!stdin.writableEnded)try{stdin.end()}catch{}}
+  #releasePipes(child){for(const stream of [child.stdin,child.stdout,child.stderr])try{stream?.destroy()}catch{}}
 
   // Closes the connection, which ends Muse's input: Muse winds down and frees the session's writer lease. A host still running
   // shutdownTimeoutMs later has its whole process tree stopped.
@@ -197,7 +207,7 @@ export class MuseHost{
     }finally{
       deadline.cancel();
       // A process that holds the pipes after the tree was stopped no longer holds Trebell's ends of them.
-      if(!this.exit)for(const stream of [child.stdin,child.stdout,child.stderr])try{stream?.destroy()}catch{}
+      if(!this.exit)this.#releasePipes(child);
     }
   }
 }

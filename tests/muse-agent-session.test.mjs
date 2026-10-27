@@ -37,7 +37,17 @@ function fakeChild({pid=4242}={}){
   child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();
   child.kill=signal=>{child.signals.push(signal);return true};
   child.exit=(code=0,signal=null)=>{if(child.exitCode!==null)return;child.exitCode=code;child.stdout.end();child.stderr.end();child.emit("exit",code,signal);child.emit("close",code,signal)};
+  // The process ends while a tool it started (agent-browser and its Chrome, a background terminal) still holds its stdout and
+  // stderr: Node then emits 'exit' and no 'close', and the output never ends.
+  child.exitHeld=(code=0,signal=null)=>{if(child.exitCode!==null)return;child.exitCode=code;child.emit("exit",code,signal)};
   return child;
+}
+// Fails, instead of hanging, when a promise does not settle in time (real timers, also while a test has Node's mock timers on).
+const realClearTimeout=globalThis.clearTimeout;
+async function settlesWithin(promise,ms,label){
+  let timer;
+  try{return await Promise.race([promise,new Promise((_resolve,reject)=>{timer=realSetTimeout(()=>reject(new Error(`${label} did not settle within ${ms} ms`)),ms)})])}
+  finally{realClearTimeout(timer)}
 }
 
 const DEFAULT_HANDLERS={
@@ -544,6 +554,58 @@ test("a failed turn rejects with Muse's own error, and a host that exits during 
   await idle.session.close();
 });
 
+test("a host that exits during a turn while a tool it started holds its output ends the turn with its exit at once, lets go of its pipes, and closes without a tree stop",async()=>{
+  const stops=[];
+  const {session,child,muse,updates}=await startSession({options:{stopTree:async target=>{stops.push(target.pid)}}});
+  const running=session.prompt([{type:"text",text:"go"}]);
+  await muse.next("turn/start");
+  child.stderr.write("panic: lost the model stream\n");
+  setImmediate(()=>child.exitHeld(1));
+  await settlesWithin(assert.rejects(running,/^Error: Muse Code exited unexpectedly \(code 1\): panic: lost the model stream$/),5000,"the turn");
+  assert.equal(session.dead,true);
+  assert.equal(updates.filter(update=>update.sessionUpdate==="runtime_error").length,0,"the turn carries the reason, once");
+  assert.deepEqual([child.stdin.destroyed,child.stdout.destroyed,child.stderr.destroyed],[true,true,true],"Trebell let go of its ends of the pipes the tool still holds");
+  await settlesWithin(session.close(),1000,"close()");
+  assert.deepEqual(stops,[],"a launcher that has exited is not stopped: its pid may be another process's by now");
+});
+
+test("the frames Muse wrote just before it exited still reach the turn, and an idle host whose tool holds its output is reported gone once",async()=>{
+  const {session,child,muse,updates}=await startSession();
+  const running=session.prompt([{type:"text",text:"go"}]);
+  const {params:{commandId:turnId}}=await muse.next("turn/start");
+  // Muse exits as it ends the turn; its last frame is read a moment after the exit.
+  child.exitHeld(0);
+  realSetTimeout(()=>muse.notify("turn/completed",{sessionId:session.sessionId,viewCursor:"v",terminal:"completed",turnId}),100);
+  assert.equal((await settlesWithin(running,5000,"the turn")).stopReason,"end_turn");
+  await until(()=>session.dead,"the idle host to be seen gone",5000);
+  assert.deepEqual(updates.filter(update=>update.sessionUpdate==="runtime_error").map(update=>update.message),["Muse Code exited unexpectedly (code 0)."]);
+  await session.close();
+});
+
+test("close() of a host that exits as its input ends, while a tool it started holds its output, returns once it has exited, without a tree stop",async()=>{
+  const stops=[];
+  const {session,child,muse}=await startSession({muse:child=>new FakeMuse(child,{exitOnEof:false}),options:{stopTree:async target=>{stops.push(target.pid);target.exit(1)}}});
+  child.stdin.on("end",()=>setImmediate(()=>child.exitHeld(0)));
+  const started=Date.now();
+  await settlesWithin(session.close(),5000,"close()");
+  assert.ok(Date.now()-started<5000,"no wait for the 10 s shutdown budget");
+  assert.equal(muse.stdinEnded,true);
+  assert.deepEqual(stops,[]);
+  assert.deepEqual(session.host.exit,{code:0,signal:null},"the exit Muse ended with");
+});
+
+test("the process-tree stop leaves a launcher that has exited alone, and stops a running one's tree",async()=>{
+  const spawned=[],spawnFn=(command,args)=>{spawned.push([command,...args]);const killer=new EventEmitter();setImmediate(()=>killer.emit("exit",0));return killer};
+  const exited=Object.assign(fakeChild(),{exitCode:1}),signalled=Object.assign(fakeChild(),{exitCode:null,signalCode:"SIGKILL"});
+  await stopMuseProcessTree(exited,{platform:"linux",graceMs:0,spawnFn});
+  await stopMuseProcessTree(signalled,{platform:"linux",graceMs:0,spawnFn});
+  assert.deepEqual([...exited.signals,...signalled.signals],[],"no group signal for a launcher that has gone");
+  await stopMuseProcessTree(exited,{platform:"win32",spawnFn});
+  assert.deepEqual(spawned,[],"no taskkill for a pid Windows may have given another process");
+  await stopMuseProcessTree(fakeChild(),{platform:"win32",spawnFn});
+  assert.deepEqual(spawned,[["taskkill","/PID","4242","/T","/F"]]);
+});
+
 test("a command Muse does not answer within 30 s stops the host",async()=>{
   assert.equal(MUSE_REQUEST_TIMEOUT_MS,30_000);
   const {session,muse}=await startSession({options:{requestTimeoutMs:40}});
@@ -588,7 +650,9 @@ async function realLauncher(folder){
   await writeFile(server,[
     "const lines=require('node:readline').createInterface({input:process.stdin});",
     `const init=${JSON.stringify(INIT)};`,
-    "lines.on('line',line=>{const frame=JSON.parse(line);if(frame.method==='initialize')process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:frame.id,result:{...init,serverInfo:{name:'muse',version:String(process.env.MUSE_NO_AUTO_UPDATE)},userAgent:process.argv.slice(2).join(' ')+' | '+process.cwd(),museHome:String(process.pid)}})+'\\n')});",
+    // MUSE_FAKE_ORPHAN: the server starts a process that inherits its stdio and outlives it, as a browser a tool started does.
+    "const orphan=()=>{if(!process.env.MUSE_FAKE_ORPHAN)return {};const left=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit',detached:true,windowsHide:true});left.unref();return {orphanPid:left.pid}};",
+    "lines.on('line',line=>{const frame=JSON.parse(line);if(frame.method==='initialize')process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:frame.id,result:{...init,serverInfo:{name:'muse',version:String(process.env.MUSE_NO_AUTO_UPDATE)},userAgent:process.argv.slice(2).join(' ')+' | '+process.cwd(),museHome:String(process.pid),...orphan()}})+'\\n')});",
     "lines.on('close',()=>{if(process.env.MUSE_FAKE_HANG)setInterval(()=>{},1000);else process.exit(0)});",
   ].join("\n"));
   if(process.platform==="win32"){
@@ -622,6 +686,25 @@ test("a real launcher in a folder with spaces and cmd metacharacters starts Muse
     const alive=target=>{try{process.kill(target,0);return true}catch(error){return error.code==="EPERM"}};
     await until(()=>!alive(pid)&&!alive(server),"the launcher and its server to end",10000);
   }finally{await rm(folder,{recursive:true,force:true})}
+});
+
+test("a real host whose server exits while a process it started still holds its output is seen gone at once, and its close does not wait for the shutdown budget",{timeout:60000},async()=>{
+  const folder=await mkdtemp(join(tmpdir(),"trebell-muse-orphan-"));let orphan=0;
+  try{
+    const launcher=await realLauncher(folder),stops=[];
+    // The tree stop is recorded, not run: run against a launcher that has exited, taskkill could reach a process given its pid.
+    const host=new MuseHost({command:launcher,args:museServeArgs(),cwd:folder,env:{...process.env,MUSE_FAKE_ORPHAN:"1"},stopTree:async target=>{stops.push(target.pid)}});
+    await host.start({version:"1.6.0"});
+    orphan=Number(host.initializeResult.orphanPid);assert.ok(orphan>0,"the server started the process that holds its output");
+    const closing=Date.now();
+    await settlesWithin(host.close(),5000,"close()");
+    assert.ok(Date.now()-closing<5000,"no wait for the 10 s shutdown budget");
+    assert.deepEqual(stops,[],"no tree stop for a launcher that has exited");
+    assert.deepEqual(host.exit,{code:0,signal:null},"the launcher's own exit, once its server ended with its input");
+  }finally{
+    if(orphan)try{process.kill(orphan)}catch{}
+    await rm(folder,{recursive:true,force:true,maxRetries:20,retryDelay:100});
+  }
 });
 
 test("the process-tree stop ends a launcher and the process it started (real processes)",async()=>{
