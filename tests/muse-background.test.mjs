@@ -153,6 +153,32 @@ test("a message sent while Muse's report turn runs takes it over (T3: a user tur
   await session.close();
 });
 
+test("a report a message takes over goes on in the message's turn from where it stopped, its earlier words and tokens left to the report's own turn, so none shows or counts twice",async()=>{
+  const fixture=await workSession(),{session,seen,wakes}=fixture,sid=session.sessionId;
+  fixture.muse.write(event("turn/started",sid,{turnId:REPORT,commandId:REPORT}));
+  await until(()=>wakes.length===1,"the report turn");
+  fixture.muse.write(itemFrame("item/started",sid,{itemId:"report-reply",kind:"agentMessage",turnId:REPORT,revision:1,status:"inProgress",text:""}));
+  fixture.muse.write(event("item/delta",sid,{itemId:"report-reply",field:"text",delta:"The work is done."}));
+  fixture.muse.write(event("session/tokenUsage",sid,{turnId:REPORT,usage:{inputTokens:1000,outputTokens:50,cacheReadTokens:800,reasoningTokens:5},promptTokens:1000}));
+  await until(()=>replyOf(seen,REPORT)==="The work is done.","the report's first words");
+  const message=session.prompt([{type:"text",text:"And this"}]);
+  const report=await settlesWithin(wakes[0],5000,"the report turn");
+  assert.deepEqual([report.raw.usage.inputTokens,report.raw.usage.outputTokens],[1000,50],"the report's own tokens");
+  const {params:start}=await fixture.muse.next("turn/start");
+  // The report's reply goes on in the same message: only what it adds is the message's turn's.
+  fixture.muse.write(event("item/delta",sid,{itemId:"report-reply",field:"text",delta:" Nothing else."}));
+  fixture.muse.write(event("session/tokenUsage",sid,{turnId:REPORT,usage:{inputTokens:200,outputTokens:20},promptTokens:200}));
+  fixture.muse.write(itemFrame("item/completed",sid,{itemId:"report-reply",kind:"agentMessage",turnId:REPORT,revision:2,status:"completed",text:"The work is done. Nothing else."}));
+  complete(fixture,REPORT,"completed",{usage:{inputTokens:1200,outputTokens:70,cacheReadTokens:800,reasoningTokens:5}});
+  fixture.muse.write(event("session/tokenUsage",sid,{turnId:start.commandId,usage:{inputTokens:300,outputTokens:30},promptTokens:300}));
+  fixture.muse.write(itemFrame("item/completed",sid,{itemId:"answer",kind:"agentMessage",turnId:start.commandId,revision:1,status:"completed",text:"Done too."}));
+  complete(fixture,start.commandId,"completed",{usage:{inputTokens:300,outputTokens:30}});
+  const result=await settlesWithin(message,5000,"the message's turn");
+  // The rest of the report and the message's own reply and tokens, each once.
+  assert.deepEqual([replyOf(seen,start.commandId),result.raw.usage.inputTokens,result.raw.usage.outputTokens,result.raw.usage.cachedInputTokens],[" Nothing else.\n\nDone too.",500,50,0]);
+  await session.close();
+});
+
 test("Stop ends a report turn the message's turn took in, then that turn, and a turn Muse starts while Trebell's runs joins it the same way (T3 interruptTurn)",async()=>{
   const fixture=await workSession(),{session,seen,wakes}=fixture,sid=session.sessionId;
   fixture.muse.write(event("turn/started",sid,{turnId:REPORT,commandId:REPORT}));
@@ -282,5 +308,34 @@ test("through the relay, a workflow's rows settle in the turn that launched it w
     assert.equal(report.items.some(item=>item.type==="userMessage"),false);
     const workflowUpdates=relay.notifications.filter(item=>/^item\//.test(item.method)&&item.params.item?.tool?.startsWith("Workflow ping-pong"));
     assert.ok(workflowUpdates.length>3&&workflowUpdates.every(item=>item.params.turnId===launched.id),"every update of its rows named the turn that launched it");
+  }finally{await relay.close()}
+});
+
+test("through the relay, a message sent while Muse's report turn runs takes it over: the report's turn ends first with its own reply and tokens, then the message's turn runs to its end with the thread active, and no token is counted twice",{timeout:120_000},async()=>{
+  const relay=await museRelay("trebell-muse-takeover-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
+    await relay.completed(thread.id,1);
+    // Muse's report starts once the workflow is done, says its first sentence, and holds.
+    await eventually(()=>relay.notifications.some(item=>item.method==="item/agentMessage/delta"&&item.params.turnId===relay.threadStore.get(thread.id).turns[1]?.id),"the report turn's first words");
+    const report=relay.threadStore.get(thread.id).turns[1];
+    assert.equal(report.status,"inProgress");
+    const {turn}=await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"And one more thing"}]});
+    await relay.completed(thread.id,3);
+    const marks=relay.notifications.map((item,index)=>({item,index}));
+    const at=check=>marks.find(({item})=>check(item))?.index??-1;
+    const reportEnd=at(item=>item.method==="turn/completed"&&item.params.turn?.id===report.id),started=at(item=>item.method==="turn/started"&&item.params.turn?.id===turn.id),end=at(item=>item.method==="turn/completed"&&item.params.turn?.id===turn.id);
+    assert.ok(reportEnd>=0&&reportEnd<started,"the report's turn ended before the message's started");
+    assert.equal(marks.filter(({item,index})=>index>started&&index<end&&item.method==="turn/completed").length,0,"no turn ended while the message's ran");
+    assert.equal(marks.filter(({item,index})=>index>started&&index<end&&item.method==="thread/status/changed"&&item.params.threadId===thread.id&&item.params.status?.type!=="active").length,0,"the thread stayed active while the message's turn ran");
+    const turns=relay.threadStore.get(thread.id).turns,text=stored=>stored.items.filter(item=>item.type==="agentMessage").map(item=>item.text).join("");
+    assert.deepEqual(turns.map(stored=>stored.status),["completed","completed","completed"]);
+    assert.equal(text(turns[1]),"The workflow with ping and pong agents is complete.","the report keeps its own reply");
+    assert.match(text(turns[2]),/^The rest of the report\.\s*Muse fixture reply/,"the rest of Muse's report, then the message's reply, are the message's turn");
+    // Each token once: the report's steps before the message on the report's record, its rest and the message's on the message's.
+    const records=new Map(relay.usage.map(entry=>[entry.turnId,entry.usage]));
+    assert.deepEqual(["inputTokens","outputTokens"].map(key=>records.get(report.id)?.[key]),[36716,262]);
+    assert.deepEqual(["inputTokens","outputTokens"].map(key=>records.get(turn.id)?.[key]),[600,30]);
   }finally{await relay.close()}
 });

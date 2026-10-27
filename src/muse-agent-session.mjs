@@ -496,22 +496,21 @@ export class MuseAgentSession{
   async prompt(parts,{onDelivered=null}={}){
     if(!this.connection||!this.sessionId)throw new Error("Muse Code session is not started.");
     if(this.dead)throw this.deadError||new Error("Muse Code stopped.");
-    // A message sent while Muse's own report turn runs takes that turn over (T3: a user turn takes a held report turn): the report
-    // ends in Trebell, the rest of Muse's turn is this one's, and Stop ends both. Muse runs the message after it (ifBusy queue).
-    const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
-    if(running&&!running.wake)throw new Error("Muse Code already has a running turn.");
+    // A message sent while Muse's own report turn runs takes that turn over (takeOverWake): the turn that took it over for this
+    // message (the relay asks for it before it starts the message's turn) is this message's, else it is taken over here.
+    const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null,prepared=running?.successor&&!running.prompted?running:null;
+    if(running&&!running.wake&&!prepared)throw new Error("Muse Code already has a running turn.");
+    const refuse=error=>{if(prepared){prepared.admit(false);prepared.fail(error)}return error};
     // A mode's launch flags, profile and approvals are its host's (museLaunchPlan), and the relay relaunches for another mode between
     // turns. While Muse's own work holds this host (a compaction, or the report it writes) no host is relaunched, so a message in a mode
     // this host was not launched for is refused rather than run with the old mode's sandbox, profile and approvals.
-    if(this.launched&&this.needsRelaunch(this.permissionMode))throw new SessionRefusalError(this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:running?MUSE_REPORT_BLOCKS_MODE_CHANGE:"Muse Code's host was started for another mode, so the message was not sent. Send it again to start Muse Code in this mode.");
-    const input=museInputParts(parts),displayText=museDisplayText(parts);
-    const turn=this.#newTurn(this.connection.mintCommandId());
-    if(running){
-      for(const id of [running.turnId,...running.joined])turn.joined.add(id);
-      for(const id of running.endedJoined)turn.endedJoined.add(id);
-      running.handOver({stopReason:"end_turn",providerMessageId:null,raw:this.#result(running,{turnId:running.turnId})});
-    }
-    this.activePrompt=turn;this.lastTurn=turn;
+    if(this.launched&&this.needsRelaunch(this.permissionMode))throw refuse(new SessionRefusalError(this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:running?MUSE_REPORT_BLOCKS_MODE_CHANGE:"Muse Code's host was started for another mode, so the message was not sent. Send it again to start Muse Code in this mode."));
+    let input,displayText;
+    try{input=museInputParts(parts);displayText=museDisplayText(parts)}catch(error){throw refuse(error)}
+    if(running?.wake&&!this.takeOverWake())throw new Error("Muse Code already has a running turn.");
+    let turn=prepared||(running?.wake?this.activePrompt:null);
+    if(!turn){turn=this.#newTurn(this.connection.mintCommandId());this.activePrompt=turn;this.lastTurn=turn}
+    turn.prompted=true;
     try{
       let ack;
       try{
@@ -540,14 +539,40 @@ export class MuseAgentSession{
     }finally{if(this.activePrompt===turn)this.activePrompt=null}
   }
 
-  // wake: a turn Muse started itself (#turnStarted). joined: Muse's turns this one took in (its report turn, a turn Muse started
-  // meanwhile), endedJoined the ones of those that ended. usage: the token counts of its model steps; joinedUsage what turn/completed
-  // added up for the turns it took in. rows: what each subagent's and workflow's row last showed; labels: workflow agents' labels.
+  // A message sent while Muse's own report turn runs takes that turn over (T3: a user turn takes a held report turn, approvals
+  // included). The report ends in Trebell with what it said so far and its tokens, its cards stay to answer, and the turn that takes it
+  // over is the session's from here on, so nothing Muse sends meanwhile is lost: the rest of Muse's turn is the message's, Stop ends
+  // both, and Muse runs the message after it (ifBusy queue). The relay asks for it before it starts the message's turn, so the report's
+  // turn has ended in the thread first (agent-relay turn/start); prompt then sends the message. False when no report runs, or when
+  // the message needs another host, which prompt refuses.
+  takeOverWake(){
+    const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
+    if(!running?.wake||!this.connection||this.dead||this.closed||(this.launched&&this.needsRelaunch(this.permissionMode)))return false;
+    const turn=this.#newTurn(this.connection.mintCommandId());turn.successor=true;
+    for(const id of [running.turnId,...running.joined])turn.joined.add(id);
+    for(const id of running.endedJoined)turn.endedJoined.add(id);
+    // The report's tokens so far are its own turn's: its turn/completed counts toward this turn only past them.
+    turn.recorded.set(running.turnId,{...running.usage});if(running.joinedUsage)turn.joinedUsage={...running.joinedUsage};
+    // What the report was saying goes on here from where it stopped (its replies and reasoning); its rows and work stay its own.
+    for(const [id,item] of running.items)if(item.kind==="agentMessage"||item.kind==="reasoning")turn.items.set(id,item);
+    for(const [id,said] of running.sent)turn.sent.set(id,said);
+    turn.lastMessage=running.lastMessage;
+    this.activePrompt=turn;this.lastTurn=turn;
+    turn.done.then(()=>{},()=>{}).then(()=>{if(this.activePrompt===turn)this.activePrompt=null});
+    running.handOver({stopReason:"end_turn",providerMessageId:null,raw:this.#result(running,{turnId:running.turnId})});
+    return true;
+  }
+
+  // wake: a turn Muse started itself (#turnStarted). successor: a turn that took one over (takeOverWake), prompted once its message
+  // went. joined: Muse's turns this one took in (its report turn, a turn Muse started meanwhile), endedJoined the ones of those that
+  // ended. usage: the token counts of its model steps; joinedUsage what turn/completed added up for the turns it took in, past what
+  // a report it took over had already counted (recorded). rows: what each subagent's and workflow's row last showed; labels: workflow
+  // agents' labels.
   #newTurn(turnId,{wake=false}={}){
     let settle,fail,admit;
     const done=new Promise((resolve,reject)=>{settle=resolve;fail=reject});
     const admitted=new Promise(resolve=>{admit=resolve});
-    const turn={turnId,wake,joined:new Set(),endedJoined:new Set(),usage:{steps:0,reported:false,input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0},joinedUsage:null,rows:new Map(),labels:new Map(),
+    const turn={turnId,wake,successor:false,prompted:false,joined:new Set(),endedJoined:new Set(),usage:{steps:0,reported:false,input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0},joinedUsage:null,recorded:new Map(),rows:new Map(),labels:new Map(),
       stopRequested:false,settled:false,items:new Map(),sent:new Map(),tools:new Set(),lastMessage:null,done,admitted,admit};
     turn.settle=value=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,value?.stopReason==="cancelled"?"cancelled":"completed");settle(value)};
     turn.fail=error=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,"failed");fail(error)};
@@ -639,6 +664,12 @@ export class MuseAgentSession{
     if((!turn||turn.settled)&&this.compaction){this.compaction.fail(new Error(MUSE_COMPACTION_STOPPED));return void this.#lose(MUSE_COMPACTION_STOPPED,{stop:true,quiet:true})}
     if(!turn||turn.settled)return;
     turn.stopRequested=true;this.#withdrawRequests(entry=>!entry.child);
+    // A turn that took Muse's report over for a message never sent (Stop came first): the report is stopped, and the turn ends here.
+    if(turn.successor&&!turn.prompted){
+      for(const id of turn.joined)if(!turn.endedJoined.has(id))try{await this.#command("turn/interrupt",{sessionId:this.sessionId,turnId:id})}catch{}
+      if(!turn.prompted){turn.admit(false);turn.settle({stopReason:"cancelled",interrupted:true,providerMessageId:null})}
+      return;
+    }
     if(!(await turn.admitted)||turn.settled)return;
     // Muse runs a turn this one took in first, so Stop ends it too (T3 interruptTurn).
     for(const id of turn.joined)if(!turn.endedJoined.has(id)&&!turn.settled)try{await this.#command("turn/interrupt",{sessionId:this.sessionId,turnId:id})}catch{}
@@ -884,12 +915,13 @@ export class MuseAgentSession{
     turn.done.then(()=>{},()=>{}).then(()=>{if(this.activePrompt===turn)this.activePrompt=null});
     try{this.onWakeTurn(turn.done)}catch{}
   }
-  // A turn this one took in ended: Stop no longer ends it, and its totals count toward this turn's.
+  // A turn this one took in ended: Stop no longer ends it, and its totals count toward this turn's, past what a report this turn took
+  // over had counted for its own turn (recorded), so no token counts twice.
   #joinedCompleted(turn,turnId,params){
     turn.endedJoined.add(turnId);this.#rememberEnded(turnId);
     const counts=museTokenCounts(params.usage);if(!counts)return;
-    const sum=turn.joinedUsage||(turn.joinedUsage={input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0});
-    for(const key of Object.keys(sum))sum[key]+=counts[key];
+    const sum=turn.joinedUsage||(turn.joinedUsage={input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0}),recorded=turn.recorded.get(turnId);
+    for(const key of Object.keys(sum))sum[key]+=Math.max(0,counts[key]-(Number(recorded?.[key])||0));
   }
   // The latest usage report a quota stop reads its reset from, also kept for the Usage page by the Muse home it is of.
   #usageChanged(params){

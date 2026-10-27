@@ -1378,13 +1378,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
 
   // A harness answers on its own when background work it started finishes (T3 Code's wake turns: Claude Code's background
   // tasks, Grok's task prompts): that answer is a turn of its own, with no user message.
+  // Its settlement is kept by session (wakeSettlements): a message that takes a Muse Code report turn over waits for it (turn/start).
+  const wakeSettlements=new WeakMap();
   function startWakeTurn(threadId,promptPromise,context){
     const thread=threadStore.get(threadId),session=sessions.get(threadId);
     if(!thread||!session){promptPromise.catch(()=>{});return}
     endFailureWait(thread.id);
     const turn=threadStore.addTurn(thread.id,{inputText:"",status:"inProgress"});session.__assistant="";session.__usage=null;
     emit("turn/started",{threadId:thread.id,turn});emit("thread/status/changed",{threadId:thread.id,status:{type:"active",activeFlags:[]}});
-    settlePrompt({thread,turn,session,promptPromise,model:thread.model||null,context});
+    wakeSettlements.set(session,settlePrompt({thread,turn,session,promptPromise,model:thread.model||null,context}));
   }
 
   async function recoverPending(context){
@@ -2082,6 +2084,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(send?.stopped)throw stoppedBeforeTurn();
       // An earlier turn that failed and still waits on its harness's recheck ends before this one starts.
       endFailureWait(thread.id);
+      // A message that takes over the report Muse Code writes itself ends the report's turn first, with its own reply and tokens, so the
+      // thread and the window show this turn running after it (MuseAgentSession.takeOverWake).
+      if(session instanceof MuseAgentSession&&session.takeOverWake())await wakeSettlements.get(session)?.catch(()=>{});
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),inputFiles:fileInputs(params.input),status:"inProgress"});session.__assistant="";
       if(session instanceof NativeAgentSession)session.__liveTurnId=turn.id;
       // The stored message is the redacted one: a secret pasted into the first message never reaches the thread list.

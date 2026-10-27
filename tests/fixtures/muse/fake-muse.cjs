@@ -35,7 +35,10 @@
 //                       whose result is ready MUSE_FAKE_SUBAGENT_MS (200) ms later; two model steps report their tokens
 //   "run workflow"      launches the ping-pong workflow and completes the turn while it runs; its agents ping and pong run
 //                       MUSE_FAKE_WORKFLOW_MS (300) ms apart, pong failing on its budget, and MUSE_FAKE_REPORT_DELAY_MS (0) ms after
-//                       the workflow has completed Muse starts a report turn of its own
+//                       the workflow has completed Muse starts a report turn of its own. With MUSE_FAKE_REPORT_HOLD "1" the report
+//                       holds after its first sentence until a message comes, which Muse queues behind it (ifBusy queue): the report
+//                       then says the rest of its reply and ends, its turn/completed adding up the report's tokens, and the message's
+//                       turn runs, reporting its own
 const fs=require("node:fs"),readline=require("node:readline");
 const log=entry=>{if(process.env.MUSE_FAKE_LOG)fs.appendFileSync(process.env.MUSE_FAKE_LOG,JSON.stringify(entry)+"\n")};
 const argv=process.argv.slice(2);
@@ -58,12 +61,13 @@ function reply(sessionId,turn,text){
   turn.text+=text;
   notify("item/delta",sessionId,{itemId:turn.itemId,field:"text",delta:text});
 }
-function complete(sessionId,turnId,terminal="completed"){
+function complete(sessionId,turnId,terminal="completed",usage=null){
   const turn=running.get(turnId);if(!turn)return;running.delete(turnId);
   notify("item/completed",sessionId,{item:{itemId:turn.itemId,kind:"agentMessage",turnId,revision:2,status:terminal==="completed"?"completed":"interrupted",text:turn.text}});
-  notify("turn/completed",sessionId,{turnId,terminal});
+  notify("turn/completed",sessionId,{turnId,terminal,...(usage?{usage}:{})});
 }
-function startTurn(sessionId,params){
+// usage: the turn reports a model step's tokens and adds them up on its turn/completed, as a message queued behind a report does.
+function startTurn(sessionId,params,{usage=null}={}){
   const state=sessions.get(sessionId),turnId=params.commandId,turn={itemId:turnId+"-reply",text:""};running.set(turnId,turn);
   if(state)state.lastTurnId=turnId;
   const words=(params.input||[]).filter(part=>part.type==="text").map(part=>part.text).at(-1)||"";
@@ -83,8 +87,9 @@ function startTurn(sessionId,params){
     return setTimeout(()=>{reply(sessionId,turn,"Muse fixture reply after a retry.");complete(sessionId,turnId)},Number(process.env.MUSE_FAKE_RETRY_MS||400));
   }
   reply(sessionId,turn,`Muse fixture reply on ${state?.modelId||"Muse's default model"} at ${params.reasoningEffort||"Muse's default"} effort.`);
+  if(usage)usageStep(sessionId,turnId,usage);
   const hold=process.env.MUSE_FAKE_HOLD==="1"||(params.input||[]).some(part=>part.type==="text"&&/hold until steered/i.test(part.text));
-  if(!hold)setTimeout(()=>complete(sessionId,turnId),20);
+  if(!hold)setTimeout(()=>complete(sessionId,turnId,"completed",usage?{inputTokens:usage.prompt,outputTokens:usage.output,cachedTokens:0,cacheReadTokens:0,cacheWriteTokens:0,reasoningTokens:0}:null),20);
   if(/exit when idle/i.test(words))setTimeout(()=>{process.stderr.write("panic: the model stream went away\n");process.exit(1)},300);
 }
 // A model step's tokens and the context they leave, as Muse 1.4.13 reports them (session/tokenUsage, session/contextUsage).
@@ -127,13 +132,26 @@ function runWorkflow(sessionId,turnId,turn){
   },step*(revisions.length+1));
 }
 // The turn Muse starts itself to report on work that finished, with an id of its own.
+const heldReports=new Map();
 function reportTurn(sessionId,turnId){
   const turn={itemId:turnId+"-reply",text:""};running.set(turnId,turn);
   notify("turn/started",sessionId,{turnId,commandId:turnId});
   notify("item/started",sessionId,{item:{itemId:turn.itemId,kind:"agentMessage",turnId,revision:1,status:"inProgress",text:""}});
   reply(sessionId,turn,"The workflow with ping and pong agents is complete.");
   usageStep(sessionId,turnId,{prompt:36716,output:262,cacheRead:33393,reasoning:238});
+  if(process.env.MUSE_FAKE_REPORT_HOLD==="1")return void heldReports.set(sessionId,{turnId,turn});
   setTimeout(()=>complete(sessionId,turnId),20);
+}
+// A message queued behind the held report: the report says the rest of its reply in the same message and ends, with the tokens of
+// both its model steps, and then the message's turn runs.
+function releaseReport(sessionId,params){
+  const {turnId,turn}=heldReports.get(sessionId);heldReports.delete(sessionId);
+  setTimeout(()=>{
+    reply(sessionId,turn," The rest of the report.");
+    usageStep(sessionId,turnId,{prompt:100,output:10});
+    complete(sessionId,turnId,"completed",{inputTokens:36816,outputTokens:272,cachedTokens:33393,cacheReadTokens:33393,cacheWriteTokens:0,reasoningTokens:238});
+    setTimeout(()=>startTurn(sessionId,params,{usage:{prompt:500,output:20}}),20);
+  },20);
 }
 const QUOTA_REFUSAL="API error 429: All credentials for model muse-wonder-1.0-contributor are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2031-05-04T10:45:52Z.) (after 10 provider attempts)";
 // The approval Muse asks before running `touch muse-approved.txt` (T3's recorded muse_permission), and how it settles.
@@ -210,7 +228,10 @@ const answers={
     return {commandId:params.commandId,status:"accepted"};
   },
   "session/compact":params=>compactSession(params),
-  "turn/start":params=>{setImmediate(()=>startTurn(params.sessionId,params));return {commandId:params.commandId,status:"accepted",turnId:params.commandId,startedNewTurn:true,disposition:"started"}},
+  "turn/start":params=>{
+    if(heldReports.has(params.sessionId)){releaseReport(params.sessionId,params);return {commandId:params.commandId,status:"accepted",turnId:params.commandId,startedNewTurn:false,disposition:"queued"}}
+    setImmediate(()=>startTurn(params.sessionId,params));return {commandId:params.commandId,status:"accepted",turnId:params.commandId,startedNewTurn:true,disposition:"started"};
+  },
   "turn/steer":params=>{
     const turn=running.get(params.expectedTurnId);if(!turn)throw Object.assign(new Error("no running turn"),{code:-32030,kind:"commandRejected"});
     const words=(params.input||[]).filter(part=>part.type==="text").map(part=>part.text).join(" ");
