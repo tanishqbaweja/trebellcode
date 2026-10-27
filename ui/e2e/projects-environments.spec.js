@@ -1410,10 +1410,12 @@ test.describe("A project's icon",()=>{
     const card=page.locator(".project-card.active");
     await card.getByRole("button",{name:/Project identity/}).click();
     const monogram=card.getByRole("button",{name:"Monogram",exact:true}),image=card.getByRole("button",{name:"Image",exact:true});
+    // Waited for before the keyboard reaches Image: Playwright turns its file chooser interception on as the wait starts, and one
+    // key press right after could beat it (a click's checks never do), so the chooser Enter opened went unseen in 2 of 9 busy runs.
+    const files=await iconFiles(page),chooser=page.waitForEvent("filechooser");
     await monogram.focus();await expect(monogram).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(image).toBeFocused();
-    const files=await iconFiles(page),chooser=page.waitForEvent("filechooser");
     await page.keyboard.press("Enter");
     await (await chooser).setFiles(files.png);
     await expect.poll(async()=>(await listedProjects(request)).find(project=>project.path===boot.cwd)?.icon?.kind).toBe("image");
