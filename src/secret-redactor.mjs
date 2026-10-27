@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
 
 const PAIRING_URL_PATTERN=/https?:\/\/[^\s]*\/pair#[^\s]*/gi;
+// A Google sign-in page's address, with its state and the local address it answers to, as an agent's log prints it (T3 stderr.ts).
+const SIGN_IN_URL_PATTERN=/https?:\/\/accounts\.google\.com[^\s]*/gi;
 const URL_USERINFO_PATTERN=/([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@]+@/gi;
 const BEARER_TOKEN_PATTERN=/\bBearer\s+[A-Za-z0-9._\-+=/]+/gi;
 const BASIC_AUTH_PATTERN=/\bAuthorization:\s*Basic\s+\S+/gi;
@@ -51,6 +53,10 @@ export function redactSecretText(text,{environment=process.env,redactHomes=false
     .replace(SECRET_FLAG_PATTERN,"$1[redacted]");
   return trim?result.trim():result;
 }
+
+// What an ACP agent's log keeps of a Google sign-in page: [sign-in-url]. Only the agents' log excerpts take this (acp-client.mjs);
+// redactSecretText leaves such an address as it was.
+export function redactSignInUrls(text){return String(text??"").replace(SIGN_IN_URL_PATTERN,"[sign-in-url]")}
 
 export function redactSecretValue(value,{environment=process.env,maxDepth=10,maxArray=100,maxFields=200,_environmentSecrets=null}={},depth=0){
   if(depth>maxDepth)return "[bounded]";

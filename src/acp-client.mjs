@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import spawn from "cross-spawn";
-import { redactSecretText } from "./secret-redactor.mjs";
+import { redactSecretText, redactSignInUrls } from "./secret-redactor.mjs";
 import { createRunTemp } from "./acp-runtime-temp.mjs";
 import { readNdjsonLines } from "./ndjson-lines.mjs";
 
@@ -14,8 +14,9 @@ export function appendAcpStderrTail(current,chunk){
   return next.length<=ACP_STDERR_TAIL_MAX_CHARS?next:next.slice(-ACP_STDERR_TAIL_MAX_CHARS);
 }
 
+// An agent's log excerpt as an error or warning shows it: no secret, home folder or Google sign-in page address in it.
 export function sanitizeAcpStderrExcerpt(text,environment=process.env){
-  return redactSecretText(text,{environment,redactHomes:true,trim:true});
+  return redactSignInUrls(redactSecretText(text,{environment,redactHomes:true,trim:true}));
 }
 
 function processError(command,error){
