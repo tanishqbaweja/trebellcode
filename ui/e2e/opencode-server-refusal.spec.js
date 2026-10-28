@@ -13,7 +13,7 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 // through OpenCode's real discovery; only the profile's --version is answered here.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/opencode-server-refusal/",import.meta.url));mkdirSync(shots,{recursive:true});
 const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
-const REFUSED_1="The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or start that server without OPENCODE_SERVER_PASSWORD.";
+const REFUSED_1="The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or leave it empty so Trebell Code starts OpenCode itself.";
 const REFUSED_2="The configured OpenCode server rejected the password. Check this profile's server URL and the OPENCODE_SERVER_PASSWORD in its environment.";
 async function switchMode(page,mode){
   if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").click();

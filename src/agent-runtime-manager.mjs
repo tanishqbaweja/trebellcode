@@ -272,11 +272,12 @@ export function openCodeServerRefused(error){
 }
 // What a refusal by a profile's own server says. Trebell sends an OpenCode 2 server the profile's OPENCODE_SERVER_PASSWORD (or
 // OPENCODE_PASSWORD), and an OpenCode 1.x server only when Trebell starts it, so for a 1.x server of the profile's own the password
-// in its environment cannot help.
+// in its environment cannot help. The advice leaves that server's password alone, all that guards a server that runs tools and shell
+// commands for whoever reaches its port: Trebell can start OpenCode itself instead.
 function openCodeServerRefusal(version){
   return String(version||"").startsWith("2.")
     ?"The configured OpenCode server rejected the password. Check this profile's server URL and the OPENCODE_SERVER_PASSWORD in its environment."
-    :"The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or start that server without OPENCODE_SERVER_PASSWORD.";
+    :"The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or leave it empty so Trebell Code starts OpenCode itself.";
 }
 // OpenCode's own answer for a profile, from its 1.x or 2.x server: its version chooses the client, as it does for the relay and Git text.
 function readOpenCodeCatalog({version=null,...options}={}){return (String(version||"").startsWith("2.")?discoverOpenCode2ModelCatalog:discoverOpenCodeModelCatalog)(options)}

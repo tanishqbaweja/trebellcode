@@ -37,7 +37,7 @@ test("an OpenCode 1.x server of the profile's own that answers with an empty 401
   const manager=await profileOn(t,{version:"1.18.32",serverUrl:await refusingServer(t,{generation:1})});
   const status=await manager.probe("opencode",{fresh:true});
   // Trebell sends no password to an OpenCode 1.x server it did not start, so the profile's OPENCODE_SERVER_PASSWORD would not help.
-  assert.deepEqual([status.available,status.authenticated,status.message],[false,false,"The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or start that server without OPENCODE_SERVER_PASSWORD."]);
+  assert.deepEqual([status.available,status.authenticated,status.message],[false,false,"The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or leave it empty so Trebell Code starts OpenCode itself."]);
 });
 
 test("an OpenCode server of the profile's own that is not there is not taken for a refusal",async t=>{

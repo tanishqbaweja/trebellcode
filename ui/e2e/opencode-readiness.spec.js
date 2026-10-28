@@ -64,7 +64,7 @@ test("Settings shows OpenCode connected after a provider sign-in and Refresh, no
     await switchMode(page,"dark");
     // The profile runs on a server of its own, which asks for a password: Trebell sends none to an OpenCode 1.x server it did not start.
     instance.serverUrl="http://127.0.0.1:4010";opencode.answer=new Error("Unauthorized");await refresh();
-    await expect(said).toHaveText("The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or start that server without OPENCODE_SERVER_PASSWORD.");
+    await expect(said).toHaveText("The configured OpenCode server asks for a password, which Trebell Code sends only to an OpenCode 1.x server it starts itself. Check this profile's server URL, or leave it empty so Trebell Code starts OpenCode itself.");
     await expect(action).toHaveText("Not ready");
     for(const mode of ["dark","light"]){
       await switchMode(page,mode);await row.scrollIntoViewIfNeeded();await expect(row).toBeInViewport({ratio:1});
