@@ -75,6 +75,7 @@ import { CODEX_STANDARD_SERVICE_TIER, configuredModelServiceTier, modelServiceTi
 import { configuredModelOptions, modelOptionSettingsWith, supportedModelOptions } from "../../src/model-options.mjs";
 import { codexReasoningEffortLabel } from "../../src/codex-model-catalog.mjs";
 import { codexErrorNotice, codexGoalsMissing, codexModelChoices, codexThreadSettings, codexTurnFailure, codexTurnInput, describeCodexGoal } from "./codex-turn-options.js";
+import { documentTextNote, noteDocumentTexts } from "./codex-turn-options.js";
 import { harnessInventory, harnessThreadOptions, harnessTurnOptions, relayThreadPreferredModel, serviceTierPickerTitle } from "./harness-turn-options.js";
 import ReasoningRow from "./components/ReasoningRow.jsx";
 import TurnActivityCard from "./components/TurnActivityCard.jsx";
@@ -4928,7 +4929,8 @@ export default function App(){
     if(!paths?.length)return {files:[],count:0,imageBytes:0};
     const body={paths};const environmentId=activeThreadRef.current?.providerMeta?.environmentId??settings.activeEnvironmentId;
     if(environmentId!==undefined)body.environmentId=environmentId;
-    return api("/api/attachments/validate",{method:"POST",body});
+    // Every send checks its files first: the answer names each document's extracted text, for a Codex message and a question's answer.
+    const result=await api("/api/attachments/validate",{method:"POST",body});noteDocumentTexts(result?.files);return result;
   }
   async function addContextAttachment({name,text,kind="context",label="Context",detail="",key=null}){const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});const [path]=await prepareAttachmentPaths([d.path]);return addContextPath(path,{kind,label,detail,key})}
   // The last citation file taken off the draft, by its chip's x or the shelf's, takes Cite's sentence with it: the files are counted,
@@ -5097,7 +5099,7 @@ export default function App(){
   function dismissGuardianDenial(review){setGuardianDenials(prev=>prev.filter(item=>item.reviewId!==review.reviewId))}
   // Questions wait in the order they came, one per request and per thread: the modal shows the first, and the next once it is answered
   // or dismissed. Each answer goes back on the socket that asked.
-  async function answerQuestion(answers,filesByQuestion={}){const current=questions[0];if(!current)return false;await validateAttachmentPaths(Object.values(filesByQuestion).flat());const result={};for(const q of current.params?.questions||[]){const values=[...(answers[q.id]||[])];const files=filesByQuestion[q.id]||[];if(files.length)values.push("Attached files:\n"+files.map(path=>"- "+path).join("\n"));result[q.id]={answers:values}}if(!current.client?.respond(current.id,{answers:result}))throw new Error("Runtime disconnected before the answer could be sent.");setQuestions(prev=>prev.filter(item=>item!==current));return true}
+  async function answerQuestion(answers,filesByQuestion={}){const current=questions[0];if(!current)return false;await validateAttachmentPaths(Object.values(filesByQuestion).flat());const result={};for(const q of current.params?.questions||[]){const values=[...(answers[q.id]||[])];const files=filesByQuestion[q.id]||[];if(files.length)values.push("Attached files:\n"+files.map(path=>"- "+path+documentTextNote(path)).join("\n"));result[q.id]={answers:values}}if(!current.client?.respond(current.id,{answers:result}))throw new Error("Runtime disconnected before the answer could be sent.");setQuestions(prev=>prev.filter(item=>item!==current));return true}
   async function cancelQuestion(){const current=questions[0];if(!current)return false;if(!current.client?.respond(current.id,{answers:{}}))throw new Error("Runtime disconnected before the question could be cancelled.");setQuestions(prev=>prev.filter(item=>item!==current));return true}
   function resolveElicitation(response){
     const current=elicitations[0];if(!current)return;

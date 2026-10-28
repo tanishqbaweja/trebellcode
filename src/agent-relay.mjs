@@ -12,7 +12,8 @@ import { threadHistoryHandoff } from "./thread-history-handoff.mjs";
 import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
 import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
-import { remoteEnvironmentImage, unreadableAttachment, withPromptAudioPath, withPromptImagePath } from "./prompt-attachments.mjs";
+import { remoteEnvironmentImage, unreadableAttachment, withPromptAudioPath, withPromptImagePath, withPromptTextPath } from "./prompt-attachments.mjs";
+import { ensureDocumentText } from "./document-text.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { MuseAgentSession } from "./muse-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
@@ -178,8 +179,9 @@ export function agentPermissionPolicyDecision(thread,request={},settings={}){
   });
 }
 
-// remote: the thread runs in a remote environment, where the composer keeps its attachments.
-async function acpPrompt(input=[],{remote=false}={}){
+// remote: the thread runs in a remote environment, where the composer keeps its attachments. home: Trebell's home, whose attachments
+// folder keeps the text extracted from an attached document.
+async function acpPrompt(input=[],{remote=false,home=null}={}){
   const out=[];
   for(const item of input){
     if(item?.type==="text")out.push({type:"text",text:String(item.text||"")});
@@ -192,7 +194,10 @@ async function acpPrompt(input=[],{remote=false}={}){
       // OpenCode 2 reads an attached image from its saved file, which the part keeps out of what the other harnesses are sent.
       out.push(withPromptImagePath({type:"image",mimeType:mime,data:data.toString("base64")},item.path));
     }else if(item?.type==="mention"){
-      out.push({type:"resource_link",uri:fileUri(item.path),name:String(item.name||item.path||"file")});
+      // A Word, Excel or other document's link keeps the file its text was extracted to, extracted now if its attaching did not, for
+      // each harness to name with it (T3 claims a message's attachments the same way). A remote environment's file is on its host.
+      const link={type:"resource_link",uri:fileUri(item.path),name:String(item.name||item.path||"file")};
+      out.push(remote?link:withPromptTextPath(link,await ensureDocumentText(item.path,{home})));
     }else if(item?.type==="localAudio"){
       // Audio is named by its saved path, as T3 Code names every attachment it does not send as content, and the harness opens it
       // with its own tools. The line keeps the file for Antigravity's session, which adds the audio after it when Antigravity takes audio.
@@ -205,8 +210,8 @@ async function acpPrompt(input=[],{remote=false}={}){
 
 // Every harness gets its working context fenced the same way (working-context-envelope.mjs), Trebell Native on every provider.
 // parts: the message's own parts when they are built already (turn/start reads a message's files before its turn exists).
-export async function contextualAgentPrompt(input=[],additionalContext={},{parts=null,remote=false}={}){
-  const prompt=parts||await acpPrompt(input,{remote});
+export async function contextualAgentPrompt(input=[],additionalContext={},{parts=null,remote=false,home=null}={}){
+  const prompt=parts||await acpPrompt(input,{remote,home});
   for(const item of prompt)attachNativePromptProvenance(item,{kind:"user_input"});
   return withWorkingContext(prompt,Object.entries(additionalContext||{}));
 }
@@ -703,6 +708,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // nothing in ACP says when that work ends. So is one whose harness can neither load nor resume a conversation, whose thread could
   // not go on in a new one. threadRequests counts the requests about each thread still being answered (see request).
   const sessionEnv=runtimeManager?.env||process.env,sessionUsed=new WeakMap(),sessionLeftWork=new WeakSet(),threadRequests=new Map();
+  // The home whose attachments folder keeps an attached document's extracted text: the GUI server's, whose process the relay runs in.
+  const documentHome=trebellHome(sessionEnv);
   const SESSION_IDLE_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_IDLE_MS):10*60_000;
   const SESSION_SWEEP_MS=Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS)>0?Number(sessionEnv.TREBELL_AGENT_SESSION_SWEEP_MS):60_000;
   let sessionSweep=null;
@@ -1298,7 +1305,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       threadStore.update(thread.id,{providerSessionId:sessionId,providerMeta:{...meta,setup:started.session}});
       beginHistoryHandoff(thread,{previousSessionId,sessionId,reason:error?.message});
       const pending=pendingHistoryHandoff(thread.id,turn.id,{excludeTurnId});
-      const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context});
+      const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context},{home:documentHome});
       return session.prompt([...prompt,...(Array.isArray(error?.steered)?error.steered:[]).flat()],{...promptOptions,messageId:randomUUID(),...handoffDelivery(thread.id,turn.id,pending)});
     };
   }
@@ -2119,7 +2126,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       }
       // The message's files are read before its turn exists: one Trebell cannot read refuses the send by its name, the draft kept,
       // and leaves no turn running behind it.
-      const messageParts=await acpPrompt(params.input||[],{remote:threadRunsRemote(thread)});
+      const messageParts=await acpPrompt(params.input||[],{remote:threadRunsRemote(thread),home:documentHome});
       if(send?.stopped)throw stoppedBeforeTurn();
       // An earlier turn that failed and still waits on its harness's recheck ends before this one starts.
       endFailureWait(thread.id);
@@ -2173,7 +2180,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const activeTurn=[...(thread.turns||[])].reverse().find(turn=>turn?.status==="inProgress");if(!activeTurn)throw new Error(`${label} has no active turn to steer.`);
         if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error(`The active ${label} turn changed before steering could be applied.`);
         const session=sessions.get(thread.id);if(!(session instanceof steerable))throw new Error(`The active ${label} session is unavailable for steering.`);
-        const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread)}));
+        const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread),home:documentHome}));
         const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env})},...fileInputs(params.input)]};
         threadStore.addItem(thread.id,activeTurn.id,item);emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});
         return {turnId:activeTurn.id,accepted:Boolean(result?.accepted),pending:Number(result?.pending)||0};
@@ -2182,7 +2189,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const activeTurn=[...(thread.turns||[])].reverse().find(turn=>["inProgress","running","starting"].includes(turn?.status));if(!activeTurn)throw new Error("Trebell Native has no active turn to steer.");
       if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error("The active Native turn changed before steering could be applied.");
       const session=sessions.get(thread.id);if(!(session instanceof NativeAgentSession))throw new Error("The active Native session is unavailable for steering.");
-      const prompt=await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread)}),result=session.steer(prompt),text=textOfInput(params.input||[]);
+      const prompt=await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread),home:documentHome}),result=session.steer(prompt),text=textOfInput(params.input||[]);
       const safeText=redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env});
       const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:safeText},...fileInputs(params.input)]};threadStore.addItem(thread.id,activeTurn.id,item);
       emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});

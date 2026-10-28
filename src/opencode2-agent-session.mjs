@@ -5,7 +5,7 @@ import { fileUri, fileUriPath } from "./file-uri.mjs";
 import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeReadOutput, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
-import { PROMPT_IMAGE_PATH } from "./prompt-attachments.mjs";
+import { PROMPT_IMAGE_PATH, textExtractedTo } from "./prompt-attachments.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
 
 const STOPPED=Symbol("opencode2-stopped");
@@ -34,7 +34,8 @@ function v2Rules(mode,{repositoryMcp=null,grants=[]}={}){
 }
 // OpenCode 2 takes an attachment as a URI it reads itself ({uri, name}), and refuses the whole prompt when one is missing (T3 Code). A
 // PNG, JPEG, GIF or WebP image whose saved file is there goes that way, and every attachment is named by its saved path, which the agent
-// opens with its own tools. A server of the profile's own may not see this machine's files: it gets the paths only.
+// opens with its own tools, a document with the file its text was extracted to. A server of the profile's own may not see this
+// machine's files: it gets the paths only.
 const NATIVE_IMAGES=Object.freeze({".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp"});
 const fileExists=path=>access(path).then(()=>true,()=>false);
 export async function openCode2PromptInput(parts=[],{external=false}={}){
@@ -46,7 +47,7 @@ export async function openCode2PromptInput(parts=[],{external=false}={}){
     const mime=pasted?String(part.mimeType||"").toLowerCase():NATIVE_IMAGES[extname(path).toLowerCase()]||"",native=Object.values(NATIVE_IMAGES).includes(mime);
     const kind=pasted||native?"image":"file",name=String(part.name||(path?basename(path):"")||kind);
     if(!path){text.push(pasted?`[Attached image "${name}" could not be sent: Trebell Code has no saved file for it]`:`[Attached file "${name}" is at: ${String(part.uri||"")}]`);continue}
-    text.push(`[Attached ${kind} "${name}" is saved at: ${path}]`);
+    text.push(`[Attached ${kind} "${name}" is saved at: ${path}${textExtractedTo(part)}]`);
     if(native&&!external&&await fileExists(path))files.push({uri:fileUri(path),name});
   }
   return {text:text.join("\n"),files};

@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { claudeCapabilities, claudeModelCatalog } from "./claude-capabilities.mjs";
 import { fileUriPath } from "./file-uri.mjs";
+import { textExtractedTo } from "./prompt-attachments.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
@@ -223,7 +224,8 @@ class MessageQueue{
 }
 
 // SDK user message content: images (png, jpeg, gif and webp only, as T3 Code allows) first, then the text blocks. Claude Code
-// expands a slash command or skill only from the last text block, so the user's own text stays last.
+// expands a slash command or skill only from the last text block, so the user's own text stays last. A file is named by its path,
+// and a document by the file its text was extracted to as well.
 export function claudeUserContent(parts=[]){
   const images=[],texts=[],links=[];
   for(const part of Array.isArray(parts)?parts:[]){
@@ -231,7 +233,7 @@ export function claudeUserContent(parts=[]){
       const mimeType=String(part.mimeType||part.mime_type||"").trim().toLowerCase();
       if(!CLAUDE_IMAGE_TYPES.has(mimeType))throw new Error(`Unsupported Claude image attachment type '${mimeType||"unknown"}'`);
       images.push({type:"image",source:{type:"base64",media_type:mimeType,data:String(part.data||"")}});
-    }else if(part?.type==="resource_link")links.push({type:"text",text:`Attached file: ${fileUriPath(part.uri)??String(part.uri||"")}`});
+    }else if(part?.type==="resource_link")links.push({type:"text",text:`Attached file: ${fileUriPath(part.uri)??String(part.uri||"")}${textExtractedTo(part)}`});
     else if(part?.type==="text"){const text=String(part.text||"");if(text)texts.push({type:"text",text})}
     else if(part)texts.push({type:"text",text:JSON.stringify(part)});
   }

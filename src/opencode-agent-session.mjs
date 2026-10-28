@@ -8,7 +8,9 @@ import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { Readable } from "node:stream";
 import spawn from "cross-spawn";
-import { fileUriPath } from "./file-uri.mjs";
+import { fileUri, fileUriPath } from "./file-uri.mjs";
+import { isDocumentTextPath } from "./document-text.mjs";
+import { PROMPT_TEXT_PATH, textExtractedTo } from "./prompt-attachments.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
@@ -20,16 +22,21 @@ const loadOpenCodeClients=()=>Promise.all([openCodeSdk??=import("@opencode-ai/sd
 const loadOpenCode2Client=()=>openCode2Client??=import("@opencode/client");
 
 // OpenCode reads a file part itself: it sends an image or a PDF to the model and reads any other file as text. Audio and video are
-// named by their saved path instead, as T3 Code names every attachment it does not send as an image, text or PDF.
+// named by their saved path instead, as T3 Code names every attachment it does not send as an image, text or PDF. A Word, Excel or
+// other document (document-text.mjs), which OpenCode would read as the bytes of its archive, goes as the text extracted from it,
+// named with the document's path; one Trebell has no text of is named by its path alone.
 const MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".pdf":"application/pdf",".md":"text/markdown",".json":"application/json",".txt":"text/plain"};
 const MEDIA=new Map([...[".mp3",".wav",".m4a",".ogg",".oga",".flac",".aac",".opus",".aiff"].map(extension=>[extension,"audio"]),...[".mp4",".mov",".mkv",".webm",".avi",".m4v",".mpeg",".mpg"].map(extension=>[extension,"video"])]);
-function openCodeBodyParts(parts){
-  return parts.map(part=>{
+export function openCodeBodyParts(parts){
+  return parts.flatMap(part=>{
     if(part.type==="text")return {type:"text",text:String(part.text||"")};
     if(part.type==="image")return {type:"file",mime:part.mimeType||"image/png",url:`data:${part.mimeType||"image/png"};base64,${part.data}`};
     if(part.type==="resource_link"){
-      const path=fileUriPath(part.uri)||"",extension=extname(path).toLowerCase(),media=MEDIA.get(extension);
-      if(media)return {type:"text",text:`[Attached ${media} "${part.name||basename(path)}" is saved at: ${path}]`};
+      const path=fileUriPath(part.uri)||"",extension=extname(path).toLowerCase(),media=MEDIA.get(extension),name=part.name||basename(path);
+      if(media)return {type:"text",text:`[Attached ${media} "${name}" is saved at: ${path}]`};
+      const textPath=part[PROMPT_TEXT_PATH];
+      if(textPath)return [{type:"text",text:`[Attached file "${name}" is saved at: ${path}${textExtractedTo(part)}]`},{type:"file",mime:"text/plain",filename:`${name}.txt`,url:fileUri(textPath)}];
+      if(isDocumentTextPath(path))return {type:"text",text:`[Attached file "${name}" is saved at: ${path}]`};
       return {type:"file",mime:MIME[extension]||"text/plain",filename:part.name||undefined,url:part.uri};
     }
     return {type:"text",text:JSON.stringify(part)};

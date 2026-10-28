@@ -35,14 +35,23 @@ export const CODEX_MAX_INPUT_CHARS=120_000;
 const IMAGE=/\.(png|jpe?g|gif|webp|bmp)$/i,AUDIO=/\.(mp3|wav|m4a|ogg|flac)$/i;
 function fileName(path){return String(path||"").split(/[\\/]/).pop()||"attachment"}
 
+// The file each attached Word, Excel or other document's text was extracted to, as the GUI server's check of a message's files before
+// it goes answers it (textPath, src/document-text.mjs), so the message names it as T3 names it: "(text extracted to: <file>)".
+const documentTexts=new Map();
+export function noteDocumentTexts(files){for(const file of Array.isArray(files)?files:[])if(file?.path)file.textPath?documentTexts.set(String(file.path),String(file.textPath)):documentTexts.delete(String(file.path))}
+export const documentTextPath=path=>documentTexts.get(String(path))||null;
+export const documentTextNote=path=>{const text=documentTextPath(path);return text?` (text extracted to: ${text})`:""};
+
 // T3 providerMessageTextWithAttachmentPaths: every attachment is named in the prompt with the path it is saved at, so
 // Codex reads it with its own tools; images and audio also go as native items. The lines follow the text whatever its length:
-// a file has no item of its own, so a line left out would be a file Codex never sees (T3 550f119c3).
-export function codexTurnInput(text,paths=[],{displayName=fileName}={}){
+// a file has no item of its own, so a line left out would be a file Codex never sees (T3 550f119c3). A document's line names the
+// file its text was extracted to too (textPath).
+export function codexTurnInput(text,paths=[],{displayName=fileName,textPath=documentTextPath}={}){
   let body=String(text??"");const media=[];
   for(const path of Array.isArray(paths)?paths:[]){
     const value=String(path||"");if(!value)continue;
-    const image=IMAGE.test(value),line=`[Attached ${image?"image":"file"} "${displayName(value)}" is saved at: ${value}]`;
+    const image=IMAGE.test(value),extracted=image?null:textPath(value);
+    const line=`[Attached ${image?"image":"file"} "${displayName(value)}" is saved at: ${value}${extracted?` (text extracted to: ${extracted})`:""}]`;
     body=body?`${body}\n\n${line}`:line;
     if(image)media.push({type:"localImage",path:value});
     else if(AUDIO.test(value))media.push({type:"localAudio",path:value});
@@ -52,7 +61,7 @@ export function codexTurnInput(text,paths=[],{displayName=fileName}={}){
 
 // The prompt and attachment paths of a Codex input text built by codexTurnInput, so a queued follow-up is edited as the
 // draft it was.
-const ATTACHMENT_LINE=/^\[Attached (?:image|file) "[^"\n]*" is saved at: ([^\n]+)\]$/u;
+const ATTACHMENT_LINE=/^\[Attached (?:image|file) "[^"\n]*" is saved at: ([^\n]+?)(?: \(text extracted to: [^\n]+\))?\]$/u;
 export function splitCodexAttachmentText(text){
   const blocks=String(text??"").split("\n\n"),paths=[];
   while(blocks.length){

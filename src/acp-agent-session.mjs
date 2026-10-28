@@ -13,7 +13,7 @@ import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizeModelOptionValues } from "./model-options.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
-import { attachmentName, PROMPT_AUDIO_PATH, PROMPT_IMAGE_PATH, unreadableAttachment } from "./prompt-attachments.mjs";
+import { attachmentName, PROMPT_AUDIO_PATH, PROMPT_IMAGE_PATH, PROMPT_TEXT_PATH, textExtractedTo, unreadableAttachment } from "./prompt-attachments.mjs";
 import { runtimeHarnessLabel, runtimeInstructions } from "./runtime-instructions.mjs";
 import { SessionRefusalError } from "./session-refusal.mjs";
 
@@ -89,6 +89,15 @@ const ANTIGRAVITY_AUDIO_MIME={".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"aud
 const ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES=1024*1024,ANTIGRAVITY_MAX_IMAGE_BYTES=10*1024*1024,ANTIGRAVITY_MAX_AUDIO_BYTES=20*1024*1024,ANTIGRAVITY_MAX_CONTENT_BYTES=50*1024*1024;
 // An image Antigravity takes that does not fit in the message, said by its name with what to do; Antigravity is asked nothing.
 const antigravityImageTooLarge=path=>new SessionRefusalError(`The attached image "${attachmentName(path)}" is too large for one Antigravity message, which takes images up to 10 MiB and 50 MiB of attachments in all. Send it in a message of its own.`);
+// A document's link is followed by the line that names it with the file its text was extracted to (agent-relay acpPrompt), as T3
+// names every attachment in the prompt's text, so Cursor and Grok read the text with their own tools.
+function acpDocumentLine(part){
+  const path=fileUriPath(part.uri)||String(part.uri||"");
+  return {type:"text",text:`[Attached file "${part.name||basename(path)}" is saved at: ${path}${textExtractedTo(part)}]`};
+}
+export function acpDocumentTextParts(parts){
+  return (Array.isArray(parts)?parts:[]).flatMap(part=>part?.type==="resource_link"&&part[PROMPT_TEXT_PATH]?[part,acpDocumentLine(part)]:[part]);
+}
 export async function antigravityPromptParts(parts,promptCapabilities={}){
   const can=promptCapabilities&&typeof promptCapabilities==="object"?promptCapabilities:{},out=[];let total=0;
   const fits=(size,limit)=>size<=limit&&total+size<=ANTIGRAVITY_MAX_CONTENT_BYTES;
@@ -114,6 +123,18 @@ export async function antigravityPromptParts(parts,promptCapabilities={}){
       const bytes=info.isFile()&&fits(info.size,ANTIGRAVITY_MAX_AUDIO_BYTES)?await readFile(audio).catch(error=>{throw unreadableAttachment("file",audio,error)}):null;
       out.push(part);
       if(bytes&&fits(bytes.length,ANTIGRAVITY_MAX_AUDIO_BYTES)){total+=bytes.length;out.push({type:"audio",mimeType:audioType,data:bytes.toString("base64")})}
+      continue;
+    }
+    // A document stays a link, named with the file its text was extracted to (document-text.mjs), and that text follows as embedded
+    // content up to 1 MiB, since Antigravity cannot open the file in Trebell's attachments folder.
+    const textPath=part?.type==="resource_link"?part[PROMPT_TEXT_PATH]:null;
+    if(textPath){
+      out.push(part,acpDocumentLine(part));
+      if(can.embeddedContext===true){
+        const bytes=await readFile(textPath).catch(()=>null);let decoded=null;
+        try{decoded=bytes&&fits(bytes.length,ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES)?new TextDecoder("utf-8",{fatal:true}).decode(bytes):null}catch{}
+        if(decoded!==null){total+=bytes.length;out.push({type:"resource",resource:{uri:pathToFileURL(textPath).href,mimeType:"text/plain",text:decoded}})}
+      }
       continue;
     }
     // Trebell writes file links as percent-encoded file: URLs (agent-relay acpPrompt).
@@ -463,7 +484,7 @@ export class AcpAgentSession{
     const given=Array.isArray(content)?content:[],commandParts=acpSlashCommandPrompt(given,this.commandNames),command=Boolean(commandParts);
     // A lone /compact, the relay's or the person's, compacts the harness's context and the runtime notes in it (T3: its text alone).
     const compacting=command&&commandParts.length===1&&text(commandParts[0]?.text)==="/compact";
-    const parts=this.runtime==="antigravity"&&!this.remoteIo?await antigravityPromptParts(commandParts||given,this.initializeResult?.agentCapabilities?.promptCapabilities):[...(commandParts||given)];
+    const parts=this.runtime==="antigravity"&&!this.remoteIo?await antigravityPromptParts(commandParts||given,this.initializeResult?.agentCapabilities?.promptCapabilities):acpDocumentTextParts(commandParts||given);
     // The notes go again once the harness compacted them away, or once the session's model, a switch of Trebell's or one the harness
     // reports, is not the one they named (T3 names the turn's model on every prompt).
     const model=this.#modelLabel();

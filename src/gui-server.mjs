@@ -42,6 +42,7 @@ import { extendConnectAttemptTimeout } from "./connect-attempt-timeout.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
 import { StorageCleanupService } from "./storage-cleanup-service.mjs";
+import { ensureDocumentText } from "./document-text.mjs";
 import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome, resolveCodexHomeLayout } from "./codex-home-layout.mjs";
@@ -597,6 +598,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   // Offline E2E also runs none of the host programs that would reach the network or answer from this machine's own installs and
   // sign-ins: host discovery (ssh -V, wsl --list), the harness checks and the code-host CLIs answer from offline-e2e-host.mjs.
   const environments=new EnvironmentManager({state,env,...(offlineE2E?{discoveryRun:offlineE2eDiscoveryRun}:{})});
+  // An attachment on this machine as the composer gets it back, with the file a Word, Excel or other document's text was extracted
+  // to (textPath, document-text.mjs), which the composer names in a Codex message as the relay names it for every other harness.
+  const withDocumentText=async file=>{const textPath=await ensureDocumentText(file.path,{home:trebellHome(env)});return textPath?{...file,textPath}:file};
   const storedActiveEnvironmentId=state.settings().activeEnvironmentId||null;
   if(storedActiveEnvironmentId&&!environments.get(storedActiveEnvironmentId))state.updateSettings({activeEnvironmentId:null});
   function requestedEnvironmentId(value,{fallback=true}={}){
@@ -3233,7 +3237,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         const safe=safeAttachmentName(body.name,"attachment.bin");
         const path=join(dir,`${Date.now()}-${randomUUID().slice(0,8)}-${safe}`);
         await writeFile(path,data);
-        return json(res,200,{path,name:basename(path),size:data.length,mime});
+        return json(res,200,await withDocumentText({path,name:basename(path),size:data.length,mime}));
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/attachments/import"&&req.method==="POST"){
@@ -3242,14 +3246,18 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         const paths=Array.isArray(body.paths)?body.paths.slice(0,100):[];
         if(!paths.length)return json(res,200,{files:[]});
         const files=[];
-        for(const path of paths)files.push(await environments.prepareAttachment(body.environmentId||null,path));
+        for(const path of paths){const file=await environments.prepareAttachment(body.environmentId||null,path);files.push(file.copied?file:await withDocumentText(file))}
         return json(res,200,{files});
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/attachments/validate"&&req.method==="POST"){
       try{
         const body=await readJsonBody(req,512*1024);const paths=Array.isArray(body.paths)?body.paths:[];
-        return json(res,200,await environments.validateAttachments(body.environmentId||null,paths));
+        const result=await environments.validateAttachments(body.environmentId||null,paths),profile=body.environmentId?environments.get(body.environmentId):null;
+        // A message about to go names each document's extracted text, extracted now if its attaching did not (T3 claims a message's
+        // attachments the same way); a remote environment's files are on its host.
+        if(!profile||profile.type==="local")for(const [index,file] of result.files.entries())result.files[index]=await withDocumentText(file);
+        return json(res,200,result);
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/models"){

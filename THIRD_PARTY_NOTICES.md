@@ -20,6 +20,41 @@ Revision used by Trebell: npm package version `1.4.13`
 Destination/integration: dependency in `package.json`; `src/muse-host.mjs` loads it when the first Muse Code session starts and drives the person's own installed `muse serve` through its `Connection`.
 Local modifications: none; Trebell does not patch or bundle a modified copy of the SDK.
 
+## saxes
+
+Trebell Code uses the exact npm release `saxes@6.0.0`, an XML parser, with its one dependency `xmlchars@2.2.0` (MIT License,
+Copyright Louis-Dominique Dubeau and contributors to xmlchars, https://github.com/lddubeau/xmlchars).
+
+Upstream: https://github.com/lddubeau/saxes  
+License: ISC License, Copyright (c) Contributors; Copyright (c) Isaac Z. Schlueter and Contributors
+Revision used by Trebell: npm package version `6.0.0`
+Destination/integration: dependency in `package.json`; `src/document-text-extract.mjs` parses the XML of an attached Word, Excel,
+PowerPoint, OpenDocument or EPUB file with it, in the process of its own that `src/document-text.mjs` starts to extract the file's text.
+Local modifications: none.
+
+## yauzl
+
+Trebell Code uses the exact npm release `yauzl@2.10.0`, a ZIP archive reader, which `extract-zip` also brings in.
+
+Upstream: https://github.com/thejoshwolfe/yauzl  
+License: MIT License, Copyright (c) 2014 Josh Wolfe
+Revision used by Trebell: npm package version `2.10.0`
+Destination/integration: dependency in `package.json`; `src/document-text-extract.mjs` reads the XML parts of an attached Word, Excel,
+PowerPoint, OpenDocument or EPUB file with it, within that file's limits.
+Local modifications: none.
+
+## character-entities
+
+Trebell Code uses the exact npm release `character-entities@2.0.2`, HTML's named character references, which `react-markdown` also
+brings in (through `decode-named-character-reference`).
+
+Upstream: https://github.com/wooorm/character-entities  
+License: MIT License, Copyright (c) 2015 Titus Wormer
+Revision used by Trebell: npm package version `2.0.2`
+Destination/integration: dependency in `package.json`; `src/document-text-extract.mjs` reads an EPUB's named entities and an RTF file's
+dash with it.
+Local modifications: none.
+
 ## T3 Code recorded Muse sessions
 
 The test fixtures in `tests/fixtures/muse/` (`simple`, `multi_turn`, `turn_interrupt`, `permission`, `workflow`, `subagent`

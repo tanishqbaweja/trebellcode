@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { acpToolFrame } from "./acp-tool-state.mjs";
 import { fileUriPath } from "./file-uri.mjs";
+import { textExtractedTo } from "./prompt-attachments.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSdk, museLaunchPlan, museServeArgs, museSessionPolicy, museWorkspaceRoot } from "./muse-host.mjs";
 import { resolveMuseReasoningEffort } from "./muse-model-catalog.mjs";
@@ -69,13 +70,14 @@ async function within(promise,ms){const timer=wait(ms);try{return await Promise.
 const owns=(turn,turnId)=>turnId===turn.turnId||turn.joined.has(turnId);
 
 // Prompt parts for turn/start and turn/steer: text as it is, images as base64 with their media type, and any other attachment as
-// a line naming the file it was saved to. An input with neither text nor an image is refused.
+// a line naming the file it was saved to, and the file a document's text was extracted to. An input with neither text nor an image
+// is refused.
 export function museInputParts(parts=[]){
   const out=[];
   for(const part of Array.isArray(parts)?parts:[]){
     if(part?.type==="text"){const value=text(part.text);if(value)out.push({type:"text",text:value})}
     else if(part?.type==="image"&&part.data)out.push({type:"image",base64Data:text(part.data),mediaType:text(part.mimeType||part.mime_type)||"image/png"});
-    else if(part?.type==="resource_link"&&part.uri)out.push({type:"text",text:`Attached file: ${fileUriPath(part.uri)??text(part.uri)}`});
+    else if(part?.type==="resource_link"&&part.uri)out.push({type:"text",text:`Attached file: ${fileUriPath(part.uri)??text(part.uri)}${textExtractedTo(part)}`});
   }
   if(!out.some(part=>part.type==="image"||part.text.trim()))throw new Error("Muse Code needs text or an image to start a turn.");
   return out;

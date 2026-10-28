@@ -1,6 +1,7 @@
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { lstat, readdir, realpath, rm, stat } from "node:fs/promises";
 import { trebellHome } from "./paths.mjs";
+import { isDocumentTextPath } from "./document-text.mjs";
 
 const DAY_MS=24*60*60*1000;
 
@@ -71,10 +72,14 @@ export class StorageCleanupService{
     const cutoff=now-days*DAY_MS;
     const protectedPaths=referencedAttachmentPaths(this.state);
     const {files}=await this.#attachmentFiles();
+    // The text extracted from an uploaded document (<file>.txt, document-text.mjs) stays while the upload does and goes with it.
+    const byPath=new Map(files.map(file=>[file.path,file])),extracted=file=>file.path.endsWith(".txt")&&isDocumentTextPath(file.path.slice(0,-4))&&byPath.has(file.path.slice(0,-4));
     let removed=0,bytes=0;
     for(const file of files){
-      if(file.mtimeMs>=cutoff||protectedPaths.has(resolve(file.path)))continue;
-      try{await rm(file.path,{force:true});removed++;bytes+=Number(file.size||0)}catch{}
+      if(extracted(file)||file.mtimeMs>=cutoff||protectedPaths.has(resolve(file.path)))continue;
+      try{await rm(file.path,{force:true});removed++;bytes+=Number(file.size||0)}catch{continue}
+      const text=isDocumentTextPath(file.path)?byPath.get(file.path+".txt"):null;
+      if(text)try{await rm(text.path,{force:true});removed++;bytes+=Number(text.size||0)}catch{}
     }
     if(removed)this.log("cleaned "+removed+" stale attachment"+(removed===1?"":"s"));
     return {removed,bytes,enabled:true};
