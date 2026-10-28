@@ -98,7 +98,9 @@ test("packaged desktop wiring keeps explicit updater controls and release metada
   assert.match(main,/createUpdaterController/);assert.match(controller,/autoUpdater\.autoDownload=false/);assert.match(controller,/autoUpdater\.autoInstallOnAppQuit=false/);
   assert.match(main,/desktop:update:check/);assert.match(main,/desktop:update:download/);assert.match(main,/desktop:update:install/);assert.match(preload,/updates:\s*\{/);assert.match(preload,/desktop:update:state/);
   assert.match(main,/desktop:window:screenshot/);assert.match(main,/capturePage\(\)/);assert.match(preload,/captureWindow:\s*\(\)\s*=>\s*invoke\("desktop:window:screenshot"\)/);
-  assert.equal(pkg.dependencies?.["electron-updater"],"^6.8.9");assert.deepEqual(pkg.build?.publish?.[0],{provider:"github",owner:"tanishqbaweja",repo:"trebellcode"});
+  assert.equal(pkg.dependencies?.["electron-updater"],"^6.8.9");assert.deepEqual(pkg.build?.publish?.[0],{provider:"github",owner:"tanishqbaweja",repo:"trebellcode-releases"});
+  // The release goes where the updater reads (build.publish), and the source commit gets the release's tag.
+  assert.match(release,/\$ReleaseRepo = "\$\(\$Publication\.owner\)\/\$\(\$Publication\.repo\)"/);assert.doesNotMatch(release,/--repo","tanishqbaweja\/trebellcode"/);assert.match(release,/@\("push","origin",\$Tag\)/);
   const dependencyInstall=release.indexOf('Invoke-Native "npm" @("install","--no-audit","--no-fund","--include=optional")'),electronCheck=release.indexOf('if (-not (Test-Path $ElectronExe))');
   assert.ok(dependencyInstall>=0&&electronCheck>dependencyInstall,"release bootstrap must install dependencies before requiring the Electron distribution");
   assert.equal((release.match(/"--publish","never"/g)||[]).length,2,"release packaging must disable electron-builder implicit GitHub publication for both unpacked and NSIS builds");

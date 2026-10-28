@@ -3262,7 +3262,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     }
     if(url.pathname==="/api/update/check"){
       try{
-        const response=await fetchImpl("https://api.github.com/repos/tanishqbaweja/trebellcode/releases/latest",{headers:{"User-Agent":"Trebell-Code/"+TREBELL_VERSION},signal:AbortSignal.timeout(8000)});
+        // Releases are published to their own repository (package.json build.publish), which the desktop updater reads too.
+        const response=await fetchImpl("https://api.github.com/repos/tanishqbaweja/trebellcode-releases/releases/latest",{headers:{"User-Agent":"Trebell-Code/"+TREBELL_VERSION},signal:AbortSignal.timeout(8000)});
         const item=await response.json().catch(()=>({}));
         if(!response.ok){
           const detail=String(item?.message||"").trim();

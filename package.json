@@ -1,6 +1,6 @@
 {
   "name": "trebell-code",
-  "version": "1.6.0",
+  "version": "2.0.0",
   "description": "A coding harness optimized for verified software-engineering quality per dollar: same or better results at lower model cost.",
   "homepage": "https://trebell.dev/code",
   "repository": {
@@ -157,7 +157,7 @@
       {
         "provider": "github",
         "owner": "tanishqbaweja",
-        "repo": "trebellcode"
+        "repo": "trebellcode-releases"
       }
     ],
     "nsis": {

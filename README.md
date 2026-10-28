@@ -99,7 +99,7 @@ See [benchmark results](BENCHMARKS.md) for verifier-grounded comparisons where T
 
 ### Windows release
 
-Download the latest installer from the [GitHub Releases](https://github.com/tanishqbaweja/trebellcode/releases) page.
+Download the latest installer from the [Trebell Code releases](https://github.com/tanishqbaweja/trebellcode-releases/releases) page.
 
 ### Run from source
 
@@ -162,7 +162,7 @@ Near-term work is focused on four things:
 | [Product principles](docs/technical/PRODUCT_PRINCIPLES.md) | The product and architecture contract |
 | [Testing](docs/technical/TESTING.md) | Deterministic, UI, live-provider, and manual validation |
 | [Benchmark results](BENCHMARKS.md) | Verifier-grounded quality, cost, token, and execution-efficiency comparisons |
-| [v1.6.0 release notes](docs/releases/v1.6.0.md) | Current release notes |
+| [v2.0.0 release notes](docs/releases/v2.0.0.md) | Current release notes |
 
 ## Repository layout
 

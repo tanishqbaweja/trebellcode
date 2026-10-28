@@ -411,12 +411,23 @@ if ($Publish) {
   Require-Command "gh" "Install GitHub CLI, then run 'gh auth login'."
   & gh auth status | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "GitHub CLI is not authenticated. Run gh auth login." }
+  # The installer goes to the repository the in-app updater reads (package.json build.publish); the source commit it was built
+  # from gets the release's tag in its own repository.
+  $Publication = $Package.build.publish[0]
+  $ReleaseRepo = "$($Publication.owner)/$($Publication.repo)"
   Push-Location $Root
   try {
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    & git rev-parse -q --verify "refs/tags/$Tag" *> $null
+    $TagExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $PreviousErrorActionPreference
+    if ($TagExitCode -ne 0) { Invoke-Native "git" @("tag","-a",$Tag,"-m","Trebell Code $Version",$Meta.commit) }
+    Invoke-Native "git" @("push","origin",$Tag)
     $Existing = $false
     $PreviousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = "SilentlyContinue"
-    & gh release view $Tag --repo tanishqbaweja/trebellcode *> $null
+    & gh release view $Tag --repo $ReleaseRepo *> $null
     $ReleaseViewExitCode = $LASTEXITCODE
     $ErrorActionPreference = $PreviousErrorActionPreference
     if ($ReleaseViewExitCode -eq 0) { $Existing = $true }
@@ -426,12 +437,12 @@ if ($Publish) {
       Write-Host "Release $Tag already exists; replacing installer asset."
       $UploadArgs = @("release","upload",$Tag,$Installer,$MetaPath,$LatestYml)
       if (Test-Path $Blockmap) { $UploadArgs += $Blockmap }
-      $UploadArgs += @("--repo","tanishqbaweja/trebellcode","--clobber")
+      $UploadArgs += @("--repo",$ReleaseRepo,"--clobber")
       Invoke-Native "gh" $UploadArgs
     } else {
       $Assets = @($Installer,$MetaPath,$LatestYml)
       if (Test-Path $Blockmap) { $Assets += $Blockmap }
-      $Args = @("release","create",$Tag) + $Assets + @("--repo","tanishqbaweja/trebellcode","--title","Trebell Code $Version","--target","main")
+      $Args = @("release","create",$Tag) + $Assets + @("--repo",$ReleaseRepo,"--title","Trebell Code $Version","--target","main")
       if (Test-Path $Notes) { $Args += @("--notes-file",$Notes) } else { $Args += @("--generate-notes") }
       Invoke-Native "gh" $Args
     }
