@@ -38,6 +38,8 @@
 //   "quota"             fails as Meta's quota refusal relayed by Muse does (a 429 naming the quota and its reset)
 //   "signed out"        fails as a turn Muse could not run without a sign-in does (authRequired)
 //   "exit when idle"    replies, completes, and then the host exits with code 1, as a Muse that crashed between turns
+//   "usage report"      reports the account's usage windows before its reply (usage/changed, which names no session), as Muse does
+//                       after a model response: the 5-hour window at 37% and the week at 12%, observed now
 //   "dev server in the background"  runs `npm run dev`, which Muse sends to the background (its tool call goes there, item/updated
 //                       with background true, then settles), completes the turn, and MUSE_FAKE_BACKGROUND_MS (1500) ms later tells the
 //                       command's end as an item of its own naming the call (backgroundTerminalCompletion, MSP 1.4.13)
@@ -105,6 +107,7 @@ function startTurn(sessionId,params,{usage=null}={}){
     notify("turn/retryScheduled",sessionId,{turnId,attempt:1,nextAttempt:2,maxAttempts:3,reason:"429 Too Many Requests",retryDelayMs:2000,errorKind:"rateLimited",httpStatus:429,system:"meta",sourceRange:{}});
     return later(process.env.MUSE_FAKE_RETRY_HOLD,Number(process.env.MUSE_FAKE_RETRY_MS||400),()=>{reply(sessionId,turn,"Muse fixture reply after a retry.");complete(sessionId,turnId)});
   }
+  if(/usage report/i.test(words)){const now=Date.now();write({jsonrpc:"2.0",method:"usage/changed",params:{observedAtMs:now,tier:"tier-1",window:{usedPercent:37,windowDurationMins:300,resetsAtMs:now+5*3_600_000},weekly:{usedPercent:12,resetsAtMs:now+6*86_400_000}}})}
   reply(sessionId,turn,`Muse fixture reply on ${state?.modelId||"Muse's default model"} at ${params.reasoningEffort||"Muse's default"} effort.`);
   if(usage)usageStep(sessionId,turnId,usage);
   const hold=process.env.MUSE_FAKE_HOLD==="1"||(params.input||[]).some(part=>part.type==="text"&&/hold until steered/i.test(part.text));

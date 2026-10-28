@@ -24,7 +24,7 @@ import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
 import { acpCommandsFromAvailable } from "./acp-agent-session.mjs";
 import { readMuseModelCatalog } from "./muse-model-catalog.mjs";
 import { museUsageLimits } from "./muse-subscription-usage.mjs";
-import * as museSessions from "./muse-agent-session.mjs";
+import { latestMuseSubscriptionUsage } from "./muse-agent-session.mjs";
 import { compareMuseVersions, isMuseLauncher, latestMuseRelease, MUSE_CHANNELS, museChannel, museChannelUrl, museUpdateEnvironment, museUpdateRefusal, museUpdateText } from "./muse-maintenance.mjs";
 
 const RUNTIMES=Object.freeze({
@@ -1304,7 +1304,7 @@ export class AgentRuntimeManager{
   }
   // The last usage/changed report Muse Code's sessions keep for a Muse home (muse-agent-session.mjs latestMuseSubscriptionUsage: the
   // account's, by the home its host names; the newest of any for a home not known), or null when none came.
-  museUsageReport=({museHome=null}={})=>museSessions.latestMuseSubscriptionUsage?.({museHome})??null;
+  museUsageReport=({museHome=null}={})=>latestMuseSubscriptionUsage({museHome});
   async usageLimits(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="claude")return readAgentRuntimeUsage("claude",{readCapabilities:()=>this.claudeCapabilities(instance,{environmentId})});

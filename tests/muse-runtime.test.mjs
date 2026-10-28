@@ -328,6 +328,21 @@ test("the Usage card reads the windows Muse Code's sessions keep for the Muse ho
   }finally{await fixture.close()}
 });
 
+// The same card with nothing standing in: a turn's usage/changed reaches the thread's MuseAgentSession through the relay, the session
+// keeps it for its host's Muse home, and the status check found that home, so the card shows the windows the turn reported.
+test("a Muse Code turn's usage report shows on the Usage card from the sessions' own store, for the Muse home the status check found",{timeout:90_000},async()=>{
+  const relay=await museRelay("trebell-muse-usage-turn-");
+  try{
+    assert.equal((await relay.manager.probe("muse",{fresh:true})).available,true);
+    const before=Date.now(),{thread}=await relay.rpc("thread/start",{cwd:relay.root});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Send a usage report"}],permissionProfile:"supervised"});
+    await relay.completed(thread.id,1);
+    const usage=await relay.manager.usageLimits("muse");
+    assert.ok(Date.parse(usage.observedAt)>=before,"the report the turn sent");
+    assert.deepEqual(usage.windows.map(row=>[row.label,row.usedPercent]),[["5-hour",37],["Weekly",12]]);
+  }finally{await relay.close()}
+});
+
 test("Muse Code signs in with `muse login` in a Trebell terminal, offers Meta's installer as text and is never installed by Trebell",async()=>{
   const fixture=await museFixture("trebell-muse-auth-");
   try{
