@@ -372,8 +372,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   // One subscription to the event stream: opened resolves true at its first chunk (OpenCode 2 sends server.connected at once) and false
   // if it ends before; ended once it has ended, however it ended; drop lets go of it. Every chunk the stream receives counts (onActivity),
   // OpenCode's heartbeats among them. The silence counts only while the session waits for the stream, as T3 Code's timeout runs only
-  // while a read waits: @opencode/client reads the stream only when asked for the next event, so an approval the person takes minutes
-  // over holds the loop, not the stream.
+  // while a read waits, so an approval the person takes minutes over is no silence of the stream's. (@opencode/client 2.0.24 reads the
+  // stream in the background and reports its heartbeats meanwhile; a subscription it is told to let go of ends quietly.)
   #subscribe(){
     const silence=new AbortController(),signal=AbortSignal.any([this.eventAbort.signal,silence.signal]);
     let timer=null,open=()=>{};const opened=new Promise(resolve=>{open=resolve});
@@ -386,8 +386,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
           try{await this.#event(event)}catch(error){if(!this.closed)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:errorText(error)}})}
           waiting();
         }
-      // A stream Trebell let go of ends with @opencode/client's Transport error, and one that failed is followed again: neither is an
-      // error of the turn's.
+      // A stream that failed (a Transport error), like one Trebell let go of, is followed again: neither is an error of the turn's.
       }catch{}
       finally{clearTimeout(timer);open(false)}
     })();

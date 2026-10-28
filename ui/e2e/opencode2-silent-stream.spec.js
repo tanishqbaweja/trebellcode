@@ -48,7 +48,7 @@ test("an OpenCode 2 turn whose stream went silent and whose server does not say 
     await expect(stopped).toBeVisible({timeout:90_000});
     await expect(stopped.locator("summary strong")).toHaveText(UNKNOWN);
     await expect(stopButton(page)).toHaveCount(0);
-    // Letting go of the stream is Trebell's own doing: @opencode/client's "Transport: This operation was aborted" is no error row.
+    // Letting go of the stream is Trebell's own doing, and no error row of its own.
     await expect(page.locator(".tool-event.kind-error").filter({hasText:"Transport"})).toHaveCount(0);
     expect(fake.called("POST /api/session/ses_main/interrupt"),"a run Trebell cannot see is not stopped blind").toHaveLength(0);
     await shots(page,"opencode2-silent-stream-stopped",()=>expect(stopped).toBeVisible());

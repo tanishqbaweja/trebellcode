@@ -1,12 +1,12 @@
 import { test,expect } from "@playwright/test";
 import { openCode2App,send,shots,stopButton } from "./opencode-relay-app.js";
 
-// An approval a person takes more than 45 seconds over on a Supervised OpenCode 2 thread, as they see it. @opencode/client reads
-// OpenCode's event stream only when the session asks for its next event, and the session waits on the person before it asks, so
-// OpenCode's heartbeats (every 15 s, as the fake server sends them) went unread meanwhile: 45 s after the card came, Trebell let go of
-// the stream, and once the person allowed the command it ended the turn ("sent nothing for 45 seconds") and interrupted the command
-// just allowed. Now the 45 seconds count only while the session waits on the stream. The real relay, OpenCode 2 session and
-// @opencode/client run against the fake OpenCode 2 server (tests/fixtures/fake-opencode2-server.mjs).
+// An approval a person takes more than 45 seconds over on a Supervised OpenCode 2 thread, as they see it: the turn waits on the
+// person, not on a stream gone silent, so allowing the command lets the turn go on, with no "sent nothing for 45 seconds" stop and no
+// interrupt of the command just allowed. @opencode/client reads OpenCode's event stream in the background and reports its heartbeats
+// (every 15 s, as the fake server sends them) while the session waits on the person. A guard: the code before the repair kept such a
+// turn too. The real relay, OpenCode 2 session and @opencode/client run against the fake OpenCode 2 server
+// (tests/fixtures/fake-opencode2-server.mjs).
 const ANSWER="The tests pass.";
 const PERMISSION="/api/session/ses_main/permission/per_tests/reply";
 

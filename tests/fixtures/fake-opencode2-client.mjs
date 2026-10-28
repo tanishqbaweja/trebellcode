@@ -1,10 +1,12 @@
 // A stand-in for @opencode/client 2.0.24 that an OpenCode2AgentSession drives through its loadClient option: every call it makes is
 // recorded and answered as OpenCode 2.0.24 answers it, overrides[name](input, requestOptions) answers a call in its place, and the event
-// stream plays what the test emits. heartbeat() is OpenCode's keepalive, a chunk that carries no event, which the client reports
-// through the subscription's onActivity when it reads it: while the session waits for the next event, else with its next read. A
-// subscription's first read is the server.connected chunk OpenCode sends at once; breakStreams(error) fails the open ones, as a dropped
-// connection does, and overrides["event.subscribe"](options, count) can answer a subscription in place of the stream (one that fails).
-// Polling uses setImmediate, so a test can run on mocked timers.
+// stream plays what the test emits. The client's event.subscribe (OpenCode.make's) reads the stream in the background and queues its
+// events (its shared reader), so every chunk reaches the subscription's onActivity as it comes, whether or not the session is asking
+// for the next event: an event the test emits, and heartbeat(), OpenCode's keepalive, a chunk that carries no event. A subscription's
+// first read opens it, and OpenCode's server.connected chunk comes at once. One whose own signal aborts ends quietly (done, no error);
+// breakStreams(error) fails the open ones once their queued events are read, as a dropped connection does, and
+// overrides["event.subscribe"](options, count) can answer a subscription in place of the stream (one that fails). Polling uses
+// setImmediate, so a test can run on mocked timers.
 export const FAKE_OPENCODE2_CLIENT_MODELS=Object.freeze([{providerID:"opencode",id:"big-pickle",name:"Big Pickle",enabled:true,limit:{context:200000},variants:[]}]);
 export const flush=()=>new Promise(resolve=>setImmediate(resolve));
 export async function eventually(check,{tries=5000,message="condition was not met in time"}={}){
@@ -33,33 +35,30 @@ export function fakeOpenCode2Client({sessions={},overrides={},models=FAKE_OPENCO
     },
     message:{list:call("message.list",{data:[]})},
     permission:{list:call("permission.list",[]),reply:call("permission.reply",undefined)},
-    // An aborted subscription throws as @opencode/client 2.0.24's sse() does when its read is aborted: its ClientError, Transport. The
-    // client reads its stream only while asked for the next event (pulling): a heartbeat that comes while the session is busy with an
-    // event reaches onActivity with the next read, as a socket's waiting chunk does.
     event:{subscribe:(options={})=>{
       const {signal,onActivity}=options,answered=overrides["event.subscribe"]?.(options,subscriptions.length);
-      const subscription={signal,onActivity,pulling:false,unread:0,connected:false,failure:null,done:false};subscriptions.push(subscription);
+      const subscription={signal,onActivity,connected:false,failure:null,done:false};subscriptions.push(subscription);
       if(answered){subscription.done=true;return answered}
       return {async*[Symbol.asyncIterator](){
         try{
+          subscription.connected=true;onActivity?.();
           for(;;){
-            subscription.pulling=true;
-            if(!subscription.connected||subscription.unread){subscription.connected=true;subscription.unread=0;onActivity?.()}
-            if(signal?.aborted)throw Object.assign(new Error("Transport: This operation was aborted"),{name:"ClientError",reason:"Transport"});
+            if(signal?.aborted)return;
+            if(queue.length){yield queue.shift();continue}
             if(subscription.failure)throw subscription.failure;
-            if(queue.length){subscription.pulling=false;yield queue.shift();continue}
             await new Promise(resolve=>{wake=resolve;signal?.addEventListener("abort",resolve,{once:true})});
           }
         }finally{subscription.done=true}
       }};
     }},
   };
+  const heard=()=>{for(const subscription of subscriptions)if(subscription.connected&&!subscription.signal?.aborted&&!subscription.done)subscription.onActivity?.()};
   return {
     client,calls,
     loadClient:async()=>({OpenCode:{make:()=>client}}),
     called:name=>calls.filter(entry=>entry.name===name).map(entry=>entry.input),
-    emit(event){queue.push({id:`evt_${calls.length}_${queue.length+1}`,created:Date.now(),...event});const next=wake;wake=null;next?.()},
-    heartbeat(){for(const subscription of subscriptions)if(!subscription.signal?.aborted&&!subscription.done){if(subscription.pulling)subscription.onActivity?.();else subscription.unread++}},
+    emit(event){queue.push({id:`evt_${calls.length}_${queue.length+1}`,created:Date.now(),...event});heard();const next=wake;wake=null;next?.()},
+    heartbeat:heard,
     breakStreams(error=Object.assign(new Error("Transport: terminated"),{name:"ClientError",reason:"Transport"})){for(const subscription of subscriptions)if(!subscription.done)subscription.failure=error;const next=wake;wake=null;next?.()},
     // The subscriptions still listening, and every one the session opened.
     listening:()=>subscriptions.filter(subscription=>!subscription.signal?.aborted&&!subscription.done).length,
