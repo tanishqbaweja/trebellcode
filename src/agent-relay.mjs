@@ -962,6 +962,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // fails instead of running in a session of the harness as it was. A start that has not launched its harness by then never does,
   // and once the relay closes no start begins.
   const startingSessions=new Set();let sessionGeneration=0;
+  // The starts closeRuntimeSessions ended (a harness's key changed while they started), refused as a reset refuses its own.
+  const endedStarts=new WeakSet();
   const restartedWhileStarting=()=>new Error("The harness was restarted while this conversation was starting.");
   async function startTracked(runtime,options,generation){
     if(generation!==sessionGeneration)throw restartedWhileStarting();
@@ -1199,10 +1201,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // took, and fails with that check's advice beside the harness's own message.
     const harness={instance,environmentId};
     const startFailure=async error=>failedWhereItRuns(harness,error,generation)?withMessage(error,await harnessFailureMessage(harness,error)):error;
+    // A start that a close or reset of the relay, or of this harness's sessions, ended is refused, never kept or failed as the harness's.
+    const ended=()=>generation!==sessionGeneration||endedStarts.has(runtime);
     try{started=await startTracked(runtime,{providerSessionId:savedSessionId,model:requestedModel},generation)}
     catch(error){
       reportModels();await runtime.close().catch(()=>{});
-      if(generation!==sessionGeneration)throw restartedWhileStarting();
+      if(ended())throw restartedWhileStarting();
       // A harness that no longer has the thread's conversation continues it in one fresh session, whose first prompt hands the
       // earlier messages over (T3's provider resume fallback). A harness that cannot run at all fails as it is, and so does the
       // fresh session's start: a lost conversation never loops.
@@ -1210,9 +1214,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       lost={previousSessionId:String(savedSessionId),reason:error.message};
       runtime=create();prepare();
       try{started=await startTracked(runtime,{providerSessionId:null,model:requestedModel},generation)}
-      catch(freshError){reportModels();await runtime.close().catch(()=>{});if(generation!==sessionGeneration)throw restartedWhileStarting();recordResumeFallback(thread,{...lost,sessionId:null,error:freshError});throw await startFailure(freshError)}
+      catch(freshError){reportModels();await runtime.close().catch(()=>{});if(ended())throw restartedWhileStarting();recordResumeFallback(thread,{...lost,sessionId:null,error:freshError});throw await startFailure(freshError)}
     }
-    if(generation!==sessionGeneration){await runtime.close().catch(()=>{});throw restartedWhileStarting()}
+    if(ended()){await runtime.close().catch(()=>{});throw restartedWhileStarting()}
     sessionHarnesses.set(runtime,harness);
     reportModels();sessionModelReports.set(runtime,reportModels);
     const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
@@ -2373,11 +2377,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   }
   // The sessions of one harness close, as a reset closes them all, and a turn one runs stops as Stop stops it: Antigravity's once its
   // saved Gemini API key changed or went, as each process keeps the key it started with (T3 closes a provider instance whose settings
-  // changed). The next turn starts the harness again. Only the sessions on this machine (here): one in a WSL or SSH environment never
-  // had the key saved here, as its launch forwards none of it. Answers how many sessions it closed.
+  // changed). The next turn starts the harness again; a start this ends is refused (endedStarts). Only the sessions on this machine
+  // (here): one in a WSL or SSH environment never had the key saved here, as its launch forwards none of it. Answers how many sessions
+  // it closed.
   async function closeRuntimeSessions(kind){
     const closes=[],here=session=>!session?.remoteIo;
-    for(const runtime of [...startingSessions])if(runtime?.runtime===kind&&here(runtime))closes.push(runtime.close().catch(()=>{}));
+    for(const runtime of [...startingSessions])if(runtime?.runtime===kind&&here(runtime)){endedStarts.add(runtime);closes.push(runtime.close().catch(()=>{}))}
     for(const [threadId,session] of [...sessions]){
       if((sessionHarnesses.get(session)?.instance?.kind||session?.runtime)!==kind||!here(session))continue;
       sessions.delete(threadId);if(session.busy)try{session.cancel?.()}catch{}

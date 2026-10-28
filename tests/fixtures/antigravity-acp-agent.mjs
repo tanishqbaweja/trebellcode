@@ -8,9 +8,10 @@
 // ever) or a JSON-RPC error, and authenticateDelayMs answers authenticate that much later. As Antigravity does, session/new, load and
 // resume refuse with auth_required (-32000) when GEMINI_API_KEY is not set. A chat's session/prompt answers "fixture reply" and ends
 // its turn; one whose text holds "[hang]" waits for session/cancel and ends cancelled. session/set_config_option and session/close
-// are answered.
+// are answered. holdLoadUntil and holdCloseUntil name files: session/load and resume, and session/close, are answered once that file
+// exists, as a slow Antigravity would answer them.
 // `--version` prints a version and exits, as a status check asks it.
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 if(process.argv.includes("--version")){process.stdout.write("antigravity-acp 1.4.3-fixture\n");process.exit(0)}
 const scenario=process.env.TREBELL_AGY_SCENARIO?JSON.parse(readFileSync(process.env.TREBELL_AGY_SCENARIO,"utf8")):{};
@@ -26,6 +27,8 @@ const answer=(message,how,result)=>{
   if(how&&typeof how==="object")return send({jsonrpc:"2.0",id:message.id,error:how});
   send({jsonrpc:"2.0",id:message.id,result});
 };
+// Runs reply at once, or once the file `path` names exists (holdLoadUntil, holdCloseUntil).
+const once=(path,reply)=>{if(!path||existsSync(path))return reply();const timer=setInterval(()=>{if(existsSync(path)){clearInterval(timer);reply()}},25)};
 const ready=Date.now()+(Number(scenario.startDelayMs)||0);
 let buffered="",hanging=null;
 function handle(message){
@@ -44,14 +47,14 @@ function handle(message){
     if(!key)answer(message,SIGNED_OUT);
     else answer(message,scenario.sessionNew,{sessionId:"agy-session",configOptions:MODELS});
   }
-  else if(message.method==="session/load"||message.method==="session/resume")answer(message,key?"ok":SIGNED_OUT,{configOptions:MODELS});
+  else if(message.method==="session/load"||message.method==="session/resume")once(scenario.holdLoadUntil,()=>answer(message,key?"ok":SIGNED_OUT,{configOptions:MODELS}));
   else if(message.method==="session/set_config_option")answer(message,"ok",{configOptions:MODELS.map(option=>option.id===message.params?.configId?{...option,currentValue:message.params.value}:option)});
   else if(message.method==="session/prompt"){
     if(JSON.stringify(message.params?.prompt??"").includes("[hang]")){hanging=message;return}
     send({jsonrpc:"2.0",method:"session/update",params:{sessionId:message.params?.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:"fixture reply"}}}});
     answer(message,"ok",{stopReason:"end_turn"});
   }
-  else if(message.method==="session/close")answer(message,"ok",{});
+  else if(message.method==="session/close")once(scenario.holdCloseUntil,()=>answer(message,"ok",{}));
   else send({jsonrpc:"2.0",id:message.id,error:{code:-32601,message:`Method not found: ${message.method}`}});
 }
 function drain(){
