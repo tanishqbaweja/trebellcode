@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 
 // An attached Word, Excel, PowerPoint, OpenDocument, RTF, EPUB or Jupyter notebook file is an archive or markup that an agent's tools
 // read as bytes, so Trebell extracts its text once into a file in its attachments folder that every harness is told of ("(text
@@ -59,9 +60,10 @@ export async function ensureDocumentText(path,{home=null,env=process.env,now=Dat
 }
 
 // The worker's command: Trebell's own Node (Electron's, run as Node, in the desktop app) with the heap limit on its command line,
-// none of the server's NODE_OPTIONS, hidden on Windows and with no shell between.
+// hidden on Windows and with no shell between. The document is untrusted, so its process gets the baseline every internal child of
+// Trebell's gets (PATH, the temp folders, the locale), and none of the server's keys, tokens or NODE_OPTIONS.
 export function documentTextCommand(path,{env=process.env,worker=WORKER,electron=Boolean(process.versions?.electron)}={}){
-  const environment={...env};delete environment.NODE_OPTIONS;
+  const environment=buildRuntimeEnvironment("native",{parent:env});
   if(electron)environment.ELECTRON_RUN_AS_NODE="1";
   return {file:process.execPath,args:[`--max-old-space-size=${HEAP_MB}`,worker,path,extname(path).toLowerCase()],options:{timeout:TIMEOUT_MS,maxBuffer:MAX_OUTPUT_BYTES,encoding:"utf8",windowsHide:true,shell:false,env:environment}};
 }

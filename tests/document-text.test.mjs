@@ -136,14 +136,21 @@ test("two sends of a document while its text is extracted run one extraction, an
   assert.equal(await readFile(book+".txt","utf8"),"Kept text","text already there is used as it is");
 });
 
-test("the extraction runs on Trebell's own Node, hidden, with no shell and none of the server's NODE_OPTIONS, under a 192 MB heap",async t=>{
-  const command=documentText.documentTextCommand("C:\\Docs\\report.DOCX",{env:{PATH:"p",NODE_OPTIONS:"--max-old-space-size=4096 --require evil.cjs",OTHER:"1"},electron:false});
+test("the extraction runs on Trebell's own Node, hidden, with no shell, none of the server's NODE_OPTIONS and none of its keys, under a 192 MB heap",async t=>{
+  const command=documentText.documentTextCommand("C:\\Docs\\report.DOCX",{env:{PATH:"p",NODE_OPTIONS:"--max-old-space-size=4096 --require evil.cjs",OTHER:"1",OPENAI_API_KEY:"sk-server"},electron:false});
   assert.equal(command.file,process.execPath);
   assert.equal(command.args[0],"--max-old-space-size=192");
   assert.match(command.args[1],/document-text-worker\.mjs$/);
   assert.deepEqual(command.args.slice(2),["C:\\Docs\\report.DOCX",".docx"]);
   assert.deepEqual({timeout:command.options.timeout,windowsHide:command.options.windowsHide,shell:command.options.shell,maxBuffer:command.options.maxBuffer},{timeout:15_000,windowsHide:true,shell:false,maxBuffer:4*1024*1024+1024});
-  assert.deepEqual(command.options.env,{PATH:"p",OTHER:"1"});
+  // The document is untrusted: the process that reads it gets the baseline names every internal child of Trebell's gets (PATH, the
+  // temp folders, the locale), not the server's provider keys, tokens or anything else it was started with. A probe worker in the
+  // real worker's place reports which of the server's keys it sees.
+  const keys=await folder(t,"trebell-document-env-"),keysHome=join(keys,"home"),envProbe=join(keys,"env-probe.mjs");
+  await writeFile(envProbe,'const names=["OPENAI_API_KEY","ANTHROPIC_API_KEY","GEMINI_API_KEY","TREBELL_PROBE_TOKEN","NODE_OPTIONS"];process.stdout.write(JSON.stringify({seen:names.filter(name=>name in process.env),path:Boolean(process.env.PATH||process.env.Path)}));',"utf8");
+  const server={...process.env,OPENAI_API_KEY:"sk-server-openai",ANTHROPIC_API_KEY:"sk-ant-server",GEMINI_API_KEY:"gemini-server",TREBELL_PROBE_TOKEN:"token-server",NODE_OPTIONS:"--no-warnings"};
+  const seen=await documentText.ensureDocumentText(await upload(keysHome,"keys.rtf",String.raw`{\rtf1 keys}`),{home:keysHome,worker:envProbe,env:server});
+  assert.deepEqual({command:command.options.env,worker:JSON.parse(await readFile(seen,"utf8"))},{command:{PATH:"p"},worker:{seen:[],path:true}},"none of the server's keys, and still its PATH");
   assert.equal(documentText.documentTextCommand("a.docx",{env:{},electron:true}).options.env.ELECTRON_RUN_AS_NODE,"1","Electron runs it as Node");
   // The heap limit holds in the process itself, whatever the server's NODE_OPTIONS ask for.
   const root=await folder(t),home=join(root,"home"),probe=join(root,"heap-probe.mjs");
