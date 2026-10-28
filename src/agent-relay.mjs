@@ -15,7 +15,7 @@ import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
 import { remoteEnvironmentImage, unreadableAttachment, withPromptAudioPath, withPromptImagePath, withPromptTextPath } from "./prompt-attachments.mjs";
 import { extractedDocumentText } from "./document-text.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
-import { MuseAgentSession } from "./muse-agent-session.mjs";
+import { MUSE_COMPACTION_STOPPED, MuseAgentSession } from "./muse-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
 import { createNativeBuiltins, safeWorkspacePath } from "./native-builtins.mjs";
 import { nativeProjectReadNeedsNoApproval } from "./native-read-approval.mjs";
@@ -953,6 +953,18 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }
     const run=startSession(thread,context,options);sessionStarts.set(thread.id,run);
     try{return usedSession(await run)}finally{if(sessionStarts.get(thread.id)===run)sessionStarts.delete(thread.id)}
+  }
+  // A Muse Code compaction whose thread's host has to start first (Muse Code starts it only when needed: the first compaction since
+  // Trebell started, one after the idle sweep let the host go or after a Stop ended it), which takes its time. A Stop meanwhile
+  // (turn/interrupt) ends the compaction there with Muse Code's own words, before Muse is asked to compact, and the host that starts
+  // stays the thread's, for its next message.
+  const museCompactionStarts=new Map();
+  async function museCompactionHost(thread,context){
+    let stop;const stopped=new Promise((_resolve,reject)=>{stop=reject});
+    const waiting={stopped:false,stop:()=>{waiting.stopped=true;stop(new Error(MUSE_COMPACTION_STOPPED))}},start=ensureSession(thread,context,{});start.catch(()=>{});
+    museCompactionStarts.set(thread.id,waiting);
+    try{const session=await Promise.race([start,stopped]);if(waiting.stopped)throw new Error(MUSE_COMPACTION_STOPPED);return session}
+    finally{if(museCompactionStarts.get(thread.id)===waiting)museCompactionStarts.delete(thread.id)}
   }
   // The sessions the sweep may let go: an ACP or OpenCode harness's, but not one it keeps until its thread closes (see sessionLeftWork
   // above), whose harness ran a tool that can outlive its turn or can neither load nor resume a conversation, and a Muse Code one that
@@ -2167,6 +2179,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       for(const send of waitingSends.get(String(params.threadId||""))||[])send.interrupt();
       // A turn that already failed and waits on its harness's recheck ends now, before this answers.
       endFailureWait(params.threadId);
+      // A Muse Code compaction still waiting for its host to start ends there (museCompactionStarts).
+      museCompactionStarts.get(String(params.threadId||""))?.stop();
       const target=sessions.get(params.threadId),running=target?lastTurnOf(String(params.threadId||"")):null;
       if(running?.id&&running.status==="inProgress")stoppedTurns.set(target,running.id);
       target?.cancel();
@@ -2205,7 +2219,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     }
     if(method==="thread/compact/start"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
-      const session=sessions.get(thread.id)||await ensureSession(thread,context,{});
+      const session=sessions.get(thread.id)||(thread.runtime==="muse"?await museCompactionHost(thread,context):await ensureSession(thread,context,{}));
       if(session instanceof NativeAgentSession){
         if(thread.status?.type==="active")throw new Error("Stop the running turn before compacting Native context.");
         const turns=Array.isArray(thread.turns)?thread.turns:[];if(!turns.length)throw new Error("There is no Native conversation history to compact yet.");
@@ -2222,7 +2236,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(session instanceof OpenCodeAgentSession||session instanceof ClaudeAgentSession){await session.compact();emit("thread/compacted",{threadId:thread.id});return {ok:true}}
       // Muse Code compacts with session/compact, settled once its compaction item ends (T3 compactThread); a conversation with nothing
       // to compact says so, and the thread goes on. A host that stopped since its last turn (a Stop during a compaction) starts again.
-      if(session instanceof MuseAgentSession){await (session.dead?await ensureSession(thread,context,{}):session).compact();emit("thread/compacted",{threadId:thread.id});return {ok:true}}
+      if(session instanceof MuseAgentSession){await (session.dead?await museCompactionHost(thread,context):session).compact();emit("thread/compacted",{threadId:thread.id});return {ok:true}}
       // Grok compacts with its own /compact command, run as a turn (T3 compactThread); a completed one adds the compaction item.
       // OpenCode in a remote environment runs on its ACP server, which answers /compact by summarizing the session, as the
       // local OpenCode server's compaction does (T3's OpenCode compactThread also sends /compact).

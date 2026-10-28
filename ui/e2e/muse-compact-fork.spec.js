@@ -201,6 +201,73 @@ test("Stop while Muse Code compacts a thread ends the compaction with Muse Code'
   }finally{await harness.close()}
 });
 
+test("Stop while Muse Code's host is still starting again for a compaction ends that compaction there with Muse Code's own words, and the thread goes on on that host",async({page})=>{
+  test.setTimeout(90_000);
+  // The stand-in's host holds its start while the file "start" names is there (MUSE_FAKE_START_HOLD).
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_COMPACT:"hold"},holds:["start"]}),startHold=join(harness.root,"release-start");
+  const stopped="Context compaction failed: Muse Code's context compaction was stopped before it finished.";
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Hello Muse");
+    await expect(reply(page,"Muse fixture reply")).toBeVisible({timeout:20_000});
+    const stop=page.getByRole("button",{name:"Stop",exact:true}),compact=page.getByRole("button",{name:"Compact",exact:true}),rows=compactRows(page);
+    // A first compaction, stopped while Muse compacts: the Stop ends Muse Code's host, which has no stop for a compaction.
+    await compact.click();
+    await expect.poll(async()=>(await harness.frames("session/compact")).length).toBe(1);
+    await stop.click();
+    await expect(rows.locator("summary strong")).toHaveText(stopped,{timeout:20_000});
+    // Compact again: Muse Code's host starts again for it, and takes its time. The header's Stop meanwhile ends the compaction there,
+    // before Muse is asked to compact. Soft, so that the old code also shows what the row and the Stop say.
+    await writeFile(startHold,"");
+    await compact.click();
+    await expect.poll(async()=>(await harness.hosts()).length,{timeout:20_000}).toBe(2);
+    await expect(rows.locator("summary strong")).toHaveText("Compacting context");
+    await expect(stop).toHaveAttribute("title","Stop the context compaction");
+    await stop.click();
+    await expect.soft(rows.locator("summary strong"),"the compaction ends at once, its host still starting").toHaveText(stopped,{timeout:5000});
+    await expect.soft(rows).not.toHaveClass(/status-running/);
+    await expect.soft(stop,"and its Stop goes").toHaveCount(0);
+    await rows.scrollIntoViewIfNeeded();await shoot(page,"muse-compaction-stopped-while-starting");
+    // The host goes on starting, and Muse is never asked to compact; the next message runs on that host.
+    await rm(startHold,{force:true});
+    await expect.poll(async()=>(await harness.frames("session/resume")).length,{timeout:20_000}).toBeGreaterThanOrEqual(1);
+    await send(page,"After the stop");
+    await expect(reply(page,"Muse fixture reply")).toHaveCount(2,{timeout:20_000});
+    expect((await harness.frames("session/compact")).length,"no compaction after the Stop").toBe(1);
+    expect((await harness.hosts()).length).toBe(2);
+  }finally{await rm(startHold,{force:true}).catch(()=>{});await harness.close()}
+});
+
+test("Stop during Muse Code's automatic compaction sends the message on uncompacted, saying the compaction was stopped, instead of giving the draft back",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"907200",MUSE_FAKE_COMPACT:"hold"}});
+  try{
+    Object.assign(harness.settings,{autoCompactContext:true,autoCompactThresholdPercent:85});
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Hello Muse");
+    await expect(reply(page,"Muse fixture reply")).toBeVisible({timeout:20_000});
+    await expect(page.locator(".composer-context")).toContainText("90%");
+    // The next message compacts the context first, and the person stops that compaction with the header's Stop.
+    await send(page,"Go on with the long conversation");
+    await expect.poll(async()=>(await harness.frames("session/compact")).length).toBe(1);
+    const stop=page.getByRole("button",{name:"Stop",exact:true});
+    await expect(stop).toHaveAttribute("title","Stop the context compaction");
+    await stop.click();
+    // The message goes on without it, on Muse Code started again, and its turn says the compaction was stopped. Soft, so that the
+    // old code also shows where the message went.
+    const note=page.locator(".tool-event").filter({hasText:"Automatic context compaction failed; continuing: Muse Code's context compaction was stopped before it finished."});
+    await expect.soft(reply(page,"Muse fixture reply"),"the message ran").toHaveCount(2,{timeout:20_000});
+    await expect.soft(note).toHaveCount(1);
+    await expect.soft(page.getByTestId("composer"),"its draft did not come back").toHaveValue("");
+    expect((await harness.frames("turn/start")).length).toBe(2);
+    await note.scrollIntoViewIfNeeded();await shoot(page,"muse-auto-compaction-stopped");
+  }finally{await harness.close()}
+});
+
 test("a message that fails while Muse Code compacts the thread is no end of the compaction, which goes on to end compacted",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startMuseHarness({holds:["compact"]});

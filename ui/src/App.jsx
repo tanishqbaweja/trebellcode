@@ -1928,8 +1928,6 @@ export default function App(){
   function settleCompactionWaiter(threadId,error=null,result={ok:true}){
     const id=String(threadId||"");const waiter=compactionWaitersRef.current.get(id);if(!waiter)return false;
     compactionWaitersRef.current.delete(id);clearTimeout(waiter.timer);if(waiter.turnless)setCompactionStops(count=>count+1);
-    // A compaction the person stopped ends the send that waited for it too, as a Stop before its turn does (maybeAutoCompactBeforeTurn).
-    if(error&&waiter.stopped&&typeof error==="object")error.trebellSendStopped=true;
     if(error)waiter.reject(error);else waiter.resolve(result);
     return true;
   }
@@ -1943,7 +1941,7 @@ export default function App(){
     let resolvePromise,rejectPromise;
     const promise=new Promise((resolve,reject)=>{resolvePromise=resolve;rejectPromise=reject});
     const timer=setTimeout(()=>settleCompactionWaiter(id,new Error("Context compaction timed out")),Math.max(5000,Number(timeoutMs)||45_000));
-    const waiter={promise,resolve:resolvePromise,reject:rejectPromise,timer,turnless:agentRuntime==="muse",turnId:null,stopped:false};
+    const waiter={promise,resolve:resolvePromise,reject:rejectPromise,timer,turnless:agentRuntime==="muse",turnId:null};
     compactionWaitersRef.current.set(id,waiter);if(waiter.turnless)setCompactionStops(count=>count+1);
     client.request("thread/compact/start",{threadId:id}).then(result=>{if(result?.turn?.id!=null)waiter.turnId??=String(result.turn.id)},error=>settleCompactionWaiter(id,error));
     return promise;
@@ -4328,15 +4326,15 @@ export default function App(){
     const usage=threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
     const decision=autoCompactionDecision(usage,{enabled:settings.autoCompactContext===true,thresholdPercent:settings.autoCompactThresholdPercent??85});
     if(!decision.shouldCompact)return {attempted:false,compacted:false,decision,error:null};
-    // The send waits for the compaction to end, as long as its harness takes (LONG_COMPACTION_RUNTIMES). One the person stopped ends the
-    // send, its draft back (settleCompactionWaiter).
+    // The send waits for the compaction to end, as long as its harness takes (LONG_COMPACTION_RUNTIMES). One that failed, or that the
+    // person stopped with the header's Stop, leaves the context as it was, and the message goes on with a row saying why, as Grok's
+    // stopped one does: stopping it ends the compaction, not the message waiting for it.
     try{
       await requestThreadCompaction(thread.id);
       updateThreadTelemetry(thread.id,{tokenUsage:null,lastActivityAt:Date.now()});
       if(activeThreadRef.current?.id===thread.id)setTokenUsage(null);
       return {attempted:true,compacted:true,decision,error:null};
     }catch(error){
-      if(error?.trebellSendStopped)throw error;
       return {attempted:true,compacted:false,decision,error};
     }
   }
@@ -4870,10 +4868,12 @@ export default function App(){
     // prompt) and the send puts its draft back; Codex can interrupt a turn only once it has started it (turn/started), so that Stop
     // waits for the turn to start (interruptStoppedSend), and until then the turn still runs here, as Stopping.
     const threadId=activeThread?.id?String(activeThread.id):null,pendingSend=threadId?pendingSendsRef.current.get(threadId)||null:null;
-    // A Muse Code compaction runs in no turn: its Stop names none, once, and the relay stops Muse's host, which has no stop for one
-    // (MuseAgentSession.cancel). The compaction ends stopped, and the next message starts Muse Code again.
+    // A Muse Code compaction runs in no turn: its Stop names none, and the relay stops Muse's host, which has no stop for one
+    // (MuseAgentSession.cancel), or ends the compaction while that host is still starting for it (agent-relay museCompactionHost). The
+    // compaction ends stopped, and the next message starts Muse Code again. Each press asks again, as one that found nothing to stop
+    // leaves the compaction running: a second Stop of one already stopped stops nothing more.
     const compaction=!running&&threadId?compactionWaitersRef.current.get(threadId):null;
-    if(compaction?.turnless){if(!compaction.stopped&&rpc){compaction.stopped=true;await rpc.request("turn/interrupt",{threadId}).catch(error=>{compaction.stopped=false;throw error})}return}
+    if(compaction?.turnless){if(rpc)await rpc.request("turn/interrupt",{threadId});return}
     // One Stop per turn: pressed again while it is on its way (a double click, the shortcut twice), it sends nothing more.
     const stopKey=activeTurnId?threadId+"\0"+activeTurnId:pendingSend;
     if(stopKey&&stopKeyRef.current===stopKey)return;

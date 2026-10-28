@@ -10,6 +10,8 @@
 //                          "hold until steered"
 //   MUSE_FAKE_SERVE_FAIL   a file: while it is there, `serve` exits at once with the exit code it holds, after the line Muse writes
 //                          for a malformed settings file (3: Muse could not load its settings)
+//   MUSE_FAKE_START_HOLD   a file: while it is there, a host's initialize is answered only once it is gone, as a host that takes a
+//                          while to start
 //   MUSE_FAKE_FORGET       a file: while it is there, session/resume answers that the session was not found, as Muse does for a
 //                          session its store no longer has
 //   MUSE_FAKE_COMPACT      how session/compact goes: unset, its compaction item ends compacted MUSE_FAKE_COMPACT_MS (50) ms later, or
@@ -334,6 +336,8 @@ readline.createInterface({input:process.stdin}).on("line",line=>{
   let frame;try{frame=JSON.parse(line)}catch{return}
   log({frame});
   if(frame.id===undefined||!frame.method)return;
+  const hold=process.env.MUSE_FAKE_START_HOLD;
+  if(frame.method==="initialize"&&hold&&fs.existsSync(hold))return void setTimeout(function held(){if(fs.existsSync(hold))return void setTimeout(held,25);write({jsonrpc:"2.0",id:frame.id,result:answers.initialize(frame.params||{})})},25);
   const answer=answers[frame.method];
   if(!answer)return write({jsonrpc:"2.0",id:frame.id,error:{code:-32601,message:`method not found: ${frame.method}`,data:{kind:"methodNotFound",retryable:false}}});
   try{write({jsonrpc:"2.0",id:frame.id,result:answer(frame.params||{})})}
