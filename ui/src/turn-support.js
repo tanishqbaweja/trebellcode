@@ -17,6 +17,7 @@ import { maybeStartAutomaticVerificationContinuation } from "./auto-verification
 import { askTerminalKeyboard } from "./terminal-keyboard.js";
 import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
 import { CODEX_GOAL_START } from "../../src/codex-goal-start.mjs";
+import { turnInfoKey } from "./turn-outcome.js";
 
 export { repositoryContextEntries } from "./context-provenance.js";
 
@@ -210,40 +211,48 @@ export async function continueInterruptedTurns({client,recovery,showActionError}
 // The first turn of a Codex goal asks for the work (codex-goal-start.mjs): Codex gets CODEX_GOAL_START before the objective, while the
 // person's message, its checkpoint and the Goal panel keep the objective as written.
 export { CODEX_GOAL_START };
+// The running turn is a compaction of the thread's own, which a goal command never stops (T3 isNativeMaintenanceCommand: a run whose
+// message is /compact): the one this window asked for (compactionWaiters), or a turn whose items, as this window saw them from its
+// turn/started (turnItems, from App), are compactions alone and that no active goal drives. A turn that compacts as it works, an
+// ordinary turn or a goal's own (also one that opens with a compaction), is stopped as any other.
+function compactionTurn({activeThread,activeTurnId,compactionWaiters,turnItems},goalStatus){
+  const threadId=String(activeThread?.id||"");if(compactionWaiters?.has(threadId))return true;
+  const types=turnItems?.key&&turnItems.key===turnInfoKey(threadId,activeTurnId)?[...turnItems.types]:[];
+  return types.length>0&&types.every(type=>type==="contextCompaction")&&goalStatus!=="active";
+}
 // A goal command that stops the turn running (T3 goalCommandStopsActiveRun) stops it as Stop does: an active goal is paused first,
 // so Codex starts no further turn of it. waitForEnd: the command starts a turn, which waits for the stopped one's turn/completed,
-// or 10 s, after which Codex says why should it refuse the start. A compaction that runs (compacting) is never stopped for a goal
-// (T3 isNativeMaintenanceCommand): the command waits for its turn to end, up to a minute, as T3 queues it after the compaction.
-async function stopForGoal({rpc,stop,compacting=false},threadId,{waitForEnd=false}={}){
+// or 10 s, after which Codex says why should it refuse the start. A compaction of the thread's own (compacting) is not stopped: the
+// command waits for its turn to end, up to a minute, as T3 queues it after the compaction.
+async function stopForGoal({rpc,stop},threadId,{waitForEnd=false,compacting=false}={}){
   let off=()=>{},timer=null;
   const ended=waitForEnd?new Promise(resolve=>{timer=setTimeout(resolve,compacting?60_000:10_000);off=rpc.subscribeNotifications(message=>{if(message.method==="turn/completed"&&String(message.params?.threadId||"")===threadId)resolve()})}):null;
   try{if(!compacting)await stop();await ended}finally{off();clearTimeout(timer)}
 }
 // Codex /goal, run like T3 Code's runGoalCommand and the Codex TUI: /goal shows the goal, clear, pause and resume
 // control it, and any other text sets a new goal and starts its first turn. A new goal or a resume sent while a turn runs stops that
-// turn and starts once it has ended; clear and pause stop only a turn the goal drives (it is active); none stops a compaction, whose
-// end a goal's turn waits for (compacting, from App: the window waits for one, or shows one running). One that cannot run keeps the
-// draft ("kept") and says why beside the composer, as /goal does on the other harnesses; a Codex without goals is said not to
-// support them.
+// turn and starts once it has ended; clear and pause stop only a turn the goal drives (it is active); none stops a compaction of the
+// thread's own (compactionTurn), whose end a goal's turn waits for. One that cannot run keeps the draft ("kept") and says why beside
+// the composer, as /goal does on the other harnesses; a Codex without goals is said not to support them.
 async function runCodexGoalCommand(deps,command){
-  const {activeThread,running,compacting,startTurn,attachments,model,contextChips,rpc,agentRuntimeLabel,setGoal,openRightPanel,setEvents,setComposerAlert}=deps;
+  const {activeThread,running,goal,startTurn,attachments,model,contextChips,rpc,agentRuntimeLabel,setGoal,openRightPanel,setEvents,setComposerAlert}=deps;
   const threadId=activeThread?.id?String(activeThread.id):null;
   const note=(title,kind="tool")=>setEvents(prev=>[...prev,{id:"goal-command-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),kind,title,status:"done",raw:{}}]);
   try{
     if(command?.type==="set"){
-      if(running&&threadId)await stopForGoal(deps,threadId,{waitForEnd:true});
+      if(running&&threadId)await stopForGoal(deps,threadId,{waitForEnd:true,compacting:compactionTurn(deps,goal?.status)});
       await startTurn(command.objective,attachments,model,null,null,repositoryFocusPaths(attachments,contextChips),{goalPatch:{objective:command.objective,status:"active"},inputText:CODEX_GOAL_START+command.objective});
       return;
     }
     if(!threadId||!rpc){note("No goal is set.");return}
     const current=(await rpc.request("thread/goal/get",{threadId}))?.goal||null;setGoal(current);
-    const drives=running&&current?.status==="active"&&!compacting;
+    const compacting=Boolean(running)&&compactionTurn(deps,current?.status),drives=running&&current?.status==="active"&&!compacting;
     if(command?.type==="clear"){if(drives)await stopForGoal(deps,threadId);const result=await rpc.request("thread/goal/clear",{threadId});setGoal(null);note(result?.cleared?"Goal cleared.":"No goal to clear.");return}
     if(!current){note("No goal is set.");return}
     if(command?.type==="pause"){if(drives)await stopForGoal(deps,threadId);const paused=await rpc.request("thread/goal/set",{threadId,status:"paused"});setGoal(paused?.goal||null);note("Goal paused. Send /goal resume to continue.");return}
     if(command?.type==="resume"){
       // A turn without new input continues the goal from the history.
-      if(running)await stopForGoal(deps,threadId,{waitForEnd:true});
+      if(running)await stopForGoal(deps,threadId,{waitForEnd:true,compacting});
       await startTurn("",[],model,null,null,null,{goalPatch:{status:"active"},goalResume:true});
       return;
     }

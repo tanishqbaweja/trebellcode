@@ -66,6 +66,14 @@ async function fakeCodex(thread){
     port,requests,turns,goals,notify,startCompaction,
     sent:method=>requests.filter(item=>item.method===method).map(item=>item.params||{}),
     ask(method,params){const id=nextId++;send({id,method,params});return {id,answers:()=>answers.get(String(id))||[]}},
+    // A turn Codex runs that this window did not start (a goal's next turn), as the steps given ([method, item]) show it, until
+    // turn/interrupt ends it.
+    runTurn(threadId,steps){
+      const turn={id:"codex-turn-"+(turns.length+1),threadId,status:"inProgress",input:[]};turns.push(turn);
+      notify("turn/started",{threadId,turn:{id:turn.id,status:"inProgress",items:[]}});
+      for(const [method,item] of steps)notify(method,{threadId,turnId:turn.id,item});
+      return turn;
+    },
     finishCompaction(){
       const turn=turns.find(item=>item.compaction&&item.status==="inProgress");if(!turn)return false;turn.status="completed";
       notify("item/completed",{threadId:turn.threadId,turnId:turn.id,item:{type:"contextCompaction",id:"compaction-"+turn.id,status:"completed"}});
@@ -221,6 +229,59 @@ test("/goal sent while Codex compacts the thread lets the compaction end, then s
     expect(codex.sent("turn/interrupt")).toEqual([]);
     await expect(composer).toHaveValue("");
     await expect(page.locator(".user-bubble").last()).toContainText("Ship the release notes");
+  }finally{await harness.close()}
+});
+
+// A turn that Codex compacts as it works is no compaction of the thread's own: a goal command stops it as any other running turn.
+test("/goal pause stops a goal's own turn that Codex compacts as it works, and the goal pauses",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,"Release goal compaction");const {codex,thread,cwd}=harness;
+  try{
+    const composer=page.getByTestId("composer"),stop=page.getByRole("button",{name:"Stop",exact:true}),now=Math.floor(Date.now()/1000);
+    // The thread's goal is active, and Codex runs its next turn: a command has run, and now Codex compacts the context to go on.
+    const goal={threadId:thread.id,objective:"Ship the release notes",status:"active",tokenBudget:null,tokensUsed:0,timeUsedSeconds:0,createdAt:now,updatedAt:now};
+    codex.goals.set(thread.id,goal);codex.notify("thread/goal/updated",{threadId:thread.id,goal});
+    const turn=codex.runTurn(thread.id,[
+      ["item/started",{type:"commandExecution",id:"cmd-1",command:"npm test",cwd,status:"inProgress"}],
+      ["item/completed",{type:"commandExecution",id:"cmd-1",command:"npm test",cwd,status:"completed",exitCode:0,aggregatedOutput:"ok"}],
+      ["item/started",{type:"contextCompaction",id:"compaction-1",status:"inProgress"}],
+    ]);
+    await expect(page.getByText("Compacting context").first()).toBeVisible();await expect(stop).toBeVisible();
+    await composer.click();await page.keyboard.type("/goal pause",{delay:8});await page.keyboard.press("Enter");
+    // The goal's turn stops as Stop stops it, and the goal is paused, so Codex starts no further turn of it.
+    await expect.poll(()=>codex.sent("turn/interrupt"),{timeout:10_000}).toEqual([{threadId:thread.id,turnId:turn.id}]);
+    expect(turn.status).toBe("interrupted");
+    await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("paused");
+    await expect(stop).toHaveCount(0);await expect(composer).toHaveValue("");
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    const panel=page.getByTestId("goal-panel");
+    await expect(panel.locator(".goal-status")).toHaveText("paused");
+    await shoot(page,"goal-pause-stops-compacting-turn",()=>expect(panel.locator(".goal-status")).toHaveText("paused"));
+  }finally{await harness.close()}
+});
+
+test("/goal sent while Codex compacts an ordinary turn as it works stops that turn at once, then starts the goal",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,"Release long turn");const {codex,thread}=harness;
+  try{
+    const composer=page.getByTestId("composer"),stop=page.getByRole("button",{name:"Stop",exact:true});
+    await composer.click();await page.keyboard.type("Summarize what changed in this release.",{delay:8});await page.keyboard.press("Enter");
+    await expect.poll(()=>codex.turns.length).toBe(1);await expect(stop).toBeVisible();
+    // As Codex runs the turn: the person's message, then a compaction of the context on its way.
+    const turn=codex.turns[0];
+    codex.notify("item/started",{threadId:thread.id,turnId:turn.id,item:{type:"userMessage",id:"user-1",content:[{type:"text",text:"Summarize what changed in this release."}]}});
+    codex.notify("item/started",{threadId:thread.id,turnId:turn.id,item:{type:"contextCompaction",id:"compaction-1",status:"inProgress"}});
+    await expect(page.getByText("Compacting context").first()).toBeVisible();
+    await composer.click();await page.keyboard.type("/goal Ship the release notes",{delay:8});await page.keyboard.press("Enter");
+    // Stopped at once, not waited for, and the goal's first turn starts once it has ended.
+    await expect.poll(()=>codex.sent("turn/interrupt"),{timeout:10_000}).toEqual([{threadId:thread.id,turnId:turn.id}]);
+    await expect.poll(()=>codex.turns.length).toBe(2);
+    expect(turn.status).toBe("interrupted");
+    expect(codex.turns[1].input.filter(item=>item.type==="text").map(item=>item.text)).toEqual(["Start working toward this goal: Ship the release notes"]);
+    await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("active");
+    await expect(composer).toHaveValue("");await expect(stop).toBeVisible();
+    await expect(page.locator(".user-bubble").last()).toContainText("Ship the release notes");
+    await shoot(page,"goal-stops-compacting-turn",()=>expect(page.locator(".user-bubble").last()).toContainText("Ship the release notes"));
   }finally{await harness.close()}
 });
 
