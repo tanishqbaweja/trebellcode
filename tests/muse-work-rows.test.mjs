@@ -1,8 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { agentToolLifecycle } from "../src/agent-relay.mjs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { activityRow, settledRow, storedRow } from "../ui/src/activity-item.js";
+import { cardRowsFromItemEntries, cardRowsFromTurns } from "../ui/src/turn-activity.js";
 import { FakeMuse, event, itemFrame, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
+import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 
 // Work that runs on past the turn that started it (Muse Code's workflows, their agents, subagents and commands in the background) as
 // the window shows it: its rows say so (runsPastTurn), from Muse Code's session through the relay's item, and the turn's end leaves
@@ -88,6 +93,34 @@ test("Muse Code's workflow, its agents and a command it sends to the background 
   // Through the relay's mapping, the window gets the agent's row pending, the work's rows as running past the turn.
   assert.deepEqual(rowsOf(seen,"wf-1:agent:ping").map(row=>[mapped(row).status,mapped(row).runsPastTurn]),[["pending",true],["completed",true]]);
   await session.close();
+});
+
+test("a read of a thread whose Muse Code session still runs a workflow past its turn says so on those items, so a window that opens the thread again keeps their rows running, and once the work ends they settle",{timeout:120_000},async()=>{
+  const holds=await mkdtemp(join(tmpdir(),"trebell-muse-live-work-")),release=join(holds,"workflow");
+  const relay=await museRelay("trebell-muse-live-work-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_WORKFLOW_HOLD:release}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}]});
+    await relay.completed(thread.id,1);
+    // The workflow runs on past its turn, held after its first agent is scheduled.
+    await eventually(()=>relay.notifications.some(item=>/^item\//.test(item.method)&&item.params.item?.tool==="Workflow ping-pong · ping"),"the workflow's agent");
+    // The window rebuilds the thread's cards from each of the reads it opens a thread with (an open, a reload, a reconnect).
+    const shown=async()=>{
+      const resumed=await relay.rpc("thread/resume",{threadId:thread.id}),items=await relay.rpc("thread/items/list",{threadId:thread.id,limit:200});
+      const turns=await relay.rpc("thread/turns/list",{threadId:thread.id,itemsView:"full"}),read=await relay.rpc("thread/read",{threadId:thread.id});
+      const rows=cards=>Object.fromEntries(Object.values(cards).flat().filter(row=>/^Workflow ping-pong/.test(row.title)).map(row=>[row.title,row.status]));
+      return {resume:rows(cardRowsFromTurns(resumed.thread.turns)),items:rows(cardRowsFromItemEntries(items.data)),turns:rows(cardRowsFromTurns(turns.data)),read:rows(cardRowsFromTurns(read.thread.turns))};
+    };
+    const every=rows=>({resume:rows,items:rows,turns:rows,read:rows});
+    assert.deepEqual(await shown(),every({"Workflow ping-pong":"running","Workflow ping-pong · ping":"pending"}),"the work still runs, so its rows stay as they are");
+    // The workflow goes on and ends: its rows settle as stored.
+    await writeFile(release,"");
+    await eventually(()=>relay.notifications.some(item=>item.method==="item/completed"&&item.params.item?.tool==="Workflow ping-pong"),"the workflow's end");
+    await relay.completed(thread.id,2);
+    assert.deepEqual(await shown(),every({"Workflow ping-pong":"done","Workflow ping-pong · ping":"done","Workflow ping-pong · pong: budget_exhausted":"failed"}));
+    // What the thread keeps holds nothing of the reads' word.
+    assert.equal(JSON.stringify(relay.threadStore.get(thread.id)).includes("stillRunning"),false);
+  }finally{await relay.close();await rm(holds,{recursive:true,force:true}).catch(()=>{})}
 });
 
 test("a command Muse Code's report still runs when a message takes the report over says so on its row before the report's turn ends, so that end leaves it running in the window and its own end settles it there",async()=>{

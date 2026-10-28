@@ -399,6 +399,13 @@ export class MuseAgentSession{
   // still running, unless none of it has been heard of for MUSE_MAX_IDLE_PIN_MS, or a turn Muse started itself. They run in this
   // host, so the relay's idle sweep keeps the session meanwhile.
   get pendingBackgroundWork(){return this.observed.size>0&&this.now()-this.workHeardAt<MUSE_MAX_IDLE_PIN_MS||Boolean(this.activePrompt?.wake&&!this.activePrompt.settled)}
+  // Whether the row of that id is of work this session still follows past its turn (observed), a followed workflow's agents with it,
+  // which a read of the thread says still runs (agent-relay withLiveWork).
+  followsWork(id){
+    if(this.dead||this.closed)return false;
+    const row=String(id||""),agent=row.indexOf(":agent:");
+    return this.observed.has(row)||agent>0&&this.observed.has(row.slice(0,agent));
+  }
   // A new host can take the conversation up again unless this one keeps its sessions in memory only.
   get resumable(){return Boolean(this.initializeResult)&&this.initializeResult.sessionDurability!=="ephemeral"}
   setPermissionMode(mode){this.permissionMode=normalizePermissionMode(mode||"supervised");return this.permissionMode}

@@ -966,6 +966,20 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     try{const session=await Promise.race([start,stopped]);if(waiting.stopped)throw new Error(MUSE_COMPACTION_STOPPED);return session}
     finally{if(museCompactionStarts.get(thread.id)===waiting)museCompactionStarts.delete(thread.id)}
   }
+  // The work a thread's live Muse Code session still follows past its turn (MuseAgentSession.followsWork): a read of the thread says
+  // so on copies of those stored items (stillRunning), so a window that opens the thread again, reloads or reconnects keeps their
+  // rows running until the work's own rows settle them, as T3 shows such work from its server's state. Once the session is gone
+  // nothing says so, and their stored rows settle.
+  function liveWorkSession(threadId){const session=sessions.get(String(threadId||""));return session instanceof MuseAgentSession&&session.observed.size?session:null}
+  const liveWorkItem=(session,item)=>item?.runsPastTurn===true&&(item.status==="inProgress"||item.status==="pending")&&session.followsWork(item.id)?{...item,stillRunning:true}:item;
+  function withLiveWork(threadId,turns){
+    const session=liveWorkSession(threadId);if(!session||!Array.isArray(turns))return turns;
+    return turns.map(turn=>{const items=Array.isArray(turn?.items)?turn.items.map(item=>liveWorkItem(session,item)):null;return items?.some((item,index)=>item!==turn.items[index])?{...turn,items}:turn});
+  }
+  function withLiveWorkEntries(threadId,page){
+    const session=liveWorkSession(threadId);if(!session||!Array.isArray(page?.data))return page;
+    return {...page,data:page.data.map(entry=>{const item=liveWorkItem(session,entry?.item);return item===entry?.item?entry:{...entry,item}})};
+  }
   // The sessions the sweep may let go: an ACP or OpenCode harness's, but not one it keeps until its thread closes (see sessionLeftWork
   // above), whose harness ran a tool that can outlive its turn or can neither load nor resume a conversation, and a Muse Code one that
   // can resume its conversation. An ACP session's capabilities are known from its start, before it enters sessions.
@@ -1707,7 +1721,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(method==="thread/search")return searchAgentThreads(typeof threadStore.searchCandidates==="function"?threadStore.searchCandidates(runtime,params.searchTerm,{archived:params.archived===true}):threadStore.list(runtime),params,{ranks:params.archived===true?null:sectionRanks(threadStore.list(runtime))});
     if(method==="thread/read"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
-      return {thread:params.includeTurns===false?{...thread,turns:[]}:thread};
+      return {thread:params.includeTurns===false?{...thread,turns:[]}:{...thread,turns:withLiveWork(thread.id,thread.turns)}};
     }
     if(method==="thread/runtimeInstances/list"){
       const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
@@ -1784,15 +1798,17 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const turn=lastTurnOf(thread.id),session=sessions.get(thread.id),draft=session?.__nativeDraft?.turnId===turn?.id?session.__nativeDraft:null;
       const liveText=turn?.status==="inProgress"&&session?(draft?draft.emitted:String(session.__assistant||"")):"";
       // The composer shows the collaboration mode the thread last ran in (Claude Code's and Cursor's Plan mode).
-      return {...resumed,...(collaborationMode?.mode?{collaborationMode}:{}),...(liveText?{trebellLiveReply:{turnId:turn.id,text:liveText}}:{})};
+      const liveTurns=resumed?.thread?.turns?.length?withLiveWork(thread.id,resumed.thread.turns):null,live=liveTurns&&liveTurns!==resumed.thread.turns?{thread:{...resumed.thread,turns:liveTurns}}:{};
+      return {...resumed,...live,...(collaborationMode?.mode?{collaborationMode}:{}),...(liveText?{trebellLiveReply:{turnId:turn.id,text:liveText}}:{})};
     }
     if(method==="thread/items/list"){
       const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
-      return paginateAgentThreadItems(thread,params);
+      return withLiveWorkEntries(thread.id,paginateAgentThreadItems(thread,params));
     }
     if(method==="thread/turns/list"){
       const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
-      return paginateAgentThreadTurns(thread,params);
+      const page=paginateAgentThreadTurns(thread,params),turns=withLiveWork(thread.id,page.data);
+      return turns===page.data?page:{...page,data:turns};
     }
     if(method==="thread/searchOccurrences"){
       const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");

@@ -55,9 +55,11 @@ export function settledRow(row,{keepPast=false}={}){
   return row?.status==="running"||row?.fromItem&&row.status==="pending"?{...row,status:"done"}:row;
 }
 // A stored step of a turn that has ended, read from the thread's history. Codex stores a compaction's item, with no status, only
-// once the compaction is done, so it reads as compacted.
+// once the compaction is done, so it reads as compacted. A step of work the thread's live session still follows past its turn (the
+// read says stillRunning: a Muse Code workflow, its agents, a subagent or a command in the background) stays as it is, for the work's
+// own later rows to settle.
 export function storedRow(row){
-  const settled=settledRow(row);
+  const settled=settledRow(row,{keepPast:row?.raw?.stillRunning===true});
   return settled!==row&&row.kind==="contextCompaction"?{...settled,title:"Context compacted"}:settled;
 }
 

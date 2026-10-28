@@ -197,6 +197,42 @@ test("a Muse Code workflow goes on in the card of the turn that launched it whil
   }finally{await harness.close()}
 });
 
+test("a Muse Code workflow still running past its turn keeps running on that turn's card after the window is reloaded and the thread opened again, and settles there",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"300"},holds:["workflow"]});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Please run workflow ping-pong");
+    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await expect(row(page.locator(".agent-block .activity-card"),"Workflow ping-pong")).toHaveCount(2,{timeout:20_000});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
+    // The window is reloaded while the workflow runs on, held after its first agent's scheduling, and the person opens the thread
+    // again: its card is rebuilt from the thread's history. Soft, so that the old code also shows what each row says.
+    await page.reload();
+    const listed=page.locator(".thread-row").filter({hasText:"Please run workflow ping-pong"});
+    await listed.locator(".thread-main").click();await expect(listed).toHaveClass(/active/);
+    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    const [stored]=harness.threadStore.list(),launchedId=harness.threadStore.get(stored.id).turns[0].id;
+    const card=page.locator(`[data-testid=activity-card][data-turn-id="${launchedId}"]`);
+    await expect(card).toHaveCount(1);
+    if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click();
+    await expect.soft(row(card,/^Workflow ping-pong$/),"the workflow, still running").toHaveClass(/status-running/);
+    await expect.soft(row(card,/^Workflow ping-pong · ping$/),"its agent, still scheduled").toHaveClass(/status-pending/);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-runs-on-after-reload-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    // The workflow goes on and ends, its rows settling on that card, and Muse reports on it in a turn of its own.
+    await harness.release("workflow");
+    await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
+    if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click();
+    await expect(row(card,/^Workflow ping-pong$/)).toHaveClass(/status-done/);
+    await expect(row(card,/^Workflow ping-pong · ping$/)).toHaveClass(/status-done/);
+    await expect(row(card,/^Workflow ping-pong · pong: budget_exhausted$/)).toHaveClass(/status-error/);
+    await expect(page.locator(".tool-event").filter({hasText:"Workflow ping-pong"}),"on that card only").toHaveCount(3);
+  }finally{await harness.close()}
+});
+
 test("a command Muse Code's report still runs when the person's message takes the report over goes on and settles in the report's card, never in that message's",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_COMMAND:"1"}});
