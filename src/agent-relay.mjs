@@ -2373,12 +2373,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   }
   // The sessions of one harness close, as a reset closes them all, and a turn one runs stops as Stop stops it: Antigravity's once its
   // saved Gemini API key changed or went, as each process keeps the key it started with (T3 closes a provider instance whose settings
-  // changed). The next turn starts the harness again. Answers how many sessions it closed.
+  // changed). The next turn starts the harness again. Only the sessions on this machine (here): one in a WSL or SSH environment never
+  // had the key saved here, as its launch forwards none of it. Answers how many sessions it closed.
   async function closeRuntimeSessions(kind){
-    const closes=[];
-    for(const runtime of [...startingSessions])if(runtime?.runtime===kind)closes.push(runtime.close().catch(()=>{}));
+    const closes=[],here=session=>!session?.remoteIo;
+    for(const runtime of [...startingSessions])if(runtime?.runtime===kind&&here(runtime))closes.push(runtime.close().catch(()=>{}));
     for(const [threadId,session] of [...sessions]){
-      if((sessionHarnesses.get(session)?.instance?.kind||session?.runtime)!==kind)continue;
+      if((sessionHarnesses.get(session)?.instance?.kind||session?.runtime)!==kind||!here(session))continue;
       sessions.delete(threadId);if(session.busy)try{session.cancel?.()}catch{}
       closes.push(closeThreadSession(session,threadId).catch(()=>{}).then(()=>emit("thread/closed",{threadId})));
     }
