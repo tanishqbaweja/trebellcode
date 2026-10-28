@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { trebellHome } from "./paths.mjs";
@@ -14,6 +14,15 @@ export async function codexAppServerToken({env=process.env,quote=false}={}){
   await mkdir(dirname(path),{recursive:true,mode:0o700});
   await writeFile(path,token,{encoding:"utf8",mode:0o600});
   return {token,path,args:["--ws-auth","capability-token","--ws-token-file",quote&&/[\s&()^|<>]/.test(path)?`"${path}"`:path],release:()=>rm(path,{force:true}).catch(()=>{})};
+}
+
+// An app-server Trebell starts on a WSL or SSH host (environment-app-server.mjs) gets a random token of its own too, but that host's
+// command line carries only the token's SHA-256 (--ws-token-sha256, which Codex checks a client's Bearer token against): nothing is
+// written there, and the digest every user of the host can read in its process list does not give the token, which stays in
+// Trebell's memory and goes only in its own clients' Authorization header.
+export function hashedCodexAppServerToken(){
+  const token=randomBytes(32).toString("base64url");
+  return {token,args:["--ws-auth","capability-token","--ws-token-sha256",createHash("sha256").update(token,"utf8").digest("hex")]};
 }
 
 // The token the relay sends to the app-server a connection's route goes to ({key, url}): the pool entry the route names (servers, by

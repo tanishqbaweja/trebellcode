@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { hashedCodexAppServerToken } from "./codex-app-server-auth.mjs";
 import { remoteCommandWords, remoteEnvironmentCommand, remoteHomeGuard, remotePathExpression, remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
@@ -71,8 +72,9 @@ export function sshRemotePorts(localAppPort){
   return {appPort:30000+seed};
 }
 
-export function remoteCodexArgs({listen}){
-  return ["app-server","--listen",listen];
+// auth: the --ws-auth arguments of the app-server's own token (hashedCodexAppServerToken), which every one Trebell starts takes.
+export function remoteCodexArgs({listen,auth=[]}){
+  return ["app-server","--listen",listen,...auth];
 }
 
 function attachLogs(child,logs,{debug=false,environment=process.env}={}){
@@ -120,8 +122,12 @@ export async function startRemoteAppServer({
     ?runtimeEnvironmentNames
     :runtimeEnvironmentKeys("codex",{approved:runtimeInstance?.approvedEnvironmentKeys});
   const commandEnvironmentNames=[...new Set([...inheritedNames,...(runtime.effectiveHomePath?["CODEX_HOME"]:[])])];
+  // Whoever reaches the port would drive this Codex: the Windows host and other distros for WSL's 0.0.0.0, every user and program
+  // of an SSH host. Only Trebell's own clients can, sending the token of which the host's command line has only the SHA-256
+  // (wsToken, codex-app-server-auth.mjs), as a local app-server's.
+  const auth=hashedCodexAppServerToken();
   const isolatedRuntimeCommand=listen=>"exec "+remoteEnvironmentCommand(
-    shellJoin([runtime.command,...remoteCodexArgs({listen})]),
+    shellJoin([runtime.command,...remoteCodexArgs({listen,auth:auth.args})]),
     commandEnvironmentNames,
     runtimeInstance?.environment||{},
   );
@@ -138,6 +144,7 @@ export async function startRemoteAppServer({
       environment:{id:profile.id,name:profile.name,type:profile.type,cwd:profile.cwd||""},
       targetUrl:`ws://${network.guest}:${appPort}`,
       readyUrl:`http://${network.guest}:${appPort}/readyz`,
+      wsToken:auth.token,
       close:async()=>{},
     };
   }
@@ -167,6 +174,7 @@ export async function startRemoteAppServer({
       environment:{id:profile.id,name:profile.name,type:profile.type,cwd:profile.cwd||""},
       targetUrl:`ws://127.0.0.1:${appPort}`,
       readyUrl:`http://127.0.0.1:${appPort}/readyz`,
+      wsToken:auth.token,
       close:async()=>{},
     };
   }

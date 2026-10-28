@@ -362,13 +362,15 @@ async function startAppServer({appPort,env=process.env,mock=false,environments=n
   return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome,sharedRuntimeHome:homeLayout.sharedHomePath,continuationKey:homeLayout.continuationKey,wsToken:auth.token };
 }
 
-// Why a local app-server did not become ready: once it has exited, the last thing it wrote (codex says why it could not listen).
-function appServerStartError(server,name){
+// Why an app-server did not become ready: once it has exited, the last thing it wrote (codex says why it could not listen).
+export function appServerStartError(server,name){
   const child=server?.child,exited=Boolean(child&&(child.exitCode!==null||child.signalCode!==null));
   if(!exited)return `Codex app-server profile '${name}' did not become ready`;
   const lines=(server.logs||[]).filter(entry=>entry.stream==="stderr").map(entry=>String(entry.text||"")).join("").split(/\r?\n/).map(line=>line.trim()).filter(line=>line&&!/^app-server exited /.test(line)&&!/^WARNING:/.test(line));
-  // A Codex from before --ws-auth stops on the argument, and its last line only says to try --help.
-  if(lines.some(line=>/unexpected argument '--ws-auth'/.test(line)))return `Codex app-server profile '${name}' exited before it was ready: this Codex has no --ws-auth, which Trebell Code starts each Codex app-server with so that only Trebell Code can connect to it. Update Codex (npm install -g @openai/codex), then try again.`;
+  // A Codex from before --ws-auth stops on the argument, and its last line only says to try --help. One a WSL or SSH host runs (its
+  // token as --ws-token-sha256, environment-app-server.mjs) is named with that environment, where it is to be updated.
+  const flag=lines.map(line=>/unexpected argument '(--ws-auth|--ws-token-sha256)'/.exec(line)?.[1]).find(Boolean),remote=server.environment;
+  if(flag)return `Codex app-server profile '${name}' exited before it was ready${remote?` in the ${remote.type==="wsl"?"WSL":"SSH"} environment '${remote.name}'`:""}: this Codex has no ${flag}, which Trebell Code starts each Codex app-server with so that only Trebell Code can connect to it. Update Codex${remote?` in '${remote.name}'`:""} (npm install -g @openai/codex), then try again.`;
   const said=String(lines.at(-1)||"").replace(/^Error:\s*/,"").slice(0,300);
   return `Codex app-server profile '${name}' exited before it was ready`+(said?": "+said:"");
 }
@@ -3387,8 +3389,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     // A thread's app-server that is released leaves the pool before it is stopped, and one started in its place has another URL; one
     // that died is still there.
     targetLive:({key,url})=>codexAppServers.get(key)?.targetUrl===url,
-    // The token of the app-server Trebell started for the connection's route (startAppServer; codexUpstreamToken): its pool entry, or
-    // the catalog app-server for the base route. One it did not start, a remote host's or a mock server's stand-in, has none.
+    // The token of the app-server Trebell started for the connection's route (startAppServer, here or on a WSL or SSH host;
+    // codexUpstreamToken): its pool entry, or the catalog app-server for the base route. A mock server's stand-in has none.
     upstreamToken:(url,route)=>codexUpstreamToken(codexAppServers,{key:route?.key,url},appServer),
     transformClientMessage:message=>transformCodexClientMessage(message),
     handleServerRequest:async message=>resolveCodexServerRequest(message),

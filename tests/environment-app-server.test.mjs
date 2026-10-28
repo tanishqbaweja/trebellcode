@@ -255,11 +255,11 @@ test("a WSL or SSH Codex profile with its own or a shadow Codex home signs in, c
       // whether auth.json is in the profile's home; what the account check said; and whether the sessions' app-server is signed in.
       const expected=folder?runs[0].hostHome+"/"+folder:"";
       seen[label]={
-        runs:runs.filter(run=>run.args!=="--version").map(run=>[run.args.replace(/ ws:\/\/\S+$/,""),run.codexHome]),
+        runs:runs.filter(run=>run.args!=="--version").map(run=>[run.args.replace(/ ws:\/\/\S+/,"").replace(/ [0-9a-f]{64}$/,""),run.codexHome]),
         authJson:existsSync(join(home,folder||".codex","auth.json")),check:[status.available,status.authenticated],
         appServer:remote.logs.map(entry=>entry.text).join("").match(/signed-(?:in|out)/)?.[0]||null,
       };
-      wanted[label]={runs:[["login",expected],["app-server",expected],["app-server --listen",expected]],authJson:true,check:[true,true],appServer:"signed-in"};
+      wanted[label]={runs:[["login",expected],["app-server",expected],["app-server --listen --ws-auth capability-token --ws-token-sha256",expected]],authJson:true,check:[true,true],appServer:"signed-in"};
     }
   }finally{await rm(work,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
   assert.deepEqual(seen,wanted);
