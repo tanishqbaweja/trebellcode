@@ -37,7 +37,7 @@ test("an OpenCode 2 turn whose event stream goes silent while OpenCode still run
 
 test("an OpenCode 2 turn whose stream went silent and whose server does not say it still runs it ends saying so, and the next message goes through",async({page})=>{
   test.setTimeout(180_000);
-  let turns=0;
+  let turns=0,failing=true;
   await openCode2App(page,({sessionID,emit,reply})=>{
     if(++turns===1)return;
     reply(ANSWER);answer(emit,sessionID,ANSWER,"msg_a2");
@@ -50,10 +50,15 @@ test("an OpenCode 2 turn whose stream went silent and whose server does not say 
     await expect(stopButton(page)).toHaveCount(0);
     // Letting go of the stream is Trebell's own doing, and no error row of its own.
     await expect(page.locator(".tool-event.kind-error").filter({hasText:"Transport"})).toHaveCount(0);
-    expect(fake.called("POST /api/session/ses_main/interrupt"),"a run Trebell cannot see is not stopped blind").toHaveLength(0);
+    // Each of the five streams opened again counted only once OpenCode said which sessions it runs, as T3 Code's reconnect does, and
+    // the run Trebell no longer follows is stopped (the stream reaches OpenCode, so the interrupt does too).
+    expect(fake.called("GET /api/session/active").length).toBeGreaterThanOrEqual(5);
+    expect(fake.called("POST /api/session/ses_main/interrupt")).toHaveLength(1);
     await shots(page,"opencode2-silent-stream-stopped",()=>expect(stopped).toBeVisible());
+    // OpenCode answers again: the next message asks it first whether that run has ended, and goes through.
+    failing=false;
     await send(page,"Fix the parser again");
     await expect(page.locator(".assistant-message-text").filter({hasText:ANSWER}),"the session listens again").toBeVisible({timeout:20_000});
     await expect(stopButton(page)).toHaveCount(0);
-  },{heartbeatMs:0,routes:{"GET /api/session/active":({send:respond})=>respond(500,{_tag:"UnknownError",message:"Internal error"})}});
+  },{heartbeatMs:0,routes:{"GET /api/session/active":({send:respond,active})=>failing?respond(500,{_tag:"UnknownError",message:"Internal error"}):respond(200,{data:Object.fromEntries([...active].map(id=>[id,{type:"running"}]))})}});
 });

@@ -107,15 +107,25 @@ function executionFailure(error){
 }
 // OpenCode 2 sends a heartbeat on its event stream every 10 to 15 seconds, so a stream that has sent nothing for this long while the
 // session waits on it is lost (T3 Code's client and OpenCode's own app wait as long), as is one that ends or fails. As T3 Code follows
-// its stream, the session subscribes again, up to five times two seconds apart, and asks OpenCode which sessions it still runs: a turn
-// whose run goes on goes on, one whose run ended meanwhile ends as its messages say, and the questions and approvals asked meanwhile are
-// asked again. A turn the session cannot follow again ends saying so, and the next turn subscribes first.
-const SILENT_STREAM_MS=45_000,RECONNECT_ATTEMPTS=5,RECONNECT_DELAY_MS=2_000,RECONNECT_OPEN_MS=5_000,RECONNECT_CHECK_MS=5_000;
+// its stream, the session subscribes again, up to five times two seconds apart, and a new stream counts once OpenCode has said which
+// sessions it still runs: a turn whose run goes on goes on, with what it said meanwhile read back from the session's history, one whose
+// run ended meanwhile ends as that history says, and the questions and approvals asked meanwhile are asked again. A turn the session
+// cannot follow again ends saying so, and its run is stopped; the next turn subscribes first, and asks OpenCode before it sends.
+const SILENT_STREAM_MS=45_000,RECONNECT_ATTEMPTS=5,RECONNECT_DELAY_MS=2_000,RECONNECT_OPEN_MS=5_000,RECONNECT_CHECK_MS=5_000,INTERRUPT_MS=10_000;
 const STREAM_LOST=Object.freeze({
   unreachable:"Trebell lost its connection to OpenCode's event stream and could not reconnect, so it stopped following the turn. Send the message again to retry.",
   unknown:"Trebell lost OpenCode's event stream, and OpenCode did not say whether it still runs the turn, so Trebell stopped following it. Send the message again to retry.",
   unsent:"OpenCode never confirmed the message and is not running it, so Trebell stopped the turn. Send the message again to retry.",
 });
+// A message sent after a turn Trebell stopped following waits for OpenCode to say that turn's run has ended (T3 Code's
+// OPENCODE_2_STILL_STOPPING), so that run's text and end reach no turn of the new message's.
+const AFTER_LOST_TURN=Object.freeze({
+  running:"OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run and did not send this message. Send the message again in a moment.",
+  unknown:"OpenCode did not say whether it still runs the turn Trebell stopped following, so Trebell did not send this message. Send the message again in a moment.",
+});
+const ENDED_FAILED="OpenCode ended the turn with an error while Trebell was reconnecting to it.";
+// A turn's history is read back to its own message, at most this many messages a page and this many pages.
+const HISTORY_PAGE=50,HISTORY_PAGES=20;
 const after=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // Trebell's repository tools are an MCP server of the session's folder, which OpenCode drops when it evicts an idle folder, so it is
 // added again before every turn; adding an unchanged config keeps its connection (T3 Code).
@@ -141,8 +151,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     // The forms waiting on the person, by form ID: {controller, answering}.
     this.forms=new Map();
     // The permission requests handled, by request ID, so one asked again after a reconnect is not answered twice; following: whether the
-    // session follows OpenCode's event stream (#follow).
-    this.permissionsHandled=new Set();this.following=false;
+    // session follows OpenCode's event stream (#follow); unsettled: a turn ended that OpenCode may still run (#lose).
+    this.permissionsHandled=new Set();this.following=false;this.unsettled=false;
     this.appliedSelection=null;
     this.sessionRules=[];
     this.messageText=new Map();
@@ -258,6 +268,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   async prompt(parts,{agent=null,onDelivered=null}={}){
     if(!this.client||!this.sessionId)throw new Error("OpenCode session is not started.");
     if(this.activePrompt)throw new Error("OpenCode already has a running turn.");
+    await this.#afterLostTurn();
     await this.#addRepositoryMcp();await this.#applySelection();await this.#applyPermissionRules();
     if(agent){const agentId=this.agentIds.get(String(agent))||String(agent);await this.client.session.switchAgent({sessionID:this.sessionId,agent:agentId})}
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
@@ -265,32 +276,76 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(!this.following)await Promise.race([this.#follow(),after(RECONNECT_OPEN_MS)]);
     let settleTurn=()=>{};const completion=new Promise(resolve=>{settleTurn=resolve});
     const input=await openCode2PromptInput(parts,{external:Boolean(this.serverUrl)});
-    // stopError: why Trebell ended the turn itself (a retry it will not wait for, a question it cannot show).
-    const turn={done:false,cancelled:false,error:null,stopError:null,text:"",assistantMessageId:null,startedAt:Date.now(),completion,settle:settleTurn};
+    // stopError: why Trebell ended the turn itself (a retry it will not wait for, a question it cannot show). text: the reply the window
+    // has, made of its text blocks (#block).
+    const turn={done:false,cancelled:false,error:null,stopError:null,text:"",blocks:new Map(),assistantMessageId:null,startedAt:Date.now(),completion,settle:settleTurn};
     this.activePrompt=turn;
     try{
       // A turn Trebell ended (Stop, an event stream gone silent) does not wait on a prompt request OpenCode never answered. The message
       // is OpenCode's once the request answers, the turn ended or not (onDelivered).
       const ended=turn.completion.then(()=>turn.stopError||turn.cancelled?STOPPED:new Promise(()=>{}));
       const posted=this.client.session.prompt({sessionID:this.sessionId,text:input.text,...(input.files.length?{files:input.files}:{})});
-      // accepted: OpenCode took the message, so a run it no longer has ended as the session's messages say (#reconnected).
-      void posted.then(value=>{turn.accepted=value||{}},()=>{});
+      // accepted: OpenCode took the message, whose id starts the turn's history (#turnHistory). One it takes after Trebell stopped
+      // following the turn has its run stopped, unless a later turn runs by then.
+      void posted.then(value=>{turn.accepted=value||{};if(turn.lost&&!this.activePrompt&&!this.closed)void this.#interrupt()},()=>{});
       if(typeof onDelivered==="function")void posted.then(()=>{try{onDelivered()}catch{}},()=>{});
       const accepted=await Promise.race([posted,ended]);
       await turn.completion;
       if(turn.stopError)throw turn.stopError;
       if(turn.cancelled)return {stopReason:"cancelled",providerMessageId:null,assistantMessageId:turn.assistantMessageId,raw:accepted===STOPPED?null:accepted};
       if(turn.error)throw Object.assign(new Error(turn.error),turn.usageLimit?{usageLimit:true}:{});
-      const messages=await this.client.message.list({sessionID:this.sessionId,order:"desc",limit:20}).catch(()=>({data:[]}));
-      const list=Array.isArray(messages?.data)?messages.data:[];
-      const user=list.find(item=>item?.type==="user"),assistant=list.find(item=>item?.type==="assistant");
+      // Only the messages since the turn's own count: OpenCode's newest assistant message may be an earlier turn's.
+      const since=await this.#turnHistory(turn).catch(()=>null)||[];
+      const user=since.findLast(item=>item?.type==="user"),assistant=since.findLast(item=>item?.type==="assistant");
       if(assistant?.id)turn.assistantMessageId=assistant.id;
       if(assistant?.error)throw new Error(errorText(assistant.error));
       if(assistant?.finish==="error")throw new Error("OpenCode reported that the model turn failed.");
-      const full=assistant?.type==="assistant"?(assistant.content||[]).filter(item=>item?.type==="text").map(item=>item.text||"").join(""):"";
-      if(full&&full!==turn.text){const suffix=full.startsWith(turn.text)?full.slice(turn.text.length):full;this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:suffix}}});turn.text=full}
+      this.#showRest(turn,since);
       return {stopReason:"end_turn",providerMessageId:user?.id||accepted?.id||null,assistantMessageId:turn.assistantMessageId,raw:assistant||accepted};
     }finally{turn.done=true;turn.settle?.();if(this.activePrompt===turn)this.activePrompt=null}
+  }
+  // After a turn Trebell stopped following (#lose), OpenCode says whether it still runs that turn's message before the next one is sent,
+  // as T3 Code asks before it starts a turn on an unsettled session: a run that goes on is stopped, and this message is refused.
+  async #afterLostTurn(){
+    if(!this.unsettled)return;
+    const runs=await openCode2Within(RECONNECT_CHECK_MS,AFTER_LOST_TURN.unknown,signal=>this.client.session.active({signal})).catch(()=>null);
+    if(!runs||typeof runs!=="object")throw new Error(AFTER_LOST_TURN.unknown);
+    if(Object.hasOwn(runs,this.sessionId)){await this.#interrupt();throw new Error(AFTER_LOST_TURN.running)}
+    this.unsettled=false;
+  }
+  #interrupt(){
+    return openCode2Within(INTERRUPT_MS,"OpenCode did not stop the run.",signal=>this.client.session.interrupt({sessionID:this.sessionId},{signal})).catch(()=>null);
+  }
+  // The session's history since the turn's own message, oldest first, as T3 Code reads it back; null when it does not reach that message.
+  async #turnHistory(turn){
+    const start=String(turn?.accepted?.id||"");if(!start)return null;
+    const read=[];let cursor=null;
+    for(let page=0;page<HISTORY_PAGES;page++){
+      const listed=await this.client.message.list({sessionID:this.sessionId,order:"desc",limit:HISTORY_PAGE,...(cursor?{cursor}:{})});
+      const items=Array.isArray(listed?.data)?listed.data:[];
+      for(const item of items){if(String(item?.id||"")===start)return read.reverse();read.push(item)}
+      cursor=listed?.cursor?.next||null;if(!cursor||!items.length)break;
+    }
+    return null;
+  }
+  // A text block of the turn's reply (an assistant message's text part, by its ordinal), as far as the window shows it. held: shown on only
+  // at its end, which carries its whole text (#backfill).
+  #block(turn,messageID,ordinal){
+    const key=`${messageID}:${Number(ordinal)||0}`;let block=turn.blocks.get(key);
+    if(!block){block={text:"",held:false};turn.blocks.set(key,block)}
+    return block;
+  }
+  #show(turn,block,text){
+    if(!text)return;block.text+=text;turn.text+=text;
+    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text}}});
+  }
+  // The reply as OpenCode keeps it, its messages' text blocks in order: the part the window does not have yet (text OpenCode did not
+  // stream) is sent once; a reply that differs from the window's is left as the window shows it.
+  #showRest(turn,since){
+    const full=since.filter(item=>item?.type==="assistant").flatMap(item=>(Array.isArray(item.content)?item.content:[]).filter(part=>part?.type==="text").map(part=>String(part.text||""))).join("");
+    if(full.length<=turn.text.length||!full.startsWith(turn.text))return;
+    const rest=full.slice(turn.text.length);turn.text=full;
+    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:rest}}});
   }
 
   async steer(parts){
@@ -373,8 +428,10 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   // if it ends before; ended once it has ended, however it ended; drop lets go of it. Every chunk the stream receives counts (onActivity),
   // OpenCode's heartbeats among them. The silence counts only while the session waits for the stream, as T3 Code's timeout runs only
   // while a read waits, so an approval the person takes minutes over is no silence of the stream's. (@opencode/client 2.0.24 reads the
-  // stream in the background and reports its heartbeats meanwhile; a subscription it is told to let go of ends quietly.)
-  #subscribe(){
+  // stream in the background and reports its heartbeats meanwhile; a subscription it is told to let go of ends quietly.) A stream opened
+  // again holds its events until gate settles, once the session has caught up with what it missed (#reconnected), as T3 Code's events
+  // wait for its reconcile.
+  #subscribe(gate=null){
     const silence=new AbortController(),signal=AbortSignal.any([this.eventAbort.signal,silence.signal]);
     let timer=null,open=()=>{};const opened=new Promise(resolve=>{open=resolve});
     const waiting=()=>{clearTimeout(timer);timer=setTimeout(()=>silence.abort(),SILENT_STREAM_MS)};
@@ -383,6 +440,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
         waiting();
         for await(const event of this.client.event.subscribe({signal,onActivity:()=>{open(true);waiting()}})){
           clearTimeout(timer);if(this.closed)break;
+          if(gate){await gate;gate=null;if(signal.aborted)break}
           try{await this.#event(event)}catch(error){if(!this.closed)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:errorText(error)}})}
           waiting();
         }
@@ -393,42 +451,77 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     return {opened,ended,drop:()=>silence.abort()};
   }
   // The event stream, followed while the session is open (T3 Code's follow): a lost stream is subscribed to again (RECONNECT_ATTEMPTS
-  // times, RECONNECT_DELAY_MS apart) and the turn checked (#reconnected); if none opens, a running turn ends saying so. The promise
-  // tells whether the first subscription opened.
+  // times, RECONNECT_DELAY_MS apart), and a new one counts once the session has caught up with what it missed (#reconnected); if none
+  // does, a running turn ends saying so (#lose). The promise tells whether the first subscription opened.
   #follow(){
     this.following=true;let first=this.#subscribe();
     this.eventTask=(async()=>{
       for(let stream=first;stream&&!this.closed;){
         await stream.ended;if(this.closed)break;
-        stream=null;
+        stream=null;let opened=false;
         for(let attempt=0;attempt<RECONNECT_ATTEMPTS&&!this.closed&&!stream;attempt++){
           if(attempt)await after(RECONNECT_DELAY_MS);if(this.closed)break;
-          const next=this.#subscribe();
-          if(await Promise.race([next.opened,after(RECONNECT_OPEN_MS).then(()=>false)]))stream=next;else{next.drop();await next.ended}
+          let caughtUp=()=>{};const next=this.#subscribe(new Promise(resolve=>{caughtUp=resolve}));
+          const open=await Promise.race([next.opened,after(RECONNECT_OPEN_MS).then(()=>false)]);opened||=open;
+          if(open&&await this.#reconnected().catch(()=>false))stream=next;else next.drop();
+          caughtUp();if(!stream)await next.ended;
         }
-        if(stream)void this.#reconnected();
-        else if(!this.closed){
-          const turn=this.activePrompt;
-          if(turn&&!turn.done&&!turn.cancelled&&!turn.stopError){turn.stopError=new Error(STREAM_LOST.unreachable);turn.settle?.()}
-        }
+        if(!stream&&!this.closed)this.#lose(this.activePrompt,opened?STREAM_LOST.unknown:STREAM_LOST.unreachable);
       }
       this.following=false;
     })();
     return first.opened;
   }
-  // Once the session listens again, OpenCode says which sessions it still runs (session.active). A turn whose run goes on goes on, and
-  // the questions and approvals of the session and its subagents that came while Trebell was not listening are asked; a turn whose run
-  // ended meanwhile ends as the session's messages say. A turn OpenCode cannot tell about, or one whose message OpenCode never took,
-  // ends saying the stream was lost; its run is not interrupted, as Trebell may no longer reach it.
+  // A turn the session stopped following ends with the reason. OpenCode may still run its message, so that run is stopped (once
+  // OpenCode has the message: interrupt false when it does not yet) and the next message asks OpenCode first (#afterLostTurn).
+  #lose(turn,reason,{interrupt=true}={}){
+    if(!turn||turn.done||turn.cancelled||turn.stopError||this.activePrompt!==turn)return;
+    turn.lost=true;turn.stopError=new Error(reason);this.unsettled=true;turn.settle?.();
+    if(interrupt)void this.#interrupt();
+  }
+  // Once the session listens again, OpenCode says which sessions it still runs (session.active), and a new stream counts only once it
+  // has (true): T3 Code's reconnect includes this check and tries again without it. A turn whose run goes on goes on, with the text it
+  // missed read back from the session's history (#backfill), and the questions and approvals of the session and its subagents that came
+  // while Trebell was not listening are asked; a turn whose run ended meanwhile ends as that history says (#endedMeanwhile), and one
+  // whose message OpenCode never took ends saying so.
   async #reconnected(){
     const turn=this.activePrompt;
-    const active=await openCode2Within(RECONNECT_CHECK_MS,"OpenCode did not say which sessions it runs.",signal=>this.client.session.active({signal})).catch(()=>null);
-    if(this.closed)return;
-    const runs=active&&typeof active==="object"?active:null,live=turn&&!turn.done&&!turn.cancelled&&!turn.stopError&&this.activePrompt===turn;
-    if(live&&!runs){turn.stopError=new Error(STREAM_LOST.unknown);turn.settle?.();return}
-    if(live&&!Object.hasOwn(runs,this.sessionId)){if(!turn.accepted)turn.stopError=new Error(STREAM_LOST.unsent);turn.settle?.();return}
-    if(!runs)return;
+    const runs=await openCode2Within(RECONNECT_CHECK_MS,"OpenCode did not say which sessions it runs.",signal=>this.client.session.active({signal}));
+    if(this.closed)return true;
+    if(!runs||typeof runs!=="object")return false;
+    const live=()=>turn&&!turn.done&&!turn.cancelled&&!turn.stopError&&this.activePrompt===turn,going=Object.hasOwn(runs,this.sessionId);
+    if(live()&&!going&&!turn.accepted)this.#lose(turn,STREAM_LOST.unsent,{interrupt:false});
+    else if(live()&&turn.accepted){
+      const since=await this.#turnHistory(turn);
+      if(live())going?this.#backfill(turn,since):this.#endedMeanwhile(turn,since);
+    }
     for(const sessionID of [this.sessionId,...[...this.sessionParents].filter(([,mine])=>mine).map(([id])=>id)])if(Object.hasOwn(runs,sessionID))void this.#askOpenRequests(sessionID);
+    return true;
+  }
+  // What the run said while Trebell was not listening (T3 Code's backfill): each text block OpenCode has kept since the turn's message is
+  // shown on from where the window's copy of it ends, and then held until OpenCode ends it (session.text.ended carries its whole text),
+  // so what the new stream sends again of it is not shown twice.
+  #backfill(turn,since){
+    for(const message of since||[]){
+      if(message?.type!=="assistant")continue;let ordinal=0;
+      for(const part of Array.isArray(message.content)?message.content:[]){
+        if(part?.type!=="text")continue;
+        const block=this.#block(turn,message.id,ordinal++),text=String(part.text||"");
+        if(text.startsWith(block.text))this.#show(turn,block,text.slice(block.text.length));
+        block.held=true;
+      }
+    }
+  }
+  // A run that ended while Trebell was not listening ends as the session's history says (T3 Code's reconcile): by the idle item OpenCode
+  // keeps for a run's end, since the turn's own message. Without one (a restarted server keeps none for the run it lost) the run was
+  // stopped, and so is the turn.
+  #endedMeanwhile(turn,since){
+    const outcome=String(since?.findLast(item=>item?.type==="idle")?.outcome||"");
+    if(outcome==="failed"){
+      const error=since.findLast(item=>item?.type==="assistant")?.error,failure=error?executionFailure(error):{text:ENDED_FAILED,usageLimit:false};
+      turn.error=failure.text;turn.usageLimit=failure.usageLimit;
+    }else if(outcome!=="succeeded")turn.cancelled=true;
+    turn.settle?.();
   }
   async #askOpenRequests(sessionID){
     const listed=await openCode2Within(RECONNECT_CHECK_MS,"OpenCode did not list the session's open requests.",signal=>Promise.all([this.client.permission.list({sessionID},{signal}),this.client.session.form.list({sessionID},{signal})])).catch(()=>null);
@@ -447,8 +540,13 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(event.type==="form.replied"||event.type==="form.cancelled")return this.#formSettled(String(data.id||""));
     if(event.type==="session.retry.scheduled")return this.#retry(event,sessionID);
     if(event.type==="session.text.delta"&&turn&&sessionID===this.sessionId){
-      const delta=String(data.delta||"");if(!delta)return;turn.text+=delta;turn.assistantMessageId=String(data.assistantMessageID||turn.assistantMessageId||"")||null;
-      this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:delta}}});return;
+      const delta=String(data.delta||"");if(!delta)return;turn.assistantMessageId=String(data.assistantMessageID||turn.assistantMessageId||"")||null;
+      const block=this.#block(turn,data.assistantMessageID,data.ordinal);if(!block.held)this.#show(turn,block,delta);return;
+    }
+    // A block held since a reconnect is shown on at its end.
+    if(event.type==="session.text.ended"&&turn&&sessionID===this.sessionId){
+      const block=this.#block(turn,data.assistantMessageID,data.ordinal),text=String(data.text||"");
+      if(block.held){block.held=false;if(text.startsWith(block.text))this.#show(turn,block,text.slice(block.text.length))}return;
     }
     if(event.type==="session.reasoning.delta"&&turn&&sessionID===this.sessionId){
       const delta=String(data.delta||"");if(delta)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_thought_chunk",content:{type:"text",text:delta},messageId:String(data.assistantMessageID||"reasoning")}});return;

@@ -49,9 +49,10 @@ test("an OpenCode 2 turn whose stream goes silent while OpenCode still runs it g
 
 test("an OpenCode 2 turn whose run ended while its stream was lost ends as its messages say, without an interrupt",{timeout:30_000},async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
+  // OpenCode keeps the run's end as an idle item with its outcome (OpenCode 2.0.24, live).
   const fake=fakeOpenCode2Client({overrides:{
     "session.active":async()=>({}),
-    "message.list":async()=>({data:[{id:"msg_a1",type:"assistant",content:[{type:"text",text:"Done while the stream was gone."}]},{id:"msg_user",type:"user"}]}),
+    "message.list":async()=>({data:[{id:"msg_idle",type:"idle",outcome:"succeeded"},{id:"msg_a1",type:"assistant",content:[{type:"text",text:"Done while the stream was gone."}]},{id:"msg_user",type:"user"}]}),
   }});
   const {session,updates}=await startedSession(t,fake);
   try{
@@ -90,11 +91,11 @@ test("an OpenCode 2 stream that fails is followed again, and a question and an a
   }finally{await session.close()}
 });
 
-test("an OpenCode 2 turn whose stream cannot be opened again ends saying so after five tries, without an interrupt, and the next turn listens again",{timeout:30_000},async t=>{
+test("an OpenCode 2 turn whose stream cannot be opened again ends saying so after five tries, its run is stopped, and the next turn listens again",{timeout:30_000},async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
-  let refusing=true;
+  let refusing=true,runs=RUNNING;
   const failing={async*[Symbol.asyncIterator](){throw Object.assign(new Error("Transport: fetch failed"),{name:"ClientError",reason:"Transport"})}};
-  const fake=fakeOpenCode2Client({overrides:{"event.subscribe":(_options,count)=>count>0&&refusing?failing:null,"session.active":async()=>RUNNING}});
+  const fake=fakeOpenCode2Client({overrides:{"event.subscribe":(_options,count)=>count>0&&refusing?failing:null,"session.active":async()=>runs,"session.interrupt":async()=>{runs={};return {interrupted:true}}}});
   const {session,updates}=await startedSession(t,fake);
   try{
     const turn=running(session);
@@ -103,7 +104,8 @@ test("an OpenCode 2 turn whose stream cannot be opened again ends saying so afte
     for(let step=0;step<60&&turn.value==="running";step++){t.mock.timers.tick(500);await settle()}
     assert.equal(turn.value,LOST);
     assert.equal(fake.subscriptions(),6,"the lost stream and five tries");
-    assert.equal(fake.called("session.interrupt").length,0,"a server Trebell cannot reach is not asked to stop");
+    // Trebell no longer follows the run, so it stops it where OpenCode still takes requests.
+    assert.equal(fake.called("session.interrupt").length,1);
     assert.deepEqual(updates.filter(update=>update.sessionUpdate==="runtime_error"),[]);
     // The server answers again: the next turn subscribes first.
     refusing=false;

@@ -3,8 +3,9 @@
 // stream plays what the test emits. The client's event.subscribe (OpenCode.make's) reads the stream in the background and queues its
 // events (its shared reader), so every chunk reaches the subscription's onActivity as it comes, whether or not the session is asking
 // for the next event: an event the test emits, and heartbeat(), OpenCode's keepalive, a chunk that carries no event. A subscription's
-// first read opens it, and OpenCode's server.connected chunk comes at once. One whose own signal aborts ends quietly (done, no error);
-// breakStreams(error) fails the open ones once their queued events are read, as a dropped connection does, and
+// first read opens it, and OpenCode's server.connected chunk comes at once. An event emitted while no subscription listens reaches none
+// (the client's connection opens with its first subscriber's read and closes with its last). One whose own signal aborts ends quietly
+// (done, no error); breakStreams(error) fails the open ones once their queued events are read, as a dropped connection does, and
 // overrides["event.subscribe"](options, count) can answer a subscription in place of the stream (one that fails). Polling uses
 // setImmediate, so a test can run on mocked timers.
 export const FAKE_OPENCODE2_CLIENT_MODELS=Object.freeze([{providerID:"opencode",id:"big-pickle",name:"Big Pickle",enabled:true,limit:{context:200000},variants:[]}]);
@@ -52,12 +53,13 @@ export function fakeOpenCode2Client({sessions={},overrides={},models=FAKE_OPENCO
       }};
     }},
   };
-  const heard=()=>{for(const subscription of subscriptions)if(subscription.connected&&!subscription.signal?.aborted&&!subscription.done)subscription.onActivity?.()};
+  const open=()=>subscriptions.filter(subscription=>subscription.connected&&!subscription.signal?.aborted&&!subscription.done&&!subscription.failure);
+  const heard=()=>{for(const subscription of open())subscription.onActivity?.()};
   return {
     client,calls,
     loadClient:async()=>({OpenCode:{make:()=>client}}),
     called:name=>calls.filter(entry=>entry.name===name).map(entry=>entry.input),
-    emit(event){queue.push({id:`evt_${calls.length}_${queue.length+1}`,created:Date.now(),...event});heard();const next=wake;wake=null;next?.()},
+    emit(event){if(!open().length)return;queue.push({id:`evt_${calls.length}_${queue.length+1}`,created:Date.now(),...event});heard();const next=wake;wake=null;next?.()},
     heartbeat:heard,
     breakStreams(error=Object.assign(new Error("Transport: terminated"),{name:"ClientError",reason:"Transport"})){for(const subscription of subscriptions)if(!subscription.done)subscription.failure=error;const next=wake;wake=null;next?.()},
     // The subscriptions still listening, and every one the session opened.

@@ -17,8 +17,11 @@ fetch(url+"/fake/password",{method:"POST",headers:{"content-type":"application/j
 // Writes the `serve` stand-in into a folder (the thread's working folder, where `node serve --port=...` finds it).
 export async function writeFakeOpenCode2Serve(folder){await writeFile(join(folder,"serve"),SERVE_SCRIPT,"utf8")}
 
-// routes["GET /api/command"]({req, res, body, send}) answers a route in place of the stand-in. Every event stream gets OpenCode 2.0.24's
-// heartbeat (a comment, no event) every heartbeatMs, 15 s as OpenCode sends it; 0 sends none, a stream gone silent.
+// routes["GET /api/command"]({req, res, body, send, active, messages, emit}) answers a route in place of the stand-in. Every event
+// stream gets OpenCode 2.0.24's heartbeat (a comment, no event) every heartbeatMs, 15 s as OpenCode sends it; 0 sends none, a stream
+// gone silent. dropStreams() ends every open event stream, as a dropped connection does. The session's history (GET
+// /api/session/<id>/message, newest first) is kept as OpenCode 2.0.24 keeps it (live): each prompt's user message under the id its
+// answer gave, the replies onPrompt's reply(text) keeps, and an idle item with the outcome for each run's end (an execution event).
 export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions={},onPrompt=null,routes={},heartbeatMs=15_000}={}){
   // active: the sessions OpenCode runs, from a prompt until an execution event ends the run (GET /api/session/active).
   const calls=[],streams=new Set(),forms=new Map(),messages=[],active=new Set();let password=null,events=0,prompts=0;
@@ -27,7 +30,8 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
   const emit=event=>{
     const value={id:`evt_${++events}`,created:Date.now(),...event};
     if(value.type==="form.created"&&value.data?.form)forms.set(String(value.data.form.id),{settled:false});
-    if(/^session\.execution\.(?:succeeded|failed|interrupted)$/.test(String(value.type)))active.delete(String(value.data?.sessionID||""));
+    const end=/^session\.execution\.(succeeded|failed|interrupted)$/.exec(String(value.type));
+    if(end){active.delete(String(value.data?.sessionID||""));messages.push({id:`msg_idle_${events}`,type:"idle",outcome:end[1]})}
     for(const res of streams)res.write(`data: ${JSON.stringify(value)}\n\n`);
     return value;
   };
@@ -39,7 +43,7 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
     if(key==="POST /fake/password"){password=String(body?.password??"");return send(204)}
     if(password!==null&&req.headers.authorization!==`Basic ${Buffer.from(`opencode:${password}`,"utf8").toString("base64")}`)return send(401,{_tag:"UnauthorizedError",message:"Unauthorized"});
     calls.push({key,body,authorization:req.headers.authorization||null,query:Object.fromEntries(url.searchParams)});
-    if(routes[key])return routes[key]({req,res,body,send});
+    if(routes[key])return routes[key]({req,res,body,send,active,messages,emit});
     if(key==="GET /api/event"){
       res.writeHead(200,{"content-type":"text/event-stream","cache-control":"no-cache"});res.write(`data: ${JSON.stringify({id:"evt_0",type:"server.connected",data:{}})}\n\n`);
       streams.add(res);res.on("close",()=>streams.delete(res));return;
@@ -60,13 +64,21 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
       if(req.method==="POST"&&(rest==="/model"||rest==="/agent"))return send(204);
       if(req.method==="GET"&&rest==="/message")return send(200,{data:[...messages].reverse()});
       if(req.method==="GET"&&(rest==="/permission"||rest==="/form"))return send(200,{data:[]});
-      if(req.method==="POST"&&rest==="/interrupt"){emit({type:"session.execution.interrupted",data:{sessionID,reason:"interrupt"}});return send(200,{data:{}})}
+      // As OpenCode answers it: a session that runs nothing has nothing to stop.
+      if(req.method==="POST"&&rest==="/interrupt"){const running=active.has(sessionID);if(running)emit({type:"session.execution.interrupted",data:{sessionID,reason:"interrupt"}});return send(200,{data:{interrupted:running}})}
       if(req.method==="POST"&&rest==="/prompt"){
         const files=Array.isArray(body?.files)?body.files:[];
         const missing=files.findIndex(file=>!file||typeof file!=="object"||typeof file.uri!=="string");
         if(missing>=0)return send(400,{_tag:"InvalidRequestError",message:`Missing key\n  at ["files"][${missing}]["uri"]`});
-        const id=`msg_user_${++prompts}`;active.add(sessionID);send(200,{data:{id,sessionID,type:"user",payload:{text:body?.text||"",files}}});
-        if(typeof onPrompt==="function")void Promise.resolve().then(()=>onPrompt({body,sessionID,id,emit,reply:text=>messages.push({id:`msg_assistant_${prompts}`,type:"assistant",content:[{type:"text",text}]})})).catch(()=>{});
+        const id=`msg_user_${++prompts}`;active.add(sessionID);messages.push({id,type:"user",text:String(body?.text||""),...(files.length?{files}:{})});
+        send(200,{data:{id,sessionID,type:"user",payload:{text:body?.text||"",files}}});
+        // reply(text, messageID) keeps the run's assistant message with that text, or writes on one already kept, as OpenCode does while
+        // the model streams.
+        const reply=(text,messageID=`msg_assistant_${prompts}`)=>{
+          const kept=messages.find(message=>message.id===messageID),content=[{type:"text",text}];
+          if(kept)kept.content=content;else messages.push({id:messageID,type:"assistant",content});
+        };
+        if(typeof onPrompt==="function")void Promise.resolve().then(()=>onPrompt({body,sessionID,id,emit,reply})).catch(()=>{});
         return;
       }
       const form=/^\/form\/([^/]+)(\/reply)?$/.exec(rest);
@@ -84,7 +96,8 @@ export async function startFakeOpenCode2({models=FAKE_OPENCODE2_MODELS,sessions=
   await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
   const url=`http://127.0.0.1:${server.address().port}`;
   return {
-    url,calls,emit,forms,active,
+    url,calls,emit,forms,active,messages,
+    dropStreams:()=>{for(const res of streams)res.end();streams.clear()},
     called:key=>calls.filter(call=>call.key===key),
     prompts:()=>calls.filter(call=>/^POST \/api\/session\/[^/]+\/prompt$/.test(call.key)).map(call=>call.body),
     close:()=>{clearInterval(heartbeat);for(const res of streams)res.end();server.closeAllConnections?.();return new Promise(resolve=>server.close(resolve))},
