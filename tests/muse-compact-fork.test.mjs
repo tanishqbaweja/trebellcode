@@ -126,7 +126,7 @@ test("/compact waits for no running Muse Code turn: it is refused while one runs
 
 // A message in another host's mode while Muse's own work holds this host (muse-agent-session.mjs, worded as Claude Code's refusal of a
 // change that would end its background work).
-const COMPACTION_BLOCKS_MODE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish, or keep the current mode, then send the message again.";
+const COMPACTION_BLOCKS_MODE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
 const REPORT_BLOCKS_MODE="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
 test("while Muse's compaction or its own report holds the host, a message in a mode another host serves is refused with nothing sent, and one in the host's own mode still goes",async()=>{
   const {session,muse}=await startSession({permissionMode:"full",muse:child=>new FakeMuse(child,{handlers:{"session/compact":compactHandler({end:null})}})});
@@ -181,8 +181,8 @@ test("through the relay, a message sent in Supervised while a Full access thread
     assert.equal(relay.notifications.some(item=>item.method==="error"&&item.params.threadId===thread.id),false);
     assert.equal((await relay.frames("turn/start")).length,1,"no turn/start reached the Full access host");
     assert.deepEqual((await relay.hosts()).map(entry=>entry.start),[["serve","--trust-workspace","--disable-sandbox"]]);
-    // The relay's Stop ends the compaction with its host (the window shows no Stop for a compaction, so its refusal says to wait); the
-    // next message starts Muse Code for Supervised and resumes the conversation there.
+    // The relay's Stop ends the compaction with its host (the window's Stop for a compaction, which its refusal names); the next
+    // message starts Muse Code for Supervised and resumes the conversation there.
     await relay.rpc("turn/interrupt",{threadId:thread.id});
     await assert.rejects(compacting,{message:MUSE_COMPACTION_STOPPED});
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Supervised after the stop"}],permissionProfile:"supervised"});

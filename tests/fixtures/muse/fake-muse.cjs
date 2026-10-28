@@ -12,9 +12,12 @@
 //                          for a malformed settings file (3: Muse could not load its settings)
 //   MUSE_FAKE_FORGET       a file: while it is there, session/resume answers that the session was not found, as Muse does for a
 //                          session its store no longer has
-//   MUSE_FAKE_COMPACT      how session/compact goes: unset, its compaction item ends compacted MUSE_FAKE_COMPACT_MS (50) ms later;
-//                          "noop" Muse has nothing to compact (no_compactable_history); "hold" the compaction runs until the host ends.
-//                          A session with no turn yet is refused (missing_run) whatever it says
+//   MUSE_FAKE_COMPACT      how session/compact goes: unset, its compaction item ends compacted MUSE_FAKE_COMPACT_MS (50) ms later, or
+//                          once the file MUSE_FAKE_COMPACT_HOLD names is there; "noop" Muse has nothing to compact
+//                          (no_compactable_history); "hold" the compaction runs until the host ends. A session with no turn yet is
+//                          refused (missing_run) whatever it says
+//   MUSE_FAKE_CONTEXT_USED how many tokens of the model's 1,007,997 the context holds after each plain turn (session/tokenUsage and
+//                          session/contextUsage), as a long conversation's does
 //   MUSE_FAKE_CHILD_ASK_HOLD  a file: once it is there, a workflow child still running from the session's last turn asks to run
 //                          `touch muse-approved.txt`, as "child approval" asks it, whether a turn runs or not
 // A turn whose message says one of these runs as T3's recorded sessions (muse_permission) and Muse 1.4.13's schema shape them:
@@ -110,7 +113,8 @@ function startTurn(sessionId,params,{usage=null}={}){
   }
   if(/usage report/i.test(words)){const now=Date.now();write({jsonrpc:"2.0",method:"usage/changed",params:{observedAtMs:now,tier:"tier-1",window:{usedPercent:37,windowDurationMins:300,resetsAtMs:now+5*3_600_000},weekly:{usedPercent:12,resetsAtMs:now+6*86_400_000}}})}
   reply(sessionId,turn,`Muse fixture reply on ${state?.modelId||"Muse's default model"} at ${params.reasoningEffort||"Muse's default"} effort.`);
-  if(usage)usageStep(sessionId,turnId,usage);
+  const held=Number(process.env.MUSE_FAKE_CONTEXT_USED)||0;
+  if(usage)usageStep(sessionId,turnId,usage);else if(held>0)usageStep(sessionId,turnId,{prompt:held,output:20,used:held});
   const hold=process.env.MUSE_FAKE_HOLD==="1"||(params.input||[]).some(part=>part.type==="text"&&/hold until steered/i.test(part.text));
   if(!hold)setTimeout(()=>complete(sessionId,turnId,"completed",usage?{inputTokens:usage.prompt,outputTokens:usage.output,cachedTokens:0,cacheReadTokens:0,cacheWriteTokens:0,reasoningTokens:0}:null),20);
   if(/exit when idle/i.test(words))setTimeout(()=>{process.stderr.write("panic: the model stream went away\n");process.exit(1)},300);
@@ -266,7 +270,7 @@ function compactSession(params){
   const item=(revision,status,extra={})=>({itemId:params.commandId+"-compaction",kind:"compaction",turnId:state.lastTurnId||null,revision,status,trigger:"manual",fallbackText:"Context compaction",...extra});
   setImmediate(()=>{
     notify("item/started",params.sessionId,{item:item(1,"inProgress")});
-    if(mode!=="hold")setTimeout(()=>notify("item/completed",params.sessionId,{item:item(2,"completed",{outcome:"compacted"})}),Number(process.env.MUSE_FAKE_COMPACT_MS||50));
+    if(mode!=="hold")later(process.env.MUSE_FAKE_COMPACT_HOLD,Number(process.env.MUSE_FAKE_COMPACT_MS||50),()=>notify("item/completed",params.sessionId,{item:item(2,"completed",{outcome:"compacted"})}));
   });
   return {commandId:params.commandId,status:"accepted"};
 }

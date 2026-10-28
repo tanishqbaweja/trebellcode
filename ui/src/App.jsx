@@ -450,6 +450,9 @@ function attachmentDisplayName(path){
 const WORKTREE_CARD_ERRORS=new WeakSet();
 // A send Stop ended before its turn existed (startTurn marks the error trebellSendStopped): its draft goes back with no note.
 const sendStoppedError=()=>Object.assign(new Error("Stopped before the turn started."),{trebellSendStopped:true});
+// The harnesses whose compaction takes as long as their model needs to summarize, which the window waits ten minutes for (45 s for
+// the others'): Grok's runs as a turn of its own (its /compact command), Muse Code's in no turn (session/compact).
+const LONG_COMPACTION_RUNTIMES=new Set(["grok","muse"]);
 function upsertEvent(events,event){return events.some(item=>item.id===event.id)?events.map(item=>item.id===event.id?{...item,...event}:item):[...events,event]}
 // Whether the live card still lists a turn's steps: the turn that ended last, until the next one starts or a message is sent.
 const showsTurn=(events,turnId)=>events.some(event=>event.fromItem&&event.turnId===turnId);
@@ -1350,6 +1353,9 @@ export default function App(){
   // Stop reads "Stopping…" until the turn has ended. The turn notes keep the turns a Stop was sent for until they end, for a
   // thread left and opened again meanwhile (openThread).
   const stopKeyRef=useRef(null); const [stoppingThreadId,setStoppingThreadId]=useState(null);
+  // Counts the Muse Code compactions the window began and ended waiting for, each of a thread (compactionWaitersRef): they run in no
+  // turn, and the header's Stop of the thread shown is its compaction's own while it runs (stop()).
+  const [,setCompactionStops]=useState(0);
   const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
   const [settings,setSettings]=useState(()=>({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:DEFAULT_MODEL_PROVIDER,...cachedAppearanceSettings()}));
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
@@ -1921,21 +1927,30 @@ export default function App(){
   },[section,rightPanelOpen,rightPanelTab,activeThread?.id]);
   function settleCompactionWaiter(threadId,error=null,result={ok:true}){
     const id=String(threadId||"");const waiter=compactionWaitersRef.current.get(id);if(!waiter)return false;
-    compactionWaitersRef.current.delete(id);clearTimeout(waiter.timer);
+    compactionWaitersRef.current.delete(id);clearTimeout(waiter.timer);if(waiter.turnless)setCompactionStops(count=>count+1);
+    // A compaction the person stopped ends the send that waited for it too, as a Stop before its turn does (maybeAutoCompactBeforeTurn).
+    if(error&&waiter.stopped&&typeof error==="object")error.trebellSendStopped=true;
     if(error)waiter.reject(error);else waiter.resolve(result);
     return true;
   }
-  function requestThreadCompaction(threadId,{timeoutMs=45_000}={}){
+  // turnless: the compaction runs in no turn of its own (Muse Code's session/compact), so only the request's answer ends it and the
+  // header's Stop is its own (stop()). turnId: the turn it runs in otherwise, once the request's answer (Grok's /compact) or its item
+  // (Codex's) names it, whose error ends it (the error notification).
+  function requestThreadCompaction(threadId,{timeoutMs=LONG_COMPACTION_RUNTIMES.has(agentRuntime)?10*60_000:45_000}={}){
     const id=String(threadId||"").trim(),client=rpcRef.current;
     if(!id||!client)return Promise.reject(new Error("Agent harness is not connected"));
     const existing=compactionWaitersRef.current.get(id);if(existing)return existing.promise;
     let resolvePromise,rejectPromise;
     const promise=new Promise((resolve,reject)=>{resolvePromise=resolve;rejectPromise=reject});
     const timer=setTimeout(()=>settleCompactionWaiter(id,new Error("Context compaction timed out")),Math.max(5000,Number(timeoutMs)||45_000));
-    compactionWaitersRef.current.set(id,{promise,resolve:resolvePromise,reject:rejectPromise,timer});
-    client.request("thread/compact/start",{threadId:id}).catch(error=>settleCompactionWaiter(id,error));
+    const waiter={promise,resolve:resolvePromise,reject:rejectPromise,timer,turnless:agentRuntime==="muse",turnId:null,stopped:false};
+    compactionWaitersRef.current.set(id,waiter);if(waiter.turnless)setCompactionStops(count=>count+1);
+    client.request("thread/compact/start",{threadId:id}).then(result=>{if(result?.turn?.id!=null)waiter.turnId??=String(result.turn.id)},error=>settleCompactionWaiter(id,error));
     return promise;
   }
+  // The row of a Muse Code compaction still running, which a send leaves on the live card: it runs in no turn, and Muse runs the
+  // message after it.
+  function turnlessCompactionRows(rows,threadId){return compactionWaitersRef.current.get(String(threadId||""))?.turnless?rows.filter(row=>row.id==="context-compact-"+threadId&&row.status==="running"):[]}
   function notificationIsActive(threadId){return !threadId||threadId===activeThreadRef.current?.id}
   // Another thread is opening: the sidebar and the header name it already, so the open thread's own settings (mode, agent, model
   // setting, runtime profile) are not changed, nor is it compacted. Its opening state takes those controls away; before it shows, a
@@ -3300,8 +3315,10 @@ export default function App(){
       settleRetry(threadId,completedTurnId,outcomeStatus==="completed"||!outcomeStatus?"recovered":"stopped",isCurrent);
       if(isCurrent){
         sealLiveTurn(threadId,completedTurnId);if(liveTurnKeyRef.current===turnInfoKey(threadId||activeThreadRef.current?.id,completedTurnId))liveTurnKeyRef.current=null;
-        // Its steps still running or pending end with it, done, but for those of work that runs on past it (settledRow's keepPast).
-        setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>settledRow(e,{keepPast:true}));return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{},turnId:completedTurnId?String(completedTurnId):null}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
+        // Its steps still running or pending end with it, done, but for those of work that runs on past it (settledRow's keepPast) and
+        // the row of a compaction that runs in no turn (Muse Code's), which only its own end ends.
+        const compacting=compactionWaitersRef.current.get(String(threadId||""))?.turnless;
+        setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>compacting&&e.kind==="contextCompaction"&&!e.turnId?e:settledRow(e,{keepPast:true}));return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{},turnId:completedTurnId?String(completedTurnId):null}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
         if(codexFailure)desktopNotify("Trebell Code error",codexFailure.message);else if(!codexGoalContinues)desktopNotify("Trebell Code finished",titleOf(activeThreadRef.current)+" is ready for review.");
       }else if(threadId&&backgroundThreadsRef.current.has(threadId)){
         backgroundThreadsRef.current.delete(threadId);loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Background task completed, but the thread list could not refresh"));const thread=threads.find(item=>item.id===threadId);desktopNotify("Background task finished",(thread?titleOf(thread):"A background Trebell task")+" is ready for review.");
@@ -3316,6 +3333,8 @@ export default function App(){
       const past=isCurrent&&isCardItem(p.item)&&trackPastTurnRow(threadId,p.turnId,item,{phase:"started"});
       if(isCurrent&&isActivityItem)setEvents(prev=>past&&!showsTurn(prev,item.turnId)?prev:takeCompactionPlace(prev,item,threadId)||[...prev.filter(e=>e.id!==item.id),item]);
       if(isCurrent&&isCardItem(p.item)&&!past)trackLiveRow(threadId,p.turnId,item,{phase:"started"});
+      // The turn the compaction this window waits for runs in, as its item names it (Codex's): that turn's error ends the wait.
+      const compaction=p.item.type==="contextCompaction"&&p.turnId!=null&&compactionWaitersRef.current.get(String(threadId||""));if(compaction)compaction.turnId??=String(p.turnId);
     }
     // A harness tool that is still running can name itself better as it goes (an ACP tool call first reports its bare tool
     // name, then its kind and command); the row follows it in place.
@@ -3528,7 +3547,10 @@ export default function App(){
         return;
       }
       settleRetry(threadId,p.turnId??null,"stopped",isCurrent);
-      if(threadId&&compactionWaitersRef.current.has(String(threadId)))settleCompactionWaiter(threadId,new Error(notice.message||"Context compaction failed"));
+      // Only the compaction's own error ends the wait for it: one of the turn it runs in, or any of the thread's while that turn is not
+      // named yet. One that runs in no turn (Muse Code's) ends with its request's answer, so a message failing meanwhile leaves it.
+      const compaction=threadId?compactionWaitersRef.current.get(String(threadId)):null;
+      if(compaction&&(compaction.turnId?compaction.turnId===String(p.turnId??""):!compaction.turnless))settleCompactionWaiter(threadId,new Error(notice.message||"Context compaction failed"));
       updateThreadTelemetry(threadId,{currentActivity:null,lastError:notice.message,lastActivityAt:Date.now()});
       // A Codex turn error ends the turn at turn/completed, which reports it once more and notifies.
       if(isCurrent&&codexTurnError)setEvents(prev=>upsertEvent(prev,{id:"codex-error-"+p.turnId,kind:"error",title:notice.title,status:"done",raw:p,turnId:String(p.turnId)}));
@@ -4306,12 +4328,15 @@ export default function App(){
     const usage=threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
     const decision=autoCompactionDecision(usage,{enabled:settings.autoCompactContext===true,thresholdPercent:settings.autoCompactThresholdPercent??85});
     if(!decision.shouldCompact)return {attempted:false,compacted:false,decision,error:null};
+    // The send waits for the compaction to end, as long as its harness takes (LONG_COMPACTION_RUNTIMES). One the person stopped ends the
+    // send, its draft back (settleCompactionWaiter).
     try{
-      await requestThreadCompaction(thread.id,agentRuntime==="grok"?{timeoutMs:10*60_000}:undefined);
+      await requestThreadCompaction(thread.id);
       updateThreadTelemetry(thread.id,{tokenUsage:null,lastActivityAt:Date.now()});
       if(activeThreadRef.current?.id===thread.id)setTokenUsage(null);
       return {attempted:true,compacted:true,decision,error:null};
     }catch(error){
+      if(error?.trebellSendStopped)throw error;
       return {attempted:true,compacted:false,decision,error};
     }
   }
@@ -4386,7 +4411,7 @@ export default function App(){
     const shown=()=>activeThreadRef.current?.id===thread.id;
     // The live card leaves the last turn here: until the new turn starts it lists only this send's notices, under no turn's name.
     const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),sentMessage={id:clientId,role:"user",text,attachments:paths};
-    if(shown()){if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,sentMessage])}setCardTurnId(null);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true)}
+    if(shown()){if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,sentMessage])}setCardTurnId(null);setEvents(prev=>[...turnlessCompactionRows(prev,thread.id),...(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[])]);resetAssistantStream();setRunning(true)}
     // Until turn/start answers the send has no turn for Stop to name, and a harness that has to start first can take a minute: Stop
     // meanwhile marks this send stopped (stop()), so it sends nothing more, and a turn the harness started before the Stop reached it
     // is stopped as soon as it is named.
@@ -4587,8 +4612,8 @@ export default function App(){
     // A new compaction's row has no turn until its item names one: the turn of the last compaction, kept, would take it away.
     setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{},turnId:null};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
     try{
-      // Grok compacts in a turn of its own (its /compact command), which takes as long as the model needs.
-      await requestThreadCompaction(activeThread.id,agentRuntime==="grok"?{timeoutMs:10*60_000}:undefined);
+      // Grok's and Muse Code's compaction take as long as the model needs (LONG_COMPACTION_RUNTIMES).
+      await requestThreadCompaction(activeThread.id);
     }catch(error){
       // The failure ends the compaction's own row, which no turn ends: it would say "Compacting context" beside its failure. That is
       // its item's row once the item came (in its turn's record too, so the turn's card says it failed), else the one Compact put up.
@@ -4685,7 +4710,7 @@ export default function App(){
     await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips),{pressed,sentChips:draft.contextChips}).catch(e=>{
       const alert=!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e))?{kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."}:null;
       if(e?.trebellSendThreadId&&String(openingThreadRef.current||activeThreadRef.current?.id||"")!==e.trebellSendThreadId){turnNotesRef.current.failSend(e.trebellSendThreadId,{draft,alert});return}
-      restoreSentDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents([]);if(alert)setComposerAlert(alert);
+      restoreSentDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents(prev=>turnlessCompactionRows(prev,activeThreadRef.current?.id));if(alert)setComposerAlert(alert);
     });
   }
   // A send belongs to the thread it was made in: a new task opened from there while it is on its way releases the composer
@@ -4845,6 +4870,10 @@ export default function App(){
     // prompt) and the send puts its draft back; Codex can interrupt a turn only once it has started it (turn/started), so that Stop
     // waits for the turn to start (interruptStoppedSend), and until then the turn still runs here, as Stopping.
     const threadId=activeThread?.id?String(activeThread.id):null,pendingSend=threadId?pendingSendsRef.current.get(threadId)||null:null;
+    // A Muse Code compaction runs in no turn: its Stop names none, once, and the relay stops Muse's host, which has no stop for one
+    // (MuseAgentSession.cancel). The compaction ends stopped, and the next message starts Muse Code again.
+    const compaction=!running&&threadId?compactionWaitersRef.current.get(threadId):null;
+    if(compaction?.turnless){if(!compaction.stopped&&rpc){compaction.stopped=true;await rpc.request("turn/interrupt",{threadId}).catch(error=>{compaction.stopped=false;throw error})}return}
     // One Stop per turn: pressed again while it is on its way (a double click, the shortcut twice), it sends nothing more.
     const stopKey=activeTurnId?threadId+"\0"+activeTurnId:pendingSend;
     if(stopKey&&stopKeyRef.current===stopKey)return;
@@ -5681,7 +5710,7 @@ export default function App(){
               {headerScript&&projectControlsShown&&<button ref={scriptButtonRef} className={"header-control script-control"+(headerRunning?" running":"")} data-fold="script" data-running={headerRunning||undefined} onClick={runHeaderScript} aria-label={headerScript.name} title={headerRunning?headerScript.name+" is running · Show its terminal":headerScript.command}>{headerRunning?<span className="script-running-dot" aria-hidden="true"/>:<Play size={13}/>}<span>{headerScript.name}</span></button>}
               {headerScript&&projectControlsShown&&headerRunning&&<button ref={scriptStopRef} className="header-control icon-only script-stop-control" data-fold="script" onClick={()=>runUserAction(stopHeaderScript,"Could not stop the project action")} aria-label={"Stop "+headerScript.name} title={"Stop "+headerScript.name}><CircleStop size={14}/></button>}
               {activeThread?.id&&!openingShown&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} disabled={running} aria-label="Review" title={reviewHint}><ShieldCheck size={14}/><span>Review</span></button>}
-              {running&&!openingShown&&<button className={"header-control stop-control"+(stopping?" stopping":"")} disabled={stopping} onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label={stopping?"Stopping":"Stop"} title={stopping?"Stopping the running turn…":"Stop the running turn"}><CircleStop size={14}/><span>{stopping?"Stopping…":"Stop"}</span></button>}
+              {(running||compactionWaitersRef.current.get(String(activeThread?.id||""))?.turnless)&&!openingShown&&<button className={"header-control stop-control"+(stopping?" stopping":"")} disabled={stopping} onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label={stopping?"Stopping":"Stop"} title={!running?"Stop the context compaction":stopping?"Stopping the running turn…":"Stop the running turn"}><CircleStop size={14}/><span>{stopping?"Stopping…":"Stop"}</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} data-fold="terminal" onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               {activeThread?.id&&!openingShown&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} data-fold="goal" onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
               <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={toggleRightPanel} aria-label={panelToggleLabel[0]} title={panelToggleLabel[1]}><PanelRight size={16}/>{recordingMark}</button>
