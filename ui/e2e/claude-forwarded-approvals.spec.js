@@ -8,9 +8,12 @@ import { claudeReply,routeClaudeApp,startClaudeRelay } from "./claude-relay-harn
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const GIT_PUSH_RULE={source:"userSettings",toolName:"Bash",ruleContent:"git push:*"};
 
+// The thread is open once its open is done, as a person sees it open: a mode picked in the open's first moment, before its cover holds
+// the pickers, would race the thread's own mode as the open lands.
 async function openThread(page,title){
   const row=page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${title}"]`)});
   await expect(row).toBeVisible({timeout:15_000});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+  await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
 }
 async function send(page,text){await page.getByTestId("composer").click();await page.keyboard.type(text,{delay:5});await page.getByTestId("send").click()}
 
