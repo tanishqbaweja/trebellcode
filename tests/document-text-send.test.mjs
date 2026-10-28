@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { contextualAgentPrompt } from "../src/agent-relay.mjs";
 import { ensureDocumentText } from "../src/document-text.mjs";
 import { createGuiServer } from "../src/gui-server.mjs";
+import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 const FIXTURES=fileURLToPath(new URL("./fixtures/documents/",import.meta.url));
 const TEXT_PATH=Symbol.for("trebell.prompt.text-path");
@@ -54,4 +55,16 @@ test("an upload is not extracted before the composer takes it in, and taking it 
   assert.match(await readFile(taken.textPath,"utf8"),/^# Quarterly Harbor Report\n/);
   const checked=await post("/api/attachments/validate",{paths:[uploaded.path]});
   assert.deepEqual(checked.files.map(file=>file.textPath),[taken.textPath],"and the send's check finds that text");
+});
+
+test("with Trebell Native, whose prompt names no document's text, neither taking a document in nor checking a message extracts it",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-document-native-")),home=join(root,"home"),env={...process.env,TREBELL_HOME:home};
+  const saved=new TrebellStateStore(env);saved.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default"});saved.close();
+  const [port,appPort]=await Promise.all([freePort(),freePort()]),gui=await createGuiServer({port,appPort,mock:true,env});
+  t.after(async()=>{await gui.close();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})});
+  const post=async(path,body)=>{const response=await fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});assert.equal(response.status,200,path);return response.json()};
+  const own=join(root,"Harbor plan.docx");await copyFile(join(FIXTURES,"report.docx"),own);
+  const uploaded=await post("/api/attachments/blob",{name:"deck.pptx",mime:"application/vnd.openxmlformats-officedocument.presentationml.presentation",dataBase64:(await readFile(join(FIXTURES,"deck.pptx"))).toString("base64")});
+  const {files:taken}=await post("/api/attachments/import",{paths:[uploaded.path,own]}),checked=await post("/api/attachments/validate",{paths:[uploaded.path,own]});
+  assert.deepEqual({taken:taken.map(file=>file.textPath??null),checked:checked.files.map(file=>file.textPath??null),attachments:await readdir(join(home,"attachments"))},{taken:[null,null],checked:[null,null],attachments:[basename(uploaded.path)]},"no text extracted, and no worker's file written");
 });

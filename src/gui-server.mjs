@@ -602,7 +602,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   const environments=new EnvironmentManager({state,env,...(offlineE2E?{discoveryRun:offlineE2eDiscoveryRun}:{})});
   // An attachment on this machine as the composer gets it back, with the file a Word, Excel or other document's text was extracted
   // to (textPath, document-text.mjs), which the composer names in a Codex message as the relay names it for every other harness.
-  const withDocumentText=async file=>{const textPath=await ensureDocumentText(file.path,{home:trebellHome(env)});return textPath?{...file,textPath}:file};
+  // Trebell Native's prompt names a document itself and no text of it, so nothing is extracted while it is the harness; a message
+  // sent to another harness has its documents extracted as its files are checked before it goes.
+  const withDocumentText=async file=>{const textPath=selectedAgentRuntime==="native"?null:await ensureDocumentText(file.path,{home:trebellHome(env)});return textPath?{...file,textPath}:file};
   const storedActiveEnvironmentId=state.settings().activeEnvironmentId||null;
   if(storedActiveEnvironmentId&&!environments.get(storedActiveEnvironmentId))state.updateSettings({activeEnvironmentId:null});
   function requestedEnvironmentId(value,{fallback=true}={}){
