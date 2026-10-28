@@ -282,10 +282,10 @@ test("official API model catalogs use their documented authentication styles",as
   assert.equal(gemini.headers.Authorization,"Bearer gm-key");
 });
 
-test("the Native provider registry is exactly the seven API-key providers with OpenAI as the default",()=>{
+test("the Native provider registry is exactly the nine API-key providers with OpenAI as the default",()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-registry-"));
   try{
-    const ids=["openai","anthropic","gemini","agentrouter","justworker","hcnsec","vyceai"];
+    const ids=["openai","anthropic","gemini","xai","meta","agentrouter","justworker","hcnsec","vyceai"];
     assert.equal(DEFAULT_MODEL_PROVIDER,"openai");
     assert.deepEqual(Object.keys(MODEL_PROVIDERS),ids);
     for(const id of ids){assert.equal(MODEL_PROVIDERS[id].id,id);assert.equal(MODEL_PROVIDERS[id].requiresKey,true,id);assert.ok(MODEL_PROVIDERS[id].envKey,id)}

@@ -55,6 +55,9 @@ export function supportedReasoningEfforts(runtime,provider,model,metadata={}){
     // Gemini's thinking levels belong to a model: without one (no key, so no catalog) there is nothing to set them on.
     if(provider==="gemini")return id?["low","medium","high"]:[];
     if(provider==="anthropic"&&/(?:claude-(?:opus|sonnet)-(?:4-[6-9]|5)|claude-(?:fable|mythos)-5)/.test(id))return ["low","medium","high"];
+    // Meta's catalog lists no levels. Its Responses API takes Minimal to Extra High (Muse Spark refuses None), and Muse Wonder and
+    // Muse Spark 1.3 also Max, which Spark 1.3's Contributor mode does not offer (dev.meta.ai/docs/models). xAI lists its own.
+    if(provider==="meta"&&/^muse-(?:spark|wonder)-/.test(id))return ["minimal","low","medium","high","xhigh",...(/^muse-wonder-|^muse-spark-1\.3(?!.*contributor)/.test(id)?["max"]:[])];
     return [];
   }
   return runtime==="codex"?advertised:[];

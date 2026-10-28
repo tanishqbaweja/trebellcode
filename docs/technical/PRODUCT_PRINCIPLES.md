@@ -796,6 +796,8 @@ The platform should be able to normalize commonly encountered APIs such as:
 - Anthropic Messages,
 - the official OpenAI API,
 - the official Anthropic API,
+- the official xAI API,
+- the Meta Model API,
 - the official Google Gemini API,
 - provider-specific derivatives,
 - and future protocols as needed.

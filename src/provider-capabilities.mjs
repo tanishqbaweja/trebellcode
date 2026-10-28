@@ -42,6 +42,22 @@ const CAPABILITIES=Object.freeze({
     persistentConnection:feature("unsupported","The current Trebell Native Gemini integration uses HTTPS Chat Completions requests."),
     nativeCompaction:feature("unsupported","Trebell Native owns compaction for direct Gemini API sessions."),
   }),
+  xai:Object.freeze({
+    ...COMMON_PROXY,
+    promptCaching:feature("unverified","xAI caches repeated prompt prefixes and routes requests that share a prompt_cache_key together; Trebell sends a stable key per model, instructions and tools and records returned cached tokens, but has not measured cache hits live."),
+    explicitCacheControl:feature("unsupported","Trebell sends no explicit cache breakpoints to the xAI Responses API."),
+    previousResponseContinuation:feature("unsupported","Trebell Native sends the whole conversation with store:false and carries the current turn's encrypted reasoning back itself; it does not use previous_response_id with xAI."),
+    persistentConnection:feature("unsupported","The current Trebell Native xAI integration uses HTTPS Responses requests."),
+    nativeCompaction:feature("unsupported","Trebell Native owns compaction for direct xAI API sessions."),
+  }),
+  meta:Object.freeze({
+    ...COMMON_PROXY,
+    promptCaching:feature("unverified","The Meta Model API groups requests for cache efficiency by prompt_cache_key; Trebell sends a stable key per model, instructions and tools and records returned cached tokens, but has not measured cache hits live."),
+    explicitCacheControl:feature("unsupported","Trebell sends no explicit cache breakpoints to the Meta Model API."),
+    previousResponseContinuation:feature("unsupported","Trebell Native sends the whole conversation with store:false and carries the current turn's encrypted reasoning back itself, Meta's stateless replay; it does not use previous_response_id with Meta."),
+    persistentConnection:feature("unsupported","The current Trebell Native Meta integration uses HTTPS Responses requests."),
+    nativeCompaction:feature("unsupported","Trebell Native owns compaction for direct Meta Model API sessions."),
+  }),
   agentrouter:Object.freeze({
     ...COMMON_PROXY,
     previousResponseContinuation:feature("unverified","AgentRouter accepts a Responses-shaped API, but Trebell has not verified that previous_response_id semantics are preserved by this proxy."),

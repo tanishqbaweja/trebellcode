@@ -32,7 +32,7 @@ test("run arg parser keeps runtime arguments while consuming Trebell utility fla
   );
   assert.deepEqual(parseRunArgs(["--provider", " AgentRouter "]), { model: null, provider: "agentrouter", forwarded: [] });
   assert.throws(()=>parseRunArgs(["--provider"]),/--provider requires a provider id/);
-  assert.throws(()=>parseRunArgs(["--provider","retired-provider"]),/Unknown provider "retired-provider"\. Choose one of: openai, anthropic, gemini, agentrouter, justworker, hcnsec, vyceai\./);
+  assert.throws(()=>parseRunArgs(["--provider","retired-provider"]),/Unknown provider "retired-provider"\. Choose one of: openai, anthropic, gemini, xai, meta, agentrouter, justworker, hcnsec, vyceai\./);
 });
 
 test("CLI help lists only the API-key model providers and no account sign-in commands",async()=>{

@@ -427,6 +427,8 @@ function fakeModels(provider=DEFAULT_MODEL_PROVIDER){
   if(provider==="justworker") return ["claude-opus-4-8"];
   if(provider==="hcnsec") return ["glm-5.3"];
   if(provider==="vyceai") return ["claude-sonnet-4-6","gpt-astra","deepseek-v4.1","auto"];
+  if(provider==="xai") return ["grok-4.7","grok-4.6"];
+  if(provider==="meta") return ["muse-spark-1.3","muse-wonder-1.0"];
   return [MOCK_DEFAULT_MODEL,"test/coding-large"];
 }
 function fakeDefaultModel(provider=DEFAULT_MODEL_PROVIDER){
@@ -2133,8 +2135,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           let validatedCatalog=null;
           if("apiKey" in body&&!knownModelProvider(body.provider||selectedProvider))throw new Error("Unknown model provider. Choose a listed provider before saving an API key.");
           if("apiKey" in body){
-            // A key for a provider with a live model list is saved only once that list answers to it (checkKey).
-            if(String(body.apiKey||"").trim() && ["openai","anthropic","gemini","agentrouter","vyceai"].includes(provider)){
+            // A key for a provider with a live model list is saved only once that list answers to it (checkKey). Mock mode lists its
+            // own models and contacts no provider, so it saves the key as typed.
+            if(String(body.apiKey||"").trim() && !mock && !providers.get(provider).staticModels){
               try{
                 validatedCatalog=await providers.checkKey(provider,body.apiKey);
               }catch(error){

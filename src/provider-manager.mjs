@@ -47,6 +47,34 @@ export const MODEL_PROVIDERS = Object.freeze({
     requiresKey: true,
     official: true,
   },
+  // xAI's Responses API (docs.x.ai), its primary interface for tool use: Bearer key. Its /v1/models also lists the image and
+  // video models, which cannot run a turn; /v1/language-models lists only the models a turn can use, each with its reasoning
+  // efforts (capabilities.reasoning_effort).
+  xai: {
+    id: "xai",
+    name: "xAI API",
+    baseUrl: "https://api.x.ai/v1",
+    wireApi: "responses",
+    protocolCompatibility: ["openai-responses"],
+    envKey: "XAI_API_KEY",
+    requiresKey: true,
+    official: true,
+    modelsPath: "/language-models",
+    statelessResponses: true,
+  },
+  // The Meta Model API (dev.meta.ai), which Muse Code itself calls: its Responses API, the one Meta names for agentic and
+  // multi-step work, with a Bearer key. META_API_KEY is the name Muse Code reads.
+  meta: {
+    id: "meta",
+    name: "Meta Model API",
+    baseUrl: "https://api.meta.ai/v1",
+    wireApi: "responses",
+    protocolCompatibility: ["openai-responses"],
+    envKey: "META_API_KEY",
+    requiresKey: true,
+    official: true,
+    statelessResponses: true,
+  },
   agentrouter: {
     id: "agentrouter",
     name: "AgentRouter",
@@ -109,6 +137,22 @@ const OPENAI_PRO_MODEL=/(?:^|[^a-z0-9])pro(?:[^a-z0-9]|$)/;
 function openAiAgentModel(id){const text=String(id||"").trim().toLowerCase(),base=text.startsWith("ft:")?text.split(":")[1]||"":text;return !OPENAI_NON_AGENT_MODEL.test(base)}
 // /models keeps listing a model after its shutdown_date (a UTC day), and from that day the Responses API answers 404 for it.
 function openAiModelShutDown(item,now){const date=Date.parse(String(item?.shutdown_date||""));return Number.isFinite(date)&&date<=now}
+// Meta's /v1/models lists its image (muse-image), speech-to-text (muse-voice-transcribe) and segmentation (sam) models beside
+// the chat models; none of them can run an agent turn.
+const META_NON_AGENT_MODEL=/(?:^|[^a-z0-9])(?:image|voice|transcribe|speech|tts|audio|sam|segment|segmentation|embedding)(?=[^a-z0-9]|$)/;
+// A listed model a Native turn can run on: OpenAI's agent-capable models that are not shut down, Meta's chat models, and every
+// model of the other providers (xAI's /v1/language-models lists only language models).
+function agentModelRow(providerId,item,now){
+  const id=String((typeof item==="string"?item:item?.id)||"").trim().toLowerCase();
+  if(providerId==="openai")return openAiAgentModel(id)&&!openAiModelShutDown(item,now);
+  if(providerId==="meta")return !META_NON_AGENT_MODEL.test(id);
+  return true;
+}
+// xAI lists a model's reasoning efforts as capabilities.reasoning_effort; Native reads them as reasoningEfforts.
+function advertisedReasoningEfforts(item){
+  const listed=item?.capabilities?.reasoning_effort;
+  return Array.isArray(listed)&&listed.length?listed.filter(value=>typeof value==="string").map(value=>value.trim().toLowerCase()).filter(Boolean):null;
+}
 function openAiDefaultModel(rows=[]){
   const ranked=rows.map(item=>({id:String((typeof item==="string"?item:item?.id)||"").trim(),created:Number(typeof item==="string"?NaN:item?.created)})).filter(item=>item.id&&!OPENAI_PRO_MODEL.test(item.id.toLowerCase()))
     .map(item=>({...item,created:Number.isFinite(item.created)?item.created:-Infinity}))
@@ -354,6 +398,27 @@ function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKey
   return body;
 }
 
+// The Responses body for a provider Native calls without server-side state (statelessResponses: xAI, Meta). The whole conversation
+// goes with each request, as for every provider but OpenAI, and nothing is kept on the provider's side (store:false). Both document
+// how a model keeps its reasoning across the calls of a turn that way: include reasoning.encrypted_content, and send each reasoning
+// item back in the next input, which the current turn's replies kept (reasoningReplay). Tools go as flat function tools, a call by
+// its flat name, the leading system and developer messages as instructions and a later one in place, as for OpenAI, with the same
+// prompt_cache_key both use to group requests that share a prefix. None of OpenAI's own fields: no verbosity (Meta refuses it),
+// reasoning.context, context management or cache breakpoints. A model whose provider refused include (replay:false) gets neither.
+function statelessResponsesBody(request={},{replay=true}={}){
+  const tools=officialOpenAiTools(request.tools),body=providerTurnToResponses({...request,tools,reasoningContext:null,textVerbosity:null},{preserveInstructionOrder:true,flattenToolCallNames:true,reasoningReplay:replay});
+  body.store=false;
+  if(replay)body.include=["reasoning.encrypted_content"];
+  body.prompt_cache_key=officialOpenAiPromptCacheKey(body);
+  return body;
+}
+// A 400 that refuses include itself (its param, or a message naming include or encrypted content).
+function statelessIncludeRefused(status,providerError){
+  if(Number(status)!==400)return false;
+  if(String(providerError?.param||"").trim().toLowerCase()==="include")return true;
+  return /\binclude\b|encrypted[\s_-]?content/i.test(String(providerError?.message||""));
+}
+
 // A turn's reply text as it arrives, for Native drafts. The sink only observes the stream: the turn's request and result are
 // the same with or without it, every call into onStream is caught, and the first throw turns the sink off. Text after the first
 // tool-call event is not passed on (a draft is withdrawn there), and text of an OpenAI commentary item is passed on as held.
@@ -527,6 +592,8 @@ export class ProviderManager {
     this.secrets = this.#load();
     // The last refused key check per provider, for this server run (checkKey); any key change clears it.
     this.keyChecks=new Map();
+    // "<provider>\0<model>" of a stateless provider that refused include for that model, for this server run.
+    this.statelessIncludeRefusals=new Set();
     this.openAiResponseContinuations=new OpenAiResponseContinuationTracker();
     this.openAiWebSocketResponseOrigins=new Map();
     this.openAiResponsesWebSocketFactory=typeof openAiResponsesWebSocketFactory==="function"?openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket(options);
@@ -773,7 +840,7 @@ export class ProviderManager {
     const key = this.key(provider.id);
     let response, raw;
     try {
-      response = await this.fetchFn(provider.baseUrl + "/models", {
+      response = await this.fetchFn(provider.baseUrl + (provider.modelsPath || "/models"), {
         headers: provider.id === "agentrouter"
           ? agentRouterHeaders(key,{environment:this.env})
           : provider.authStyle === "anthropic"
@@ -801,11 +868,11 @@ export class ProviderManager {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      throw new Error(`${provider.name} returned invalid JSON from /models`);
+      throw new Error(`${provider.name} returned invalid JSON from ${provider.modelsPath || "/models"}`);
     }
     const listed = Array.isArray(parsed?.data) ? parsed.data : Array.isArray(parsed?.models) ? parsed.models : [];
     const now = Number(this.nowFn());
-    const rows = provider.id === "openai" ? listed.filter((item) => openAiAgentModel(typeof item === "string" ? item : item?.id) && !openAiModelShutDown(item, now)) : listed;
+    const rows = provider.id === "openai" || provider.id === "meta" ? listed.filter((item) => agentModelRow(provider.id, item, now)) : listed;
     const models = [...new Set(rows.map((item) => typeof item === "string" ? item : item?.id).filter(Boolean).map(String))].sort();
     return {
       models,
@@ -816,6 +883,7 @@ export class ProviderManager {
         .map((item) => {
           const metadata={ ...clone(item), id: String(item.id), provider: provider.id };
           if(metadata.protocolCompatibility==null)metadata.protocolCompatibility=[...(provider.protocolCompatibility||[])];
+          const efforts=metadata.reasoningEfforts==null?advertisedReasoningEfforts(item):null;if(efforts)metadata.reasoningEfforts=efforts;
           return metadata;
         }),
     };
@@ -944,13 +1012,22 @@ export class ProviderManager {
     };
     // Every HTTPS send of a Responses body. A 400 for a body that carries replayed reasoning is read for its error: a refusal of that
     // reasoning is answered by the one resend without it, and any other goes on as before, with its status, headers and text.
+    // A stateless provider (xAI, Meta) that refuses include for a model is sent the body again without it and without the reasoning
+    // it carried, and that model's later requests leave both out.
     const forwardResponsesBody=async body=>{
       const send=sent=>this.forwardResponses(provider.id,sent,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});
       const upstream=await send(body);
-      if(upstream.ok||Number(upstream.status)!==400||replayRefused||!replayedReasoningCount(body))return upstream;
+      const sentInclude=provider.statelessResponses===true&&Array.isArray(body?.include)&&body.include.length>0;
+      if(upstream.ok||Number(upstream.status)!==400||(!sentInclude&&(replayRefused||!replayedReasoningCount(body))))return upstream;
       const raw=await upstream.text();let providerError=null;try{providerError=JSON.parse(raw)?.error}catch{}
       if(!providerError||typeof providerError!=="object")providerError={message:raw};
-      if(!openAiReasoningReplayRefused(upstream.status,providerError,body.input))return new Response(raw,{status:upstream.status,statusText:upstream.statusText,headers:upstream.headers});
+      if(sentInclude&&statelessIncludeRefused(upstream.status,providerError)){
+        this.statelessIncludeRefusals.add(provider.id+"\0"+model);
+        const {include:_include,...rest}=body;responsesBody={...rest,input:body.input.filter(item=>item?.type!=="reasoning")};
+        sink?.restart();
+        return send(responsesBody);
+      }
+      if(replayRefused||!replayedReasoningCount(body)||!openAiReasoningReplayRefused(upstream.status,providerError,body.input))return new Response(raw,{status:upstream.status,statusText:upstream.statusText,headers:upstream.headers});
       sink?.restart();
       return send(refuseReplay(body,{status:upstream.status,wireApi:"openai-responses",providerError}));
     };
@@ -994,6 +1071,9 @@ export class ProviderManager {
           openAiContinuation=this.openAiResponseContinuations.prepare(fullResponsesBody,parentId,{messageRefs,identityToken});
           responsesBody=openAiContinuation?.body||fullResponsesBody;
         }
+      }else if(provider.statelessResponses){
+        fullResponsesBody=statelessResponsesBody({...request,model},{replay:!this.statelessIncludeRefusals.has(provider.id+"\0"+model)});
+        responsesBody=fullResponsesBody;
       }else{
         fullResponsesBody=providerTurnToResponses({...request,model});
         responsesBody=fullResponsesBody;

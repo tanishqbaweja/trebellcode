@@ -83,7 +83,7 @@ Examples:
 
 - Trebell Native + VyceAi;
 - Trebell Native + AgentRouter;
-- Trebell Native + the official OpenAI, Anthropic, or Gemini API;
+- Trebell Native + the official OpenAI, Anthropic, Gemini, xAI or Meta Model API;
 - Codex using Codex's own account/provider/model configuration;
 - Claude Code using Claude Code's own model/auth semantics.
 
@@ -115,12 +115,16 @@ Current integrations:
 - **OpenAI API** (the default selection)
 - **Anthropic API**
 - **Google Gemini API**
+- **xAI API** (Responses, models from `/v1/language-models`; `XAI_API_KEY`)
+- **Meta Model API** (Responses, models from `/v1/models`; `META_API_KEY`)
 - **AgentRouter**
 - **JustWorker.icu**
 - **HCNSec.cn**
 - **VyceAi**
 
 Every provider requires an API key, so Trebell Native needs one before its first turn. Add it in **Settings → Agents & models**; keys are stored through Trebell's secret handling path. A key saved in Settings takes precedence over the provider's environment variable (for example `OPENAI_API_KEY`).
+
+xAI and the Meta Model API are called on their Responses APIs without server-side state: each request carries the whole conversation with `store: false`, asks for `reasoning.encrypted_content` and sends back the reasoning the current turn's replies returned, which both providers document for keeping a model's reasoning across tool calls. A model that refuses `include` gets the request again without it, and its later requests leave it out.
 
 > **.env is not product configuration.** A local ignored .env may be used for developer/live-provider tests only.
 

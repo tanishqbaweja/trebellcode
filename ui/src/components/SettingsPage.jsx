@@ -23,6 +23,8 @@ const PROVIDER_NOTES={
   openai:"Models are loaded live from the official OpenAI /v1/models API for this key.",
   anthropic:"Models are loaded live from the official Anthropic /v1/models API for this key.",
   gemini:"Models are loaded live from Google's Gemini OpenAI-compatible /models API for this key.",
+  xai:"Grok models from xAI. Models are loaded live from the official xAI /v1/language-models API for this key.",
+  meta:"Muse models from Meta. Models are loaded live from the official Meta Model API /v1/models for this key.",
   agentrouter:"Models are loaded live from AgentRouter /v1/models for this key.",
   vyceai:"Models are loaded live from Vyce AI /v1/models for this key.",
   justworker:"Available model: claude-opus-4-8.",
@@ -315,7 +317,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const selected=settings.modelProvider||DEFAULT_MODEL_PROVIDER;
   const providerOptions=providerInfo?.providers?.length
     ?providerInfo.providers.map(item=>({id:item.id,name:item.name||modelProviderLabel(item.id),official:Boolean(item.official)}))
-    :Object.entries(MODEL_PROVIDER_LABELS).map(([id,name])=>({id,name,official:["openai","anthropic","gemini"].includes(id)}));
+    :Object.entries(MODEL_PROVIDER_LABELS).map(([id,name])=>({id,name,official:["openai","anthropic","gemini","xai","meta"].includes(id)}));
   // Until the app knows which harness runs (its first load is still reading it), its settings hold the default harness: the server's own
   // report decides, so Settings never offers to switch to the harness that already runs.
   const appRuntime=runtimeKnown?settings.agentRuntime:null;

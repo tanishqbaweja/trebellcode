@@ -41,7 +41,7 @@ Public benchmark work compares Trebell Native against mature harnesses using the
 - **Browser and desktop verification** with Playwright-backed browser workflows, screenshots, runtime checks, and evidence-aware verification.
 - **MCP, skills, plugins, and lazy tool exposure** so specialized capabilities do not have to inflate every prompt.
 - **Durable context and recovery** through persisted thread state, event history, checkpoints, verification records, and bounded recovery flows.
-- **Official provider support** for OpenAI, Anthropic, and Google Gemini, plus the AgentRouter, JustWorker.icu, HCNSec.cn, and VyceAi compatible routes, each used with your own API key.
+- **Official provider support** for OpenAI, Anthropic, Google Gemini, xAI, and the Meta Model API, plus the AgentRouter, JustWorker.icu, HCNSec.cn, and VyceAi compatible routes, each used with your own API key.
 
 ## What makes it different
 
@@ -133,7 +133,7 @@ npm run ui:dev
 
 ### Model provider
 
-Trebell Native calls the model provider you select with your own API key: OpenAI (the default), Anthropic, Google Gemini, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi. Every provider needs a key, so add one in **Settings → Agents & models** before the first Native turn (the OpenAI provider also reads `OPENAI_API_KEY` from the environment). Codex, Claude Code, OpenCode, and the other runtimes keep using their own accounts and configuration.
+Trebell Native calls the model provider you select with your own API key: OpenAI (the default), Anthropic, Google Gemini, xAI, the Meta Model API, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi. Every provider needs a key, so add one in **Settings → Agents & models** before the first Native turn (without one, each provider reads its own environment variable, such as `OPENAI_API_KEY`, `XAI_API_KEY` or `META_API_KEY`). Codex, Claude Code, OpenCode, and the other runtimes keep using their own accounts and configuration.
 
 ## Validation
 
