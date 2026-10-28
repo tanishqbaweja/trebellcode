@@ -26,7 +26,7 @@ import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnO
 import { activityRow, isCardItem, mergeLiveRow, restoredRow, retryActivityRow, retryRowId, settledRetryRows, settledRow } from "./activity-item.js";
 import { cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeCompactionTurnIds, storeIncompleteTurnIds } from "./turn-activity.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
-import { approvalResponse } from "./approval-utils.js";
+import { answeringClick, approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
 import { isListedThread, prependThread } from "./thread-list-state.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
@@ -95,12 +95,17 @@ const WorktreeSetupCard=lazy(()=>import("./components/WorktreeSetupCard.jsx"));
 const UsagePage=lazy(()=>import("./components/UsagePage.jsx"));
 const LicensesPage=lazy(()=>import("./components/LicensesPage.jsx"));
 const ContextInspector=lazy(()=>import("./components/ContextInspector.jsx"));
-const RuntimeTrace=lazy(()=>import("./components/RuntimeTrace.jsx"));
+// The Runtime tab's trace, which the tab (RuntimeSurface, idle-parts.js) draws: its code is asked for as the tab is first asked for,
+// beside the tab's own (preloadRuntimeTrace), so it does not wait for the tab's code to come before it starts to load.
+let runtimeTraceLoad=null;
+const loadRuntimeTrace=()=>runtimeTraceLoad||=import("./components/RuntimeTrace.jsx");
+const preloadRuntimeTrace=()=>{if(!runtimeTraceLoad)loadRuntimeTrace().catch(()=>{})};
+const RuntimeTrace=lazy(loadRuntimeTrace);
 // Shown only on the right panel's Runtime tab, so it loads when that tab first shows instead of with the app (B11).
 const AgentBackgroundTerminals=lazy(()=>import("./components/AgentBackgroundTerminals.jsx"));
 // Shown only once auto review has denied an action, so it loads with the first denial instead of with the app (B11). The approval
-// card a harness waits on loads at idle right after the first paint instead (ApprovalCard below, idle-parts.js), so it is there
-// before a request can come from a thread the person opened and shows the moment the request comes.
+// card stays in App (ApprovalCard below): a harness waits on it, so it shows the moment the request comes, and no chunk that is
+// slow or fails to load stands between the person and their answer.
 const GuardianDenialCard=lazy(()=>import("./components/GuardianDenialCard.jsx"));
 const QuestionModal=lazy(()=>import("./components/QuestionModal.jsx"));
 const McpElicitationModal=lazy(()=>import("./components/McpElicitationModal.jsx"));
@@ -137,18 +142,19 @@ const loadTurnSupport=()=>turnSupportLoad||=import("./turn-support.js").then(mod
 const loadThreadActions=()=>threadActionsLoad||=import("./thread-actions.js").then(module=>threadActions=module,error=>{
   threadActionsLoad=null;throw loadFailed(error);
 });
-// And what App draws or runs only once the person does something, or a harness asks (idle-parts.js: the Cite button of text selected
-// in a reply, the find bar of Ctrl+F, what the sidebar's and the palette's searches find in the threads, the card of an approval a
-// harness asks for and the right panel's Runtime tab), in one chunk. Once it is in (idleParts) each part draws or runs at once, as
-// before: lazy() is handed the loaded part itself, which it takes without suspending. What comes before then waits for it; a part
-// drawn before then (the Cite button, with the conversation; an approval asked as the page opens; the Runtime tab opened at once)
-// waits for the idle load, and one that cannot load says so in its place (LazySlot), with loadFailed's words.
+// And what App draws or runs only once the person does something (idle-parts.js: the Cite button of text selected in a reply, the
+// find bar of Ctrl+F, what the sidebar's and the palette's searches find in the threads, the right panel's Runtime tab and History's
+// list), in one chunk. Once it is in (idleParts) each part draws or runs at once, as before: lazy() is handed the loaded part itself,
+// which it takes without suspending. What comes before then waits for it. The Cite button is drawn with every conversation, so one
+// drawn before then waits for the idle load; a part drawn only once the person opens it (the find bar, the Runtime tab, History)
+// asks for the chunk at once. One that cannot load says so in its place (LazySlot), with loadFailed's words.
 let idleParts=null,idlePartsLoad=null,reachIdle;const idleReached=new Promise(resolve=>reachIdle=resolve);
 const loadIdleParts=()=>idlePartsLoad||=import("./idle-parts.js").then(module=>idleParts=module,error=>{
   idlePartsLoad=null;throw loadFailed(error);
 });
-const idlePart=name=>lazy(()=>idleParts?{then:resolve=>resolve({default:idleParts[name]})}:idleReached.then(loadIdleParts).then(parts=>({default:parts[name]})));
-const AssistantSelectionToolbar=idlePart("AssistantSelectionToolbar"),ThreadFindBar=idlePart("ThreadFindBar"),ApprovalCard=idlePart("ApprovalCard"),RuntimeSurface=idlePart("RuntimeSurface"),ThreadHistoryPage=idlePart("ThreadHistoryPage");
+// load: what a part drawn before the chunk is in waits for (the chunk itself, or the idle load for the Cite button).
+const idlePart=(name,load=loadIdleParts)=>lazy(()=>idleParts?{then:resolve=>resolve({default:idleParts[name]})}:load().then(parts=>({default:parts[name]})));
+const AssistantSelectionToolbar=idlePart("AssistantSelectionToolbar",()=>idleReached.then(loadIdleParts)),ThreadFindBar=idlePart("ThreadFindBar"),RuntimeSurface=idlePart("RuntimeSurface"),ThreadHistoryPage=idlePart("ThreadHistoryPage");
 // A send's context packet comes only from turn-support.js (prepareTurnContext), so a send with one has that module; one without
 // carries no repository context.
 function repositoryContextEntries(packet,options){return packet?turnSupport.repositoryContextEntries(packet,options):{}}
@@ -249,10 +255,12 @@ const LOADED_BROWSER_ENTRY_ID=BROWSER_NAVIGATION?window.history.state?.trebellNa
 // A part loaded with lazy() whose code could not load (the UI was rebuilt or updated under an open page, or the link to a remote
 // Trebell server dropped), or that failed as it drew, says so in its place: without a boundary React takes the whole app off the
 // screen with it. The browser keeps a module that failed to load as failed, so a reload is what loads it again. failed: what shows
-// instead, for a part that has no place until the person uses it (the Cite button).
+// instead, for a part that has no place until the person uses it (the Cite button). resetKey: what the slot holds (the right panel's
+// tab); another one draws again in its place, so a part that could not be shown takes only its own place with it.
 class LazySlot extends React.Component{
-  state={error:null};
+  state={error:null,resetKey:this.props.resetKey};
   static getDerivedStateFromError(error){return {error}}
+  static getDerivedStateFromProps(props,state){return props.resetKey===state.resetKey?null:{error:null,resetKey:props.resetKey}}
   render(){
     const {error}=this.state;
     return error?this.props.failed?this.props.failed(error):<div className="lazy-slot-error" role="alert"><span>This part of Trebell could not be shown: {error.message||String(error)}</span><button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>:<Suspense fallback={this.props.fallback??null}>{this.props.children}</Suspense>;
@@ -290,8 +298,8 @@ function CiteUnavailable({containerRef}){
   },[containerRef]);
   return at&&<div className="lazy-slot-error cite-unavailable" role="alert" style={{left:at.x,top:at.y}} onPointerDown={event=>event.preventDefault()}><span>Cite could not load.</span><button ref={reload} type="button" tabIndex={-1} className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>;
 }
-function DeferredSurface({children,label="Loading…",compact=false}){
-  return <LazySlot fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</LazySlot>;
+function DeferredSurface({children,label="Loading…",compact=false,resetKey}){
+  return <LazySlot resetKey={resetKey} fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</LazySlot>;
 }
 
 function sameSnapshot(left,right){
@@ -660,6 +668,33 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk||selectedChunks.includes(chunk.key)} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<LazySlot failed={()=><CiteUnavailable containerRef={historyRef}/>}><AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></LazySlot></div>;
 });
+// threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
+// A card answers once, and only to a click aimed at it: the second click of a double click (its click count is 2, or it lands where
+// the first did, answeringClick) was aimed at the card before, which the first click answered, and the next card has come up under
+// the pointer. The rest of that press does nothing either (ignorePressRest), as on an app request's buttons: with no card after it,
+// the second click lands on the conversation, which slides under the pointer, and would select a word there.
+function ApprovalCard({request,onResolve,threadLabel=""}){
+  const answered=useRef(false);
+  if(!request)return null;
+  const answer=(event,decision)=>{if(answered.current||event.detail>1||!answeringClick(event))return;answered.current=true;Promise.resolve(onResolve(request,decision)).then(result=>{if(!result)answered.current=false})};
+  const p=request.params||{};
+  const permissions=request.method==="item/permissions/requestApproval";
+  const network=permissions?p.permissions?.network:null;const fileSystem=permissions?p.permissions?.fileSystem:null;
+  const title=permissions?"Additional access requested":request.method.includes("fileChange")||request.method==="applyPatchApproval"?"File changes need approval":p.networkApprovalContext?.host?"Network access needs approval":"Command needs approval";
+  // The command is shown even when the harness gives a reason, so nobody approves "Run the tests" without seeing what runs. A file
+  // change lists the files it touches, which the server finds for Codex's request (trebellFileChanges), with or without a reason.
+  const commandText=Array.isArray(p.command)?p.command.map(part=>String(part)).join(" "):typeof p.command==="string"?p.command:"";
+  const files=Array.isArray(p.trebellFileChanges)?p.trebellFileChanges:[];
+  const networkTarget=p.networkApprovalContext?.host?`${p.networkApprovalContext.protocol||"network"}://${p.networkApprovalContext.host}`:"";
+  const detail=permissions?[network&&"Network access",fileSystem&&"Filesystem access"].filter(Boolean).join(" + "):(networkTarget||p.reason||commandText||p.path||(files.length?"":request.method));
+  const showCommand=!permissions&&Boolean(commandText.trim())&&detail!==commandText;
+  const approvalOptions=Array.isArray(p.approvalOptions)?p.approvalOptions.filter(option=>option&&typeof option.decision==="string"&&option.label):[];
+  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}{(detail||!files.length)&&<p>{detail||p.reason||request.method}</p>}{showCommand&&<pre className="approval-command" data-testid="approval-command"><code>{commandText}</code></pre>}{files.length>0&&<pre className="approval-command" data-testid="approval-files"><code>{files.map(file=>file.movePath?"Move "+file.path+" to "+file.movePath:({add:"Add",delete:"Delete"}[file.kind]||"Edit")+" "+file.path).join("\n")+(p.trebellFileChangesMore>0?"\n…and "+p.trebellFileChangesMore+" more file"+(p.trebellFileChangesMore>1?"s":""):"")}</code></pre>}{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}{approvalOptions.filter(option=>option.warning).map(option=><small key={"warning-"+option.decision}>{option.label}: {option.warning}</small>)}<div className="approval-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}>{approvalOptions.length
+    // An ACP harness's own choices, in its order and wording (T3 grokApprovalOptions / antigravityApprovalOptions).
+    ?approvalOptions.map(option=><button key={option.decision} className={option.decision==="accept"?"approve":undefined} onClick={event=>answer(event,option.decision)}>{option.label}</button>)
+    // A Codex card's Allow session covers every later command, or file change, of its thread's session (trebellSessionScope).
+    :<><button onClick={event=>answer(event,"decline")}>Deny</button><button onClick={event=>answer(event,"acceptForSession")}>{{command:"Allow commands this session",fileChange:"Allow edits this session"}[p.trebellSessionScope]||"Allow session"}</button><button className="approve" onClick={event=>answer(event,"accept")}>Allow once</button></>}</div></div>;
+}
 // The undo toast's remaining seconds, counting down with the timer that removes it. Hidden from the live region so it is
 // not announced every second. Each toast counts with one of its own (keyed by the toast): a toast that replaced another went on
 // from that one's last count, so it read 6s for its first quarter second.
@@ -5522,38 +5557,8 @@ export default function App(){
   // A welcome suggestion fills the composer and gives it the focus with the caret at the end, so Enter sends it and typing carries on.
   // It replaces the draft as an edit does, so a note about the draft it replaces goes.
   function suggestPrompt(text){composerPromptEdit();setPrompt(text);requestAnimationFrame(()=>{const node=document.querySelector('[data-testid="composer"]');if(!node)return;node.focus();node.setSelectionRange(text.length,text.length)})}
-  // keywords: another name a command is found by, the one the sidebar gives its destination.
-  const paletteActions=paletteOpen?[
-    {id:"new",label:"New thread",detail:"Start a clean coding task",keywords:"New task",shortcut:shortcutHint(commandKey("newChat")),onRun:newTask},
-    {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
-    ...(window.trebellDesktop?.pickDirectory?[{id:"folder",label:"Open workspace folder",detail:projectPath||"Choose a local folder",onRun:pickWorkspace}]:[]),
-    {id:"projects",label:"Recent projects",detail:"Switch checkouts or clone a repository",onRun:()=>navigateSection("projects")},
-    {id:"files",label:"Files",detail:"Browse and edit the workspace",onRun:()=>openRightPanel("files")},
-    ...(!projectlessMode?[{id:"diff",label:"Changes",detail:"Inspect the current Git diff",onRun:()=>openRightPanel("diff")},{id:"git",label:"Source control",detail:gitInfo?.branch||"Git and pull requests",onRun:()=>openRightPanel("source")}]:[]),
-    ...(!projectlessMode?[{id:"context",label:"Trebell context",detail:"Inspect repository context supplied to the latest turn",onRun:()=>openRightPanel("context")}]:[]),
-    ...(paletteThread?[{id:"link-pr",label:"Link pull request",detail:"Attach a hosted review to this thread",onRun:async()=>{const url=await askText("Pull request URL");if(url)await linkPullRequestUrl(url,"manual")}}]:[]),
-    // Toggle terminal's key opens the terminal only while it is closed (it closes an open one), so this row offers it only then.
-    {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:panel==="terminal"?"":shortcutHint(commandKey("terminal")),onRun:()=>{setPanel("terminal");focusTerminalDrawer()}},
-    ...((currentProject?.scripts||[]).map(script=>({id:"project-action:"+script.id,label:"Run "+script.name,detail:script.command,onRun:()=>runProjectAction(script)}))),
-    {id:"browser",label:"Browser",detail:window.trebellDesktop?.browser?"Open Trebell Agent Browser":"Open hosted preview and local dev-server tools",onRun:()=>openRightPanel("preview")},
-    ...(runtimeCapabilities.delegation?[{id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")}]:[]),
-    ...(paletteThread?[{id:"goal",label:"Thread goal",detail:goal?.objective||"Set a durable objective",onRun:()=>openRightPanel("goal")}]:[]),
-    ...(paletteThread&&gitInfo?.isGit?[{id:"review",label:"Review changes",detail:`Ask ${agentRuntimeLabel} to review uncommitted changes`,onRun:()=>startReview()}]:[]),
-    ...(runtimeCapabilities.harnessTools?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>navigateSection("tools")}]:[]),
-    {id:"environments",label:"Environments",detail:"Local, WSL and SSH",onRun:()=>navigateSection("environments")},
-    {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>navigateSection("usage")},
-    {id:"licenses",label:"Open source licenses",detail:"Third-party packages and installed license notices",onRun:()=>navigateSection("licenses")},
-    // Cycle appearance mode and Cycle theme step on to the next choice, whatever it is, so no single row here offers their keys.
-    {id:"appearance-system",label:"Appearance: System",detail:"Follow the operating system light/dark setting",onRun:()=>saveAppSettings({appearanceMode:"system"})},
-    {id:"appearance-light",label:"Appearance: Light",detail:"Use light appearance",onRun:()=>saveAppSettings({appearanceMode:"light"})},
-    {id:"appearance-dark",label:"Appearance: Dark",detail:"Use dark appearance",onRun:()=>saveAppSettings({appearanceMode:"dark"})},
-    {id:"theme-trebell",label:"Theme: Trebell",detail:"Default purple Trebell palette",onRun:()=>saveAppSettings({appearance:"dark"})},
-    {id:"theme-midnight",label:"Theme: Midnight",detail:"Cooler deep-blue Trebell palette",onRun:()=>saveAppSettings({appearance:"midnight"})},
-    {id:"theme-black",label:"Theme: Black",detail:"OLED-friendly black Trebell palette",onRun:()=>saveAppSettings({appearance:"black"})},
-    ...(settings.customThemes||[]).map(theme=>({id:"theme-custom:"+theme.id,label:"Theme: "+theme.name,detail:`Custom ${theme.appearance||"dark"} theme`,onRun:()=>saveAppSettings({appearance:theme.id})})),
-    {id:"settings",label:"Settings",detail:window.trebellDesktop?"Providers, permissions and desktop behavior":"Providers, permissions and workspace behavior",onRun:()=>navigateSection("settings")},
-    ...(paletteThread&&messages.length?[{id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread}]:[]),
-  ]:null;
+  // What the palette's commands run and show (palette-actions.js, which comes with the palette's code), as this render has it.
+  const paletteApp=paletteOpen?{commandKey,newTask,newGeneralChat,pickWorkspace,projectPath,navigateSection,openRightPanel,projectlessMode,gitInfo,paletteThread,askText,linkPullRequestUrl,panel,setPanel,focusTerminalDrawer,currentProject,runProjectAction,runtimeCapabilities,goal,agentRuntimeLabel,startReview,saveAppSettings,settings,messages,shareThread}:null;
 
   const previewSurface=<PreviewPage
     projectPath={projectPath}
@@ -5580,9 +5585,10 @@ export default function App(){
       const goalThreadId=activeThread?.id||null,forGoalThread=apply=>next=>{if(goalThreadId&&activeThreadRef.current?.id===goalThreadId)apply(next)};
       return <>{openingShown&&<div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>}<GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} covered={openingShown} leaving={openingPending} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/></>;
     }
-    // The Runtime tab (RuntimeSurface, idle-parts.js) draws the approval card, the background processes and the trace App keeps. The
-    // background processes and the trace are the open thread's: another thread starts each afresh, so an answer still on its way for
-    // the thread left lands nowhere.
+    // The Runtime tab (RuntimeSurface, idle-parts.js) draws the approval card, the background processes and the trace App keeps, the
+    // trace's code asked for with the tab's. The background processes and the trace are the open thread's: another thread starts each
+    // afresh, so an answer still on its way for the thread left lands nowhere.
+    preloadRuntimeTrace();
     return <RuntimeSurface mock={bootstrap.mock} rpcStatus={rpcStatus} running={running} agentRuntimeLabel={agentRuntimeLabel} events={events} completedEvents={completedEvents} providerReady={providerReady} stats={stats} context={contextValueLabel(tokenUsage)} runtimeCapabilities={runtimeCapabilities}
       approval={<ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/>}
       backgroundTerminals={runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<LazySlot><AgentBackgroundTerminals key={activeThread.id} rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/></LazySlot>}
@@ -5683,9 +5689,7 @@ export default function App(){
               <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} historyError={historyPage.error} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={shownTurnOrder} turnActivity={shownTurnActivity} liveCardTurnId={liveCardTurnId} newestTurnId={newestTurnId} onToggleLayout={activityCardToggleLayout}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout} onShown={setAgentBlockShown}/>
               {guardianDenials.map(review=><LazySlot key={review.reviewId}><div className="inline-approval"><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div></LazySlot>)}
-              {/* The approval card's code comes at idle right after the first paint (idle-parts.js): one asked before then shows once it
-                  has come, and one whose code cannot load says so here, with Reload. */}
-              {shownApproval&&<LazySlot><div className="inline-approval"><ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div></LazySlot>}
+              {shownApproval&&<div className="inline-approval"><ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {/* A follow-up's button runs once for a double click or Enter held on it, as a thread's menu item does: the rest of the press
                   does nothing, so the second click never lands on the next follow-up's button, which comes up in its place once the first
                   takes this one out or moves it. A follow-up on its way reads as being sent, its buttons off (queuedOnItsWay). Its buttons
@@ -5731,14 +5735,16 @@ export default function App(){
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
       {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runningTasks={runningTasks} onActionError={showActionError} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={(session,pressed)=>{setSection("chat");setPanel("terminal");askTerminalKeyboard(pressed);setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>navigateSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
-        {/* History's list (ThreadHistoryPage, idle-parts.js) comes at idle right after the first paint; History opened before then waits
-            for it under its heading. */}
+        {/* History's list (ThreadHistoryPage, idle-parts.js) comes at idle right after the first paint; History opened before then asks
+            for it at once and says it is loading under its heading. */}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><DeferredSurface label="Loading thread history…"><ThreadHistoryPage threadHistory={threadHistory} threadCatalogCursor={threadCatalogCursor} threadMeta={threadMeta} agentRuntime={agentRuntime} agentRuntimeName={agentRuntimeName} onRetry={()=>setThreadHistory(current=>current.loading?current:{...current,loading:true,retrying:true,retries:(current.retries||0)+1})} onOpen={t=>runUserAction(()=>openThread(t),"Could not open thread")} onNewTask={()=>runUserAction(newTask,"Could not start a new thread")} onLoadOlder={loadOlderThreadHistory}/></DeferredSurface></div>}
       </main>
 
       {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" {...layoutSeparatorProps("right")} onPointerDown={event=>beginLayoutResize("right",event)}/>}
       {rightPanelOpen&&narrowDrawer&&!rightPanelMaximized&&<div className="inspector-scrim" data-testid="inspector-scrim" aria-hidden="true" onClick={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}/>}
-      {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","context","source"]:[]} hiddenTabs={runtimeCapabilities.delegation?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact>{rightPanelContent()}</DeferredSurface></RightPanel>}
+      {/* A tab that could not be shown takes only its own place with it: the next tab draws (resetKey; Files and Diff are one
+          WorkspacePanel). */}
+      {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","context","source"]:[]} hiddenTabs={runtimeCapabilities.delegation?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact resetKey={rightPanelTab==="diff"?"files":rightPanelTab}>{rightPanelContent()}</DeferredSurface></RightPanel>}
       {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")+(viewSection!=="chat"?" secondary-surface-error":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     </div>
 
@@ -5747,7 +5753,7 @@ export default function App(){
     {!elicitations.length&&questions[0]&&<LazySlot><QuestionModal key={questions[0].id} request={questions[0]} threadLabel={requestThreadLabel(questions[0])} waiting={questions.length-1} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={(room,keep)=>pickFiles("",{room,keep})}/></LazySlot>}
     {snoozeRequest&&<LazySlot><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)} focusFallback={focusShownView}/></LazySlot>}
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><UndoCountdown key={threadUndo.id} expiresAt={threadUndo.expiresAt}/></div>}
-    {paletteOpen&&<LazySlot fallback={<CommandPaletteLoading seed={paletteSeedRef} onClose={closePalette}/>}><CommandPalette open seed={paletteSeedRef} focusFallback={focusShownView} onClose={closePalette} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></LazySlot>}
+    {paletteOpen&&<LazySlot fallback={<CommandPaletteLoading seed={paletteSeedRef} onClose={closePalette}/>}><CommandPalette open seed={paletteSeedRef} focusFallback={focusShownView} onClose={closePalette} app={paletteApp} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></LazySlot>}
     {initialLoaded&&settings.onboardingComplete===false&&<LazySlot><OnboardingModal open projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={managedInference?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/></LazySlot>}
   </div>;
 }

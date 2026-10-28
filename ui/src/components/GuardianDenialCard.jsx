@@ -3,8 +3,8 @@ import { ShieldCheck } from "lucide-react";
 import { guardianActionSummary } from "../guardian-review.js";
 
 // An action auto review denied, as App shows it in the conversation. App loads it with the first denial instead of with the app
-// (B11); the approval card a harness waits on loads at idle right after the first paint (ApprovalCard.jsx, idle-parts.js). Allow
-// anyway sends the event built here, which is loaded once this card shows, so App takes it from this module.
+// (B11); the approval card a harness waits on stays in App. Allow anyway sends the event built here, which is loaded once this
+// card shows, so App takes it from this module.
 export { guardianDeniedEvent } from "../guardian-denied-event.js";
 export default function GuardianDenialCard({review,busy,onApprove,onDismiss}){
   if(!review)return null;

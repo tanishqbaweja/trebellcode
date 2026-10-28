@@ -9,8 +9,9 @@ const HISTORY_RUNTIME_LABELS=Object.freeze({native:"Native",codex:"Codex",claude
 
 // The list of the History page under its heading, which App keeps: the threads History has read (App's threadHistory), a first page
 // that failed with its Retry, and Load older threads. It shows once the person opens History, so App loads it at idle right after the
-// first paint (idle-parts.js, B11): from then on History draws at once, and History opened before then waits for that load under its
-// heading ("Loading thread history…"). What History reads, and when, stays in App (the History effects, loadOlderThreadHistory).
+// first paint (idle-parts.js, B11): from then on History draws at once, and History opened before then asks for it at once and says
+// "Loading thread history…" under its heading until it is in. What History reads, and when, stays in App (the History effects,
+// loadOlderThreadHistory).
 export default function ThreadHistoryPage({threadHistory,threadCatalogCursor,threadMeta,agentRuntime,agentRuntimeName,onRetry,onOpen,onNewTask,onLoadOlder}){
   return <div className="history-page">
     {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert"><span key={threadHistory.failures}>{threadHistory.failures>1?"Still could not":"Could not"} load thread history: {threadHistory.error}</span><button type="button" className="tb-btn tb-btn--sm" aria-disabled={threadHistory.retrying||undefined} onClick={event=>{ignorePressRest(!event.detail);onRetry()}}>{threadHistory.retrying?"Retrying…":"Retry"}</button></div>}

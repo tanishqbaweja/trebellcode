@@ -3,9 +3,9 @@ import { Check, Minus } from "lucide-react";
 
 // The right panel's Runtime tab: the harness's transport and steps, the approval card, the harness grid, the capability matrix, the
 // open thread's background processes and trace, and the latest activity. It shows once the person opens the tab, so App loads it at
-// idle right after the first paint (idle-parts.js, B11): from then on the tab draws at once, and one opened before then waits for that
-// load ("Loading panel…"), as every other tab of the panel waits for its own. App hands it the parts it keeps (approval,
-// backgroundTerminals, trace) as they are drawn there.
+// idle right after the first paint (idle-parts.js, B11): from then on the tab draws at once, and one opened before then asks for it at
+// once and says "Loading panel…" until it is in, as every other tab of the panel does for its own. App hands it the parts it keeps
+// (approval, backgroundTerminals, trace) as they are drawn there.
 function capabilityStatus(value){
   if(value==="runtime")return "runtime";
   return value?"available":"not exposed";

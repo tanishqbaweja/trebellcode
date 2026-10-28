@@ -1,5 +1,6 @@
 import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { BarChart3, Bot, Copy, CornerDownLeft, FileDiff, Files, FolderCode, FolderGit2, FolderOpen, GitBranch, GitPullRequest, Globe, Layers, MessageSquarePlus, MessageSquareText, Monitor, Moon, Palette, Play, Scale, Search, Server, Settings, ShieldCheck, SquarePen, SquareTerminal, Sun, Target, Wrench } from "lucide-react";
+import { paletteActions } from "../palette-actions.js";
 
 // Presentational icons for the built-in palette actions (keyed by action id). Actions can still pass their own icon.
 const ACTION_ICONS={
@@ -50,7 +51,9 @@ export default function CommandPalette(props){
 
 // seed: App's handoff from the stand-in search box it shows while this code loads ({opener,query}, see CommandPaletteLoading).
 // focusFallback: where focus goes when the control the palette was opened from has gone with the view a command left.
-function CommandPaletteOpen({open,onClose,seed,focusFallback,actions=[],projects=[],threads=[],environmentNames={},dataError="",onOpenProject,onOpenThread,onSearchThreadMessages}){
+// app: what App's render hands the palette's commands (palette-actions.js), which are built again with each one.
+function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[],threads=[],environmentNames={},dataError="",onOpenProject,onOpenThread,onSearchThreadMessages}){
+  const actions=useMemo(()=>app?paletteActions(app):[],[app]);
   const [query,setQuery]=useState("");
   const [selected,setSelected]=useState(0);
   const [messageMatches,setMessageMatches]=useState([]);

@@ -77,15 +77,17 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // and Environments (T3M) about evens out), which took them 0.2 KB gzip over it: its headroom stays 1.0 / 0.1 KB, as on main before
 // the port. The first bundle grew 623.0 / 199.7 to 623.3 / 199.8 KB with Muse Code in App's harness lists (T3M).
 // Then (2026-10-28) by what the second wave of the port adds to the lazy chunks, 3.9 / 1.6 KB (T3M2 only the first bundle's new name
-// in their import lines, 0.0 / 0.1 KB; T3D 0.4 / 0.2 KB, Settings' Update to a harness's newer release and Muse Code's windows on
-// Usage; T3K 3.5 / 1.3 KB, Antigravity's Gemini API key form and the Codex goal commands sent while a thread compacts), and by what
-// moved into them out of the first bundle, 9.4 / 3.3 KB, when T3K took it to 624.3 / 200.1 KB with lanes T3O and the one after it
-// still to add to it: the approval card, the right panel's Runtime tab, History's list and the threads' message search, loaded at
-// idle right after the first paint with the Cite button (idle-parts.js), since neither the first screen nor a thread's first draw
-// needs them before a harness asks, the person opens them or a search runs, and what comes before that load waits for it. They took
-// them 12.3 / 4.7 KB over it: its headroom stays 1.0 / 0.1 KB, as on main before the second wave. The first bundle went down, 624.3 /
-// 200.1 to 616.0 / 197.6 KB, with 2.4 KB gzip of room for those two lanes.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:779.9,gzipKB:257.6}};
+// in the import lines of the lazy chunks that load it, 0.0 / 0.1 KB; T3D 0.4 / 0.2 KB, Settings' Update to a harness's newer release
+// and Muse Code's windows on Usage; T3K 3.5 / 1.3 KB, Antigravity's Gemini API key form and the Codex goal commands sent while a
+// thread compacts), and by what moved into them out of the first bundle, 10.5 / 3.7 KB, when T3K took it to 624.3 / 200.1 KB with
+// lanes T3O and the one after it still to add to it: the right panel's Runtime tab, History's list and the threads' message search,
+// loaded at idle right after the first paint with the Cite button (idle-parts.js), and the palette's commands, which come with the
+// palette's own code (palette-actions.js), since neither the first screen nor a thread's first draw needs them before the person
+// opens them or a search runs, and what is opened before then asks for its code at once and says it is loading meanwhile. The
+// approval card a harness waits on stays in the first bundle. They took them 13.4 / 5.1 KB over it: its headroom stays 1.0 / 0.1 KB,
+// as on main before the second wave. The first bundle went down, 624.3 / 200.1 to 615.8 / 197.8 KB, with 2.2 KB gzip of room for
+// those two lanes.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:781,gzipKB:258}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{

@@ -40,15 +40,16 @@
 :root:root .main-frame .secondary-page :is(h1,h2)[tabindex="-1"]:focus{outline:none}
 
 /* While a page's code loads (the DeferredSurface fallback in App.jsx), its frame and App.jsx header already sit where the
-   loaded page puts them (Settings included), so the title does not jump when the page arrives. */
-:root:root .secondary-page:has(> .surface-loading){padding:44px 56px 72px;background:transparent!important;color:var(--tx0)!important}
-:root:root .secondary-page:has(> .surface-loading)>*{max-width:1080px;margin-left:auto;margin-right:auto}
-:root:root .secondary-page:has(> .surface-loading)>.page-header{display:block;margin:0 auto 26px!important;padding:0}
-:root:root .secondary-page:has(> .surface-loading)>.page-header h1{margin:0!important;font-size:26px!important;font-weight:650!important;letter-spacing:-.035em!important;line-height:1.2!important;color:var(--tx0)!important}
-:root:root .secondary-page:has(> .surface-loading)>.page-header p{max-width:720px;margin:7px 0 0!important;font-size:13px!important;line-height:1.6!important;color:var(--tx2)!important}
+   loaded page puts them (Settings included), so the title does not jump when the page arrives, nor when the page's code cannot
+   load and the loading line turns into its error (LazySlot's .lazy-slot-error). */
+:root:root .secondary-page:is(:has(> .surface-loading),:has(> .lazy-slot-error)){padding:44px 56px 72px;background:transparent!important;color:var(--tx0)!important}
+:root:root .secondary-page:is(:has(> .surface-loading),:has(> .lazy-slot-error))>*{max-width:1080px;margin-left:auto;margin-right:auto}
+:root:root .secondary-page:is(:has(> .surface-loading),:has(> .lazy-slot-error))>.page-header{display:block;margin:0 auto 26px!important;padding:0}
+:root:root .secondary-page:is(:has(> .surface-loading),:has(> .lazy-slot-error))>.page-header h1{margin:0!important;font-size:26px!important;font-weight:650!important;letter-spacing:-.035em!important;line-height:1.2!important;color:var(--tx0)!important}
+:root:root .secondary-page:is(:has(> .surface-loading),:has(> .lazy-slot-error))>.page-header p{max-width:720px;margin:7px 0 0!important;font-size:13px!important;line-height:1.6!important;color:var(--tx2)!important}
 :root:root .secondary-page>.surface-loading{min-height:160px;color:var(--tx2)!important;font-size:12.5px}
 @media (max-width:900px){
-  :root:root .secondary-page:has(> .surface-loading){padding:28px 22px 56px}
+  :root:root .secondary-page:is(:has(> .surface-loading),:has(> .lazy-slot-error)){padding:28px 22px 56px}
 }
 
 /* ============ Shared controls ============ */
