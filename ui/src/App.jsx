@@ -1240,9 +1240,6 @@ export default function App(){
   // turnActivityRef. liveItemRowsRef: the live card's steps by thread and turn (trackLiveRow), which a turn's card takes once the turn
   // ends; liveTurnKeyRef: the open thread's running turn, the one stored steps may still join the live card for.
   const [turnActivity,setTurnActivity]=useState(()=>emptyTurnActivity(null));const turnActivityRef=useRef(turnActivity);turnActivityRef.current=turnActivity;const liveItemRowsRef=useRef(new Map());const liveTurnKeyRef=useRef(null);
-  // turnItemsRef: the kinds of item the open thread's running turn has shown since its turn/started, which tell a compaction of its own
-  // from a turn that compacts as it works (turn-support.js compactionTurn).
-  const turnItemsRef=useRef(null);
   // retryRowsRef: the live list's retry rows still retrying (retryActivityRow), by thread and row (retryRowKey), since turn ids are
   // only unique inside a thread; each is settled once its turn goes on or ends.
   const retryRowsRef=useRef(new Set());
@@ -3295,7 +3292,7 @@ export default function App(){
         // that starts again under its id gets back the steps its card holds.
         const owner=threadId||activeThreadRef.current?.id;
         if(owner&&id){
-          liveTurnKeyRef.current=turnInfoKey(owner,id);turnItemsRef.current={key:liveTurnKeyRef.current,types:new Set()};
+          liveTurnKeyRef.current=turnInfoKey(owner,id);
           for(const entry of [...liveItemRowsRef.current.values()])if(entry.threadId===String(owner)&&entry.turnId!==String(id))sealLiveTurn(owner,entry.turnId);
           diffEventBufferRef.current?.flush();setEvents(prev=>{const next=prev.filter(event=>!event.turnId||event.turnId===String(id));return next.length===prev.length?prev:next});
           const stored=turnActivityRef.current;seedLiveRows(owner,id,stored.threadId===owner?stored.turns[String(id)]?.rows:null);
@@ -3339,7 +3336,6 @@ export default function App(){
     else if(message.method==="turn/plan/updated"&&isCurrent){const plan=(p.plan||[]).map((s,i)=>({id:"plan-"+i,kind:"plan",title:s.step||s.description||s.text||"Plan step",status:s.status==="completed"?"done":s.status==="inProgress"?"running":"pending",raw:s,turnId:p.turnId==null?null:String(p.turnId)}));setEvents(prev=>[...prev.filter(e=>e.kind!=="plan"),...plan])}
     else if(message.method==="item/started"&&p.item){
       if(p.item.type==="agentMessage")keepReplyStart(threadId,p.turnId,{itemId:p.item.id,text:p.item.text});
-      if(turnItemsRef.current?.key===turnInfoKey(threadId,p.turnId))turnItemsRef.current.types.add(p.item.type);
       const item=activityRow(p.item,{turnId:p.turnId});
       const isActivityItem=!["userMessage","agentMessage","sessionHandoff"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,{currentActivity:{id:item.id,kind:item.kind,title:item.title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
@@ -4601,8 +4597,8 @@ export default function App(){
     catch(error){keepDraft();setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return "kept"}
     let filled=false;const fill=value=>{filled=true;restoreSentDraft({text:typeof value==="function"?value(""):String(value??"")})};
     // What tells a compaction of the thread's own, which a goal command never stops: the one this window waits for (compactionWaiters),
-    // and the items the running turn has shown (turnItems).
-    const result=await support.runSlashCommand({currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,running,activeTurnId,goal,compactionWaiters:compactionWaitersRef.current,turnItems:turnItemsRef.current,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,stop,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt:fill,setGoal,setEvents,setComposerAlert},text);
+    // and the rows and messages of the running turn (events, messages).
+    const result=await support.runSlashCommand({currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,running,activeTurnId,goal,events,messages,compactionWaiters:compactionWaitersRef.current,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,stop,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt:fill,setGoal,setEvents,setComposerAlert},text);
     if(result==="kept"&&!filled)keepDraft();
     return result;
   }

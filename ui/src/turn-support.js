@@ -17,7 +17,6 @@ import { maybeStartAutomaticVerificationContinuation } from "./auto-verification
 import { askTerminalKeyboard } from "./terminal-keyboard.js";
 import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
 import { CODEX_GOAL_START } from "../../src/codex-goal-start.mjs";
-import { turnInfoKey } from "./turn-outcome.js";
 
 export { repositoryContextEntries } from "./context-provenance.js";
 
@@ -212,13 +211,15 @@ export async function continueInterruptedTurns({client,recovery,showActionError}
 // person's message, its checkpoint and the Goal panel keep the objective as written.
 export { CODEX_GOAL_START };
 // The running turn is a compaction of the thread's own, which a goal command never stops (T3 isNativeMaintenanceCommand: a run whose
-// message is /compact): the one this window asked for (compactionWaiters), or a turn whose items, as this window saw them from its
-// turn/started (turnItems, from App), are compactions alone and that no active goal drives. A turn that compacts as it works, an
-// ordinary turn or a goal's own (also one that opens with a compaction), is stopped as any other.
-function compactionTurn({activeThread,activeTurnId,compactionWaiters,turnItems},goalStatus){
-  const threadId=String(activeThread?.id||"");if(compactionWaiters?.has(threadId))return true;
-  const types=turnItems?.key&&turnItems.key===turnInfoKey(threadId,activeTurnId)?[...turnItems.types]:[];
-  return types.length>0&&types.every(type=>type==="contextCompaction")&&goalStatus!=="active";
+// message is /compact): the one this window asked for (compactionWaiters), or a turn that shows nothing but a compaction (its rows in
+// events are compactions alone, as turn-activity.js storeCompactionTurnIds reads a stored one, and messages hold no message, reply or
+// thought of it) and that no active goal drives. A turn that compacts as it works, an ordinary turn or a goal's own (also one that
+// opens with a compaction), is stopped as any other.
+function compactionTurn({activeThread,activeTurnId,compactionWaiters,events=[],messages=[]},goalStatus){
+  const turnId=String(activeTurnId??""),ofTurn=item=>turnId!==""&&String(item?.turnId??"")===turnId;
+  if(compactionWaiters?.has(String(activeThread?.id||"")))return true;
+  const rows=events.filter(ofTurn);
+  return rows.length>0&&rows.every(row=>row.kind==="contextCompaction")&&!messages.some(ofTurn)&&goalStatus!=="active";
 }
 // A goal command that stops the turn running (T3 goalCommandStopsActiveRun) stops it as Stop does: an active goal is paused first,
 // so Codex starts no further turn of it. waitForEnd: the command starts a turn, which waits for the stopped one's turn/completed,
