@@ -103,10 +103,11 @@ const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Swit
 // A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start and the
 // window's poll make one) reuses the last read of the same binary and version that was complete (openCodeCatalogComplete), and one that
 // was not for OPENCODE_INCOMPLETE_REUSE_MS: each read starts an `opencode serve`. (T3 Code checks such an OpenCode again on its
-// five-minute health interval.) Settings' own listing (its open, Refresh and a sign-in's follow-up) reads again. Any other fresh check
-// (a switch, the listing a profile's Save or Delete or an install answers with, a failed turn's recheck) keeps a complete read too, and
-// reads one that was not again once it is OPENCODE_CATALOG_REUSE_MS old, so a switch's read also serves the listing right after it; T3
-// Code does not read OpenCode's catalog again when a turn fails.
+// five-minute health interval.) Settings' Refresh (its Refresh buttons and a sign-in's follow-up) reads again. Any other fresh check
+// (Settings' open, a switch, the listing a profile's Save or Delete or an install answers with, a failed turn's recheck) keeps a
+// complete read too, and reads one that was not again once it is OPENCODE_CATALOG_REUSE_MS old, so a switch's read also serves the
+// listing right after it, and entering Settings' sections starts no `opencode serve` for a complete read; T3 Code does not read
+// OpenCode's catalog again when a turn fails.
 const OPENCODE_CATALOG_REUSE_MS=10_000;
 const OPENCODE_INCOMPLETE_REUSE_MS=5*60_000;
 const OPENCODE_STATUS_TIMEOUT_MS=20_000;
@@ -936,7 +937,7 @@ export class AgentRuntimeManager{
     }
   }
   // A status check's provider list: the last complete one read for this binary and version, one that is not if it was read within
-  // OPENCODE_INCOMPLETE_REUSE_MS (OPENCODE_CATALOG_REUSE_MS for a fresh check), or a new read (always for Settings' listing, refresh),
+  // OPENCODE_INCOMPLETE_REUSE_MS (OPENCODE_CATALOG_REUSE_MS for a fresh check), or a new read (always for Settings' Refresh, refresh),
   // which may take this long, and as long once its server is up. OpenCode's server can take up to 30 seconds to start (its first run
   // converts the shared database), and a start that runs out of time fails the read itself.
   async #openCodeStatusCatalog(instance,version,{fresh=false,refresh=false}={}){
@@ -1399,8 +1400,9 @@ export class AgentRuntimeManager{
     return readAgentRuntimeUsage(instance.kind,{environment,platform:this.platform,home,readText,joinPath:join,fetchImpl:this.fetchImpl,serverUrl:instance.serverUrl||""});
   }
   // The full listing answers Settings (its open, Refresh, a sign-in's follow-up) and the runtime mutations, so it checks again.
-  // refresh (Settings' own listing) also reads Muse Code's model lists and OpenCode's catalogs again, which the mutations' listings reuse.
-  async snapshot({fresh=true,refresh=false}={}){
+  // refresh (Settings' own listing) also reads Muse Code's model lists and OpenCode's catalogs again, which the mutations' listings reuse;
+  // keepOpenCode (Settings' open, not its Refresh) keeps a complete OpenCode catalog, as those listings do.
+  async snapshot({fresh=true,refresh=false,keepOpenCode=false}={}){
     if(refresh)this.#museCatalogDue();
     // Each status of a harness Trebell updates says whether a newer release is out and how it is updated (update). Settings' own
     // listing reads each newest release whose last answer is gone, beside the status checks where it can, else as soon as its check
@@ -1408,7 +1410,7 @@ export class AgentRuntimeManager{
     // check runs is in this listing, one that answers later the next listing's. The other listings use the last answers.
     const instances=this.instances(),waitMs=refresh?RELEASE_WAIT_MS:null;if(refresh)for(const instance of instances)this.#startReleaseRead(instance);
     const checked=await Promise.all(instances.map(async instance=>{
-      const status=await this.probe(instance,{fresh,refresh});
+      const status=await this.probe(instance,{fresh,refresh:refresh&&!keepOpenCode});
       if(refresh)void this.#updateAdvisory(instance,status,{waitMs:0}).catch(()=>null);
       return status;
     }));

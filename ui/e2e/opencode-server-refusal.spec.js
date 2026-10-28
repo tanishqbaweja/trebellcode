@@ -37,7 +37,7 @@ test("Settings says when an OpenCode profile's own server refuses Trebell, from 
   const before=await (await request.get("/api/settings")).json();
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
   let listings=0;
-  await page.route(/\/api\/agent-runtimes$/,async route=>{if(route.request().method()!=="GET")return route.continue();listings++;return json(route,await manager.snapshot({refresh:true}))});
+  await page.route(/\/api\/agent-runtimes$/,async route=>{if(route.request().method()!=="GET")return route.continue();listings++;return json(route,await manager.snapshot({refresh:true,keepOpenCode:route.request().headers()["x-trebell-catalogs"]==="kept"}))});
   try{
     await page.goto("/");
     await expect(page.getByTestId("composer")).toBeVisible();

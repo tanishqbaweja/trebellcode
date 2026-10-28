@@ -1989,8 +1989,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     }
     if(url.pathname==="/api/agent-runtimes"){
       if(req.method==="GET"){
-        // Settings' own listing (its open and Refresh): Muse Code's model lists are read again too.
-        try{return json(res,200,await agentRuntimes.snapshot({refresh:true}));}
+        // Settings' own listing (its open and Refresh): Muse Code's model lists are read again too, and OpenCode's catalogs on Refresh
+        // (its open asks with x-trebell-catalogs: kept, which keeps a complete one).
+        try{return json(res,200,await agentRuntimes.snapshot({refresh:true,keepOpenCode:req.headers["x-trebell-catalogs"]==="kept"}));}
         catch(error){return json(res,500,{error:error.message});}
       }
       if(req.method==="POST"){

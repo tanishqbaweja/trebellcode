@@ -367,10 +367,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   }
   // A mutation answer is newer than any probe still in flight, so that probe's answer is discarded.
   function setAgentInfo(info){agentInfoSeqRef.current++;setAgentInfoRefreshing(false);setAgentInfoError("");rememberAgentInfo(info)}
-  async function loadAgentRuntimes({strict=false}={}){
+  // kept: the section's open, which keeps OpenCode's complete catalogs (each read starts an `opencode serve`); Refresh reads them again.
+  async function loadAgentRuntimes({strict=false,kept=false}={}){
     const seq=++agentInfoSeqRef.current;setAgentInfoRefreshing(true);
     try{
-      const info=await api("/api/agent-runtimes");
+      const info=await api("/api/agent-runtimes",kept?{headers:{"x-trebell-catalogs":"kept"}}:{});
       if(seq===agentInfoSeqRef.current){setAgentInfoError("");rememberAgentInfo(info)}
       return info;
     }catch(error){
@@ -881,7 +882,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     else if(settingsSection==="desktop")refresh({includeRuntime:false,includeUpdate:false,includeDiagnostics:false,includeStorage:false,includeDesktopUpdates:false});
   },[projectPath,settingsSection]);
   useEffect(()=>{if(settingsSection==="agents")loadProviders()},[settingsSection]);
-  useEffect(()=>{if(settingsSection==="agents"||settingsSection==="diagnostics")loadAgentRuntimes()},[settingsSection]);
+  useEffect(()=>{if(settingsSection==="agents"||settingsSection==="diagnostics")loadAgentRuntimes({kept:true})},[settingsSection]);
   useEffect(()=>{
     if(!settingsEntry?.nonce||settingsEntry.nonce===appliedSettingsEntryNonce)return;
     appliedSettingsEntryNonce=settingsEntry.nonce;
