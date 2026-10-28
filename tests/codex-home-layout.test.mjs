@@ -17,7 +17,7 @@ test("Codex shadow home shares state but keeps auth private",async()=>{
     const layout=await prepareCodexHome({homePath:shared,shadowHomePath:shadow});assert.equal(layout.mode,"authOverlay");assert.equal(layout.effectiveHomePath,resolve(shadow));
     const configPath=join(shadow,"config.toml"),sharedConfig=join(shared,"config.toml");
     if((await lstat(configPath)).isSymbolicLink())assert.equal(resolve(dirname(configPath),await readlink(configPath)),resolve(sharedConfig));
-    else{const [a,b]=await Promise.all([lstat(configPath),lstat(sharedConfig)]);assert.equal(a.ino,b.ino)}
+    else{const [a,b]=await Promise.all([lstat(configPath,{bigint:true}),lstat(sharedConfig,{bigint:true})]);assert.equal(a.ino,b.ino)}
     const sessionsPath=join(shadow,"sessions");assert.equal(resolve(dirname(sessionsPath),await readlink(sessionsPath)),resolve(join(shared,"sessions")));
     assert.equal(await readFile(join(shadow,"auth.json"),"utf8"),'{"shadow":true}\n');
     assert.equal(await readFile(join(shadow,"models_cache.json"),"utf8"),"private-cache\n");

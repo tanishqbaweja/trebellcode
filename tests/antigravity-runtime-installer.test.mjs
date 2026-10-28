@@ -90,15 +90,16 @@ const leftovers=async fx=>(await readdir(fx.runtimes).catch(()=>[])).filter(name
 
 test("an install checks the download against the registry's SHA-256, starts the new runtime once, and moves it into place",async t=>{
   const fx=await home(t);let unpacked=null;
-  // The file extract-zip unpacked, to tell whether the installed one is it (moved) or a copy.
-  const extractImpl=async(archive,options)=>{await extractZip(archive,options);unpacked=await stat(join(options.dir,"agy_acp_server.exe"))};
+  // The file extract-zip unpacked, to tell whether the installed one is it (moved) or a copy, by ids read as BigInts (as Numbers
+  // two files' NTFS ids can be one).
+  const extractImpl=async(archive,options)=>{await extractZip(archive,options);unpacked=await stat(join(options.dir,"agy_acp_server.exe"),{bigint:true})};
   const {result,error,requests,launches,logged}=await install(fx,{extractImpl});
   assert.equal(error,null,String(error?.message));
   assert.deepEqual(requests,[ACP_REGISTRY_URL,ARCHIVE]);
   assert.equal(result.version,VERSION);assert.equal(result.binary,join(fx.current,"agy_acp_server.exe"));
   assert.equal(await readFile(join(fx.current,"agy_acp_server.exe"),"utf8"),"stand-in server");
   assert.equal(await readFile(join(fx.current,"localharness_external.exe"),"utf8"),"stand-in helper");
-  assert.equal((await stat(join(fx.current,"agy_acp_server.exe"))).ino,unpacked.ino,"the unpacked file was moved into place, not copied");
+  assert.equal((await stat(join(fx.current,"agy_acp_server.exe"),{bigint:true})).ino,unpacked.ino,"the unpacked file was moved into place, not copied");
   const metadata=await readAntigravityInstall({env:fx.env});
   assert.equal(metadata.source,"acp-registry");assert.equal(metadata.target,"windows-x86_64");assert.equal(metadata.version,VERSION);
   assert.match(metadata.sha256,/^[0-9a-f]{64}$/);

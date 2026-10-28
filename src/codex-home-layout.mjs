@@ -20,8 +20,10 @@ async function linkState(path){
 async function ensureLink({sharedHome,effectiveHome,name}){
   const target=join(sharedHome,name),link=join(effectiveHome,name),state=await linkState(link);
   if(state.kind==="other"){
+    // The hard link Windows makes without symlink rights is the shared file itself. Its id is read as a BigInt: NTFS ids pass 2^53,
+    // where two files' ids can be one Number.
     try{
-      const [existing,targetStat]=await Promise.all([lstat(link),lstat(target)]);
+      const [existing,targetStat]=await Promise.all([lstat(link,{bigint:true}),lstat(target,{bigint:true})]);
       if(existing.dev===targetStat.dev&&existing.ino&&existing.ino===targetStat.ino)return;
     }catch{}
     if(!REPLACEABLE_SHARED_ENTRIES.has(name))throw new Error(`Cannot create Codex shadow home entry '${name}' because '${link}' already exists and is not a symlink.`);

@@ -15,11 +15,12 @@ async function homes(prefix){
   return {root,shared,shadow,cleanup:()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})};
 }
 const exists=path=>access(path).then(()=>true,()=>false);
-// The shadow entry is the shared one: a symlink to it, or the hard link Windows makes without symlink rights (codex-home-layout).
+// The shadow entry is the shared one: a symlink to it, or the hard link Windows makes without symlink rights (codex-home-layout),
+// told by ids read as BigInts (as Numbers two files' NTFS ids can be one).
 async function linkedTo(path,target){
-  const entry=await lstat(path);
+  const entry=await lstat(path,{bigint:true});
   if(entry.isSymbolicLink())return resolve(dirname(path),await readlink(path))===resolve(target);
-  const shared=await lstat(target);return entry.dev===shared.dev&&Boolean(entry.ino)&&entry.ino===shared.ino;
+  const shared=await lstat(target,{bigint:true});return entry.dev===shared.dev&&Boolean(entry.ino)&&entry.ino===shared.ino;
 }
 
 test("a Codex shadow home keeps Finder's .DS_Store of its own through every start, and never links the shared one",async()=>{
