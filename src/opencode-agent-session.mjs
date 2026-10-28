@@ -720,9 +720,12 @@ export class OpenCodeAgentSession{
       else{
         const query={directory:this.cwd},path={id:this.sessionId};
         // A slash command runs as OpenCode's own command (T3 Code): its template, agent and model come from the command, with the
-        // user's text after the command as its arguments and only their attachments as parts.
+        // user's text after the command as its arguments and only their attachments as parts. An attachment OpenCode gets as a line
+        // instead (a document without text, audio, video) and a document's line naming its text follow the arguments, as T3 reads
+        // the command from the text its attachment lines are in, so none drops out of the command unsaid.
+        const lines=command?openCodeBodyParts(given.filter(part=>part?.type==="resource_link")).filter(part=>part.type==="text").map(part=>part.text):[];
         const request=command
-          ?this.client.session.command({path,query,body:{messageID,command:command.name,arguments:command.arguments,...(modelId?{model:modelId}:{}),...(agent?{agent}:{}),...(variant?{variant}:{}),parts:bodyParts.filter(part=>part.type==="file")},fetch:openCodeLongRequestFetch})
+          ?this.client.session.command({path,query,body:{messageID,command:command.name,arguments:[command.arguments,...lines].filter(Boolean).join("\n\n"),...(modelId?{model:modelId}:{}),...(agent?{agent}:{}),...(variant?{variant}:{}),parts:bodyParts.filter(part=>part.type==="file")},fetch:openCodeLongRequestFetch})
           :this.client.session.prompt({path,query,body:{messageID,...options,parts:bodyParts},fetch:openCodeLongRequestFetch});
         request.catch(()=>{});turn.sent();
         response=await Promise.race([request,turn.stopped]);
