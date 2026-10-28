@@ -1,5 +1,6 @@
 import { normalizedPath } from "./codex-projects.js";
 import { threadTitle } from "./thread-catalog.js";
+import { nativeThreadSearchMatches } from "./thread-list-query.js";
 
 export function searchableThreadMessage(item={}){
   if(item?.type!=="userMessage"&&item?.type!=="agentMessage")return "";
@@ -65,4 +66,54 @@ export function sidebarSearchMatches(threads=[],query="",{threadMeta={},projects
     }
     return Boolean(matchingPullRequestExcerpt(meta,needle));
   });
+}
+
+// What the sidebar's and the palette's searches find in the threads' messages (needle: the query, trimmed, of two letters or more):
+// the first 50 threads whose linked pull request matches, then the harness's own thread search where it has one (the threads it finds
+// that the list does not hold join it), else the last 150 items of each of the other threads, read eight at a time and kept in cache
+// by thread while its updatedAt holds (the 100 newest threads' only). App loads it at idle (idle-parts.js, B11) and hands it what its
+// render reads: rpc, threads, threadMeta, runtimeCapabilities, setThreads and the cache. A search that could not read everything says
+// so in warning.
+export async function searchThreadMessages({rpc,threads,threadMeta,runtimeCapabilities,setThreads,cache},needle){
+  const candidates=threads.slice(0,50);let cursor=0;
+  const results=[];const matched=new Set();let nativeError=null;const readErrors=[];
+  for(const thread of candidates){
+    const excerpt=matchingPullRequestExcerpt(threadMeta[thread.id]||{},needle);
+    if(excerpt){results.push({threadId:thread.id,excerpt:"PR · "+excerpt,thread});matched.add(thread.id)}
+  }
+  if(runtimeCapabilities.threadSearch){
+    try{
+      const response=await rpc.request("thread/search",{searchTerm:needle,limit:50,sortKey:"recency_at",sortDirection:"desc",archived:false});
+      if(response?.data){
+        const native=nativeThreadSearchMatches(response);
+        const merged=new Map(results.map(item=>[item.threadId,item]));
+        for(const item of native)if(!merged.has(item.threadId))merged.set(item.threadId,item);
+        if(native.length)setThreads(prev=>{
+          const known=new Set(prev.map(thread=>thread.id));
+          const extra=native.map(item=>item.thread).filter(thread=>thread?.id&&!known.has(thread.id));
+          return extra.length?[...prev,...extra]:prev;
+        });
+        return{matches:[...merged.values()],warning:""};
+      }
+    }catch(error){nativeError=error}
+  }
+  const searchable=candidates.filter(thread=>!matched.has(thread.id));
+  const workers=Array.from({length:Math.min(8,searchable.length)},async()=>{
+    while(cursor<searchable.length){
+      const thread=searchable[cursor++];const version=Number(thread.updatedAt||0);let cached=cache.get(thread.id);
+      if(!cached||cached.updatedAt!==version){
+        try{
+          const response=await rpc.request("thread/items/list",{threadId:thread.id,limit:150,sortDirection:"desc"});
+          cached={updatedAt:version,items:response.data||[]};cache.set(thread.id,cached);
+        }catch(error){readErrors.push(error);continue}
+      }
+      const excerpt=matchingMessageExcerpt(cached.items,needle);if(excerpt)results.push({threadId:thread.id,excerpt,thread});
+    }
+  });
+  await Promise.all(workers);
+  if(cache.size>100){const keep=new Set(threads.slice(0,100).map(thread=>thread.id));for(const id of cache.keys())if(!keep.has(id))cache.delete(id)}
+  const warnings=[];
+  if(nativeError)warnings.push("Full thread search unavailable: "+(nativeError?.message||String(nativeError))+". Searching loaded threads only.");
+  if(readErrors.length)warnings.push(`${readErrors.length} loaded thread${readErrors.length===1?"":"s"} could not be searched: ${readErrors[0]?.message||String(readErrors[0])}.`);
+  return{matches:results,warning:warnings.join(" ")};
 }

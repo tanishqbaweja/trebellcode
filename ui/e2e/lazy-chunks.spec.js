@@ -77,13 +77,16 @@ async function openFixtureThread(page){
   await expect(page.getByTestId("composer")).toHaveAttribute("placeholder","Ask Trebell Code anything…");
 }
 
-// A harness waits on its approval, so the approval card is part of the app's first script: it shows the moment the request comes
-// and is answered with no script left to load.
+// A harness waits on its approval, so the approval card's code comes at idle right after the first paint (idle-parts.js), before a
+// request can come from a thread the person opened: from then on it shows the moment the request comes and is answered with no script
+// left to load. (One asked before that code has come waits for it: idle-loaded-parts.spec.js.)
 test("an approval shows the moment it is asked and is answered with no script left to load",async({page})=>{
   test.setTimeout(45_000);
+  const parts=page.waitForEvent("requestfinished",request=>/\/assets\/idle-parts-[^/]*\.js$/.test(request.url()));
   const fixture=await codexFixture(page);
   try{
     await openFixtureThread(page);
+    await parts;
     const refused=await refuseScriptsFromNow(page);
     fixture.send({id:"approval-now",method:"item/commandExecution/requestApproval",params:{threadId:fixture.thread.id,turnId:"turn-approval",itemId:"cmd-approval",command:["echo","approval"],reason:"Approve this fixture command"}});
     const card=page.locator(".conversation-column .approval-card").filter({hasText:"Approve this fixture command"});

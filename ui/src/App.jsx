@@ -5,9 +5,8 @@ import {
   GitBranch, Globe2, HardDrive, Link2, MemoryStick, Network, Paperclip, Plus, Send,
   ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Mic, Camera, History,
   PanelRight, PanelBottom, PanelLeftOpen, Command, Target, Play, Search, Sun, Moon,
-  BarChart3, ChevronLeft, ChevronRight, Folder, LoaderCircle, Minus, ScrollText, Server, Settings as SettingsIcon, Wrench
+  BarChart3, ChevronLeft, ChevronRight, Folder, LoaderCircle, ScrollText, Server, Settings as SettingsIcon, Wrench
 } from "lucide-react";
-import { compactDateTime, fullDateTime, isoDateTime } from "./time-format.js";
 import { CodexRpcClient } from "./rpc.js";
 import { api, wsUrl } from "./api.js";
 import ThreadSidebar,{ ignorePressRest } from "./components/ThreadSidebar.jsx";
@@ -27,7 +26,7 @@ import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnO
 import { activityRow, isCardItem, mergeLiveRow, restoredRow, retryActivityRow, retryRowId, settledRetryRows, settledRow } from "./activity-item.js";
 import { cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeCompactionTurnIds, storeIncompleteTurnIds } from "./turn-activity.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
-import { answeringClick, approvalResponse } from "./approval-utils.js";
+import { approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
 import { isListedThread, prependThread } from "./thread-list-state.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
@@ -37,7 +36,7 @@ import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
 import { createThreadTurnNotes } from "./thread-turn-notes.js";
 import { latestTurnRowsStart } from "./conversation-order.js";
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
-import { nativeThreadSearchMatches, rankSearchHits, rankThreadSections, threadListParams } from "./thread-list-query.js";
+import { rankSearchHits, rankThreadSections, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary } from "./guardian-review.js";
 import { completedItemStatus } from "./tool-event-status.js";
@@ -100,8 +99,8 @@ const RuntimeTrace=lazy(()=>import("./components/RuntimeTrace.jsx"));
 // Shown only on the right panel's Runtime tab, so it loads when that tab first shows instead of with the app (B11).
 const AgentBackgroundTerminals=lazy(()=>import("./components/AgentBackgroundTerminals.jsx"));
 // Shown only once auto review has denied an action, so it loads with the first denial instead of with the app (B11). The approval
-// card stays in App (ApprovalCard below): a harness waits on it, so it shows the moment the request comes, and no chunk that is
-// slow or fails to load stands between the person and their answer.
+// card a harness waits on loads at idle right after the first paint instead (ApprovalCard below, idle-parts.js), so it is there
+// before a request can come from a thread the person opened and shows the moment the request comes.
 const GuardianDenialCard=lazy(()=>import("./components/GuardianDenialCard.jsx"));
 const QuestionModal=lazy(()=>import("./components/QuestionModal.jsx"));
 const McpElicitationModal=lazy(()=>import("./components/McpElicitationModal.jsx"));
@@ -138,16 +137,18 @@ const loadTurnSupport=()=>turnSupportLoad||=import("./turn-support.js").then(mod
 const loadThreadActions=()=>threadActionsLoad||=import("./thread-actions.js").then(module=>threadActions=module,error=>{
   threadActionsLoad=null;throw loadFailed(error);
 });
-// And what App draws or runs only once the person does something (idle-parts.js: the Cite button of text selected in a reply, the
-// find bar of Ctrl+F, and what the sidebar's and the palette's searches find in the threads), in one chunk. Once it is in (idleParts)
-// each part draws or runs at once, as before: lazy() is handed the loaded part itself, which it takes without suspending. What comes
-// before then waits for it; a part drawn before then (the Cite button, with the conversation) waits for the idle load.
+// And what App draws or runs only once the person does something, or a harness asks (idle-parts.js: the Cite button of text selected
+// in a reply, the find bar of Ctrl+F, what the sidebar's and the palette's searches find in the threads, the card of an approval a
+// harness asks for and the right panel's Runtime tab), in one chunk. Once it is in (idleParts) each part draws or runs at once, as
+// before: lazy() is handed the loaded part itself, which it takes without suspending. What comes before then waits for it; a part
+// drawn before then (the Cite button, with the conversation; an approval asked as the page opens; the Runtime tab opened at once)
+// waits for the idle load, and one that cannot load says so in its place (LazySlot), with loadFailed's words.
 let idleParts=null,idlePartsLoad=null,reachIdle;const idleReached=new Promise(resolve=>reachIdle=resolve);
 const loadIdleParts=()=>idlePartsLoad||=import("./idle-parts.js").then(module=>idleParts=module,error=>{
   idlePartsLoad=null;throw loadFailed(error);
 });
 const idlePart=name=>lazy(()=>idleParts?{then:resolve=>resolve({default:idleParts[name]})}:idleReached.then(loadIdleParts).then(parts=>({default:parts[name]})));
-const AssistantSelectionToolbar=idlePart("AssistantSelectionToolbar"),ThreadFindBar=idlePart("ThreadFindBar");
+const AssistantSelectionToolbar=idlePart("AssistantSelectionToolbar"),ThreadFindBar=idlePart("ThreadFindBar"),ApprovalCard=idlePart("ApprovalCard"),RuntimeSurface=idlePart("RuntimeSurface"),ThreadHistoryPage=idlePart("ThreadHistoryPage");
 // A send's context packet comes only from turn-support.js (prepareTurnContext), so a send with one has that module; one without
 // carries no repository context.
 function repositoryContextEntries(packet,options){return packet?turnSupport.repositoryContextEntries(packet,options):{}}
@@ -293,11 +294,6 @@ function DeferredSurface({children,label="Loading…",compact=false}){
   return <LazySlot fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</LazySlot>;
 }
 
-function capabilityStatus(value){
-  if(value==="runtime")return "runtime";
-  return value?"available":"not exposed";
-}
-
 function sameSnapshot(left,right){
   if(left===right)return true;
   try{return JSON.stringify(left)===JSON.stringify(right)}catch{return false}
@@ -335,14 +331,6 @@ function cachedAppearanceSettings(){
   }catch{return {}}
 }
 
-// The harness transport state in the words the Runtime panel uses, with the status-dot tone that matches it.
-function transportStatusCopy(status){
-  if(status==="connected")return {label:"Connected",tone:"ok"};
-  if(status==="connecting"||status==="reconnecting")return {label:"Connecting…",tone:"warn"};
-  if(status==="error")return {label:"Connection failed",tone:"err"};
-  return {label:"Not connected",tone:"off"};
-}
-
 // Full-page sections share the workspace topbar: its crumb names the page (Settings adds its open section), and its actions keep
 // the sidebar, inspector, theme and palette reachable on every page.
 const PAGE_CRUMBS=Object.freeze({
@@ -351,8 +339,6 @@ const PAGE_CRUMBS=Object.freeze({
 });
 
 const AGENT_RUNTIME_LABELS=Object.freeze({native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity",muse:"Muse Code"});
-// The short harness names the sidebar chips use.
-const HISTORY_RUNTIME_LABELS=Object.freeze({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity",muse:"Muse"});
 function agentRuntimeName(kind){return AGENT_RUNTIME_LABELS[kind]||String(kind||"")||"the agent harness"}
 // A model catalog belongs to its harness, and to the inference provider only when Trebell manages inference for that harness.
 function modelCatalogScope(runtime,provider){return String(runtime||"")+"\0"+(sharedRuntimeCapabilities(runtime).managedInference?String(provider||""):"")}
@@ -674,33 +660,6 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
     ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk||index===anchorChunk||selectedChunks.includes(chunk.key)} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
     :latestStart<0?messages.map(renderMessage):[...messages.slice(0,latestStart).map(renderMessage),<span key="latest-turn-start" className="latest-turn-start" hidden/>,...messages.slice(latestStart).map(renderMessage)]}<LazySlot failed={()=><CiteUnavailable containerRef={historyRef}/>}><AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></LazySlot></div>;
 });
-// threadLabel names the task that asked when it is not the open thread, so nobody approves a command without knowing whose it is.
-// A card answers once, and only to a click aimed at it: the second click of a double click (its click count is 2, or it lands where
-// the first did, answeringClick) was aimed at the card before, which the first click answered, and the next card has come up under
-// the pointer. The rest of that press does nothing either (ignorePressRest), as on an app request's buttons: with no card after it,
-// the second click lands on the conversation, which slides under the pointer, and would select a word there.
-function ApprovalCard({request,onResolve,threadLabel=""}){
-  const answered=useRef(false);
-  if(!request)return null;
-  const answer=(event,decision)=>{if(answered.current||event.detail>1||!answeringClick(event))return;answered.current=true;Promise.resolve(onResolve(request,decision)).then(result=>{if(!result)answered.current=false})};
-  const p=request.params||{};
-  const permissions=request.method==="item/permissions/requestApproval";
-  const network=permissions?p.permissions?.network:null;const fileSystem=permissions?p.permissions?.fileSystem:null;
-  const title=permissions?"Additional access requested":request.method.includes("fileChange")||request.method==="applyPatchApproval"?"File changes need approval":p.networkApprovalContext?.host?"Network access needs approval":"Command needs approval";
-  // The command is shown even when the harness gives a reason, so nobody approves "Run the tests" without seeing what runs. A file
-  // change lists the files it touches, which the server finds for Codex's request (trebellFileChanges), with or without a reason.
-  const commandText=Array.isArray(p.command)?p.command.map(part=>String(part)).join(" "):typeof p.command==="string"?p.command:"";
-  const files=Array.isArray(p.trebellFileChanges)?p.trebellFileChanges:[];
-  const networkTarget=p.networkApprovalContext?.host?`${p.networkApprovalContext.protocol||"network"}://${p.networkApprovalContext.host}`:"";
-  const detail=permissions?[network&&"Network access",fileSystem&&"Filesystem access"].filter(Boolean).join(" + "):(networkTarget||p.reason||commandText||p.path||(files.length?"":request.method));
-  const showCommand=!permissions&&Boolean(commandText.trim())&&detail!==commandText;
-  const approvalOptions=Array.isArray(p.approvalOptions)?p.approvalOptions.filter(option=>option&&typeof option.decision==="string"&&option.label):[];
-  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}{(detail||!files.length)&&<p>{detail||p.reason||request.method}</p>}{showCommand&&<pre className="approval-command" data-testid="approval-command"><code>{commandText}</code></pre>}{files.length>0&&<pre className="approval-command" data-testid="approval-files"><code>{files.map(file=>file.movePath?"Move "+file.path+" to "+file.movePath:({add:"Add",delete:"Delete"}[file.kind]||"Edit")+" "+file.path).join("\n")+(p.trebellFileChangesMore>0?"\n…and "+p.trebellFileChangesMore+" more file"+(p.trebellFileChangesMore>1?"s":""):"")}</code></pre>}{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}{approvalOptions.filter(option=>option.warning).map(option=><small key={"warning-"+option.decision}>{option.label}: {option.warning}</small>)}<div className="approval-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}>{approvalOptions.length
-    // An ACP harness's own choices, in its order and wording (T3 grokApprovalOptions / antigravityApprovalOptions).
-    ?approvalOptions.map(option=><button key={option.decision} className={option.decision==="accept"?"approve":undefined} onClick={event=>answer(event,option.decision)}>{option.label}</button>)
-    // A Codex card's Allow session covers every later command, or file change, of its thread's session (trebellSessionScope).
-    :<><button onClick={event=>answer(event,"decline")}>Deny</button><button onClick={event=>answer(event,"acceptForSession")}>{{command:"Allow commands this session",fileChange:"Allow edits this session"}[p.trebellSessionScope]||"Allow session"}</button><button className="approve" onClick={event=>answer(event,"accept")}>Allow once</button></>}</div></div>;
-}
 // The undo toast's remaining seconds, counting down with the timer that removes it. Hidden from the live region so it is
 // not announced every second. Each toast counts with one of its own (keyed by the toast): a toast that replaced another went on
 // from that one's last count, so it read 6s for its first quarter second.
@@ -2651,50 +2610,12 @@ export default function App(){
       return false;
     }finally{setThreadRuntimeProfileBusy("")}
   }
+  // What the sidebar's and the palette's searches find in the threads' messages, which idle-parts.js reads (thread-message-search.js)
+  // from the threads as this render has them: a search before that code has come waits for it, and one that cannot load it fails.
   async function searchThreadMessages(queryText){
     const needle=String(queryText||"").trim();if(needle.length<2||!rpc||rpcStatus!=="connected")return{matches:[],warning:""};
-    const {matchingMessageExcerpt,matchingPullRequestExcerpt}=idleParts||await loadIdleParts();
-    const candidates=threads.slice(0,50);const cache=threadMessageSearchCacheRef.current;let cursor=0;
-    const results=[];const matched=new Set();let nativeError=null;const readErrors=[];
-    for(const thread of candidates){
-      const excerpt=matchingPullRequestExcerpt(threadMeta[thread.id]||{},needle);
-      if(excerpt){results.push({threadId:thread.id,excerpt:"PR · "+excerpt,thread});matched.add(thread.id)}
-    }
-    if(runtimeCapabilities.threadSearch){
-      try{
-        const response=await rpc.request("thread/search",{searchTerm:needle,limit:50,sortKey:"recency_at",sortDirection:"desc",archived:false});
-        if(response?.data){
-          const native=nativeThreadSearchMatches(response);
-          const merged=new Map(results.map(item=>[item.threadId,item]));
-          for(const item of native)if(!merged.has(item.threadId))merged.set(item.threadId,item);
-          if(native.length)setThreads(prev=>{
-            const known=new Set(prev.map(thread=>thread.id));
-            const extra=native.map(item=>item.thread).filter(thread=>thread?.id&&!known.has(thread.id));
-            return extra.length?[...prev,...extra]:prev;
-          });
-          return{matches:[...merged.values()],warning:""};
-        }
-      }catch(error){nativeError=error}
-    }
-    const searchable=candidates.filter(thread=>!matched.has(thread.id));
-    const workers=Array.from({length:Math.min(8,searchable.length)},async()=>{
-      while(cursor<searchable.length){
-        const thread=searchable[cursor++];const version=Number(thread.updatedAt||0);let cached=cache.get(thread.id);
-        if(!cached||cached.updatedAt!==version){
-          try{
-            const response=await rpc.request("thread/items/list",{threadId:thread.id,limit:150,sortDirection:"desc"});
-            cached={updatedAt:version,items:response.data||[]};cache.set(thread.id,cached);
-          }catch(error){readErrors.push(error);continue}
-        }
-        const excerpt=matchingMessageExcerpt(cached.items,needle);if(excerpt)results.push({threadId:thread.id,excerpt,thread});
-      }
-    });
-    await Promise.all(workers);
-    if(cache.size>100){const keep=new Set(threads.slice(0,100).map(thread=>thread.id));for(const id of cache.keys())if(!keep.has(id))cache.delete(id)}
-    const warnings=[];
-    if(nativeError)warnings.push("Full thread search unavailable: "+(nativeError?.message||String(nativeError))+". Searching loaded threads only.");
-    if(readErrors.length)warnings.push(`${readErrors.length} loaded thread${readErrors.length===1?"":"s"} could not be searched: ${readErrors[0]?.message||String(readErrors[0])}.`);
-    return{matches:results,warning:warnings.join(" ")};
+    const deps={rpc,threads,threadMeta,runtimeCapabilities,setThreads,cache:threadMessageSearchCacheRef.current};
+    return (idleParts||await loadIdleParts()).searchThreadMessages(deps,needle);
   }
   async function loadSkills(client,path=projectPath,forceReload=false,{strict=false}={}){
     if(agentRuntime!=="codex")return;
@@ -5659,48 +5580,13 @@ export default function App(){
       const goalThreadId=activeThread?.id||null,forGoalThread=apply=>next=>{if(goalThreadId&&activeThreadRef.current?.id===goalThreadId)apply(next)};
       return <>{openingShown&&<div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>}<GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} covered={openingShown} leaving={openingPending} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/></>;
     }
-    return <div className="runtime-surface">
-      <section className="runtime-summary">
-        {(()=>{const transport=bootstrap.mock?{label:"Ready · replies use the direct provider route",tone:"ok"}:rpcStatus==="connected"?{label:"Connected locally",tone:"ok"}:transportStatusCopy(rpcStatus);return <div><span className={"runtime-dot tone-"+transport.tone+(transport.tone==="ok"?" online":"")}/><div><strong>{running?"Agent working":agentRuntimeLabel+" harness"}</strong><span>{transport.label}</span></div></div>})()}
-        {/* Steps are counted only when there are some: an idle runtime has no step pending. */}
-        <small data-testid="runtime-activity-steps">{events.length?`${completedEvents}/${events.length} current activity ${events.length===1?"step":"steps"} complete`:"No activity yet"}</small>
-      </section>
-      <ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/>
-      <section className="runtime-grid">
-        <div><span>Agent harness</span><strong>{agentRuntimeLabel}</strong></div>
-        <div><span>Harness status</span><strong>{providerReady?"Ready":"Setup required"}</strong></div>
-        <div><span>CPU</span><strong>{stats.cpu||"—"}</strong></div>
-        <div><span>Memory</span><strong>{stats.memory||"—"}</strong></div>
-        <div><span>Disk</span><strong>{stats.disk||"—"}</strong></div>
-        <div><span>Context</span>{" "}<strong>{contextValueLabel(tokenUsage)}</strong></div>
-      </section>
-      <section className="runtime-capabilities" data-testid="runtime-capabilities">
-        <div className="runtime-capabilities-head"><strong>Runtime capability matrix</strong><span>Only exposed controls should be usable.</span></div>
-        <div className="runtime-capability-grid">
-          {[
-            ["Queue",runtimeCapabilities.queue],
-            ["Fork",runtimeCapabilities.fork],
-            ["Rewind",runtimeCapabilities.rewind],
-            ["Compaction",runtimeCapabilities.compaction],
-            ["MCP injection",runtimeCapabilities.mcpInjection],
-            ["Language intelligence",runtimeCapabilities.languageIntelligence],
-            ["Sandbox",runtimeCapabilities.nativeSandbox],
-            ["Detached tasks",runtimeCapabilities.detachedTasks],
-            ["Multi-model fan-out",runtimeCapabilities.multiModelFanout],
-            ["Background processes",runtimeCapabilities.backgroundProcesses],
-            ["Delegation",runtimeCapabilities.delegation],
-            ["Harness tools",runtimeCapabilities.harnessTools],
-            ["Steering",runtimeCapabilities.steering],
-            ["Runtime profiles",runtimeCapabilities.runtimeProfileSwitching],
-          ].map(([label,value])=><div key={label} className={value==="runtime"?"available runtime":value?"available":"unavailable"}>{value?<Check size={13} aria-hidden="true"/>:<Minus size={13} aria-hidden="true"/>}<span>{label}</span><strong>{capabilityStatus(value)}</strong></div>)}
-        </div>
-      </section>
-      {/* The background processes and the trace are the open thread's: another thread starts each afresh, so an answer still on its
-          way for the thread left lands nowhere. */}
-      {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<LazySlot><AgentBackgroundTerminals key={activeThread.id} rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/></LazySlot>}
-      <RuntimeTrace key={activeThread?.id||""} threadId={activeThread?.id||null}/>
-      <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
-    </div>;
+    // The Runtime tab (RuntimeSurface, idle-parts.js) draws the approval card, the background processes and the trace App keeps. The
+    // background processes and the trace are the open thread's: another thread starts each afresh, so an answer still on its way for
+    // the thread left lands nowhere.
+    return <RuntimeSurface mock={bootstrap.mock} rpcStatus={rpcStatus} running={running} agentRuntimeLabel={agentRuntimeLabel} events={events} completedEvents={completedEvents} providerReady={providerReady} stats={stats} context={contextValueLabel(tokenUsage)} runtimeCapabilities={runtimeCapabilities}
+      approval={<ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/>}
+      backgroundTerminals={runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<LazySlot><AgentBackgroundTerminals key={activeThread.id} rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/></LazySlot>}
+      trace={<RuntimeTrace key={activeThread?.id||""} threadId={activeThread?.id||null}/>}/>;
   }
 
   if(initialLoadError)return <div className="startup-failure-shell">
@@ -5797,7 +5683,9 @@ export default function App(){
               <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} historyError={historyPage.error} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={shownTurnOrder} turnActivity={shownTurnActivity} liveCardTurnId={liveCardTurnId} newestTurnId={newestTurnId} onToggleLayout={activityCardToggleLayout}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout} onShown={setAgentBlockShown}/>
               {guardianDenials.map(review=><LazySlot key={review.reviewId}><div className="inline-approval"><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div></LazySlot>)}
-              {shownApproval&&<div className="inline-approval"><ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
+              {/* The approval card's code comes at idle right after the first paint (idle-parts.js): one asked before then shows once it
+                  has come, and one whose code cannot load says so here, with Reload. */}
+              {shownApproval&&<LazySlot><div className="inline-approval"><ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div></LazySlot>}
               {/* A follow-up's button runs once for a double click or Enter held on it, as a thread's menu item does: the rest of the press
                   does nothing, so the second click never lands on the next follow-up's button, which comes up in its place once the first
                   takes this one out or moves it. A follow-up on its way reads as being sent, its buttons off (queuedOnItsWay). Its buttons
@@ -5843,11 +5731,9 @@ export default function App(){
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
       {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runningTasks={runningTasks} onActionError={showActionError} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={(session,pressed)=>{setSection("chat");setPanel("terminal");askTerminalKeyboard(pressed);setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>navigateSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
-        {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
-          {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert"><span key={threadHistory.failures}>{threadHistory.failures>1?"Still could not":"Could not"} load thread history: {threadHistory.error}</span><button type="button" className="tb-btn tb-btn--sm" aria-disabled={threadHistory.retrying||undefined} onClick={event=>{ignorePressRest(!event.detail);setThreadHistory(current=>current.loading?current:{...current,loading:true,retrying:true,retries:(current.retries||0)+1})}}>{threadHistory.retrying?"Retrying…":"Retry"}</button></div>}
-          {threadHistory.items.length?threadHistory.items.map(t=>{const owner=threadCatalogRuntime(t,threadMeta[t.id]||{},agentRuntime)||agentRuntime;return <button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><div><strong title={titleOf(t)}>{titleOf(t)}</strong><span title={t.preview||t.cwd||undefined}>{t.preview||t.cwd}</span></div><em className="history-runtime-chip" title={"Owned by "+agentRuntimeName(owner)}>{HISTORY_RUNTIME_LABELS[owner]||owner}</em><time dateTime={isoDateTime(t.updatedAt)} title={fullDateTime(t.updatedAt)}>{compactDateTime(t.updatedAt)}</time></button>}):!threadHistory.error&&<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newTask,"Could not start a new thread")}>Start a new task</button>}</div>}
-          {threadHistory.olderError&&!threadHistory.loadingOlder&&<div className="history-load-error provider-status-error" role="alert">Could not load older threads: {threadHistory.olderError}</div>}{(threadHistory.nextCursor||threadCatalogCursor)&&<div className="history-page-control history-load-more"><button type="button" aria-disabled={threadHistory.loadingOlder||undefined} onClick={event=>{ignorePressRest(!event.detail);loadOlderThreadHistory()}}>{threadHistory.loadingOlder?"Loading older threads…":"Load older threads"}</button></div>}
-        </div></div>}
+        {/* History's list (ThreadHistoryPage, idle-parts.js) comes at idle right after the first paint; History opened before then waits
+            for it under its heading. */}
+        {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><DeferredSurface label="Loading thread history…"><ThreadHistoryPage threadHistory={threadHistory} threadCatalogCursor={threadCatalogCursor} threadMeta={threadMeta} agentRuntime={agentRuntime} agentRuntimeName={agentRuntimeName} onRetry={()=>setThreadHistory(current=>current.loading?current:{...current,loading:true,retrying:true,retries:(current.retries||0)+1})} onOpen={t=>runUserAction(()=>openThread(t),"Could not open thread")} onNewTask={()=>runUserAction(newTask,"Could not start a new thread")} onLoadOlder={loadOlderThreadHistory}/></DeferredSurface></div>}
       </main>
 
       {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" {...layoutSeparatorProps("right")} onPointerDown={event=>beginLayoutResize("right",event)}/>}

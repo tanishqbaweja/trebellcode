@@ -59,7 +59,7 @@ test("every harness kind is named in every label map the server and the UI keep"
     ["ui/src/components/EnvironmentsPage.jsx","const labels="],
   ])assert.deepEqual(labels(path,marker),long,path+" "+marker);
   for(const [path,marker] of [
-    ["ui/src/App.jsx","const HISTORY_RUNTIME_LABELS="],
+    ["ui/src/components/ThreadHistoryPage.jsx","const HISTORY_RUNTIME_LABELS="],
     ["ui/src/components/ThreadSidebar.jsx","const rowRuntimeLabel=("],
   ])assert.deepEqual(labels(path,marker),SHORT,path+" "+marker);
   assert.deepEqual(labels("src/harness-text-generation.mjs","const HARNESS_NAMES="),Object.fromEntries(KINDS.filter(kind=>kind.id!=="native").map(kind=>[kind.id,kind.name])));

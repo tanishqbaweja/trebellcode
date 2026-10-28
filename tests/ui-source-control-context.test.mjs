@@ -100,7 +100,7 @@ test("linked pull requests answered after a thread change update that thread, no
 
 test("the goal panel starts afresh for another thread, and a late answer never lands in it",()=>{
   const app=readFileSync(join(root,"ui","src","App.jsx"),"utf8");
-  const goal=app.slice(app.indexOf('if(rightPanelTab==="goal")'),app.indexOf('return <div className="runtime-surface">'));
+  const goal=app.slice(app.indexOf('if(rightPanelTab==="goal")'),app.indexOf('return <RuntimeSurface '));
   assert.match(goal,/const goalThreadId=activeThread\?\.id\|\|null/);
   assert.match(goal,/<GoalPanel key=\{goalThreadId\?"goal:"\+goalThreadId:"goal:none"\}/,"no earlier thread's error or draft stays on screen");
   assert.match(goal,/forGoalThread=apply=>next=>\{if\(goalThreadId&&activeThreadRef\.current\?\.id===goalThreadId\)apply\(next\)\}/,"a save that answers after another thread opened is not shown there");
