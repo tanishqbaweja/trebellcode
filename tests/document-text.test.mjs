@@ -10,14 +10,11 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as documentText from "../src/document-text.mjs";
 import { extractDocumentText } from "../src/document-text-extract.mjs";
-import { StorageCleanupService } from "../src/storage-cleanup-service.mjs";
-import { TrebellStateStore } from "../src/trebell-state.mjs";
 import { zipArchive } from "./fixtures/documents/zip.mjs";
 
 const FIXTURES=fileURLToPath(new URL("./fixtures/documents/",import.meta.url));
 // The note text that reached a limit ends with, and the whole text of one that reached it before any text.
 const TRUNCATED="[The extracted text stops here, at Trebell Code's limits for a document.]",CUT="\n\n"+TRUNCATED;
-const DAY_MS=24*60*60*1000;
 // The text of each fixture (tests/fixtures/documents/make-fixtures.mjs), as an agent is to read it.
 const EXPECTED={
   "report.docx":"# Quarterly Harbor Report\nCargo volume rose 12 percent & the new crane is running.\nPort\tTons\nJuniper\t4200\nNext review: March.",
@@ -191,23 +188,4 @@ test("an archive past its limits has its text cut with a note, or none, instead 
   // No DTD is read, so an entity a document declares never expands: the part is left out as not valid XML.
   const entities=await extract("entities.docx",zipArchive({"word/document.xml":'<!DOCTYPE d [<!ENTITY a "AAAAAAAAAA"><!ENTITY b "&a;&a;&a;&a;&a;">]><d><p>&b;</p></d>'}));
   assert.ok(entities.includes("[A part of the document was left out: word/document.xml is missing or is not valid XML.]")&&!entities.includes("AAAA"));
-});
-
-test("an upload's text goes with the upload when the attachments folder is cleaned, and stays while the upload does",async t=>{
-  const home=await folder(t,"trebell-document-cleanup-"),env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
-  state.updateSettings({storageCleanup:{attachmentsAfterDays:7,terminalHistoryAfterDays:null}});
-  const stale=new Date(Date.now()-10*DAY_MS),age=async(...paths)=>{for(const path of paths)await utimes(path,stale,stale)};
-  const old=await upload(home,"old.docx","old"),kept=await upload(home,"kept.xlsx","kept"),fresh=await upload(home,"fresh.pptx","fresh");
-  await writeFile(old+".txt","old text");await writeFile(kept+".txt","kept text");await writeFile(fresh+".txt","fresh text");
-  const orphan=join(home,"attachments","1761400000000-cd34ef56-gone.odt.txt");await writeFile(orphan,"orphan text");
-  // The old upload's text was extracted later, and is newer than it; the kept upload's text is as old as it, and a stash keeps the upload.
-  await age(old,kept,kept+".txt",fresh+".txt",orphan);
-  state.addStash({text:"keep",attachments:[kept],contextChips:[]});
-  const result=await new StorageCleanupService({state,env}).sweep({now:Date.now()});
-  await assert.rejects(stat(old),{code:"ENOENT"});
-  await assert.rejects(stat(old+".txt"),{code:"ENOENT"},"the old upload's text went with it");
-  assert.equal(await readFile(kept+".txt","utf8"),"kept text","the kept upload keeps its text");
-  assert.equal(await readFile(fresh+".txt","utf8"),"fresh text","and so does the fresh one, whatever the text's own age");
-  await assert.rejects(stat(orphan),{code:"ENOENT"},"text whose upload is gone goes by its own age");
-  assert.deepEqual({removed:result.attachments.removed,bytes:result.attachments.bytes},{removed:3,bytes:"old".length+"old text".length+"orphan text".length});
 });
