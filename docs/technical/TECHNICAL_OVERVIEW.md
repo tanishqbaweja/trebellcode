@@ -126,6 +126,8 @@ Every provider requires an API key, so Trebell Native needs one before its first
 
 xAI and the Meta Model API are called on their Responses APIs without server-side state: each request carries the whole conversation with `store: false`, asks for `reasoning.encrypted_content` and sends back the reasoning the current turn's replies returned, which both providers document for keeping a model's reasoning across tool calls. A model that refuses `include` gets the request again without it, and its later requests leave it out.
 
+`ProviderManager.keyFor(provider)` is the one way the server reads a provider's key for a consumer other than Native's own calls (a harness the person put on API key): the key saved in Settings, else the environment variable Native reads for that provider, through the same code; an id that is not a model provider is refused.
+
 > **.env is not product configuration.** A local ignored .env may be used for developer/live-provider tests only.
 
 AgentRouter defaults to its current Codex-compatible OpenAI Chat endpoint at `https://co.agentrouter.org/v1`. Trebell Native still owns the prompt, tools, context, turn loop, and session; the Codex-shaped headers are only an upstream compatibility fingerprint. The fingerprint version follows the bundled `@openai/codex` package instead of freezing an old client version. Compatibility overrides remain available through `AGENTROUTER_BASE_URL`, `AGENTROUTER_WIRE_API`, and `AGENTROUTER_CLIENT_VERSION` when an older/private AgentRouter deployment requires them.

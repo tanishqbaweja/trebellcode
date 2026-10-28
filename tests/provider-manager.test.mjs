@@ -32,7 +32,7 @@ test("provider keys are stored separately and never returned by definitions", ()
   const manager=new ProviderManager({env,fetchFn:async()=>new Response("{}")});
   manager.setKey("agentrouter","ar-secret");
   assert.equal(manager.hasKey("agentrouter"),true);
-  assert.equal(manager.childEnv("agentrouter",{}).AGENTROUTER_API_KEY,"ar-secret");
+  assert.equal(manager.keyFor("agentrouter").key,"ar-secret");
   const def=manager.definitions().find(x=>x.id==="agentrouter");
   assert.equal(def.hasKey,true);
   assert.deepEqual(def.protocolCompatibility,["openai-chat-completions"]);
@@ -89,7 +89,7 @@ test("previously stored provider keys with wrapping quotes are normalized on rea
   writeFileSync(join(root,"provider-secrets.json"),JSON.stringify({agentrouter:'"ar-existing-key"'}),"utf8");
   const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async()=>new Response("{}")});
   assert.equal(manager.key("agentrouter"),"ar-existing-key");
-  assert.equal(manager.childEnv("agentrouter",{}).AGENTROUTER_API_KEY,"ar-existing-key");
+  assert.equal(manager.keyFor("agentrouter").key,"ar-existing-key");
 });
 
 test("AgentRouter validates the key and loads its live model catalog", async () => {
@@ -234,7 +234,7 @@ test("Vyce accepts VYCE_API_KEY as an environment alias", () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   const manager=new ProviderManager({env:{TREBELL_HOME:root,VYCE_API_KEY:"sk-vyce-alias"},fetchFn:async()=>new Response("{}")});
   assert.equal(manager.key("vyceai"),"sk-vyce-alias");
-  assert.equal(manager.childEnv("vyceai",{}).VYCEAI_API_KEY,"sk-vyce-alias");
+  assert.equal(manager.keyFor("vyceai").key,"sk-vyce-alias");
 });
 
 test("provider environment aliases match Trebell root .env names", () => {
@@ -242,8 +242,8 @@ test("provider environment aliases match Trebell root .env names", () => {
   const manager=new ProviderManager({env:{TREBELL_HOME:root,JUST_WORKER_API_KEY:"jw-alias",HNSEC_API_KEY:"hc-alias"},fetchFn:async()=>new Response("{}")});
   assert.equal(manager.key("justworker"),"jw-alias");
   assert.equal(manager.key("hcnsec"),"hc-alias");
-  assert.equal(manager.childEnv("justworker",{}).JUSTWORKER_API_KEY,"jw-alias");
-  assert.equal(manager.childEnv("hcnsec",{}).HCNSEC_API_KEY,"hc-alias");
+  assert.equal(manager.keyFor("justworker").key,"jw-alias");
+  assert.equal(manager.keyFor("hcnsec").key,"hc-alias");
 });
 
 test("official API providers are first-class Trebell Native inference providers without exposing keys", () => {
@@ -259,7 +259,7 @@ test("official API providers are first-class Trebell Native inference providers 
   assert.equal(manager.key("openai"),"oa-env");
   assert.equal(manager.key("anthropic"),"an-env");
   assert.equal(manager.key("gemini"),"gm-env");
-  assert.equal(manager.childEnv("gemini",{}).GEMINI_API_KEY,"gm-env");
+  assert.equal(manager.keyFor("gemini").key,"gm-env");
 });
 
 test("official API model catalogs use their documented authentication styles",async()=>{
@@ -1518,7 +1518,7 @@ test("provider key normalization strips copied Bearer prefix and invisible chara
   const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root}});
   manager.setKey("agentrouter","\uFEFFBearer  ar-live-key\u200B");
   assert.equal(manager.key("agentrouter"),"ar-live-key");
-  assert.equal(manager.childEnv("agentrouter",{}).AGENTROUTER_API_KEY,"ar-live-key");
+  assert.equal(manager.keyFor("agentrouter").key,"ar-live-key");
 });
 
 

@@ -745,10 +745,31 @@ export class ProviderManager {
     return provider.id==="agentrouter"?agentRouterProvider(provider,this.env):provider;
   }
 
+  // Where a provider's key comes from: the key saved in Settings (provider-secrets.json), else the first of the provider's
+  // environment variables that is set in Trebell's own environment.
+  #keySource(provider){
+    if(this.secrets[provider.id])return {key:normalizeProviderKey(this.secrets[provider.id]),source:"settings",variable:null};
+    const variable=(provider.envKeys||[provider.envKey]).find(name=>this.env[name]);
+    return variable?{key:normalizeProviderKey(this.env[variable]),source:"environment",variable}:{key:"",source:null,variable:null};
+  }
+
   key(providerId) {
-    const provider = this.get(providerId);
-    const envValue = (provider.envKeys || [provider.envKey]).map(key => this.env[key]).find(Boolean);
-    return normalizeProviderKey(this.secrets[provider.id] || envValue || "");
+    return this.#keySource(this.get(providerId)).key;
+  }
+
+  // A provider's key for another consumer of it, such as a harness the person put on API key, read as Native reads it (key()):
+  // {provider, key, source: "settings" | "environment", variable: the environment variable it came from, or null}, or null when
+  // the provider has no key. An id that is not a model provider is refused, never read as the default provider.
+  keyFor(providerId){
+    const id=String(providerId??"").trim().toLowerCase();
+    if(!Object.prototype.hasOwnProperty.call(MODEL_PROVIDERS,id))throw new Error(`Unknown model provider "${String(providerId??"")}".`);
+    const found=this.#keySource(this.get(id));
+    return found.key?{provider:id,...found}:null;
+  }
+
+  // keyFor of each listed provider that has a key (by default every model provider), in the order listed.
+  keysFor(providerIds=Object.keys(MODEL_PROVIDERS)){
+    return (Array.isArray(providerIds)?providerIds:[]).map(id=>this.keyFor(id)).filter(Boolean);
   }
 
   hasKey(providerId) {
@@ -775,15 +796,6 @@ export class ProviderManager {
     this.openAiResponseContinuations.clear();
     this.openAiWebSocketResponseOrigins.clear();
     try{transport?.close?.()}catch{}
-  }
-
-  childEnv(providerId, baseEnv = this.env) {
-    const provider = this.get(providerId);
-    const next = { ...baseEnv };
-    const key = this.key(provider.id);
-    if (key) next[provider.envKey] = key;
-    else delete next[provider.envKey];
-    return next;
   }
 
   status(providerId) {
