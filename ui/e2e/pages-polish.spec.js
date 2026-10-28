@@ -24,7 +24,7 @@ async function open(page,request,{mode="dark",width=1280,height=800}={}){
   await request.post("/api/projects",{data:{path:boot.cwd,name:"Polish Workspace",activate:true}});
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
-  expect(await page.evaluate(()=>document.documentElement.dataset.mode)).toBe(mode);
+  await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
 }
 test.afterEach(async({request})=>{await request.post("/api/settings",{data:BASE})});
 
@@ -317,7 +317,7 @@ async function openCodexHistory(page,fixture,threads,{mode="dark",width=1280,hei
   await page.route(/\/api\/agent-runtimes$/,route=>json(route,{selectedRuntime:"codex",selectedInstanceId:"codex-default",definitions:[{id:"codex",name:"Codex",protocol:"codex",multipleInstances:true}],instances:[{id:"codex-default",kind:"codex",displayName:"Codex",enabled:true}],statuses:[{id:"codex-default",kind:"codex",name:"Codex",available:true,installed:true,authenticated:true,version:"fixture"}]}));
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
-  expect(await page.evaluate(()=>document.documentElement.dataset.mode)).toBe(mode);
+  await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
   await nav(page,"History").click();
   await expect(page.getByRole("heading",{name:"Thread history",level:1})).toBeVisible();
   const rows=page.locator(".history-thread-row");
