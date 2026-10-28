@@ -198,8 +198,9 @@ test("a command the report still runs when a message takes the report over stays
   fixture.muse.write(itemFrame("item/completed",sid,check(3,"completed",{visibleOutput:"12 tests passed",exitCode:0})));
   await until(()=>rowsOf(seen,"report-check").at(-1)?.status==="completed","the command's end");
   const entries=seen.filter(entry=>entry.update.toolCallId==="report-check");
-  assert.deepEqual(entries.map(entry=>[entry.turnKey,entry.update.sessionUpdate]),[[REPORT,"tool_call"],[REPORT,"tool_call_update"],[REPORT,"tool_call_update"],[REPORT,"tool_call_update"]],"one row, the report's, from its start to its end");
-  assert.deepEqual(entries.map(entry=>entry.update.rawOutput),["","12 tests","12 tests passed","12 tests passed"]);
+  // The takeover sends the row again, saying it runs past the report's turn from then on (runsPastTurn), before the report ends.
+  assert.deepEqual(entries.map(entry=>[entry.turnKey,entry.update.sessionUpdate,entry.update.runsPastTurn===true]),[[REPORT,"tool_call",false],[REPORT,"tool_call_update",true],[REPORT,"tool_call_update",true],[REPORT,"tool_call_update",true],[REPORT,"tool_call_update",true]],"one row, the report's, from its start to its end");
+  assert.deepEqual(entries.map(entry=>entry.update.rawOutput),["","","12 tests","12 tests passed","12 tests passed"]);
   complete(fixture,REPORT);complete(fixture,start.commandId);
   assert.equal((await settlesWithin(message,5000,"the message's turn")).stopReason,"end_turn");
   assert.equal(seen.some(entry=>entry.turnKey===start.commandId&&entry.update.toolCallId),false,"no row in the message's turn");

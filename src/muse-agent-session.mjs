@@ -579,12 +579,16 @@ export class MuseAgentSession{
     turn.recorded.set(running.turnId,{...running.usage});if(running.joinedUsage)turn.joinedUsage={...running.joinedUsage};
     // What the report was saying goes on here from where it stopped (its replies and reasoning). Its rows stay its own: its work, and a
     // row still open (a command it runs), which settles in the report's turn as its work's rows do (observed, openRows).
+    const open=[];
     for(const [id,item] of running.items){
       if(item.kind==="agentMessage"||item.kind==="reasoning")turn.items.set(id,item);
-      else if(item.status==="inProgress"&&running.tools.has(id)&&!this.observed.has(id)){this.observed.set(id,running);this.openRows.add(id);this.workHeardAt=this.now()}
+      else if(item.status==="inProgress"&&running.tools.has(id)&&!this.observed.has(id)){this.observed.set(id,running);this.openRows.add(id);this.workHeardAt=this.now();open.push(item)}
     }
     for(const [id,said] of running.sent)turn.sent.set(id,said);
     turn.lastMessage=running.lastMessage;
+    // Each open row says from here that it runs past the report's turn (followed, runsPastTurn), sent again before that turn ends in
+    // Trebell: the end leaves it running in the window, and its own next row, its end too, settles it in the report's card.
+    for(const item of open)this.#publish(running,item);
     running.handOver({stopReason:"end_turn",providerMessageId:null,raw:this.#result(running,{turnId:running.turnId})});
     return true;
   }

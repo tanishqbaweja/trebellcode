@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import spawn from "cross-spawn";
+import { WebSocket } from "ws";
 import { attachAgentRelay } from "../../src/agent-relay.mjs";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
@@ -193,6 +194,40 @@ test("a Muse Code workflow goes on in the card of the turn that launched it whil
     await expect(page.locator(".activity-card").filter({hasText:"Workflow ping-pong"})).toHaveCount(1);
     await expect(row(launched,"Workflow ping-pong")).toHaveCount(3);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await launched.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-settled-past-turns-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
+
+test("a command Muse Code's report still runs when the person's message takes the report over goes on and settles in the report's card, never in that message's",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_COMMAND:"1"}});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Please run workflow ping-pong");
+    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    // Muse reports on the finished workflow in a turn of its own, says its first sentence and runs `npm test`, and holds there.
+    await expect(page.getByText("The workflow with ping and pong agents is complete.").first()).toBeVisible({timeout:20_000});
+    const live=page.locator(".agent-block .activity-card");
+    await expect(row(live,"npm test")).toHaveClass(/status-running/,{timeout:20_000});
+    // A message from another window of the person's takes the report over (this window queues its own behind the running report):
+    // the report's turn ends here, and Muse ends the command once the message comes. Soft, so that the old code also shows what each
+    // card says.
+    const [thread]=harness.threadStore.list(),other=new WebSocket(harness.wsUrl);
+    await new Promise((resolve,reject)=>{other.once("open",resolve);other.once("error",reject)});
+    try{
+      other.send(JSON.stringify({id:1,method:"turn/start",params:{threadId:thread.id,input:[{type:"text",text:"And one more thing"}]}}));
+      await expect(reply(page,"Muse fixture reply")).toBeVisible({timeout:20_000});
+    }finally{other.close()}
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
+    const [,report,message]=harness.threadStore.get(thread.id).turns;
+    const card=turn=>page.locator(`.turn-card[data-turn-id="${turn.id}"] [data-testid=activity-card]`);
+    for(const turn of [report,message])if(await card(turn).count()&&await card(turn).getAttribute("data-state")!=="open")await card(turn).locator(".activity-card-head").click();
+    await expect.soft(row(card(report),"npm test"),"the command settled on the report's card").toHaveClass(/status-done/);
+    await expect.soft(page.locator(".activity-card").filter({hasText:"npm test"}),"and on no other card").toHaveCount(1);
+    await expect.soft(row(page.locator(".agent-block .activity-card"),"npm test"),"none of it on the message's card").toHaveCount(0);
+    await expect(row(card(report),"npm test")).toHaveCount(1);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await card(report).scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-report-command-taken-over-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });
 

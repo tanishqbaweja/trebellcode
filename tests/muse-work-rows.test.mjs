@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { agentToolLifecycle } from "../src/agent-relay.mjs";
 import { activityRow, settledRow, storedRow } from "../ui/src/activity-item.js";
-import { FakeMuse, itemFrame, startSession, until } from "./fixtures/muse/fake-host.mjs";
+import { FakeMuse, event, itemFrame, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
 
 // Work that runs on past the turn that started it (Muse Code's workflows, their agents, subagents and commands in the background) as
 // the window shows it: its rows say so (runsPastTurn), from Muse Code's session through the relay's item, and the turn's end leaves
@@ -87,5 +87,36 @@ test("Muse Code's workflow, its agents and a command it sends to the background 
   assert.ok(seen.filter(entry=>entry.update.toolCallId).every(entry=>entry.turnKey===turnId),"every row names the turn that started it");
   // Through the relay's mapping, the window gets the agent's row pending, the work's rows as running past the turn.
   assert.deepEqual(rowsOf(seen,"wf-1:agent:ping").map(row=>[mapped(row).status,mapped(row).runsPastTurn]),[["pending",true],["completed",true]]);
+  await session.close();
+});
+
+test("a command Muse Code's report still runs when a message takes the report over says so on its row before the report's turn ends, so that end leaves it running in the window and its own end settles it there",async()=>{
+  const REPORT="report-turn",seen=[],wakes=[];
+  const fixture=await startSession({muse:child=>new FakeMuse(child),options:{onUpdate:params=>seen.push(params),onWakeTurn:promise=>{wakes.push(promise)}}}),{session}=fixture,sid=session.sessionId;
+  // Muse starts its report on its own, which runs `npm test`.
+  fixture.muse.write(event("turn/started",sid,{turnId:REPORT,commandId:REPORT}));
+  await until(()=>wakes.length===1,"the report turn");
+  const check=(revision,status,extra={})=>({itemId:"report-check",kind:"toolCall",turnId:REPORT,revision,status,tool:"bash",callId:"call_check",args:"{\"command\":\"npm test\"}",...extra});
+  fixture.muse.write(itemFrame("item/started",sid,check(1,"inProgress")));
+  await until(()=>rowsOf(seen,"report-check").length===1,"the command's row in the report");
+  // A message takes the report over: the report's turn ends in Trebell, the window's card of it with it (agent-relay settlePrompt).
+  let atReportEnd=-1;wakes[0].then(()=>{atReportEnd=seen.length});
+  const message=session.prompt([{type:"text",text:"And this"}]);
+  await settlesWithin(wakes[0],5000,"the report turn");
+  const {params:start}=await fixture.muse.next("turn/start");
+  // Muse's next word of the command is its end, as Muse's report command ends once the message comes (fake-muse.cjs).
+  fixture.muse.write(itemFrame("item/completed",sid,check(2,"completed",{visibleOutput:"All 12 tests passed.",exitCode:0})));
+  await until(()=>rowsOf(seen,"report-check").at(-1)?.status==="completed","the command's end");
+  const rows=rowsOf(seen,"report-check");
+  // The row says it runs past the report's turn before that turn ends, and its end says so too, to settle it in the report's card.
+  const shape=list=>list.map(row=>[row.status,row.runsPastTurn===true]);
+  assert.deepEqual({beforeReportEnd:shape(rowsOf(seen.slice(0,atReportEnd),"report-check")),all:shape(rows)},{beforeReportEnd:[["in_progress",false],["in_progress",true]],all:[["in_progress",false],["in_progress",true],["completed",true]]});
+  assert.ok(seen.filter(entry=>entry.update.toolCallId==="report-check").every(entry=>entry.turnKey===REPORT),"every row of it names the report's turn");
+  // In the window: the report's end leaves the row running, and the end comes as a row of a turn that ended, for that turn's card.
+  const shown=activityRow(mapped(rows[1]),{turnId:REPORT});
+  assert.deepEqual([settledRow(shown,{keepPast:true}).status,mapped(rows[2]).runsPastTurn],["running",true]);
+  fixture.muse.notify("turn/completed",{sessionId:sid,viewCursor:"v",terminal:"completed",turnId:REPORT});
+  fixture.muse.notify("turn/completed",{sessionId:sid,viewCursor:"v",terminal:"completed",turnId:start.commandId});
+  assert.equal((await settlesWithin(message,5000,"the message's turn")).stopReason,"end_turn");
   await session.close();
 });
