@@ -47,7 +47,8 @@
 //   "spawn subagent"    keeps a todo list and runs a subagent (role "hello agent"), whose child session replies on its own turn, and
 //                       whose result is ready MUSE_FAKE_SUBAGENT_MS (200) ms later; two model steps report their tokens
 //   "run workflow"      launches the ping-pong workflow and completes the turn while it runs; its agents ping and pong run
-//                       MUSE_FAKE_WORKFLOW_MS (300) ms apart, pong failing on its budget, and MUSE_FAKE_REPORT_DELAY_MS (0) ms after
+//                       MUSE_FAKE_WORKFLOW_MS (300) ms apart, pong failing on its budget, and going on past ping's scheduling only
+//                       once the file MUSE_FAKE_WORKFLOW_HOLD names is there, when it names one; MUSE_FAKE_REPORT_DELAY_MS (0) ms after
 //                       the workflow has completed, or once the file MUSE_FAKE_REPORT_START_HOLD names is there, Muse starts a report
 //                       turn of its own. With MUSE_FAKE_REPORT_HOLD "1" the report
 //                       holds after its first sentence until a message comes, which Muse queues behind it (ifBusy queue): the report
@@ -147,11 +148,17 @@ function runWorkflow(sessionId,turnId,turn){
   const ping={childId:itemId+"-ping",attempt:1},pong={childId:itemId+"-pong",attempt:1},pingDone={...ping,status:"terminal",terminal:"completed",durationMs:2360};
   const revisions=[[{...ping,status:"scheduled",label:"ping"}],[{...ping,status:"started"}],[{...ping,status:"started"},{...pong,status:"scheduled",label:"pong"}],[pingDone,{...pong,status:"started"}],
     [pingDone,{...pong,status:"terminal",terminal:"completed",failureKind:"budget_exhausted",durationMs:2639}]];
-  revisions.forEach((children,index)=>setTimeout(()=>notify("item/updated",sessionId,{item:workflow(children)}),step*(index+1)));
-  setTimeout(()=>{
-    notify("item/completed",sessionId,{item:workflow(revisions.at(-1),{status:"completed",finalSummary:"{\"status\":\"ok\"}",durationMs:3616,stopAvailable:false})});
-    later(process.env.MUSE_FAKE_REPORT_START_HOLD,Number(process.env.MUSE_FAKE_REPORT_DELAY_MS||0),()=>reportTurn(sessionId,turnId+"-report"));
-  },step*(revisions.length+1));
+  // Each revision step ms after the one before, the one after ping's scheduling once the hold's file is there.
+  const revise=index=>{
+    if(index===revisions.length){
+      notify("item/completed",sessionId,{item:workflow(revisions.at(-1),{status:"completed",finalSummary:"{\"status\":\"ok\"}",durationMs:3616,stopAvailable:false})});
+      return later(process.env.MUSE_FAKE_REPORT_START_HOLD,Number(process.env.MUSE_FAKE_REPORT_DELAY_MS||0),()=>reportTurn(sessionId,turnId+"-report"));
+    }
+    notify("item/updated",sessionId,{item:workflow(revisions[index])});
+    const next=()=>setTimeout(()=>revise(index+1),step);
+    if(index===0&&process.env.MUSE_FAKE_WORKFLOW_HOLD)later(process.env.MUSE_FAKE_WORKFLOW_HOLD,0,next);else next();
+  };
+  setTimeout(()=>revise(0),step);
 }
 // A command Muse sends to the background: the call's item goes there (background true) and settles, and the command's end comes
 // later as an item of its own that names the call.

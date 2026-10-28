@@ -593,12 +593,12 @@ export class MuseAgentSession{
   // went. joined: Muse's turns this one took in (its report turn, a turn Muse started meanwhile), endedJoined the ones of those that
   // ended. usage: the token counts of its model steps; joinedUsage what turn/completed added up for the turns it took in, past what
   // a report it took over had already counted (recorded). rows: what each subagent's and workflow's row last showed; labels: workflow
-  // agents' labels.
+  // agents' labels; followed: the items of work followed past the turn (observed), whose rows say so to their end (runsPastTurn).
   #newTurn(turnId,{wake=false}={}){
     let settle,fail,admit;
     const done=new Promise((resolve,reject)=>{settle=resolve;fail=reject});
     const admitted=new Promise(resolve=>{admit=resolve});
-    const turn={turnId,wake,successor:false,prompted:false,joined:new Set(),endedJoined:new Set(),usage:{steps:0,reported:false,input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0},joinedUsage:null,recorded:new Map(),rows:new Map(),labels:new Map(),
+    const turn={turnId,wake,successor:false,prompted:false,joined:new Set(),endedJoined:new Set(),usage:{steps:0,reported:false,input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0},joinedUsage:null,recorded:new Map(),rows:new Map(),labels:new Map(),followed:new Set(),
       stopRequested:false,settled:false,items:new Map(),sent:new Map(),tools:new Set(),lastMessage:null,done,admitted,admit};
     turn.settle=value=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,value?.stopReason==="cancelled"?"cancelled":"completed");settle(value)};
     turn.fail=error=>{if(turn.settled)return;turn.settled=true;this.#endTurn(turn,"failed");fail(error)};
@@ -1051,17 +1051,21 @@ export class MuseAgentSession{
     if(item.kind==="agentMessage")return this.#stream(turn,item,"agent_message_chunk",text(item.text));
     // A reasoning item's summary parts, or the provider's own reasoning text where it sends that instead.
     if(item.kind==="reasoning")return this.#stream(turn,item,"agent_thought_chunk",(Array.isArray(item.summary)?item.summary:[]).map(text).filter(Boolean).join("\n\n")||text(item.text));
-    this.#row(turn,museToolUpdate(item),{work:WORK_KINDS.has(item.kind)});
+    // Work followed past its turn (observed), a workflow's agents with it, says so on each of its rows to the one that settles it
+    // (runsPastTurn): its turn's end leaves the row as it is in the window, for the work's own later rows to settle.
+    if(this.observed.get(item.itemId)===turn)turn.followed.add(item.itemId);
+    const past=turn.followed.has(item.itemId);
+    this.#row(turn,museToolUpdate(item),{work:WORK_KINDS.has(item.kind),past});
     // A workflow's agents follow its own row (T3 publishWorkflowAgents).
-    if(item.kind==="workflow")for(const update of museWorkflowAgentUpdates(item,turn.labels))this.#row(turn,update,{work:true});
+    if(item.kind==="workflow")for(const update of museWorkflowAgentUpdates(item,turn.labels))this.#row(turn,update,{work:true,past});
   }
   // One row's update: tool_call the first time, tool_call_update after. A subagent's or a workflow's goes only when it shows something
   // new, as Muse re-sends them whole on each change, and one that settled keeps the end it had (T3 keeps each one's first end time).
-  #row(turn,update,{work=false}={}){
+  #row(turn,update,{work=false,past=false}={}){
     const frame=acpToolFrame(update),id=frame.toolCallId;
     if(work){const shown=JSON.stringify([frame.status,frame.title,frame.rawOutput]);if(turn.rows.get(id)===shown)return;turn.rows.set(id,shown)}
     const first=!turn.tools.has(id);turn.tools.add(id);
-    this.#emit(turn,{...frame,sessionUpdate:first?"tool_call":"tool_call_update"});
+    this.#emit(turn,{...frame,sessionUpdate:first?"tool_call":"tool_call_update",...(past?{runsPastTurn:true}:{})});
   }
   // A turn's updates name it (turnKey): the relay keeps a row of a turn that ended in that turn, not in the thread's last one.
   #emit(turn,update){this.onUpdate?.({sessionId:this.sessionId,turnKey:turn.turnId,update})}

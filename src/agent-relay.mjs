@@ -220,7 +220,9 @@ export async function contextualAgentPrompt(input=[],additionalContext={},{parts
 const acpEntries=list=>(Array.isArray(list)?list:[]).filter(entry=>entry&&typeof entry==="object"&&!Array.isArray(entry));
 function acpToolItem(update){
   const id=String(update.toolCallId||randomUUID()),locations=acpEntries(update.locations);
-  const status=update.status==="completed"?"completed":update.status==="failed"?"failed":"inProgress";
+  // A call ACP calls pending has not started yet (its input still streams, it waits on its approval, or a Muse Code workflow's agent is
+  // only scheduled): its row reads pending, as a plan's step that has not started does, and ends with its turn as a running one does.
+  const status=update.status==="completed"?"completed":update.status==="failed"?"failed":update.status==="pending"?"pending":"inProgress";
   if(update.namespace)return {type:"dynamicToolCall",id,namespace:String(update.namespace),tool:String(update.tool||update.title||update.kind||"tool"),arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations,rawOutput:update.rawOutput};
   // ACP sessions merge each tool update into the tool's last state and normalize its output (acp-tool-state.mjs): aggregatedOutput and
   // exitCode for commands, changes with paths and text for diffs.
@@ -235,6 +237,9 @@ function acpToolItem(update){
 
 export function agentToolLifecycle(update,previousOutput=""){
   const item=acpToolItem(update);
+  // Work its harness follows past the end of the turn that started it (a Muse Code workflow, subagent or command in the background)
+  // says so on its item: the window keeps its row as it is when that turn ends, for the work's own later updates to settle.
+  if(update.runsPastTurn===true)item.runsPastTurn=true;
   const terminal=item.status==="completed"||item.status==="failed";
   let output="",outputDelta="";
   if(item.type==="commandExecution"&&typeof item.aggregatedOutput==="string"){

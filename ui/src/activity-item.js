@@ -46,10 +46,13 @@ export function activityRow(item={},{turnId=null}={}){
 }
 
 // A step of a turn that has ended is not running any more: a harness that sends no status, a subtask stored as it started and
-// a tool cut off by a stop all read done, as the live card marks them when the turn completes. Its title stays: a compaction still
-// running when its turn ended (stopped, or failed) did not compact, so only one the thread's history stores (storedRow) reads so.
-export function settledRow(row){
-  return row?.status==="running"?{...row,status:"done"}:row;
+// a tool cut off by a stop all read done, as the live card marks them when the turn completes, and so does a harness's call that
+// never started (pending; a plan's pending steps are no items and stay). Its title stays: a compaction still running when its turn
+// ended (stopped, or failed) did not compact, so only one the thread's history stores (storedRow) reads so. keepPast: the live
+// window's turn end, which leaves a step of work that runs on past its turn (its item says runsPastTurn) for that work's own events.
+export function settledRow(row,{keepPast=false}={}){
+  if(keepPast&&row?.raw?.runsPastTurn)return row;
+  return row?.status==="running"||row?.fromItem&&row.status==="pending"?{...row,status:"done"}:row;
 }
 // A stored step of a turn that has ended, read from the thread's history. Codex stores a compaction's item, with no status, only
 // once the compaction is done, so it reads as compacted.

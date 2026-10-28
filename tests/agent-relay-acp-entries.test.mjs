@@ -19,8 +19,8 @@ test("a plan or a tool update with one entry that is not an object leaves that e
     const {item}=agentToolLifecycle({toolCallId:"delete-1",title:"Delete old-notes.txt",kind:"delete",status:"completed",locations});
     assert.deepEqual({type:item.type,namespace:item.namespace,tool:item.tool,status:item.status,locations:item.locations},{type:"dynamicToolCall",namespace:"agent",tool:"Delete old-notes.txt",status:"completed",locations:[]});
   }
-  // Well-formed updates map as before, a file change that names no file yet among them.
+  // Well-formed updates map as before, a file change that names no file yet among them (pending, as ACP says it has not started).
   assert.deepEqual(acpPlanEvent({sessionUpdate:"plan",entries:[{content:"A",status:"completed"}]}).plan,[{step:"A",status:"completed",priority:null}]);
   assert.deepEqual(agentToolLifecycle({toolCallId:"edit-2",kind:"edit",status:"completed",locations:[{path:"a.txt"}]}).item.changes,[{path:"a.txt",kind:"edit"}]);
-  for(const locations of [undefined,[]])assert.deepEqual(agentToolLifecycle({toolCallId:"edit-3",title:"Edit",kind:"edit",status:"pending",locations}).item,{type:"fileChange",id:"edit-3",status:"inProgress",changes:[],rawInput:undefined,rawOutput:undefined});
+  for(const locations of [undefined,[]])assert.deepEqual(agentToolLifecycle({toolCallId:"edit-3",title:"Edit",kind:"edit",status:"pending",locations}).item,{type:"fileChange",id:"edit-3",status:"pending",changes:[],rawInput:undefined,rawOutput:undefined});
 });

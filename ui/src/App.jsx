@@ -451,6 +451,8 @@ const WORKTREE_CARD_ERRORS=new WeakSet();
 // A send Stop ended before its turn existed (startTurn marks the error trebellSendStopped): its draft goes back with no note.
 const sendStoppedError=()=>Object.assign(new Error("Stopped before the turn started."),{trebellSendStopped:true});
 function upsertEvent(events,event){return events.some(item=>item.id===event.id)?events.map(item=>item.id===event.id?{...item,...event}:item):[...events,event]}
+// Whether the live card still lists a turn's steps: the turn that ended last, until the next one starts or a message is sent.
+const showsTurn=(events,turnId)=>events.some(event=>event.fromItem&&event.turnId===turnId);
 // What became of a thread's own Codex app-server that died, as the server noted it (trebellAppServerExit).
 function appServerExitText(exit){
   const how=exit?.signal?"was stopped by "+exit.signal:Number.isInteger(exit?.code)?"exited with code "+exit.code:"exited";
@@ -1441,6 +1443,20 @@ export default function App(){
     if(phase==="started")entry.rows.delete(id);
     entry.rows.set(id,next);
   }
+  // A step of a turn that ended, of work that runs on past it (its item says runsPastTurn: a Muse Code workflow, its agents, a
+  // subagent, a command in the background), changes on that turn's own card as it comes, where it stands or after the card's steps,
+  // never on the live card of a later turn (showsTurn). True when it did; a turn the live card follows keeps its steps there. A turn
+  // whose steps the window has not loaded is not called whole for it.
+  function trackPastTurnRow(threadId,turnId,row,options){
+    const owner=String(threadId||activeThreadRef.current?.id||""),key=turnInfoKey(owner,turnId),id=String(turnId);
+    if(!row.raw?.runsPastTurn||!key||key===liveTurnKeyRef.current||liveItemRowsRef.current.has(key))return false;
+    setTurnActivity(prev=>{
+      if(prev.threadId!==owner)return prev;
+      const known=prev.turns[id],rows=known?.rows||[],at=rows.findIndex(item=>String(item.id)===String(row.id)),next=restoredRow(mergeLiveRow(rows[at]||null,row,options));
+      return mergeTurnActivity(prev,{[id]:at<0?[...rows,next]:rows.map((item,index)=>index===at?next:item)},{mode:"replace",complete:Boolean(known?.complete)});
+    });
+    return true;
+  }
   function keepLiveExtra(threadId,turnId,id,value){
     const key=turnInfoKey(threadId,turnId),extras=liveExtrasRef.current;if(key)extras.set(key,(extras.get(key)||new Map()).set(id,value));
   }
@@ -1487,11 +1503,11 @@ export default function App(){
   }
   // A turn that ended, or that the live card left for another, keeps its steps as its own card: its live rows, settled and bounded,
   // after any older ones history pages stored meanwhile. A turn whose history is not all loaded (running when the thread opened,
-  // cut by the first page) stays incomplete.
+  // cut by the first page) stays incomplete. A step of work that runs on past the turn keeps running there (trackPastTurnRow).
   function sealLiveTurn(threadId,turnId){
     const owner=threadId||activeThreadRef.current?.id,key=turnInfoKey(owner,turnId),entry=liveItemRowsRef.current.get(key);if(!entry)return;
     liveItemRowsRef.current.delete(key);
-    const id=String(turnId),sealed=[...entry.rows.values()].map(row=>restoredRow(settledRow(row))),sealedIds=new Set(sealed.map(row=>String(row.id)));
+    const id=String(turnId),sealed=[...entry.rows.values()].map(row=>restoredRow(settledRow(row,{keepPast:true}))),sealedIds=new Set(sealed.map(row=>String(row.id)));
     setTurnActivity(prev=>{
       if(prev.threadId!==entry.threadId)return prev;
       const known=prev.turns[id],older=(known?.rows||[]).filter(row=>!sealedIds.has(String(row.id)));
@@ -3284,7 +3300,8 @@ export default function App(){
       settleRetry(threadId,completedTurnId,outcomeStatus==="completed"||!outcomeStatus?"recovered":"stopped",isCurrent);
       if(isCurrent){
         sealLiveTurn(threadId,completedTurnId);if(liveTurnKeyRef.current===turnInfoKey(threadId||activeThreadRef.current?.id,completedTurnId))liveTurnKeyRef.current=null;
-        setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>e.status==="running"?{...e,status:"done"}:e);return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{},turnId:completedTurnId?String(completedTurnId):null}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
+        // Its steps still running or pending end with it, done, but for those of work that runs on past it (settledRow's keepPast).
+        setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>settledRow(e,{keepPast:true}));return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{},turnId:completedTurnId?String(completedTurnId):null}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
         if(codexFailure)desktopNotify("Trebell Code error",codexFailure.message);else if(!codexGoalContinues)desktopNotify("Trebell Code finished",titleOf(activeThreadRef.current)+" is ready for review.");
       }else if(threadId&&backgroundThreadsRef.current.has(threadId)){
         backgroundThreadsRef.current.delete(threadId);loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Background task completed, but the thread list could not refresh"));const thread=threads.find(item=>item.id===threadId);desktopNotify("Background task finished",(thread?titleOf(thread):"A background Trebell task")+" is ready for review.");
@@ -3296,8 +3313,9 @@ export default function App(){
       const item=activityRow(p.item,{turnId:p.turnId});
       const isActivityItem=!["userMessage","agentMessage","sessionHandoff"].includes(p.item.type);
       if(isActivityItem)updateThreadTelemetry(threadId,{currentActivity:{id:item.id,kind:item.kind,title:item.title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
-      if(isCurrent&&isActivityItem)setEvents(prev=>takeCompactionPlace(prev,item,threadId)||[...prev.filter(e=>e.id!==item.id),item]);
-      if(isCurrent&&isCardItem(p.item))trackLiveRow(threadId,p.turnId,item,{phase:"started"});
+      const past=isCurrent&&isCardItem(p.item)&&trackPastTurnRow(threadId,p.turnId,item,{phase:"started"});
+      if(isCurrent&&isActivityItem)setEvents(prev=>past&&!showsTurn(prev,item.turnId)?prev:takeCompactionPlace(prev,item,threadId)||[...prev.filter(e=>e.id!==item.id),item]);
+      if(isCurrent&&isCardItem(p.item)&&!past)trackLiveRow(threadId,p.turnId,item,{phase:"started"});
     }
     // A harness tool that is still running can name itself better as it goes (an ACP tool call first reports its bare tool
     // name, then its kind and command); the row follows it in place.
@@ -3306,14 +3324,15 @@ export default function App(){
       const item=activityRow(p.item,{turnId:p.turnId});
       const activity=threadTelemetryRef.current[threadId]?.currentActivity;
       if(activity?.id===item.id&&(activity.title!==item.title||activity.kind!==item.kind))updateThreadTelemetry(threadId,{currentActivity:{...activity,kind:item.kind,title:item.title}});
+      const past=isCurrent&&isCardItem(p.item)&&trackPastTurnRow(threadId,p.turnId,item,{phase:"progress"});
       if(isCurrent)setEvents(prev=>{
         const index=prev.findIndex(e=>e.id===item.id);
-        if(index<0)return [...prev,item];
+        if(index<0)return past&&!showsTurn(prev,item.turnId)?prev:[...prev,item];
         const old=prev[index],merged=mergeLiveRow(old,item,{phase:"progress"});
         if(merged===old)return prev;
         const next=prev.slice();next[index]=merged;return next;
       });
-      if(isCurrent&&isCardItem(p.item))trackLiveRow(threadId,p.turnId,item,{phase:"progress"});
+      if(isCurrent&&isCardItem(p.item)&&!past)trackLiveRow(threadId,p.turnId,item,{phase:"progress"});
       // A running command's progress (the agent relay's ACP steps) carries its whole output so far, after the delta it adds: that
       // replaces what streamed, which lacks what came before the thread was shown again, so the open step shows all of it as it goes.
       const full=p.item.type==="commandExecution"&&typeof p.item.aggregatedOutput==="string"?p.item.aggregatedOutput:"";
@@ -3354,11 +3373,13 @@ export default function App(){
         // A finished thought leaves the live activity for the conversation, where a reopened thread shows it too.
         if(p.item.type==="reasoning"){const thought=reasoningHistoryMessage(p.item,p.turnId,streamedCommandOutput);setEvents(prev=>prev.filter(e=>e.id!==item.id));if(thought)setMessages(prev=>prev.some(m=>m.id===thought.id)?prev:[...prev,thought])}
         else if(isActivityItem){
+          const past=isCardItem(p.item)&&trackPastTurnRow(threadId,p.turnId,item,{phase:"completed",streamed:streamedCommandOutput});
           setEvents(prev=>{
             if(prev.some(e=>e.id===item.id))return prev.map(e=>e.id===item.id?mergeLiveRow(e,item,{phase:"completed",streamed:streamedCommandOutput}):e);
+            if(past&&!showsTurn(prev,item.turnId))return prev;
             const row=mergeLiveRow(null,item,{phase:"completed",streamed:streamedCommandOutput});return takeCompactionPlace(prev,row,threadId)||[...prev,row];
           });
-          if(isCardItem(p.item))trackLiveRow(threadId,p.turnId,item,{phase:"completed",streamed:streamedCommandOutput});
+          if(isCardItem(p.item)&&!past)trackLiveRow(threadId,p.turnId,item,{phase:"completed",streamed:streamedCommandOutput});
         }
       }
     }

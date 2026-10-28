@@ -34,15 +34,18 @@ function onlyMuse(launcher){
     child.once("close",code=>{clearTimeout(timer);resolve({ok:code===0,code,error:null,stdout,stderr})});
   });
 }
-// environment: the stand-in's switches, as the Muse Code profile's own variables. The relay has a context engine, so each thread
-// with a project gets Trebell's repository tools, as the app's does.
-async function startMuseHarness({environment={}}={}){
+// environment: the stand-in's switches, as the Muse Code profile's own variables. holds: what the stand-in waits to do until the test
+// has seen what it checks (release). The relay has a context engine, so each thread with a project gets Trebell's repository tools,
+// as the app's does.
+async function startMuseHarness({environment={},holds=[]}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-muse-sessions-")),repo=join(root,"muse-repo"),log=join(root,"muse.log");await mkdir(repo,{recursive:true});
+  const held=Object.fromEntries(holds.map(name=>[name,join(root,`release-${name}`)]));
   const folder=windows?join(root,"AppData","Local","Programs","muse"):join(root,"home",".local","bin");await mkdir(folder,{recursive:true});
   const launcher=join(folder,windows?"muse.cmd":"muse");
   await writeFile(launcher,windows?`@echo off\r\nsetlocal\r\n"${process.execPath}" "${FAKE_MUSE}" %*\r\nexit /b %ERRORLEVEL%\r\n`:`#!/bin/sh\nexec "${process.execPath}" "${FAKE_MUSE}" "$@"\n`);
   if(!windows)await chmod(launcher,0o755);
-  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,mcpServers:[],agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,...environment}}]},meta=new Map();
+  const switches={MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,...environment,...Object.fromEntries(holds.map(name=>[`MUSE_FAKE_${name.toUpperCase()}_HOLD`,held[name]]))};
+  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,mcpServers:[],agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:switches}]},meta=new Map();
   const state={settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
   const env={...process.env,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),CLAUDE_CONFIG_DIR:join(root,"claude"),MUSE_INSTALL_DIR:"",...(windows?{LOCALAPPDATA:join(root,"AppData","Local")}:{HOME:join(root,"home")})};
   const runtimeManager=new AgentRuntimeManager({state,env,runFn:onlyMuse(launcher)}),threadStore=new AgentThreadStore(env);
@@ -51,7 +54,7 @@ async function startMuseHarness({environment={}}={}){
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const frames=async method=>(await readFile(log,"utf8").catch(()=>"")).split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line)).filter(entry=>entry.frame?.method===method).map(entry=>entry.frame);
   return {
-    root,repo,settings,runtimeManager,frames,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,
+    root,repo,settings,runtimeManager,threadStore,frames,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,release:name=>writeFile(held[name],""),
     async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})},
   };
 }
@@ -122,13 +125,24 @@ test("a Muse Code subagent and its todo list show as the running turn's row and 
 
 test("a Muse Code workflow's agents settle in the turn that launched it, and Muse's report on it comes as a turn of its own",async({page})=>{
   test.setTimeout(90_000);
-  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"500"}});
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"500"},holds:["workflow"]});
   try{
     await routeMuseApp(page,harness);
     await page.setViewportSize({width:1280,height:800});
     await page.goto("/");
     await send(page,"Please run workflow ping-pong");
     await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    // The turn has ended and the workflow runs on, held after its first agent's scheduling: the workflow's row still runs, and that
+    // agent, scheduled after the turn ended, comes in pending on the ended turn's card (the live card until another turn starts).
+    // Soft, so that the old code also shows what each of the two rows says.
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
+    const live=page.locator(".agent-block .activity-card");
+    await expect(row(live,"Workflow ping-pong")).toHaveCount(2,{timeout:20_000});
+    await expect.soft(row(live,/^Workflow ping-pong$/),"the workflow, past the end of its turn").toHaveClass(/status-running/);
+    await expect.soft(row(live,/^Workflow ping-pong · ping$/),"its agent, scheduled after the turn ended").toHaveClass(/status-pending/);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await live.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-runs-on-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    await harness.release("workflow");
     // Muse reports once the workflow is done, in a turn with no message of the person's.
     await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
     await expect(page.locator(".user-row")).toHaveCount(1);
@@ -141,6 +155,44 @@ test("a Muse Code workflow's agents settle in the turn that launched it, and Mus
     // The report turn has no steps of the workflow's.
     await expect(page.locator(".activity-card").filter({hasText:"Workflow ping-pong"})).toHaveCount(1);
     for(const mode of ["dark","light"]){await switchMode(page,mode);await launched.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-report-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
+
+test("a Muse Code workflow goes on in the card of the turn that launched it while the person's next message runs and after it ended, its agents coming and settling there and never on that message's card",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"300"},holds:["workflow","report_start"]});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Please run workflow ping-pong");
+    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    await expect(row(page.locator(".agent-block .activity-card"),"Workflow ping-pong")).toHaveCount(2,{timeout:20_000});
+    // The next message's turn takes the live card; the launching turn's own card has the workflow as it is, still running. Soft, so
+    // that the old code also shows what that card and the live card say at each step.
+    await send(page,"Hello Muse");
+    await expect(reply(page,"Muse fixture reply")).toBeVisible({timeout:20_000});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
+    const [thread]=harness.threadStore.list(),launchedId=harness.threadStore.get(thread.id).turns[0].id;
+    const launched=page.locator(`.turn-card[data-turn-id="${launchedId}"] [data-testid=activity-card]`);
+    if(await launched.getAttribute("data-state")!=="open")await launched.locator(".activity-card-head").click();
+    await expect.soft(row(launched,/^Workflow ping-pong$/),"the workflow on its turn's card").toHaveClass(/status-running/);
+    await expect.soft(row(launched,/^Workflow ping-pong · ping$/),"its agent on its turn's card").toHaveClass(/status-pending/);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await launched.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-past-next-turn-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    // The workflow goes on with no turn running: its agents start, pong comes and fails on its budget, and the workflow ends, each on
+    // the launching turn's card, before Muse starts its report; the live card, the next message's, lists none of it.
+    await harness.release("workflow");
+    await expect.soft(row(launched,"Workflow ping-pong · pong"),"the agent that came after the next turn, on the launching turn's card").toHaveClass(/status-error/,{timeout:20_000});
+    await expect.soft(row(launched,/^Workflow ping-pong · ping$/)).toHaveClass(/status-done/);
+    await expect.soft(row(launched,/^Workflow ping-pong$/)).toHaveClass(/status-done/);
+    await expect.soft(page.locator(".agent-block").filter({hasText:"Workflow ping-pong"}),"none of it on the next message's card").toHaveCount(0);
+    await expect.soft(page.locator(".activity-card").filter({hasText:"Workflow ping-pong"})).toHaveCount(1);
+    await harness.release("report_start");
+    await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
+    await expect(page.locator(".activity-card").filter({hasText:"Workflow ping-pong"})).toHaveCount(1);
+    await expect(row(launched,"Workflow ping-pong")).toHaveCount(3);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await launched.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-workflow-settled-past-turns-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });
 
