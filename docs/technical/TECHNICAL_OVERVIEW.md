@@ -57,7 +57,7 @@ flowchart LR
     NATIVE["Trebell Native"]
     CODEX["Codex app-server"]
     EXTERNAL["Claude Code · OpenCode · Cursor · Grok Build · Antigravity · Muse Code"]
-    PROVIDERS["OpenAI · Anthropic · Gemini · AgentRouter · JustWorker · HCNSec · VyceAi"]
+    PROVIDERS["OpenAI · Anthropic · Gemini · xAI · Meta · AgentRouter · JustWorker · HCNSec · VyceAi"]
     MCP["MCP servers"]
     BROWSER["Agent Browser / desktop verification"]
 
@@ -124,7 +124,7 @@ Current integrations:
 
 Every provider requires an API key, so Trebell Native needs one before its first turn. Add it in **Settings → Agents & models**; keys are stored through Trebell's secret handling path. A key saved in Settings takes precedence over the provider's environment variable (for example `OPENAI_API_KEY`).
 
-xAI and the Meta Model API are called on their Responses APIs without server-side state: each request carries the whole conversation with `store: false`, asks for `reasoning.encrypted_content` and sends back the reasoning the current turn's replies returned, which both providers document for keeping a model's reasoning across tool calls. A model that refuses `include` gets the request again without it, and its later requests leave it out.
+xAI and the Meta Model API are called on their Responses APIs without server-side state: each request carries the whole conversation with `store: false`, asks for `reasoning.encrypted_content` and sends back the reasoning the current turn's replies returned, which both providers document for keeping a model's reasoning across tool calls. A model that refuses `include` gets the request again without it, and its later requests leave it out. Their replies come back whole (`stream: false`), as for every provider but OpenAI, until a live check shows their streamed replies match (`src/native-reply-streaming.mjs`); Meta documents a server-side time limit for unstreamed requests (HTTP 504 `gateway_timeout`), which a live check of a long turn should measure.
 
 `ProviderManager.keyFor(provider)` is the one way the server reads a provider's key for a consumer other than Native's own calls (a harness the person put on API key): the key saved in Settings, else the environment variable Native reads for that provider, through the same code; an id that is not a model provider is refused.
 

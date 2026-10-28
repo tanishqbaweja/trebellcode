@@ -59,6 +59,8 @@ Providers:
 - [ ] OpenAI API
 - [ ] Anthropic API
 - [ ] Google Gemini API
+- [ ] xAI API (a Grok model with a Thinking level from its list; a turn that needs several tool calls, so its encrypted reasoning goes back each call)
+- [ ] Meta Model API (Muse Spark 1.3 at Max and Muse Wonder; a long turn, to see whether its unstreamed request outlasts Meta's server-side time limit)
 - [ ] AgentRouter
 - [ ] JustWorker.icu
 - [ ] HCNSec.cn

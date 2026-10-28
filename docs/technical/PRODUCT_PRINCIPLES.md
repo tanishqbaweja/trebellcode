@@ -329,7 +329,7 @@ It must reuse the same platform services external runtimes use.
 
 Trebell Native is also the **direct-API harness**. Its model transport may be:
 
-- an official model API such as OpenAI, Anthropic or Google Gemini,
+- an official model API such as OpenAI, Anthropic, Google Gemini, xAI or the Meta Model API,
 - a third-party provider such as AgentRouter, VyceAi, JustWorker or HCNSec,
 - or another compatible transport added later.
 
