@@ -29,6 +29,17 @@ export function documentTextPath(path,{home,info}){
   return join(folder,`${key}-${basename(file).replace(/[^a-zA-Z0-9._-]/g,"_").slice(-100)}.txt`);
 }
 
+// The file the text of the document at path was extracted to, or null while it has none: nothing is extracted here. A message's
+// prompt names it this way, as T3's prompt builders look for it (resolveExtractedTextPath): attaching the file and the check of a
+// message about to go extract it (ensureDocumentText, T3's claim of a message's attachments), so a send extracts at most once.
+export async function extractedDocumentText(path,{home=null}={}){
+  if(!home||!isDocumentTextPath(path))return null;
+  const file=resolve(String(path)),info=await stat(file).catch(()=>null);
+  if(!info?.isFile())return null;
+  const sidecar=documentTextPath(file,{home,info});
+  return await isFile(sidecar)?sidecar:null;
+}
+
 // The text extracted from the document at path, or null: a file that is no document, a document over 16 MB or one the worker
 // refused gets none, and the person's file is never changed. A failure of the system's is tried again a second later, as T3 does.
 // home: Trebell's home, whose attachments folder keeps the text. worker and env are the process's, for tests.

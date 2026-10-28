@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { antigravityPromptParts } from "../src/acp-agent-session.mjs";
 import { contextualAgentPrompt } from "../src/agent-relay.mjs";
 import { claudeUserContent } from "../src/claude-agent-session.mjs";
+import { ensureDocumentText } from "../src/document-text.mjs";
 import { fileUri } from "../src/file-uri.mjs";
 import { museInputParts } from "../src/muse-agent-session.mjs";
 import { OpenCodeAgentSession } from "../src/opencode-agent-session.mjs";
@@ -39,13 +40,16 @@ async function attachments(home,root){
   return {report,broken,notes,own};
 }
 const mention=path=>({type:"mention",name:basename(path),path});
+// The message's files on this machine had their text extracted as the composer took them in and checked them before the send
+// (/api/attachments/import and /validate); a remote environment's were copied to its host.
 async function relayParts(t,{remote=false}={}){
-  const root=await folder(t),home=join(root,"home"),files=await attachments(home,root);
-  const parts=await contextualAgentPrompt([{type:"text",text:"Summarize the report"},...[files.report,files.own,files.broken,files.notes].map(mention)],{},{home,remote});
+  const root=await folder(t),home=join(root,"home"),files=await attachments(home,root),paths=[files.report,files.own,files.broken,files.notes];
+  if(!remote)for(const path of paths)await ensureDocumentText(path,{home});
+  const parts=await contextualAgentPrompt([{type:"text",text:"Summarize the report"},...paths.map(mention)],{},{home,remote});
   return {root,home,files,parts};
 }
 
-test("the relay keeps each attached document's extracted text on its link, extracting it now if its attaching did not, and none for another file or a remote environment's",async t=>{
+test("the relay keeps each attached document's extracted text on its link, and none for another file or a remote environment's",async t=>{
   const {home,files,parts}=await relayParts(t);
   const [,report,own,broken,notes]=parts;
   assert.equal(report[TEXT_PATH],files.report+".txt","an upload's text beside it");
@@ -106,6 +110,8 @@ const GROK={initialize:{protocolVersion:1,agentCapabilities:{loadSession:true,se
 async function acpTurn(t,kind,config){
   const fx=await scriptedAcp(t,config),dir=join(fx.root,"home","attachments"),report=join(dir,"1761500000000-ab12cd34-report.docx"),broken=join(dir,"1761500000000-cd34ef56-broken.docx");
   await mkdir(dir,{recursive:true});await copyFile(join(FIXTURES,"report.docx"),report);await writeFile(broken,"invalid document");
+  // As the composer takes them in and checks them before the send.
+  for(const path of [report,broken])await ensureDocumentText(path,{home:join(fx.root,"home")});
   const {rpc,next}=await acpRelay(t,kind,fx);
   const started=await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"}),completed=next(message=>message.method==="turn/completed");
   await rpc("turn/start",{threadId:started.thread.id,input:[{type:"text",text:"What is the report's first heading?"},mention(report),mention(broken)]});

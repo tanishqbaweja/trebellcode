@@ -13,7 +13,7 @@ import { runtimeHarnessLabel } from "./runtime-instructions.mjs";
 import { OpenCodeAgentSession, remapOpenCodeTurns } from "./opencode-agent-session.mjs";
 import { OpenCode2AgentSession } from "./opencode2-agent-session.mjs";
 import { remoteEnvironmentImage, unreadableAttachment, withPromptAudioPath, withPromptImagePath, withPromptTextPath } from "./prompt-attachments.mjs";
-import { ensureDocumentText } from "./document-text.mjs";
+import { extractedDocumentText } from "./document-text.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { MuseAgentSession } from "./muse-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
@@ -194,10 +194,12 @@ async function acpPrompt(input=[],{remote=false,home=null}={}){
       // OpenCode 2 reads an attached image from its saved file, which the part keeps out of what the other harnesses are sent.
       out.push(withPromptImagePath({type:"image",mimeType:mime,data:data.toString("base64")},item.path));
     }else if(item?.type==="mention"){
-      // A Word, Excel or other document's link keeps the file its text was extracted to, extracted now if its attaching did not, for
-      // each harness to name with it (T3 claims a message's attachments the same way). A remote environment's file is on its host.
+      // A Word, Excel or other document's link keeps the file its text was extracted to, for each harness to name with it. Attaching
+      // the file and the composer's check of the message before it goes extract it (T3 claims a message's attachments the same way),
+      // so the relay only looks for that text, as T3's prompt builders do, and the turn never waits on a second extraction (Trebell
+      // Native's prompt names none). A remote environment's file is on its host.
       const link={type:"resource_link",uri:fileUri(item.path),name:String(item.name||item.path||"file")};
-      out.push(remote?link:withPromptTextPath(link,await ensureDocumentText(item.path,{home})));
+      out.push(remote?link:withPromptTextPath(link,await extractedDocumentText(item.path,{home})));
     }else if(item?.type==="localAudio"){
       // Audio is named by its saved path, as T3 Code names every attachment it does not send as content, and the harness opens it
       // with its own tools. The line keeps the file for Antigravity's session, which adds the audio after it when Antigravity takes audio.

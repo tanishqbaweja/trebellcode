@@ -3239,7 +3239,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         const safe=safeAttachmentName(body.name,"attachment.bin");
         const path=join(dir,`${Date.now()}-${randomUUID().slice(0,8)}-${safe}`);
         await writeFile(path,data);
-        return json(res,200,await withDocumentText({path,name:basename(path),size:data.length,mime}));
+        // A document's text is extracted once the composer takes the upload in (/api/attachments/import, next), which knows the
+        // environment: a thread in a remote environment gets a copy on its host, where no text of this machine's is named.
+        return json(res,200,{path,name:basename(path),size:data.length,mime});
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/attachments/import"&&req.method==="POST"){

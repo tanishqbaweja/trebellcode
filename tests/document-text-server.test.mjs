@@ -1,6 +1,7 @@
-// The GUI server extracts an attached document's text as the document is uploaded or attached from the person's folders, and answers
-// with the file it went to (textPath): beside an upload in Trebell's attachments folder, and never beside the person's own file. The
-// check a message's files get before it goes answers each document's text too, which the composer names in a Codex message.
+// The GUI server extracts an attached document's text as the composer takes the document in (an upload, or a file attached from the
+// person's folders, /api/attachments/import), and answers with the file it went to (textPath): beside an upload in Trebell's
+// attachments folder, and never beside the person's own file. The check a message's files get before it goes answers each document's
+// text too, which the composer names in a Codex message.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
@@ -24,12 +25,14 @@ test("an uploaded, imported or checked document answers with the file its text w
   t.after(async()=>{await gui.close();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})});
   const post=async(path,body)=>{const response=await fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});assert.equal(response.status,200,path);return response.json()};
 
-  const report=await post("/api/attachments/blob",{name:"report.docx",mime:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",dataBase64:(await readFile(join(FIXTURES,"report.docx"))).toString("base64")});
+  // An upload, taken in as the composer takes every upload in.
+  const upload=async(name,mime,bytes)=>{const saved=await post("/api/attachments/blob",{name,mime,dataBase64:Buffer.from(bytes).toString("base64")});const {files:[taken]}=await post("/api/attachments/import",{paths:[saved.path]});return taken};
+  const report=await upload("report.docx","application/vnd.openxmlformats-officedocument.wordprocessingml.document",await readFile(join(FIXTURES,"report.docx")));
   assert.equal(report.textPath,report.path+".txt","an upload's text goes beside it");
   assert.match(await readFile(report.textPath,"utf8"),/^# Quarterly Harbor Report\n/);
-  const broken=await post("/api/attachments/blob",{name:"broken.docx",mime:"application/octet-stream",dataBase64:Buffer.from("invalid document").toString("base64")});
+  const broken=await upload("broken.docx","application/octet-stream","invalid document");
   assert.equal(broken.textPath,undefined,"a corrupt document has none");
-  const shot=await post("/api/attachments/blob",{name:"shot.png",mime:"image/png",dataBase64:Buffer.from([137,80,78,71]).toString("base64")});
+  const shot=await upload("shot.png","image/png",Buffer.from([137,80,78,71]));
   assert.equal(shot.textPath,undefined);
 
   const {files:[imported]}=await post("/api/attachments/import",{paths:[own]});
@@ -37,8 +40,8 @@ test("an uploaded, imported or checked document answers with the file its text w
   assert.equal(join(imported.textPath,".."),join(home,"attachments"),"its text is kept in Trebell's attachments folder");
   assert.match(await readFile(imported.textPath,"utf8"),/^## Sheet: Budget\nItem\tCost\tDue\nLantern\t37/);
   assert.deepEqual(await readdir(projects),["Budget 2027.xlsx"],"nothing is written beside it");
-  const {files:[upload]}=await post("/api/attachments/import",{paths:[report.path]});
-  assert.equal(upload.textPath,report.textPath,"an upload taken in keeps the text beside it");
+  const {files:[again]}=await post("/api/attachments/import",{paths:[report.path]});
+  assert.equal(again.textPath,report.textPath,"an upload taken in again keeps the text beside it");
 
   const checked=await post("/api/attachments/validate",{paths:[report.path,own,broken.path,shot.path]});
   assert.deepEqual(checked.files.map(file=>file.textPath),[report.textPath,imported.textPath,undefined,undefined]);
