@@ -151,6 +151,37 @@ test("text typed on while a Control+Enter fan-out checks its files stays in the 
   }finally{gate.open();await fanout.close()}
 });
 
+// A background send checks its files as it is sent, and its launch checks them again right after, as each launch of a fan-out does
+// after the fan-out's own check: only the send's own check may extract an attached document's text (T3 claims a message's attachments
+// once), and the launches' checks only find it, so no document's text is extracted twice, or once more for each model, as it goes.
+test("a background send's and a fan-out's files are checked as they are sent and again as each task starts, only the send's own check extracting a document's text",async({page})=>{
+  test.setTimeout(100_000);
+  const fanout=await startNativeFanout(page,{models:["model-a","model-b"]}),{threadStore,providerCalls,worktrees}=fanout;
+  // What each check of the composer's files asks of the server: whether it may extract a document's text.
+  const checks=[];await page.route(/\/api\/attachments\/validate$/,async route=>{checks.push(route.request().postDataJSON()?.extract!==false);await route.fallback()});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.locator(".branch-control")).toContainText(fanout.baseBranch,{timeout:10_000});
+    const composer=page.getByTestId("composer"),chips=page.locator(".attachment-shelf > span");
+    const attach=async name=>{const [chooser]=await Promise.all([page.waitForEvent("filechooser"),page.getByRole("button",{name:"Attach files"}).click()]);await chooser.setFiles([{name,mimeType:"text/plain",buffer:Buffer.from("Notes on "+name)}]);await expect(chips).toHaveText([name])};
+    // One model: Control+Enter sends the task to the background.
+    await attach("background-notes.txt");
+    await composer.click();await page.keyboard.type("Look at the background notes",{delay:5});await page.keyboard.press("Control+Enter");
+    await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(1);await expect(chips).toHaveCount(0);
+    // Soft, so that the old code also shows the fan-out's checks.
+    expect.soft(checks,"the background send's checks of its file").toEqual([true,false]);
+    // Two models: Control+Enter sends a fan-out, one task for each.
+    await pickBothModels(page);await attach("fanout-notes.txt");
+    await composer.click();await page.keyboard.type("Look at the fan-out notes",{delay:5});await page.keyboard.press("Control+Enter");
+    await expect.poll(()=>worktrees.length,WORKTREES_MADE).toBe(2);await expect.poll(()=>providerCalls.length,{timeout:15_000}).toBe(3);
+    expect(checks.slice(2),"the fan-out's checks of its file").toEqual([true,false,false]);
+    const sent=sentMessages(threadStore).sort((a,b)=>String(a.text).localeCompare(String(b.text)));
+    expect(sent,"each task, with its file").toEqual([{text:"Look at the background notes",files:[expect.stringMatching(/background-notes\.txt$/)]},...[1,2].map(()=>({text:"Look at the fan-out notes",files:[expect.stringMatching(/fanout-notes\.txt$/)]}))]);
+    await expect(page.locator(".thread-row")).toHaveCount(3);
+    await shootModes(page,"files-checked-once-per-send");
+  }finally{await fanout.close()}
+});
+
 // The fan-out's threads each run on their own model. Opened, one shows that model in its picker, not the composer's pick of several,
 // and a follow-up sent there goes to it: the follow-up went to the first model picked, which the relay then made the thread's model.
 test("a follow-up in a Native fan-out thread goes to that thread's own model, the one its picker shows",async({page})=>{

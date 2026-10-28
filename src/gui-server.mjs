@@ -42,7 +42,7 @@ import { extendConnectAttemptTimeout } from "./connect-attempt-timeout.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
 import { StorageCleanupService } from "./storage-cleanup-service.mjs";
-import { ensureDocumentText } from "./document-text.mjs";
+import { ensureDocumentText, extractedDocumentText } from "./document-text.mjs";
 import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome, resolveCodexHomeLayout } from "./codex-home-layout.mjs";
@@ -603,8 +603,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   // An attachment on this machine as the composer gets it back, with the file a Word, Excel or other document's text was extracted
   // to (textPath, document-text.mjs), which the composer names in a Codex message as the relay names it for every other harness.
   // Trebell Native's prompt names a document itself and no text of it, so nothing is extracted while it is the harness; a message
-  // sent to another harness has its documents extracted as its files are checked before it goes.
-  const withDocumentText=async file=>{const textPath=selectedAgentRuntime==="native"?null:await ensureDocumentText(file.path,{home:trebellHome(env)});return textPath?{...file,textPath}:file};
+  // sent to another harness has its documents extracted as its files are checked before it goes. extract false: only the text a
+  // document has already, for a send's second check of its files, right after the first one extracted it.
+  const withDocumentText=async(file,{extract=true}={})=>{const textPath=selectedAgentRuntime==="native"?null:await (extract?ensureDocumentText:extractedDocumentText)(file.path,{home:trebellHome(env)});return textPath?{...file,textPath}:file};
   const storedActiveEnvironmentId=state.settings().activeEnvironmentId||null;
   if(storedActiveEnvironmentId&&!environments.get(storedActiveEnvironmentId))state.updateSettings({activeEnvironmentId:null});
   function requestedEnvironmentId(value,{fallback=true}={}){
@@ -3261,8 +3262,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         const body=await readJsonBody(req,512*1024);const paths=Array.isArray(body.paths)?body.paths:[];
         const result=await environments.validateAttachments(body.environmentId||null,paths),profile=body.environmentId?environments.get(body.environmentId):null;
         // A message about to go names each document's extracted text, extracted now if its attaching did not (T3 claims a message's
-        // attachments the same way); a remote environment's files are on its host.
-        if(!profile||profile.type==="local")for(const [index,file] of result.files.entries())result.files[index]=await withDocumentText(file);
+        // attachments the same way); a remote environment's files are on its host. A send checks its files twice, and the second
+        // check, which comes right after the first, asks for no extraction (extract: false): a send extracts each document once.
+        if(!profile||profile.type==="local")for(const [index,file] of result.files.entries())result.files[index]=await withDocumentText(file,{extract:body.extract!==false});
         return json(res,200,result);
       }catch(error){return json(res,400,{error:error.message});}
     }

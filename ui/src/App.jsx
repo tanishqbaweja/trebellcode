@@ -4385,7 +4385,8 @@ export default function App(){
   // as the send was made (a recipe, a goal set). The composer's chips as the queue started a follow-up went, a chip cited there
   // meanwhile for the next message among them, and their files stayed on the shelf as plain attachments.
   // inputText: what the harness gets in place of text, which the person's message and its checkpoint keep (a Codex goal's first turn).
-  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false,inputText=null,sentChips=goalResume?[]:contextChips,pressed=terminalPresses()}={}){
+  // checked: the send checked its files a moment ago (dispatchSend, Send now), which extracted their text: this check only finds it.
+  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false,inputText=null,sentChips=goalResume?[]:contextChips,pressed=terminalPresses(),checked=false}={}){
     // The view the send was made from: its composer's hold (send()) and the open count (openThread, newChat). A new task's send keeps
     // that view only while no thread is shown or opening and the hold is still its own (another thread opened, or a new task opened
     // from one, released it); with no hold, while nothing was opened since.
@@ -4393,7 +4394,7 @@ export default function App(){
     const newTaskShown=()=>!activeThreadRef.current&&!openingThreadRef.current&&(sendView?submittingRef.current===sendView:openSeqRef.current===sendOpen);
     assertTurnModel(modelId);
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
-    await validateAttachmentPaths(paths||[]);
+    await validateAttachmentPaths(paths||[],{extract:!checked});
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
     const autoCompaction=thread?await maybeAutoCompactBeforeTurn(thread):{attempted:false,compacted:false,decision:null,error:null};
     // A thread the send creates keeps its turns' cards from its first turn on, as an opened thread does. Trebell's tool catalog comes
@@ -4471,9 +4472,10 @@ export default function App(){
       throw error;
     }
   }
-  async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null,projectless=projectlessMode,focusPaths=null}={}){
+  // checked: the send checked its files a moment ago (a background send, a fan-out), which extracted their text: this check only finds it.
+  async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null,projectless=projectlessMode,focusPaths=null,checked=false}={}){
     assertTurnModel(modelId);
-    await validateAttachmentPaths(paths||[]);if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
+    await validateAttachmentPaths(paths||[],{extract:!checked});if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
     let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");
     // Trebell's tool catalog comes before the worktree, so a task that cannot start for want of it leaves no worktree behind.
     await loadSharedToolCatalog();
@@ -4583,7 +4585,7 @@ export default function App(){
     // Its text left the composer as the send started (dispatchSend), or leaves it once the fan-out has launched (sendInBackground); its
     // files and context leave it now, and what was added meanwhile stays.
     setPromptHistoryIndex(-1);dropSentDraft(draft);setEvents([]);resetAssistantStream();setSection("chat");
-    const launches=fanout.map(modelId=>startDetachedTurn(draft.text,draft.attachments,modelId,{forceWorktree:true,basePath:draft.projectPath,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips)}).then(result=>({ok:true,modelId,result})).catch(error=>({ok:false,modelId,error})));
+    const launches=fanout.map(modelId=>startDetachedTurn(draft.text,draft.attachments,modelId,{forceWorktree:true,basePath:draft.projectPath,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips),checked:true}).then(result=>({ok:true,modelId,result})).catch(error=>({ok:false,modelId,error})));
     // What came of each launch is told once all have answered, by background-send-outcome.js, which loads then: should it not load,
     // the draft of a launch that failed goes back to the composer.
     Promise.all(launches).then(results=>import("./background-send-outcome.js").then(({settleModelFanout})=>settleModelFanout({results,fanout,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),error=>{if(results.some(item=>!item.ok))restoreFailedDraft(draft);showActionError(error,"Could not show how the multi-model run went")}));
@@ -4706,7 +4708,7 @@ export default function App(){
     // alone: its draft and note wait for its own thread (openThread). One that failed before it had a thread puts its draft back
     // beside the composer's. The files and context of one that goes through left the composer with its hold when another view was
     // shown (openThread), so what the composer shown holds was added there and stays, the same workspace file too.
-    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips),{pressed,sentChips:draft.contextChips}).catch(e=>{
+    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips),{pressed,sentChips:draft.contextChips,checked:true}).catch(e=>{
       const alert=!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e))?{kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."}:null;
       if(e?.trebellSendThreadId&&String(openingThreadRef.current||activeThreadRef.current?.id||"")!==e.trebellSendThreadId){turnNotesRef.current.failSend(e.trebellSendThreadId,{draft,alert});return}
       restoreSentDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents(prev=>turnlessCompactionRows(prev,activeThreadRef.current?.id));if(alert)setComposerAlert(alert);
@@ -4739,7 +4741,7 @@ export default function App(){
     setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
     // A launch that fails is told by background-send-outcome.js, which loads then: should it not load, the draft goes back to the
     // composer.
-    startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips)}).catch(error=>import("./background-send-outcome.js").then(({settleFailedBackgroundSend})=>settleFailedBackgroundSend({error,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),()=>{restoreFailedDraft(draft);showActionError(error,"Background task failed")}));
+    startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips),checked:true}).catch(error=>import("./background-send-outcome.js").then(({settleFailedBackgroundSend})=>settleFailedBackgroundSend({error,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),()=>{restoreFailedDraft(draft);showActionError(error,"Background task failed")}));
   }
   // A follow-up's button pressed from the keyboard keeps the keyboard, as the sidebar's rows do, instead of dropping it on the page with
   // the button its action takes away or turns off: Edit gives it to the composer, where the edit is made; Send now and Remove, whose
@@ -4815,7 +4817,7 @@ export default function App(){
       const threadId=activeThread?.id||null,dispatching=queueNow(threadId).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now(),autoStartFailed:false}:q);
       if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
       try{
-        await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips),{sentChips:item.contextChips||[]});
+        await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips),{sentChips:item.contextChips||[],checked:true});
         await persistLocalQueue(threadId,queueNow(threadId).filter(q=>q.id!==item.id));queueKeysDone(item.id);
       }catch(error){
         // Stop ended it before its turn existed: it stays in its place in the queue, which is left as it is but for its dispatch mark, as
@@ -4976,11 +4978,13 @@ export default function App(){
     const result=await api("/api/attachments/import",{method:"POST",body});
     return (result.files||[]).map(file=>file.path);
   }
-  async function validateAttachmentPaths(paths){
+  async function validateAttachmentPaths(paths,{extract=true}={}){
     if(!paths?.length)return {files:[],count:0,imageBytes:0};
     const body={paths};const environmentId=activeThreadRef.current?.providerMeta?.environmentId??settings.activeEnvironmentId;
     if(environmentId!==undefined)body.environmentId=environmentId;
     // Every send checks its files first: the answer names each document's extracted text, for a Codex message and a question's answer.
+    // extract false: the turn's check right after the send's own, which extracted that text, only finds it, so a send extracts once.
+    if(!extract)body.extract=false;
     const result=await api("/api/attachments/validate",{method:"POST",body});noteDocumentTexts(result?.files);return result;
   }
   async function addContextAttachment({name,text,kind="context",label="Context",detail="",key=null}){const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});const [path]=await prepareAttachmentPaths([d.path]);return addContextPath(path,{kind,label,detail,key})}

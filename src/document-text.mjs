@@ -30,8 +30,9 @@ export function documentTextPath(path,{home,info}){
 }
 
 // The file the text of the document at path was extracted to, or null while it has none: nothing is extracted here. A message's
-// prompt names it this way, as T3's prompt builders look for it (resolveExtractedTextPath): attaching the file and the check of a
-// message about to go extract it (ensureDocumentText, T3's claim of a message's attachments), so a send extracts at most once.
+// prompt names it this way, as T3's prompt builders look for it (resolveExtractedTextPath), and so does a send's second check of its
+// files: attaching the file and the first check of a message about to go extract it (ensureDocumentText, T3's claim of a message's
+// attachments), so a send extracts at most once.
 export async function extractedDocumentText(path,{home=null}={}){
   if(!home||!isDocumentTextPath(path))return null;
   const file=resolve(String(path)),info=await stat(file).catch(()=>null);
