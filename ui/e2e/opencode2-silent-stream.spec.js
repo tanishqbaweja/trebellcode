@@ -36,7 +36,7 @@ test("an OpenCode 2 turn whose event stream goes silent while OpenCode still run
 });
 
 test("an OpenCode 2 turn whose stream went silent and whose server does not say it still runs it ends saying so, and the next message goes through",async({page})=>{
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
   let turns=0,failing=true;
   await openCode2App(page,({sessionID,emit,reply})=>{
     if(++turns===1)return;
@@ -45,7 +45,8 @@ test("an OpenCode 2 turn whose stream went silent and whose server does not say 
     await send(page,"Fix the parser");
     await expect(stopButton(page),"the turn waits on OpenCode").toBeVisible({timeout:20_000});
     const stopped=page.locator(".tool-event.kind-error").filter({hasText:"did not say whether it still runs the turn"});
-    await expect(stopped).toBeVisible({timeout:90_000});
+    // 45 silent seconds, then five tries two seconds apart (about 53 s here, and twice that on a loaded machine).
+    await expect(stopped).toBeVisible({timeout:180_000});
     await expect(stopped.locator("summary strong")).toHaveText(UNKNOWN);
     await expect(stopButton(page)).toHaveCount(0);
     // Letting go of the stream is Trebell's own doing, and no error row of its own.
