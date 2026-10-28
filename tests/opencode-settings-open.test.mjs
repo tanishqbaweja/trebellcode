@@ -9,8 +9,8 @@ import { createGuiServer } from "../src/gui-server.mjs";
 
 // Settings lists the harnesses each time a person enters its Agents & models or Diagnostics section, and each read of OpenCode's own
 // answer (its providers, models, commands, skills and agents) starts an `opencode serve` per OpenCode profile and takes seconds (2.7 s
-// for 1.18.32, 1.3 s for 2.0.24, measured live). Entering a section keeps a complete answer, as a switch's or a Save's listing does,
-// and reads one that is not again once it is ten seconds old; the section's Refresh buttons and a sign-in's follow-up read it again.
+// for 1.18.32, 1.3 s for 2.0.24, measured live). Entering a section keeps an answer, as a switch's or a Save's listing does, and reads
+// it again once it is ten seconds old; the section's Refresh buttons and a sign-in's follow-up read it again.
 // Only the profile's --version answers here (runFn), and the reads are stood in for.
 async function openCodeManager(t){
   const home=await mkdtemp(join(tmpdir(),"trebell-opencode-settings-open-"));t.after(()=>rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100}));
@@ -29,12 +29,12 @@ const catalog=({models:ids=["anthropic/claude-x"]}={})=>({
 });
 const opencode=listing=>listing.statuses.find(status=>status.id==="opencode-default");
 
-test("entering Settings' sections again keeps OpenCode's complete answer, and its Refresh reads OpenCode again",async t=>{
+test("entering Settings' sections again soon after keeps OpenCode's complete answer, and its Refresh reads OpenCode again",async t=>{
   const {manager,reads,fake,advance}=await openCodeManager(t);
   fake.answer=catalog();
   assert.equal(opencode(await manager.snapshot({refresh:true,keepOpenCode:true})).authenticated,true);
   assert.equal(reads.length,1,"the first open reads it");
-  advance(10*60_000);
+  advance(5_000);
   await manager.snapshot({refresh:true,keepOpenCode:true});await manager.snapshot({refresh:true,keepOpenCode:true});
   assert.equal(reads.length,1,"entering Agents & models, then Diagnostics, starts no opencode serve");
   // The person adds a provider's models and presses Refresh.

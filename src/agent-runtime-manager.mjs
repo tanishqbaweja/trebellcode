@@ -101,13 +101,13 @@ const releaseOrder=(kind,a,b)=>kind==="muse"?compareMuseVersions(a,b):compareSem
 // Muse Code runs where Trebell runs; a WSL or SSH environment has no Muse Code of Trebell's.
 const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Switch to the local environment to use it.";
 // A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start and the
-// window's poll make one) reuses the last read of the same binary and version that was complete (openCodeCatalogComplete), and one that
-// was not for OPENCODE_INCOMPLETE_REUSE_MS: each read starts an `opencode serve`. (T3 Code checks such an OpenCode again on its
-// five-minute health interval.) Settings' Refresh (its Refresh buttons and a sign-in's follow-up) reads again. Any other fresh check
-// (Settings' open, a switch, the listing a profile's Save or Delete or an install answers with, a failed turn's recheck) keeps a
-// complete read too, and reads one that was not again once it is OPENCODE_CATALOG_REUSE_MS old, so a switch's read also serves the
-// listing right after it, and entering Settings' sections starts no `opencode serve` for a complete read; T3 Code does not read
-// OpenCode's catalog again when a turn fails.
+// window's poll make one) reuses the last read of the same binary, version and environment that was complete (openCodeCatalogComplete),
+// and one that was not for OPENCODE_INCOMPLETE_REUSE_MS: each read starts an `opencode serve`. (T3 Code checks such an OpenCode again on
+// its five-minute health interval.) Settings' Refresh (its Refresh buttons and a sign-in's follow-up) reads again. Any other fresh check
+// (Settings' open, a switch, the listing a profile's Save or Delete or an install answers with) reads again a read that is
+// OPENCODE_CATALOG_REUSE_MS old, so a switch's read also serves the listing right after it, and going between Settings' sections starts
+// at most one `opencode serve` in that time. A failed turn's recheck keeps a complete read, as T3 Code does not read OpenCode's catalog
+// again when a turn fails.
 const OPENCODE_CATALOG_REUSE_MS=10_000;
 const OPENCODE_INCOMPLETE_REUSE_MS=5*60_000;
 const OPENCODE_STATUS_TIMEOUT_MS=20_000;
@@ -917,11 +917,11 @@ export class AgentRuntimeManager{
   // How a profile's catalog is read (readOpenCodeCatalog); tests stand in for OpenCode here.
   openCodeCatalogReader=readOpenCodeCatalog;
   // OpenCode's own answer for a profile (its connected models and providers, and its commands, skills and agents), from one managed
-  // server or the profile's server, kept per binary and version: a complete one for reuseMs, one that is not for incompleteMs. Readers
-  // at the same time share one read; a failed read is not kept. read.entry is the read waited on: starting once the read starts its
-  // server, and up once that server is up.
+  // server or the profile's server, kept per binary and version and the profile's environment as it is set (a Save that changes it reads
+  // OpenCode again): a complete one for reuseMs, one that is not for incompleteMs. Readers at the same time share one read; a failed
+  // read is not kept. read.entry is the read waited on: starting once the read starts its server, and up once that server is up.
   async #openCodeCatalog(instance,{version=null,reuseMs=OPENCODE_CATALOG_REUSE_MS,incompleteMs=reuseMs,read=null}={}){
-    const command=this.executable(instance),key=[instance.id,command,instance.serverUrl||"",version||""].join("|"),cached=this.#openCodeCatalogs.get(key);
+    const command=this.executable(instance),key=[instance.id,command,instance.serverUrl||"",version||"",JSON.stringify([normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys),instance.environment||{}])].join("|"),cached=this.#openCodeCatalogs.get(key);
     if(cached?.pending){if(read)read.entry=cached;return await cached.pending}
     if(cached&&this.now()-cached.at<(cached.complete?reuseMs:incompleteMs))return cached.value;
     let isUp=()=>{};const entry={pending:null,starting:false,up:new Promise(resolve=>{isUp=resolve})};if(read)read.entry=entry;
@@ -938,15 +938,16 @@ export class AgentRuntimeManager{
     }
   }
   // A status check's provider list: the last complete one read for this binary and version, one that is not if it was read within
-  // OPENCODE_INCOMPLETE_REUSE_MS (OPENCODE_CATALOG_REUSE_MS for a fresh check), or a new read (always for Settings' Refresh, refresh),
-  // which may take this long, and as long once its server is up. OpenCode's server can take up to 30 seconds to start (its first run
-  // converts the shared database), and a start that runs out of time fails the read itself.
-  async #openCodeStatusCatalog(instance,version,{fresh=false,refresh=false}={}){
+  // OPENCODE_INCOMPLETE_REUSE_MS, one read within OPENCODE_CATALOG_REUSE_MS for a fresh check (a complete one of any age for a failed
+  // turn's recheck, keepCatalog), or a new read (always for Settings' Refresh, refresh), which may take this long, and as long once its
+  // server is up. OpenCode's server can take up to 30 seconds to start (its first run converts the shared database), and a start that
+  // runs out of time fails the read itself.
+  async #openCodeStatusCatalog(instance,version,{fresh=false,refresh=false,keepCatalog=false}={}){
     const timers=[],read={};let done=false;
     const after=then=>{const timer=setTimeout(then,OPENCODE_STATUS_TIMEOUT_MS);timer.unref?.();timers.push(timer)};
     try{
       return await Promise.race([
-        this.#openCodeCatalog(instance,{version,read,...(refresh?{reuseMs:0}:{reuseMs:Number.POSITIVE_INFINITY,incompleteMs:fresh?OPENCODE_CATALOG_REUSE_MS:OPENCODE_INCOMPLETE_REUSE_MS})}),
+        this.#openCodeCatalog(instance,{version,read,...(refresh?{reuseMs:0}:fresh&&!keepCatalog?{reuseMs:OPENCODE_CATALOG_REUSE_MS}:{reuseMs:Number.POSITIVE_INFINITY,incompleteMs:fresh?OPENCODE_CATALOG_REUSE_MS:OPENCODE_INCOMPLETE_REUSE_MS})}),
         new Promise((_resolve,reject)=>{
           // It ends once both have passed: the wait since it began, and the wait since the read's server came up, if it starts one.
           const fail=()=>reject(new Error(`OpenCode did not answer within ${OPENCODE_STATUS_TIMEOUT_MS/1000} seconds.`));
@@ -984,7 +985,7 @@ export class AgentRuntimeManager{
   // to say). And a caller that joined another answer that cannot run asks again (or joins a probe started after it asked): a thread
   // start refuses on it, and the person may just have signed in outside Trebell, or its check timed out under load. fresh starts a
   // new one, which the next callers share. Each caller gets its own copy.
-  async probe(instanceOrKind,{environmentId=undefined,fresh=false,refresh=false}={}){
+  async probe(instanceOrKind,{environmentId=undefined,fresh=false,refresh=false,keepCatalog=false}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="native")return this.#probeNow(instance,{environmentId});
     const key=this.#probeKey(instance,environmentId),owner=this.#probeOwner(instance,environmentId),cached=this.#probes.get(key);
@@ -995,7 +996,7 @@ export class AgentRuntimeManager{
     // A local binary replaced since (npm i -g, the harness's own updater) makes its version check due, so its answer is not kept
     // past that either. Read before the probe runs, so a binary replaced while it runs makes the next caller ask again.
     const binary=this.#binaryPaths(instance,environmentId),signature=binarySignature(binary);
-    const pending=this.#probeNow(instance,{environmentId,fresh,refresh});this.#probes.set(key,{pending,owner});
+    const pending=this.#probeNow(instance,{environmentId,fresh,refresh,keepCatalog});this.#probes.set(key,{pending,owner});
     try{
       const value=await pending;
       if(this.#probes.get(key)?.pending===pending){if(value?.available&&(value.versionCheckFailed||value.account?.type==="customEndpoint"||keptProbeAnswer(value))||versionCheckOnly(value))this.#probes.set(key,{at:this.now(),value,binary,signature,owner});else this.#probes.delete(key)}
@@ -1026,7 +1027,7 @@ export class AgentRuntimeManager{
     if(owner)for(const [other,entry] of this.#probes)if(other!==key&&entry.owner===owner&&!entry.pending)this.#probes.delete(other);
     // Muse Code's model list is read again with it: a failed turn may be a sign-out.
     if(instance.kind==="muse")this.#museCatalogDue(instance);
-    const pending=this.probe(instance,{environmentId,fresh:true}),settled=()=>{if(this.#rechecks.get(key)===pending)this.#rechecks.delete(key)};
+    const pending=this.probe(instance,{environmentId,fresh:true,keepCatalog:true}),settled=()=>{if(this.#rechecks.get(key)===pending)this.#rechecks.delete(key)};
     // A Claude Code found signed out forgets its kept capability probe, whose account and plan usage the Usage card would show for up
     // to five minutes more: the next Refresh asks Claude Code again.
     if(instance.kind==="claude")pending.then(value=>{if(value?.authenticated===false)this.dropClaudeCapabilities(instance,{environmentId})},()=>{});
@@ -1058,7 +1059,7 @@ export class AgentRuntimeManager{
     this.#unfinishedInstalls.set(instance.id,unfinishedInstall(instance.kind,result));
     return result;
   }
-  async #probeNow(instance,{environmentId=undefined,fresh=false,refresh=false}={}){
+  async #probeNow(instance,{environmentId=undefined,fresh=false,refresh=false,keepCatalog=false}={}){
     const def=RUNTIMES[instance.kind];
     if(instance.kind==="native")return {id:instance.id,kind:"native",name:def.name,available:true,installed:true,authenticated:null,protocol:"native",managed:true,version:null,binary:null,message:"Built into Trebell Code"};
     if(instance.kind==="codex"){
@@ -1149,7 +1150,7 @@ export class AgentRuntimeManager{
       // T3 Code's status check: the upstream providers OpenCode's matching 1.x/2.x server adapter reports connected, ready once it lists
       // models for them.
       let catalog;
-      try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null,{fresh,refresh})}
+      try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null,{fresh,refresh,keepCatalog})}
       catch(error){
         if(instance.serverUrl&&openCodeServerRefused(error))return unavailable(openCodeServerRefusal(compatibility?.version),{authenticated:false});
         return unavailable(("OpenCode could not list its providers: "+(error?.message||String(error))).slice(0,500));

@@ -6,10 +6,11 @@ import { join } from "node:path";
 import * as runtimeManager from "../src/agent-runtime-manager.mjs";
 
 // Every read of OpenCode's own answer (its providers, models, commands, skills and agents) starts an `opencode serve` and takes
-// seconds (2.7 s for 1.18.32, 1.3 s for 2.0.24, measured live). Settings' own listing (its open, Refresh and a sign-in's follow-up)
-// reads it again. Any other fresh check keeps a complete answer, and reads one that is not complete again at most every ten seconds: a
-// failed turn's recheck (T3 Code does not read OpenCode's catalog again when a turn fails), a switch and the listing right after it, a
-// profile's Save or Delete and an install. Only the profile's --version answers here (runFn), and the reads are stood in for.
+// seconds (2.7 s for 1.18.32, 1.3 s for 2.0.24, measured live). Settings' Refresh and a sign-in's follow-up read it again. A failed
+// turn's recheck keeps a complete answer (T3 Code does not read OpenCode's catalog again when a turn fails), and reads one that is not
+// complete again at most every ten seconds; any other fresh check (a switch and the listing right after it, a profile's Save or Delete
+// and an install, Settings' sections) keeps an answer for ten seconds. Only the profile's --version answers here (runFn), and the reads
+// are stood in for.
 async function openCodeManager(t){
   const home=await mkdtemp(join(tmpdir(),"trebell-opencode-reuse-"));t.after(()=>rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100}));
   const instance={id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,binaryPath:join(home,"no-opencode-here"),serverUrl:null,environment:{}};
@@ -37,15 +38,15 @@ test("a failed turn's recheck of OpenCode asks its version again but keeps a com
   assert.equal(versions(),before+1,"the version check runs again");
 });
 
-test("a switch to OpenCode reads its catalog once for the switch and the listing after it, a profile's Save keeps it, and Settings' listing reads it again",async t=>{
+test("a switch to OpenCode reads its catalog once for the switch and the listing after it, a profile's Save soon after keeps it, and Settings' listing reads it again",async t=>{
   const {manager,reads,fake,advance}=await openCodeManager(t);
   fake.answer=catalog();
   await manager.setActive({runtime:"opencode"});
   await manager.snapshot();
   assert.equal(reads.length,1,"the switch's read serves the listing right after it");
-  advance(10*60_000);
+  advance(5_000);
   await manager.setActive({runtime:"opencode"});await manager.snapshot();
-  assert.equal(reads.length,1,"a switch and a Save's listing keep a complete catalog");
+  assert.equal(reads.length,1,"a switch and a Save's listing keep a complete catalog read five seconds before");
   await manager.snapshot({refresh:true});
   assert.equal(reads.length,2,"Settings' own listing reads OpenCode again");
 });
