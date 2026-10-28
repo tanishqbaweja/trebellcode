@@ -3337,7 +3337,8 @@ export default function App(){
     // A harness tool that is still running can name itself better as it goes (an ACP tool call first reports its bare tool
     // name, then its kind and command); the row follows it in place.
     else if(message.method==="item/tool/progress"&&p.item){
-      // Output-only updates stream through outputDelta; only a changed name, kind or status touches the row and the telemetry.
+      // Output-only updates stream through outputDelta; only a changed name, kind or status touches the row and the telemetry, and a
+      // step's word that it runs on past its turn touches the row too (mergeLiveRow).
       const item=activityRow(p.item,{turnId:p.turnId});
       const activity=threadTelemetryRef.current[threadId]?.currentActivity;
       if(activity?.id===item.id&&(activity.title!==item.title||activity.kind!==item.kind))updateThreadTelemetry(threadId,{currentActivity:{...activity,kind:item.kind,title:item.title}});

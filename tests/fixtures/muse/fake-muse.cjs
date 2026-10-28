@@ -59,7 +59,9 @@
 //                       holds after its first sentence until a message comes, which Muse queues behind it (ifBusy queue): the report
 //                       then says the rest of its reply and ends, its turn/completed adding up the report's tokens, and the message's
 //                       turn runs, reporting its own. With MUSE_FAKE_REPORT_COMMAND "1" the held report also runs `npm test`, which
-//                       ends once the message comes, before the rest of the report; once the file MUSE_FAKE_REPORT_ASK_HOLD names is
+//                       ends once the message comes, before the rest of the report (and, when MUSE_FAKE_REPORT_COMMAND_HOLD names a
+//                       file, only once that file is there, the rest of the report and the message's turn after it, as they follow a
+//                       long command in Muse); once the file MUSE_FAKE_REPORT_ASK_HOLD names is
 //                       there, the held report asks to run `touch muse-approved.txt` ("ask approval"), and its answer ends the report
 const fs=require("node:fs"),readline=require("node:readline");
 const log=entry=>{if(process.env.MUSE_FAKE_LOG)fs.appendFileSync(process.env.MUSE_FAKE_LOG,JSON.stringify(entry)+"\n")};
@@ -195,16 +197,17 @@ function reportTurn(sessionId,turnId){
   setTimeout(()=>complete(sessionId,turnId),20);
 }
 // A message queued behind the held report: the report says the rest of its reply in the same message and ends, with the tokens of
-// both its model steps, and then the message's turn runs.
+// both its model steps, and then the message's turn runs. Its `npm test` ends first, once the file MUSE_FAKE_REPORT_COMMAND_HOLD names
+// is there when it names one.
 function releaseReport(sessionId,params){
   const {turnId,turn}=heldReports.get(sessionId);heldReports.delete(sessionId);
-  setTimeout(()=>{
+  later(process.env.MUSE_FAKE_REPORT_COMMAND_HOLD,20,()=>{
     if(process.env.MUSE_FAKE_REPORT_COMMAND==="1")notify("item/completed",sessionId,{item:reportCheck(turnId,2,"completed",{visibleOutput:"All 12 tests passed."})});
     reply(sessionId,turn," The rest of the report.");
     usageStep(sessionId,turnId,{prompt:100,output:10});
     complete(sessionId,turnId,"completed",{inputTokens:36816,outputTokens:272,cachedTokens:33393,cacheReadTokens:33393,cacheWriteTokens:0,reasoningTokens:238});
     setTimeout(()=>startTurn(sessionId,params,{usage:{prompt:500,output:20}}),20);
-  },20);
+  });
 }
 const QUOTA_REFUSAL="API error 429: All credentials for model muse-wonder-1.0-contributor are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2031-05-04T10:45:52Z.) (after 10 provider attempts)";
 // The approval Muse asks before running `touch muse-approved.txt` (T3's recorded muse_permission), and how it settles.

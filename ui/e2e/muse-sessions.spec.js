@@ -233,9 +233,9 @@ test("a Muse Code workflow still running past its turn keeps running on that tur
   }finally{await harness.close()}
 });
 
-test("a command Muse Code's report still runs when the person's message takes the report over goes on and settles in the report's card, never in that message's",async({page})=>{
+test("a command Muse Code's report still runs when the person's message takes the report over goes on running in the report's card past the report's end and settles there, never in that message's",async({page})=>{
   test.setTimeout(90_000);
-  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_COMMAND:"1"}});
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_COMMAND:"1"},holds:["report_command"]});
   try{
     await routeMuseApp(page,harness);
     await page.setViewportSize({width:1280,height:800});
@@ -247,18 +247,27 @@ test("a command Muse Code's report still runs when the person's message takes th
     const live=page.locator(".agent-block .activity-card");
     await expect(row(live,"npm test")).toHaveClass(/status-running/,{timeout:20_000});
     // A message from another window of the person's takes the report over (this window queues its own behind the running report):
-    // the report's turn ends here, and Muse ends the command once the message comes. Soft, so that the old code also shows what each
-    // card says.
+    // the report's turn ends here while Muse still runs the command, which goes on until the test lets it end, and the message's turn
+    // waits for Muse. Soft, so that the old code also shows what each card says.
     const [thread]=harness.threadStore.list(),other=new WebSocket(harness.wsUrl);
+    const card=turn=>page.locator(`.turn-card[data-turn-id="${turn.id}"] [data-testid=activity-card]`);
+    const open=async turn=>{if(await card(turn).count()&&await card(turn).getAttribute("data-state")!=="open")await card(turn).locator(".activity-card-head").click()};
     await new Promise((resolve,reject)=>{other.once("open",resolve);other.once("error",reject)});
     try{
       other.send(JSON.stringify({id:1,method:"turn/start",params:{threadId:thread.id,input:[{type:"text",text:"And one more thing"}]}}));
+      await expect.poll(()=>{const turns=harness.threadStore.get(thread.id).turns;return turns.length===3&&turns[1].status!=="inProgress"},{message:"the report's turn ends in Trebell",timeout:20_000}).toBe(true);
+      const ended=harness.threadStore.get(thread.id).turns[1];
+      await expect(card(ended)).toHaveCount(1,{timeout:20_000});await open(ended);
+      await expect.soft(row(card(ended),"npm test"),"the command, still running past the report's end, on the report's card").toHaveClass(/status-running/);
+      for(const mode of ["dark","light"]){await switchMode(page,mode);await card(ended).scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-report-command-runs-past-report-${mode}-1280x800.png`})}
+      await switchMode(page,"dark");
+      // Muse ends the command, says the rest of the report, and runs the message.
+      await harness.release("report_command");
       await expect(reply(page,"Muse fixture reply")).toBeVisible({timeout:20_000});
     }finally{other.close()}
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
     const [,report,message]=harness.threadStore.get(thread.id).turns;
-    const card=turn=>page.locator(`.turn-card[data-turn-id="${turn.id}"] [data-testid=activity-card]`);
-    for(const turn of [report,message])if(await card(turn).count()&&await card(turn).getAttribute("data-state")!=="open")await card(turn).locator(".activity-card-head").click();
+    for(const turn of [report,message])await open(turn);
     await expect.soft(row(card(report),"npm test"),"the command settled on the report's card").toHaveClass(/status-done/);
     await expect.soft(page.locator(".activity-card").filter({hasText:"npm test"}),"and on no other card").toHaveCount(1);
     await expect.soft(row(page.locator(".agent-block .activity-card"),"npm test"),"none of it on the message's card").toHaveCount(0);
