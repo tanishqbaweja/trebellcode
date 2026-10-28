@@ -125,8 +125,9 @@ test("/compact waits for no running Muse Code turn: it is refused while one runs
 });
 
 // A message in another host's mode while Muse's own work holds this host (muse-agent-session.mjs, worded as Claude Code's refusal of a
-// change that would end its background work).
-const COMPACTION_BLOCKS_MODE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
+// change that would end its background work). The report runs as a turn, whose Stop every window shows; a compaction runs in no turn,
+// and only the window that waits for it shows its Stop, so its refusal names no Stop.
+const COMPACTION_BLOCKS_MODE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish, or keep the current mode, then send the message again.";
 const REPORT_BLOCKS_MODE="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
 test("while Muse's compaction or its own report holds the host, a message in a mode another host serves is refused with nothing sent, and one in the host's own mode still goes",async()=>{
   const {session,muse}=await startSession({permissionMode:"full",muse:child=>new FakeMuse(child,{handlers:{"session/compact":compactHandler({end:null})}})});

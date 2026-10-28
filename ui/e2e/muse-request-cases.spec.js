@@ -189,7 +189,7 @@ test("a turn Muse Code could not run signed out says once how to sign in",async(
   }finally{await harness.close()}
 });
 
-test("a message sent in Supervised while a Full access thread's compaction runs is not sent, saying to wait for it or stop it, keeps its draft and never runs on the Full access host",async({page})=>{
+test("a message sent in Supervised while a Full access thread's compaction runs is not sent, saying to wait for it, keeps its draft and never runs on the Full access host",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startMuseHarness({environment:{MUSE_FAKE_COMPACT:"hold"}});
   try{
@@ -201,8 +201,9 @@ test("a message sent in Supervised while a Full access thread's compaction runs 
     await page.locator("select.permission-picker").first().selectOption("supervised");
     await send(page,"Now in Supervised");
     const alert=page.getByTestId("composer-alert");
-    await expect(alert).toHaveText("Not sent: Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish (or stop it), or keep the current mode, then send the message again. Your draft is kept.",{timeout:20_000});
-    // The compaction runs in no turn, and the header's Stop the refusal names is the compaction's own.
+    // The refusal names no Stop: the compaction runs in no turn, and only the window that waits for it, as this one does, shows its
+    // Stop in the header, which a reloaded window or another of the person's does not.
+    await expect(alert).toHaveText("Not sent: Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish, or keep the current mode, then send the message again. Your draft is kept.",{timeout:20_000});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveAttribute("title","Stop the context compaction");
     await expect(page.getByTestId("composer")).toHaveValue("Now in Supervised");
     await expect(page.locator(".tool-event").filter({hasText:"Context compaction failed"})).toHaveCount(0);

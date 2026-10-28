@@ -56,9 +56,10 @@ const ACTIONS=Object.freeze({
 export const MUSE_NOTHING_TO_COMPACT="There is no Muse Code conversation history to compact yet.";
 export const MUSE_COMPACTION_STOPPED="Muse Code's context compaction was stopped before it finished.";
 // A message in a mode this Muse Code host was not launched for, while Muse's own work holds the host (as Claude Code's background
-// work blocks a change that would end it). The window's Stop shows for both: a compaction's, which runs in no turn, stops the host
-// (cancel), and the report's ends its turn.
-export const MUSE_COMPACTION_BLOCKS_MODE_CHANGE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
+// work blocks a change that would end it). The report runs as a turn, whose Stop every window shows, so its refusal names it. A
+// compaction runs in no turn, and only the window that waits for it shows its Stop (which stops the host, cancel), not a reloaded
+// window or another of the person's, so its refusal names none.
+export const MUSE_COMPACTION_BLOCKS_MODE_CHANGE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish, or keep the current mode, then send the message again.";
 export const MUSE_REPORT_BLOCKS_MODE_CHANGE="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
 // Why Muse did not compact, from its own durable words (compaction_unavailable, summarizer_failed), as a sentence.
 function compactionFailure(reason){const words=text(reason).trim().replaceAll("_"," ");return `Muse Code could not compact the conversation${words?`: ${words}`:""}.`}
