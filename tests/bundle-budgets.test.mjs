@@ -88,6 +88,10 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // as on main before the second wave. The first bundle went down, 624.3 / 200.1 to 615.8 / 197.8 KB, with 2.2 KB gzip of room for
 // those two lanes. Lane T3O then added 0.1 / 0.0 KB to the lazy chunks (OpenCode's server-refusal and catalog wording in Settings)
 // and nothing to the first bundle (615.7 / 197.8 KB): the lazy chunks read 780.1 / 257.8 KB, 0.9 / 0.2 KB under the limit.
+// The last lane of the port, T3S, then added 2.2 / 0.7 KB to the first bundle (617.9 / 198.5 KB: Muse Code's work that runs past
+// its turn kept live on that turn's card, its compaction's wait and Stop, and an attached document's extracted text named in Codex's
+// input) and 0.0 / 0.1 KB to the lazy chunks (the first bundle's new name in their import lines): 780.1 / 257.9 KB, 0.9 / 0.1 KB
+// under the limit.
 const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:781,gzipKB:258}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
