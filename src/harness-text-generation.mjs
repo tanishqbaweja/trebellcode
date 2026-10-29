@@ -331,13 +331,15 @@ async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=f
   deleteViaAcp=Boolean(deleteSession&&initialized?.agentCapabilities?.sessionCapabilities?.delete);
   let setup=await starting(()=>client.createSession({cwd,mcpServers:[]}));
   sessionId=String(setup?.sessionId||"")||null;if(!sessionId)throw new Error(`${ctx.name} did not create the Git text session`);ctx.check();
+  // Setting the read-only mode and the model are the start's last steps (Cursor gets a model on every request): a process that ends at
+  // either ended as it started too, and says so as above; any other failure says which step failed.
+  const configStep=(apply,failed)=>starting(async()=>{try{return await apply()}catch(error){throw new Error(failed(error),{cause:error})}});
   // A required mode (Cursor's ask, the restricted OpenCode agent) is never skipped: without it the prompt is not sent.
   const modes=acpConfigSelect(setup,"mode");
   const target=mode?(modes.choices.some(choice=>choice.value===mode)?mode:null):acpReadOnlyMode(instance.kind,setup),required=Boolean(mode)||instance.kind==="cursor";
   if(required&&!target)throw new Error(`${ctx.name} did not offer ${mode?`its restricted ${mode} agent`:"its read-only ask mode"}, so the Git text prompt was not sent`);
   if(target&&modes.current!==target){
-    try{setup=await acpApplyValue(client,sessionId,setup,"mode",target)}
-    catch{throw new Error(`${ctx.name} could not switch to its read-only ${target} mode, so the Git text prompt was not sent`)}
+    setup=await configStep(()=>acpApplyValue(client,sessionId,setup,"mode",target),()=>`${ctx.name} could not switch to its read-only ${target} mode, so the Git text prompt was not sent`);
     ctx.check();
   }
   // The thread's model when the harness offers it. Cursor saves its model globally, so it always gets an explicit one (Auto when
@@ -345,8 +347,7 @@ async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=f
   const models=acpConfigSelect(setup,"model"),offeredModel=id=>Boolean(id)&&models.choices.some(choice=>choice.value===id);
   const chosen=ctx.models.map(id=>acpTextModel(instance.kind,id)).find(offeredModel)||(instance.kind==="cursor"&&offeredModel("default")?"default":null);
   if(chosen&&(chosen!==models.current||instance.kind==="cursor")){
-    try{setup=await acpApplyValue(client,sessionId,setup,"model",chosen)}
-    catch(error){throw new Error(`${ctx.name} could not switch to model ${chosen}: ${error?.message||error}`)}
+    setup=await configStep(()=>acpApplyValue(client,sessionId,setup,"model",chosen),error=>`${ctx.name} could not switch to model ${chosen}: ${error?.message||error}`);
     ctx.check();
   }
   prompting=true;
