@@ -7,10 +7,12 @@ import { openCode2App,send,shots,stopButton } from "./opencode-relay-app.js";
 // the turn's own message what OpenCode did meanwhile, as T3 Code does. It used to take OpenCode's newest assistant message as the
 // answer, so a run lost meanwhile answered with the earlier turn's reply and a reply with text Trebell missed was shown twice; and a
 // turn Trebell stopped following left OpenCode's run going, whose text and end the next turn took. A message refused while that run
-// went on then stayed in the conversation as sent, its turn failed and the composer empty.
+// went on then stayed in the conversation as sent, its turn failed and the composer empty; and a turn whose run OpenCode lost read
+// "stopped" with nothing saying why.
 const ANSWER="The parser handles nested quotes now.";
 const EARLIER="The earlier answer.";
 const STILL_RUNNING="OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run. Send the message again in a moment.";
+const RUN_LOST="OpenCode lost this turn's run while Trebell was reconnecting to it, so the turn did not finish. Send the message again to retry.";
 const later=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // A turn's reply: shown as it streams (.assistant-answer), and as the turn's message once it has ended (.assistant-message-text).
 const replyText=page=>page.locator(".assistant-message-text"),streaming=page=>page.locator(".assistant-answer, .assistant-message-text");
@@ -71,7 +73,7 @@ test("a message sent while OpenCode still runs the turn Trebell stopped followin
   },{heartbeatMs:0,routes});
 });
 
-test("an OpenCode 2 turn whose run was lost while its stream was down ends stopped, without the earlier turn's reply as its answer",async({page})=>{
+test("an OpenCode 2 turn whose run was lost while its stream was down ends saying OpenCode lost the run, without the earlier turn's reply as its answer",async({page})=>{
   test.setTimeout(120_000);
   await openCode2App(page,async({body,sessionID,emit,reply,fake})=>{
     if(!/again/.test(String(body?.text||""))){reply(EARLIER,"msg_a1");answer(emit,sessionID,EARLIER,"msg_a1");return}
@@ -80,17 +82,22 @@ test("an OpenCode 2 turn whose run was lost while its stream was down ends stopp
     emit({type:"session.text.started",data:{sessionID,assistantMessageID:"msg_a2",ordinal:0}});block(emit,sessionID,"msg_a2","Working on it.");
     await expect(streaming(page).filter({hasText:"Working on it."})).toBeVisible();
     fake.active.delete(sessionID);fake.dropStreams();
-  },async({fake})=>{
+  },async({fake,threadStore,threadId})=>{
     await send(page,"Fix the parser");
     await expect(replyText(page).filter({hasText:EARLIER})).toBeVisible({timeout:20_000});
     await expect(stopButton(page)).toHaveCount(0);
     await send(page,"Fix the parser again");
     await expect(streaming(page).filter({hasText:"Working on it."})).toBeVisible({timeout:20_000});
     await expect(stopButton(page),"the turn ends once Trebell has read OpenCode's history").toHaveCount(0,{timeout:60_000});
+    // Nobody stopped it: it failed, and its row says OpenCode lost the run, under what it had written.
+    const row=page.locator(".tool-event.kind-error").filter({hasText:RUN_LOST});
+    await expect(row,"the turn says OpenCode lost its run").toBeVisible();
+    await expect(page.getByTestId("turn-outcome").last()).toContainText("failed");
+    expect(threadStore.get(threadId).turns[1]?.error?.message).toBe(RUN_LOST);
     await expect(replyText(page).filter({hasText:EARLIER}),"the earlier turn's reply is not shown again").toHaveCount(1);
     await expect(replyText(page).last()).toHaveText("Working on it.");
     expect(fake.called("GET /api/session/ses_main/message").length,"Trebell read OpenCode's history").toBeGreaterThanOrEqual(2);
-    await shots(page,"opencode2-lost-stream-run-lost",()=>expect(replyText(page).last()).toHaveText("Working on it."));
+    await shots(page,"opencode2-lost-stream-run-lost",()=>expect(row).toBeVisible());
   },{heartbeatMs:0});
 });
 

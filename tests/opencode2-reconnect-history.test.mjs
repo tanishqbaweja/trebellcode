@@ -30,7 +30,10 @@ const text=(id,...parts)=>({id,type:"assistant",content:parts.map(part=>({type:"
 // The session's history as OpenCode lists it (newest first): the earlier turn's message, reply and end, then this turn's.
 const EARLIER=[{id:"msg_idle_1",type:"idle",outcome:"succeeded"},text("msg_a1","The earlier answer."),{id:"msg_user_1",type:"user",text:"Earlier"}];
 
-test("an OpenCode 2 turn whose run ended while its stream was lost, with no reply or end of its own in OpenCode's history, ends stopped instead of with the earlier turn's reply",{timeout:30_000},async t=>{
+// A run that ended with no end kept (a restarted server keeps none for the run it lost) read as stopped, though nobody stopped it.
+const RUN_LOST="OpenCode lost this turn's run while Trebell was reconnecting to it, so the turn did not finish. Send the message again to retry.";
+
+test("an OpenCode 2 turn whose run ended while its stream was lost, with no reply or end of its own in OpenCode's history, ends saying OpenCode lost the run instead of with the earlier turn's reply",{timeout:30_000},async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
   const fake=fakeOpenCode2Client({overrides:{
     "session.prompt":async()=>({id:"msg_user_2"}),"session.active":async()=>({}),
@@ -43,7 +46,8 @@ test("an OpenCode 2 turn whose run ended while its stream was lost, with no repl
     await eventually(()=>fake.called("session.prompt").length===1);await settle();
     fake.breakStreams();
     await eventually(()=>turn.value!=="running");
-    assert.equal(turn.value,"cancelled");
+    assert.equal(turn.value,RUN_LOST);
+    assert.equal(fake.called("session.interrupt").length,0,"OpenCode runs nothing to stop");
     assert.equal(chunks(updates),"","the earlier turn's reply is not shown again");
   }finally{await session.close()}
 });

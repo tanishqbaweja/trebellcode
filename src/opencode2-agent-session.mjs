@@ -126,6 +126,7 @@ const AFTER_LOST_TURN=Object.freeze({
   unknown:"OpenCode did not say whether it still runs the turn Trebell stopped following. Send the message again in a moment.",
 });
 const ENDED_FAILED="OpenCode ended the turn with an error while Trebell was reconnecting to it.";
+const RUN_LOST="OpenCode lost this turn's run while Trebell was reconnecting to it, so the turn did not finish. Send the message again to retry.";
 // A turn's history is read back to its own message, at most this many messages a page and this many pages.
 const HISTORY_PAGE=50,HISTORY_PAGES=20;
 const after=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -523,14 +524,15 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     }
   }
   // A run that ended while Trebell was not listening ends as the session's history says (T3 Code's reconcile): by the idle item OpenCode
-  // keeps for a run's end, since the turn's own message. Without one (a restarted server keeps none for the run it lost) the run was
-  // stopped, and so is the turn.
+  // keeps for a run's end, since the turn's own message. Without one (a restarted server keeps none for the run it lost) OpenCode lost
+  // the run, and the turn ends saying so: nobody stopped it.
   #endedMeanwhile(turn,since){
     const outcome=String(since?.findLast(item=>item?.type==="idle")?.outcome||"");
     if(outcome==="failed"){
       const error=since.findLast(item=>item?.type==="assistant")?.error,failure=error?executionFailure(error):{text:ENDED_FAILED,usageLimit:false};
       turn.error=failure.text;turn.usageLimit=failure.usageLimit;
-    }else if(outcome!=="succeeded")turn.cancelled=true;
+    }else if(!outcome)turn.stopError=new Error(RUN_LOST);
+    else if(outcome!=="succeeded")turn.cancelled=true;
     turn.settle?.();
   }
   async #askOpenRequests(sessionID){
