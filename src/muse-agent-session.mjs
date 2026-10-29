@@ -292,9 +292,11 @@ export function museApprovalToolCall(params={}){
 }
 // The approval card's words for what a Muse approval asks (the relay's card): a title for a file access or network approval, a
 // protected write and a read outside the workspace by name (Muse names a path inside its workspace relative to it), else the card's
-// own; the stage a staged command's choices answer, with the whole command under it; and the workflow agent a child's approval comes
-// from (agent: its name, as its row shows it), which runs on past the turn that started it, so Stop leaves its card waiting.
-export function museApprovalCard(params={},{agent=""}={}){
+// own; the stage a staged command's choices answer, with the whole command under it; and the agent a child's approval comes from
+// (agent: its name, as its row shows it), which Stop leaves its card waiting for. It runs on past the turn that started it only once
+// that turn has ended with its work running (runsPast): a subagent asking while its turn runs stops with that turn. notice: what is
+// asked, which a desktop notification says, when the card's line is who asks.
+export function museApprovalCard(params={},{agent="",runsPast=false}={}){
   const subject=params.subject&&typeof params.subject==="object"?params.subject:{},kind=text(subject.kind),asked=museApprovalToolCall(params).title;
   const outside=/^(?:[a-z]:)?[\\/]|^\.\.(?:[\\/]|$)/i.test(text(subject.path).trim());
   const title=kind==="network"?"Network access needs approval":kind!=="fileAccess"?"":subject.access==="read"?outside?"Read outside the workspace needs approval":"File read needs approval"
@@ -302,9 +304,9 @@ export function museApprovalCard(params={},{agent=""}={}){
   const index=params.currentRequirementId?.sourceIndex,stage=kind==="shell"&&Array.isArray(subject.stages)?subject.stages.find(item=>item?.requirementId?.sourceIndex===index):null;
   const words=(Array.isArray(stage?.argv)?stage.argv:[]).map(word=>text(word)).map(word=>word&&!/\s/.test(word)?word:`"${word}"`).join(" ");
   const staged=Number(stage?.totalStages)>1&&words?`Stage ${Number(stage.position)||index+1} of ${stage.totalStages}: ${words}`:"";
-  const asker=params.subagentOrigin?`Asked by ${agent?"the "+agent:"a Muse Code workflow agent"}, which runs on past the turn that started it.`:"";
+  const asker=params.subagentOrigin?`Asked by ${agent?"the "+agent:"a Muse Code workflow agent"}${runsPast?", which runs on past the turn that started it":""}.`:"";
   const reason=[asker,staged].filter(Boolean).join(" ");
-  return {...(title?{title}:{}),reason:reason||asked,...(reason?{command:asked}:{})};
+  return {...(title?{title}:{}),reason:reason||asked,...(reason?{command:asked}:{}),...(asker?{notice:staged||asked}:{})};
 }
 // Muse's questions as the relay's question dialog asks them (T3 publishRequest): the header, question and options, several choices
 // for a multiple-selection question, and the person's own words for every one, as Muse takes a free-text answer to any question.
@@ -839,11 +841,13 @@ export class MuseAgentSession{
     const shown={requirementId:params.currentRequirementId,availableChoices:params.availableChoices};
     if(typeof this.onPermission!=="function")return this.#answerApproval(entry,"decline",shown);
     const ask=new AbortController();entry.ask=ask;entry.shown=shownKey(params);
+    // The agent that asks, by name, and whether its work runs on past a turn that has ended (observed, its turn settled).
     const origin=params.subagentOrigin||{},agent=[origin.subagentId,origin.childRunId,origin.childSessionId].map(id=>this.agentNames.get(text(id))).find(Boolean);
+    const runsPast=Boolean(agent&&this.observed.get(agent.itemId)?.settled);
     let decision="decline";
     try{
       decision=await this.onPermission({
-        method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},card:museApprovalCard(params,{agent}),
+        method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},card:museApprovalCard(params,{agent:agent?.name||"",runsPast}),
         options:(Array.isArray(params.availableChoices)?params.availableChoices:[]).filter(choice=>choice?.choiceId).map(choice=>({optionId:text(choice.choiceId),name:text(choice.label),kind:text(choice.decision)})),
         askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||personOnly(params)||!choices.has("accept")||read,
         approvalOptions:museApprovalOptions(params.availableChoices),signal:ask.signal,...(read?{outsideReadsAsk:true}:{}),
@@ -933,9 +937,10 @@ export class MuseAgentSession{
   }
   // The names a child's approval card says who asks with (its subagentOrigin names the agent): a subagent's, by its subagent id and its
   // child session, and a workflow agent's, by its child id, as their rows name them; a workflow's later revisions leave labels out.
+  // Each with the item of the work it is (itemId: the subagent's, or its workflow's), which says whether it runs on past its turn.
   #nameAgents(item){
-    if(item?.kind==="subagent"){const name=clip(item.role)||clip(item.objective);if(name)for(const id of [item.subagentId,item.childSessionId])if(text(id))this.agentNames.set(text(id),"subagent "+name)}
-    if(item?.kind==="workflow")for(const child of Array.isArray(item.children)?item.children:[])if(clip(child?.label)&&text(child.childId))this.agentNames.set(text(child.childId),"workflow agent "+clip(child.label));
+    if(item?.kind==="subagent"){const name=clip(item.role)||clip(item.objective);if(name)for(const id of [item.subagentId,item.childSessionId])if(text(id))this.agentNames.set(text(id),{name:"subagent "+name,itemId:text(item.itemId)})}
+    if(item?.kind==="workflow")for(const child of Array.isArray(item.children)?item.children:[])if(clip(child?.label)&&text(child.childId))this.agentNames.set(text(child.childId),{name:"workflow agent "+clip(child.label),itemId:text(item.itemId)});
     while(this.agentNames.size>MUSE_SETTLED_LIMIT)this.agentNames.delete(this.agentNames.keys().next().value);
   }
 

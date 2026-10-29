@@ -33,6 +33,7 @@
 //   "child approval"    a workflow child (subagentOrigin, its own run) asks to run the same command while the turn waits until it
 //                       is stopped or the child's approval is settled; the child's approval outlives the turn
 //   "protected child"   a workflow child asks to write .muse/settings.json, a protected write that offers Allow once and Reject only
+//   "subagent approval" a subagent (role "sleeper") the turn waits on asks to run the same command, its origin naming the subagent
 //   "staged approval"   asks to run `touch a.txt && rm b.txt` stage by stage: `touch a.txt` first, and once the file MUSE_FAKE_STAGE_HOLD
 //                       names is there (else MUSE_FAKE_STAGE_MS, 300 ms, later) Muse's reviewer moves the approval on to `rm b.txt`
 //                       (approval/updated, reviewCompleted) with that stage's own choices, a saved rule keeping it out among them; a
@@ -109,6 +110,7 @@ function startTurn(sessionId,params,{usage=null}={}){
   if(/read outside/i.test(words))return askApproval(sessionId,turnId,false,{read:true});
   if(/child approval/i.test(words))return askApproval(sessionId,turnId,false,{child:true});
   if(/protected child/i.test(words))return askApproval(sessionId,turnId,false,{child:true,protectedWrite:true});
+  if(/subagent approval/i.test(words))return subagentApproval(sessionId,turnId);
   if(/staged approval/i.test(words))return askApproval(sessionId,turnId,false,{staged:true});
   if(/ask question/i.test(words))return askQuestion(sessionId,turnId);
   if(/dev server in the background/i.test(words))return runInBackground(sessionId,turnId,turn);
@@ -146,6 +148,12 @@ function spawnSubagent(sessionId,turnId,turn){
     usageStep(sessionId,turnId,{prompt:33144,output:123,cacheRead:32625,reasoning:7});
     reply(sessionId,turn,"Hello");complete(sessionId,turnId);
   },Number(process.env.MUSE_FAKE_SUBAGENT_MS||200));
+}
+// "subagent approval": a subagent (role "sleeper") runs while its turn waits on it, and asks to run `touch muse-approved.txt`, its
+// subagentOrigin naming the subagent; the turn ends once that is settled, or with a Stop.
+function subagentApproval(sessionId,turnId){
+  notify("item/started",sessionId,{item:{itemId:turnId+"-agent",kind:"subagent",turnId,revision:1,status:"inProgress",fallbackText:"Subagent: Sleep a while",subagentId:"subagent-1",agentPath:"main/sleeper/1",depth:1,role:"sleeper",objective:"Sleep a while",controlStatus:"running",childSessionId:turnId+"-child"}});
+  askApproval(sessionId,turnId,false,{child:true,subagent:"subagent-1"});
 }
 function runWorkflow(sessionId,turnId,turn){
   const step=Number(process.env.MUSE_FAKE_WORKFLOW_MS||300),itemId=turnId+"-workflow";let revision=0;
@@ -230,9 +238,10 @@ const READ_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved
 // A staged shell command's second stage, `rm b.txt`, with its own rules: one saved to allow it, one saved to keep it out.
 const RM_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"allow_local_prefix_rm",label:"Always allow in this workspace: rm ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: rm ..."},{choiceId:"deny_once",label:"Reject",decision:"denied",scope:"once"},{choiceId:"deny_local_prefix_rm",label:"Always reject in this workspace: rm ...",decision:"deniedPolicyAmendment",scope:"localPersistent",rulePreview:"Always reject in this workspace: rm ..."}];
 let nextRequest=900;
-function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false,protectedWrite=false,staged=false}={}){
-  // A workflow child's approval names the child's own run as its turn, and its origin: the workflow agent running, if one runs.
-  const turnId=child?parentTurnId+"-child-run":parentTurnId,origin=child?{subagentOrigin:{subagentId:sessions.get(sessionId)?.workflowAgent||"agent-7",childRunId:turnId,childSessionId:parentTurnId+"-child-session"}}:{};
+function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false,protectedWrite=false,staged=false,subagent=null}={}){
+  // A workflow child's approval names the child's own run as its turn, and its origin: the subagent asking (subagent), else the
+  // workflow agent running, if one runs.
+  const turnId=child?parentTurnId+"-child-run":parentTurnId,origin=child?{subagentOrigin:{subagentId:subagent||sessions.get(sessionId)?.workflowAgent||"agent-7",childRunId:turnId,childSessionId:parentTurnId+"-child-session"}}:{};
   const approvalId=turnId+"-approval",requirement={approvalId,sourceIndex:0},workspaceRoot=sessions.get(sessionId)?.workspaceRoot||"";
   const outside=read?require("node:path").resolve(workspaceRoot||process.cwd(),"..","outside-notes.txt"):"",choices=read||protectedWrite?READ_CHOICES:SHELL_CHOICES;
   const command=staged?"touch a.txt && rm b.txt":"touch muse-approved.txt",stage=(index,argv)=>({requirementId:{approvalId,sourceIndex:index},position:index+1,totalStages:staged?2:1,argv,argvComplete:true,resolution:{kind:"unresolved"},suggestedPrefix:{argvPrefix:[argv[0]],label:`Always allow in this workspace: ${argv[0]} ...`}});

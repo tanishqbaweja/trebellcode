@@ -138,11 +138,11 @@ test("Stop leaves a workflow child's approval card waiting, and the person's All
     const stop=page.getByRole("button",{name:"Stop",exact:true});
     await stop.click();
     await expect(stop).toHaveCount(0,{timeout:20_000});
-    // The turn ended; the workflow's child still waits on the person, and its card says a workflow agent that runs on past the turn
-    // asks (this one names no agent of a workflow Trebell was told of), with the command under it.
+    // The turn ended; the workflow's child still waits on the person, and its card says a workflow agent asks (this one names no agent
+    // of a workflow Trebell was told of, nor one it follows past a turn that ended), with the command under it.
     await expect(card(page)).toBeVisible();
     await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: touch ...","Reject"]);
-    await expect(card(page).locator(":scope > p")).toHaveText("Asked by a Muse Code workflow agent, which runs on past the turn that started it.");
+    await expect(card(page).locator(":scope > p")).toHaveText("Asked by a Muse Code workflow agent.");
     await expect(card(page).getByTestId("approval-command")).toHaveText("touch muse-approved.txt");
     expect(await harness.frames("approval/decide")).toEqual([]);
     await shoot(page,"muse-child-card-after-stop",card(page));
@@ -193,6 +193,34 @@ test("a workflow agent's approval card names the agent and says it runs on past 
   }finally{await harness.close()}
 });
 
+test("a subagent's approval card names the subagent and not that it runs on past its turn, the desktop is told what it asks, and the card Stop leaves says the same while the subagent's row says it stopped with its turn",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness();
+  try{
+    // The desktop app's notifications, kept to read: the window tells it of an approval as it comes.
+    await page.addInitScript(()=>{window.trebellDesktop={notify:note=>{(window.__trebellNotes||=[]).push(note)}}});
+    await openMuse(page,harness);
+    await send(page,"Please have the subagent approval wait");
+    const line="Asked by the subagent sleeper.",stop=page.getByRole("button",{name:"Stop",exact:true});
+    await expect(card(page).locator(":scope > p")).toHaveText(line,{timeout:20_000});
+    await expect(card(page).locator(".card-title strong")).toHaveText("Command needs approval");
+    await expect(card(page).getByTestId("approval-command")).toHaveText("touch muse-approved.txt");
+    await expect(stop,"the turn that waits on the subagent runs").toBeVisible();
+    await expect.poll(()=>page.evaluate(()=>(window.__trebellNotes||[]).filter(note=>note.title==="Approval required").map(note=>note.body))).toEqual(["touch muse-approved.txt"]);
+    await shoot(page,"muse-subagent-card-while-its-turn-runs",card(page));
+    // Stop ends the turn and the subagent with it; the card stays, saying what it said.
+    await stop.click();
+    await expect(stop).toHaveCount(0,{timeout:20_000});
+    await expect(row(page,"Stopped with its turn")).toHaveCount(1,{timeout:20_000});
+    await expect(card(page).locator(":scope > p")).toHaveText(line);
+    expect(await harness.frames("approval/decide")).toEqual([]);
+    await shoot(page,"muse-subagent-card-after-stop",card(page));
+    await card(page).getByRole("button",{name:"Allow once",exact:true}).click();
+    await expect(card(page)).toHaveCount(0,{timeout:20_000});
+    await expect.poll(async()=>(await harness.frames("approval/decide")).map(frame=>frame.params.choiceId)).toEqual(["allow_once"]);
+  }finally{await harness.close()}
+});
+
 test("in Full access a workflow child's protected write shows on the approval card, answered by the person and never for them",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startMuseHarness();
@@ -202,9 +230,9 @@ test("in Full access a workflow child's protected write shows on the approval ca
     await send(page,"Please have the protected child write its settings");
     await expect(card(page)).toContainText(".muse/settings.json",{timeout:20_000});
     await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Reject"]);
-    // Titled for what it asks: a write to a protected file, which a workflow agent asks.
+    // Titled for what it asks: a write to a protected file, which a workflow agent asks while the turn runs.
     await expect(card(page).locator(".card-title strong")).toHaveText("Write to a protected file needs approval");
-    await expect(card(page).locator(":scope > p")).toHaveText("Asked by a Muse Code workflow agent, which runs on past the turn that started it.");
+    await expect(card(page).locator(":scope > p")).toHaveText("Asked by a Muse Code workflow agent.");
     await expect(card(page).getByTestId("approval-command")).toHaveText(".muse/settings.json");
     expect(await harness.frames("approval/decide")).toEqual([]);
     await shoot(page,"muse-protected-child-card",card(page));

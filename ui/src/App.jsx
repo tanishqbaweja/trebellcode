@@ -3238,7 +3238,8 @@ export default function App(){
     }
     if(permissionMode==="edits"&&message.method==="item/fileChange/requestApproval"){client.respond(message.id,{decision:"accept"});return}
     if(permissionMode==="edits"&&message.method==="applyPatchApproval"){client.respond(message.id,{decision:"approved"});return}
-    if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,ownedRequest(message,client)]);desktopNotify("Approval required",message.params?.reason||message.params?.command||"Trebell Code is waiting for permission.");return}
+    // The desktop notification says what is asked: the harness's own words for it (trebellNotice) where the card's line says who asks.
+    if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,ownedRequest(message,client)]);desktopNotify("Approval required",message.params?.trebellNotice||message.params?.reason||message.params?.command||"Trebell Code is waiting for permission.");return}
     client.reject(message.id,-32601,"Unsupported Trebell client request: "+message.method);
   }
   // A completed turn's verification is planned by turn-support.js (planCompletedTurnEvidence). A plan that cannot be made, also for

@@ -2355,7 +2355,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         },
         // outsideReadsAsk: the harness asks the person before it reads outside the workspace (Muse Code), so such a read is the person's
         // to answer, as T3 shows it: the workspace boundary refuses what a harness would do unasked. card: the harness's own words for
-        // its card (Muse Code's museApprovalCard): a title for what it asks (trebellTitle), the line under it and the command it shows.
+        // its card (Muse Code's museApprovalCard): a title for what it asks (trebellTitle), the line under it and the command it shows,
+        // and what is asked, for the desktop notification, when that line says who asks (trebellNotice).
         async permission(thread,{params,options,askUser=false,approvalOptions=null,signal=null,outsideReadsAsk=false,runless=false,card=null}){
           const current=threadStore.get(thread.id)||thread,turnId=current?.turns?.at(-1)?.id||null,traceData=agentPermissionTraceData({toolCall:params.toolCall,options});
           const traceBase={runtime:current?.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),environmentId:current?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,threadId:thread.id,turnId,category:"policy"};
@@ -2381,7 +2382,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           try{
             // An ACP harness's own choices (approvalOptions) are shown as the card's buttons; each answers with its decision.
             const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:card?.reason||agentApprovalReason(params),toolCall:params.toolCall,options,...(Array.isArray(approvalOptions)&&approvalOptions.length?{approvalOptions}:{}),
-              ...(card?.title?{trebellTitle:card.title}:{}),...(card?.command?{command:card.command}:{})},thread.id,signal,{runless}),decision=result?.decision||"decline";
+              ...(card?.title?{trebellTitle:card.title}:{}),...(card?.command?{command:card.command}:{}),...(card?.notice?{trebellNotice:card.notice}:{})},thread.id,signal,{runless}),decision=result?.decision||"decline";
             journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision,policyDecision:POLICY_CONFIRM}});return decision;
           }catch(error){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"error",data:{...traceData,message:error?.message||String(error)}});throw error;
