@@ -117,6 +117,12 @@ test("finished steps count every step with an outcome, notice rows included, and
   assert.equal(finishedActivitySteps(null),0);
 });
 
+// A harness's call that never started before its turn ended reads "not run" (activity-item.js settledRow): that is its outcome, so the
+// Runtime tab counts it complete with the call beside it that ran, not as a step still waiting.
+test("a call its turn ended before it started has its outcome, so the Runtime tab counts it complete",()=>{
+  assert.equal(finishedActivitySteps([{status:"done"},{status:"notRun"}]),2);
+});
+
 test("a Native exact edit that went through reads as a file change with the diff Trebell returned, one pair or an edits list",()=>{
   const diff="@@ -2,3 +2,3 @@ def greet(self):\n     name = self.name\n-    return 'Hello ' + name\n+    return 'Hi ' + name\n     # end";
   const edit={type:"dynamicToolCall",id:"edit-1",namespace:"trebell_workspace",tool:"replace_text",status:"completed",arguments:{path:"src/greet.py",edits:[{old_text:"'Hello '",new_text:"'Hi '"}]},rawOutput:{path:"/repo/src/greet.py",size:80,replacements:1,beforeSha256:"a".repeat(64),afterSha256:"b".repeat(64),diff}};
