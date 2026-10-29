@@ -1,7 +1,9 @@
 // The GUI server outside mock mode with the stand-in for Antigravity's ACP server (antigravity-acp-agent.mjs) as the Antigravity
 // profile's executable, Antigravity the harness in use, and every other harness missing from the machine as the server sees it: a
-// person's home, PATH, temp folder and Trebell home of the test's own. Answers Settings' sign-in route (post), a connection to the
-// agent relay the app's chats go through (connect), and the stand-in's scenario and log.
+// person's home, PATH, temp folder and Trebell home of the test's own. auth sets how the Antigravity profile signs in, geminiKey is a
+// Google Gemini key saved in Trebell's store before the server starts, and fetchFn stands in for the providers a key save checks.
+// Answers Settings' sign-in route (post), its key save (saveKey), a connection to the agent relay the app's chats go through
+// (connect), and the stand-in's scenario and log.
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -10,11 +12,12 @@ import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { createGuiServer } from "../../src/gui-server.mjs";
 import { TrebellStateStore } from "../../src/trebell-state.mjs";
+import { ProviderManager } from "../../src/provider-manager.mjs";
 
 const AGENT=fileURLToPath(new URL("./antigravity-acp-agent.mjs",import.meta.url));
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
-export async function antigravityGui(t,scenario={}){
+export async function antigravityGui(t,scenario={},{auth=null,geminiKey=null,fetchFn=undefined}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-agy-gui-")),person=join(root,"person"),trebellHome=join(root,"trebell"),project=join(root,"project"),scenarioPath=join(root,"scenario.json"),logPath=join(root,"log.jsonl");
   // The server and the relay connections close before the folders go (Windows keeps a running process's folder busy).
   const sockets=new Set();let gui=null;
@@ -28,9 +31,12 @@ export async function antigravityGui(t,scenario={}){
     TREBELL_HOME:trebellHome,CODEX_HOME:join(root,"codex"),TREBELL_CODEX_BIN:noCodex,TREBELL_HISTORY_DISABLE_CLAUDE:"1",TREBELL_AGY_SCENARIO:scenarioPath,TREBELL_AGY_LOG:logPath};
   const state=new TrebellStateStore(env);
   state.updateSettings({onboardingComplete:true,agentRuntime:"antigravity",agentRuntimeInstanceId:"antigravity-default",agentRuntimeInstances:[{id:"antigravity-default",kind:"antigravity",displayName:"Antigravity",enabled:true,binaryPath:wrapper,environment:{},approvedEnvironmentKeys:["TREBELL_AGY_SCENARIO","TREBELL_AGY_LOG"]}]});
+  if(auth){const settings=state.settings();state.updateSettings({agentRuntimeInstances:settings.agentRuntimeInstances.map(item=>item.id==="antigravity-default"?{...item,auth}:item)})}
   state.close();
+  if(geminiKey)new ProviderManager({env}).setKey("gemini",geminiKey);
   const setScenario=value=>writeFile(scenarioPath,JSON.stringify(value));await setScenario(scenario);
-  gui=await createGuiServer({port:await freePort(),mock:false,env});
+  gui=await createGuiServer({port:await freePort(),mock:false,env,...(fetchFn?{fetchFn}:{})});
+  const saveKey=async(provider,apiKey)=>{const response=await fetch(gui.url+"/api/providers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider,apiKey,select:false})});const text=await response.text();let body=null;try{body=JSON.parse(text)}catch{}return {status:response.status,text,body}};
   const post=async body=>{const response=await fetch(gui.url+"/api/agent-runtime-auth",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({runtime:"antigravity",instanceId:"antigravity-default",...body})});const text=await response.text();return {status:response.status,text,body:JSON.parse(text)}};
   const log=async()=>{try{return (await readFile(logPath,"utf8")).trim().split("\n").filter(Boolean).map(line=>JSON.parse(line))}catch{return []}};
   // A connection to the agent relay, as a Trebell window has one: requests (rpc) and the notifications it is sent (next).
@@ -51,7 +57,7 @@ export async function antigravityGui(t,scenario={}){
     });
     return {ws,rpc,next,seen};
   }
-  return {root,project,trebellHome,post,log,scenario:setScenario,connect,gui};
+  return {root,project,trebellHome,post,saveKey,log,scenario:setScenario,connect,gui};
 }
 
 // Waits, by real time, until condition() holds.

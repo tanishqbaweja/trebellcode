@@ -1,6 +1,7 @@
 // What an external harness (Claude Code, Codex, Cursor, Grok, OpenCode, Antigravity) starts with, beside the OS baseline and its own
-// variables: the person's toolchain locations and proxy, as their terminal gives them, without a value that holds a credential, and
-// for Claude Code its cloud-provider switches with their region, profile, project and model names. Native's command environment is
+// non-secret names: the person's toolchain locations and proxy, as their terminal gives them, without a value that holds a credential,
+// and never a provider's key, a sign-in token or Claude Code's cloud-provider switches (its own settings.json holds those): a harness
+// signs in with its own login, or runs on its vendor's key once its profile is set to an API key. Native's command environment is
 // what it was. Fixture values only: no real environment is read.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -25,7 +26,7 @@ test("Claude Code, Codex, Cursor and the other harnesses start with the person's
     const env=buildRuntimeEnvironment(kind,{parent:parentWith({}),platform:"linux"});
     assert.equal(env.PATH,"/usr/local/bin:/usr/bin",kind);assert.equal(env.HOME,"/home/me",kind);
     for(const [name,value] of Object.entries({...TOOLCHAIN,...PROXY}))assert.equal(env[name],value,`${kind} ${name}`);
-    for(const name of Object.keys(SECRETS))if(!(kind==="opencode"&&name==="AWS_SECRET_ACCESS_KEY"))assert.equal(env[name],undefined,`${kind} ${name}`);
+    for(const name of Object.keys(SECRETS))assert.equal(env[name],undefined,`${kind} ${name}`);
   }
 });
 
@@ -51,30 +52,29 @@ test("on Windows a harness gets each proxy once, whatever its spelling, and its 
   assert.deepEqual(approved,{PATH:"C:\\Tools",https_proxy:"http://user:pass@proxy:8080"});
 });
 
-test("Claude Code gets its cloud-provider switches and their region, profile, project and model names, and not the providers' secrets",()=>{
+// Claude Code on Amazon Bedrock, Google's Agent Platform or Microsoft Foundry runs on that cloud's own credentials: its switches,
+// regions and credential files are Claude Code's own configuration (its settings.json env), never something Trebell's environment
+// hands it, so a CLAUDE_CODE_USE_BEDROCK there never moves Claude Code off the person's own sign-in.
+test("Claude Code gets no cloud-provider switch, credential file or cloud secret from Trebell's environment, approved or not",()=>{
   const providers={
     CLAUDE_CODE_USE_BEDROCK:"1",CLAUDE_CODE_USE_VERTEX:"1",CLAUDE_CODE_USE_FOUNDRY:"1",CLAUDE_CODE_USE_MANTLE:"1",CLAUDE_CODE_SKIP_BEDROCK_AUTH:"1",
-    AWS_REGION:"us-east-1",AWS_PROFILE:"bedrock-dev",ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION:"us-west-2",ANTHROPIC_BEDROCK_BASE_URL:"https://gateway.example/bedrock",
-    ANTHROPIC_VERTEX_PROJECT_ID:"vertex-project",CLOUD_ML_REGION:"global",VERTEX_REGION_CLAUDE_4_6_SONNET:"europe-west1",VERTEX_REGION_CLAUDE_5_5_OPUS:"us-east5",
-    ANTHROPIC_FOUNDRY_RESOURCE:"my-resource",ANTHROPIC_DEFAULT_OPUS_MODEL:"us.anthropic.claude-opus-4-8",ANTHROPIC_DEFAULT_HAIKU_MODEL:"claude-haiku-4-5",ANTHROPIC_MODEL:"claude-opus-4-8",
+    AWS_REGION:"us-east-1",AWS_PROFILE:"bedrock-dev",AWS_SHARED_CREDENTIALS_FILE:"/home/me/.aws/credentials",GOOGLE_APPLICATION_CREDENTIALS:"/home/me/adc.json",
+    ANTHROPIC_VERTEX_PROJECT_ID:"vertex-project",CLOUD_ML_REGION:"global",VERTEX_REGION_CLAUDE_4_6_SONNET:"europe-west1",ANTHROPIC_MODEL:"claude-opus-4-8",
   };
   const secrets={AWS_ACCESS_KEY_ID:"AKIAFIXTURE",AWS_SECRET_ACCESS_KEY:"fixture-secret",AWS_SESSION_TOKEN:"fixture-session",AWS_BEARER_TOKEN_BEDROCK:"fixture-bedrock-key",
     ANTHROPIC_FOUNDRY_API_KEY:"fixture-foundry-key",ANTHROPIC_FOUNDRY_AUTH_TOKEN:"fixture-foundry-token",ANTHROPIC_AWS_API_KEY:"fixture-aws-platform",ANTHROPIC_CUSTOM_HEADERS:"Authorization: Bearer fixture"};
   const parent={PATH:"/usr/bin",HOME:"/home/me",...providers,...secrets};
   const claude=buildRuntimeEnvironment("claude",{parent,platform:"linux"});
-  for(const [name,value] of Object.entries(providers))assert.equal(claude[name],value,name);
-  for(const name of Object.keys(secrets))assert.equal(claude[name],undefined,name);
-  // The person can still approve one, as any other name.
-  assert.equal(buildRuntimeEnvironment("claude",{parent,approved:["AWS_SECRET_ACCESS_KEY"],platform:"linux"}).AWS_SECRET_ACCESS_KEY,"fixture-secret");
-  // They are Claude Code's: Codex and Cursor do not get them.
-  for(const kind of ["codex","cursor"]){const env=buildRuntimeEnvironment(kind,{parent,platform:"linux"});for(const name of ["CLAUDE_CODE_USE_BEDROCK","VERTEX_REGION_CLAUDE_4_6_SONNET","ANTHROPIC_VERTEX_PROJECT_ID"])assert.equal(env[name],undefined,`${kind} ${name}`)}
+  assert.deepEqual(claude,{PATH:"/usr/bin",HOME:"/home/me"});
+  // A secret stays out even when a profile lists it; a plain name it lists passes, as any approved name does.
+  const approved=buildRuntimeEnvironment("claude",{parent,approved:[...Object.keys(secrets),"GOOGLE_APPLICATION_CREDENTIALS","AWS_PROFILE"],platform:"linux"});
+  for(const name of [...Object.keys(secrets),"GOOGLE_APPLICATION_CREDENTIALS"])assert.equal(approved[name],undefined,name);
+  assert.equal(approved.AWS_PROFILE,"bedrock-dev");
 });
 
-// `claude auth status` answers for the provider its switch names: Claude Code 2.1.311 in a home of its own said
-// {"loggedIn":true,"authMethod":"third_party","apiProvider":"bedrock"} with CLAUDE_CODE_USE_BEDROCK=1 (and the same for "vertex" and
-// "foundry" with their switches), and {"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"} (exit 1) without one
-// (live check, 2026-10-27).
-test("a Claude Code profile that runs on Amazon Bedrock from the shell reads signed in: its status check gets the switch and the region",async t=>{
+// `claude auth status` answers for the provider its switch names: with CLAUDE_CODE_USE_BEDROCK=1 Claude Code reads signed in on
+// Bedrock (live check, 2026-10-27). That switch in Trebell's environment no longer reaches it: its own sign-in decides.
+test("a Claude Code whose Bedrock switch is only in Trebell's environment is checked on its own sign-in",async t=>{
   const home=mkdtempSync(join(tmpdir(),"trebell-harness-env-"));t.after(()=>rmSync(home,{recursive:true,force:true}));
   const binary=join(home,"claude");writeFileSync(binary,"claude build 1");
   const calls=[],settings={agentRuntime:"claude",agentRuntimeInstances:[{id:"claude-default",kind:"claude",binaryPath:binary,environment:{}}]};
@@ -85,18 +85,18 @@ test("a Claude Code profile that runs on Amazon Bedrock from the shell reads sig
       ?{ok:true,code:0,error:null,stdout:JSON.stringify({loggedIn:true,authMethod:"third_party",apiProvider:"bedrock"}),stderr:""}
       :{ok:false,code:1,error:null,stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"}),stderr:""};
   };
-  const manager=new AgentRuntimeManager({state:{settings:()=>settings},platform:"linux",env:{PATH:"/usr/bin",HOME:home,TREBELL_HOME:join(home,"trebell"),CLAUDE_CODE_USE_BEDROCK:"1",AWS_REGION:"us-east-1",AWS_PROFILE:"bedrock-dev",AWS_SECRET_ACCESS_KEY:"fixture-secret"},runFn});
+  const manager=new AgentRuntimeManager({state:{settings:()=>settings},platform:"linux",env:{PATH:"/usr/bin",HOME:home,TREBELL_HOME:join(home,"trebell"),CLAUDE_CODE_USE_BEDROCK:"1",AWS_REGION:"us-east-1",AWS_PROFILE:"bedrock-dev",AWS_SECRET_ACCESS_KEY:"fixture-secret",ANTHROPIC_API_KEY:"sk-ant-fixture"},runFn});
   const status=await manager.probe("claude");
-  assert.deepEqual([status.installed,status.available,status.authenticated],[true,true,true],status.message);
+  assert.deepEqual([status.installed,status.available,status.authenticated],[true,false,false],status.message);
+  assert.match(status.message,/claude auth login/);
   const auth=calls.find(call=>call.args==="auth status");
-  assert.deepEqual([auth.env.CLAUDE_CODE_USE_BEDROCK,auth.env.AWS_REGION,auth.env.AWS_PROFILE,auth.env.AWS_SECRET_ACCESS_KEY],["1","us-east-1","bedrock-dev",undefined]);
+  assert.deepEqual([auth.env.CLAUDE_CODE_USE_BEDROCK,auth.env.AWS_REGION,auth.env.AWS_PROFILE,auth.env.AWS_SECRET_ACCESS_KEY,auth.env.ANTHROPIC_API_KEY],[undefined,undefined,undefined,undefined,undefined]);
 });
 
 // A host's harness gets its listed names through env -i as NAME="${NAME-}", the host's own value or an empty one where the host sets
-// none, so the cloud-provider and model names stay with Claude Code on this machine: on a host, an empty ANTHROPIC_MODEL or
-// AWS_PROFILE is not an unset one.
-test("a Claude Code on an SSH or WSL host gets the names it always had, not the cloud-provider and model names as empty variables",async()=>{
-  const OPTIONAL=["CLAUDE_CODE_USE_BEDROCK","CLAUDE_CODE_SKIP_VERTEX_AUTH","AWS_REGION","AWS_PROFILE","ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION","ANTHROPIC_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES","CLOUD_ML_REGION","GOOGLE_APPLICATION_CREDENTIALS","ANTHROPIC_FOUNDRY_RESOURCE"];
+// none: a Claude Code there gets its home and endpoint names and the baseline, and no key or sign-in token of the host's shell.
+test("a Claude Code on an SSH or WSL host gets no key, token or cloud-provider name from the host's shell",async()=>{
+  const OPTIONAL=["CLAUDE_CODE_USE_BEDROCK","CLAUDE_CODE_SKIP_VERTEX_AUTH","AWS_REGION","AWS_PROFILE","ANTHROPIC_MODEL","CLOUD_ML_REGION","GOOGLE_APPLICATION_CREDENTIALS","ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN"];
   const profile={id:"ssh-claude",type:"ssh",cwd:"/srv/app"},sent=[];
   const environments={get:id=>id===profile.id?profile:null,spawnArgv:()=>{throw new Error("nothing is started on the host")},
     executeArgv:async(_id,{command,args,environmentNames})=>{sent.push(remoteEnvironmentCommand([command,...args].join(" "),environmentNames));return args[0]==="auth"?{exitCode:0,stdout:JSON.stringify({loggedIn:true}),stderr:""}:{exitCode:0,stdout:"2.1.311 (Claude Code)\n",stderr:""}}};
@@ -104,16 +104,23 @@ test("a Claude Code on an SSH or WSL host gets the names it always had, not the 
   await manager.probe("claude");
   assert.equal(sent.length,2,"its version and sign-in checks");
   for(const command of sent){
-    for(const name of OPTIONAL)assert.equal(command.includes(`${name}="\${${name}-}"`),false,`${name} in ${command.slice(0,80)}`);
-    for(const name of ["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","ANTHROPIC_BASE_URL","PATH","HOME"])assert.ok(command.includes(`${name}="\${${name}-}"`),name);
+    for(const name of OPTIONAL)assert.equal(command.includes(name+"="),false,`${name} in ${command.slice(0,80)}`);
+    for(const name of ["ANTHROPIC_BASE_URL","PATH","HOME"])assert.ok(command.includes(name+'="$'+"{"+name+'-}"'),name);
   }
-  // Its sessions there get the same names, and a name the profile approves goes as any approved name does.
+  // Its sessions there get the same names, and a plain name the profile approves goes as any approved name does; a key never.
   const names=manager.childEnvironmentKeys({id:"claude-default",kind:"claude"});
   assert.deepEqual(OPTIONAL.filter(name=>names.includes(name)),[]);
   assert.ok(manager.childEnvironmentKeys({id:"claude-bedrock",kind:"claude",approvedEnvironmentKeys:["AWS_PROFILE"]}).includes("AWS_PROFILE"));
-  // On this machine Claude Code still gets the ones Trebell's environment sets, and no empty one.
-  const local=buildRuntimeEnvironment("claude",{parent:{PATH:"/usr/bin",CLAUDE_CODE_USE_BEDROCK:"1",AWS_REGION:"us-east-1",ANTHROPIC_MODEL:""},platform:"linux"});
-  assert.deepEqual(local,{PATH:"/usr/bin",CLAUDE_CODE_USE_BEDROCK:"1",AWS_REGION:"us-east-1"});
+  assert.equal(manager.childEnvironmentKeys({id:"claude-key",kind:"claude",approvedEnvironmentKeys:["ANTHROPIC_API_KEY"]}).includes("ANTHROPIC_API_KEY"),false);
+  // A profile set to an API key gets no key from the host's shell either: it runs on an API key only on this machine, and its status
+  // there says to sign in with its own login (no turn starts on a half sign-in).
+  const onKey=manager.childEnvironmentKeys({id:"claude-api",kind:"claude",auth:"api-key"});
+  assert.equal(onKey.some(name=>["ANTHROPIC_API_KEY","OPENAI_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN"].includes(name)),false);
+  sent.length=0;
+  const status=await manager.probe({id:"claude-api",kind:"claude",auth:"api-key"},{fresh:true});
+  assert.deepEqual([status.available,status.authenticated,status.authMethod],[false,false,"api-key"]);
+  assert.equal(status.message,"Claude Code runs on an API key only on this machine: Trebell Code never sends a saved key to a WSL or SSH environment. In this environment, set Claude Code to Sign in and sign in there with claude auth login.");
+  for(const command of sent)assert.equal(command.includes("ANTHROPIC_API_KEY"),false,command.slice(0,80));
 });
 
 // The login shell's __MISE_DIFF (login-shell-environment.mjs) can encode the values of mise's [env], secrets among them: a harness
@@ -137,7 +144,7 @@ test("the harness processes Trebell starts get them: Claude Code's sessions and 
   const manager=new AgentRuntimeManager({state:{settings:()=>({})},platform:"linux",env});
   const claude=manager.childEnv({id:"claude-work",kind:"claude",homePath:"/home/me/.claude-work",approvedEnvironmentKeys:[],environment:{}});
   assert.equal(claude.CLAUDE_CONFIG_DIR,"/home/me/.claude-work","the profile's home, never the parent's");
-  assert.equal(claude.JAVA_HOME,TOOLCHAIN.JAVA_HOME);assert.equal(claude.HTTPS_PROXY,PROXY.HTTPS_PROXY);assert.equal(claude.CLAUDE_CODE_USE_VERTEX,"1");assert.equal(claude.CLOUD_ML_REGION,"global");
+  assert.equal(claude.JAVA_HOME,TOOLCHAIN.JAVA_HOME);assert.equal(claude.HTTPS_PROXY,PROXY.HTTPS_PROXY);assert.equal(claude.CLAUDE_CODE_USE_VERTEX,undefined);assert.equal(claude.CLOUD_ML_REGION,undefined);
   assert.equal(claude.GITHUB_TOKEN,undefined);
   assert.equal(manager.childEnv({id:"claude-default",kind:"claude"}).CLAUDE_CONFIG_DIR,undefined,"no profile home: Claude Code's own default, not the parent's");
   const cursor=manager.childEnv({id:"cursor-default",kind:"cursor"});

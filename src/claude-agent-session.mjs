@@ -343,7 +343,7 @@ export function claudeUsageLimited(result,limited){
 
 export function claudeSignedOutMessage(configDir=""){
   const home=String(configDir||"").trim();
-  return `Claude Code could not authenticate. Run \`claude auth login\`${home?` with CLAUDE_CONFIG_DIR set to "${home}"`:""}, then send the message again. For API-key authentication, check this profile's configured credentials.`;
+  return `Claude Code could not authenticate. Run \`claude auth login\`${home?` with CLAUDE_CONFIG_DIR set to "${home}"`:""}, then send the message again, or set this profile to run on the Anthropic API key in Agents & models.`;
 }
 
 // failureHint: sign-in or usage-limit evidence; apiError: the API's own words for an api_error (an explained reply's text, or the

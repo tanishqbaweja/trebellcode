@@ -3,7 +3,7 @@ import { hashedCodexAppServerToken } from "./codex-app-server-auth.mjs";
 import { remoteCommandWords, remoteEnvironmentCommand, remoteHomeGuard, remotePathExpression, remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
-import { runtimeEnvironmentKeys } from "./runtime-environment.mjs";
+import { isHarnessCredentialName, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 
 function quotePosix(value){
   return "'" + String(value).replace(/'/g,"'\\''") + "'";
@@ -57,8 +57,9 @@ export function remoteCodexProfileSetup({profile={},runtimeInstance=null}={}){
   const instance=runtimeInstance||{};
   const command=String(instance.binaryPath||profile.codexPath||"codex").trim()||"codex";
   const lines=[];
+  // A profile's own variables, never one that carries a credential (runtime-environment.mjs): Codex signs in with codex login.
   for(const [name,value] of Object.entries(instance.environment||{})){
-    if(!/^[A-Z_][A-Z0-9_]*$/i.test(name)||value==null)continue;
+    if(!/^[A-Z_][A-Z0-9_]*$/i.test(name)||value==null||isHarnessCredentialName(name))continue;
     lines.push("export "+name+"="+quotePosix(String(value)));
   }
   const home=remoteCodexHomeSetup(instance);if(home)lines.push(home);

@@ -181,7 +181,7 @@ test("the official Cursor .cmd launcher wins over PATH and serves version, about
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
 });
 
-test("runtime child environments do not inherit unrelated parent secrets",async()=>{
+test("runtime child environments inherit no key, approved or not, and the profile keeps only names",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-env-"));
   try{
     const state=new TrebellStateStore({...process.env,TREBELL_HOME:home});
@@ -189,14 +189,18 @@ test("runtime child environments do not inherit unrelated parent secrets",async(
       state,platform:"linux",
       env:{PATH:"/usr/bin",HOME:"/home/test",ANTHROPIC_API_KEY:"claude-secret",OPENAI_API_KEY:"openai-secret",GITHUB_TOKEN:"github-secret",TEAM_PROXY:"http://proxy"},
     });
-    const claude=manager.upsertInstance({id:"claude-safe",kind:"claude",displayName:"Claude safe",approvedEnvironmentKeys:["TEAM_PROXY","GITHUB_TOKEN"],environment:{CUSTOM_MODE:"safe",CURSOR_API_KEY:"must-not-persist"}});
+    // A key name is refused for a harness profile: a harness signs in with its own login or, set to API key, its vendor's key.
+    assert.throws(()=>manager.upsertInstance({id:"claude-safe",kind:"claude",approvedEnvironmentKeys:["TEAM_PROXY","GITHUB_TOKEN"]}),/GITHUB_TOKEN holds an API key or sign-in/);
+    const claude=manager.upsertInstance({id:"claude-safe",kind:"claude",displayName:"Claude safe",approvedEnvironmentKeys:["TEAM_PROXY"],environment:{CUSTOM_MODE:"safe",CURSOR_API_KEY:"must-not-persist"}});
     assert.deepEqual(claude.environment,{CUSTOM_MODE:"safe"});
-    assert.deepEqual(claude.approvedEnvironmentKeys,["TEAM_PROXY","GITHUB_TOKEN"]);
+    assert.deepEqual(claude.approvedEnvironmentKeys,["TEAM_PROXY"]);
     const env=manager.childEnv(claude);
-    assert.equal(env.PATH,"/usr/bin");assert.equal(env.ANTHROPIC_API_KEY,"claude-secret");assert.equal(env.OPENAI_API_KEY,undefined);
-    assert.equal(env.GITHUB_TOKEN,"github-secret","explicit approval should pass the current parent value without storing it");assert.equal(env.TEAM_PROXY,"http://proxy");assert.equal(env.CUSTOM_MODE,"safe");
+    assert.equal(env.PATH,"/usr/bin");assert.equal(env.ANTHROPIC_API_KEY,undefined,"Claude Code on Sign in gets no Anthropic key");assert.equal(env.OPENAI_API_KEY,undefined);
+    assert.equal(env.GITHUB_TOKEN,undefined);assert.equal(env.TEAM_PROXY,"http://proxy","an approved name passes the current parent value without storing it");assert.equal(env.CUSTOM_MODE,"safe");
+    // A profile saved before approvals were checked keeps a key name in its list, and its launch still leaves the key out.
+    assert.equal(manager.childEnv({...claude,approvedEnvironmentKeys:["TEAM_PROXY","GITHUB_TOKEN","ANTHROPIC_API_KEY"]}).GITHUB_TOKEN,undefined);
     const persisted=await readFile(join(home,"ui-state.json"),"utf8");
-    assert.doesNotMatch(persisted,/claude-secret|github-secret|http:\/\/proxy/);assert.match(persisted,/GITHUB_TOKEN/);
+    assert.doesNotMatch(persisted,/claude-secret|github-secret|http:\/\/proxy/);assert.match(persisted,/TEAM_PROXY/);
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
@@ -224,8 +228,8 @@ test("remote runtime processes receive the same least-privilege environment-name
   const spawnRuntime=manager.processSpawner(instance,"ssh-fixture");assert.ok(spawnRuntime);
   spawnRuntime({args:["--version"],cwd:"/srv/app",stdio:["ignore","pipe","pipe"]});
   const names=calls[0].options.environmentNames;
-  assert.ok(names.includes("PATH"));assert.ok(names.includes("HOME"));assert.ok(names.includes("ANTHROPIC_API_KEY"));assert.ok(names.includes("TEAM_PROXY"));
-  assert.equal(names.includes("OPENAI_API_KEY"),false);
+  assert.ok(names.includes("PATH"));assert.ok(names.includes("HOME"));assert.ok(names.includes("TEAM_PROXY"));
+  assert.equal(names.includes("ANTHROPIC_API_KEY"),false,"a host's Claude Code on Sign in gets no key from the host's shell");assert.equal(names.includes("OPENAI_API_KEY"),false);
 });
 
 test("remote runtime spawns carry explicit variables, and the runtime CLI runs where the profile runs",async()=>{
@@ -655,7 +659,7 @@ test("an OpenCode from its own installer updates with opencode upgrade to the ne
   }finally{await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
 
-test("remote runtime usage reads the remote login but returns only normalized limits",async()=>{
+test("a host's Cursor, Grok and OpenCode usage reads no variable or file there and calls no one",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-remote-usage-"));const env={...process.env,TREBELL_HOME:home};
   try{
     const state=new TrebellStateStore(env);state.updateSettings({activeEnvironmentId:"ssh-usage",agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default"});
@@ -670,13 +674,13 @@ test("remote runtime usage reads the remote login but returns only normalized li
         return {exitCode:1,stdout:"",stderr:"not found"};
       },
     };
-    let authorization="";
-    const manager=new AgentRuntimeManager({state,env,environments,fetchImpl:async(_url,options)=>{authorization=options.headers.authorization;return new Response(JSON.stringify({planUsage:{totalPercentUsed:61}}),{status:200,headers:{"content-type":"application/json"}})}});
-    const limits=await manager.usageLimits("cursor");
-    assert.equal(authorization,"Bearer remote-private-token");
-    assert.equal(limits.windows[0].usedPercent,61);
-    assert.doesNotMatch(JSON.stringify(limits),/remote-private-token/);
-    assert.equal(calls.some(call=>call.command==="sh"),true);
+    let fetched=0;
+    const manager=new AgentRuntimeManager({state,env,environments,fetchImpl:async()=>{fetched++;return new Response("{}",{status:200})}});
+    for(const kind of ["cursor","grok","opencode"]){
+      const limits=await manager.usageLimits(kind);
+      assert.deepEqual(limits.windows,[]);assert.equal(limits.unavailable.reason,"unsupported");assert.match(limits.unavailable.message,/never reads the sign-in/);
+    }
+    assert.equal(fetched,0);assert.deepEqual(calls,[]);
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 

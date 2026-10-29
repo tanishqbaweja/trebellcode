@@ -1,36 +1,48 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildRuntimeEnvironment, carriesCredentials, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys, TOOLCHAIN_ENVIRONMENT_KEYS } from "../src/runtime-environment.mjs";
+import { buildRuntimeEnvironment, carriesCredentials, isHarnessCredentialName, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys, TOOLCHAIN_ENVIRONMENT_KEYS } from "../src/runtime-environment.mjs";
+import { MODEL_PROVIDERS } from "../src/provider-manager.mjs";
 
-test("runtime environments keep OS essentials and only the selected runtime credentials",()=>{
+// A harness signs in with its own login, or runs on its vendor's key only when its profile is set to an API key (harness-auth.mjs,
+// added by AgentRuntimeManager): Trebell's environment never hands one a provider's key or a sign-in token.
+test("runtime environments keep OS essentials and give no harness a credential from Trebell's environment",()=>{
   const parent={
-    PATH:"/usr/bin",HOME:"/home/me",LANG:"en_US.UTF-8",
-    ANTHROPIC_API_KEY:"claude-secret",OPENAI_API_KEY:"openai-secret",XAI_API_KEY:"xai-secret",
+    PATH:"/usr/bin",HOME:"/home/me",LANG:"en_US.UTF-8",CODEX_HOME:"/home/me/.codex",ANTHROPIC_BASE_URL:"https://gateway.example",
+    ANTHROPIC_API_KEY:"claude-secret",ANTHROPIC_AUTH_TOKEN:"claude-token",CLAUDE_CODE_OAUTH_TOKEN:"claude-oauth",OPENAI_API_KEY:"openai-secret",CODEX_API_KEY:"codex-secret",XAI_API_KEY:"xai-secret",
     GITHUB_TOKEN:"github-secret",AWS_SECRET_ACCESS_KEY:"aws-secret",TREBELL_INTERNAL_SECRET:"trebell-secret",
   };
   const claude=buildRuntimeEnvironment("claude",{parent,platform:"linux"});
-  assert.equal(claude.PATH,"/usr/bin");assert.equal(claude.HOME,"/home/me");assert.equal(claude.ANTHROPIC_API_KEY,"claude-secret");
-  assert.equal(claude.OPENAI_API_KEY,undefined);assert.equal(claude.XAI_API_KEY,undefined);assert.equal(claude.GITHUB_TOKEN,undefined);assert.equal(claude.AWS_SECRET_ACCESS_KEY,undefined);assert.equal(claude.TREBELL_INTERNAL_SECRET,undefined);
-  const codex=buildRuntimeEnvironment("codex",{parent,platform:"linux"});assert.equal(codex.OPENAI_API_KEY,"openai-secret");assert.equal(codex.ANTHROPIC_API_KEY,undefined);
+  assert.equal(claude.PATH,"/usr/bin");assert.equal(claude.HOME,"/home/me");assert.equal(claude.ANTHROPIC_BASE_URL,"https://gateway.example","an endpoint holds no secret");
+  for(const name of ["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","OPENAI_API_KEY","XAI_API_KEY","GITHUB_TOKEN","AWS_SECRET_ACCESS_KEY","TREBELL_INTERNAL_SECRET"])assert.equal(claude[name],undefined,name);
+  const codex=buildRuntimeEnvironment("codex",{parent,platform:"linux"});assert.equal(codex.CODEX_HOME,"/home/me/.codex");
+  for(const name of ["OPENAI_API_KEY","CODEX_API_KEY","ANTHROPIC_API_KEY"])assert.equal(codex[name],undefined,name);
+  for(const kind of ["codex","claude","cursor","grok","opencode","antigravity","muse"])for(const name of runtimeEnvironmentKeys(kind))
+    assert.ok(!isHarnessCredentialName(name)||name==="OPENCODE_SERVER_PASSWORD",`${kind} forwards ${name}`);
 });
 
-test("explicit inherited variable names expose values without persisting them in the profile",()=>{
-  const parent={PATH:"/bin",AWS_SECRET_ACCESS_KEY:"approved-secret",TEAM_FEATURE_FLAG:"yes",UNRELATED_SECRET:"nope"};
-  const approved=normalizeApprovedEnvironmentKeys(["AWS_SECRET_ACCESS_KEY","TEAM_FEATURE_FLAG","TEAM_FEATURE_FLAG","not-valid?"]);
-  assert.deepEqual(approved,["AWS_SECRET_ACCESS_KEY","TEAM_FEATURE_FLAG"]);
-  const env=buildRuntimeEnvironment("opencode",{parent,approved,overrides:{CUSTOM_MODE:"safe"},platform:"linux"});
-  assert.equal(env.AWS_SECRET_ACCESS_KEY,"approved-secret");assert.equal(env.TEAM_FEATURE_FLAG,"yes");assert.equal(env.CUSTOM_MODE,"safe");assert.equal(env.UNRELATED_SECRET,undefined);
-  assert.ok(runtimeEnvironmentKeys("opencode",{approved}).includes("AWS_SECRET_ACCESS_KEY"));
+test("approved names and a profile's own variables pass only when they hold no credential, for every harness but Native",()=>{
+  const parent={PATH:"/bin",AWS_SECRET_ACCESS_KEY:"approved-secret",AWS_ACCESS_KEY_ID:"aws-id",META_API_KEY:"meta-secret",GROK_AUTH:"{}",GOOGLE_APPLICATION_CREDENTIALS:"/adc.json",TEAM_FEATURE_FLAG:"yes",UNRELATED_SECRET:"nope",MCP_BEARER_TOKEN:"mcp"};
+  const approved=normalizeApprovedEnvironmentKeys(["AWS_SECRET_ACCESS_KEY","AWS_ACCESS_KEY_ID","META_API_KEY","GROK_AUTH","GOOGLE_APPLICATION_CREDENTIALS","TEAM_FEATURE_FLAG","TEAM_FEATURE_FLAG","not-valid?"]);
+  assert.deepEqual(approved,["AWS_SECRET_ACCESS_KEY","AWS_ACCESS_KEY_ID","META_API_KEY","GROK_AUTH","GOOGLE_APPLICATION_CREDENTIALS","TEAM_FEATURE_FLAG"]);
+  for(const kind of ["opencode","claude","muse","grok"]){
+    const env=buildRuntimeEnvironment(kind,{parent,approved,overrides:{CUSTOM_MODE:"safe",OPENCODE_AUTH_CONTENT:"{}",ANTHROPIC_CUSTOM_HEADERS:"x-api-key: k"},platform:"linux"});
+    assert.equal(env.TEAM_FEATURE_FLAG,"yes");assert.equal(env.CUSTOM_MODE,"safe");assert.equal(env.UNRELATED_SECRET,undefined);
+    for(const name of ["AWS_SECRET_ACCESS_KEY","AWS_ACCESS_KEY_ID","META_API_KEY","GROK_AUTH","GOOGLE_APPLICATION_CREDENTIALS","OPENCODE_AUTH_CONTENT","ANTHROPIC_CUSTOM_HEADERS"])assert.equal(env[name],undefined,kind+" "+name);
+    const names=runtimeEnvironmentKeys(kind,{approved});assert.ok(names.includes("TEAM_FEATURE_FLAG"));assert.equal(names.some(name=>isHarnessCredentialName(name)&&name!=="OPENCODE_SERVER_PASSWORD"),false);
+  }
+  // Trebell Native keeps its approvals (its MCP servers' bearer names, its source control's tokens).
+  assert.equal(buildRuntimeEnvironment("native",{parent,approved:["MCP_BEARER_TOKEN"],platform:"linux"}).MCP_BEARER_TOKEN,"mcp");
+  assert.ok(runtimeEnvironmentKeys("native",{approved:["MCP_BEARER_TOKEN"]}).includes("MCP_BEARER_TOKEN"));
 });
 
-test("OpenCode receives supported upstream provider variables without inheriting unrelated credentials",()=>{
-  const parent={PATH:"/bin",HF_TOKEN:"hf-value",NVIDIA_API_KEY:"nv-value",OPENAI_API_KEY:"oa-value",GEMINI_API_KEY:"gem-value",GITHUB_TOKEN:"github-value",CI_DEPLOY_TOKEN:"ci-value"};
-  const env=buildRuntimeEnvironment("opencode",{parent,platform:"linux"});
-  assert.equal(env.HF_TOKEN,"hf-value");assert.equal(env.NVIDIA_API_KEY,"nv-value");assert.equal(env.OPENAI_API_KEY,"oa-value");assert.equal(env.GEMINI_API_KEY,"gem-value");
-  assert.equal(env.GITHUB_TOKEN,undefined);assert.equal(env.CI_DEPLOY_TOKEN,undefined);
+test("every model provider's key and every harness's sign-in variable counts as a credential, in any case",()=>{
+  for(const provider of Object.values(MODEL_PROVIDERS))for(const name of [provider.envKey,...(provider.envKeys||[])])assert.ok(isHarnessCredentialName(name),name);
+  for(const name of ["OPENAI_API_KEY","CODEX_API_KEY","ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","CURSOR_API_KEY","CURSOR_AUTH_TOKEN","XAI_API_KEY","GROK_CODE_XAI_API_KEY","GROK_AUTH","GROK_AUTH_PROVIDER_COMMAND","OPENCODE_API_KEY","OPENCODE_AUTH_CONTENT","GEMINI_API_KEY","GOOGLE_API_KEY","GOOGLE_APPLICATION_CREDENTIALS","META_API_KEY","MODEL_API_KEY","HF_TOKEN","NVIDIA_API_KEY","AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_SESSION_TOKEN","AWS_BEARER_TOKEN_BEDROCK","ANTHROPIC_CUSTOM_HEADERS","MUSE_CUSTOM_HEADERS","SOME_SERVICE_CREDENTIALS","github_token","xai_api_key"])
+    assert.ok(isHarnessCredentialName(name),name);
+  for(const name of ["PATH","CODEX_HOME","GROK_HOME","OPENAI_BASE_URL","ANTHROPIC_BASE_URL","MUSE_CHANNEL","HTTPS_PROXY","JAVA_HOME","TEAM_FEATURE_FLAG"])assert.equal(isHarnessCredentialName(name),false,name);
 });
 
-// Antigravity signs in only with the Gemini API key Trebell keeps for it, in a home of its own (antigravity-auth.mjs).
+// Antigravity takes no Google credential, project or home from Trebell's environment (antigravity-auth.mjs).
 test("Antigravity inherits no Google credential or project, nor unrelated secrets",()=>{
   const parent={PATH:"/bin",HOME:"/home/me",GOOGLE_API_KEY:"google-value",GOOGLE_CLOUD_PROJECT:"project-a",GOOGLE_APPLICATION_CREDENTIALS:"/home/me/adc.json",OPENAI_API_KEY:"other-provider",GITHUB_TOKEN:"unrelated"};
   const env=buildRuntimeEnvironment("antigravity",{parent,platform:"linux"});
@@ -38,9 +50,10 @@ test("Antigravity inherits no Google credential or project, nor unrelated secret
   assert.equal(env.OPENAI_API_KEY,undefined);assert.equal(env.GITHUB_TOKEN,undefined);assert.equal(env.PATH,"/bin");assert.equal(env.HOME,"/home/me");
 });
 
-test("Windows runtime environment lookup handles Path casing without copying unrelated variables",()=>{
-  const env=buildRuntimeEnvironment("cursor",{parent:{Path:"C:\\Tools",USERPROFILE:"C:\\Users\\me",CURSOR_AUTH_TOKEN:"cursor-secret",RANDOM_TOKEN:"nope"},platform:"win32"});
-  assert.equal(env.PATH,"C:\\Tools");assert.equal(env.USERPROFILE,"C:\\Users\\me");assert.equal(env.CURSOR_AUTH_TOKEN,"cursor-secret");assert.equal(env.RANDOM_TOKEN,undefined);
+test("Windows runtime environment lookup handles Path casing without copying a credential in any case",()=>{
+  const env=buildRuntimeEnvironment("cursor",{parent:{Path:"C:\\Tools",USERPROFILE:"C:\\Users\\me",CURSOR_AUTH_TOKEN:"cursor-secret",cursor_api_key:"cursor-key",CURSOR_API_ENDPOINT:"https://cursor.example",RANDOM_TOKEN:"nope"},approved:["Cursor_Auth_Token"],platform:"win32"});
+  assert.equal(env.PATH,"C:\\Tools");assert.equal(env.USERPROFILE,"C:\\Users\\me");assert.equal(env.CURSOR_API_ENDPOINT,"https://cursor.example");
+  for(const name of ["CURSOR_AUTH_TOKEN","cursor_api_key","Cursor_Auth_Token","CURSOR_API_KEY","RANDOM_TOKEN"])assert.equal(env[name],undefined,name);
 });
 
 test("Antigravity inherits only the OS baseline, not the person's Gemini home or key",()=>{

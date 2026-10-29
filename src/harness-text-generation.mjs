@@ -364,7 +364,7 @@ async function museText(ctx){
   const catalog=runtimeManager.museModelCatalog?.(instance)||null,listed=Array.isArray(catalog?.models)?catalog.models:[];
   const model=ctx.models.find(id=>listed.includes(id))||catalog?.preferred||null;
   const reasoningEffort=resolveMuseReasoningEffort((Array.isArray(catalog?.metadata)?catalog.metadata:[]).find(row=>row?.id===model)||null,"low");
-  const host=(ctx.deps.museHost||(options=>new MuseHost(options)))({command:runtimeManager.executable(instance,{environmentId}),args:museServeArgs("read-only"),cwd,env:runtimeManager.childEnv(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys||[]});
+  const host=(ctx.deps.museHost||(options=>new MuseHost(options)))({command:runtimeManager.executable(instance,{environmentId}),args:museServeArgs("read-only"),cwd,env:runtimeManager.childEnv(instance),authMethod:runtimeManager.authMethod?.(instance)||"sign-in"});
   ctx.defer(()=>host.close());
   await host.start({version:ctx.version,requestedCapabilities:[]});ctx.check();
   const connection=host.connection,sessionId=connection.mintCommandId(),turnId=connection.mintCommandId(),replies=new Map(),answered=new Set();

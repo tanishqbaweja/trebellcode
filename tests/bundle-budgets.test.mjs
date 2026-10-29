@@ -95,6 +95,9 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // Trebell Native's xAI and Meta Model API providers then added 0.2 / 0.1 KB to the first bundle (618.1 / 198.6 KB: their labels and
 // the Thinking levels Meta documents for its models) and 0.2 / -0.1 KB to the lazy chunks (Settings' notes and search terms for
 // them, and the first bundle's new name in their import lines): 780.3 / 257.8 KB, 0.7 / 0.2 KB under the limit.
+// Each harness's sign-in choice in Settings (Sign in or its provider's API key, with the key's field on its row) in place of
+// Antigravity's own key form then added nothing to the first bundle (618.1 / 198.6 KB) and 0.3 / 0.1 KB to the lazy chunks:
+// 780.6 / 257.9 KB, 0.4 / 0.1 KB under the limit (and 1.1 / 0.2 KB to the CSS: 681.9 / 98.6 KB).
 const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:781,gzipKB:258}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 

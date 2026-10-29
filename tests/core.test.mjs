@@ -101,7 +101,7 @@ test("standalone Codex inherited process stays hidden on Windows",()=>{
   assert.doesNotMatch(source,/windowsHide:\s*false/);
 });
 
-test("standalone Codex child environment preserves Codex-native credentials without unrelated host secrets",t=>{
+test("standalone Codex child environment keeps its home and no key: Codex signs in with codex login",t=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-codex-env-"));
   t.after(()=>rmSync(root,{recursive:true,force:true}));
   const env=codexChildEnvironment({
@@ -118,8 +118,8 @@ test("standalone Codex child environment preserves Codex-native credentials with
   assert.equal(env.PATH,process.env.PATH||"/usr/bin");
   assert.equal(env.HOME,root);
   assert.equal(env.CODEX_HOME,join(root,"native-codex-home"));
-  assert.equal(env.OPENAI_API_KEY,"codex-openai-token");
-  assert.equal(env.CODEX_API_KEY,"codex-native-token");
+  assert.equal(env.OPENAI_API_KEY,undefined,"a key in the shell is Native's, never Codex's");
+  assert.equal(env.CODEX_API_KEY,undefined);
   assert.equal(env.GITHUB_TOKEN,undefined);
   assert.equal(env.CUSTOM_PRIVATE_TOKEN,undefined);
 });

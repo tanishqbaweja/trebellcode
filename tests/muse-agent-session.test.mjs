@@ -180,20 +180,21 @@ test("Muse Code's host starts `muse serve --trust-workspace` hidden in the plain
   }finally{await rm(folder,{recursive:true,force:true})}
 });
 
-test("Muse Code never gets a META_API_KEY its profile did not approve, matched in any case and its value never read, and a host started without an environment gets a Muse profile's",async()=>{
+test("Muse Code never gets a META_API_KEY unless its profile is set to its API key, matched in any case and its value never read, and a host started without an environment gets a Muse profile's",async()=>{
   for(const key of ["META_API_KEY","meta_api_key","Meta_Api_Key"]){
     const source={PATH:"/bin",MUSE_CHANNEL:"muse-stable"};let reads=0;
     Object.defineProperty(source,key,{enumerable:true,get:()=>{reads++;return "meta-key-of-trebells-environment"}});
     assert.deepEqual(museEnvironment(source),{PATH:"/bin",MUSE_CHANNEL:"muse-stable",MUSE_NO_AUTO_UPDATE:"1"},key);
     assert.equal(reads,0,"the key's value is never read");
     assert.ok(Object.keys(source).includes(key),"the environment given is left as it was");
-    assert.equal(museEnvironment(source,{approved:["meta_api_key"]})[key],"meta-key-of-trebells-environment","a profile that approves the key keeps it");
+    assert.equal(museEnvironment(source,{approved:["meta_api_key"]})[key],undefined,"an approval is no way in");
+    assert.equal(museEnvironment(source,{authMethod:"api-key"})[key],"meta-key-of-trebells-environment","a profile set to its API key keeps it");
   }
-  // A session hands the approval to its host: the key reaches Muse only with it.
+  // A session hands its profile's method to its host: the key reaches Muse only on its API key.
   const plain=await startSession({options:{env:{PATH:"/bin",META_API_KEY:"meta-key-of-trebells-environment"}}});
   assert.equal("META_API_KEY" in plain.spawned[0].options.env,false);
   await plain.session.close();
-  const approved=await startSession({options:{env:{PATH:"/bin",META_API_KEY:"meta-key-of-trebells-environment"},approvedEnvironmentKeys:["META_API_KEY"]}});
+  const approved=await startSession({options:{env:{PATH:"/bin",META_API_KEY:"meta-key-of-trebells-environment"},authMethod:"api-key"}});
   assert.equal(approved.spawned[0].options.env.META_API_KEY,"meta-key-of-trebells-environment");
   await approved.session.close();
   // Without an environment, a host gets what a Muse Code profile gets of Trebell's own: no other harness's key, and no META_API_KEY.

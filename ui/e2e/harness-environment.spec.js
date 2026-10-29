@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 // listed, as mise's __MISE_DIFF does (a CLI started through a mise x wrapper needs it, and it can hold the secrets mise sets). Codex is
 // the harness here because the server makes it active without its CLI (offline E2E has none); every harness's editor says the same.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/harness-environment/",import.meta.url));mkdirSync(shots,{recursive:true});
-const SAID="Trebell passes only a safe OS baseline, this runtime's own variables and the names listed here, and to a harness on this computer (not on an SSH or WSL environment) also your proxy and toolchain variables (HTTPS_PROXY, JAVA_HOME and the like).";
+const SAID="Trebell passes only a safe OS baseline, this runtime's own settings (its home, config and endpoint) and the names listed here, and to a harness on this computer (not on an SSH or WSL environment) also your proxy and toolchain variables (HTTPS_PROXY, JAVA_HOME and the like).";
+// No key or sign-in token passes by a listed name: how a harness signs in is the profile's own choice.
+const NO_KEYS="No API key or sign-in token passes, listed or not: a harness signs in with its own login or, set to API key, its provider's key.";
 const APPROVE="A proxy or toolchain value that holds a password or token passes only when its name is listed, as does mise's __MISE_DIFF, which can hold mise's secrets and which a CLI started through a mise x wrapper needs.";
 async function switchMode(page,mode){
   if(await page.locator("html").getAttribute("data-mode")!==mode)await page.locator("[data-testid=appearance-toggle]:visible").first().click();
@@ -34,7 +36,9 @@ test("a harness profile's editor says a harness on this computer gets the proxy 
     // Codex's own field, so this is that harness's profile.
     await expect(editor.getByLabel("CODEX_HOME")).toBeVisible();
     const note=editor.locator("p").filter({hasText:"Trebell passes only a safe OS baseline"});
-    await expect(note).toHaveText(SAID+" "+APPROVE+" Values are read from the parent process at launch time and are not stored in the profile.");
+    await expect(note).toHaveText(SAID+" "+APPROVE+" "+NO_KEYS+" Values are read from the parent process at launch time and are not stored in the profile.");
+    // The profile's own choice of how it signs in, Sign in by default.
+    await expect(editor.getByLabel("Signs in with")).toHaveValue("sign-in");
     await expect(editor).not.toContainText("this runtime's own credential variables");
     // A proxy with a password in it: the person lists its name, typed as they would.
     const keys=editor.getByRole("textbox",{name:"Approved inherited environment variables"});

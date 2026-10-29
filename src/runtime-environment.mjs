@@ -1,3 +1,5 @@
+import { isSecretEnvironmentName } from "./secret-redactor.mjs";
+
 const BASELINE_KEYS=Object.freeze([
   "PATH","PATHEXT","SystemRoot","WINDIR","COMSPEC","TEMP","TMP","TMPDIR",
   "HOME","USERPROFILE","HOMEDRIVE","HOMEPATH","APPDATA","LOCALAPPDATA","PROGRAMDATA",
@@ -6,56 +8,55 @@ const BASELINE_KEYS=Object.freeze([
   "SSL_CERT_FILE","SSL_CERT_DIR","NODE_EXTRA_CA_CERTS","NO_COLOR","FORCE_COLOR",
 ]);
 
-// What runs Claude Code on a cloud provider (code.claude.com/docs/en/env-vars): the switch for Amazon Bedrock (and its Mantle
-// endpoint), Claude Platform on AWS, Google Cloud's Agent Platform (Vertex AI) and Microsoft Foundry, each one's gateway switch, the
-// region, profile, project, workspace, resource and endpoint names they read, where the AWS and Google sign-ins keep their files, and
-// the model each alias resolves to (a Foundry deployment is named only there). The providers' secrets (AWS_ACCESS_KEY_ID,
-// AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_BEARER_TOKEN_BEDROCK, ANTHROPIC_AWS_API_KEY, ANTHROPIC_FOUNDRY_API_KEY,
-// ANTHROPIC_FOUNDRY_AUTH_TOKEN, ANTHROPIC_CUSTOM_HEADERS) pass only when the profile approves them. These pass to a Claude Code on
-// this machine where Trebell's environment sets them (LOCAL_RUNTIME_KEYS), not to one on an SSH or WSL host: a host's harness gets
-// each of its runtime names through env -i, empty where the host sets none, and an empty ANTHROPIC_MODEL or AWS_PROFILE is not an
-// unset one. A profile can list any of them, as any name.
-const CLAUDE_PROVIDER_KEYS=Object.freeze([
-  "CLAUDE_CODE_USE_BEDROCK","CLAUDE_CODE_USE_MANTLE","CLAUDE_CODE_USE_ANTHROPIC_AWS","CLAUDE_CODE_USE_VERTEX","CLAUDE_CODE_USE_FOUNDRY",
-  "CLAUDE_CODE_SKIP_BEDROCK_AUTH","CLAUDE_CODE_SKIP_MANTLE_AUTH","CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH","CLAUDE_CODE_SKIP_VERTEX_AUTH","CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
-  "AWS_REGION","AWS_DEFAULT_REGION","AWS_PROFILE","AWS_CONFIG_FILE","AWS_SHARED_CREDENTIALS_FILE","ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
-  "ANTHROPIC_BEDROCK_REGION_PREFIX","ANTHROPIC_BEDROCK_SERVICE_TIER","ANTHROPIC_BEDROCK_BASE_URL","ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
-  "ANTHROPIC_AWS_WORKSPACE_ID","ANTHROPIC_AWS_BASE_URL","ANTHROPIC_VERTEX_PROJECT_ID","CLOUD_ML_REGION","ANTHROPIC_VERTEX_BASE_URL",
-  "GOOGLE_APPLICATION_CREDENTIALS","ANTHROPIC_FOUNDRY_RESOURCE","ANTHROPIC_FOUNDRY_BASE_URL",
-  "ANTHROPIC_MODEL","ANTHROPIC_DEFAULT_MODEL","ANTHROPIC_SMALL_FAST_MODEL",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL_NAME","ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL_NAME","ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL","ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME","ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
-  "ANTHROPIC_DEFAULT_FABLE_MODEL","ANTHROPIC_DEFAULT_FABLE_MODEL_NAME","ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION","ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES",
-]);
-
+// What each harness gets of Trebell's own environment beside the baseline: its home, its config, its endpoint, its release channel
+// and Trebell's own lock on the OpenCode server it starts. None is a credential: a harness signs in with its own login in its own
+// home, or, only when the person picks it in Settings, runs on its vendor's API key, which AgentRuntimeManager adds itself
+// (harness-auth.mjs). A key in .env, the shell, the Windows user environment or a profile's approved names never reaches a harness,
+// on this machine or on a WSL or SSH host (each name here is forwarded from the host's shell there), and never switches one to its
+// key method. Claude Code's cloud-provider switches (Bedrock, Vertex, Foundry) are its own configuration (its settings.json env).
 const RUNTIME_KEYS=Object.freeze({
   native:Object.freeze([]),
-  codex:Object.freeze(["CODEX_HOME","OPENAI_API_KEY","OPENAI_BASE_URL","OPENAI_ORG_ID","OPENAI_PROJECT_ID","CODEX_API_KEY"]),
-  // Claude Code's own credentials and endpoint; on this machine also what runs it on a cloud provider (CLAUDE_PROVIDER_KEYS).
-  claude:Object.freeze(["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","ANTHROPIC_BASE_URL"]),
-  cursor:Object.freeze(["CURSOR_API_KEY","CURSOR_AUTH_TOKEN","CURSOR_API_ENDPOINT"]),
+  codex:Object.freeze(["CODEX_HOME","OPENAI_BASE_URL"]),
+  claude:Object.freeze(["ANTHROPIC_BASE_URL"]),
+  cursor:Object.freeze(["CURSOR_API_ENDPOINT"]),
   grok:Object.freeze([
-    "XAI_API_KEY","GROK_AUTH","GROK_HOME","GROK_OIDC_ISSUER","GROK_OIDC_CLIENT_ID",
-    "GROK_OAUTH2_ISSUER","GROK_OAUTH2_CLIENT_ID","GROK_OAUTH2_PRINCIPAL_TYPE","GROK_OAUTH2_PRINCIPAL_ID",
-    "GROK_AUTH_PROVIDER_COMMAND","GROK_LOCAL_AUTH","GROK_CLI_CHAT_PROXY_BASE_URL","GROK_MODELS_BASE_URL",
-    "GROK_CONFIG","GROK_CONFIG_PATH",
+    "GROK_HOME","GROK_OIDC_ISSUER","GROK_OIDC_CLIENT_ID","GROK_OAUTH2_ISSUER","GROK_OAUTH2_CLIENT_ID","GROK_OAUTH2_PRINCIPAL_TYPE",
+    "GROK_OAUTH2_PRINCIPAL_ID","GROK_LOCAL_AUTH","GROK_CLI_CHAT_PROXY_BASE_URL","GROK_MODELS_BASE_URL","GROK_CONFIG","GROK_CONFIG_PATH",
   ]),
-  opencode:Object.freeze([
-    "OPENCODE_API_KEY","OPENCODE_AUTH_CONTENT","OPENCODE_CONFIG","OPENCODE_CONFIG_DIR","OPENCODE_SERVER_USERNAME","OPENCODE_SERVER_PASSWORD",
-    "OPENAI_API_KEY","ANTHROPIC_API_KEY","GOOGLE_API_KEY","GEMINI_API_KEY","OPENROUTER_API_KEY",
-    "NVIDIA_API_KEY","HF_TOKEN","HUGGINGFACE_API_KEY","DEEPSEEK_API_KEY","MISTRAL_API_KEY","GROQ_API_KEY","XAI_API_KEY",
-    "COHERE_API_KEY","CEREBRAS_API_KEY","TOGETHER_API_KEY","FIREWORKS_API_KEY","PERPLEXITY_API_KEY",
-    "AZURE_OPENAI_API_KEY","AZURE_OPENAI_ENDPOINT",
-    "AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_SESSION_TOKEN","AWS_REGION","AWS_DEFAULT_REGION",
-  ]),
-  // Antigravity takes no Google credential, project or home from Trebell's environment: it signs in only with the Gemini API key
-  // Trebell keeps for it, in a home of its own (antigravity-auth.mjs).
+  opencode:Object.freeze(["OPENCODE_CONFIG","OPENCODE_CONFIG_DIR","OPENCODE_SERVER_USERNAME","OPENCODE_SERVER_PASSWORD","AZURE_OPENAI_ENDPOINT","AWS_REGION","AWS_DEFAULT_REGION"]),
+  // Antigravity takes no Google credential, project or home from Trebell's environment (antigravity-auth.mjs).
   antigravity:Object.freeze([]),
-  // Muse Code's release channel. META_API_KEY is left out, so a key in Trebell's own environment never takes the place of the
-  // person's Muse sign-in (Muse prefers the key); a profile that approves it forwards it.
   muse:Object.freeze(["MUSE_CHANNEL"]),
 });
+
+// Trebell's own lock on an OpenCode server (the password it starts one with, or the one a profile's own server asks for): no
+// provider's credential, so it passes where its name is listed.
+const HARNESS_SERVER_LOCKS=new Set(["OPENCODE_SERVER_PASSWORD"]);
+// The names that carry a model provider's key or a harness's sign-in, beside every name isSecretEnvironmentName matches (any
+// *_API_KEY, *_TOKEN, *_SECRET*, *_PASSWORD): Native's providers' keys (provider-manager.mjs MODEL_PROVIDERS, tests check each is
+// here), the keys and sign-ins each harness reads (Grok's stored sign-in and the command that prints its token, OpenCode's stored
+// credentials, Muse's and Claude Code's header strings, AWS's key id) and Google's credential file.
+const HARNESS_CREDENTIAL_NAMES=new Set([
+  "OPENAI_API_KEY","CODEX_API_KEY","CODEX_ACCESS_TOKEN","ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN",
+  "CURSOR_API_KEY","CURSOR_AUTH_TOKEN","XAI_API_KEY","GROK_CODE_XAI_API_KEY","GROK_AUTH","GROK_AUTH_PROVIDER_COMMAND",
+  "OPENCODE_API_KEY","OPENCODE_AUTH_CONTENT","GEMINI_API_KEY","GOOGLE_API_KEY","GOOGLE_GENERATIVE_AI_API_KEY","GOOGLE_APPLICATION_CREDENTIALS",
+  "META_API_KEY","MODEL_API_KEY","AGENTROUTER_API_KEY","JUSTWORKER_API_KEY","HCNSEC_API_KEY","VYCEAI_API_KEY","OPENROUTER_API_KEY",
+  "AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_SESSION_TOKEN","AWS_BEARER_TOKEN_BEDROCK","ANTHROPIC_AWS_API_KEY",
+  "ANTHROPIC_FOUNDRY_API_KEY","ANTHROPIC_FOUNDRY_AUTH_TOKEN","ANTHROPIC_CUSTOM_HEADERS","MUSE_CUSTOM_HEADERS","HF_TOKEN",
+]);
+// Whether a variable's name carries a credential no harness gets from Trebell: whatever its case, as Windows reads names so.
+export function isHarnessCredentialName(name){
+  const upper=String(name||"").trim().toUpperCase();if(!upper)return false;
+  return isSecretEnvironmentName(upper)||HARNESS_CREDENTIAL_NAMES.has(upper)||/(?:_CREDENTIALS|_AUTH_CONTENT|_API_KEY|_ACCESS_KEY_ID)$/.test(upper);
+}
+// What a harness may get by name: anything but a credential, except Trebell's lock on its OpenCode server.
+const harnessMay=(runtime,name)=>runtime==="native"||!isHarnessCredentialName(name)||HARNESS_SERVER_LOCKS.has(String(name).toUpperCase());
+// A profile's approved names a harness can get: for every kind but Native, none that carries a credential (a profile saved before
+// this kept them, and they stay out).
+export function harnessApprovedKeys(kind,approved=[]){
+  const runtime=String(kind||"").toLowerCase();
+  return normalizeApprovedEnvironmentKeys(approved).filter(name=>runtime==="native"||!isHarnessCredentialName(name));
+}
 
 // What a project's toolchain reads to find itself, the version picked for the project, the packages already installed and how
 // to build: the commands Native runs for the model (its terminal and background processes) get these on top of the baseline, as
@@ -138,11 +139,6 @@ export function carriesCredentials(value){const text=String(value??"");return UR
 export const PROXY_ENVIRONMENT_KEYS=Object.freeze(["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","NO_PROXY","http_proxy","https_proxy","all_proxy","no_proxy"]);
 const PROXY_USERINFO=/^\s*(?:[a-z][a-z0-9+.-]*:\/\/)?[^\s/?#@]+@/i;
 function proxyCarriesCredentials(value){return carriesCredentials(value)||PROXY_USERINFO.test(String(value))}
-// Name families a harness reads whole: Claude Code's region for each model on Google Cloud's Agent Platform, one more with each model
-// (VERTEX_REGION_CLAUDE_4_6_SONNET, VERTEX_REGION_CLAUDE_5_5_OPUS), each a region's name.
-const RUNTIME_KEY_PREFIXES=Object.freeze({claude:Object.freeze(["VERTEX_REGION_CLAUDE_"])});
-// The names a harness on this machine gets beside its runtime names, and a host's does not (see CLAUDE_PROVIDER_KEYS).
-const LOCAL_RUNTIME_KEYS=Object.freeze({claude:CLAUDE_PROVIDER_KEYS});
 
 function keyName(value){return String(value||"").trim()}
 function validName(value){return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)}
@@ -153,7 +149,7 @@ export function normalizeApprovedEnvironmentKeys(value){
 }
 
 export function runtimeEnvironmentKeys(kind,{approved=[]}={}){
-  return [...new Set([...BASELINE_KEYS,...(RUNTIME_KEYS[String(kind||"").toLowerCase()]||[]),...normalizeApprovedEnvironmentKeys(approved)])];
+  return [...new Set([...BASELINE_KEYS,...(RUNTIME_KEYS[String(kind||"").toLowerCase()]||[]),...harnessApprovedKeys(kind,approved)])];
 }
 
 // A name's value in the parent; on Windows whatever its case, the first spelling in the parent's order winning. The parent's
@@ -177,12 +173,9 @@ function parentLookup(parent,{caseInsensitive=false}={}){
 // git, diagnostics and transports keep what they had; a harness on a remote host forwards only runtimeEnvironmentKeys' names.
 export function buildRuntimeEnvironment(kind,{parent={},approved=[],overrides={},platform=process.platform,toolchain=false}={}){
   const env={},caseInsensitive=platform==="win32",lookup=parentLookup(parent,{caseInsensitive}),runtime=String(kind||"").toLowerCase(),harness=runtime!=="native";
-  for(const name of new Set([...runtimeEnvironmentKeys(kind,{approved}),...(LOCAL_RUNTIME_KEYS[runtime]||[])])){
+  for(const name of runtimeEnvironmentKeys(kind,{approved})){
     const value=lookup(name);
     if(value!=null&&String(value)!=="")env[name]=String(value);
-  }
-  for(const prefix of RUNTIME_KEY_PREFIXES[runtime]||[])for(const [name,value] of Object.entries(parent)){
-    if(validName(name)&&(caseInsensitive?name.toUpperCase():name).startsWith(prefix)&&value!=null&&String(value)!==""&&!Object.hasOwn(env,name))env[name]=String(value);
   }
   if(toolchain||harness){
     const fold=name=>caseInsensitive?name.toLowerCase():name,set=new Set(Object.keys(env).map(fold));
@@ -198,8 +191,9 @@ export function buildRuntimeEnvironment(kind,{parent={},approved=[],overrides={}
       if(value!=null&&String(value)!==""&&!proxyCarriesCredentials(value)){env[name]=String(value);set.add(fold(name))}
     }
   }
+  // A profile's own variables, none that carries a credential for a harness (as its approved names).
   for(const [name,value] of Object.entries(overrides||{})){
-    if(!validName(name)||value==null)continue;
+    if(!validName(name)||value==null||!harnessMay(runtime,name))continue;
     env[name]=String(value);
   }
   return env;

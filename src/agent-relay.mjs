@@ -1100,7 +1100,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
     const status=await runtimeManager.probe(instance,{environmentId});if(!status.available)throw new Error(status.message||`${status.name} is unavailable`);
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
-    const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode:effectivePermissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
+    const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),authMethod:runtimeManager.authMethod?.(instance)||"sign-in",permissionMode:effectivePermissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
     if(instance.kind==="native"){
       if(typeof nativeProviderTurn!=="function")throw new Error("Trebell Native provider transport is unavailable");
       const namespaceNames=new Set(thread.providerMeta?.dynamicToolNamespaces||[]),projectless=Boolean(thread.providerMeta?.projectless);
@@ -1247,7 +1247,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // Muse Code through Meta's SDK on a `muse serve` of Trebell's own, the thread's model and Thinking level resolved against the
       // list its status check read, with the MCP servers the ACP harnesses get and the report turns Muse starts itself as wake turns.
       :instance.kind==="muse"
-      ?new MuseAgentSession({...common,command:runtimeManager.executable(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys,modelCatalog:()=>runtimeManager.museModelCatalog?.(instance)||null,mcpServers:acpMcpServers,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context)})
+      ?new MuseAgentSession({...common,command:runtimeManager.executable(instance),modelCatalog:()=>runtimeManager.museModelCatalog?.(instance)||null,mcpServers:acpMcpServers,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context)})
       :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),argsForPermission:mode=>runtimeManager.acpArgs(instance,mode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,runTempRoot:instance.kind==="antigravity"&&!remoteIo?acpRuntimeTempRoot(runtimeManager.childEnv(instance),"antigravity"):null,attachmentsDir:instance.kind==="antigravity"&&!remoteIo?join(trebellHome(runtimeManager.env||process.env),"attachments"):null,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
     let runtime=create(),started,lost=null;
     // A Cursor thread runs in the Plan mode it last ran in until a turn names another (also after a restart).
@@ -2443,13 +2443,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(promptSettlements.size)await Promise.allSettled([...promptSettlements]);
     for(const threadId of [...toolWrites.keys()])settleToolWrites(threadId);
   }
-  // The sessions of one harness close, as a reset closes them all, and a turn one runs stops as Stop stops it: Antigravity's once its
-  // saved Gemini API key changed or went, as each process keeps the key it started with (T3 closes a provider instance whose settings
-  // changed). The next turn starts the harness again; a start this ends is refused (endedStarts). Only the sessions on this machine
-  // (here): one in a WSL or SSH environment never had the key saved here, as its launch forwards none of it. Answers how many sessions
-  // it closed.
-  async function closeRuntimeSessions(kind){
-    const closes=[],here=session=>!session?.remoteIo;
+  // The sessions of one harness close, as a reset closes them all, and a turn one runs stops as Stop stops it: Antigravity's once it
+  // signed in with another method of its own, and any harness's once Settings changed how its profile signs in (everywhere: on a WSL
+  // or SSH host too), as each process keeps the sign-in or key it started with (T3 closes a provider instance whose settings
+  // changed). The next turn starts the harness again; a start this ends is refused (endedStarts). Without everywhere only the
+  // sessions on this machine (here): Antigravity runs nowhere else. Answers how many sessions it closed.
+  async function closeRuntimeSessions(kind,{everywhere=false}={}){
+    const closes=[],here=session=>everywhere||!session?.remoteIo;
     for(const runtime of [...startingSessions])if(runtime?.runtime===kind&&here(runtime)){endedStarts.add(runtime);closes.push(runtime.close().catch(()=>{}))}
     for(const [threadId,session] of [...sessions]){
       if((sessionHarnesses.get(session)?.instance?.kind||session?.runtime)!==kind||!here(session))continue;

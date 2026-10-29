@@ -50,6 +50,8 @@ function scenarioRuntimeManager(kind,fx){
     instances:()=>[{...instance}],activeInstance:()=>({...instance}),activeRuntime:()=>kind,compatibleInstanceIds:()=>[instance.id],
     probe:async()=>({id:instance.id,name:kind,available:true,authenticated:true,version:"fixture"}),
     runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...fx.env}),executable:()=>process.execPath,acpArgs:()=>[...fx.args],
+    // How the profile signs in (Settings' choice): fx.authMethod, else its own sign-in.
+    authMethod:()=>fx.authMethod||"sign-in",
     env:{...process.env,TREBELL_HOME:join(fx.root,"home")},
   };
 }
