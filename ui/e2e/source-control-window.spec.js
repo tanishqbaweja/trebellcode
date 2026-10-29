@@ -379,6 +379,98 @@ test("the Git panel lines its loading and clean text up with its rows, ends a lo
   await worktreeShot(auditDir+"source-control-worktrees-light-1280x800.png");
 });
 
+// The device pixels in each box ({left,top,right,bottom}, in device pixels of the shots) that differ between two shots of the same
+// element. The PNGs are decoded in a blank page of the same browser, so the app page is left alone.
+async function changedPixels(context,before,after,boxes){
+  const decoder=await context.newPage();
+  try{
+    return await decoder.evaluate(async({before,after,boxes})=>{
+      const pixels=async source=>{const image=new Image();image.src="data:image/png;base64,"+source;await image.decode();const canvas=document.createElement("canvas");canvas.width=image.width;canvas.height=image.height;const context=canvas.getContext("2d");context.drawImage(image,0,0);return context.getImageData(0,0,image.width,image.height)};
+      const a=await pixels(before),b=await pixels(after);
+      return boxes.map(box=>{
+        let changed=0;
+        for(let y=Math.max(0,box.top);y<Math.min(a.height,box.bottom);y++)for(let x=Math.max(0,box.left);x<Math.min(a.width,box.right);x++){const i=(y*a.width+x)*4;if(Math.abs(a.data[i]-b.data[i])+Math.abs(a.data[i+1]-b.data[i+1])+Math.abs(a.data[i+2]-b.data[i+2])>36)changed++}
+        return changed;
+      });
+    },{before:before.toString("base64"),after:after.toString("base64"),boxes});
+  }finally{await decoder.close()}
+}
+
+// The Changes list draws each path in a box with overflow hidden, for its ellipsis. The box was one 11.5px line high (a line height
+// of 1) and ended half a pixel above the ink of the font's descenders, so the tails of g, j, p, q and y were cut wherever the box fell
+// on the pixel grid: 'docs/typography.md' read 'typoqraphy' at 100%, a lone 'src/greeting.js' 'src/qreetinq.is', and at 150% and
+// 200% every path lost some (UI lane D, round 13). At 100%, at 125% and 150% display scaling and at 200%, in dark and light, each
+// path's box holds the ink of its characters, and the list is drawn as it is with every box reaching 4px over and under its line (a
+// style added for one comparison shot, which leaves each path where it is in its row and its ellipsis as it is). Each row keeps its
+// 32px with its path in its middle, and the long path its ellipsis.
+test("the Git tab's Changes list draws its paths whole, the tails of g, j, p, q and y too, at 100%, 125%, 150% and 200% in dark and light, a long path keeping its ellipsis and each row its height",async({page:testPage,browser,playwright,baseURL,proxy,channel,headless,request})=>{
+  test.setTimeout(150_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark"}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Source control descenders"}});
+  const long="docs/typography/jumpy-glyphs-in-a-query-keep-their-tails-in-a-path-long-enough-to-end-in-an-ellipsis.md";
+  const status=[{code:" M",path:"docs/typography.md"},{code:" M",path:"src/greeting.js"},{code:" M",path:"src/jumpy-query.py"},{code:"??",path:"pkg/"},{code:" M",path:long}];
+  const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  // The comparison shot's style: each path's box reaches 4px over and under its line, its margins taking as much back, so the path
+  // keeps its place in the row.
+  const reach=":root:root .context-panel .status-list>div span{padding-block:4px!important;margin-block:-4px!important}";
+  for(const [scale,display] of [[1,false],[1.25,true],[1.5,true],[2,false]]){
+    let own=null,context=null;
+    try{
+      // At 125% and 150% a browser of the test's own, its device scale factor set as a display's scaling sets it; at 200% a context of
+      // the test's browser with the device scale factor alone.
+      if(display)own=await playwright.chromium.launch({headless,channel,args:["--force-device-scale-factor="+scale]});
+      if(scale!==1)context=await (own||browser).newContext({baseURL,proxy,viewport:{width:1280,height:800},deviceScaleFactor:scale});
+      const page=context?await context.newPage():testPage;
+      await page.route("**/api/git/info?**",route=>json(route,{isGit:true,root:boot.cwd,branch:"main",branches:["main"],upstream:"origin/main",status,worktrees:[{path:boot.cwd,branch:"main"}],remotes:[{name:"origin",url:"https://example.test/repo.git"}]}));
+      await page.route("**/api/source-control/diagnostics?**",route=>json(route,{selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,comment:true,review:true,merge:true}}}));
+      await page.route("**/api/source-control/prs?**",route=>json(route,{provider:"github",capabilities:{create:true,comment:true,review:true,merge:true},items:[]}));
+      // The theme button's setting stays in the page, so each scale and the later tests start dark.
+      await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
+      await page.setViewportSize({width:1280,height:800});
+      await page.goto("/");
+      expect(await page.evaluate(()=>devicePixelRatio),"the page's device pixels to a CSS pixel").toBe(scale);
+      await page.getByRole("button",{name:"Projects",exact:true}).click();
+      const project=page.locator(".project-card").filter({hasText:"Source control descenders"});await expect(project).toBeVisible();await project.locator(".project-open").click();
+      await expect(page.getByRole("heading",{name:"What do you want to build?"})).toBeVisible();
+      await page.getByTestId("right-panel-toggle").click();
+      const right=page.getByTestId("right-panel");await right.getByRole("button",{name:"Git",exact:true}).click();
+      const list=right.locator(".status-list"),rows=list.locator(":scope > div"),paths=rows.locator("span");
+      await expect(paths).toHaveText(status.map(entry=>entry.path));
+      await page.evaluate(()=>document.fonts.ready);
+      for(const mode of ["dark","light"]){
+        if(await page.locator("html").getAttribute("data-mode")!==mode){await page.getByTestId("appearance-toggle").click();await expect(page.locator("html")).toHaveAttribute("data-mode",mode)}
+        const at=`at ${scale*100}% in ${mode}`;
+        // Each row's height, whether its path's middle is the row's to a device pixel (the font's height rounds to whole ones), whether
+        // the path is cut and set to end in an ellipsis, and how far the ink of its characters reaches over the top and under the bottom
+        // of its box, from its baseline (the bottom of an empty inline box put at its end for the reading and taken out).
+        const read=await rows.evaluateAll(nodes=>nodes.map(row=>{
+          const span=row.querySelector("span"),style=getComputedStyle(span),box=span.getBoundingClientRect(),own=row.getBoundingClientRect(),range=document.createRange();
+          range.selectNodeContents(span);const text=range.getBoundingClientRect(),middle=(own.top+parseFloat(getComputedStyle(row).borderTopWidth)+own.bottom)/2;
+          const mark=span.appendChild(document.createElement("i"));mark.style.cssText="display:inline-block;width:0;height:0;margin:0;padding:0;border:0;vertical-align:baseline";
+          const baseline=mark.getBoundingClientRect().bottom;mark.remove();
+          const canvas=document.createElement("canvas").getContext("2d");canvas.font=`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;const ink=canvas.measureText(span.textContent);
+          return {path:span.textContent,height:own.height,centred:Math.abs((text.top+text.bottom)/2-middle)<=1/devicePixelRatio,cut:span.scrollWidth>span.clientWidth,ellipsis:style.overflowX==="hidden"&&style.textOverflow==="ellipsis",
+            over:+(box.top-(baseline-ink.actualBoundingBoxAscent)).toFixed(2),under:+(baseline+ink.actualBoundingBoxDescent-box.bottom).toFixed(2)};
+        }));
+        expect.soft(read.map(row=>[row.path,row.height,row.centred,row.cut,row.ellipsis]),`each row's height, its path in its middle, and only the long path cut, with an ellipsis, ${at}`).toEqual(status.map(entry=>[entry.path,32,true,entry.path===long,true]));
+        expect.soft(read.filter(row=>row.over>0||row.under>0).map(row=>`${row.path}: ${row.over}px over the top of its box, ${row.under}px under its bottom`),`ink outside the paths' boxes ${at}`).toEqual([]);
+        // The list as drawn against the same list with every path's box reaching 4px over and under its line: each path's box and 4px
+        // over and under it, in device pixels, is the same in both, so nothing of its ink was cut.
+        const drawn=await list.screenshot({animations:"disabled",path:auditDir+`source-control-changes-paths-${mode}-${scale*100}.png`});
+        const style=await page.addStyleTag({content:reach}),reached=await list.screenshot({animations:"disabled"});
+        await style.evaluate(node=>node.remove());
+        const boxes=await list.evaluate((node,scale)=>{
+          const box=node.getBoundingClientRect(),x=Math.floor(box.x+1e-3),y=Math.floor(box.y+1e-3);
+          return [...node.querySelectorAll(":scope>div span")].map(span=>{const own=span.getBoundingClientRect();return {left:Math.floor((own.left-x)*scale),right:Math.ceil((own.right-x)*scale),top:Math.floor((own.top-4-y)*scale),bottom:Math.ceil((own.bottom+4-y)*scale)}});
+        },scale);
+        const changed=await changedPixels(page.context(),drawn,reached,boxes);
+        expect.soft(Object.fromEntries(status.map((entry,index)=>[entry.path,changed[index]])),`device pixels of each path its box cut ${at}`).toEqual(Object.fromEntries(status.map(entry=>[entry.path,0])));
+      }
+    }finally{await context?.close();await own?.close()}
+  }
+});
+
 test("Generate failures name the text that could not be written, unless the writer already did",async({page,request})=>{
   test.setTimeout(35_000);
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",environmentThemeSelections:{}}});

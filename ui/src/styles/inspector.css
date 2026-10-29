@@ -539,7 +539,9 @@
 :root:root .context-panel .status-list{max-height:220px;overflow:auto;border:1px solid var(--line)!important;border-radius:var(--r-m);background:var(--bg1)!important}
 :root:root .context-panel .status-list>div{height:32px;display:grid;grid-template-columns:30px minmax(0,1fr);align-items:center;gap:8px;padding:0 12px;border-top:1px solid var(--line);font:450 11.5px/1 var(--mono);color:var(--tx1)!important}
 :root:root .context-panel .status-list>div:first-child{border-top:0}
-:root:root .context-panel .status-list>div span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* A path's box clips it, for its ellipsis, and its line is only as tall as its letters: room over and under the line, which its margins
+   take back so the path stays where it is in the row, keeps the tails of g, j, p, q and y and the tops of tall letters. */
+:root:root .context-panel .status-list>div span{min-width:0;padding-block:3px;margin-block:-3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 :root:root .context-panel .status-list code{justify-self:start;min-width:14px;padding:2px 5px;border-radius:5px;background:var(--warnt);color:var(--warn)!important;font:600 10px/1.2 var(--mono);text-align:center;white-space:pre}
 :root:root .context-panel .status-list code[data-state="added"]{background:var(--okt);color:var(--ok)!important}
 :root:root .context-panel .status-list code:is([data-state="deleted"],[data-state="conflict"]){background:var(--errt);color:var(--err)!important}
