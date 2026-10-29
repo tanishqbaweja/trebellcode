@@ -304,9 +304,11 @@ test("a message sent in Supervised while a Full access thread's compaction runs 
 // Muse's report on the work it finished runs as a turn, which the window steers a message into: Enter or the Steer button with steer
 // follow-ups, Send now or its shortcut on a queued follow-up. One in a mode the report's host was not launched for is not sent, as one
 // sent while Muse compacts, and never goes into the report on that host; one in the report's own mode still does. A draft refused so
-// stays in the composer; a queued follow-up refused so stays queued, as its note says in the queue's own words.
+// stays in the composer; a queued follow-up refused so stays queued, as its note says in the queue's own words: it goes once the
+// report ends, with nothing for the person to send again. The note goes once the follow-up leaves the queue, or a Stop holds it. Its
+// words are checked soft, so that the old code also shows what Remove and Stop leave of it.
 const REFUSED="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
-const REPORT_NOT_SENT="Not sent: "+REFUSED+" Your draft is kept.",QUEUED_NOT_SENT="Queued follow-up not sent: "+REFUSED+" It stays queued.";
+const REPORT_NOT_SENT="Not sent: "+REFUSED+" Your draft is kept.",QUEUED_NOT_SENT="Queued follow-up not sent: Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. It stays queued and goes once the report ends.";
 test("a message steered in Supervised while Muse Code writes its report on a Full access thread is not sent, saying to wait for the report, keeps its draft and never reaches the Full access host, and back in Full access it steers into the report",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
@@ -359,22 +361,25 @@ test("a queued message sent now in Full access while Muse Code writes its report
     await expect(queued.locator("p")).toHaveText(["Now in Full access"]);
     // The shortcut that sends the oldest queued follow-up now, from the composer.
     await page.keyboard.press("Control+Shift+Enter");
-    await expect(alert).toHaveText(QUEUED_NOT_SENT,{timeout:20_000});
+    await expect.soft(alert).toHaveText(QUEUED_NOT_SENT,{timeout:20_000});
     // The next message waits behind it, and its own Send now is refused alike.
     await send(page,"And run the tests");
     await expect(alert).toHaveCount(0);
     await expect(queued.locator("p")).toHaveText(["Now in Full access","And run the tests"]);
     await queued.filter({hasText:"And run the tests"}).getByRole("button",{name:"Send now"}).click();
-    await expect(alert).toHaveText(QUEUED_NOT_SENT,{timeout:20_000});
+    await expect.soft(alert).toHaveText(QUEUED_NOT_SENT,{timeout:20_000});
     await expect(queued.locator(":scope > span")).toHaveText(["Queued","Queued"]);
     await expect(page.getByTestId("app-action-error")).toHaveCount(0);
     await expect(stop,"the report goes on").toBeVisible();
     expect(await harness.frames("turn/steer")).toEqual([]);
     expect(await harness.hosts()).toEqual([["serve","--trust-workspace"]]);
     await shoot(page,"muse-send-now-mode-change-while-reporting",alert);
-    // Stop ends the report and holds the queue; Send now then starts Muse Code for Full access, and the queue goes on after it.
+    // Stop ends the report and holds the queue, so the note that the follow-up goes once the report ends goes; Send now then starts
+    // Muse Code for Full access, and the queue goes on after it.
     await stop.click();
     await expect(stop).toHaveCount(0,{timeout:20_000});
+    await expect(queued.locator(":scope > span")).toHaveText(["Queued · held after Stop","Queued · held after Stop"]);
+    await expect(alert,"the note goes with the hold").toHaveCount(0);
     await queued.filter({hasText:"Now in Full access"}).getByRole("button",{name:"Send now"}).click();
     await expect(queued).toHaveCount(0,{timeout:20_000});
     await expect(reply(page,"Muse fixture reply")).toHaveCount(2,{timeout:20_000});
@@ -399,18 +404,22 @@ test("a follow-up queued before the person picks Full access, sent now by its sh
     await expect(queued.locator("p")).toHaveText(["Now in Full access"]);
     await page.locator("select.permission-picker").first().selectOption("full");
     await page.keyboard.press("Control+Shift+Enter");
-    await expect(alert).toHaveText(QUEUED_NOT_SENT,{timeout:20_000});
+    await expect.soft(alert).toHaveText(QUEUED_NOT_SENT,{timeout:20_000});
     await expect(queued.locator(":scope > span")).toHaveText(["Queued"]);
     expect(await harness.frames("turn/steer"),"nothing went into the report").toEqual([]);
     // Its Send now says the same.
     await page.getByTestId("composer").click();await page.keyboard.type("x");await page.keyboard.press("Backspace");
     await expect(alert).toHaveCount(0);
     await queued.getByRole("button",{name:"Send now"}).click();
-    await expect(alert).toHaveText(QUEUED_NOT_SENT,{timeout:20_000});
+    await expect.soft(alert).toHaveText(QUEUED_NOT_SENT,{timeout:20_000});
     await expect(stop,"the report goes on").toBeVisible();
     expect(await harness.frames("turn/steer")).toEqual([]);
     expect(await harness.hosts()).toEqual([["serve","--trust-workspace"]]);
     await shoot(page,"muse-shortcut-after-mode-pick-while-reporting",alert);
+    // Remove takes the follow-up out of the queue, and the note about it goes with it.
+    await queued.getByRole("button",{name:"Remove"}).click();
+    await expect(queued).toHaveCount(0);
+    await expect(alert,"no note is left about a follow-up the queue no longer has").toHaveCount(0);
   }finally{await harness.close()}
 });
 

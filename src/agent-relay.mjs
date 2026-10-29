@@ -2226,7 +2226,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const session=sessions.get(thread.id);if(!(session instanceof steerable))throw new Error(`The active ${label} session is unavailable for steering.`);
         // A Muse Code message in a mode its host cannot take while Muse writes its report there is refused before it goes, as turn/start
         // refuses it (MuseAgentSession.modeRefusal), so the person keeps the draft and the report goes on; one in the host's mode goes in.
-        const museRefusal=session instanceof MuseAgentSession?session.modeRefusal(agentPermissionProfilePatch(params).permissionProfile):null;if(museRefusal)throw Object.assign(new Error(museRefusal),{code:MESSAGE_NOT_SENT});
+        // The refusal carries the words for a follow-up of Trebell's queue sent now, which stays queued (data.queued).
+        const profile=agentPermissionProfilePatch(params).permissionProfile,museRefusal=session instanceof MuseAgentSession?session.modeRefusal(profile):null;
+        if(museRefusal)throw Object.assign(new Error(museRefusal),{code:MESSAGE_NOT_SENT,rpcData:{queued:session.modeRefusal(profile,{queued:true})}});
         const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread),home:documentHome}));
         const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env})},...fileInputs(params.input)]};
         threadStore.addItem(thread.id,activeTurn.id,item);emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});
@@ -2431,7 +2433,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           // Only the person's own turns are checked: Trebell's continuations of a thread (queues, goals, recovery) run on its owner.
           if(message.method==="turn/start"){const ownerError=agentTurnOwnerError(threadStore.get(message.params?.threadId),runtimeManager.activeRuntime());if(ownerError)throw ownerError}
           const result=await request(context,message.method,message.params||{});ws.send(JSON.stringify({id:message.id,result}))}
-        catch(error){log(error?.stack||String(error));ws.send(JSON.stringify({id:message.id,error:{code:Number(error?.code)||-32000,message:error instanceof Error?error.message:String(error)}}))}
+        catch(error){log(error?.stack||String(error));ws.send(JSON.stringify({id:message.id,error:{code:Number(error?.code)||-32000,message:error instanceof Error?error.message:String(error),...(error?.rpcData?{data:error.rpcData}:{})}}))}
       });
       // An app tool call this window was given may have run already (a click, typed text, a delegated task), so it is refused rather
       // than asked of another window, which would run it a second time: the model is told the window closed before it answered.

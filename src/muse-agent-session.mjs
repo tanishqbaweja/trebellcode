@@ -64,6 +64,11 @@ export const MUSE_COMPACTION_STOPPED="Muse Code's context compaction was stopped
 // window or another of the person's, so its refusal names none.
 export const MUSE_COMPACTION_BLOCKS_MODE_CHANGE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish, or keep the current mode, then send the message again.";
 export const MUSE_REPORT_BLOCKS_MODE_CHANGE="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
+// The same refusals for a follow-up of Trebell's queue sent now while a turn runs (turn/steer), which stays queued, in the queue's own
+// words: the queue sends it once the turn ends (the report's, unless a Stop holds the queue), and a compaction still running then
+// refuses it again, as it refuses a message.
+export const MUSE_COMPACTION_KEEPS_QUEUED="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. It stays queued, and goes once this turn ends if Muse Code has finished compacting by then.";
+export const MUSE_REPORT_KEEPS_QUEUED="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. It stays queued and goes once the report ends.";
 // Why Muse did not compact, from its own durable words (compaction_unavailable, summarizer_failed), as a sentence.
 function compactionFailure(reason){const words=text(reason).trim().replaceAll("_"," ");return `Muse Code could not compact the conversation${words?`: ${words}`:""}.`}
 
@@ -435,12 +440,13 @@ export class MuseAgentSession{
   // (needsRelaunch), and Muse's own work holds this one, a compaction or the report Muse writes (also one a message's turn took in
   // before the message went), which a relaunch would stop. The relay refuses such a message before it keeps the message's mode and
   // before its turn starts, or before it steers it into the report (turn/steer names the message's mode), so the person keeps their
-  // draft and the thread the mode its host runs; prompt refuses it too.
-  modeRefusal(mode=this.permissionMode){
+  // draft and the thread the mode its host runs; prompt refuses it too. queued: the words for a follow-up of Trebell's queue sent
+  // now, which stays queued.
+  modeRefusal(mode=this.permissionMode,{queued=false}={}){
     if(!this.launched||this.dead||!this.needsRelaunch(mode))return null;
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
     const report=running?.wake||running?.successor&&!running.prompted&&[...running.joined].some(id=>!running.endedJoined.has(id));
-    return this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:report?MUSE_REPORT_BLOCKS_MODE_CHANGE:null;
+    return this.compaction?(queued?MUSE_COMPACTION_KEEPS_QUEUED:MUSE_COMPACTION_BLOCKS_MODE_CHANGE):report?(queued?MUSE_REPORT_KEEPS_QUEUED:MUSE_REPORT_BLOCKS_MODE_CHANGE):null;
   }
   // A mode's launch flags, permission profile and approval mode are fixed when its host launches (museLaunchPlan), so a mode with
   // another plan needs a new host, which resumes the conversation (T3: runtime policy changes require a fresh Muse host).

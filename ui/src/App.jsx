@@ -3225,6 +3225,9 @@ export default function App(){
       }finally{onItsWay.delete(next.id)}
     })();
   },[running,queued,queueMode,runtimeCapabilities.nativeQueue,queuedEditId,heldQueues]);
+  // The note that a queued follow-up was not sent (sendQueuedNow) goes once that follow-up has left the queue, and as a Stop holds the
+  // queue (stop()), which then sends it no more by itself.
+  useEffect(()=>{setComposerAlert(current=>current?.queuedId&&!queued.some(item=>item.id===current.queuedId)?null:current)},[queued]);
   useEffect(()=>{setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null)},[agentRuntime,runtimeCapabilities.nativeQueue,projectlessMode]);
   useEffect(()=>{if(!running){stopKeyRef.current=null;setStoppingThreadId(null)}},[running]);
 
@@ -4911,13 +4914,14 @@ export default function App(){
       if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
         // Steered into the turn, it is on its way until Codex has it: its card says so and leaves it be, and a steer that fails leaves
         // it queued as it was (clearQueuedDispatch). One the relay refuses for the mode it is sent in says so as the queue's own note
-        // does, and that it stays queued: the queue sends it once the turn ends, unless a Stop holds it, and the note ends as it goes.
+        // does, in the relay's words for a follow-up that stays queued (data.queued): the queue sends it once the turn ends, unless a
+        // Stop holds it, and the note ends as it goes, as a Stop holds the queue, or as the follow-up leaves the queue otherwise.
         let steered=false;
         try{
           await persistLocalQueue(activeThread.id,queueNow(activeThread.id).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now()}:q));
           await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments),...harnessThreadOptions(agentRuntime,{permissionMode})});steered=true;
           await persistLocalQueue(activeThread.id,queueNow(activeThread.id).filter(q=>q.id!==item.id));queueKeysDone(item.id);followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
-        }catch(error){if(!steered)await clearQueuedDispatch(activeThread.id,item.id);if(error?.rpcCode!==-31000)throw error;setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error.message)+" It stays queued.",queuedId:item.id});return}
+        }catch(error){if(!steered)await clearQueuedDispatch(activeThread.id,item.id);if(error?.rpcCode!==-31000)throw error;setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error.rpcData?.queued||error.message),queuedId:item.id});return}
       }
       if(running)return;
       // Its dispatch mark goes into the queue as it is now (queueNow), not the copy taken at the press.
@@ -4988,8 +4992,9 @@ export default function App(){
     const stopKey=activeTurnId?threadId+"\0"+activeTurnId:pendingSend;
     if(stopKey&&stopKeyRef.current===stopKey)return;
     // The thread's queue stays as it was, as Codex's does: nothing in it goes to the composer, and nothing in it starts by itself,
-    // also when the stopped turn ends before the interrupt is answered, until the thread runs a turn again (startTurn).
-    stopKeyRef.current=stopKey;setStoppingThreadId(threadId);holdQueue(threadId,true);
+    // also when the stopped turn ends before the interrupt is answered, until the thread runs a turn again (startTurn). A note that a
+    // queued follow-up goes once the turn ends (sendQueuedNow) goes with it.
+    stopKeyRef.current=stopKey;setStoppingThreadId(threadId);holdQueue(threadId,true);setComposerAlert(current=>current?.queuedId?null:current);
     // Stop pauses an active Codex goal first, so Codex starts no further goal turn, then stops the newest turn (T3 Code,
     // the Codex TUI).
     let turnId=activeTurnId;
