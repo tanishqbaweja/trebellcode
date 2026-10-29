@@ -62,15 +62,25 @@ export function createToolCallLogger({path,environment=process.env,now=()=>Date.
   };
 }
 
-// Read-only: `git diff HEAD` plus the contents of untracked, non-ignored files. GIT_OPTIONAL_LOCKS=0 keeps git
-// from refreshing the index, so the workspace the verifier grades is left exactly as the agent left it.
-export async function captureFinalDiff({root,path,environment=process.env,maxUntrackedFiles=40,maxUntrackedChars=64_000}={}){
+// The commit the workspace is at before the agent starts, or null (no repository, no commit yet): captureFinalDiff diffs against it,
+// so work the agent committed (trebell_source_control commit_all, or git commit in its terminal) stays in the final diff.
+export async function gitHeadCommit({root,environment=process.env}={}){
+  try{
+    const {stdout}=await execFileAsync("git",["rev-parse","--verify","HEAD^{commit}"],{cwd:root,timeout:30_000,windowsHide:true,env:{...environment,GIT_OPTIONAL_LOCKS:"0"}});
+    const commit=String(stdout||"").trim();return /^[0-9a-f]{40,64}$/i.test(commit)?commit:null;
+  }catch{return null}
+}
+
+// Read-only: `git diff <base>` (the commit the run started from, else HEAD) plus the contents of untracked, non-ignored files.
+// GIT_OPTIONAL_LOCKS=0 keeps git from refreshing the index, so the workspace the verifier grades is left exactly as the agent left it.
+export async function captureFinalDiff({root,path,environment=process.env,base=null,maxUntrackedFiles=40,maxUntrackedChars=64_000}={}){
   const redact=secretRedactor(environment);
   const git=args=>execFileAsync("git",args,{cwd:root,maxBuffer:32*1024*1024,timeout:30_000,windowsHide:true,env:{...environment,GIT_OPTIONAL_LOCKS:"0",GIT_PAGER:"cat"}});
+  const from=/^[0-9a-f]{40,64}$/i.test(String(base||""))?String(base):"HEAD";
   try{
     // allSettled so neither git process is still running in the workspace when this returns.
     const settled=await Promise.allSettled([
-      git(["-c","core.quotepath=off","diff","--no-color","--no-ext-diff","HEAD"]),
+      git(["-c","core.quotepath=off","diff","--no-color","--no-ext-diff",from]),
       git(["ls-files","--others","--exclude-standard","-z"]),
     ]);
     const failed=settled.find(item=>item.status==="rejected");
@@ -85,7 +95,7 @@ export async function captureFinalDiff({root,path,environment=process.env,maxUnt
     }
     if(files.length>maxUntrackedFiles)parts.push(`\n=== ${files.length-maxUntrackedFiles} more untracked files not shown\n`);
     await writeFile(path,redact(parts.join("")),"utf8");
-    return {captured:true,trackedDiffChars:diff.length,untrackedFiles:files.length};
+    return {captured:true,base:from,trackedDiffChars:diff.length,untrackedFiles:files.length};
   }catch(failure){
     await writeFile(path,`[final diff unavailable: ${capText(String(failure?.message??failure),500)}]\n`,"utf8").catch(()=>{});
     return {captured:false,trackedDiffChars:0,untrackedFiles:0};
