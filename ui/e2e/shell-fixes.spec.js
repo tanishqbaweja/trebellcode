@@ -3664,6 +3664,70 @@ for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`a / or 
   }finally{await harness.close()}
 });
 
+// Repair of UI lane C, round 13: the / and @ menus' entries take a press of the mouse only, but they stayed stops in Tab's order, and
+// a menu comes before the draft in the page: one Shift+Tab from the draft put the keyboard on the menu's last entry, with its focus
+// ring, the highlight Enter and Tab pick from the draft scrolled out of view, and Enter or Space there did nothing; the keyboard left
+// the composer after 15 presses with the / menu and 9 with the @ menu, and Tab from the control before the composer landed on the
+// menu's first entry. The menus are driven from the draft (the arrow keys, Enter, Tab), so nothing in them is a stop of Tab's, nor a
+// menu that scrolls, which Chrome makes one once nothing in it is. So in the desktop app and in a browser, at 1280 by 800, with the
+// terminal drawer closed (the menus over the composer), as it opens, 330px (over the composer, capped, scrolling) and at its tallest
+// (under the composer, over the drawer): with each menu typed open, one Shift+Tab from the draft takes the keyboard where it goes with
+// no menu open, to the control before the composer, and Tab from there takes it back to the draft as typed, where ArrowDown moves the
+// menu's highlight; at the drawer's tallest the moved menu goes with the keyboard and comes back with it.
+for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`Shift+Tab from the draft with the / or @ menu open goes to the control before the composer as with no menu open, and Tab from there back to the draft, where the arrow keys drive the menu, with the terminal drawer closed, as it opens and at its tallest, at 1280 by 800 in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:800});
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads),tag=`${shell}-${mode}`;
+  try{
+    await page.route(/\/api\/workspace\/search\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:ledgerFiles})}));
+    await routeMenuTerminals(page,menuTerminals());
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),handle=page.getByTestId("terminal-resizer"),composer=page.getByTestId("composer");
+    const slash=page.locator(".chat-workspace .composer-wrap .slash-menu"),mention=page.getByTestId("file-mention-menu");
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    // What has the keyboard, as a person reads it: the draft, a control in the composer or out of it by its name, or the page.
+    const keyboardOn=()=>page.evaluate(()=>{
+      const node=document.activeElement;if(!node||node===document.body)return "the page";if(node.matches("[data-testid=composer]"))return "the draft";
+      return (node.closest(".composer-wrap")?"the composer's ":"")+(node.getAttribute("aria-label")||node.getAttribute("title")||node.textContent.trim().slice(0,60)||node.tagName);
+    });
+    const inComposer=()=>page.evaluate(()=>Boolean(document.activeElement?.closest(".composer-wrap")));
+    const clear=async()=>{await composer.click();await page.keyboard.press("Control+a");await page.keyboard.press("Delete");await expect(composer).toHaveValue("")};
+    for(const [where,state] of [["with the drawer closed","closed"],["as the drawer opens, 330px","330"],["at the drawer's tallest","tallest"]]){
+      if(state==="330"){await openTerminalDrawer(page);await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:"the drawer as it opens"}).toBe(330)}
+      if(state==="tallest"){
+        await focusTerminalHandle(page);await page.keyboard.press("End");
+        await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:"the drawer at its tallest"}).toBe(Number(await handle.getAttribute("aria-valuemax")));
+      }
+      // With no menu open, Shift+Tab from the draft goes to the control before the composer, and Tab from there back to the draft.
+      await clear();await page.keyboard.press("Shift+Tab");
+      const before=await keyboardOn();
+      expect(await inComposer(),`the keyboard out of the composer, on ${before}, after Shift+Tab from the empty draft ${where}`).toBe(false);
+      await page.keyboard.press("Tab");await expect(composer,`the draft after Tab from ${before} ${where}`).toBeFocused();
+      for(const [kind,menu,typed,name] of [["/",slash,"/","slash"],["@",mention,"Check @ledger","mention"]]){
+        await clear();await page.keyboard.type(typed,{delay:5});await expect(menu).toBeVisible();if(menu===mention)await expect(mention.locator("button")).toHaveCount(8);await settle(page);
+        const open=await readComposerMenu(menu),chosen=await menu.locator("button.active strong").textContent();
+        if(state==="330")expect.soft(await menu.evaluate(node=>node.scrollHeight>node.clientHeight),`the ${kind} menu ${where}: capped over the composer, its entries scrolling`).toBe(true);
+        // Shift+Tab from the draft: the keyboard leaves the composer at the first press, for the control it reaches with no menu open.
+        let presses=0;do{await page.keyboard.press("Shift+Tab");presses++}while(presses<30&&await inComposer());
+        expect.soft([presses,await keyboardOn()],`the Shift+Tab presses that take the keyboard out of the composer from the draft with the ${kind} menu open ${where}, and what has it then`).toEqual([1,before]);
+        await settle(page);
+        if(open.under)expect.soft((await readComposerMenu(menu)).first.pressed,`the ${kind} menu moved over the drawer ${where} with the keyboard out of the composer, a press at its first entry's middle landing on it`).toBe(false);
+        await page.screenshot({path:join(shotsDir,`composer-menu-shift-tab-${tag}-${name}-${state}.png`),animations:"disabled"});
+        // Tab from there: back to the draft as typed, the menu shown with its first entry in view, and ArrowDown moving its highlight.
+        await page.keyboard.press("Tab");
+        expect.soft(await keyboardOn(),`what has the keyboard after Tab from ${before} with the ${kind} menu open ${where}`).toBe("the draft");
+        await expect.soft(composer).toHaveValue(typed);await settle(page);
+        expect.soft((await readComposerMenu(menu)).first.pressed,`the ${kind} menu ${where} with the keyboard back in the draft, a press at its first entry's middle landing on it`).toBe(true);
+        await composer.focus();await page.keyboard.press("ArrowDown");
+        await expect.soft(menu.locator("button.active strong"),`the ${kind} menu's highlight after ArrowDown in the draft ${where}, from ${chosen}`).not.toHaveText(chosen);
+        await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await clear();
+      }
+    }
+  }finally{await harness.close()}
+});
+
 // Repair of UI lane C, round 12: the room the / and @ menus open in over the composer ended at the toasts' line under the header, and
 // a menu that room capped began there, so a toast up while a menu is open, which shows under the header then, lay over its first
 // rows, the one Enter or Tab picks: with the terminal drawer as it opens, 330px, where both menus are capped at 1280 by 800, a failed
