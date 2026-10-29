@@ -55,6 +55,29 @@ test("Trebell Native exposes and persists OpenAI Fast independently from Max thi
   await shootBothModes(page,"native-fast-tier");
 });
 
+// GPT-6 Luna, whose Thinking level Native was measured with (Max): with nothing saved the picker shows Max, the level a message runs at,
+// lists no Default option (one could never stay chosen there: choosing it deleted the saved level and the picker showed Max again) and
+// says in its title that Max is the default; each level picked is saved and shown, and the pill shows its whole value.
+test("the Thinking picker on GPT-6 Luna shows Max with nothing saved, offers no Default that could never stay chosen, and keeps every pick",async({page,request})=>{
+  await request.post("/api/settings",{data:{onboardingComplete:true,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",defaultModel:"gpt-6-luna",modelReasoningEfforts:{},modelServiceTiers:{}}});
+  await routeLuna(page);
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await expect(page.getByTestId("model-picker")).toContainText("GPT-6 Luna");
+  const thinking=page.getByTestId("reasoning-effort-picker");
+  await expect(thinking).toHaveValue("max");
+  await expect(thinking.locator("option")).toHaveText(["Thinking · None","Thinking · Low","Thinking · Medium","Thinking · High","Thinking · Extra High","Thinking · Max"]);
+  await expect(thinking).toHaveAttribute("title",/Default: Max, the level Trebell Native was measured with/);
+  const saved=async()=>(await (await request.get("/api/settings")).json()).modelReasoningEfforts?.["native:openai:gpt-6-luna"]??null;
+  expect(await saved()).toBe(null);
+  await thinking.selectOption({label:"Thinking · High"});
+  await expect.poll(saved).toBe("high");await expect(thinking).toHaveValue("high");
+  await thinking.selectOption({label:"Thinking · Max"});
+  await expect.poll(saved).toBe("max");await expect(thinking).toHaveValue("max");
+  await expect.poll(async()=>(await readComposer(page)).pickers.find(text=>text.startsWith("Thinking"))).toBe("Thinking · Max");
+  await shootBothModes(page,"native-thinking-default");
+});
+
 // What a person reads in the composer's controls: each picker's chosen value, marked when the pill is too narrow for its whole text
 // or lies past the edge of the row that clips it, the model picker's name, marked when cut, and whether the bar scrolls sideways.
 const readComposer=page=>page.locator(".composer-bar").evaluate(async bar=>{
