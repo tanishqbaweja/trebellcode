@@ -17,13 +17,13 @@ import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 const mapped=update=>agentToolLifecycle(update).item;
 const live=update=>activityRow(mapped(update),{turnId:"turn-1"});
 
-test("a harness's call that has not started reads pending, and ends with its turn as a running one does, as every harness's running step still does",()=>{
+test("a harness's call that has not started reads pending, and one its turn ended before it started did not run, while every harness's running step still ends done",()=>{
   // ACP's pending (input still streaming, an approval waited on, a workflow's agent scheduled) is the row's own status.
   for(const update of [{toolCallId:"c1",title:"npm test",kind:"execute",status:"pending"},{toolCallId:"c2",title:"Read notes.txt",kind:"read",status:"pending"},{toolCallId:"c3",kind:"edit",status:"pending",locations:[{path:"a.txt"}]},{toolCallId:"c4",namespace:"trebell_repository",tool:"search",status:"pending"}]){
     assert.equal(mapped(update).status,"pending",update.toolCallId);
     const row=live(update);assert.equal(row.status,"pending");
-    assert.equal(settledRow(row,{keepPast:true}).status,"done","the live window's turn end");
-    assert.equal(storedRow(row).status,"done","the thread's history");
+    assert.equal(settledRow(row,{keepPast:true}).status,"notRun","the live window's turn end");
+    assert.equal(storedRow(row).status,"notRun","the thread's history");
   }
   // The other statuses map as before.
   assert.deepEqual(["in_progress","completed","failed",undefined].map(status=>mapped({toolCallId:"c",title:"x",kind:"execute",status}).status),["inProgress","completed","failed","inProgress"]);
@@ -46,10 +46,10 @@ test("a row of work that runs on past its turn stays as it is at the turn's end 
   assert.equal(workflow.runsPastTurn,true);
   for(const flag of [undefined,false,"yes"])assert.equal("runsPastTurn" in mapped({toolCallId:"t",title:"x",kind:"other",status:"in_progress",runsPastTurn:flag}),false);
   const running=activityRow(workflow,{turnId:"turn-1"}),scheduled=live({toolCallId:"wf-1:agent:ping",title:"Workflow ping-pong · ping",kind:"other",status:"pending",runsPastTurn:true});
-  for(const row of [running,scheduled]){
+  for(const [row,ended] of [[running,"done"],[scheduled,"notRun"]]){
     assert.equal(settledRow(row,{keepPast:true}),row,"left for the work's own rows");
-    assert.equal(settledRow(row).status,"done");
-    assert.equal(storedRow(row).status,"done","a thread opened again shows what its history stored");
+    assert.equal(settledRow(row).status,ended);
+    assert.equal(storedRow(row).status,ended,"a thread opened again shows what its history stored");
   }
   assert.deepEqual([running.status,scheduled.status],["running","pending"]);
 });

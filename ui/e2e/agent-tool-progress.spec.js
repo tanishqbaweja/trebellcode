@@ -102,3 +102,97 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
   }
 });
+
+// A call Cursor sends pending (not started: its input still streams, or it waits its turn) and never starts did not run: once its turn
+// ends it reads not run, without the check of the call beside it that ran, on the turn's card and after a reload.
+test("a Cursor tool call that never started reads not run once its turn ends, not done like the call that ran, also after a reload",async({page})=>{
+  test.setTimeout(60_000);
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-not-run-")),fixture=join(root,"fake-cursor.mjs");
+  await writeFile(fixture,String.raw`
+import { existsSync } from "node:fs";
+import readline from "node:readline";
+const send=value=>process.stdout.write(JSON.stringify(value)+"\n");
+const select=(id,category,currentValue,values)=>({id,name:id,category,type:"select",currentValue,options:values.map(([value,name])=>({value,name}))});
+let options=[select("mode","mode","agent",[["agent","Agent"],["plan","Plan"],["ask","Ask"]]),select("model","model","default",[["default","Auto"]])];
+const update=(sessionId,update)=>send({jsonrpc:"2.0",method:"session/update",params:{sessionId,update}});
+// The tests run once the test writes "start" beside this file, so it sees both calls pending first.
+const released=name=>new Promise(resolve=>{const check=()=>existsSync(new URL("./"+name,import.meta.url))?resolve():setTimeout(check,50);check()});
+readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",async line=>{
+  let m;try{m=JSON.parse(line)}catch{return}
+  if(m.id==null||!m.method)return;
+  const reply=result=>send({jsonrpc:"2.0",id:m.id,result});
+  if(m.method==="initialize")return reply({protocolVersion:1,agentInfo:{name:"fixture",version:"1"},agentCapabilities:{loadSession:true}});
+  if(m.method==="session/new"||m.method==="session/load")return reply({sessionId:"fixture-session",configOptions:options});
+  if(m.method==="session/set_config_option"){options=options.map(option=>option.id===m.params.configId?{...option,currentValue:m.params.value}:option);return reply({configOptions:options})}
+  if(m.method==="session/prompt"){
+    const id=m.params.sessionId;
+    update(id,{sessionUpdate:"tool_call",toolCallId:"run-tests",title:"Run npm test",kind:"execute",status:"pending",rawInput:{command:"npm test"}});
+    update(id,{sessionUpdate:"tool_call",toolCallId:"lint",title:"Run npm run lint",kind:"execute",status:"pending",rawInput:{command:"npm run lint"}});
+    await released("start");
+    update(id,{sessionUpdate:"tool_call_update",toolCallId:"run-tests",status:"in_progress"});
+    update(id,{sessionUpdate:"tool_call_update",toolCallId:"run-tests",status:"completed",rawOutput:"12 passing"});
+    // The lint call never starts: it is still pending as the turn ends.
+    update(id,{sessionUpdate:"agent_message_chunk",content:{type:"text",text:"The tests pass; I left the lint for later."}});
+    return reply({stopReason:"end_turn"});
+  }
+  reply({});
+});
+`,"utf8");
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  const seed=threadStore.create({runtime:"cursor",cwd:root,providerSessionId:"",model:"default",name:"Pending calls"});
+  const instance={id:"cursor-default",kind:"cursor",displayName:"Cursor",enabled:true};
+  const runtimeManager={
+    activeRuntime:()=>"cursor",activeInstance:()=>instance,instances:()=>[instance],
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>process.env,
+    executable:()=>process.execPath,acpArgs:()=>[fixture],compatibleInstanceIds:()=>[instance.id],
+    probe:async()=>({id:instance.id,name:instance.displayName,available:true,authenticated:true,version:"fixture"}),
+  };
+  const meta=new Map([[seed.id,{projectless:true,environmentId:null}]]);
+  const state={settings:()=>({activeEnvironmentId:null,continueThreadsAfterRestart:false}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},recordUsage:()=>{}};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:null,state,version:"fixture"});
+  const port=await listen(server),json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  try{
+    await keepThreadMeta(page);
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default",modelProvider:"openai",defaultPermissionMode:"full",defaultWorkspaceMode:"current"};
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(settings,route.request().postDataJSON()||{});return json(route,settings)});
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+port+"/api/agent/ws",cwd:root,platform:"win32",version:"fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{[seed.id]:{projectless:true,environmentId:null}}}));
+    await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,{models:["default"],metadata:{provider:"cursor",models:[{id:"default",name:"Auto",provider:"cursor",agent:"Cursor"}]}}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const listed=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Pending calls"]')});
+    await listed.locator(".thread-main").click();
+    const composer=page.getByTestId("composer");await expect(composer).toBeEnabled();
+    await composer.click();await page.keyboard.type("Run the tests and the lint",{delay:5});await page.keyboard.press("Enter");
+    const row=title=>page.locator(".tool-event").filter({has:page.locator("summary strong",{hasText:title})});
+    const tests=row("Run npm test"),lint=row("Run npm run lint");
+    await expect(lint.locator("summary em"),"a call not started yet reads pending").toHaveText("pending",{timeout:20_000});
+    await expect(tests.locator("summary em")).toHaveText("pending");
+    await writeFile(join(root,"start"),"");
+    await expect(page.locator(".assistant-message-text").filter({hasText:"The tests pass; I left the lint for later."})).toBeVisible({timeout:20_000});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:15_000});
+    // What the turn's card says once the turn ended: the call that ran is done, the one that never started did not run.
+    const said=async()=>({tests:await tests.locator("summary em").innerText(),lint:await lint.locator("summary em").innerText(),lintChecked:await lint.locator("summary .timeline-marker svg.lucide-check").count()});
+    await expect.poll(said,{message:"the turn's card as the turn ended",timeout:10_000}).toEqual({tests:"done",lint:"not run",lintChecked:0});
+    for(const mode of ["dark","light"]){
+      if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").first().click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);await lint.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:auditDir+`agent-tool-not-run-${mode}-1280x800.png`});
+    }
+    // The window reloaded and the thread opened again: its card, rebuilt from the thread's history, says the same.
+    await page.reload();
+    await listed.locator(".thread-main").click();await expect(listed).toHaveClass(/active/);
+    await expect(page.locator(".assistant-message-text").filter({hasText:"The tests pass; I left the lint for later."})).toBeVisible({timeout:20_000});
+    const card=page.getByTestId("activity-card").last();await expect(card).toBeVisible();
+    if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click();
+    await expect.poll(said,{message:"the card after a reload",timeout:10_000}).toEqual({tests:"done",lint:"not run",lintChecked:0});
+    await page.setViewportSize({width:700,height:800});await lint.scrollIntoViewIfNeeded();
+    await expect(lint.locator("summary em"),"a narrow window says the same").toHaveText("not run");
+    await page.screenshot({animations:"disabled",path:auditDir+`agent-tool-not-run-reloaded-${await page.evaluate(()=>document.documentElement.dataset.mode)}-700x800.png`});
+  }finally{
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});
+  }
+});

@@ -74,11 +74,12 @@ function EventIcon({event}){
   if(event.kind==="mcpToolCall")return <Zap size={13}/>;
   return <Sparkles size={13}/>;
 }
-// A row's pill: an error says error, a retry what became of it, any other step its status.
+// A row's pill: an error says error, a retry what became of it, a call that never started that it did not run, any other step its
+// status.
 function eventPill(event){
   if(event.kind==="error")return "error";
   if(event.kind==="retry")return event.status==="running"?"retrying":event.status==="done"?"recovered":event.status;
-  return event.status;
+  return event.status==="notRun"?"not run":event.status;
 }
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
   const [expanded,setExpanded]=useState(false);
