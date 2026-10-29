@@ -1024,10 +1024,53 @@ test("a Compact the window stopped waiting for says so on its row, and its later
     // Soft, so that the old code also shows what the compaction's end does.
     await page.clock.fastForward("00:46");
     await expect.soft(rows.locator("summary strong")).toHaveText(["Trebell stopped waiting for the context compaction after 45 seconds; Codex may still be compacting."]);
+    // A step whose end is not known, not a failed one: no error mark, pill or failed count.
+    await expect.soft(rows).toHaveClass([/status-unknown/]);await expect.soft(rows).not.toHaveClass([/kind-error|status-error/]);
+    await expect.soft(rows.locator("summary em")).toHaveText(["unknown"]);
+    await expect.soft(page.locator(".activity-card-failed"),"nothing failed").toHaveCount(0);
     await rows.scrollIntoViewIfNeeded();await shoot(page,"compact-window-stopped-waiting");
     codex.notify("item/completed",{threadId,turnId,item,completedAtMs:Date.now()});codex.notify("thread/compacted",{threadId,turnId});
     codex.notify("turn/completed",{threadId,turn:{id:turnId,status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
     await expect(rows.locator("summary strong")).toHaveText(["Context compacted"]);await expect(rows).toHaveClass([/status-done/]);
+  }finally{await codex.close()}
+});
+
+// A message whose automatic compaction Codex has not ended in the window's 45 seconds goes on, its row saying the window stopped
+// waiting; the compaction's end, as Codex sends it (its item started before the limit, completed after it, then its turn's end and the
+// message's turn), takes that row: one row of the compaction, compacted, on its own turn's card, and none left saying Codex may still
+// be compacting.
+test("a message's automatic compaction that Codex ends after the window's 45 seconds leaves one row of it, compacted, and none saying Codex may still compact",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  await page.clock.install();
+  const codex=await startCodex(page,{name:"Codex auto compact",project:true,settings:{autoCompactContext:true,autoCompactThresholdPercent:85}});
+  const rows=page.locator(".tool-event").filter({hasText:/compact/i}),usage=percent=>({threadId:codex.thread.id,tokenUsage:{modelContextWindow:100_000,last:{inputTokens:percent*1000},total:{totalTokens:130_000}}});
+  try{
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [first]=codex.turns;first.answer();first.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    codex.notify("thread/tokenUsage/updated",usage(93));await expect(page.locator(".context-meter")).toHaveAttribute("aria-valuenow","93");
+    await sendTyped(page,"Count again.");
+    await expect.poll(()=>codex.calls.includes("thread/compact/start")).toBe(true);
+    const threadId=codex.thread.id,compactTurn="codex-auto-compact-turn",item={type:"contextCompaction",id:"auto-compaction-item-1"};
+    codex.notify("turn/started",{threadId,turn:{id:compactTurn,status:"inProgress",items:[]}});codex.notify("item/started",{threadId,turnId:compactTurn,item});
+    await expect(rows.locator("summary strong")).toHaveText(["Compacting context"]);
+    // At 45 seconds the message goes on, and Codex holds its turn behind the compaction's.
+    await page.clock.fastForward("00:46");
+    await expect.poll(()=>codex.turns.length).toBe(2);
+    await expect(rows.locator("summary strong")).toHaveText(["Trebell stopped waiting for the context compaction after 45 seconds; Codex may still be compacting."]);
+    codex.notify("item/completed",{threadId,turnId:compactTurn,item,completedAtMs:Date.now()});codex.notify("thread/compacted",{threadId,turnId:compactTurn});
+    codex.notify("turn/completed",{threadId,turn:{id:compactTurn,status:"completed",items:[]}});
+    // Before the message's turn starts, one row says the compaction is done, and none that Codex may still be compacting.
+    await expect(rows.locator("summary strong")).toHaveText(["Context compacted"]);
+    await expect(page.locator(".tool-event").filter({hasText:"may still be compacting"})).toHaveCount(0);
+    const next=codex.turns[1];next.answer();next.start();
+    await expect.poll(()=>next.status,{timeout:10_000}).toBe("completed");await expect(stop(page)).toHaveCount(0);
+    await expect(page.locator(".tool-event").filter({hasText:"may still be compacting"}),"no row says Codex may still compact").toHaveCount(0);
+    const card=page.locator(`.turn-card[data-turn-id="${compactTurn}"] [data-testid=activity-card]`);
+    if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click();
+    await expect(rows.locator("summary strong")).toHaveText(["Context compacted"]);
+    await rows.scrollIntoViewIfNeeded();await shoot(page,"auto-compact-ended-after-window-stopped-waiting");
   }finally{await codex.close()}
 });
 

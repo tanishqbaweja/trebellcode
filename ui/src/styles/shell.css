@@ -405,6 +405,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .timeline .tool-event.status-running summary em{border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:var(--acsoft);color:var(--ac)}
 .conversation-column .timeline .tool-event:is(.status-error,.kind-error) summary em{border-color:var(--errb);background:var(--errt);color:var(--err)}
 .conversation-column .timeline .tool-event.status-warning summary em{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
+/* A step whose end the window does not know (a compaction it stopped waiting for) says what the person can do next, so its whole
+   text shows, wrapped, where other steps' long titles are cut. */
+.conversation-column .timeline .tool-event.status-unknown summary strong{padding:6px 0;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.45}
 /* A retry row while its harness retries: amber, as a degraded state that goes on (the turn has not failed). */
 .conversation-column .timeline .tool-event.kind-retry.status-running summary .timeline-marker{color:var(--warn)}
 .conversation-column .timeline .tool-event.kind-retry.status-running summary em{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}

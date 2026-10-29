@@ -282,11 +282,13 @@ export async function runSlashCommand(deps,text){
       const resolved=await api("/api/project-recipe/resolve",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,recipe:recipe.id||recipe.name,input:rest.join(" "),currentPermission:permissionMode,runtime:agentRuntime}});
       const execution=resolved.execution;if(!execution)throw new Error("Recipe could not be resolved");
       if(execution.model&&!models.includes(execution.model))throw new Error(`Recipe ${recipe.name} requires model ${execution.model}, which is not available in the active runtime.`);
+      // Its message shows in the conversation while an automatic compaction runs before it (pending): the composer let it go already.
       await startTurn(execution.turnInput,attachments,execution.model||model,null,null,repositoryFocusPaths(attachments,contextChips),{
         permissionModeOverride:execution.permissionMode,
         additionalContext:{"trebell.recipe":{kind:"application",value:execution.context}},
         goalPatch:execution.goalPatch,
         toolAllowlist:execution.toolAllowlist,
+        pending:true,
       });
       if(execution.permissionMode&&execution.permissionMode!==permissionMode)setPermissionMode(execution.permissionMode);
       setEvents(prev=>[...prev,{id:"recipe-"+Date.now(),kind:"tool",title:`Started project recipe ${recipe.name}`,status:"done",raw:{recipe:recipe.name,permissionMode:execution.permissionMode,model:execution.model||model,maxChildren:execution.goalPatch?.childAgentBudget??null}}]);
@@ -497,19 +499,24 @@ export async function prepareTurnContext(deps,thread,cwd,text,paths,{background=
 // first that the harness compacts and is connected). The send waits for it to end, as long as its harness takes, with the row App
 // shows while it runs (requestThreadCompaction). One that failed, or that the person stopped with the header's Stop, leaves the
 // context as it was, and the message goes on with a row saying why, as Grok's stopped one does: stopping it ends the compaction, not
-// the message waiting for it. One the window stopped waiting for says so, and the compaction's own end, should it come, takes that
-// row (thread/compacted). held: the composer's message, which no queue holds: it waits meanwhile in its thread's queue as being
-// sent, which shows it, and a window that opens the thread again, or is reloaded or closed meanwhile, keeps it for the person to
-// send (persistent-queue.js hydratePersistedQueue). It leaves the queue before the send goes on, never after its turn may have
-// started. compacted: the context is compacted; row: the turn's row saying how the compaction went.
-export async function compactBeforeTurn(deps,thread,held){
-  const {activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,persistLocalQueue,queueNow}=deps;
+// the message waiting for it. One the window stopped waiting for says so, as a compaction whose end is not known (status unknown),
+// and the compaction's own end, should it come, takes that row (thread/compacted). held: the composer's message, which no queue
+// holds: it waits meanwhile in its thread's queue as being sent, held by this window (heldBy: windowKey) for as long as it can wait
+// (heldUntil: holdMs from now, its harness's limit and a margin), whose card says what it waits for. That shows it; another window
+// that opens the thread meanwhile shows it as on its way there, and a window that opens the thread again, or is reloaded or closed
+// meanwhile, keeps it for the person to send (persistent-queue.js hydratePersistedQueue, heldElsewhere). It leaves the queue before
+// the send goes on, never after its turn may have started. A message with no draft of the composer's (a project's recipe) shows as
+// on its way meanwhile (onWait: its message in the conversation). compacted: the context is compacted; row: the turn's row saying how
+// the compaction went.
+export async function compactBeforeTurn(deps,thread,held,onWait=null){
+  const {activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,windowKey,holdMs,persistLocalQueue,queueNow}=deps;
   const usage=threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
   const decision=autoCompactionDecision(usage,{enabled:settings.autoCompactContext===true,thresholdPercent:settings.autoCompactThresholdPercent??85});
   if(!decision.shouldCompact)return {};
   const row=patch=>({id:"auto-compact-"+thread.id,kind:"contextCompaction",title:"Context compacted automatically before this turn",status:"done",raw:decision,...patch});
-  const kept=held&&{...held,id:crypto.randomUUID(),createdAt:Date.now(),dispatchingAt:Date.now()},onItsWay=localQueueStartRef.current;
+  const now=Date.now(),kept=held&&{...held,id:crypto.randomUUID(),createdAt:now,dispatchingAt:now,heldBy:windowKey,heldUntil:now+holdMs},onItsWay=localQueueStartRef.current;
   if(kept){onItsWay.add(kept.id);await persistLocalQueue(thread.id,[...queueNow(thread.id),kept]).catch(()=>{})}
+  else onWait?.();
   try{
     await requestThreadCompaction(thread.id);
     updateThreadTelemetry(thread.id,{tokenUsage:null,lastActivityAt:Date.now()});
@@ -517,6 +524,6 @@ export async function compactBeforeTurn(deps,thread,held){
     return {compacted:true,row:row()};
   }catch(error){
     const message=error?.message||String(error);
-    return {compacted:false,row:row({kind:"error",title:error?.waited?message:"Automatic context compaction failed; continuing: "+message,waited:error?.waited})};
+    return {compacted:false,row:row(error?.waited?{status:"unknown",title:message,waited:true}:{kind:"error",title:"Automatic context compaction failed; continuing: "+message})};
   }finally{if(kept){await persistLocalQueue(thread.id,queueNow(thread.id).filter(item=>item.id!==kept.id)).catch(()=>{});onItsWay.delete(kept.id)}}
 }

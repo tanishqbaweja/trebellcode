@@ -10,13 +10,21 @@ export function persistedQueueItems(items=[]){
     createdAt:Number(item.createdAt)||Date.now(),
     autoStartFailed:Boolean(item.autoStartFailed),
     dispatchingAt:Number(item.dispatchingAt)||null,
+    ...(item.heldBy&&Number(item.heldUntil)?{heldBy:String(item.heldBy),heldUntil:Number(item.heldUntil)}:{}),
   }));
 }
 
+// A message a window holds in its thread's queue while the automatic compaction before it runs (heldBy: that window's key, which a
+// reload of it keeps; heldUntil: as long as that window can wait) is on its way in that window: another window shows it as being
+// sent until then. The window itself reloaded is gone, and knows it by its key.
+export function heldElsewhere(item,windowKey,now=Date.now()){
+  return Boolean(item?.dispatchingAt&&item.heldBy&&item.heldBy!==windowKey&&Number(item.heldUntil)>now);
+}
+
 // A follow-up left on its way by a window that is gone (a reload, a restart) may have started, so it waits for a retry; one still on
-// its way in this window (onItsWay, the ids of those) keeps its mark while its send goes on.
-export function hydratePersistedQueue(items=[],onItsWay=new Set()){
-  return persistedQueueItems(items).map(item=>item.dispatchingAt&&!onItsWay.has(item.id)?{
-    ...item,dispatchingAt:null,autoStartFailed:true,recoveredUncertainDispatch:true,
+// its way in this window (onItsWay, the ids of those), or held in another (heldElsewhere), keeps its mark while its send goes on.
+export function hydratePersistedQueue(items=[],onItsWay=new Set(),windowKey=null,now=Date.now()){
+  return persistedQueueItems(items).map(item=>item.dispatchingAt&&!onItsWay.has(item.id)&&!heldElsewhere(item,windowKey,now)?{
+    ...item,dispatchingAt:null,autoStartFailed:true,recoveredUncertainDispatch:true,heldBy:null,heldUntil:null,
   }:item);
 }

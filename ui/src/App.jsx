@@ -59,7 +59,7 @@ import { userVerificationAvailability } from "./user-verification.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { desktopBridgeToolAvailability } from "./desktop-tool-availability.js";
-import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
+import { heldElsewhere, hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
 import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, openThreadTitleSource, sameCatalogSnapshot, threadCatalogRuntime, threadOwnerElsewhere, threadsFromCatalogMeta, threadTitle, threadKeptBySwitch } from "./thread-catalog.js";
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { finishedActivitySteps } from "./activity-details.js";
@@ -251,6 +251,9 @@ function focusNewTask(){
 const BROWSER_NAVIGATION=typeof window!=="undefined"&&!window.trebellDesktop&&typeof window.history?.pushState==="function";
 // The tab history entry this page load opened on: another one when the app starts means Back or Forward was pressed meanwhile.
 const LOADED_BROWSER_ENTRY_ID=BROWSER_NAVIGATION?window.history.state?.trebellNav?.id||null:null;
+// This window's own key, which a reload of it keeps (sessionStorage, the window's own): a message it holds in its thread's queue for
+// an automatic compaction names it (persistent-queue.js heldElsewhere).
+const WINDOW_KEY=(()=>{const key="trebell-window-key";try{const kept=sessionStorage.getItem(key);if(kept)return kept;const made=crypto.randomUUID();sessionStorage.setItem(key,made);return made}catch{return crypto.randomUUID()}})();
 
 // A part loaded with lazy() whose code could not load (the UI was rebuilt or updated under an open page, or the link to a remote
 // Trebell server dropped), or that failed as it drew, says so in its place: without a boundary React takes the whole app off the
@@ -455,7 +458,10 @@ const LONG_COMPACTION_RUNTIMES=new Set(["grok","muse"]);
 function upsertEvent(events,event){return events.some(item=>item.id===event.id)?events.map(item=>item.id===event.id?{...item,...event}:item):[...events,event]}
 // The row of a compaction the window waits for in a thread (requestThreadCompaction), until its end says how it went. It has no turn
 // until its item names one: the turn of the last compaction, kept, would take it away.
-const compactingRow=threadId=>({id:"context-compact-"+threadId,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{},turnId:null});
+const compactingRow=threadId=>({id:"context-compact-"+threadId,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{},turnId:null,waited:false});
+// What a compaction row says once the window stopped waiting for its end (requestThreadCompaction's waited error): neither compacted
+// nor failed, its end not known (status unknown, a step's neutral look and pill).
+const waitedCompactionRow=error=>({kind:"contextCompaction",title:error.message,status:"unknown",waited:true});
 // Whether the live card still lists a turn's steps: the turn that ended last, until the next one starts or a message is sent.
 const showsTurn=(events,turnId)=>events.some(event=>event.fromItem&&event.turnId===turnId);
 // What became of a thread's own Codex app-server that died, as the server noted it (trebellAppServerExit).
@@ -1430,11 +1436,12 @@ export default function App(){
   // Clears only the live reply text (a withdrawn Native draft), leaving command, diff and tool streams as they are.
   function clearAssistantText(){assistantStreamSyncRef.current=EMPTY_ASSISTANT_STREAM;assistantStreamBufferRef.current?.reset();assistantTextRef.current="";activityTimelineRef.current?.setText("")}
   // A compaction's item row, under the item's own id as the thread's history names it, takes the place of the row Compact put up for
-  // its thread, also once the window stopped waiting for it (waited): one compaction is one row, and two in one turn are two. null
-  // when it has no such row to take.
+  // its thread, also once the window stopped waiting for it (waited), and of the row of a message the window stopped waiting for its
+  // automatic compaction for (compactBeforeTurn's): one compaction is one row, and two in one turn are two. null when it has no such
+  // row to take.
   function takeCompactionPlace(prev,row,threadId){
     if(row.kind!=="contextCompaction"||prev.some(event=>event.id===row.id))return null;
-    const index=prev.findIndex(event=>event.id==="context-compact-"+threadId&&(event.waited||event.kind==="contextCompaction"&&event.status==="running"));
+    const index=prev.findIndex(event=>event.id==="context-compact-"+threadId&&(event.waited||event.kind==="contextCompaction"&&event.status==="running")||event.id==="auto-compact-"+threadId&&event.waited);
     return index<0?null:prev.map((event,at)=>at===index?row:event);
   }
   // The newest compaction row still running in the open thread's turn records (turnId's when given) ends as end says, so the card
@@ -1943,17 +1950,20 @@ export default function App(){
   // header's Stop is its own (stop()). turnId: the turn it runs in otherwise, once the request's answer (Grok's /compact) or its item
   // (Codex's) names it, whose error ends it (the error notification).
   // Its row in the thread shown (compactingRow) is Compact's, or the one of a message the automatic compaction runs before. At its
-  // limit the window stops waiting while the harness may still compact: the row says so (waited), and the compaction's own end,
-  // should it come, takes that row (thread/compacted, takeCompactionPlace).
+  // limit the window stops waiting while the harness may still compact: the row says so (waited), as a step whose end is not known,
+  // not a failed one, and the compaction's own end, should it come, takes that row (thread/compacted, takeCompactionPlace). One that
+  // runs in no turn (Muse Code's) loses its Stop there, which the row says Compact brings back: Muse joins its running compaction,
+  // which Compact's row then follows, also in place of the row of a message that went on without it (auto-compact), so one
+  // compaction keeps one row.
   function requestThreadCompaction(threadId){
-    const id=String(threadId||"").trim(),client=rpcRef.current,long=LONG_COMPACTION_RUNTIMES.has(agentRuntime);
+    const id=String(threadId||"").trim(),client=rpcRef.current,long=LONG_COMPACTION_RUNTIMES.has(agentRuntime),turnless=agentRuntime==="muse";
     if(!id||!client)return Promise.reject(new Error("Agent harness is not connected"));
-    if(activeThreadRef.current?.id===id)setEvents(prev=>upsertEvent(prev,compactingRow(id)));
+    if(activeThreadRef.current?.id===id)setEvents(prev=>upsertEvent(turnless?prev.filter(event=>!(event.waited&&event.id==="auto-compact-"+id)):prev,compactingRow(id)));
     const existing=compactionWaitersRef.current.get(id);if(existing)return existing.promise;
     let resolvePromise,rejectPromise;
     const promise=new Promise((resolve,reject)=>{resolvePromise=resolve;rejectPromise=reject});
-    const timer=setTimeout(()=>settleCompactionWaiter(id,Object.assign(new Error(`Trebell stopped waiting for the context compaction after ${long?"10 minutes":"45 seconds"}; ${agentRuntimeLabel} may still be compacting.`),{waited:true})),long?600_000:45_000);
-    const waiter={promise,resolve:resolvePromise,reject:rejectPromise,timer,turnless:agentRuntime==="muse",turnId:null};
+    const timer=setTimeout(()=>settleCompactionWaiter(id,Object.assign(new Error(`Trebell stopped waiting for the context compaction after ${long?"10 minutes":"45 seconds"}; ${agentRuntimeLabel} may still be compacting.${turnless?" Press Compact to follow it again; its Stop comes back.":""}`),{waited:true})),long?600_000:45_000);
+    const waiter={promise,resolve:resolvePromise,reject:rejectPromise,timer,turnless,turnId:null};
     compactionWaitersRef.current.set(id,waiter);if(waiter.turnless)setCompactionStops(count=>count+1);
     client.request("thread/compact/start",{threadId:id}).then(result=>{if(result?.turn?.id!=null)waiter.turnId??=String(result.turn.id)},error=>settleCompactionWaiter(id,error));
     return promise;
@@ -3136,14 +3146,29 @@ export default function App(){
   // A follow-up being edited holds the local queue, so it goes as saved, and so does a Stop (heldQueues), unless it fails. One goes at
   // a time: none starts while one of the queue is on its way (localQueueStartRef), whatever the queue's order meanwhile. One marked on
   // its way that no send of this window has (a copy of the queue from before its send ended) may have gone already: it waits for the
-  // person, marked to retry as one a reload left (hydratePersistedQueue), and is never started a second time by itself.
+  // person, marked to retry as one a reload left (hydratePersistedQueue), and is never started a second time by itself. A message
+  // another window holds for its automatic compaction (heldElsewhere) is on its way there, and nothing of this queue starts here
+  // meanwhile: this window reads the thread's queue again now, as each of its turns starts or ends, and once that window can hold it
+  // no longer. The message leaves this window's queue once it has left the thread's (before its turn starts), and is left to retry
+  // once nothing holds it there; this window writes nothing of it.
   useEffect(()=>{
     if(runtimeCapabilities.nativeQueue&&(queueMode==="native"||queued[0]?.native))return;
-    const threadId=activeThreadRef.current?.id||null;
+    const threadId=activeThreadRef.current?.id||null,elsewhere=threadId?queued.find(item=>heldElsewhere(item,WINDOW_KEY)):null;
+    if(elsewhere){
+      let current=true;
+      const reread=()=>api("/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(meta=>{
+        const there=(meta?.trebellQueue||[]).find(item=>item.id===elsewhere.id);
+        if(!current||activeThreadRef.current?.id!==threadId||there&&heldElsewhere(there,WINDOW_KEY))return;
+        const [left]=there?hydratePersistedQueue([there],localQueueStartRef.current,WINDOW_KEY):[];
+        setQueued(shown=>shown.some(item=>item.id===elsewhere.id)?left?shown.map(item=>item.id===elsewhere.id?left:item):shown.filter(item=>item.id!==elsewhere.id):shown);
+      }).catch(()=>{});
+      reread();const timer=setTimeout(reread,Math.max(0,Number(elsewhere.heldUntil)-Date.now())+100);
+      return()=>{current=false;clearTimeout(timer)};
+    }
     if(running||!queued.length||queuedEditId||heldQueues.has(String(threadId)))return;
     const next=queued[0],onItsWay=localQueueStartRef.current;if(next?.autoStartFailed||queued.some(item=>onItsWay.has(item.id)))return;
     if(next.dispatchingAt){
-      const retry=queueNow(threadId).map(item=>item.id===next.id&&item.dispatchingAt&&!onItsWay.has(item.id)?{...item,dispatchingAt:null,autoStartFailed:true}:item);
+      const retry=queueNow(threadId).map(item=>item.id===next.id&&item.dispatchingAt&&!onItsWay.has(item.id)?{...item,dispatchingAt:null,autoStartFailed:true,heldBy:null,heldUntil:null}:item);
       persistLocalQueue(threadId,retry).catch(()=>{if(activeThreadRef.current?.id===threadId)setQueued(retry)});return;
     }
     onItsWay.add(next.id);
@@ -3546,12 +3571,13 @@ export default function App(){
       updateThreadTelemetry(threadId,{currentActivity:null,lastActivity:{id,kind:"contextCompaction",title:"Context compacted",completedAtMs:at},lastActivityAt:at,lastError:null});
       // The compaction's row ends compacted: its item's (the newest still running, else the newest), or the one Compact put up; a
       // harness that sends no item gets its row here. Its turn's record too, should the item not say so before the turn ends. The
-      // row of one the window stopped waiting for (waited) is among them: Compact's, or the one of the message that went on.
+      // row of one the window stopped waiting for (waited) is among them, before an older one: Compact's, or the one of the message
+      // that went on.
       const compacted={kind:"contextCompaction",title:"Context compacted",status:"done",waited:false};
       if(isCurrent){
         endCompactionRecord(threadId,p.turnId,row=>({...row,...compacted}));
         setEvents(prev=>{
-          const rows=prev.filter(item=>item.kind==="contextCompaction"||item.waited),row=rows.findLast(item=>item.status==="running")||rows.at(-1);
+          const rows=prev.filter(item=>item.kind==="contextCompaction"||item.waited),row=rows.findLast(item=>item.status==="running")||rows.findLast(item=>item.waited)||rows.at(-1);
           return row?prev.map(item=>item===row?{...item,...compacted}:item):[...prev,{id,...compacted,raw:p,...(p.turnId?{turnId:String(p.turnId)}:{})}];
         });
       }
@@ -3935,7 +3961,7 @@ export default function App(){
     // The queue shown is the thread's as it is now (queueNow's copy), not as it was when this open began: a follow-up whose send
     // ended while the open waited has left it, or is marked to retry, and only one still on its way now reads as being sent. A copy
     // read before would show the one that went as being sent, with its buttons off, and the queue would start it a second time.
-    const restoredLocalQueue=useNativeQueue?[]:hydratePersistedQueue(queueNowRef.current.threadMeta[thread.id]?.trebellQueue||savedMeta.trebellQueue||[],localQueueStartRef.current);
+    const restoredLocalQueue=useNativeQueue?[]:hydratePersistedQueue(queueNowRef.current.threadMeta[thread.id]?.trebellQueue||savedMeta.trebellQueue||[],localQueueStartRef.current,WINDOW_KEY);
     // The composer's note goes with the view it was about: another thread shown, or this one opening after all, ends it; the thread
     // shown opening again (a reconnect) keeps a note about its failed send or about another thread that did not open.
     activeThreadRef.current=openedThread;setComposerAlert(current=>current&&(previousThreadId!==thread.id||(current.kind==="open"&&current.threadId===String(thread.id)))?null:current);pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!reopeningCurrentThread)shownWelcomeRef.current=null;if(!preserveSection&&sectionRef.current===from&&!openRunRef.current?.pageAsked)setSection("chat");setMessages([]);setTurnOrder({threadId:thread.id,ids:[]});setTurnActivity(emptyTurnActivity(thread.id));liveItemRowsRef.current.clear();liveTurnKeyRef.current=resumedRunning&&resumedTurnId?turnInfoKey(thread.id,resumedTurnId):null;setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
@@ -4349,11 +4375,11 @@ export default function App(){
   }
   // Whether a send compacts the context first, and the wait for it, are turn-support.js's (compactBeforeTurn): a send made before that
   // module has loaded waits for it, and one that cannot load it goes on with the context as it is. held: the composer's message, which
-  // waits meanwhile in its thread's queue when the queue is Trebell's own (queueMode local).
-  async function maybeAutoCompactBeforeTurn(thread,held){
+  // waits meanwhile in its thread's queue when the queue is Trebell's own (queueMode local); onWait shows a message no queue holds.
+  async function maybeAutoCompactBeforeTurn(thread,held,onWait){
     if(!thread?.id||!runtimeCapabilities.compaction||rpcStatus!=="connected")return {};
     let support;try{support=await loadTurnSupport()}catch{return {}}
-    return support.compactBeforeTurn({activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,persistLocalQueue,queueNow},thread,queueMode==="local"&&held);
+    return support.compactBeforeTurn({activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,windowKey:WINDOW_KEY,holdMs:(LONG_COMPACTION_RUNTIMES.has(agentRuntime)?600_000:45_000)+60_000,persistLocalQueue,queueNow},thread,queueMode==="local"&&held,onWait);
   }
   // A packet that could not be made, also for want of turn-support.js: the send goes on without it, and its activity says why.
   async function contextUnavailable(thread,error,{background=false}={}){
@@ -4402,8 +4428,9 @@ export default function App(){
   // meanwhile for the next message among them, and their files stayed on the shelf as plain attachments.
   // inputText: what the harness gets in place of text, which the person's message and its checkpoint keep (a Codex goal's first turn).
   // checked: the send checked its files a moment ago (dispatchSend, Send now), which extracted their text: this check only finds it.
-  // held: the composer's draft of a message no queue holds (dispatchSend), kept while an automatic compaction runs before it.
-  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false,inputText=null,sentChips=goalResume?[]:contextChips,pressed=terminalPresses(),checked=false,held=null}={}){
+  // held: the composer's draft of a message no queue holds (dispatchSend), kept while an automatic compaction runs before it. Its
+  // message, and that of a project's recipe (pending), shows in the conversation meanwhile when no queue of Trebell's holds it.
+  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false,inputText=null,sentChips=goalResume?[]:contextChips,pressed=terminalPresses(),checked=false,held=null,pending=false}={}){
     // The view the send was made from: its composer's hold (send()) and the open count (openThread, newChat). A new task's send keeps
     // that view only while no thread is shown or opening and the hold is still its own (another thread opened, or a new task opened
     // from one, released it); with no hold, while nothing was opened since.
@@ -4413,7 +4440,12 @@ export default function App(){
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[],{extract:!checked});
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
-    const autoCompaction=await maybeAutoCompactBeforeTurn(thread,held);
+    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),sentMessage={id:clientId,role:"user",text,attachments:paths};
+    const showSent=()=>{followConversationEnd();setMessages(prev=>prev.some(message=>message.id===clientId)?prev:[...prev,sentMessage])};
+    // A message shown while the automatic compaction runs before it is the send's, as below: the live card leaves the last turn for
+    // it (that turn's card reads in its place, above the message), keeping only the compaction's row.
+    const waitShown=()=>{if(activeThreadRef.current?.id!==thread.id)return;showSent();setCardTurnId(null);setEvents(prev=>prev.filter(row=>row.id==="context-compact-"+thread.id))};
+    const autoCompaction=await maybeAutoCompactBeforeTurn(thread,held,(held||pending)&&!goalResume?waitShown:null);
     // A thread the send creates keeps its turns' cards from its first turn on, as an opened thread does. Trebell's tool catalog comes
     // first: a send that cannot start for want of it sets nothing up (no worktree, no thread). A new task left while its thread was
     // being made (another thread opened meanwhile) stays as the person left it: the thread starts on its own in the sidebar, and its
@@ -4426,9 +4458,9 @@ export default function App(){
       if(newTaskShown()){activeThreadRef.current=thread;setActiveThread(thread);setTurnActivity(emptyTurnActivity(thread.id));setProjectPath(cwd)}
     }
     const shown=()=>activeThreadRef.current?.id===thread.id;
-    // The live card leaves the last turn here: until the new turn starts it lists only this send's notices, under no turn's name.
-    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),sentMessage={id:clientId,role:"user",text,attachments:paths};
-    if(shown()){if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,sentMessage])}setCardTurnId(null);setEvents(prev=>[...turnlessCompactionRows(prev,thread.id),...(autoCompaction.row?[autoCompaction.row]:[])]);resetAssistantStream();setRunning(true)}
+    // The live card leaves the last turn here: until the new turn starts it lists only this send's notices, under no turn's name. The
+    // message shows once, also when it showed while the automatic compaction ran.
+    if(shown()){if(!goalResume)showSent();setCardTurnId(null);setEvents(prev=>[...turnlessCompactionRows(prev,thread.id),...(autoCompaction.row?[autoCompaction.row]:[])]);resetAssistantStream();setRunning(true)}
     // Until turn/start answers the send has no turn for Stop to name, and a harness that has to start first can take a minute: Stop
     // meanwhile marks this send stopped (stop()), so it sends nothing more, and a turn the harness started before the Stop reached it
     // is stopped as soon as it is named.
@@ -4633,8 +4665,9 @@ export default function App(){
     }catch(error){
       // The failure ends the compaction's own row, which no turn ends: it would say "Compacting context" beside its failure. That is
       // its item's row once the item came (in its turn's record too, so the turn's card says it failed), else the one Compact put up.
-      // One the window stopped waiting for has not failed, as far as it knows: its row says so (requestThreadCompaction).
-      const failed={kind:"error",title:(error.waited?"":"Context compaction failed: ")+(error.message||String(error)),status:"done",waited:error.waited};
+      // One the window stopped waiting for has not failed, as far as it knows: its row says so, a compaction whose end is not known
+      // (requestThreadCompaction).
+      const failed=error.waited?waitedCompactionRow(error):{kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done"};
       if(activeThreadRef.current?.id!==threadId)return;
       endCompactionRecord(threadId,null,row=>({...row,...failed}));
       setEvents(prev=>{const row=prev.findLast(item=>item.kind==="contextCompaction"&&item.status==="running");return row?prev.map(item=>item===row?{...item,...failed}:item):upsertEvent(prev,{id,...failed,raw:{}})});
@@ -5773,7 +5806,7 @@ export default function App(){
                   does nothing, so the second click never lands on the next follow-up's button, which comes up in its place once the first
                   takes this one out or moves it. A follow-up on its way reads as being sent, its buttons off (queuedOnItsWay). Its buttons
                   pressed from the keyboard keep the keyboard (pressQueued): Edit in the composer, the others in the queue. */}
-              {queued.map((item,index)=>{const sending=!item.native&&Boolean(item.dispatchingAt),sendingTitle=sending?"This follow-up is already being sent":undefined;return <div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span title={sending?"This follow-up is being sent: it leaves the queue once it has gone, and stays here if it cannot be sent.":queueHeld&&!item.native&&!item.autoStartFailed?"A Stop holds the queue: it goes on once this thread runs a turn again. Send now sends this follow-up now.":undefined}>{item.native?`Queued in ${agentRuntimeLabel}`:sending?"Sending…":item.autoStartFailed?"Queued · retry needed":queueHeld?"Queued · held after Stop":"Queued"}{queuedEditId===item.id?" · editing"+(queueEditDraft?" · your draft returns after":""):""}</span><p>{item.text}</p><div className="queued-message-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}><button disabled={sending||(running&&!runtimeCapabilities.steering)||queuedEditId===item.id} title={sendingTitle||(queuedEditId===item.id?"Save the edit with Enter, or press Escape, before sending it":running&&!runtimeCapabilities.steering?cannotSteerReason:undefined)} onClick={event=>pressQueued(event,item,index,0,()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={event=>pressQueued(event,item,index,1,()=>editQueued(item),"Could not edit queued follow-up")} disabled={sending||Boolean(queuedEditId)||item.editable===false} title={sendingTitle||(queuedEditId&&queuedEditId!==item.id?"Save the follow-up you are editing, or press Escape, first":undefined)}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={sending||index===0} onClick={event=>pressQueued(event,item,index,2,()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={sending||index===queued.length-1} onClick={event=>pressQueued(event,item,index,3,()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button disabled={sending} title={sendingTitle} onClick={event=>pressQueued(event,item,index,4,()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>})}
+              {queued.map((item,index)=>{const sending=!item.native&&Boolean(item.dispatchingAt),held=sending&&Boolean(item.heldBy),sendingTitle=sending?(held?"This message is already on its way":"This follow-up is already being sent"):undefined;return <div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span title={sending?(held?(item.heldBy===WINDOW_KEY?"This message waits for the context compaction to end: it is sent then, and comes back to the composer if it cannot be.":"This message is on its way in another window, which sends it once the context compaction has ended."):"This follow-up is being sent: it leaves the queue once it has gone, and stays here if it cannot be sent."):queueHeld&&!item.native&&!item.autoStartFailed?"A Stop holds the queue: it goes on once this thread runs a turn again. Send now sends this follow-up now.":undefined}>{item.native?`Queued in ${agentRuntimeLabel}`:sending?"Sending…":item.autoStartFailed?"Queued · retry needed":queueHeld?"Queued · held after Stop":"Queued"}{queuedEditId===item.id?" · editing"+(queueEditDraft?" · your draft returns after":""):""}</span><p>{item.text}</p><div className="queued-message-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}><button disabled={sending||(running&&!runtimeCapabilities.steering)||queuedEditId===item.id} title={sendingTitle||(queuedEditId===item.id?"Save the edit with Enter, or press Escape, before sending it":running&&!runtimeCapabilities.steering?cannotSteerReason:undefined)} onClick={event=>pressQueued(event,item,index,0,()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={event=>pressQueued(event,item,index,1,()=>editQueued(item),"Could not edit queued follow-up")} disabled={sending||Boolean(queuedEditId)||item.editable===false} title={sendingTitle||(queuedEditId&&queuedEditId!==item.id?"Save the follow-up you are editing, or press Escape, first":undefined)}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={sending||index===0} onClick={event=>pressQueued(event,item,index,2,()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={sending||index===queued.length-1} onClick={event=>pressQueued(event,item,index,3,()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button disabled={sending} title={sendingTitle} onClick={event=>pressQueued(event,item,index,4,()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>})}
               {!messages.length&&!events.length&&!storeCardTurnIds(shownTurnActivity).length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>

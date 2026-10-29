@@ -63,11 +63,12 @@ async function startMuseHarness({environment={},holds=[]}={}){
   };
 }
 // The app's endpoints for a window on Muse Code in Supervised, answered from the harness's runtime manager as the GUI server answers.
-async function routeMuseApp(page,harness){
+// recipes: the project's recipes. meta: the threads' meta store, which another window of the test shares.
+async function routeMuseApp(page,harness,{recipes=[],meta={}}={}){
   const manager=harness.runtimeManager,status=await manager.probe("muse",{fresh:true}),listed=await manager.models("muse");
-  const project={id:"muse-project",name:"Muse Project",path:harness.repo,environmentId:null,effectiveSettings:{}};
+  const project={id:"muse-project",name:"Muse Project",path:harness.repo,environmentId:null,effectiveSettings:{},recipes};
   const settings=Object.assign(harness.settings,{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"});
-  await keepThreadMeta(page);
+  await keepThreadMeta(page,meta);
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",runtimeCapabilities:manager.capabilities("muse"),agentRuntimeReady:true,agentRuntimeStatus:status,provider:"openai",providerReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:harness.repo,platform:process.platform,version:"muse-compact-fork-fixture",activeEnvironment:null,activeEnvironmentId:null}));
   await page.route(/\/api\/runtime$/,async route=>json(route,{agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",agentRuntimeStatus:await manager.probe("muse"),provider:"openai",providerReady:true,appServerReady:true,appServerExitCode:null,activeEnvironment:null,appServerError:null,logs:[]}));
   await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[project],activeProjectId:project.id,threadMeta:{}}));
@@ -195,6 +196,16 @@ for(const outcome of ["compacted","nothing to compact"]){
 
 // What the window shows once the frame after the next one is drawn: what a timer that fired just now did is on the page.
 const drawn=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve,0)))));
+// The row of a compaction the window stopped waiting for: what it says, all of it in view, the way back to the compaction too, and
+// that it reads as a step whose end is not known, not as a failed one (no error mark or pill, and no card counting it failed). Soft,
+// so that the old code also shows what comes after it.
+const WAITED="Trebell stopped waiting for the context compaction after 10 minutes; Muse Code may still be compacting. Press Compact to follow it again; its Stop comes back.";
+async function waitedLooks(page,rows){
+  await expect.soft(rows).toHaveClass([/status-unknown/]);await expect.soft(rows).not.toHaveClass([/kind-error|status-error/]);
+  await expect.soft(rows.locator("summary em")).toHaveText(["unknown"]);
+  await expect.soft(page.locator(".activity-card-failed"),"no card counts it failed").toHaveCount(0);
+  expect.soft(await rows.locator("summary strong").evaluateAll(nodes=>nodes.map(node=>node.scrollWidth<=node.clientWidth+1)),"its whole text shows").toEqual([true]);
+}
 
 test("a Muse Code compaction that runs past the 45 seconds the window waits for another harness's still ends compacted, and the thread goes on",async({page})=>{
   test.setTimeout(90_000);
@@ -404,6 +415,15 @@ test("a message waiting for Muse Code's automatic compaction shows in the thread
     await expect.soft(rows.locator("summary strong"),"a row says the context is compacted").toHaveText(["Compacting context"]);await expect.soft(rows).toHaveClass([/status-running/]);
     await expect.soft(page.getByRole("button",{name:"Compact",exact:true}),"Compact is not offered").toHaveCount(0);
     expect((await harness.frames("turn/start")).length).toBe(1);
+    // It reads as being sent, its own words saying what it waits for, and none of its buttons can send, change or drop it meanwhile.
+    const held=page.locator(".queued-message").filter({hasText:"Go on with the long conversation"});
+    const sending=async()=>{
+      await expect(held.locator(":scope > span")).toHaveText("Sending…");
+      await expect(held.locator(":scope > span")).toHaveAttribute("title","This message waits for the context compaction to end: it is sent then, and comes back to the composer if it cannot be.");
+      for(const name of ["Send now","Edit","Remove"])await expect(held.getByRole("button",{name,exact:true}),name+" is off").toBeDisabled();
+      await expect(held.getByRole("button",{name:"Send now",exact:true})).toHaveAttribute("title","This message is already on its way");
+    };
+    await sending();
     await shoot(page,"muse-auto-compaction-message-shown");
     // Away to New task and back to the thread meanwhile: both show again.
     await page.getByRole("button",{name:"New task",exact:true}).first().click();
@@ -412,6 +432,7 @@ test("a message waiting for Muse Code's automatic compaction shows in the thread
     await expect(reply(page,"Muse fixture reply")).toHaveCount(1);
     await expect.soft(waiting,"the message shows on the thread opened again").toBeVisible();
     await expect.soft(rows.locator("summary strong"),"and so does its row").toHaveText(["Compacting context"]);
+    await sending();
     // Once Muse has compacted, the message goes, once, and the turn says the context was compacted before it.
     await harness.release("compact");
     await expect(reply(page,"Muse fixture reply")).toHaveCount(2,{timeout:20_000});
@@ -447,6 +468,109 @@ test("a reload while a message waits for Muse Code's automatic compaction keeps 
   }finally{await harness?.close()}
 });
 
+// The person's message sent in one window waits for Muse Code's automatic compaction (the stand-in holds it), with the context at
+// 90%; the threads' meta is shared with the person's other windows, as the server's is. The window is returned with the harness.
+async function heldInFirstWindow(page,meta){
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"907200"},holds:["compact"]});
+  Object.assign(harness.settings,{autoCompactContext:true,autoCompactThresholdPercent:85});
+  await routeMuseApp(page,harness,{meta});
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await send(page,"Hello Muse");
+  await expect(reply(page,"Muse fixture reply")).toBeVisible({timeout:20_000});
+  await expect(page.locator(".composer-context")).toContainText("90%");
+  await send(page,"Go on with the long conversation");
+  await expect.poll(async()=>(await harness.frames("session/compact")).length).toBe(1);
+  return harness;
+}
+// The person's other window opens the thread, its message waiting there.
+async function openElsewhere(other,harness,meta){
+  await routeMuseApp(other,harness,{meta});
+  await other.setViewportSize({width:1280,height:800});
+  await other.goto("/");
+  await other.locator(".thread-row").filter({hasText:"Hello Muse"}).locator(".thread-main").click();
+  await expect(reply(other,"Muse fixture reply")).toHaveCount(1,{timeout:20_000});
+  return other.locator(".queued-message").filter({hasText:"Go on with the long conversation"});
+}
+const ELSEWHERE="This message is on its way in another window, which sends it once the context compaction has ended.";
+
+test("another window that opens the thread while a message waits there for Muse Code's automatic compaction shows it on its way in the first window, with nothing to send it twice, and drops it as its turn starts",async({page})=>{
+  test.setTimeout(120_000);
+  const meta={};let harness=null,other=null;
+  try{
+    harness=await heldInFirstWindow(page,meta);
+    other=await page.context().newPage();
+    const elsewhere=await openElsewhere(other,harness,meta);
+    await expect(elsewhere.locator(":scope > span")).toHaveText("Sending…");
+    await expect(elsewhere.locator(":scope > span")).toHaveAttribute("title",ELSEWHERE);
+    for(const name of ["Send now","Edit","Remove"])await expect(elsewhere.getByRole("button",{name,exact:true}),name+" is off").toBeDisabled();
+    await expect(elsewhere.getByRole("button",{name:"Send now",exact:true})).toHaveAttribute("title","This message is already on its way");
+    await other.screenshot({animations:"disabled",path:auditDir+"muse-auto-compaction-message-on-its-way-elsewhere-dark-1280x800.png"});
+    // Muse compacts, and the first window sends the message, once: the other window drops it from its queue as its turn starts, and
+    // shows its turn's reply.
+    await harness.release("compact");
+    await expect(reply(page,"Muse fixture reply")).toHaveCount(2,{timeout:20_000});
+    await expect(elsewhere,"the message leaves the other window's queue").toHaveCount(0,{timeout:20_000});
+    await expect(reply(other,"Muse fixture reply")).toHaveCount(2,{timeout:20_000});
+    expect((await harness.frames("turn/start")).length).toBe(2);
+  }finally{await other?.close().catch(()=>{});await harness?.close()}
+});
+
+test("a message whose window closed while it waited for Muse Code's automatic compaction is left to retry in the person's other window once that window could hold it no longer, and is never sent by itself",async({page})=>{
+  test.setTimeout(120_000);
+  const meta={};let harness=null,first=null;
+  try{
+    // The first window is closed while its message waits.
+    first=await page.context().newPage();
+    harness=await heldInFirstWindow(first,meta);
+    await first.close();first=null;
+    // The other window opens the thread: the message is on its way in the closed window until that window could hold it no longer,
+    // then left to retry. Its timers run on a clock the test moves on.
+    await page.clock.install();
+    const kept=await openElsewhere(page,harness,meta);
+    await expect(kept.locator(":scope > span")).toHaveText("Sending…");
+    await expect(kept.locator(":scope > span")).toHaveAttribute("title",ELSEWHERE);
+    await page.clock.fastForward("11:30");
+    await expect(kept.locator(":scope > span")).toHaveText("Queued · retry needed",{timeout:20_000});
+    await expect(kept.getByRole("button",{name:"Send now",exact:true})).toBeEnabled();
+    await shoot(page,"muse-auto-compaction-message-left-to-retry");
+    expect((await harness.frames("turn/start")).length,"nothing sent it").toBe(1);
+    // Muse ends its compaction, and the person sends the message from there: it goes once.
+    await harness.release("compact");
+    await kept.getByRole("button",{name:"Send now",exact:true}).click();
+    await expect(reply(page,"Muse fixture reply")).toHaveCount(2,{timeout:20_000});
+    await expect(kept).toHaveCount(0);
+    expect((await harness.frames("turn/start")).length).toBe(2);
+  }finally{await first?.close().catch(()=>{});await harness?.close()}
+});
+
+test("a project's recipe sent with the context nearly full shows its message in the thread while Muse Code compacts first, and goes once, when Muse has compacted",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"907200"},holds:["compact"]});
+  try{
+    Object.assign(harness.settings,{autoCompactContext:true,autoCompactThresholdPercent:85});
+    await routeMuseApp(page,harness,{recipes:[{id:"tidy",name:"/tidy",description:"Tidy what the conversation built"}]});
+    await page.route(/\/api\/project-recipe\/resolve$/,route=>json(route,{execution:{turnInput:"Tidy what the long conversation built",context:"The project's tidy recipe",permissionMode:null,model:null,goalPatch:null,toolAllowlist:null}}));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Hello Muse");
+    await expect(reply(page,"Muse fixture reply")).toBeVisible({timeout:20_000});
+    await expect(page.locator(".composer-context")).toContainText("90%");
+    // The recipe, picked from the composer's menu (Enter picks it, Enter sends it), runs a turn the automatic compaction comes before.
+    await page.getByTestId("composer").click();await page.keyboard.type("/tidy");await page.keyboard.press("Enter");await page.keyboard.press("Enter");
+    await expect.poll(async()=>(await harness.frames("session/compact")).length).toBe(1);
+    const message=page.locator(".user-row").filter({hasText:"Tidy what the long conversation built"});
+    await expect(message,"the recipe's message shows while Muse compacts").toBeVisible();
+    await expect(compactRows(page).locator("summary strong")).toHaveText(["Compacting context"]);
+    expect((await harness.frames("turn/start")).length).toBe(1);
+    await shoot(page,"muse-auto-compaction-recipe-message-shown");
+    await harness.release("compact");
+    await expect(reply(page,"Muse fixture reply")).toHaveCount(2,{timeout:20_000});
+    await expect(message,"its message shows once").toHaveCount(1);
+    expect((await harness.frames("turn/start")).length).toBe(2);
+  }finally{await harness.close()}
+});
+
 test("once the window has waited its ten minutes for Muse Code's compaction, its row says the window stopped waiting while Muse may still compact, and Muse's later end replaces that row",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startMuseHarness({holds:["compact"]});
@@ -464,11 +588,18 @@ test("once the window has waited its ten minutes for Muse Code's compaction, its
     await expect(rows.locator("summary strong")).toHaveText(["Compacting context"]);
     // Soft, so that the old code also shows what Muse's later end does.
     await page.clock.fastForward("10:30");await drawn(page);
-    await expect.soft(rows.locator("summary strong")).toHaveText(["Trebell stopped waiting for the context compaction after 10 minutes; Muse Code may still be compacting."]);
+    await expect.soft(rows.locator("summary strong")).toHaveText([WAITED]);
+    await waitedLooks(page,rows);
+    await expect(page.getByRole("button",{name:"Stop",exact:true}),"the window no longer follows the compaction").toHaveCount(0);
     await rows.scrollIntoViewIfNeeded();await shoot(page,"muse-compaction-window-stopped-waiting");
+    // Compact follows it again, as the row says: its Stop comes back, on the same row, compacting.
+    await page.getByRole("button",{name:"Compact",exact:true}).click();
+    await expect(rows.locator("summary strong")).toHaveText(["Compacting context"]);await expect(rows).toHaveClass([/status-running/]);
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveAttribute("title","Stop the context compaction");
     // Muse's end comes later, and takes that row's place: one row, compacted.
     await harness.release("compact");
     await expect(rows.locator("summary strong")).toHaveText(["Context compacted"],{timeout:20_000});await expect(rows).toHaveClass([/status-done/]);
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
     // /compact typed afterwards (Enter picks it from the menu, Enter sends it) compacts again, on that same row.
     await page.getByTestId("composer").click();await page.keyboard.type("/compact");await page.keyboard.press("Enter");await page.keyboard.press("Enter");
     await expect.poll(async()=>(await harness.frames("session/compact")).length).toBe(2);
@@ -498,11 +629,21 @@ test("a message whose automatic compaction Muse Code has not finished in the win
     await page.clock.fastForward("10:30");await drawn(page);
     await expect(reply(page,"Muse fixture reply")).toHaveCount(2,{timeout:20_000});
     const rows=compactRows(page);
-    await expect.soft(rows.locator("summary strong")).toHaveText(["Trebell stopped waiting for the context compaction after 10 minutes; Muse Code may still be compacting."]);
+    await expect.soft(rows.locator("summary strong")).toHaveText([WAITED]);
+    await waitedLooks(page,rows);
     await rows.first().scrollIntoViewIfNeeded();await shoot(page,"muse-auto-compaction-window-stopped-waiting");
+    // Once the message's turn has ended, Compact follows Muse's compaction again, as the row says: its Stop comes back, and Compact's
+    // row takes the place of the message's, one row of the one compaction.
+    const stop=page.getByRole("button",{name:"Stop",exact:true});
+    await expect(stop).toHaveCount(0,{timeout:20_000});
+    await page.getByRole("button",{name:"Compact",exact:true}).click();
+    await expect(rows.locator("summary strong")).toHaveText(["Compacting context"]);await expect(rows).toHaveClass([/status-running/]);
+    await expect(stop).toHaveAttribute("title","Stop the context compaction");
+    expect((await harness.frames("session/compact")).length,"Muse is asked nothing more: Compact joins the compaction it runs").toBe(1);
     // Muse's end comes later, and takes that row's place: one row, compacted.
     await harness.release("compact");
     await expect(rows.locator("summary strong")).toHaveText(["Context compacted"],{timeout:20_000});await expect(rows).toHaveClass([/status-done/]);
+    await expect(stop).toHaveCount(0);
     expect((await harness.frames("turn/start")).length).toBe(2);
   }finally{await harness.close()}
 });
