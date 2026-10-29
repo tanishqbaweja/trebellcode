@@ -49,7 +49,6 @@ import { requestPreview } from "./preview-open.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
 import { EMPTY_ASSISTANT_STREAM, assistantStreamDelta } from "./assistant-stream-sync.js";
 import { createLatestValueBuffer } from "./latest-value-buffer.js";
-import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
 import { focusBesideSelection } from "./selection-focus.js";
@@ -130,12 +129,12 @@ const loadAskDialog=()=>askDialogLoad||=import("./ask-dialog.js").catch(error=>{
 });
 const askConfirm=(...args)=>loadAskDialog().then(dialog=>dialog.askConfirm(...args));
 const askText=(...args)=>loadAskDialog().then(dialog=>dialog.askText(...args));
-// What App does around an agent's turn beyond showing it (turn-support.js: a send's repository context and new worktree, a send that
-// is a slash command or a project's recipe, the agent's calls to Trebell's own tools, a completed turn's verification, the turns a
-// restart interrupted) and what a person does to threads (thread-actions.js: pin, snooze, settle, archive, fork, delete, Undo, a move
-// up or down) load the same way: neither the first screen nor opening and reading a thread needs them. Each is kept once loaded
-// (turnSupport, threadActions), so what needs it runs at once, as before; what comes before the load waits for it, and what cannot
-// load it fails and says so.
+// What App does around an agent's turn beyond showing it (turn-support.js: a send's repository context, new worktree and the
+// compaction it runs first, a send that is a slash command or a project's recipe, the agent's calls to Trebell's own tools, a
+// completed turn's verification, the turns a restart interrupted) and what a person does to threads (thread-actions.js: pin,
+// snooze, settle, archive, fork, delete, Undo, a move up or down) load the same way: neither the first screen nor opening and
+// reading a thread needs them. Each is kept once loaded (turnSupport, threadActions), so what needs it runs at once, as before;
+// what comes before the load waits for it, and what cannot load it fails and says so.
 let turnSupport=null,turnSupportLoad=null,threadActions=null,threadActionsLoad=null;
 const loadTurnSupport=()=>turnSupportLoad||=import("./turn-support.js").then(module=>turnSupport=module,error=>{
   turnSupportLoad=null;throw loadFailed(error);
@@ -454,6 +453,9 @@ const sendStoppedError=()=>Object.assign(new Error("Stopped before the turn star
 // the others'): Grok's runs as a turn of its own (its /compact command), Muse Code's in no turn (session/compact).
 const LONG_COMPACTION_RUNTIMES=new Set(["grok","muse"]);
 function upsertEvent(events,event){return events.some(item=>item.id===event.id)?events.map(item=>item.id===event.id?{...item,...event}:item):[...events,event]}
+// The row of a compaction the window waits for in a thread (requestThreadCompaction), until its end says how it went. It has no turn
+// until its item names one: the turn of the last compaction, kept, would take it away.
+const compactingRow=threadId=>({id:"context-compact-"+threadId,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{},turnId:null});
 // Whether the live card still lists a turn's steps: the turn that ended last, until the next one starts or a message is sent.
 const showsTurn=(events,turnId)=>events.some(event=>event.fromItem&&event.turnId===turnId);
 // What became of a thread's own Codex app-server that died, as the server noted it (trebellAppServerExit).
@@ -1424,10 +1426,11 @@ export default function App(){
   // Clears only the live reply text (a withdrawn Native draft), leaving command, diff and tool streams as they are.
   function clearAssistantText(){assistantStreamSyncRef.current=EMPTY_ASSISTANT_STREAM;assistantStreamBufferRef.current?.reset();assistantTextRef.current="";activityTimelineRef.current?.setText("")}
   // A compaction's item row, under the item's own id as the thread's history names it, takes the place of the row Compact put up for
-  // its thread: one compaction is one row, and two in one turn are two. null when it has no such row to take.
+  // its thread, also once the window stopped waiting for it (waited): one compaction is one row, and two in one turn are two. null
+  // when it has no such row to take.
   function takeCompactionPlace(prev,row,threadId){
     if(row.kind!=="contextCompaction"||prev.some(event=>event.id===row.id))return null;
-    const index=prev.findIndex(event=>event.id==="context-compact-"+threadId&&event.kind==="contextCompaction"&&event.status==="running");
+    const index=prev.findIndex(event=>event.id==="context-compact-"+threadId&&(event.waited||event.kind==="contextCompaction"&&event.status==="running"));
     return index<0?null:prev.map((event,at)=>at===index?row:event);
   }
   // The newest compaction row still running in the open thread's turn records (turnId's when given) ends as end says, so the card
@@ -1934,13 +1937,17 @@ export default function App(){
   // turnless: the compaction runs in no turn of its own (Muse Code's session/compact), so only the request's answer ends it and the
   // header's Stop is its own (stop()). turnId: the turn it runs in otherwise, once the request's answer (Grok's /compact) or its item
   // (Codex's) names it, whose error ends it (the error notification).
-  function requestThreadCompaction(threadId,{timeoutMs=LONG_COMPACTION_RUNTIMES.has(agentRuntime)?10*60_000:45_000}={}){
-    const id=String(threadId||"").trim(),client=rpcRef.current;
+  // Its row in the thread shown (compactingRow) is Compact's, or the one of a message the automatic compaction runs before. At its
+  // limit the window stops waiting while the harness may still compact: the row says so (waited), and the compaction's own end,
+  // should it come, takes that row (thread/compacted, takeCompactionPlace).
+  function requestThreadCompaction(threadId){
+    const id=String(threadId||"").trim(),client=rpcRef.current,long=LONG_COMPACTION_RUNTIMES.has(agentRuntime);
     if(!id||!client)return Promise.reject(new Error("Agent harness is not connected"));
+    if(activeThreadRef.current?.id===id)setEvents(prev=>upsertEvent(prev,compactingRow(id)));
     const existing=compactionWaitersRef.current.get(id);if(existing)return existing.promise;
     let resolvePromise,rejectPromise;
     const promise=new Promise((resolve,reject)=>{resolvePromise=resolve;rejectPromise=reject});
-    const timer=setTimeout(()=>settleCompactionWaiter(id,new Error("Context compaction timed out")),Math.max(5000,Number(timeoutMs)||45_000));
+    const timer=setTimeout(()=>settleCompactionWaiter(id,Object.assign(new Error(`Trebell stopped waiting for the context compaction after ${long?"10 minutes":"45 seconds"}; ${agentRuntimeLabel} may still be compacting.`),{waited:true})),long?600_000:45_000);
     const waiter={promise,resolve:resolvePromise,reject:rejectPromise,timer,turnless:agentRuntime==="muse",turnId:null};
     compactionWaitersRef.current.set(id,waiter);if(waiter.turnless)setCompactionStops(count=>count+1);
     client.request("thread/compact/start",{threadId:id}).then(result=>{if(result?.turn?.id!=null)waiter.turnId??=String(result.turn.id)},error=>settleCompactionWaiter(id,error));
@@ -3523,12 +3530,13 @@ export default function App(){
       settleCompactionWaiter(threadId,null,{ok:true,source:"thread/compacted"});
       updateThreadTelemetry(threadId,{currentActivity:null,lastActivity:{id,kind:"contextCompaction",title:"Context compacted",completedAtMs:at},lastActivityAt:at,lastError:null});
       // The compaction's row ends compacted: its item's (the newest still running, else the newest), or the one Compact put up; a
-      // harness that sends no item gets its row here. Its turn's record too, should the item not say so before the turn ends.
-      const compacted={kind:"contextCompaction",title:"Context compacted",status:"done"};
+      // harness that sends no item gets its row here. Its turn's record too, should the item not say so before the turn ends. The
+      // row of one the window stopped waiting for (waited) is among them: Compact's, or the one of the message that went on.
+      const compacted={kind:"contextCompaction",title:"Context compacted",status:"done",waited:false};
       if(isCurrent){
         endCompactionRecord(threadId,p.turnId,row=>({...row,...compacted}));
         setEvents(prev=>{
-          const rows=prev.filter(item=>item.kind==="contextCompaction"),row=rows.findLast(item=>item.status==="running")||rows.at(-1);
+          const rows=prev.filter(item=>item.kind==="contextCompaction"||item.waited),row=rows.findLast(item=>item.status==="running")||rows.at(-1);
           return row?prev.map(item=>item===row?{...item,...compacted}:item):[...prev,{id,...compacted,raw:p,...(p.turnId?{turnId:String(p.turnId)}:{})}];
         });
       }
@@ -3921,6 +3929,8 @@ export default function App(){
     // The turn that still runs (resumedTurnId) gets back on its live card the MCP progress and the diff it had, those sent while the
     // thread was not shown among them; its stored steps go in front of the diff (seedLiveRows).
     for(const [id,value] of liveExtrasRef.current.get(turnInfoKey(thread.id,resumedTurnId))||[])if(id){mcpProgressRef.current.set(id,value);activityTimelineRef.current?.setMcpProgress(id,value)}else setEvents(prev=>upsertEvent(prev,value));
+    // A Muse Code compaction this window still waits for, which runs in no turn and so in no history, gets its row back too.
+    if(compactionWaitersRef.current.get(String(thread.id))?.turnless)setEvents(prev=>upsertEvent(prev,compactingRow(thread.id)));
     if(liveReply?.text)showLiveReply(thread.id,resumedTurnId,liveReply);
     // A send of this thread that failed while another view was shown gives its draft and its note back here (dispatchSend).
     // A thread whose own Codex app-server died says so, in one row: its resumes name the death until its next turn, under one id.
@@ -4322,22 +4332,13 @@ export default function App(){
     const detail=error?.message||String(error)||"Unknown checkpoint error";
     setEvents(prev=>[...prev,{id:"checkpoint-error-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),kind:"error",title:message+": "+detail,status:"error",raw:{...raw,error:detail}}]);
   }
-  async function maybeAutoCompactBeforeTurn(thread){
-    if(!thread?.id||!runtimeCapabilities.compaction||rpcStatus!=="connected")return {attempted:false,compacted:false,decision:null,error:null};
-    const usage=threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
-    const decision=autoCompactionDecision(usage,{enabled:settings.autoCompactContext===true,thresholdPercent:settings.autoCompactThresholdPercent??85});
-    if(!decision.shouldCompact)return {attempted:false,compacted:false,decision,error:null};
-    // The send waits for the compaction to end, as long as its harness takes (LONG_COMPACTION_RUNTIMES). One that failed, or that the
-    // person stopped with the header's Stop, leaves the context as it was, and the message goes on with a row saying why, as Grok's
-    // stopped one does: stopping it ends the compaction, not the message waiting for it.
-    try{
-      await requestThreadCompaction(thread.id);
-      updateThreadTelemetry(thread.id,{tokenUsage:null,lastActivityAt:Date.now()});
-      if(activeThreadRef.current?.id===thread.id)setTokenUsage(null);
-      return {attempted:true,compacted:true,decision,error:null};
-    }catch(error){
-      return {attempted:true,compacted:false,decision,error};
-    }
+  // Whether a send compacts the context first, and the wait for it, are turn-support.js's (compactBeforeTurn): a send made before that
+  // module has loaded waits for it, and one that cannot load it goes on with the context as it is. held: the composer's message, which
+  // waits meanwhile in its thread's queue when the queue is Trebell's own (queueMode local).
+  async function maybeAutoCompactBeforeTurn(thread,held){
+    if(!thread?.id||!runtimeCapabilities.compaction||rpcStatus!=="connected")return {};
+    let support;try{support=await loadTurnSupport()}catch{return {}}
+    return support.compactBeforeTurn({activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,persistLocalQueue,queueNow},thread,queueMode==="local"&&held);
   }
   // A packet that could not be made, also for want of turn-support.js: the send goes on without it, and its activity says why.
   async function contextUnavailable(thread,error,{background=false}={}){
@@ -4386,7 +4387,8 @@ export default function App(){
   // meanwhile for the next message among them, and their files stayed on the shelf as plain attachments.
   // inputText: what the harness gets in place of text, which the person's message and its checkpoint keep (a Codex goal's first turn).
   // checked: the send checked its files a moment ago (dispatchSend, Send now), which extracted their text: this check only finds it.
-  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false,inputText=null,sentChips=goalResume?[]:contextChips,pressed=terminalPresses(),checked=false}={}){
+  // held: the composer's draft of a message no queue holds (dispatchSend), kept while an automatic compaction runs before it.
+  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null,goalResume=false,inputText=null,sentChips=goalResume?[]:contextChips,pressed=terminalPresses(),checked=false,held=null}={}){
     // The view the send was made from: its composer's hold (send()) and the open count (openThread, newChat). A new task's send keeps
     // that view only while no thread is shown or opening and the hold is still its own (another thread opened, or a new task opened
     // from one, released it); with no hold, while nothing was opened since.
@@ -4396,7 +4398,7 @@ export default function App(){
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[],{extract:!checked});
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
-    const autoCompaction=thread?await maybeAutoCompactBeforeTurn(thread):{attempted:false,compacted:false,decision:null,error:null};
+    const autoCompaction=await maybeAutoCompactBeforeTurn(thread,held);
     // A thread the send creates keeps its turns' cards from its first turn on, as an opened thread does. Trebell's tool catalog comes
     // first: a send that cannot start for want of it sets nothing up (no worktree, no thread). A new task left while its thread was
     // being made (another thread opened meanwhile) stays as the person left it: the thread starts on its own in the sidebar, and its
@@ -4411,7 +4413,7 @@ export default function App(){
     const shown=()=>activeThreadRef.current?.id===thread.id;
     // The live card leaves the last turn here: until the new turn starts it lists only this send's notices, under no turn's name.
     const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),sentMessage={id:clientId,role:"user",text,attachments:paths};
-    if(shown()){if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,sentMessage])}setCardTurnId(null);setEvents(prev=>[...turnlessCompactionRows(prev,thread.id),...(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[])]);resetAssistantStream();setRunning(true)}
+    if(shown()){if(!goalResume){followConversationEnd();setMessages(prev=>[...prev,sentMessage])}setCardTurnId(null);setEvents(prev=>[...turnlessCompactionRows(prev,thread.id),...(autoCompaction.row?[autoCompaction.row]:[])]);resetAssistantStream();setRunning(true)}
     // Until turn/start answers the send has no turn for Stop to name, and a harness that has to start first can take a minute: Stop
     // meanwhile marks this send stopped (stop()), so it sends nothing more, and a turn the harness started before the Stop reached it
     // is stopped as soon as it is named.
@@ -4610,15 +4612,14 @@ export default function App(){
     if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
     if(!activeThread?.id||!rpc||leavingThread())return;
     const threadId=activeThread.id,id="context-compact-"+threadId;
-    // A new compaction's row has no turn until its item names one: the turn of the last compaction, kept, would take it away.
-    setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{},turnId:null};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
     try{
       // Grok's and Muse Code's compaction take as long as the model needs (LONG_COMPACTION_RUNTIMES).
       await requestThreadCompaction(activeThread.id);
     }catch(error){
       // The failure ends the compaction's own row, which no turn ends: it would say "Compacting context" beside its failure. That is
       // its item's row once the item came (in its turn's record too, so the turn's card says it failed), else the one Compact put up.
-      const failed={kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done"};
+      // One the window stopped waiting for has not failed, as far as it knows: its row says so (requestThreadCompaction).
+      const failed={kind:"error",title:(error.waited?"":"Context compaction failed: ")+(error.message||String(error)),status:"done",waited:error.waited};
       if(activeThreadRef.current?.id!==threadId)return;
       endCompactionRecord(threadId,null,row=>({...row,...failed}));
       setEvents(prev=>{const row=prev.findLast(item=>item.kind==="contextCompaction"&&item.status==="running");return row?prev.map(item=>item===row?{...item,...failed}:item):upsertEvent(prev,{id,...failed,raw:{}})});
@@ -4709,7 +4710,7 @@ export default function App(){
     // alone: its draft and note wait for its own thread (openThread). One that failed before it had a thread puts its draft back
     // beside the composer's. The files and context of one that goes through left the composer with its hold when another view was
     // shown (openThread), so what the composer shown holds was added there and stays, the same workspace file too.
-    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips),{pressed,sentChips:draft.contextChips,checked:true}).catch(e=>{
+    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips),{pressed,sentChips:draft.contextChips,checked:true,held:draft}).catch(e=>{
       const alert=!e?.trebellSendStopped&&!(e&&typeof e==="object"&&WORKTREE_CARD_ERRORS.has(e))?{kind:"send",text:e?.rpcTimedOut?agentRuntimeLabel+" has not answered the send, so it may still start. Your draft is kept; check the conversation before sending it again.":"Not sent: "+sentenceText(e?.message||String(e)||"the harness refused the turn")+" Your draft is kept."}:null;
       if(e?.trebellSendThreadId&&String(openingThreadRef.current||activeThreadRef.current?.id||"")!==e.trebellSendThreadId){turnNotesRef.current.failSend(e.trebellSendThreadId,{draft,alert});return}
       restoreSentDraft(draft);if(submittingRef.current!==sendView)return;setRunning(false);setEvents(prev=>turnlessCompactionRows(prev,activeThreadRef.current?.id));if(alert)setComposerAlert(alert);
@@ -5401,6 +5402,9 @@ export default function App(){
   const openingView=openingPending?opening.thread:null,openingShown=Boolean(openingView&&openingCover);
   const openingOverPage=openingShown&&opening.toChat&&section!=="chat"&&section!=="new"&&section===opening.from&&!opening.pageAsked,viewSection=openingOverPage?"chat":section;
   const headerThread=openingView||activeThread;
+  // The compaction this window waits for in the thread shown: Muse Code's has the header's Stop (stop()), and Compact is not offered
+  // while one runs.
+  const shownCompaction=compactionWaitersRef.current.get(String(activeThread?.id||""));
   const activeTitle=titleOf(openThreadTitleSource(headerThread,threads));
   // The approval of the thread the header names comes first; one from another thread says which task is asking, the thread being
   // left included while another opens.
@@ -5716,7 +5720,7 @@ export default function App(){
               {headerScript&&projectControlsShown&&<button ref={scriptButtonRef} className={"header-control script-control"+(headerRunning?" running":"")} data-fold="script" data-running={headerRunning||undefined} onClick={runHeaderScript} aria-label={headerScript.name} title={headerRunning?headerScript.name+" is running · Show its terminal":headerScript.command}>{headerRunning?<span className="script-running-dot" aria-hidden="true"/>:<Play size={13}/>}<span>{headerScript.name}</span></button>}
               {headerScript&&projectControlsShown&&headerRunning&&<button ref={scriptStopRef} className="header-control icon-only script-stop-control" data-fold="script" onClick={()=>runUserAction(stopHeaderScript,"Could not stop the project action")} aria-label={"Stop "+headerScript.name} title={"Stop "+headerScript.name}><CircleStop size={14}/></button>}
               {activeThread?.id&&!openingShown&&gitInfo?.isGit&&<button className="header-control review-control" data-fold="review" onClick={reviewFromHeader} disabled={running} aria-label="Review" title={reviewHint}><ShieldCheck size={14}/><span>Review</span></button>}
-              {(running||compactionWaitersRef.current.get(String(activeThread?.id||""))?.turnless)&&!openingShown&&<button className={"header-control stop-control"+(stopping?" stopping":"")} disabled={stopping} onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label={stopping?"Stopping":"Stop"} title={!running?"Stop the context compaction":stopping?"Stopping the running turn…":"Stop the running turn"}><CircleStop size={14}/><span>{stopping?"Stopping…":"Stop"}</span></button>}
+              {(running||shownCompaction?.turnless)&&!openingShown&&<button className={"header-control stop-control"+(stopping?" stopping":"")} disabled={stopping} onClick={()=>runUserAction(stop,"Could not stop turn")} aria-label={stopping?"Stopping":"Stop"} title={!running?"Stop the context compaction":stopping?"Stopping the running turn…":"Stop the running turn"}><CircleStop size={14}/><span>{stopping?"Stopping…":"Stop"}</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only terminal-control "+(panel==="terminal"?"active":"")} data-fold="terminal" onClick={toggleTerminalPanel} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               {activeThread?.id&&!openingShown&&<button className={"header-control icon-only goal-control "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} data-fold="goal" onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
               <button data-testid="right-panel-toggle" className={"header-control icon-only panel-control "+(rightPanelOpen?"active":"")} onClick={toggleRightPanel} aria-label={panelToggleLabel[0]} title={panelToggleLabel[1]}><PanelRight size={16}/>{recordingMark}</button>
@@ -5765,7 +5769,7 @@ export default function App(){
           {/* Only a running clone shows its progress: one stopping says so, and one stopped or failed says how it ended, not the percentage it stopped at. */}
 
           {cloneBannerShown&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":currentProject.cloneJob.status==="cancelling"?"Stopping the clone…":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{currentProject.cloneJob.status==="running"&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{currentProject.cloneJob.status==="running"?Math.round(currentProject.cloneJob.progress||0)+"%":""}</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
-  <Composer starting={!runtimeKnown} prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} alert={composerAlert} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(opening)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} transportReason={transportReason} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={configureProviderKey} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} uploadingFiles={uploadingFiles} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={composerSetPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} threadSettingsWait={openingShown} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={openingShown?null:tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={composerSetWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(headerThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(!openingShown&&activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={openingShown?null:threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelOption={composerModelOption} onModelPickerOpenChange={setModelPickerOpen} onRoom={composerRoom} onMenuShown={setComposerMenuShown} menuDismissed={composerMenuDismissed} setMenuDismissed={setComposerMenuDismissed} mentionBusy={composerMentionBusy} setMentionBusy={setComposerMentionBusy} codexThread={agentRuntime==="codex"&&!openingShown&&activeThread?.id&&codexThreadState?.threadId===activeThread.id?codexThreadState:null} onCancelEdit={queuedEditId?composerCancelQueuedEdit:null}/>
+  <Composer starting={!runtimeKnown} prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} alert={composerAlert} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(opening)} providerReady={providerReady} transportReady={Boolean(bootstrap.mock)||rpcStatus==="connected"} transportStatus={rpcStatus==="error"||rpcStatus==="connected"?rpcStatus:transportConnectedRef.current?"reconnecting":"connecting"} transportReason={transportReason} onRetryTransport={composerRetryTransport} runtimeSwitchLabel={runtimeSwitchLabel} modelsLoading={modelsLoading||!initialLoaded} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} onConfigureProvider={configureProviderKey} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!headerThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} attachments={attachments} uploadingFiles={uploadingFiles} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={composerSetPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} threadSettingsWait={openingShown} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={openingShown?null:tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={composerSetWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(headerThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(!openingShown&&activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction&&!shownCompaction)} onCompact={composerCompact} runtimeProfiles={openingShown?null:threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onReasoningEffort={composerReasoningEffort} onServiceTier={composerServiceTier} onModelOption={composerModelOption} onModelPickerOpenChange={setModelPickerOpen} onRoom={composerRoom} onMenuShown={setComposerMenuShown} menuDismissed={composerMenuDismissed} setMenuDismissed={setComposerMenuDismissed} mentionBusy={composerMentionBusy} setMentionBusy={setComposerMentionBusy} codexThread={agentRuntime==="codex"&&!openingShown&&activeThread?.id&&codexThreadState?.threadId===activeThread.id?codexThreadState:null} onCancelEdit={queuedEditId?composerCancelQueuedEdit:null}/>
 
           {/* The drawer opening asks for the keyboard its terminal takes as it comes up (terminal-keyboard.js). */}
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer" ref={terminalDrawerOpened}>

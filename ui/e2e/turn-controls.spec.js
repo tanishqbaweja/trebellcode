@@ -1002,6 +1002,35 @@ for(const order of ["Codex","the agent relay"]){
   });
 }
 
+// A Compact whose end the window stopped waiting for (after 45 seconds, Grok's and Muse Code's after 10 minutes) says so on its row,
+// and that the harness may still compact, not that it failed; its end, when it comes as the agent relay sends it (the item completed
+// only, as for Grok), makes that same row compacted rather than adding one.
+test("a Compact the window stopped waiting for says so on its row, and its later end makes that same row compacted",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  // The window's timers run on a clock the test moves on, past the 45 seconds it waits.
+  await page.clock.install();
+  const codex=await startCodex(page,{name:"Codex compact"});
+  const rows=page.locator(".tool-event").filter({hasText:/compact/i});
+  try{
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    await page.getByRole("button",{name:"Compact",exact:true}).click();
+    await expect.poll(()=>codex.calls.includes("thread/compact/start")).toBe(true);
+    const threadId=codex.thread.id,turnId="codex-compact-turn",item={type:"contextCompaction",id:"compaction-item-1"};
+    codex.notify("turn/started",{threadId,turn:{id:turnId,status:"inProgress",items:[]}});await expect(stop(page)).toBeVisible();
+    await expect(rows.locator("summary strong")).toHaveText(["Compacting context"]);
+    // Soft, so that the old code also shows what the compaction's end does.
+    await page.clock.fastForward("00:46");
+    await expect.soft(rows.locator("summary strong")).toHaveText(["Trebell stopped waiting for the context compaction after 45 seconds; Codex may still be compacting."]);
+    await rows.scrollIntoViewIfNeeded();await shoot(page,"compact-window-stopped-waiting");
+    codex.notify("item/completed",{threadId,turnId,item,completedAtMs:Date.now()});codex.notify("thread/compacted",{threadId,turnId});
+    codex.notify("turn/completed",{threadId,turn:{id:turnId,status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
+    await expect(rows.locator("summary strong")).toHaveText(["Context compacted"]);await expect(rows).toHaveClass([/status-done/]);
+  }finally{await codex.close()}
+});
+
 // A turn the person asked something in, which Codex compacts first and then ends with no reply, says it finished without one under
 // its message, live and once the next turn starts, its card saying it compacted: only a compaction turn of its own (Compact's) has
 // no such row.

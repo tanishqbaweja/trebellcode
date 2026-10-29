@@ -1,9 +1,9 @@
 // What the app does around an agent's turn beyond showing it: the repository context a send carries, the new worktree a send can
-// ask for, a send that is a command rather than a message (a project's recipe or one of the composer's slash commands), the
-// agent's own tool calls (Trebell's browser, computer, source-control, repository and delegation tools), the verification planned
-// once a turn completes, and the turns a restart interrupted. Nothing on the first screen or in opening and reading a thread needs
-// it, so App loads this module at idle after the first paint (B11). Each function takes what it reads of App's render as deps, as
-// App's own functions read it.
+// ask for, the compaction a send runs first, a send that is a command rather than a message (a project's recipe or one of the
+// composer's slash commands), the agent's own tool calls (Trebell's browser, computer, source-control, repository and delegation
+// tools), the verification planned once a turn completes, and the turns a restart interrupted. Nothing on the first screen or in
+// opening and reading a thread needs it, so App loads this module at idle after the first paint (B11). Each function takes what it
+// reads of App's render as deps, as App's own functions read it.
 import { api } from "./api.js";
 import { codexGoalsMissing, describeCodexGoal } from "./codex-turn-options.js";
 import { parseCodexGoalCommand } from "./codex-goal-command.js";
@@ -15,6 +15,7 @@ import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verif
 import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
 import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
 import { askTerminalKeyboard } from "./terminal-keyboard.js";
+import { autoCompactionDecision } from "./auto-compaction.js";
 import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
 import { CODEX_GOAL_START } from "../../src/codex-goal-start.mjs";
 
@@ -490,4 +491,32 @@ export async function prepareTurnContext(deps,thread,cwd,text,paths,{background=
   }catch(error){
     return contextUnavailable(thread,error,{background});
   }
+}
+
+// The compaction a send runs first, once the thread's context is as full as the automatic compaction setting waits for (App checks
+// first that the harness compacts and is connected). The send waits for it to end, as long as its harness takes, with the row App
+// shows while it runs (requestThreadCompaction). One that failed, or that the person stopped with the header's Stop, leaves the
+// context as it was, and the message goes on with a row saying why, as Grok's stopped one does: stopping it ends the compaction, not
+// the message waiting for it. One the window stopped waiting for says so, and the compaction's own end, should it come, takes that
+// row (thread/compacted). held: the composer's message, which no queue holds: it waits meanwhile in its thread's queue as being
+// sent, which shows it, and a window that opens the thread again, or is reloaded or closed meanwhile, keeps it for the person to
+// send (persistent-queue.js hydratePersistedQueue). It leaves the queue before the send goes on, never after its turn may have
+// started. compacted: the context is compacted; row: the turn's row saying how the compaction went.
+export async function compactBeforeTurn(deps,thread,held){
+  const {activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,persistLocalQueue,queueNow}=deps;
+  const usage=threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
+  const decision=autoCompactionDecision(usage,{enabled:settings.autoCompactContext===true,thresholdPercent:settings.autoCompactThresholdPercent??85});
+  if(!decision.shouldCompact)return {};
+  const row=patch=>({id:"auto-compact-"+thread.id,kind:"contextCompaction",title:"Context compacted automatically before this turn",status:"done",raw:decision,...patch});
+  const kept=held&&{...held,id:crypto.randomUUID(),createdAt:Date.now(),dispatchingAt:Date.now()},onItsWay=localQueueStartRef.current;
+  if(kept){onItsWay.add(kept.id);await persistLocalQueue(thread.id,[...queueNow(thread.id),kept]).catch(()=>{})}
+  try{
+    await requestThreadCompaction(thread.id);
+    updateThreadTelemetry(thread.id,{tokenUsage:null,lastActivityAt:Date.now()});
+    if(activeThreadRef.current?.id===thread.id)setTokenUsage(null);
+    return {compacted:true,row:row()};
+  }catch(error){
+    const message=error?.message||String(error);
+    return {compacted:false,row:row({kind:"error",title:error?.waited?message:"Automatic context compaction failed; continuing: "+message,waited:error?.waited})};
+  }finally{if(kept){await persistLocalQueue(thread.id,queueNow(thread.id).filter(item=>item.id!==kept.id)).catch(()=>{});onItsWay.delete(kept.id)}}
 }
