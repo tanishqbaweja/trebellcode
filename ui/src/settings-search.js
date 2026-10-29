@@ -6,7 +6,7 @@ const BASE_SETTINGS_SEARCH_ITEMS=[
   {id:"general-updates",section:"general",title:"Updates",terms:"update download install release version"},
   {id:"agents-harness",section:"agents",title:"Agent harness",terms:"native trebell native codex claude cursor grok opencode antigravity muse runtime harness install authenticate sign in"},
   {id:"agents-profiles",section:"agents",title:"Runtime profiles",terms:"profile account codex home claude config auto compact shadow home multi account"},
-  {id:"agents-provider",section:"agents",title:"Model provider",terms:"provider openai anthropic gemini agentrouter justworker hcnsec vyceai api key inference"},
+  {id:"agents-provider",section:"agents",title:"Model provider",terms:"provider openai anthropic gemini xai meta agentrouter justworker hcnsec vyceai api key inference"},
   {id:"agents-models",section:"agents",title:"Custom models",terms:"model reasoning effort service tier pricing custom model"},
   {id:"agents-mcp",section:"agents",title:"MCP servers",terms:"mcp model context protocol tools stdio claude cursor grok antigravity muse server executable"},
   {id:"agents-runtime",section:"agents",title:"Runtime diagnostics",terms:"runtime app server inference status diagnostics"},

@@ -3073,8 +3073,8 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await expect(threshold).toHaveValue("300000");
   const approvedEnvironment=editor.getByLabel("Approved inherited environment variables");
   await expect(approvedEnvironment).toBeVisible();
-  await approvedEnvironment.fill("HTTPS_PROXY\nAWS_SECRET_ACCESS_KEY");
-  await expect(approvedEnvironment).toHaveValue("HTTPS_PROXY\nAWS_SECRET_ACCESS_KEY");
+  await approvedEnvironment.fill("HTTPS_PROXY\nNO_PROXY");
+  await expect(approvedEnvironment).toHaveValue("HTTPS_PROXY\nNO_PROXY");
   await expect(editor).toContainText("Values are read from the parent process at launch time and are not stored in the profile.");
   const metrics=await editor.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
@@ -3083,7 +3083,7 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await page.screenshot({animations:"disabled",path:auditDir+"settings-claude-profile-1280x800.png",fullPage:true});
   await editor.getByRole("button",{name:"Save profile",exact:true}).click();
   await expect(editor).toHaveCount(0);
-  expect(savedProfile?.approvedEnvironmentKeys).toEqual(["HTTPS_PROXY","AWS_SECRET_ACCESS_KEY"]);
+  expect(savedProfile?.approvedEnvironmentKeys).toEqual(["HTTPS_PROXY","NO_PROXY"]);
   expect(JSON.stringify(savedProfile)).not.toContain("proxy-secret");
   await page.getByRole("button",{name:"Threads",exact:true}).click();
   await page.getByTestId("right-panel-toggle").click();

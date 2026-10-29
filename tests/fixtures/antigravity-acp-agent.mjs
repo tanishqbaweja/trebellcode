@@ -6,12 +6,15 @@
 // holds every request until that long after the start, as a slow machine's start would. exitAt names a request ("start" for none) at
 // which the process writes stderr and exits with exitCode; authenticate and sessionNew are "ok" (the default), "hang" (no answer
 // ever) or a JSON-RPC error, and authenticateDelayMs answers authenticate that much later. As Antigravity does, session/new, load and
-// resume refuse with auth_required (-32000) when GEMINI_API_KEY is not set. A chat's session/prompt answers "fixture reply" and ends
+// resume refuse with auth_required (-32000) unless it is signed in: with GEMINI_API_KEY set (its key method), or with its own login,
+// which an authenticate with one of its login methods makes (it then keeps a token file in GEMINI_HOME, as Antigravity does) and a
+// token file already there stands for. A chat's session/prompt answers "fixture reply" and ends
 // its turn; one whose text holds "[hang]" waits for session/cancel and ends cancelled. session/set_config_option and session/close
 // are answered. holdLoadUntil and holdCloseUntil name files: session/load and resume, and session/close, are answered once that file
 // exists, as a slow Antigravity would answer them.
 // `--version` prints a version and exits, as a status check asks it.
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 if(process.argv.includes("--version")){process.stdout.write("antigravity-acp 1.4.3-fixture\n");process.exit(0)}
 const scenario=process.env.TREBELL_AGY_SCENARIO?JSON.parse(readFileSync(process.env.TREBELL_AGY_SCENARIO,"utf8")):{};
@@ -31,6 +34,9 @@ const answer=(message,how,result)=>{
 const once=(path,reply)=>{if(!path||existsSync(path))return reply();const timer=setInterval(()=>{if(existsSync(path)){clearInterval(timer);reply()}},25)};
 const ready=Date.now()+(Number(scenario.startDelayMs)||0);
 let buffered="",hanging=null;
+// Its own login, kept as Antigravity keeps it: a token file in its home (the fixture writes "fixture", never a real token).
+const tokenFile=process.env.GEMINI_HOME?join(process.env.GEMINI_HOME,"antigravity-acp","acp_token.json"):null;
+let ownLogin=Boolean(tokenFile&&existsSync(tokenFile));
 function handle(message){
   const key=process.env.GEMINI_API_KEY,keyName=key?(scenario.keyNames||{})[key]??null:null;
   if(message.method==="session/cancel"&&message.id==null){
@@ -42,12 +48,18 @@ function handle(message){
   record({method:message.method,params:message.params??null,geminiHome:process.env.GEMINI_HOME??null,fileStorage:process.env.AGY_ACP_FORCE_FILE_STORAGE??null,keySet:Boolean(key),keyIsExpected:Boolean(key)&&key===scenario.expectKey,keyName,googleApiKey:Boolean(process.env.GOOGLE_API_KEY),pid:process.pid});
   if(scenario.exitAt===message.method){exit();return}
   if(message.method==="initialize")answer(message,"ok",{protocolVersion:1,agentCapabilities:{loadSession:true,sessionCapabilities:{list:{},resume:{}},auth:{logout:{}}},authMethods:METHODS,agentInfo:{name:"antigravity-acp",title:"Google Antigravity",version:"1.4.3-fixture"}});
-  else if(message.method==="authenticate"){const reply=()=>answer(message,scenario.authenticate,{});if(scenario.authenticateDelayMs)setTimeout(reply,scenario.authenticateDelayMs);else reply()}
+  else if(message.method==="authenticate"){
+    const reply=()=>{
+      if((!scenario.authenticate||scenario.authenticate==="ok")&&message.params?.methodId!=="gemini-api-key"){ownLogin=true;if(tokenFile){mkdirSync(join(tokenFile,".."),{recursive:true});writeFileSync(tokenFile,"fixture")}}
+      answer(message,scenario.authenticate,{});
+    };
+    if(scenario.authenticateDelayMs)setTimeout(reply,scenario.authenticateDelayMs);else reply();
+  }
   else if(message.method==="session/new"){
-    if(!key)answer(message,SIGNED_OUT);
+    if(!key&&!ownLogin)answer(message,SIGNED_OUT);
     else answer(message,scenario.sessionNew,{sessionId:"agy-session",configOptions:MODELS});
   }
-  else if(message.method==="session/load"||message.method==="session/resume")once(scenario.holdLoadUntil,()=>answer(message,key?"ok":SIGNED_OUT,{configOptions:MODELS}));
+  else if(message.method==="session/load"||message.method==="session/resume")once(scenario.holdLoadUntil,()=>answer(message,key||ownLogin?"ok":SIGNED_OUT,{configOptions:MODELS}));
   else if(message.method==="session/set_config_option")answer(message,"ok",{configOptions:MODELS.map(option=>option.id===message.params?.configId?{...option,currentValue:message.params.value}:option)});
   else if(message.method==="session/prompt"){
     if(JSON.stringify(message.params?.prompt??"").includes("[hang]")){hanging=message;return}

@@ -92,6 +92,15 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // its turn kept live on that turn's card, its compaction's wait and Stop, and an attached document's extracted text named in Codex's
 // input) and 0.0 / 0.1 KB to the lazy chunks (the first bundle's new name in their import lines): 780.1 / 257.9 KB, 0.9 / 0.1 KB
 // under the limit.
+// Trebell Native's xAI and Meta Model API providers then added 0.2 / 0.1 KB to the first bundle (618.1 / 198.6 KB: their labels and
+// the Thinking levels Meta documents for its models) and 0.2 / -0.1 KB to the lazy chunks (Settings' notes and search terms for
+// them, and the first bundle's new name in their import lines): 780.3 / 257.8 KB, 0.7 / 0.2 KB under the limit.
+// Each harness's sign-in choice in Settings (Sign in or its provider's API key, with the key's field on its row) in place of
+// Antigravity's own key form then added nothing to the first bundle (618.1 / 198.6 KB) and 0.3 / 0.1 KB to the lazy chunks:
+// 780.6 / 257.9 KB, 0.4 / 0.1 KB under the limit (and 1.1 / 0.2 KB to the CSS: 681.9 / 98.6 KB).
+// That row's repairs (a key Trebell reads from the environment said as from its variable, and Remove key on the row) then added
+// nothing to the first bundle and 0.2 / 0.1 KB to the lazy chunks: 780.8 / 258.0 KB, 0.2 / 0.0 KB under the limit (the Settings
+// chunk 47 gzip bytes from its next 0.1 KB).
 const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:781,gzipKB:258}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 

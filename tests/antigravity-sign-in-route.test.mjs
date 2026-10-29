@@ -1,8 +1,7 @@
 // Settings' Antigravity sign-in through the GUI server's /api/agent-runtime-auth, outside mock mode, with a stand-in for Antigravity's
-// ACP server (fixtures/antigravity-acp-agent.mjs) as the profile's executable: it signs in with the Gemini API key typed, or the one
-// saved, with no Google credential of Trebell's environment and in Trebell's own home for Antigravity, opens its session in a
-// throwaway folder rather than the project, and saves the key once that worked, in harness-secrets.json and nowhere else. The answer
-// never carries the key, a refused key is not saved, and Remove key takes it out.
+// ACP server (fixtures/antigravity-acp-agent.mjs) as the profile's executable: on Sign in it runs Antigravity's own sign-in, with no
+// Google credential or key of Trebell's environment, in Trebell's own home for Antigravity, opens its session in a throwaway folder
+// rather than the project, and records only the login it chose. Settings' choice moves Antigravity to its API key and back.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -55,38 +54,42 @@ async function guiWithStandIn(t){
   return {root,person,trebellHome,agyHome:join(trebellHome,"antigravity-home"),ownSettings,post,scenario,log,secrets:()=>readFile(join(trebellHome,"harness-secrets.json"),"utf8").catch(()=>"{}")};
 }
 
-test("Settings' Antigravity sign-in saves the key once Antigravity signed in with it, in Trebell's own home for it, and never shows it again",{timeout:90_000},async t=>{
+test("Settings' Antigravity Sign in runs Antigravity's own sign-in in Trebell's home for it, with no key, and records only its method",{timeout:90_000},async t=>{
   const fx=await guiWithStandIn(t);
   const before=await readFile(fx.ownSettings,"utf8");
-  const answer=await fx.post({action:"login",apiKey:KEY});
+  const answer=await fx.post({action:"login"});
   assert.equal(answer.status,200,answer.text);
   const body=JSON.parse(answer.text);
-  assert.equal(body.ok,true);assert.equal(body.authenticated,true);assert.equal(body.auth.methodId,"gemini-api-key");
+  assert.equal(body.ok,true);assert.equal(body.authenticated,true);assert.deepEqual([body.auth.methodId,body.auth.methodName],["oauth-personal","Log in with Google"]);
   assert.ok(Array.isArray(body.agentSnapshot?.statuses),"the harness list comes with the answer");
-  assert.ok(!answer.text.includes(KEY),"the key is not in the answer or its harness list");
   const log=await fx.log(),authenticate=log.find(entry=>entry.method==="authenticate"),created=log.find(entry=>entry.method==="session/new");
-  assert.equal(authenticate.params.methodId,"gemini-api-key");assert.equal(authenticate.keyIsExpected,true,"the typed key, as GEMINI_API_KEY");
-  assert.equal(authenticate.googleApiKey,false,"the inherited GOOGLE_API_KEY stays out");
+  assert.equal(authenticate.params.methodId,"oauth-personal","its own Google login, which the agent runs itself");
+  assert.equal(authenticate.keySet,false,"no Gemini key of Trebell's environment or of a profile's approved names");assert.equal(authenticate.googleApiKey,false);
   assert.equal(authenticate.geminiHome,fx.agyHome,"Trebell's home for Antigravity, not the person's ~/.gemini");
   assert.ok(!inside(created.params.cwd,join(fx.root,"project"))&&basename(created.params.cwd).startsWith("trebell-antigravity-sign-in-"),`session/new in a throwaway folder, not ${created.params.cwd}`);
   assert.equal(await readFile(fx.ownSettings,"utf8"),before,"the person's own Antigravity settings, which Zed or JetBrains share, are as they were");
-  assert.deepEqual(JSON.parse(await readFile(join(fx.agyHome,"antigravity-acp","settings.json"),"utf8")),{auth:{type:"gemini-api-key"}});
-  assert.equal(JSON.parse(await fx.secrets())["antigravity.geminiApiKey"],KEY,"the key is saved in harness-secrets.json");
-  const holding=[...await filesHolding(fx.trebellHome,KEY),...await filesHolding(fx.person,KEY),...await filesHolding(join(fx.root,"tmp"),KEY)];
-  assert.deepEqual(holding,[join(fx.trebellHome,"harness-secrets.json")],"nowhere else: not in Trebell's settings and state, its logs, Antigravity's settings or the person's home");
-
-  // A sign-in that fails keeps the key saved before; Sign in with no key typed signs in with the saved one.
-  await fx.scenario({authenticate:{code:-32602,message:"Invalid params"}});
-  const refused=await fx.post({action:"login",apiKey:"AIzaSyAnotherFixtureKey000000000000000"});
-  assert.equal(refused.status,400);assert.match(JSON.parse(refused.text).error,/^Antigravity rejected the Gemini API key\./);
-  assert.equal(JSON.parse(await fx.secrets())["antigravity.geminiApiKey"],KEY,"the refused key is not saved");
-  await fx.scenario({});
+  assert.deepEqual(JSON.parse(await readFile(join(fx.agyHome,"antigravity-acp","settings.json"),"utf8")),{auth:{type:"oauth-personal"}},"its home names the login it chose");
+  assert.equal(await fx.secrets(),"{}","no key store is written");
+  for(const value of ["inherited-gemini-key-value","inherited-google-key-value"])
+    assert.deepEqual([...await filesHolding(fx.trebellHome,value),...await filesHolding(join(fx.root,"tmp"),value)],[],"no inherited key is kept anywhere");
+  // Signing in again with the same login stops no chat; Remove key is gone with the key form.
   const again=await fx.post({action:"login"});
-  assert.equal(again.status,200,again.text);assert.equal((await fx.log()).filter(entry=>entry.method==="authenticate").at(-1).keyIsExpected,true,"the saved key");
-
+  assert.equal(again.status,200,again.text);assert.equal(JSON.parse(again.text).stoppedChats,0);
   const removed=await fx.post({action:"remove-key"});
-  assert.equal(removed.status,200,removed.text);assert.equal(JSON.parse(removed.text).authenticated,false);
-  assert.equal(JSON.parse(await fx.secrets())["antigravity.geminiApiKey"],undefined,"Remove key takes it out");
-  const none=await fx.post({action:"login"});
-  assert.equal(none.status,400);assert.match(JSON.parse(none.text).error,/^Antigravity needs a Gemini API key\./);
+  assert.equal(removed.status,400);assert.equal(JSON.parse(removed.text).error,"Unsupported runtime authentication action");
+});
+
+test("Settings' choice moves Antigravity to its API key and back, and a profile on its API key has no Sign in",{timeout:90_000},async t=>{
+  const fx=await guiWithStandIn(t);
+  const chosen=await fx.post({action:"method",method:"api-key"});
+  assert.equal(chosen.status,200,chosen.text);
+  const body=JSON.parse(chosen.text);
+  assert.equal(body.method,"api-key");
+  assert.equal(body.agentSnapshot.instances.find(item=>item.id==="antigravity-default").signIn.method,"api-key");
+  const refused=await fx.post({action:"login"});
+  assert.equal(refused.status,400);assert.match(JSON.parse(refused.text).error,/is set to run on an API key\. Set it to Sign in to use its own sign-in\./);
+  assert.deepEqual((await fx.log()).filter(entry=>entry.method==="authenticate"),[],"no sign-in ran");
+  assert.equal((await fx.post({action:"method",method:"sign-in"})).status,200);
+  const cursor=await fx.post({action:"method",runtime:"cursor",instanceId:"cursor-default",method:"api-key"});
+  assert.equal(cursor.status,400);assert.match(JSON.parse(cursor.text).error,/Cursor has no API key/);
 });

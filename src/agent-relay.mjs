@@ -1024,9 +1024,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // The starts closeRuntimeSessions ended (a harness's key changed while they started), refused as a reset refuses its own.
   const endedStarts=new WeakSet();
   const restartedWhileStarting=()=>new Error("The harness was restarted while this conversation was starting.");
-  async function startTracked(runtime,options,generation){
+  // harness: the runtime profile and environment the start is for (startingHarnesses), which closeRuntimeSessions goes by.
+  const startingHarnesses=new WeakMap();
+  async function startTracked(runtime,options,generation,harness=null){
     if(generation!==sessionGeneration)throw restartedWhileStarting();
-    startingSessions.add(runtime);
+    startingSessions.add(runtime);if(harness)startingHarnesses.set(runtime,harness);
     try{return await runtime.start(options)}finally{startingSessions.delete(runtime)}
   }
   // A harness that failed where it runs (its session did not start, or a turn ended in its error) is asked again, once
@@ -1099,8 +1101,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(instance.kind==="codex")throw new Error("Codex uses the native Codex relay");
     const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
     const status=await runtimeManager.probe(instance,{environmentId});if(!status.available)throw new Error(status.message||`${status.name} is unavailable`);
+    // A profile on an API key starts only with its key, whatever status was kept from before the key went (keyRefusal): without it the
+    // harness would run on a login of its own.
+    const keyRefused=runtimeManager.keyRefusal?.(instance,environmentId);if(keyRefused)throw new Error(keyRefused.message);
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
-    const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode:effectivePermissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
+    // The environment of the version the status read: OpenCode on its API keys leaves its stored sign-ins out by its line (childEnv).
+    const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance,{version:status.version||null}),authMethod:runtimeManager.authMethod?.(instance)||"sign-in",permissionMode:effectivePermissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
     if(instance.kind==="native"){
       if(typeof nativeProviderTurn!=="function")throw new Error("Trebell Native provider transport is unavailable");
       const namespaceNames=new Set(thread.providerMeta?.dynamicToolNamespaces||[]),projectless=Boolean(thread.providerMeta?.projectless);
@@ -1247,7 +1253,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // Muse Code through Meta's SDK on a `muse serve` of Trebell's own, the thread's model and Thinking level resolved against the
       // list its status check read, with the MCP servers the ACP harnesses get and the report turns Muse starts itself as wake turns.
       :instance.kind==="muse"
-      ?new MuseAgentSession({...common,command:runtimeManager.executable(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys,modelCatalog:()=>runtimeManager.museModelCatalog?.(instance)||null,mcpServers:acpMcpServers,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context)})
+      ?new MuseAgentSession({...common,command:runtimeManager.executable(instance),modelCatalog:()=>runtimeManager.museModelCatalog?.(instance)||null,mcpServers:acpMcpServers,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context)})
       :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),argsForPermission:mode=>runtimeManager.acpArgs(instance,mode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,runTempRoot:instance.kind==="antigravity"&&!remoteIo?acpRuntimeTempRoot(runtimeManager.childEnv(instance),"antigravity"):null,attachmentsDir:instance.kind==="antigravity"&&!remoteIo?join(trebellHome(runtimeManager.env||process.env),"attachments"):null,onWakeTurn:promise=>startWakeTurn(thread.id,promise,context),spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
     let runtime=create(),started,lost=null;
     // A Cursor thread runs in the Plan mode it last ran in until a turn names another (also after a restart).
@@ -1262,7 +1268,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const startFailure=async error=>failedWhereItRuns(harness,error,generation)?withMessage(error,await harnessFailureMessage(harness,error)):error;
     // A start that a close or reset of the relay, or of this harness's sessions, ended is refused, never kept or failed as the harness's.
     const ended=()=>generation!==sessionGeneration||endedStarts.has(runtime);
-    try{started=await startTracked(runtime,{providerSessionId:savedSessionId,model:requestedModel},generation)}
+    try{started=await startTracked(runtime,{providerSessionId:savedSessionId,model:requestedModel},generation,harness)}
     catch(error){
       reportModels();await runtime.close().catch(()=>{});
       if(ended())throw restartedWhileStarting();
@@ -1272,7 +1278,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(!freshIfLost||!savedSessionId||!isHarnessSessionLost(error))throw await startFailure(error);
       lost={previousSessionId:String(savedSessionId),reason:error.message};
       runtime=create();prepare();
-      try{started=await startTracked(runtime,{providerSessionId:null,model:requestedModel},generation)}
+      try{started=await startTracked(runtime,{providerSessionId:null,model:requestedModel},generation,harness)}
       catch(freshError){reportModels();await runtime.close().catch(()=>{});if(ended())throw restartedWhileStarting();recordResumeFallback(thread,{...lost,sessionId:null,error:freshError});throw await startFailure(freshError)}
     }
     if(ended()){await runtime.close().catch(()=>{});throw restartedWhileStarting()}
@@ -2443,16 +2449,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(promptSettlements.size)await Promise.allSettled([...promptSettlements]);
     for(const threadId of [...toolWrites.keys()])settleToolWrites(threadId);
   }
-  // The sessions of one harness close, as a reset closes them all, and a turn one runs stops as Stop stops it: Antigravity's once its
-  // saved Gemini API key changed or went, as each process keeps the key it started with (T3 closes a provider instance whose settings
-  // changed). The next turn starts the harness again; a start this ends is refused (endedStarts). Only the sessions on this machine
-  // (here): one in a WSL or SSH environment never had the key saved here, as its launch forwards none of it. Answers how many sessions
-  // it closed.
-  async function closeRuntimeSessions(kind){
-    const closes=[],here=session=>!session?.remoteIo;
-    for(const runtime of [...startingSessions])if(runtime?.runtime===kind&&here(runtime)){endedStarts.add(runtime);closes.push(runtime.close().catch(()=>{}))}
+  // The sessions of one harness close, as a reset closes them all, and a turn one runs stops as Stop stops it: Antigravity's once it
+  // signed in with another method of its own, and any harness's once Settings changed how its profile signs in (everywhere: on a WSL
+  // or SSH host too), as each process keeps the sign-in or key it started with (T3 closes a provider instance whose settings
+  // changed). The next turn starts the harness again; a start this ends is refused (endedStarts). Without everywhere only the
+  // sessions on this machine (here): Antigravity runs nowhere else. Answers how many sessions it closed. instanceIds: only the sessions
+  // of these runtime profiles (one whose method changed, the ones on a key saved or removed), never another profile's of the kind.
+  async function closeRuntimeSessions(kind,{everywhere=false,instanceIds=null}={}){
+    const closes=[],here=session=>everywhere||!session?.remoteIo,ids=Array.isArray(instanceIds)?new Set(instanceIds.map(String)):null;
+    const ours=(runtime,harness)=>ids?Boolean(harness?.instance)&&ids.has(String(harness.instance.id)):(harness?.instance?.kind||runtime?.runtime)===kind;
+    if(ids&&!ids.size)return 0;
+    for(const runtime of [...startingSessions])if(ours(runtime,startingHarnesses.get(runtime))&&here(runtime)){endedStarts.add(runtime);closes.push(runtime.close().catch(()=>{}))}
     for(const [threadId,session] of [...sessions]){
-      if((sessionHarnesses.get(session)?.instance?.kind||session?.runtime)!==kind||!here(session))continue;
+      if(!ours(session,sessionHarnesses.get(session))||!here(session))continue;
       sessions.delete(threadId);if(session.busy)try{session.cancel?.()}catch{}
       closes.push(closeThreadSession(session,threadId).catch(()=>{}).then(()=>emit("thread/closed",{threadId})));
     }

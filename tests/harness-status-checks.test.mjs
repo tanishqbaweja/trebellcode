@@ -370,11 +370,16 @@ test("a logged-out `grok models` is read once more, and the second answer decide
     assert.deepEqual([status.available,status.authenticated,status.message],expected,answers.join(" then "));
     assert.equal(fx.calls.filter(call=>call.args==="models").length,calls,answers.join(" then "));
   }
-  // With an xAI API key Grok's own sign-in is not asked.
-  const keyed=await localHarness(t,"grok",args=>args[0]==="models"?answered("Not logged in\n"):answered("grok 1.0.41\n"),{env:{XAI_API_KEY:"xai-test-not-a-key"}});
+  // An XAI_API_KEY in Trebell's environment says nothing of a Grok on Sign in: its own login is read, and the key reaches no check.
+  const around=await localHarness(t,"grok",args=>args[0]==="models"?answered("Not logged in\n"):answered("grok 1.0.41\n"),{env:{XAI_API_KEY:"xai-test-not-a-key"}});
+  const own=await around.manager.probe("grok");
+  assert.deepEqual([own.available,own.authenticated,own.authMethod],[false,false,"sign-in"]);
+  assert.deepEqual(around.calls.map(call=>[call.args,call.env.XAI_API_KEY]),[["--version",undefined],["models",undefined],["models",undefined]]);
+  // A profile set to its API key is ready on the xAI key without asking Grok's own sign-in.
+  const keyed=await localHarness(t,"grok",args=>args[0]==="models"?answered("Not logged in\n"):answered("grok 1.0.41\n"),{env:{XAI_API_KEY:"xai-test-not-a-key"},instance:{auth:"api-key"}});
   const status=await keyed.manager.probe("grok");
-  assert.deepEqual([status.available,status.authenticated],[true,true]);
-  assert.deepEqual(keyed.calls.map(call=>call.args),["--version"]);
+  assert.deepEqual([status.available,status.authenticated,status.authMethod],[true,true,"api-key"]);
+  assert.deepEqual(keyed.calls.map(call=>[call.args,call.env.XAI_API_KEY]),[["--version","xai-test-not-a-key"]]);
 });
 
 test("a Claude Code profile with a custom API endpoint is not called signed out; one on Anthropic's own API is",async t=>{

@@ -57,7 +57,7 @@ flowchart LR
     NATIVE["Trebell Native"]
     CODEX["Codex app-server"]
     EXTERNAL["Claude Code · OpenCode · Cursor · Grok Build · Antigravity · Muse Code"]
-    PROVIDERS["OpenAI · Anthropic · Gemini · AgentRouter · JustWorker · HCNSec · VyceAi"]
+    PROVIDERS["OpenAI · Anthropic · Gemini · xAI · Meta · AgentRouter · JustWorker · HCNSec · VyceAi"]
     MCP["MCP servers"]
     BROWSER["Agent Browser / desktop verification"]
 
@@ -83,9 +83,40 @@ Examples:
 
 - Trebell Native + VyceAi;
 - Trebell Native + AgentRouter;
-- Trebell Native + the official OpenAI, Anthropic, or Gemini API;
+- Trebell Native + the official OpenAI, Anthropic, Gemini, xAI or Meta Model API;
 - Codex using Codex's own account/provider/model configuration;
 - Claude Code using Claude Code's own model/auth semantics.
+
+Each external harness signs in as the person sets it in Settings for its runtime profile (`src/harness-auth.mjs`): **Sign in**, its own
+login in its own home (the default), or **API key**, its vendor's key from Native's key store in the form its official CLI takes it
+(`ANTHROPIC_API_KEY` for Claude Code, `META_API_KEY` for Muse Code, `XAI_API_KEY` with Grok's key method, `GEMINI_API_KEY` with Antigravity's
+key method, each saved provider's variable for OpenCode, which then runs with none of the logins `opencode auth login` keeps: OpenCode
+1.x on an empty set of them, `OPENCODE_AUTH_CONTENT={}`, which it reads in place of its `auth.json`, and OpenCode 2.x, which keeps
+them in its database ahead of a key in its environment and reads no `OPENCODE_AUTH_CONTENT`, on a database of Trebell's own for the
+profile, `OPENCODE_DB=<Trebell home>/opencode-api-key-homes/<profile>/opencode.db`, which holds none of them; its 2.x sessions live
+there too, so a thread whose session is in the other database continues in a new session with its earlier messages handed over;
+Codex signs in with `codex login --with-api-key` in a home of Trebell's own over its shared home, which
+`codex logout` empties again once the profile is back on Sign in or removed, or the OpenAI key is removed or replaced (every such
+home, a profile's that is not running included, once the app-servers on the key have stopped); Grok signs in with its key
+method before each chat session and each Git text session starts). A harness on API key runs on this machine only: Trebell sends no
+saved key to a WSL or SSH environment, and a key the host's shell holds never stands in for it, so there it is refused until it is set
+to Sign in, which uses its own login there. An OpenCode profile with a server URL of its own runs on that server's sign-in and cannot be
+set to API key. Every start of a profile on API key checks its key again (`AgentRuntimeManager.keyRefusal`: the relay's sessions, Git
+text, and a status kept from before the key went): with none, its status says so once its version is read, and nothing of the
+harness starts for it, no chat, Git text, sign-in check (`claude auth status`), account read (Codex's), model-list host (`muse serve`,
+OpenCode's catalog server) or usage read (Claude Code's capability probe), each of which would run on the person's own login. A key saved or removed, or a
+profile's method changed, closes the chats of the profiles concerned only, and stops their Codex app-servers whether a profile is the
+active one or not (only theirs: the active one's catalog starts again, and another Codex profile's threads go on), since each process
+keeps the sign-in or key it started with; a profile removed closes its own open chats and stops its Codex app-servers the same way,
+so none goes on with a key removed after it. A key saved or removed on a harness's row is Native's key for that provider too: with
+Trebell Native active on it, Native's readiness and model list follow at once, as after the Model provider card. What Trebell keeps
+of a harness's own answers is kept per sign-in (the method, and on a
+key a fingerprint of it): OpenCode's catalog, an ACP harness's model list, Antigravity's list its sessions report and Claude Code's
+capability probe (its models, account and plan usage) are read again after a switch or a new key, never served from the other.
+Cursor signs in only. No key reaches a harness any
+other way: `src/runtime-environment.mjs` keeps every credential name (`isHarnessCredentialName`) out of what each harness gets of
+Trebell's environment, a profile's approved names and its variables (on a WSL or SSH host too, in the variables its Codex app-server
+starts with), and Cursor's, Grok's and OpenCode's usage meters read none of their stored sign-ins.
 
 External harnesses are not forced through Trebell Native's provider layer merely to make the UI look symmetrical.
 
@@ -115,12 +146,18 @@ Current integrations:
 - **OpenAI API** (the default selection)
 - **Anthropic API**
 - **Google Gemini API**
+- **xAI API** (Responses, models from `/v1/language-models`; `XAI_API_KEY`)
+- **Meta Model API** (Responses, models from `/v1/models`; `META_API_KEY`)
 - **AgentRouter**
 - **JustWorker.icu**
 - **HCNSec.cn**
 - **VyceAi**
 
 Every provider requires an API key, so Trebell Native needs one before its first turn. Add it in **Settings → Agents & models**; keys are stored through Trebell's secret handling path. A key saved in Settings takes precedence over the provider's environment variable (for example `OPENAI_API_KEY`).
+
+xAI and the Meta Model API are called on their Responses APIs without server-side state: each request carries the whole conversation with `store: false`, asks for `reasoning.encrypted_content` and sends back the reasoning the current turn's replies returned, which both providers document for keeping a model's reasoning across tool calls. A model that refuses `include` gets the request again without it, and its later requests leave it out. Their replies come back whole (`stream: false`), as for every provider but OpenAI, until a live check shows their streamed replies match (`src/native-reply-streaming.mjs`); Meta documents a server-side time limit for unstreamed requests (HTTP 504 `gateway_timeout`), which a live check of a long turn should measure.
+
+`ProviderManager.keyFor(provider)` is the one way the server reads a provider's key for a consumer other than Native's own calls (a harness the person put on API key, `AgentRuntimeManager.harnessKeys`): the key saved in Settings, else the environment variable Native reads for that provider, through the same code; an id that is not a model provider is refused.
 
 > **.env is not product configuration.** A local ignored .env may be used for developer/live-provider tests only.
 

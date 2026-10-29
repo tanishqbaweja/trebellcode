@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, extname, join, resolve, relative, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AcpClient, defaultAcpClientCapabilities } from "./acp-client.mjs";
-import { ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_KEY_NEEDED, antigravityIpv6Failure } from "./antigravity-auth.mjs";
+import { ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_SIGN_IN_NEEDED, antigravityIpv6Failure } from "./antigravity-auth.mjs";
 import { acpApplyValue, acpConfigChoices, acpConfigSelect, acpReadOnlyMode, acpSetupWithConfigOptions, acpSetupWithValue } from "./acp-session-config.mjs";
 import { cursorEffortOption, cursorEffortValue, cursorFastOption, cursorSwitchValue, GROK_INITIALIZE_META } from "./acp-model-catalog.mjs";
 import { acpToolFrame, mergeAcpToolUpdate } from "./acp-tool-state.mjs";
 import { CursorTransportFailure } from "./cursor-transport-failure.mjs";
 import { fileUriPath } from "./file-uri.mjs";
+import { acpApiKeyMethod } from "./harness-auth.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizeModelOptionValues } from "./model-options.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
@@ -345,8 +346,10 @@ function requestedModel(runtime,model){
 }
 
 export class AcpAgentSession{
-  constructor({runtime,command,args=[],cwd,processCwd=null,env=process.env,permissionMode="supervised",onUpdate,onPermission,onQuestion=null,onElicitation,onWakeTurn=null,argsForPermission=null,runTempRoot=null,version="0.0.0",spawnProcess=null,remoteIo=null,mcpServers=[],attachmentsDir=null}={}){
+  constructor({runtime,command,args=[],cwd,processCwd=null,env=process.env,permissionMode="supervised",onUpdate,onPermission,onQuestion=null,onElicitation,onWakeTurn=null,argsForPermission=null,runTempRoot=null,version="0.0.0",spawnProcess=null,remoteIo=null,mcpServers=[],attachmentsDir=null,authMethod="sign-in"}={}){
     this.runtime=runtime;this.command=command;this.args=[...(args||[])];this.cwd=remoteIo?String(cwd||remoteIo.root||"/"):resolve(cwd||process.cwd());this.env=env;
+    // How the profile signs in (harness-auth.mjs): "api-key" signs a harness that asks in with its key method, else its own login.
+    this.authMethod=authMethod==="api-key"?"api-key":"sign-in";
     // Trebell saves pasted text and uploads outside the workspace. Antigravity checks every path against its own allowed
     // folders, so T3 grants it the attachments folder (additionalDirectories) and serves its client files there too.
     this.attachmentsDir=runtime==="antigravity"&&!remoteIo&&text(attachmentsDir)?resolve(attachmentsDir):null;
@@ -387,6 +390,15 @@ export class AcpAgentSession{
     try{
       await client.start();
       this.initializeResult=await client.initialize({version:this.version,timeoutMs:this.runtime==="antigravity"?90_000:30_000,capabilities:this.#clientCapabilities(),meta:this.runtime==="grok"?GROK_INITIALIZE_META:null});
+      // A harness set to its API key that has a key method of its own signs in with it before its session starts (Grok's xai.api_key,
+      // its launch carrying XAI_API_KEY), so a login it cached itself (`grok login`) never stands in for the key the person chose.
+      this.keySignedIn=false;
+      const keyMethod=this.#apiKeyMethod();
+      if(keyMethod){
+        try{await client.authenticate(keyMethod)}
+        catch(failure){throw Object.assign(new Error(`${this.label} could not sign in with '${keyMethod}': ${failure?.message||failure}`),{code:failure?.code,cause:failure})}
+        this.keySignedIn=true;
+      }
       let setup;
       // The folder is granted before the first upload lands in it, so it must exist for the harness to accept it.
       if(this.attachmentsDir)await mkdir(this.attachmentsDir,{recursive:true}).catch(()=>{});
@@ -410,9 +422,10 @@ export class AcpAgentSession{
     const setUp=()=>providerSessionId?this.#resume(client,providerSessionId):this.#create(client);
     try{return await setUp()}
     catch(error){
-      const methodId=error?.code===ACP_AUTH_REQUIRED&&!client.closed?this.#signInMethod():null;
-      // An Antigravity with no key saved in Trebell has no sign-in to make here: it needs one first.
-      if(!methodId&&this.runtime==="antigravity"&&error?.code===ACP_AUTH_REQUIRED)throw Object.assign(new Error(ANTIGRAVITY_KEY_NEEDED),{code:error.code,cause:error});
+      // A harness still signed out after its key method signed it in is not asked again.
+      const methodId=error?.code===ACP_AUTH_REQUIRED&&!client.closed&&!this.keySignedIn?this.#signInMethod():null;
+      // An Antigravity on Sign in that is not signed in signs in from Settings, never in the middle of a chat's start.
+      if(!methodId&&this.runtime==="antigravity"&&error?.code===ACP_AUTH_REQUIRED)throw Object.assign(new Error(ANTIGRAVITY_SIGN_IN_NEEDED),{code:error.code,cause:error});
       if(!methodId)throw error;
       try{await client.authenticate(methodId)}
       catch(failure){throw Object.assign(new Error(`${this.label} could not sign in with '${methodId}': ${failure?.message||failure}`),{code:failure?.code,cause:failure})}
@@ -427,17 +440,21 @@ export class AcpAgentSession{
     return setup;
   }
 
-  // The method a signed-out harness signs in with, only when its initialize lists it (T3 selectAcpAgentAuthMethod and
-  // resolveGrokAuthMethodId): Grok its API key when XAI_API_KEY is set, else its cached login. Antigravity its Gemini API key method
-  // when Trebell has a key saved for it (its launch's GEMINI_API_KEY comes from that key alone), listed or not, as T3 signs in with
-  // the method it is set to, and never the Google logins it lists, the route Google's terms rule out for third-party apps. Any other
-  // harness the first method it runs itself (type agent, or none given), such as Cursor's cursor_login.
+  // The method a signed-out harness signs in with, by how its profile signs in (Settings' choice), never by what its environment
+  // holds: Grok its xAI key method on an API key (its launch then has XAI_API_KEY), else its cached `grok login`, only when its
+  // initialize lists it (T3 resolveGrokAuthMethodId). Antigravity its Gemini key method on an API key, listed or not, as T3 signs in
+  // with the method it is set to; on Sign in none here (its own sign-in runs from Settings, in the browser). Any other harness the
+  // first method it runs itself (type agent, or none given), such as Cursor's cursor_login.
   #signInMethod(){
-    const methods=Array.isArray(this.initializeResult?.authMethods)?this.initializeResult.authMethods:[];
-    if(this.runtime==="antigravity")return text(this.env?.GEMINI_API_KEY)?ANTIGRAVITY_API_KEY_METHOD:null;
-    if(this.runtime==="grok"){const id=text(this.env?.XAI_API_KEY)?"xai.api_key":"cached_token";return methods.some(method=>text(method?.id)===id)?id:null}
+    const methods=Array.isArray(this.initializeResult?.authMethods)?this.initializeResult.authMethods:[],onKey=this.authMethod==="api-key";
+    if(this.runtime==="antigravity")return onKey&&text(this.env?.GEMINI_API_KEY)?ANTIGRAVITY_API_KEY_METHOD:null;
+    if(this.runtime==="grok"){const id=onKey?"xai.api_key":"cached_token";return methods.some(method=>text(method?.id)===id)?id:null}
     return text(methods.find(method=>text(method?.id)&&(method.type==null||method.type==="agent"))?.id)||null;
   }
+  // The key method a harness on its API key signs in with as it starts (acpApiKeyMethod, which Git text shares): Grok's xai.api_key,
+  // when its initialize lists it and its launch has the key. Antigravity's key method is named in its home's settings
+  // (prepareAntigravityHome) and asked for once it says it needs one (#signInMethod).
+  #apiKeyMethod(){return acpApiKeyMethod({runtime:this.runtime,authMethod:this.authMethod,env:this.env,initializeResult:this.initializeResult})}
 
   // T3 keeps the id it asked for: session/load and session/resume answers carry no sessionId.
   // A conversation the harness refuses to load or resume is a lost session (HarnessSessionLostError): the relay continues the

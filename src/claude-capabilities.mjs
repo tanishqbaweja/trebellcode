@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { claudeUsageResponseToLimits } from "./agent-usage-limits.mjs";
 import { hasClaudeManagedMcpConfig } from "./claude-managed-mcp.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
@@ -84,6 +85,12 @@ function claudeProbeSignedOut(account,env={}){
   let endpoint=null;try{endpoint=new URL(String(env?.ANTHROPIC_BASE_URL||"").trim())}catch{}
   return !(endpoint&&/^https?:$/.test(endpoint.protocol)&&endpoint.hostname&&endpoint.hostname!=="api.anthropic.com");
 }
+// How a probe's Claude Code signs in, as its launch's environment says: on the ANTHROPIC_API_KEY it has (a fingerprint of it, never
+// the key), or on the person's own login when it has none (a profile on Sign in never has one, AgentRuntimeManager.childEnv).
+function signInOf(env){
+  const key=String(env?.ANTHROPIC_API_KEY||"");
+  return key?"api-key:"+createHash("sha256").update(key).digest("hex").slice(0,16):"sign-in";
+}
 // A probe is reused only when it read what it was asked for from a signed-in account (T3 Code's ClaudeDriver): one whose usage
 // read failed (what the Usage card says it could not read) and one Claude answered signed out are asked again next time.
 function keptClaudeProbe(value,env){
@@ -97,9 +104,11 @@ function keptClaudeProbe(value,env){
 // sign-in. maxAgeMs is how old an answer the caller accepts; by default, the entry's own window. The model list, which a failed
 // usage read leaves as it was, takes five minutes (the probe's models and commands do not expire with its usage), and a probe that
 // fails puts back the answer it was to replace.
+// It is kept per sign-in too (signInOf): a profile moved between its own login and an API key, or onto another key, is asked again,
+// never served the account, models and plan usage of the other.
 export function createClaudeCapabilitiesCache({probe=probeClaudeCapabilities,ttlMs=CLAUDE_CAPABILITIES_TTL_MS,now=()=>Date.now()}={}){
   const entries=new Map();
-  const keyOf=({command,cwd,env,spawnProcess,scope})=>[String(command||""),String(env?.CLAUDE_CONFIG_DIR||""),String(cwd||""),spawnProcess?"remote:"+String(scope||""):"local"].join("\0");
+  const keyOf=({command,cwd,env,spawnProcess,scope})=>[String(command||""),String(env?.CLAUDE_CONFIG_DIR||""),String(cwd||""),spawnProcess?"remote:"+String(scope||""):"local",signInOf(env)].join("\0");
   const current=(entry,maxAgeMs)=>Boolean(entry?.value)&&now()-entry.at<(maxAgeMs??entry.ttl);
   return {
     peek(input={},{maxAgeMs}={}){
@@ -118,7 +127,7 @@ export function createClaudeCapabilitiesCache({probe=probeClaudeCapabilities,ttl
       entries.set(key,{...(entry||{}),pending});
       return pending;
     },
-    // Forgets the answers kept for this executable and Claude home where it runs, every folder's: a sign-out its probe did not see
+    // Forgets the answers kept for this executable and Claude home where it runs, every folder's and sign-in's: a sign-out its probe did not see
     // (`claude auth status` finds it signed out, or a turn failed to authenticate) shows at the next read instead of up to five minutes
     // later. A probe still running stays for the readers that wait on it, but its answer is not kept.
     drop(input={}){

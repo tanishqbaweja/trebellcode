@@ -96,7 +96,7 @@ test("Muse Code is found where Meta's installers put it, without a PATH entry: M
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
-test("Muse Code runs with its release channel and MUSE_NO_AUTO_UPDATE=1, and Trebell's own META_API_KEY reaches it only when its profile approves it",()=>{
+test("Muse Code runs with its release channel and MUSE_NO_AUTO_UPDATE=1, and a META_API_KEY reaches it only on a profile set to its API key",()=>{
   const parent={PATH:"/usr/bin",HOME:"/home/me",XDG_CONFIG_HOME:"/home/me/.config",META_API_KEY:"meta-key-in-trebells-env",MUSE_CHANNEL:"muse-canary",OPENAI_API_KEY:"not-for-muse"};
   const manager=new AgentRuntimeManager({state:museState(),env:parent,platform:"linux"});
   const env=manager.childEnv({id:"muse-default",kind:"muse"});
@@ -106,7 +106,10 @@ test("Muse Code runs with its release channel and MUSE_NO_AUTO_UPDATE=1, and Tre
   assert.equal("OPENAI_API_KEY" in env,false);
   assert.ok(manager.childEnvironmentKeys({kind:"muse"}).includes("MUSE_CHANNEL"));
   const approved=manager.childEnv({id:"muse-key",kind:"muse",approvedEnvironmentKeys:["META_API_KEY"]});
-  assert.equal(approved.META_API_KEY,"meta-key-in-trebells-env","a profile that approves META_API_KEY forwards it");
+  assert.equal("META_API_KEY" in approved,false,"an approved META_API_KEY never replaces the person's Muse sign-in");
+  const onKey=manager.childEnv({id:"muse-key",kind:"muse",auth:"api-key"});
+  assert.equal(onKey.META_API_KEY,"meta-key-in-trebells-env","a profile set to its API key runs on the Meta key (here Native's variable)");
+  assert.equal("OPENAI_API_KEY" in onKey,false,"and on no other vendor's key");
   assert.equal(manager.childEnv({id:"muse-updates",kind:"muse",environment:{MUSE_NO_AUTO_UPDATE:"0"}}).MUSE_NO_AUTO_UPDATE,"0","a profile's own value wins");
 });
 
@@ -235,10 +238,12 @@ test("Muse Code's list is read again only by Settings' own listing, a failed tur
     assert.equal(await count(),2,"a failed turn's recheck reads it again");
     await manager.snapshot({refresh:true});
     assert.equal(await count(),3,"so does Settings' Refresh");
-    // A change to what the profile runs Muse Code with reads it again at the next check.
-    fixture.state.settings().agentRuntimeInstances[0].approvedEnvironmentKeys=["META_API_KEY"];
+    // A change to what the profile runs Muse Code with reads it again at the next check: here its API key, with a Meta key (with
+    // none, its status says so and no host starts).
+    fixture.env.META_API_KEY="meta-fixture-key";
+    fixture.state.settings().agentRuntimeInstances[0].auth="api-key";
     await manager.snapshot();
-    assert.equal(await count(),4,"a profile saved with other approved names");
+    assert.equal(await count(),4,"a profile saved with another sign-in method");
   }finally{await fixture.close()}
   const signedOut=await museFixture("trebell-muse-listings-signed-out-",{models:false});
   try{
@@ -430,11 +435,13 @@ test("a Muse Code thread runs on Muse Code: the turn takes the composer's Thinki
   }finally{await relay.close()}
 });
 
-test("Trebell's own META_API_KEY reaches the hosts of a Muse Code thread and of its model list only when the profile approves it",{timeout:90_000},async()=>{
+test("a META_API_KEY reaches the hosts of a Muse Code thread and of its model list only when the profile is set to its API key",{timeout:90_000},async()=>{
   for(const approved of [false,true]){
     const relay=await museRelay(approved?"trebell-muse-key-approved-":"trebell-muse-key-",{env:{META_API_KEY:"meta-key-in-trebells-env"}});
     try{
-      if(approved)relay.state.settings().agentRuntimeInstances[0].approvedEnvironmentKeys=["META_API_KEY"];
+      // An approved name is no way in: only the profile's API key choice is.
+      relay.state.settings().agentRuntimeInstances[0].approvedEnvironmentKeys=["META_API_KEY"];
+      if(approved)relay.state.settings().agentRuntimeInstances[0].auth="api-key";
       const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
       await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello Muse"}]});
       await relay.completed(thread.id,1);

@@ -41,7 +41,7 @@ Public benchmark work compares Trebell Native against mature harnesses using the
 - **Browser and desktop verification** with Playwright-backed browser workflows, screenshots, runtime checks, and evidence-aware verification.
 - **MCP, skills, plugins, and lazy tool exposure** so specialized capabilities do not have to inflate every prompt.
 - **Durable context and recovery** through persisted thread state, event history, checkpoints, verification records, and bounded recovery flows.
-- **Official provider support** for OpenAI, Anthropic, and Google Gemini, plus the AgentRouter, JustWorker.icu, HCNSec.cn, and VyceAi compatible routes, each used with your own API key.
+- **Official provider support** for OpenAI, Anthropic, Google Gemini, xAI, and the Meta Model API, plus the AgentRouter, JustWorker.icu, HCNSec.cn, and VyceAi compatible routes, each used with your own API key.
 
 ## What makes it different
 
@@ -133,7 +133,16 @@ npm run ui:dev
 
 ### Model provider
 
-Trebell Native calls the model provider you select with your own API key: OpenAI (the default), Anthropic, Google Gemini, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi. Every provider needs a key, so add one in **Settings → Agents & models** before the first Native turn (the OpenAI provider also reads `OPENAI_API_KEY` from the environment). Codex, Claude Code, OpenCode, and the other runtimes keep using their own accounts and configuration.
+Trebell Native calls the model provider you select with your own API key: OpenAI (the default), Anthropic, Google Gemini, xAI, the Meta Model API, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi. Every provider needs a key, so add one in **Settings → Agents & models** before the first Native turn (without one, each provider reads its own environment variable, such as `OPENAI_API_KEY`, `XAI_API_KEY` or `META_API_KEY`).
+
+### How each harness signs in
+
+Trebell Native always runs on API keys, as above. Every other harness runs as its own official CLI or SDK, and you choose in **Settings → Agents & models**, on the harness or on each of its runtime profiles, how it signs in:
+
+- **Sign in** (the default): the harness's own login in its own home (`codex login`, `claude auth login`, `grok login`, `opencode auth login`, `muse login`, or Antigravity's own sign-in, which its row's **Sign in** runs). Trebell never reads or copies the credentials a harness keeps for it.
+- **API key**: the harness runs on its vendor's key from the same store the Model provider card uses (Claude Code on the Anthropic key, Codex on the OpenAI key, Muse Code on the Meta Model API key, Grok Build on the xAI key, Antigravity on the Google Gemini key, OpenCode on each saved key of a provider it supports). The row names the key and lets you add, replace or remove it there, in that one store, so for Trebell Native too; with none saved, the provider's environment variable counts (the row names that variable, and a key saved there replaces it for Trebell Native too), and with neither the row says the key is missing and the harness does not start. A harness runs on an API key on this machine only: in a WSL or SSH environment it is refused, as Trebell never sends a saved key to another machine; set it to Sign in to use its own login there. An OpenCode profile with a server URL of its own runs on that server's sign-in and cannot be set to API key.
+
+Cursor has no API key: it signs in with `cursor-agent login` only. A key in `.env`, in Trebell's environment or in a profile's approved variables never reaches a harness on Sign in, and never moves one to its API key: only the choice above does.
 
 ## Validation
 

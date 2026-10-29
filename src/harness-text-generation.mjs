@@ -7,6 +7,7 @@ import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "./acp-session-c
 import { withProbeAdvice } from "./agent-runtime-manager.mjs";
 import { claudeExplainedApiError, claudeRejectedLimit, claudeResultFailure, claudeSignedOutMessage, claudeUsageLimitHint, claudeUsageLimited } from "./claude-agent-session.mjs";
 import { hasClaudeManagedMcpConfig } from "./claude-managed-mcp.mjs";
+import { acpApiKeyMethod } from "./harness-auth.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexApprovalResponse, isCodexApprovalRequest } from "./codex-policy-adapter.mjs";
 import { museApprovalChoices, museApprovalToolCall } from "./muse-agent-session.mjs";
@@ -233,7 +234,7 @@ function refuseOpenCodeAsks({client,v2Client,directory,sessionId}){
 async function openCode2Text(ctx){
   const {runtimeManager,instance,environmentId}=ctx,cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx),chunks=[];
   const session=new OpenCode2AgentSession({
-    command:runtimeManager.executable(instance,{environmentId}),cwd,env:runtimeManager.childEnv(instance),serverUrl:instance.serverUrl||null,
+    command:runtimeManager.executable(instance,{environmentId}),cwd,env:runtimeManager.childEnv(instance,{version:ctx.runtimeStatus?.version||null}),serverUrl:instance.serverUrl||null,
     version:ctx.runtimeStatus?.version||"",permissionMode:"read-only",repositoryMcp:null,
     onUpdate:event=>{const update=event?.update||{};if(update.sessionUpdate==="agent_message_chunk"&&update.content?.type==="text")chunks.push(String(update.content.text||""))},
     onPermission:async()=>"decline",
@@ -258,7 +259,7 @@ async function openCodeText(ctx){
   // code would run as the user and see the diff). A profile's own server URL keeps the repository as its directory: Trebell does not own
   // that server's working folder, and a local temp path may not exist on its host.
   const createClient=ctx.deps.openCodeClient||(await loadOpenCodeSdk()).createOpencodeClient,createV2Client=ctx.deps.openCodeV2Client||(await loadOpenCodeV2Sdk()).createOpencodeClient;
-  const cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx),env=runtimeManager.childEnv(instance);
+  const cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx),env=runtimeManager.childEnv(instance,{version:ctx.runtimeStatus?.version||null});
   const server=await (ctx.deps.openCodeServer||startOpenCodeServer)({command:runtimeManager.executable(instance,{environmentId}),cwd,env,serverUrl:instance.serverUrl||null});
   ctx.defer(()=>server?.close?.());ctx.check();
   // A server Trebell started with the profile's OPENCODE_SERVER_PASSWORD answers only its clients that send it (startOpenCodeServer).
@@ -324,6 +325,14 @@ async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=f
   // Cursor lists its base model ids (the ids in Trebell's model list) only to a client with the parameterized model picker.
   const capabilities={fs:{readTextFile:false,writeTextFile:false},terminal:false,...(instance.kind==="cursor"?{_meta:{parameterizedModelPicker:true}}:{})};
   const initialized=await client.initialize({version:ctx.version,capabilities,timeoutMs:ctx.remaining()});ctx.check();
+  // A Grok on its API key signs in with its key method before the session, as a chat of it does (acpApiKeyMethod): a login it
+  // cached itself never writes the Git text.
+  const keyMethod=acpApiKeyMethod({runtime:instance.kind,authMethod:runtimeManager.authMethod?.(instance),env,initializeResult:initialized});
+  if(keyMethod){
+    try{await client.authenticate(keyMethod,{timeoutMs:ctx.remaining()})}
+    catch(failure){throw new Error(`${ctx.name} could not sign in with '${keyMethod}': ${failure?.message||failure}`)}
+    ctx.check();
+  }
   deleteViaAcp=Boolean(deleteSession&&initialized?.agentCapabilities?.sessionCapabilities?.delete);
   let setup=await client.createSession({cwd,mcpServers:[]});
   sessionId=String(setup?.sessionId||"")||null;if(!sessionId)throw new Error(`${ctx.name} did not create the Git text session`);ctx.check();
@@ -364,7 +373,7 @@ async function museText(ctx){
   const catalog=runtimeManager.museModelCatalog?.(instance)||null,listed=Array.isArray(catalog?.models)?catalog.models:[];
   const model=ctx.models.find(id=>listed.includes(id))||catalog?.preferred||null;
   const reasoningEffort=resolveMuseReasoningEffort((Array.isArray(catalog?.metadata)?catalog.metadata:[]).find(row=>row?.id===model)||null,"low");
-  const host=(ctx.deps.museHost||(options=>new MuseHost(options)))({command:runtimeManager.executable(instance,{environmentId}),args:museServeArgs("read-only"),cwd,env:runtimeManager.childEnv(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys||[]});
+  const host=(ctx.deps.museHost||(options=>new MuseHost(options)))({command:runtimeManager.executable(instance,{environmentId}),args:museServeArgs("read-only"),cwd,env:runtimeManager.childEnv(instance),authMethod:runtimeManager.authMethod?.(instance)||"sign-in"});
   ctx.defer(()=>host.close());
   await host.start({version:ctx.version,requestedCapabilities:[]});ctx.check();
   const connection=host.connection,sessionId=connection.mintCommandId(),turnId=connection.mintCommandId(),replies=new Map(),answered=new Set();
@@ -449,6 +458,9 @@ export async function generateTextWithHarness({runtimeManager,instance=null,prom
       const status=await runtimeManager.probe(target,{environmentId});context.runtimeStatus=status;check();
       if(!status?.available)throw Object.assign(new Error(status?.message||`${name} is unavailable`),{code:"HARNESS_UNAVAILABLE"});
     }
+    // A profile on an API key writes Git text only with its key, whatever status was kept from before the key went (keyRefusal).
+    const keyRefused=runtimeManager?.keyRefusal?.(target,environmentId);
+    if(keyRefused)throw Object.assign(new Error(keyRefused.message),{code:"HARNESS_UNAVAILABLE"});
     return adapter(context);
   })();
   running.catch(()=>{});

@@ -9,9 +9,10 @@
 //   internal quota endpoints as Antigravity's own client (aidev_client), the use Antigravity's terms (section 6) name.
 // Cursor's usage read went out as the Cursor CLI (x-cursor-client-type: cli) too. The scan fails on any of them and names the file
 // and line it found.
-// It does not cover every stored sign-in: the Cursor and Grok usage meters (src/agent-usage-limits.mjs) still read those CLIs' stored
-// login tokens and send them to the CLIs' own services, by the plan's decision (T3 does the same), and the OpenCode Go meter reads the
-// API key kept in OpenCode's auth.json. Whether they go on doing so is the owner's decision, still open.
+// The owner's rule since 2026-10-28 covers every harness: Trebell never reads or copies the credentials a harness keeps for its own
+// sign-in. So the scan also fails on code that names Cursor's, Grok's or OpenCode's stored login (their auth.json) or reads the
+// sign-in tokens they take from the environment (CURSOR_AUTH_TOKEN, GROK_AUTH, OPENCODE_AUTH_CONTENT): their usage meters read
+// none of it (src/agent-usage-limits.mjs).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
@@ -31,6 +32,8 @@ const RULES=[
   [/\boauth-20\d\d-\d\d-\d\d\b/,"sends Anthropic's OAuth beta flag, which only a Claude.ai login carries"],
   [/x-cursor-client-type/i,"poses as the Cursor CLI (x-cursor-client-type)"],
   [/aidev_client/i,"poses as Antigravity's own client (aidev_client)"],
+  [/(?:cursor|grok|opencode)[^\n]{0,80}auth\.json|auth\.json[^\n]{0,80}(?:cursor|grok|opencode)/i,"reads Cursor's, Grok's or OpenCode's stored login (auth.json)"],
+  [/(?:\benv|\benvironment|process\.env)\s*\??\.\s*(?:GROK_AUTH|OPENCODE_AUTH_CONTENT|CURSOR_AUTH_TOKEN)\b|\[\s*["'](?:GROK_AUTH|OPENCODE_AUTH_CONTENT|CURSOR_AUTH_TOKEN)["']\s*\]/,"reads a harness's sign-in token from the environment (CURSOR_AUTH_TOKEN, GROK_AUTH, OPENCODE_AUTH_CONTENT)"],
 ];
 // Calls that only build a path, and the one call that may take Antigravity's token file: access(), which checks that it exists.
 const PATH_BUILDERS=new Set(["join","resolve","joinPath","path.join","path.resolve","posix.join","win32.join"]);

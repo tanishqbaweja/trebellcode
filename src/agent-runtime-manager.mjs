@@ -1,6 +1,6 @@
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { access, mkdtemp, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, posix, resolve, win32 } from "node:path";
 import spawn from "cross-spawn";
@@ -8,10 +8,12 @@ import { codexBin, codexHome, trebellHome } from "./paths.mjs";
 import { prepareCodexHome, resolveCodexHomeLayout } from "./codex-home-layout.mjs";
 import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
 import { sharedRuntimeCapabilities } from "./runtime-capabilities.mjs";
-import { withoutSecretEnvironment } from "./secret-redactor.mjs";
-import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
+import { redactSecretText, withoutSecretEnvironment } from "./secret-redactor.mjs";
+import { buildRuntimeEnvironment, isHarnessCredentialName, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
+import { HARNESS_API_KEY, HARNESS_KEY_VARIABLES, HARNESS_SIGN_IN, harnessApiKeyProfileRefusal, harnessAuthMethod, harnessKeyEnvironment, harnessKeyMissingMessage, harnessRemoteKeyMessage, harnessTakesApiKey, normalizeHarnessAuthMethod } from "./harness-auth.mjs";
+import { MODEL_PROVIDERS, ProviderManager } from "./provider-manager.mjs";
 import { installAntigravityRuntime, readAntigravityInstall } from "./antigravity-runtime-installer.mjs";
-import { afterAntigravitySignIn, ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_KEY_NEEDED, ANTIGRAVITY_KEY_SAVED, antigravityApiKey, antigravityEnvironment, antigravityHome, antigravityIpv6Failure } from "./antigravity-auth.mjs";
+import { afterAntigravitySignIn, ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_KEY_READY, ANTIGRAVITY_SIGN_IN_NEEDED, ANTIGRAVITY_SIGNED_IN, antigravityEnvironment, antigravityHome, antigravityIpv6Failure, antigravitySignInState } from "./antigravity-auth.mjs";
 import { discoverOpenCode2ModelCatalog, discoverOpenCodeModelCatalog } from "./opencode-agent-session.mjs";
 import { resolveWindowsCommandShim, windowsCommandShimTarget } from "./windows-command-shim.mjs";
 import { harnessInstallOwner, manualUpdateRefusal, manualUpdateText, newestListed, npmInstallArgs, npmRecordedVersion, registryRelease, shownCommand } from "./harness-install-plan.mjs";
@@ -359,6 +361,37 @@ async function run(command,args=[],{env=process.env,cwd=process.cwd(),timeoutMs=
   });
 }
 
+// The home of Trebell's own a Codex profile on an API key signs in to (AgentRuntimeManager.codexHomeConfig), one per profile.
+export function codexApiKeyHome(env,instance){return join(trebellHome(env),"codex-api-key-homes",String(instance?.id||"codex-default").replace(/[^A-Za-z0-9._-]/g,"_"))}
+// The database of Trebell's own an OpenCode 2.x profile on its API keys runs on (OPENCODE_DB), one per profile. OpenCode 2.x keeps
+// the sign-ins `opencode auth login` makes in its database, ahead of a key in its environment, and reads no OPENCODE_AUTH_CONTENT;
+// a new database holds none of them (2.2.1 reads its sign-ins from its database only, takes OPENCODE_DB as that database's path, runs
+// its import of 1.x's data only on a database that holds 1.x's sessions, and `opencode auth import` only when the person runs it). Its
+// sessions live there too, so a thread whose session is in the other database continues in a new one, its earlier messages handed over.
+export function openCodeApiKeyDatabase(env,instance){return join(trebellHome(env),"opencode-api-key-homes",String(instance?.id||"opencode-default").replace(/[^A-Za-z0-9._-]/g,"_"),"opencode.db")}
+// What npm runs with for an install or update (and the harness package's own install script with it): Trebell's environment
+// without any variable that holds a provider's key or a sign-in (runtime-environment.mjs isHarnessCredentialName), so no API key in
+// it reaches a harness's install script; npm keeps its own settings, the proxy and the toolchain.
+// npm's own registry sign-in stays (an .npmrc that names ${NPM_TOKEN} fails without it): its npm_config_* settings, NPM_TOKEN and
+// NODE_AUTH_TOKEN, none a model provider's key or a harness's sign-in.
+const NPM_REGISTRY_NAME=/^(?:npm_config_|NPM_TOKEN$|NODE_AUTH_TOKEN$)/i;
+export function installEnvironment(parent=process.env){
+  const env={};for(const [name,value] of Object.entries(parent||{}))if(value!=null&&(!isHarnessCredentialName(name)||NPM_REGISTRY_NAME.test(name)))env[name]=value;
+  return env;
+}
+// A short command whose stdin gets input (a key a CLI reads there), then ends: its exit, as run() answers it.
+async function runWithInput(command,args=[],{env=process.env,cwd=process.cwd(),input="",timeoutMs=30_000}={}){
+  return await new Promise(resolve=>{
+    let stdout="",stderr="",settled=false,child;
+    const finish=(code,error=null)=>{if(settled)return;settled=true;clearTimeout(timer);resolve({ok:code===0,code,error:error?.message||null,stdout,stderr})};
+    try{child=spawn(command,args,{cwd,env,windowsHide:true,stdio:["pipe","pipe","pipe"]})}catch(error){return resolve({ok:false,code:null,error:error.message,stdout:"",stderr:""})}
+    child.stdout?.on("data",chunk=>{stdout=(stdout+chunk).slice(-64_000)});child.stderr?.on("data",chunk=>{stderr=(stderr+chunk).slice(-64_000)});
+    child.once("error",error=>finish(null,error));child.once("exit",code=>finish(code));
+    const timer=setTimeout(()=>{void terminateProcessTree(child).finally(()=>finish(null,new Error("command timed out")))},timeoutMs);
+    child.stdin?.on("error",()=>{});child.stdin?.end(input);
+  });
+}
+
 function defaultInstance(kind){return {id:`${kind}-default`,kind,displayName:RUNTIMES[kind].name,enabled:true,binaryPath:null,homePath:null,shadowHomePath:null,serverUrl:null,autoCompactWindow:null,environment:{}}}
 
 export function runtimeExecutableCandidates(kind,{env=process.env,platform=process.platform}={}){
@@ -402,7 +435,45 @@ export function runtimeExecutableCandidates(kind,{env=process.env,platform=proce
 }
 
 export class AgentRuntimeManager{
-  constructor({state,env=process.env,environments=null,platform=process.platform,arch=process.arch,fetchImpl=globalThis.fetch,claudeCapabilitiesCache=claudeCapabilities,now=Date.now,runFn=run}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.arch=arch;this.fetchImpl=fetchImpl;this.claudeCapabilitiesCache=claudeCapabilitiesCache;this.now=now;this.runFn=runFn}
+  // providers: the ProviderManager whose keys a harness on API key runs on (the server's own, so a key saved in Settings counts at
+  // once); without one the manager reads the same store and environment through a ProviderManager of its own when a key is asked for.
+  constructor({state,env=process.env,environments=null,platform=process.platform,arch=process.arch,fetchImpl=globalThis.fetch,claudeCapabilitiesCache=claudeCapabilities,now=Date.now,runFn=run,providers=null}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.arch=arch;this.fetchImpl=fetchImpl;this.claudeCapabilitiesCache=claudeCapabilitiesCache;this.now=now;this.runFn=runFn;this.#providers=providers}
+  #providers=null;
+  // A provider's key for a harness on API key (ProviderManager.keyFor): the key saved in Settings, else Native's environment variable.
+  providerKey(providerId){
+    if(!this.#providers)this.#providers=new ProviderManager({env:this.env,fetchFn:this.fetchImpl});
+    return this.#providers.keyFor(providerId);
+  }
+  // How a profile signs in (harness-auth.mjs): "api-key" only where the person set it, else "sign-in".
+  authMethod(instance){return harnessAuthMethod(instance)}
+  // The keys a profile on API key starts with, its vendor's only; none on Sign in.
+  harnessKeys(instance){return harnessAuthMethod(instance)===HARNESS_API_KEY?harnessKeyEnvironment(instance.kind,id=>this.providerKey(id)):{env:{},providers:[],missing:[],ready:false}}
+  // Why a profile set to an API key cannot start now, or null: {message, keyMissing}. It runs in a WSL or SSH environment
+  // (remoteKeyRefusal), it is an OpenCode at a server URL of its own (harnessApiKeyProfileRefusal), or Trebell has no key of its
+  // vendor. Every start asks it (the relay's sessions, Git text), whatever a status kept from before says, so a harness whose key was
+  // removed since never starts on a login of its own instead.
+  keyRefusal(instance,environmentId=undefined){
+    if(!harnessTakesApiKey(instance?.kind)||harnessAuthMethod(instance)!==HARNESS_API_KEY)return null;
+    const refused=this.remoteKeyRefusal(instance,environmentId)||harnessApiKeyProfileRefusal(instance);if(refused)return {message:refused,keyMissing:false};
+    if(this.harnessKeys(instance).ready)return null;
+    return {message:harnessKeyMissingMessage(RUNTIMES[instance.kind].name,Object.keys(HARNESS_KEY_VARIABLES[instance.kind]).map(id=>MODEL_PROVIDERS[id]?.name||id)),keyMissing:true};
+  }
+  // What a reading kept for a profile depends on in how it signs in: its method, and on an API key a fingerprint of the keys it runs on
+  // (never a key), so a switch, or a key saved or removed, reads the harness again (its OpenCode catalog, its ACP model list).
+  #signInMark(instance){
+    if(harnessAuthMethod(instance)!==HARNESS_API_KEY)return HARNESS_SIGN_IN;
+    const env=this.harnessKeys(instance).env;
+    return HARNESS_API_KEY+":"+createHash("sha256").update(JSON.stringify(Object.keys(env).sort().map(name=>[name,env[name]]))).digest("hex").slice(0,16);
+  }
+  // What Settings shows of a profile's method: the providers whose key it runs on, each with whether Trebell has one (never the key).
+  authSummary(instance){
+    const kind=instance?.kind;if(!harnessTakesApiKey(kind))return null;
+    const method=harnessAuthMethod(instance),keys=Object.entries(HARNESS_KEY_VARIABLES[kind]).map(([provider,variable])=>{
+      let found=null;try{found=this.providerKey(provider)}catch{}
+      return {provider,name:MODEL_PROVIDERS[provider]?.name||provider,variable,saved:Boolean(found),source:found?.source||null,from:found?.variable||null};
+    });
+    return {method,keys};
+  }
   definitions(){return Object.values(RUNTIMES).map(item=>({...item,capabilities:runtimeCapabilities(item.id)}))}
   capabilities(instanceOrKind=this.activeInstance()){
     const kind=typeof instanceOrKind==="string"
@@ -468,8 +539,19 @@ export class AgentRuntimeManager{
     const id=String(input.id||`${kind}-${Date.now()}`);const index=list.findIndex(item=>item.id===id);
     if(RUNTIMES[kind]?.multipleInstances===false&&id!==`${kind}-default`)throw new Error(`${RUNTIMES[kind].name} is built into Trebell Code and does not support additional runtime profiles`);
     const item={...(index>=0?list[index]:{}),...input,id,kind,displayName:String(input.displayName||RUNTIMES[kind].name),enabled:input.enabled!==false};
+    // What the harness list adds to a profile it shows is no setting of it.
+    delete item.signIn;delete item.environmentKeys;
     item.environment=withoutSecretEnvironment(item.environment);
-    item.approvedEnvironmentKeys=normalizeApprovedEnvironmentKeys(input.approvedEnvironmentKeys??item.approvedEnvironmentKeys);
+    // A harness signs in with its own login, or runs on its vendor's key when its profile is set to an API key: an approved name
+    // never hands it a provider's key or a sign-in token (Trebell Native keeps its approvals, such as its MCP servers' bearer names).
+    const approved=normalizeApprovedEnvironmentKeys(input.approvedEnvironmentKeys??item.approvedEnvironmentKeys),refused=kind==="native"?[]:approved.filter(name=>isHarnessCredentialName(name));
+    if(refused.length)throw new Error(`${refused.join(", ")} ${refused.length===1?"holds":"hold"} an API key or sign-in, which a profile never passes to ${RUNTIMES[kind].name}. ${harnessTakesApiKey(kind)?`To run ${RUNTIMES[kind].name} on an API key, set it to API key under ${RUNTIMES[kind].name} in Agents & models, which uses the key saved for its provider.`:`${RUNTIMES[kind].name} signs in with its own login.`} Keys for Trebell Native go in its Model provider card.`);
+    item.approvedEnvironmentKeys=approved;
+    // How it signs in: the profile's choice, kept as saved when a save does not name it (Sign in when it never chose).
+    const method=normalizeHarnessAuthMethod(kind,Object.hasOwn(input,"auth")?input.auth:item.auth);
+    if(method)item.auth=method;else delete item.auth;
+    // An OpenCode at a server URL of its own has no launch of Trebell's to hand a key to.
+    const keyRefused=item.auth===HARNESS_API_KEY?harnessApiKeyProfileRefusal(item):null;if(keyRefused)throw new Error(keyRefused);
     if(kind==="claude"){
       const raw=input.autoCompactWindow;
       if(raw==null||String(raw).trim()==="")item.autoCompactWindow=null;
@@ -489,7 +571,23 @@ export class AgentRuntimeManager{
     const patch={agentRuntimeInstances:list};
     let resetTo=null;
     if(settings.agentRuntimeInstanceId===id){resetTo=`${target.kind}-default`;patch.agentRuntimeInstanceId=resetTo}
-    this.state.updateSettings(patch);return {ok:true,resetTo,kind:target.kind};
+    // instance: the profile as it was, whose Codex home of Trebell's own for an API key the server signs out (codexApiKeyLogout).
+    this.state.updateSettings(patch);return {ok:true,resetTo,kind:target.kind,instance:target};
+  }
+  // Sets how one profile signs in (Settings' choice), changing nothing else of it: its own sign-in, or its vendor's API key.
+  // Answers the profile and whether the method changed.
+  setAuthMethod(instanceId,method){
+    const target=this.instances().find(item=>item.id===String(instanceId||""));
+    if(!target)throw new Error("Runtime profile was not found");
+    const next=normalizeHarnessAuthMethod(target.kind,method)||"sign-in",changed=harnessAuthMethod(target)!==next;
+    const keyRefused=next===HARNESS_API_KEY?harnessApiKeyProfileRefusal(target):null;if(keyRefused)throw new Error(keyRefused);
+    const settings=this.state.settings(),list=Array.isArray(settings.agentRuntimeInstances)?[...settings.agentRuntimeInstances]:[];
+    const index=list.findIndex(item=>item.id===target.id),item={...(index>=0?list[index]:target),auth:next};
+    if(index>=0)list[index]=item;else list.push(item);
+    this.state.updateSettings({agentRuntimeInstances:list});
+    // The Codex account read kept for the profile is about the home it read: the next status reads it again.
+    this.#codexAccounts.clear();
+    return {instance:item,changed};
   }
   executable(instance,{environmentId=undefined}={}){
     if(instance?.binaryPath?.trim())return resolveWindowsCommandShim(instance.binaryPath.trim(),{platform:this.platform});
@@ -509,20 +607,96 @@ export class AgentRuntimeManager{
     }
     return def?.command||null;
   }
-  childEnv(instance){
-    const env=buildRuntimeEnvironment(instance?.kind,{parent:this.env,approved:instance?.approvedEnvironmentKeys,overrides:instance?.environment,platform:this.platform});
-    if(instance?.kind==="codex"){
-      const layout=resolveCodexHomeLayout({homePath:instance?.homePath,shadowHomePath:instance?.shadowHomePath,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
+  // The homes a Codex profile runs in on this machine (codex-home-layout.mjs). One on an API key runs in a home of Trebell's own over
+  // its shared home (an auth overlay, as a shadow home is): Codex signs in there with the key (codexApiKeyLogin), and the sign-in the
+  // person made with codex login in the profile's own home stays as it is for when the profile is set back to Sign in.
+  codexHomeConfig(instance){
+    const config={homePath:String(instance?.homePath||"").trim()||null,shadowHomePath:String(instance?.shadowHomePath||"").trim()||null,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")};
+    return harnessAuthMethod(instance)===HARNESS_API_KEY?{...config,shadowHomePath:codexApiKeyHome(this.env,instance)}:config;
+  }
+  #codexKeyLogins=new Map();
+  // Signs a local Codex profile on an API key in to its own home with the OpenAI key, as Codex's CLI takes one (`codex login
+  // --with-api-key`, the key on its stdin, never in its arguments or a file Trebell writes): again only when the key or the home
+  // changed. With no key, a sign-in an earlier key left there goes (`codex logout`), so Codex never runs on a key Trebell no longer has,
+  // and Codex does not start at all (its app-server, a turn's or the model list's, fails with the status's words): no turn runs on a
+  // half sign-in.
+  async codexApiKeyLogin(instance,{command=this.executable(instance)}={}){
+    if(instance?.kind!=="codex"||harnessAuthMethod(instance)!==HARNESS_API_KEY)return {ran:false};
+    const env=this.childEnv(instance),home=env.CODEX_HOME,key=this.harnessKeys(instance).env.OPENAI_API_KEY||null;
+    await prepareCodexHome(this.codexHomeConfig(instance));
+    const mark=key?createHash("sha256").update(home+"\0"+key).digest("hex"):"none:"+home;
+    let ran=false;
+    if(this.#codexKeyLogins.get(home)!==mark){
+      const result=await runWithInput(command,key?["login","--with-api-key"]:["logout"],{env,input:key?key+"\n":"",timeoutMs:30_000});
+      if(key&&!result.ok)throw new Error(("Codex could not sign in with the OpenAI API key: "+redactSecretText(String(result.stderr||result.stdout||result.error||"no answer"),{environment:{OPENAI_API_KEY:key}}).trim()).slice(0,500));
+      this.#codexKeyLogins.set(home,mark);this.#codexAccounts.clear();ran=true;
+    }
+    if(!key)throw Object.assign(new Error(harnessKeyMissingMessage(RUNTIMES.codex.name,[MODEL_PROVIDERS.openai.name])),{code:"HARNESS_KEY_MISSING"});
+    return {ran};
+  }
+  // Signs a Codex profile's home of Trebell's own for an API key out (`codex logout`), so no copy of a key stays there once the
+  // profile is set back to Sign in or removed, or the OpenAI key is removed or replaced; the next start on an API key signs in again.
+  // Only a home that is there, best effort, never thrown: a Codex that could not run (its binary gone) would leave its sign-in file
+  // there, so that copy of the key goes all the same, unread (the home is Trebell's own, and only Trebell's `codex login
+  // --with-api-key` writes it). home: another home of Trebell's own for a key, a removed profile's (codexApiKeyLogoutAll).
+  async codexApiKeyLogout(instance,{command=this.executable(instance),home=codexApiKeyHome(this.env,instance)}={}){
+    if(instance?.kind!=="codex")return {ran:false};
+    if(!existsSync(home))return {ran:false};
+    const env={...this.childEnv({...instance,auth:"sign-in"},{key:false}),CODEX_HOME:home};
+    const result=await runWithInput(command,["logout"],{env,input:"",timeoutMs:30_000}).catch(error=>({ok:false,error:error?.message||String(error)}));
+    await rm(join(home,"auth.json"),{force:true}).catch(()=>{});
+    this.#codexKeyLogins.delete(home);this.#codexAccounts.clear();
+    return {ran:true,ok:Boolean(result?.ok)};
+  }
+  // The OpenAI key removed or replaced in Trebell: every Codex home of Trebell's own for a key signs out, a listed profile's with its own
+  // Codex and one a removed profile left with the default Codex, so no copy of the key, or of the one before, stays in any of them.
+  async codexApiKeyLogoutAll(){
+    const root=join(trebellHome(this.env),"codex-api-key-homes");let names=[];
+    try{names=readdirSync(root,{withFileTypes:true}).filter(entry=>entry.isDirectory()).map(entry=>entry.name)}catch{}
+    const listed=new Map(this.instances().filter(item=>item.kind==="codex").map(item=>[resolve(codexApiKeyHome(this.env,item)),item]));
+    let ran=0;
+    for(const name of names){const home=join(root,name),instance=listed.get(resolve(home))||{...defaultInstance("codex"),id:name};if((await this.codexApiKeyLogout(instance,{home})).ran)ran++}
+    return {ran};
+  }
+  // Why a profile set to an API key cannot run in a WSL or SSH environment (environmentId), or null: Trebell sends no saved key to a
+  // host (it would show in the host's process list), and a key the host's shell holds never stands in for it, so there the harness
+  // is refused until the person sets it to Sign in, which runs it on its own login there.
+  remoteKeyRefusal(instance,environmentId=undefined){
+    if(harnessAuthMethod(instance)!==HARNESS_API_KEY||!this.processSpawner(instance,environmentId))return null;
+    return harnessRemoteKeyMessage(RUNTIMES[instance.kind]?.name||instance.kind,instance.kind);
+  }
+  // The environment a harness's processes run with: the baseline, its own non-secret names and the profile's approved names and
+  // variables (runtime-environment.mjs), with no credential of any kind (a last guard, whatever a profile saved before), plus, only
+  // for a profile set to an API key, its own vendor's key in the variable its CLI reads. key false leaves that key out too (an
+  // update or install, which needs none). version: the version of the OpenCode it starts (its status's), which chooses how OpenCode
+  // on its API keys leaves its stored sign-ins out.
+  childEnv(instance,{key=true,version=null}={}){
+    const kind=instance?.kind,env=buildRuntimeEnvironment(kind,{parent:this.env,approved:instance?.approvedEnvironmentKeys,overrides:instance?.environment,platform:this.platform});
+    if(kind!=="native")for(const name of Object.keys(env))if(isHarnessCredentialName(name)&&name.toUpperCase()!=="OPENCODE_SERVER_PASSWORD")delete env[name];
+    const keys=key&&kind!=="native"?this.harnessKeys(instance).env:{};
+    if(kind==="codex"){
+      const layout=resolveCodexHomeLayout(this.codexHomeConfig(instance));
       if(layout.effectiveHomePath)env.CODEX_HOME=layout.effectiveHomePath;
     }
-    if(instance?.kind==="claude"&&instance?.homePath)env.CLAUDE_CONFIG_DIR=instance.homePath;
+    if(kind==="claude"&&instance?.homePath)env.CLAUDE_CONFIG_DIR=instance.homePath;
     // Meta's launcher would otherwise update Muse Code in the foreground, or start its updater, each time Trebell runs it (T3 Code
     // sets it too); a profile's own value wins.
-    if(instance?.kind==="muse"&&env.MUSE_NO_AUTO_UPDATE==null)env.MUSE_NO_AUTO_UPDATE="1";
-    // Antigravity runs in Trebell's home for it, with the Gemini API key saved for it and no Google credential of anyone else's.
-    if(instance?.kind==="antigravity")return antigravityEnvironment(env,{home:antigravityHome(this.env),apiKey:antigravityApiKey(this.env)});
-    return env;
+    if(kind==="muse"&&env.MUSE_NO_AUTO_UPDATE==null)env.MUSE_NO_AUTO_UPDATE="1";
+    // Antigravity runs in Trebell's home for it, with no Google credential of anyone else's, and the Gemini key only on an API key.
+    if(kind==="antigravity")return antigravityEnvironment(env,{home:antigravityHome(this.env),apiKey:keys.GEMINI_API_KEY||null});
+    // OpenCode on its API keys runs with none of the sign-ins `opencode auth login` keeps, so only the keys the person chose serve it:
+    // OpenCode 1.x on an empty set of them (OPENCODE_AUTH_CONTENT, which it reads in place of the ones in its data home), OpenCode 2.x
+    // on a database of Trebell's own for the profile (openCodeApiKeyDatabase), and an OpenCode whose version is not given on both.
+    // Trebell never reads the person's sign-ins.
+    if(kind==="opencode"&&key&&harnessAuthMethod(instance)===HARNESS_API_KEY){
+      const said=String(version||""),line=/(?:^|\s)v?2\./i.test(said)?2:said.trim()?1:null,database=line===1?null:openCodeApiKeyDatabase(this.env,instance);
+      if(database)try{mkdirSync(dirname(database),{recursive:true})}catch{}
+      return {...env,...keys,...(line===2?{}:{OPENCODE_AUTH_CONTENT:"{}"}),...(database?{OPENCODE_DB:database}:{})};
+    }
+    return {...env,...keys};
   }
+  // The names a harness on a WSL or SSH host gets from the host's own shell: its non-secret names and approved names, never a key or
+  // sign-in token, whichever way its profile signs in (a profile on an API key runs on this machine only, remoteKeyRefusal).
   childEnvironmentKeys(instanceOrKind=this.activeInstance()){
     const instance=typeof instanceOrKind==="string"
       ?(this.instances().find(item=>item.id===instanceOrKind)||this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind)))
@@ -597,7 +771,8 @@ export class AgentRuntimeManager{
     // A local probe runs in the home the profile's app-server runs in (gui-server startAppServer): a shadow home is linked to
     // its shared home first, so Codex reads the profile's config there and never fills the shadow home with folders of its own
     // (its skills) where the shared home's links belong.
-    const home=spawner?Promise.resolve():prepareCodexHome({homePath:String(instance.homePath||"").trim()||null,shadowHomePath:String(instance.shadowHomePath||"").trim()||null,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
+    // A profile on an API key is signed in to its own home with the key first (codexApiKeyLogin).
+    const home=spawner?Promise.resolve():prepareCodexHome(this.codexHomeConfig(instance)).then(()=>this.codexApiKeyLogin(instance,{command}));
     const pending=home.then(()=>readCodexAccount({spawnAppServer,platform:this.platform})).then(result=>({result}),error=>({error:error?.message||String(error)}));
     this.#codexAccounts.set(key,{pending});
     const value=await pending;
@@ -612,7 +787,7 @@ export class AgentRuntimeManager{
       const result=await this.environments.executeArgv(profile.id,{command,args,cwd:cwd||profile.cwd||"",timeoutMs,maxOutput:4*1024*1024});
       return {ok:result.exitCode===0,code:result.exitCode,error:result.timedOut?"command timed out":null,stdout:result.stdout||"",stderr:result.stderr||""};
     }
-    return this.runFn(command,args,{env:env||this.env,cwd:cwd||process.cwd(),timeoutMs});
+    return this.runFn(command,args,{env:env||installEnvironment(this.env),cwd:cwd||process.cwd(),timeoutMs});
   }
   installable(kind){
     const runtime=normalizeAgentRuntime(kind);const packageName=INSTALLABLE_PACKAGES[runtime]||null;
@@ -684,7 +859,7 @@ export class AgentRuntimeManager{
       if(this.activeEnvironment(environmentId))throw new Error("Managed Antigravity ACP installation is currently available only on the local machine");
       const instance=this.instances().find(item=>item.kind==="antigravity"&&item.id==="antigravity-default")||defaultInstance("antigravity");
       // The new runtime's start check launches it with the profile's own environment, as its sessions are (its home and key aside).
-      const installed=await installAntigravityRuntime({env:this.env,fetchImpl:this.fetchImpl,platform:this.platform,arch:this.arch,launchEnv:this.childEnv(instance)});
+      const installed=await installAntigravityRuntime({env:this.env,fetchImpl:this.fetchImpl,platform:this.platform,arch:this.arch,launchEnv:this.childEnv(instance,{key:false})});
       const status=await this.probe(instance,{environmentId:null,fresh:true});
       return {ok:true,runtime:"antigravity",managed:"acp-registry",targetVersion:installed.version,status};
     }
@@ -782,14 +957,14 @@ export class AgentRuntimeManager{
     }
     // The harness's own updater runs as the profile runs it, Codex's with CODEX_HOME at the shared home whose standalone tree it keeps.
     const step=owner.method==="npm"?{command:"npm",args:npmInstallArgs(packageName,targetVersion,owner.prefix),pinned:true}
-      :{command:owner.binary,args:runtime==="opencode"?["upgrade",targetVersion]:owner.args,env:{...this.childEnv(instance),...(owner.env||{})},pinned:runtime==="opencode"};
+      :{command:owner.binary,args:runtime==="opencode"?["upgrade",targetVersion]:owner.args,env:{...this.childEnv(instance,{key:false}),...(owner.env||{})},pinned:runtime==="opencode"};
     return {instance,method:owner.method,binary:owner.real,installedVersion:installed,targetVersion,packageName,...(compatibility?{compatibility}:{}),...step,shown:shownCommand(step.command,step.args,remote?"linux":this.platform)};
   }
   // Muse Code's update (T3 museMaintenance), from installed, the version the profile's Muse Code answered: Meta's launcher, run with its
   // update on, synchronous and due, installs the newest release of its channel (read again now) before it answers --version, and the
   // version must then have moved. A Muse Code that Meta's launcher does not run is the person's to update.
   async #museUpdatePlan(instance,installed){
-    const launcher=this.#museLauncher(instance),env=this.childEnv(instance),channel=museChannel(env);
+    const launcher=this.#museLauncher(instance),env=this.childEnv(instance,{key:false}),channel=museChannel(env);
     if(!launcher.updates)throw new Error(museUpdateRefusal(launcher.real||RUNTIMES.muse.command));
     if(!MUSE_CHANNELS.includes(channel))throw new Error(`This Muse Code runs on the channel ${channel} (MUSE_CHANNEL), which Meta does not publish: Meta's launcher runs only on muse-stable or muse-canary. Nothing was installed.`);
     const targetVersion=await this.#latestRelease(museChannelUrl(channel),{fresh:true,read:()=>latestMuseRelease(this.fetchImpl,channel)});
@@ -921,11 +1096,11 @@ export class AgentRuntimeManager{
   // OpenCode again): a complete one for reuseMs, one that is not for incompleteMs. Readers at the same time share one read; a failed
   // read is not kept. read.entry is the read waited on: starting once the read starts its server, and up once that server is up.
   async #openCodeCatalog(instance,{version=null,reuseMs=OPENCODE_CATALOG_REUSE_MS,incompleteMs=reuseMs,read=null}={}){
-    const command=this.executable(instance),key=[instance.id,command,instance.serverUrl||"",version||"",JSON.stringify([normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys),instance.environment||{}])].join("|"),cached=this.#openCodeCatalogs.get(key);
+    const command=this.executable(instance),key=[instance.id,command,instance.serverUrl||"",version||"",this.#signInMark(instance),JSON.stringify([normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys),instance.environment||{}])].join("|"),cached=this.#openCodeCatalogs.get(key);
     if(cached?.pending){if(read)read.entry=cached;return await cached.pending}
     if(cached&&this.now()-cached.at<(cached.complete?reuseMs:incompleteMs))return cached.value;
     let isUp=()=>{};const entry={pending:null,starting:false,up:new Promise(resolve=>{isUp=resolve})};if(read)read.entry=entry;
-    const pending=entry.pending=Promise.resolve().then(()=>this.openCodeCatalogReader({version,command,cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null,
+    const pending=entry.pending=Promise.resolve().then(()=>this.openCodeCatalogReader({version,command,cwd:process.cwd(),env:this.childEnv(instance,{version}),serverUrl:instance.serverUrl||null,
       onServerStart:start=>{entry.starting=true;Promise.resolve(start).then(isUp,()=>{})}}));
     this.#openCodeCatalogs.set(key,entry);
     try{
@@ -989,10 +1164,11 @@ export class AgentRuntimeManager{
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="native")return this.#probeNow(instance,{environmentId});
     const key=this.#probeKey(instance,environmentId),owner=this.#probeOwner(instance,environmentId),cached=this.#probes.get(key);
+    // A profile on an API key whose key has gone since an answer was read is not available, whatever that answer said (#keyGate).
     if(!fresh&&cached?.pending){
-      const value=await cached.pending;if(value?.available||versionCheckOnly(value))return structuredClone(value);
-      const next=this.#probes.get(key);if(next?.pending&&next.pending!==cached.pending)return structuredClone(await next.pending);
-    }else if(!fresh&&cached&&this.now()-cached.at<PROBE_REUSE_MS&&binarySignature(cached.binary)===cached.signature)return structuredClone(cached.value);
+      const value=await cached.pending;if(value?.available||versionCheckOnly(value))return this.#keyGate(instance,structuredClone(value),environmentId);
+      const next=this.#probes.get(key);if(next?.pending&&next.pending!==cached.pending)return this.#keyGate(instance,structuredClone(await next.pending),environmentId);
+    }else if(!fresh&&cached&&this.now()-cached.at<PROBE_REUSE_MS&&binarySignature(cached.binary)===cached.signature)return this.#keyGate(instance,structuredClone(cached.value),environmentId);
     // A local binary replaced since (npm i -g, the harness's own updater) makes its version check due, so its answer is not kept
     // past that either. Read before the probe runs, so a binary replaced while it runs makes the next caller ask again.
     const binary=this.#binaryPaths(instance,environmentId),signature=binarySignature(binary);
@@ -1059,7 +1235,41 @@ export class AgentRuntimeManager{
     this.#unfinishedInstalls.set(instance.id,unfinishedInstall(instance.kind,result));
     return result;
   }
-  async #probeNow(instance,{environmentId=undefined,fresh=false,refresh=false,keepCatalog=false}={}){
+  // A status check, with how the profile signs in (authMethod) and, for one set to an API key that cannot run, why: Trebell has no key
+  // for it, or it is in a WSL or SSH environment, where a harness signs in with its own login (remoteKeyRefusal). No turn starts on a
+  // half sign-in.
+  async #probeNow(instance,options={}){
+    const value=await this.#probeHarness(instance,options);
+    if(!value||!harnessTakesApiKey(instance?.kind))return value;
+    return this.#keyGate(instance,{...value,authMethod:harnessAuthMethod(instance)},options.environmentId);
+  }
+  // An installed harness's status on an API key that cannot start now (keyRefusal) is unavailable and says why: one read now, and one
+  // read while it had its key and kept for PROBE_REUSE_MS (a key removed since, here or in another window).
+  #keyGate(instance,value,environmentId=undefined){
+    if(!value?.installed||harnessAuthMethod(instance)!==HARNESS_API_KEY)return value;
+    const refusal=this.keyRefusal(instance,environmentId);if(!refusal)return value;
+    return {...value,available:false,authenticated:false,account:null,...(refusal.keyMissing?{keyMissing:true}:{}),message:refusal.message};
+  }
+  // The status of an installed profile on an API key that cannot start now (keyRefusal), answered once its version check has: no
+  // sign-in check, account read or model-list host of the harness starts for it, as each would run on the person's own login
+  // (`claude auth status`, Codex's account read, OpenCode's catalog server, `muse serve`). #keyGate says why. null for any other.
+  #refusedAfterVersion(instance,environmentId,fields={}){
+    const refusal=this.keyRefusal(instance,environmentId);if(!refusal)return null;
+    const compatibility=runtimeCompatibility(instance.kind,fields.version);
+    return {id:instance.id,kind:instance.kind,name:RUNTIMES[instance.kind].name,available:false,installed:true,authenticated:false,managed:false,account:null,...fields,message:refusal.message,...(compatibility?{compatibility}:{})};
+  }
+  // Settings saved or removed a key these profiles run on: their kept statuses go (and the Codex account reads), so the next status
+  // asks each harness again on the key it has now.
+  forgetProbes(instanceIds=[]){
+    const ids=new Set([...instanceIds].map(String));if(!ids.size)return;
+    for(const [key,entry] of [...this.#probes]){
+      if(entry.pending||!entry.owner)continue;
+      let owner=null;try{owner=JSON.parse(entry.owner)}catch{}
+      if(Array.isArray(owner)&&ids.has(String(owner[2])))this.#probes.delete(key);
+    }
+    this.#codexAccounts.clear();
+  }
+  async #probeHarness(instance,{environmentId=undefined,fresh=false,refresh=false,keepCatalog=false}={}){
     const def=RUNTIMES[instance.kind];
     if(instance.kind==="native")return {id:instance.id,kind:"native",name:def.name,available:true,installed:true,authenticated:null,protocol:"native",managed:true,version:null,binary:null,message:"Built into Trebell Code"};
     if(instance.kind==="codex"){
@@ -1071,6 +1281,7 @@ export class AgentRuntimeManager{
         return {id:instance.id,kind:"codex",name:def.name,available:false,installed:!host&&!missing,authenticated:false,protocol:"codex",version:null,binary:this.executable(instance,{environmentId}),message:missing?"Codex CLI was not found. Install it (npm install -g @openai/codex), then sign in with codex login.":(checked.stderr||checked.error||"Codex CLI is unavailable").trim().slice(0,500)};
       }
       const version=failure?null:(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null;
+      const refused=this.#refusedAfterVersion(instance,environmentId,{protocol:"codex",version,binary:this.executable(instance,{environmentId})});if(refused)return refused;
       // Readiness is Codex's own account/read answer (T3 accountProbeStatus), so non-OpenAI model providers need no login.
       const probed=await this.#codexAccount(instance,environmentId);
       if(probed.error)return {id:instance.id,kind:"codex",name:def.name,available:false,installed:true,authenticated:null,protocol:"codex",version,binary:this.executable(instance,{environmentId}),message:("Codex app-server account check failed: "+probed.error).slice(0,500)};
@@ -1086,11 +1297,17 @@ export class AgentRuntimeManager{
         return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:true,companionInstalled,message:companionInstalled?"Antigravity desktop is installed. Install the ACP runtime to use Antigravity inside Trebell Code.":"Antigravity ACP runtime is not installed"};
       }
       const install=await readAntigravityInstall({env:this.env});
-      // Antigravity is ready once a Gemini API key is saved for it (Settings saves one only once Antigravity has signed in with
-      // it); whether Google still takes the key, a session finds out (authenticated null, as for a key a probe cannot check).
+      // Antigravity on an API key is ready once Trebell has a Google Gemini key (#probeNow says when it has none); whether Google
+      // takes it, a session finds out (authenticated null). On Sign in it is ready once its own sign-in is in its home: the method its
+      // settings.json names, and its token file there (never read). No status check starts it: each launch unpacks about 1 GB.
       if(install?.version&&!instance.binaryPath?.trim()){
-        const saved=Boolean(antigravityApiKey(this.env));
-        return {id:instance.id,kind:instance.kind,name:def.name,available:saved,installed:true,authenticated:saved?null:false,protocol:def.protocol,managed:true,version:String(install.version),binary:command,account:saved?{authMethod:ANTIGRAVITY_API_KEY_METHOD,label:"Gemini API key"}:null,message:saved?ANTIGRAVITY_KEY_SAVED:ANTIGRAVITY_KEY_NEEDED};
+        const base={id:instance.id,kind:instance.kind,name:def.name,installed:true,protocol:def.protocol,managed:true,version:String(install.version),binary:command};
+        // What the move of the old key form's key did that the person would not see (legacy-harness-key-migration.mjs) is said here,
+        // on its row, until the Gemini key or Antigravity's method next changes.
+        const moveNote=String(this.state?.settings?.()?.antigravityKeyNote||"").trim();
+        if(this.authMethod(instance)===HARNESS_API_KEY)return {...base,available:true,authenticated:null,account:{authMethod:ANTIGRAVITY_API_KEY_METHOD,label:"Google Gemini API key"},message:moveNote?ANTIGRAVITY_KEY_READY+" "+moveNote:ANTIGRAVITY_KEY_READY};
+        const own=await antigravitySignInState({env:this.env});
+        return {...base,available:own.signedIn,authenticated:own.signedIn?null:false,account:own.signedIn?{authMethod:own.method,label:"Antigravity sign-in"}:null,message:own.signedIn?ANTIGRAVITY_SIGNED_IN:ANTIGRAVITY_SIGN_IN_NEEDED};
       }
     }
     const versionResult=await this.#versionCheck(instance,{environmentId,fresh}),failure=versionResult.ok?null:versionCheckFailure(versionResult),host=Boolean(failure&&this.processSpawner(instance,environmentId));
@@ -1105,6 +1322,7 @@ export class AgentRuntimeManager{
       return {id:instance.id,kind:instance.kind,name:def.name,available:!versionless,installed:true,authenticated:null,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version:null,account:null,versionCheckFailed:true,message:versionless?`${/[.!?…]$/.test(said)?said:said+"."} Trebell Code needs its version (1.x or 2.x) to start it.`:said};
     }
     if(failure)return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:!host&&failure!=="missing",authenticated:false,protocol:def.protocol,managed:Boolean(def.managed),binary:command,message:runtimeProbeFailure(def,versionResult)};
+    const refused=this.#refusedAfterVersion(instance,environmentId,{protocol:def.protocol,managed:Boolean(def.managed),binary:command,version:(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null});if(refused)return refused;
     let authenticated=true,account=null,message="Ready";
     if(instance.kind==="claude"){
       // `claude auth status` prints {"loggedIn":…} (exiting 1 when signed out). A check that printed nothing, or was cut off before it
@@ -1122,6 +1340,8 @@ export class AgentRuntimeManager{
       if(endpoint){authenticated=null;account={...(account||{}),type:"customEndpoint",label:"Custom API endpoint"};message="Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts."}
       else if(authenticated===false)message="Claude Code is not authenticated. Run `claude auth login` and try again.";
       else if(authenticated==null)message="Claude Code is installed, but Trebell could not verify its authentication status.";
+      // On its API key `claude auth status` reads the ANTHROPIC_API_KEY its launch has (apiKeySource), as the row then says.
+      else if(this.authMethod(instance)===HARNESS_API_KEY)message="Runs on the Anthropic API key.";
     }else if(instance.kind==="cursor"){
       let about=await this.#run(instance,["about","--format","json"],{timeoutMs:8000,environmentId});
       const unsupported=/unknown (?:option|argument)|unexpected argument|unrecognized (?:option|argument)/i.test(String(about.stdout||"")+"\n"+String(about.stderr||""));
@@ -1131,9 +1351,10 @@ export class AgentRuntimeManager{
       if(authenticated===false)message="Cursor Agent is installed but not authenticated. Run cursor-agent login.";
       else if(authenticated==null)message="Cursor Agent is installed, but Trebell could not verify its authentication status.";
     }else if(instance.kind==="grok"){
-      const environment=this.childEnv(instance);
-      if(String(environment.XAI_API_KEY||"").trim()){
-        authenticated=true;account={authMethod:"api_key"};
+      // On an API key it runs on the xAI key (#probeNow says when Trebell has none); on Sign in only its own login counts,
+      // read with `grok models`.
+      if(this.authMethod(instance)===HARNESS_API_KEY){
+        authenticated=true;account={authMethod:"api_key",label:"xAI API key"};message="Runs on the xAI API key.";
       }else{
         const signedIn=async()=>{const models=await this.#run(instance,["models"],{timeoutMs:10_000,environmentId});return models.ok?parseGrokModelsAuth((models.stdout||"")+"\n"+(models.stderr||"")):null};
         // Grok prints the logged-out line for an access token that has just expired, then refreshes it in the same process: a
@@ -1187,11 +1408,14 @@ export class AgentRuntimeManager{
       return answer({available:false,installed:true,version:parseMuseVersion(said),message:checked.error==="probe timed out"?"Muse Code did not answer `muse --version` in time. Press Refresh to check it again.":`Muse Code is installed, but \`muse --version\` failed${Number.isInteger(checked.code)?` with exit code ${checked.code}`:""}. Check its executable path, or install Muse Code again.`});
     }
     const version=parseMuseVersion(said),compatibility=runtimeCompatibility("muse",version),known={installed:true,version,...(compatibility?{compatibility}:{})};
+    // On its API key with no key, `muse serve` would list the models of the person's own `muse login`: it does not start.
+    const refusal=this.keyRefusal(instance,environmentId);if(refusal)return answer({...known,available:false,authenticated:false,message:refusal.message});
     let catalog;
     try{catalog=await this.#museCatalog(instance,version)}
     catch(error){const reason=String(error?.message||error).trim().slice(0,400);return answer({...known,available:false,message:`Muse Code could not list its models: ${/[.!?…]$/.test(reason)?reason:reason+"."} Press Refresh to check it again.`})}
-    if(!catalog.models.length)return answer({...known,available:false,message:"Muse Code listed no models. Sign in with muse login, then press Refresh."});
-    return answer({...known,available:true,message:"Muse Code checks its sign-in when a turn runs. Sign in with muse login if a turn says it is signed out."});
+    const onKey=this.authMethod(instance)===HARNESS_API_KEY;
+    if(!catalog.models.length)return answer({...known,available:false,message:onKey?"Muse Code listed no models for the Meta Model API key. Check the key, then press Refresh.":"Muse Code listed no models. Sign in with muse login, then press Refresh."});
+    return answer({...known,available:true,message:onKey?"Muse Code runs on the Meta Model API key.":"Muse Code checks its sign-in when a turn runs. Sign in with muse login if a turn says it is signed out."});
   }
   #museCatalogs=new Map();
   // The models Muse Code lists (readMuseModelCatalog), read once per profile as it is set (its binary, version, environment and
@@ -1200,12 +1424,12 @@ export class AgentRuntimeManager{
   // and a failed read for PROBE_REUSE_MS, after which the next check reads again. Settings' own listing (its open and Refresh), a
   // failed turn's recheck and picking a Muse Code whose list has no models read it again (#museCatalogDue). Reads at once share one.
   async #museCatalog(instance,version){
-    const command=this.executable(instance),key=JSON.stringify([command,binarySignature(this.#binaryPaths(instance)),version||null,normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys),instance.environment||{}]);
+    const command=this.executable(instance),key=JSON.stringify([command,binarySignature(this.#binaryPaths(instance)),version||null,normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys),instance.environment||{},this.authMethod(instance)]);
     const cached=this.#museCatalogs.get(instance.id),current=cached?.key===key&&!cached.due?cached:null;
     if(current?.pending)return await current.pending;
     if(current&&!current.error)return current.value;
     if(current&&this.now()-current.at<PROBE_REUSE_MS)throw current.error;
-    const pending=readMuseModelCatalog({command,env:this.childEnv(instance),approvedEnvironmentKeys:instance.approvedEnvironmentKeys,cwd:process.cwd()}),entry={key,pending,value:cached?.value||null};
+    const pending=readMuseModelCatalog({command,env:this.childEnv(instance),authMethod:this.authMethod(instance),cwd:process.cwd()}),entry={key,pending,value:cached?.value||null};
     this.#museCatalogs.set(instance.id,entry);
     try{
       const value=await pending;
@@ -1270,7 +1494,7 @@ export class AgentRuntimeManager{
   // One ACP harness's model list, read where the profile runs and kept per profile, environment and harness version once it
   // has models; a failure is reported (never replaced by a stand-in list) and read again next time.
   async #acpModelList(instance,status,environmentId,label,load){
-    const key=[instance.kind,instance.id,this.activeEnvironment(environmentId)?.id||"local",status?.version||""].join("|"),cached=this.#acpModelLists.get(key);
+    const key=[instance.kind,instance.id,this.activeEnvironment(environmentId)?.id||"local",status?.version||"",this.#signInMark(instance)].join("|"),cached=this.#acpModelLists.get(key);
     let catalog;
     try{
       if(cached?.pending)catalog=await cached.pending;
@@ -1321,7 +1545,7 @@ export class AgentRuntimeManager{
   rememberAcpSessionModels(instance,setup,{environmentId=undefined}={}){
     if(instance?.kind!=="antigravity")return;
     const catalog=antigravityModelCatalog(setup);if(!catalog.models.length)return;
-    const environment=this.activeEnvironment(environmentId)?.id||null,key=[instance.id,environment||"local"].join("|");
+    const environment=this.activeEnvironment(environmentId)?.id||null,key=this.#antigravityListKey(instance,environmentId);
     const served=this.#antigravityModelLists.get(key)||antigravitySeedCatalog(),signature=list=>JSON.stringify([list.models,list.preferred||null,list.metadata||[]]);
     this.#antigravityModelLists.set(key,catalog);
     if(signature(served)===signature(catalog))return;
@@ -1330,14 +1554,19 @@ export class AgentRuntimeManager{
   // Until a session has reported the account's list, T3's manifest list stands in and one throwaway local session reads the
   // real list in the background. Each launch unpacks Antigravity's bundle (about 1 GB), so listing never starts it again
   // (T3 AntigravityDriver: status checks never spawn; sessions and refreshes do).
-  // Its session signs in with the saved key when Antigravity asks for one; a refresh that ended because the machine gives Antigravity
+  // Its session signs in with the key method on an API key when Antigravity asks (never by itself on Sign in); a refresh that ended because the machine gives Antigravity
   // no IPv6 sockets says so with the stand-in list (#antigravityModelFailures), as nothing of Antigravity's can run there.
   #antigravityModelFailures=new Map();
+  // The list a profile's sessions reported is kept per sign-in as well (#signInMark): one read on the person's own sign-in never
+  // stands for the Gemini key's, nor one key's for another's.
+  #antigravityListKey(instance,environmentId){return [instance.id,this.activeEnvironment(environmentId)?.id||"local",this.#signInMark(instance)].join("|")}
   #antigravityModels(instance,environmentId){
-    const key=[instance.id,this.activeEnvironment(environmentId)?.id||"local"].join("|"),known=this.#antigravityModelLists.get(key);
+    const key=this.#antigravityListKey(instance,environmentId),known=this.#antigravityModelLists.get(key);
     if(known)return {models:known.models,metadata:known.metadata,preferred:known.preferred,source:"session"};
     if(!this.#antigravityRefreshes.has(key)&&!this.processSpawner(instance,environmentId)){
       const refresh=(async()=>{
+        // Only an Antigravity that can sign in starts: on an API key with a Gemini key, on Sign in once its own sign-in is in its home.
+        if(this.authMethod(instance)===HARNESS_API_KEY?!this.harnessKeys(instance).ready:!(await antigravitySignInState({env:this.env})).signedIn){this.#antigravityRefreshes.delete(key);return}
         const folder=await mkdtemp(join(tmpdir(),"trebell-antigravity-models-")),options=this.#acpProbeOptions(instance,environmentId);
         try{
           const setup=await withAcpProbe(options,async(client,initialized)=>(await afterAntigravitySignIn(client,options.env,()=>acpProbeSession(client,initialized,{cwd:folder,timeoutMs:90_000}))).setup);
@@ -1370,36 +1599,16 @@ export class AgentRuntimeManager{
   museUsageReport=({museHome=null}={})=>latestMuseSubscriptionUsage({museHome});
   async usageLimits(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
+    // A profile on an API key that cannot start now reads no usage: Claude Code's probe would read the person's own plan instead.
+    const refusal=this.keyRefusal(instance,environmentId);
+    if(refusal)return {checkedAt:new Date(this.now()).toISOString(),windows:[],unavailable:{reason:"unsupported",message:refusal.message}};
     if(instance.kind==="claude")return readAgentRuntimeUsage("claude",{readCapabilities:()=>this.claudeCapabilities(instance,{environmentId})});
     // Muse Code's are the windows of the last report its sessions keep for the profile's Muse home (the one its status check's host
     // named), as no read asks Muse: MSP's usage/read answers only the host's last report too. A Muse Code runs only on this machine.
     if(instance.kind==="muse")return this.processSpawner(instance,environmentId)?{checkedAt:new Date(this.now()).toISOString(),windows:[],unavailable:{reason:"unsupported",message:MUSE_LOCAL_ONLY}}:museUsageLimits(this.museUsageReport({museHome:this.#museCatalogs.get(instance.id)?.value?.museHome??null}),{now:this.now()});
-    const profile=this.activeEnvironment(environmentId);
-    if(profile&&profile.type!=="local"&&this.environments){
-      const names=["HOME","XDG_CONFIG_HOME","XDG_DATA_HOME","AGENT_CLI_CREDENTIAL_STORE","CURSOR_AUTH_TOKEN","CURSOR_API_KEY","CURSOR_API_ENDPOINT","XAI_API_KEY","GROK_AUTH","GROK_HOME","GROK_OIDC_ISSUER","GROK_OIDC_CLIENT_ID","GROK_OAUTH2_ISSUER","GROK_OAUTH2_CLIENT_ID","GROK_OAUTH2_PRINCIPAL_TYPE","GROK_OAUTH2_PRINCIPAL_ID","GROK_AUTH_PROVIDER_COMMAND","GROK_LOCAL_AUTH","GROK_CLI_CHAT_PROXY_BASE_URL","GROK_MODELS_BASE_URL","GROK_CONFIG","GROK_CONFIG_PATH","OPENCODE_AUTH_CONTENT","OPENCODE_API_KEY"];
-      const valuesScript=names.map(name=>"printf '"+name+"='; printf '%s' \"$"+"{"+name+"-}\" | base64 | tr -d '\\n'; printf '\\n'").join("; ");
-      const [valuesResult,platformResult]=await Promise.all([
-        this.environments.executeArgv(profile.id,{command:"sh",args:["-lc",valuesScript],cwd:"",timeoutMs:8000,maxOutput:512*1024}),
-        this.environments.executeArgv(profile.id,{command:"uname",args:["-s"],cwd:"",timeoutMs:5000,maxOutput:16*1024}),
-      ]);
-      if(valuesResult.exitCode!==0)return {checkedAt:new Date().toISOString(),windows:[],unavailable:{reason:"probeFailed",message:(RUNTIMES[instance.kind]?.name||instance.kind)+" could not inspect remote account usage."}};
-      const environment={};
-      for(const line of String(valuesResult.stdout||"").split(/\r?\n/)){
-        const separator=line.indexOf("=");if(separator<1)continue;
-        const name=line.slice(0,separator),encoded=line.slice(separator+1);if(!names.includes(name)||!encoded)continue;
-        try{environment[name]=Buffer.from(encoded,"base64").toString("utf8")}catch{}
-      }
-      const remotePlatform=/darwin/i.test(platformResult.stdout||"")?"darwin":"linux";
-      const home=environment.HOME||"/";
-      const readText=async path=>{
-        const result=await this.environments.executeArgv(profile.id,{command:"cat",args:[String(path)],cwd:"",timeoutMs:5000,maxOutput:512*1024});
-        return result.exitCode===0?String(result.stdout||""):null;
-      };
-      return readAgentRuntimeUsage(instance.kind,{environment,platform:remotePlatform,home,readText,joinPath:posix.join,fetchImpl:this.fetchImpl,serverUrl:instance.serverUrl||""});
-    }
-    const environment=this.childEnv(instance);const home=environment.HOME||environment.USERPROFILE||homedir();
-    const readText=async path=>{try{return await readFile(path,"utf8")}catch{return null}};
-    return readAgentRuntimeUsage(instance.kind,{environment,platform:this.platform,home,readText,joinPath:join,fetchImpl:this.fetchImpl,serverUrl:instance.serverUrl||""});
+    // Cursor's, Grok Build's and OpenCode Go's usage would take the sign-in each keeps for itself (its stored login or a token in
+    // the environment), which Trebell never reads: their meters say so, until a harness reports its usage over its own protocol.
+    return readAgentRuntimeUsage(instance.kind,{name:RUNTIMES[instance.kind]?.name||instance.kind});
   }
   // The full listing answers Settings (its open, Refresh, a sign-in's follow-up) and the runtime mutations, so it checks again.
   // refresh (Settings' own listing) also reads Muse Code's model lists and OpenCode's catalogs again, which the mutations' listings reuse;
@@ -1422,11 +1631,12 @@ export class AgentRuntimeManager{
     }));
     const publicInstances=instances.map(instance=>{
       const {environment,...safe}=instance;
-      return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys)};
+      // signIn: how the profile signs in, and for each provider whose key it can run on whether Trebell has one (never the key).
+      return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys),...(harnessTakesApiKey(instance.kind)?{signIn:this.authSummary(instance)}:{})};
     });
     // What a new install runs; an update says its own command in its status's update.
     const installCommand=id=>id==="muse"?museInstallCommand(this.platform):INSTALLABLE_PACKAGES[id]?shownCommand("npm",npmInstallArgs(INSTALLABLE_PACKAGES[id]),this.platform)+(id==="opencode"?" (OpenCode 1.x)":""):null;
-    const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,installCommand:installCommand(def.id),canAuthenticate:["codex","claude","cursor","grok","opencode","antigravity","muse"].includes(def.id)}));
+    const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,installCommand:installCommand(def.id),canAuthenticate:["codex","claude","cursor","grok","opencode","antigravity","muse"].includes(def.id),apiKey:harnessTakesApiKey(def.id)}));
     const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),capabilities:this.capabilities(active),definitions,instances:publicInstances,statuses,installs:this.installs()};
   }
 }

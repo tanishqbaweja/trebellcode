@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 import spawn from "cross-spawn";
 import { appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "./acp-client.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
-import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys } from "./runtime-environment.mjs";
+import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 
 // Muse Code's host: Trebell starts the person's own `muse serve`, which speaks the Muse Session Protocol (MSP, NDJSON JSON-RPC over
 // its stdio), and drives it through Meta's SDK (@muse-code/sdk) over a bare Connection on that stdio, as the SDK's docs advise for
@@ -47,14 +47,17 @@ export function museSessionPolicy(mode="supervised"){
 // Everything a mode fixes when the host launches: a mode with another plan needs a new host (needsRelaunch).
 export function museLaunchPlan(mode="supervised"){return {args:museServeArgs(mode),...museSessionPolicy(mode)}}
 
+// The keys and header strings Muse Code reads in place of the person's own `muse login` (its binary: "META_API_KEY always takes
+// priority over the account login"), or to reach another provider: none reaches it, matched by name in any case and never read,
+// except META_API_KEY for a profile set to an API key (authMethod "api-key", Settings' choice), whose launch carries the Meta key.
+const MUSE_KEY_NAMES=new Set(["META_API_KEY","MODEL_API_KEY","OPENAI_API_KEY","ANTHROPIC_API_KEY","OPENROUTER_API_KEY","MUSE_CUSTOM_HEADERS"]);
 // The environment Muse Code runs with (T3 Code's makeMuseEnvironment): MUSE_NO_AUTO_UPDATE=1, since Meta's launcher may otherwise
-// update itself in the foreground, or start a hidden PowerShell updater, each time Trebell starts Muse Code; and no META_API_KEY,
-// matched by its name in any case and its value never read, unless the profile approves that name (approved, the profile's
-// approvedEnvironmentKeys): Muse prefers a key to the person's own `muse login`, so one set for something else (Native on Meta's
-// API) would bill them per token in place of their subscription.
-export function museEnvironment(env=process.env,{approved=[]}={}){
-  const keep=normalizeApprovedEnvironmentKeys(approved).some(name=>name.toUpperCase()==="META_API_KEY"),out={};
-  for(const name of Object.keys(env||{}))if(keep||name.toUpperCase()!=="META_API_KEY")out[name]=env[name];
+// update itself in the foreground, or start a hidden PowerShell updater, each time Trebell starts Muse Code; and none of the keys
+// above on Sign in, so a key set for something else (Native on Meta's API) never bills the person per token in place of their
+// subscription.
+export function museEnvironment(env=process.env,{authMethod="sign-in"}={}){
+  const out={},onKey=authMethod==="api-key";
+  for(const name of Object.keys(env||{})){const upper=name.toUpperCase();if(!MUSE_KEY_NAMES.has(upper)||(onKey&&upper==="META_API_KEY"))out[name]=env[name]}
   out.MUSE_NO_AUTO_UPDATE="1";
   return out;
 }
@@ -129,9 +132,9 @@ export async function stopMuseProcessTree(child,{platform=process.platform,grace
 }
 
 export class MuseHost{
-  // env: the profile's (AgentRuntimeManager.childEnv), approvedEnvironmentKeys the names its profile approves.
-  constructor({command="muse",args=museServeArgs(),cwd=process.cwd(),env=null,approvedEnvironmentKeys=[],spawnFn=spawn,platform=process.platform,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,stopTree=stopMuseProcessTree,onWarning=null}={}){
-    this.command=command;this.args=[...args];this.cwd=cwd;this.env=museEnvironment(env??inheritedMuseEnvironment(),{approved:approvedEnvironmentKeys});this.spawnFn=spawnFn;this.platform=platform;
+  // env: the profile's (AgentRuntimeManager.childEnv), authMethod how the profile signs in (museEnvironment).
+  constructor({command="muse",args=museServeArgs(),cwd=process.cwd(),env=null,authMethod="sign-in",spawnFn=spawn,platform=process.platform,startupTimeoutMs=MUSE_STARTUP_TIMEOUT_MS,shutdownTimeoutMs=MUSE_SHUTDOWN_TIMEOUT_MS,stopTree=stopMuseProcessTree,onWarning=null}={}){
+    this.command=command;this.args=[...args];this.cwd=cwd;this.env=museEnvironment(env??inheritedMuseEnvironment(),{authMethod});this.spawnFn=spawnFn;this.platform=platform;
     this.startupTimeoutMs=startupTimeoutMs;this.shutdownTimeoutMs=shutdownTimeoutMs;this.stopTree=stopTree;this.onWarning=onWarning;
     this.sdk=null;this.child=null;this.connection=null;this.initializeResult=null;this.fingerprintWarning=null;
     this.stderrTail="";this.exit=null;this.closing=false;this.#closing=null;

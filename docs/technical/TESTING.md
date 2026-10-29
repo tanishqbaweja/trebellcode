@@ -59,6 +59,8 @@ Providers:
 - [ ] OpenAI API
 - [ ] Anthropic API
 - [ ] Google Gemini API
+- [ ] xAI API (a Grok model with a Thinking level from its list; a turn that needs several tool calls, so its encrypted reasoning goes back each call)
+- [ ] Meta Model API (Muse Spark 1.3 at Max and Muse Wonder; a long turn, to see whether its unstreamed request outlasts Meta's server-side time limit)
 - [ ] AgentRouter
 - [ ] JustWorker.icu
 - [ ] HCNSec.cn
@@ -78,6 +80,19 @@ Failure checks:
 - [ ] On a fresh profile with no key, Trebell Native shows that an API key is required and its **Configure** action opens **Settings → Agents & models** instead of starting a turn.
 - [ ] Provider refresh failure does not erase the last valid config.
 - [ ] No raw key appears in visible diagnostics/log output.
+
+Harnesses on their API key (each official harness but Cursor, which signs in only):
+
+- [ ] For Claude Code, Codex, Grok Build, OpenCode, Muse Code and Antigravity: set it to **API key** on its row, add its vendor's key there, and check that a chat runs on that key (the vendor's console shows the use on that key) and that the Model provider card lists the same key as saved.
+- [ ] Set it back to **Sign in** and check that the next chat runs on its own login, with no key: for Codex, `codex login status` in `<Trebell home>/codex-api-key-homes/<profile>` says it is not logged in.
+- [ ] Remove the key on the harness's row (or the Model provider card) and check that the row says the key is missing, no chat starts on it, and the Model provider card has no key for that provider either.
+- [ ] With Trebell Native active on Anthropic, remove the Anthropic key on Claude Code's row and check that the composer says Setup required at once, with no reload; save a key there again and check that Native's models come back and a chat runs.
+- [ ] Remove a Claude Code profile on its API key while one of its chats is open, then remove the Anthropic key: check that the chat's next message does not run on the removed key (the chat stopped with its profile).
+- [ ] In a WSL or SSH environment, check that a harness on its API key says it runs on an API key only on this machine.
+- [ ] OpenCode 1.x on **API key** with a provider also signed in with `opencode auth login`: check that only the saved keys' providers are listed and serve a chat (Trebell starts it with `OPENCODE_AUTH_CONTENT={}` in place of its stored logins), and that its own login serves again on **Sign in**. 1.x's `auth set` and `auth remove` write what `OPENCODE_AUTH_CONTENT` holds back into its `auth.json`: check that no credential is written while it is on **API key** (its `auth.json` is unchanged after a chat and a Git text), as that would replace the person's stored logins.
+- [ ] OpenCode 2.x on **API key** with a login made with `opencode auth login` for a provider whose key is also saved (Anthropic OAuth, say) and one for a provider with no key (GitHub Copilot, OpenCode Zen): check that its status and model list name only the saved keys' providers, that a chat runs on the saved key (the provider's console shows it), not on the login, that `<Trebell home>/opencode-api-key-homes/<profile>/opencode.db` is the database it runs on, and that on **Sign in** its logins serve again, a thread started on the key continuing in a new session with its earlier messages.
+- [ ] Muse Code on **API key** while `muse login` is also signed in: check that a chat runs on the Meta Model API key (Meta's console shows it), as Muse's docs do not say whether `META_API_KEY` or its login wins.
+- [ ] Grok Build on **API key** while `grok login` is also signed in: check that a chat and a commit message (Git text) both run on the xAI key.
 
 ---
 
@@ -202,6 +217,7 @@ Live adapter smoke on **2026-09-27**:
 - Trebell detected the installed runtime, opened a real authenticated ACP session, the model used coding tools to create a proof file, and Trebell independently verified the file contents.
 
 - [ ] Connect/install Antigravity.
+- [ ] Sign in with Antigravity's own sign-in from its row (it opens Google's page); then set it to API key with a Google Gemini key and check that a chat runs on the key.
 - [ ] Start a text-only coding task.
 - [ ] Perform a repository change.
 - [ ] Attempt to attach a video.

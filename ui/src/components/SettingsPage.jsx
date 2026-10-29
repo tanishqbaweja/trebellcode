@@ -15,7 +15,6 @@ import { harnessCheck, harnessStateText, harnessStateTitle } from "../harness-ch
 import { agentName } from "../display-labels.js";
 import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, MODEL_PROVIDER_LABELS, modelProviderLabel } from "../provider-labels.js";
 import ScopedSettingsCard from "./ScopedSettingsCard.jsx";
-import AntigravityKeyForm from "./AntigravityKeyForm.jsx";
 import { ignorePressRest } from "./ThreadSidebar.jsx";
 import { askConfirm } from "../ask-dialog.js";
 
@@ -23,6 +22,8 @@ const PROVIDER_NOTES={
   openai:"Models are loaded live from the official OpenAI /v1/models API for this key.",
   anthropic:"Models are loaded live from the official Anthropic /v1/models API for this key.",
   gemini:"Models are loaded live from Google's Gemini OpenAI-compatible /models API for this key.",
+  xai:"Grok models from xAI. Models are loaded live from the official xAI /v1/language-models API for this key.",
+  meta:"Muse models from Meta. Models are loaded live from the official Meta Model API /v1/models for this key.",
   agentrouter:"Models are loaded live from AgentRouter /v1/models for this key.",
   vyceai:"Models are loaded live from Vyce AI /v1/models for this key.",
   justworker:"Available model: claude-opus-4-8.",
@@ -132,6 +133,34 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
     {keyProblem&&<p className="keybinding-note" id={base+"-key-problem"} role="alert">{keyProblem}</p>}
     {whenText&&<p className="keybinding-note" id={base+"-when-problem"} role="alert">{whenText}</p>}
     {note&&<p className={"keybinding-note "+note.kind} id={base+"-note"} role="status">{note.text}</p>}
+  </div>;
+}
+// A key Settings saves for a harness, named as the Model provider card names it: "Anthropic API" -> "Anthropic API key".
+const keyLabel=name=>/API$/.test(name)?name+" key":name+" API key";
+// How the harness a row shows signs in (Settings' choice for that profile, harness-auth.mjs): its own sign-in, or its vendor's API
+// key from Trebell's one key per provider, added, replaced or removed here in the Model provider card's store (for Trebell Native
+// too, which reads the same store), whichever harness is active. Cursor has no API key.
+function HarnessSignIn({def,profile,busy,onMethod,onKey}){
+  const info=profile?.signIn,[key,setKey]=useState(""),[provider,setProvider]=useState(""),[pending,setPending]=useState(null);
+  if(!info)return null;
+  // The choice shows at once, as the server saves it.
+  const choose=value=>{setPending(value);Promise.resolve(onMethod(profile,value)).finally(()=>setPending(null))};
+  const onKeyMethod=(pending||info.method)==="api-key",chosen=info.keys.find(item=>item.provider===provider)||info.keys[0],group="harness-auth-"+profile.id;
+  // A key from the environment is none saved in Trebell Code: one saved here takes its place, for Trebell Native too. A saved one is
+  // said to be shared with Trebell Native, as its Remove key removes it there too.
+  const env=item=>item.source==="environment",kept=chosen.saved&&!env(chosen);
+  const uses=info.keys.length>1?"Uses each saved key, shared with Trebell Native: "+info.keys.map(item=>keyLabel(item.name)+(item.saved?env(item)?` (from ${item.from})`:" (saved)":" (none)")).join(", ")+".":`Uses the ${keyLabel(chosen.name)}${chosen.saved?(env(chosen)?` from ${chosen.from}; a key saved here replaces it, for Trebell Native too.`:", saved in Trebell Code, shared with Trebell Native."):": none saved yet."}`;
+  return <div className="harness-auth" data-testid={"harness-auth-"+def.id}>
+    <div role="radiogroup" aria-label={def.name+" signs in with"}>
+      <label><input type="radio" name={group} checked={!onKeyMethod} disabled={busy} onChange={()=>choose("sign-in")}/>Sign in</label>
+      <label><input type="radio" name={group} checked={onKeyMethod} disabled={busy} onChange={()=>choose("api-key")}/>API key</label>
+    </div>
+    {onKeyMethod&&<div className="harness-auth-key"><small>{uses}</small>
+      {info.keys.length>1&&<select aria-label={"Key for "+def.name} value={chosen.provider} onChange={e=>setProvider(e.target.value)}>{info.keys.map(item=><option key={item.provider} value={item.provider}>{item.name}</option>)}</select>}
+      <input type="password" autoComplete="off" aria-label={keyLabel(chosen.name)+" for "+def.name} value={key} onChange={e=>setKey(e.target.value)} placeholder={kept?"Saved key ••••••••":"Paste "+keyLabel(chosen.name)}/>
+      <button disabled={busy||!key.trim()} onClick={async()=>{if(await onKey(def,chosen.provider,key))setKey("")}}>{kept?"Replace key":"Save key"}</button>
+      {kept&&<button disabled={busy} onClick={()=>onKey(def,chosen.provider,"")}>Remove key</button>}
+    </div>}
   </div>;
 }
 const AGENT_RUNTIME_SKELETON_ROWS=["Trebell Native","Codex","Claude Code","Cursor","Grok Build","OpenCode","Antigravity","Muse Code"];
@@ -247,8 +276,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     }
   },[agentInfo]);
   const [authenticatingAgent,setAuthenticatingAgent]=useState(null);
-  // Antigravity's Sign in opens its Gemini API key form under the harness list (AntigravityKeyForm).
-  const [antigravityKeyOpen,setAntigravityKeyOpen]=useState(false);
+  // A harness's sign-in method or key on its way from its row (HarnessSignIn).
+  const [harnessAuthBusy,setHarnessAuthBusy]=useState(false);
   const [instanceDraft,setInstanceDraft]=useState(null);
   // The approved variables as typed, while their field is being edited. The list is made from them at each change and shows, one name
   // a line, once the field is left: shown at each key, it took a new line or a comma away as soon as it was typed. Another window
@@ -315,7 +344,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const selected=settings.modelProvider||DEFAULT_MODEL_PROVIDER;
   const providerOptions=providerInfo?.providers?.length
     ?providerInfo.providers.map(item=>({id:item.id,name:item.name||modelProviderLabel(item.id),official:Boolean(item.official)}))
-    :Object.entries(MODEL_PROVIDER_LABELS).map(([id,name])=>({id,name,official:["openai","anthropic","gemini"].includes(id)}));
+    :Object.entries(MODEL_PROVIDER_LABELS).map(([id,name])=>({id,name,official:["openai","anthropic","gemini","xai","meta"].includes(id)}));
   // Until the app knows which harness runs (its first load is still reading it), its settings hold the default harness: the server's own
   // report decides, so Settings never offers to switch to the harness that already runs.
   const appRuntime=runtimeKnown?settings.agentRuntime:null;
@@ -426,7 +455,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     setAgentMessageTarget(instanceDraft.kind||selectedAgent);
     showAgentMessage("Saving runtime profile…");
     try{
-      const instance={...instanceDraft};delete instance.environmentKeys;
+      const instance={...instanceDraft};delete instance.environmentKeys;delete instance.signIn;
       const request=()=>api("/api/agent-runtimes",{method:"POST",body:{action:"upsert",instance}});
       // Saving the active profile reloads its harness: the same single reconnect as a switch. Other profiles save in place.
       const active=activeInstanceId===instance.id;
@@ -515,16 +544,39 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   // while the harness's sign in starts keeps it.
   async function authenticateAgentRuntime(kind,instanceId){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind),pressed=terminalPresses();if(!definition?.canAuthenticate)return;
-    if(kind==="antigravity"){setAntigravityKeyOpen(true);return}
     setAgentMessageTarget(kind);
     setAuthenticatingAgent(instanceId||kind);showAgentMessage("Opening "+(definition.name||kind)+" sign in…");
     try{
-      // Each harness but Antigravity (its key form) signs in in a terminal the answer opens.
+      // Each harness signs in in a terminal the answer opens, Antigravity in the browser page it opens itself.
       const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action:"login",runtime:kind,instanceId:instanceId||null,environmentId:runtimeEnvironmentId||null,cwd:projectPath||null}});
-      showAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
+      if(result?.agentSnapshot){setAgentInfo(result.agentSnapshot);showAgentMessage(`${definition.name||kind} signed in (${result.auth?.methodName||"its own sign-in"}).`)}
+      else showAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
       if(result?.session)onOpenRuntimeAuthTerminal?.(result.session,pressed);
     }catch(error){showAgentMessage(error.message,true)}
     finally{setAuthenticatingAgent(null)}
+  }
+  // A harness profile's sign-in method, and a key for the provider it runs on, from its row.
+  async function setHarnessMethod(profile,method){
+    const name=(agentInfo?.definitions||[]).find(item=>item.id===profile.kind)?.name||profile.kind;
+    setAgentMessageTarget(profile.kind);setHarnessAuthBusy(true);showAgentMessage("Saving…");
+    try{
+      const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action:"method",instanceId:profile.id,method}});
+      if(result?.agentSnapshot)setAgentInfo(result.agentSnapshot);
+      showAgentMessage(`${name} ${method==="api-key"?"runs on its API key":"signs in with its own sign-in"}.${result?.stoppedChats?" Open chats on it stopped.":""}`);
+    }catch(error){showAgentMessage(error.message,true)}
+    finally{setHarnessAuthBusy(false)}
+  }
+  async function saveHarnessKey(def,provider,key){
+    setAgentMessageTarget(def.id);setHarnessAuthBusy(true);showAgentMessage("Saving…");
+    try{
+      const result=await api("/api/providers",{method:"POST",body:{provider,apiKey:key,select:false}});
+      setProviderInfo(result);await loadAgentRuntimes();showAgentMessage((key?"API key saved.":"API key removed.")+(result.stoppedChats?" Open chats on it stopped.":""));
+      // With Trebell Native active, the key of the provider it calls: the app's readiness and model list follow it, as after the
+      // Model provider card's (which only Native's Settings draw); on another harness, switching to Native reads them again.
+      if(selectedAgent==="native"&&provider===result.selected)await onProviderUpdated?.({provider,catalog:result,refreshBootstrap:false});
+      return true;
+    }catch(error){showAgentMessage(error.message,true);return false}
+    finally{setHarnessAuthBusy(false)}
   }
   async function save(patch){
     setSettingsError("");
@@ -1056,9 +1108,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           const compatibility=status?.compatibility;const incompatible=["broken","unsupported"].includes(compatibility?.status);
           const noSignIn=saysNothingOfSignIn(status,def.id);
           const unverified=!noSignIn&&status?.authenticated==null&&["cursor","grok","opencode"].includes(def.id)&&status?.message;
-          // Antigravity with a Gemini API key saved says so beside its version (no check before a chat tells whether Google takes the
-          // key), and its sign-in button changes the key.
-          const keySaved=def.id==="antigravity"&&Boolean(status?.available&&status?.account?.authMethod)&&status.message;
+          // A harness on its API key says so beside its version, as an Antigravity says its own sign-in (no check before a chat tells
+          // whether the provider takes the key); one on Sign in offers its own sign-in.
+          const profile=(agentInfo?.instances||[]).find(item=>item.id===(status?.id||def.id+"-default")),onKey=profile?.signIn?.method==="api-key";
+          const keySaved=(onKey||def.id==="antigravity")&&Boolean(status?.available)&&status.message;
           const statusText=incompatible?(compatibility.message||"Incompatible runtime version"):noSignIn||unverified?status.message:status?.available?[status?.version,keySaved].filter(Boolean).join(" · ")||status?.message||"Ready":status?.message||"Unavailable";
           const actionText=active?(incompatible||unverified?"Needs setup":"Active"):status?.available?(incompatible||unverified?"Needs setup":"Switch"):status?.installed?"Not ready":"Not installed";
           const installing=installs.running.includes(def.id),installNote=installs.note?.kind===def.id?installs.note:null;
@@ -1067,9 +1120,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           const update=status?.update,verb=status?.installed?(update?update.canUpdate&&update.newer:def.installable)&&"Update":def.installable&&"Install";
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(def.id,status.id)}>
             <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em className={"is-"+String(actionText).toLowerCase().replace(/\s+/g,"-")}>{actionText}</em>
-          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":keySaved?"Change key":"Sign in"}</button>}{(verb||installing)&&<button className="agent-runtime-install" disabled={installing} onClick={()=>installAgentRuntime(def.id,verb,status)}>{installing?"Installing…":verb}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}{update?.message&&<p className="agent-runtime-option-note">{update.message}</p>}{installNote&&<p ref={installNoteRef} className={installNote.error?"agent-runtime-option-error":"agent-runtime-option-note"} role={installNote.error?"alert":"status"}>{installNote.text}</p>}</div>;
+          </button>{def.canAuthenticate&&!onKey&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{(verb||installing)&&<button className="agent-runtime-install" disabled={installing} onClick={()=>installAgentRuntime(def.id,verb,status)}>{installing?"Installing…":verb}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}{update?.message&&<p className="agent-runtime-option-note">{update.message}</p>}{installNote&&<p ref={installNoteRef} className={installNote.error?"agent-runtime-option-error":"agent-runtime-option-note"} role={installNote.error?"alert":"status"}>{installNote.text}</p>}{def.apiKey&&status&&<HarnessSignIn def={def} profile={profile} busy={harnessAuthBusy} onMethod={setHarnessMethod} onKey={saveHarnessKey}/>}</div>;
         })}</div>
-        {antigravityKeyOpen&&<AntigravityKeyForm saved={Boolean(runtimeStatusForKind(agentInfo,"antigravity")?.account?.authMethod)} instanceId={runtimeStatusForKind(agentInfo,"antigravity")?.id||null} onClose={()=>setAntigravityKeyOpen(false)} onAnswer={(result,said)=>{setAntigravityKeyOpen(false);if(result?.agentSnapshot)setAgentInfo(result.agentSnapshot);else loadAgentRuntimes();setAgentMessageTarget("antigravity");showAgentMessage(said)}}/>}
         {settingDrawn["agents-profiles"]&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>
           {selectedInstances.map(instance=>{
@@ -1078,7 +1130,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
             const noSignIn=saysNothingOfSignIn(status,instance.kind);
             return <div className="runtime-profile-row" key={instance.id}>
               <button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(instance.kind,instance.id)}><span><strong>{instance.displayName||instance.id}</strong><small>{noSignIn?status.message:status?.available?status.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?"Active":"Use"}</em></button>
-              {(agentInfo?.definitions||[]).find(item=>item.id===instance.kind)?.canAuthenticate&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button onClick={()=>authenticateAgentRuntime(instance.kind,instance.id)} disabled={!!authenticatingAgent}>{authenticatingAgent===instance.id?"Opening…":"Sign in"}</button>}
+              {(agentInfo?.definitions||[]).find(item=>item.id===instance.kind)?.canAuthenticate&&instance.signIn?.method!=="api-key"&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button onClick={()=>authenticateAgentRuntime(instance.kind,instance.id)} disabled={!!authenticatingAgent}>{authenticatingAgent===instance.id?"Opening…":"Sign in"}</button>}
               {selectedAgentDefinition?.multipleInstances!==false&&<button onClick={()=>editInstance(instance)}>Edit</button>}
               {instance.id!==`${instance.kind}-default`&&<button onClick={()=>removeInstance(instance)}>Remove</button>}
               {switchRefusal?.profile&&switchRefusal.instanceId===instance.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}
@@ -1091,9 +1143,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           {(instanceDraft.kind==="codex"||instanceDraft.kind==="claude")&&<label>{instanceDraft.kind==="codex"?"CODEX_HOME":"Claude config directory"}<input value={instanceDraft.homePath||""} onChange={e=>setInstanceDraft({...instanceDraft,homePath:e.target.value})} placeholder={instanceDraft.kind==="codex"?"Leave blank to use your normal ~/.codex profile":"Leave blank for the default Claude profile"}/></label>}
           {instanceDraft.kind==="codex"&&<><label>Shadow home path<input value={instanceDraft.shadowHomePath||""} onChange={e=>setInstanceDraft({...instanceDraft,shadowHomePath:e.target.value})} placeholder="Optional account-specific home, e.g. ~/.codex_personal"/></label><p>Optional. Keeps this account's <code>auth.json</code> private while sharing sessions, config, skills, plugins and worktrees from the CODEX_HOME above. Use the same CODEX_HOME across compatible accounts.</p></>}
           {instanceDraft.kind==="claude"&&<><label>Auto-compact after<input type="number" min="100000" max="1000000" step="1000" value={instanceDraft.autoCompactWindow??""} onChange={e=>setInstanceDraft({...instanceDraft,autoCompactWindow:e.target.value})} placeholder="Claude default"/></label><p>Optional. Compact automatically after 100,000–1,000,000 tokens. Leave blank to use Claude Code's default threshold.</p></>}
+          {(agentInfo?.definitions||[]).find(item=>item.id===instanceDraft.kind)?.apiKey&&<label>Signs in with<select value={instanceDraft.auth||"sign-in"} onChange={e=>setInstanceDraft({...instanceDraft,auth:e.target.value})}><option value="sign-in">Its own sign-in</option><option value="api-key">Its provider's API key</option></select></label>}
           {instanceDraft.kind==="opencode"&&<label>Existing OpenCode server URL<input value={instanceDraft.serverUrl||""} onChange={e=>setInstanceDraft({...instanceDraft,serverUrl:e.target.value})} placeholder="Optional, e.g. http://127.0.0.1:4096"/></label>}
           <label>Approved inherited environment variables<textarea value={environmentKeysText??(instanceDraft.approvedEnvironmentKeys||[]).join("\n")} onChange={e=>{setEnvironmentKeysText(e.target.value);setInstanceDraft({...instanceDraft,approvedEnvironmentKeys:e.target.value.split(/\r?\n|,/).map(value=>value.trim()).filter(Boolean)})}} onBlur={e=>{if(document.activeElement!==e.target)setEnvironmentKeysText(null)}} placeholder={"One variable name per line\nExample: HTTPS_PROXY"}/></label>
-          <p>Trebell passes only a safe OS baseline, this runtime's own variables and the names listed here, and to a harness on this computer (not on an SSH or WSL environment) also your proxy and toolchain variables (HTTPS_PROXY, JAVA_HOME and the like). A proxy or toolchain value that holds a password or token passes only when its name is listed, as does mise's __MISE_DIFF, which can hold mise's secrets and which a CLI started through a mise x wrapper needs. Values are read from the parent process at launch time and are not stored in the profile.</p>
+          <p>Trebell passes only a safe OS baseline, this runtime's own settings (its home, config and endpoint) and the names listed here, and to a harness on this computer (not on an SSH or WSL environment) also your proxy and toolchain variables (HTTPS_PROXY, JAVA_HOME and the like). A proxy or toolchain value that holds a password or token passes only when its name is listed, as does mise's __MISE_DIFF, which can hold mise's secrets and which a CLI started through a mise x wrapper needs. No API key or sign-in token passes, listed or not: a harness signs in with its own login or, set to API key, its provider's key. Values are read from the parent process at launch time and are not stored in the profile.</p>
           <div className="provider-key-actions"><button className="setting-action" onClick={saveInstance} disabled={savingInstance} aria-busy={savingInstance?"true":undefined}>{savingInstance&&<RefreshCw size={12} className="spin" aria-hidden="true"/>}Save profile</button><button onClick={()=>setInstanceDraft(null)}>Cancel</button></div>
           {instanceRefusal&&<p ref={instanceRefusalRef} className="provider-status-error" role="alert">{instanceRefusal}</p>}
         </div>}

@@ -329,7 +329,7 @@ It must reuse the same platform services external runtimes use.
 
 Trebell Native is also the **direct-API harness**. Its model transport may be:
 
-- an official model API such as OpenAI, Anthropic or Google Gemini,
+- an official model API such as OpenAI, Anthropic, Google Gemini, xAI or the Meta Model API,
 - a third-party provider such as AgentRouter, VyceAi, JustWorker or HCNSec,
 - or another compatible transport added later.
 
@@ -796,6 +796,8 @@ The platform should be able to normalize commonly encountered APIs such as:
 - Anthropic Messages,
 - the official OpenAI API,
 - the official Anthropic API,
+- the official xAI API,
+- the Meta Model API,
 - the official Google Gemini API,
 - provider-specific derivatives,
 - and future protocols as needed.
@@ -1091,18 +1093,29 @@ Do not solve prompt injection solely by adding another giant warning prompt.
 
 External CLIs must not automatically inherit every secret available to the Trebell parent process.
 
-Build runtime environments from:
+Trebell Native runs on API keys: the key of the provider chosen in its Model provider card, else that provider's environment
+variable. Every other harness signs in the way the person picks in Settings for its runtime profile, and nothing else decides it:
+
+- **Sign in** (the default): the harness's own login in its own home. No key or sign-in token from Trebell's key store, .env,
+  Trebell's own environment or a profile's approved variables reaches it, on this machine or on a WSL or SSH host.
+- **API key**: only its own vendor's key, from Trebell's one key per provider (the Model provider card's store, else the variable
+  Native reads), in the form its official CLI or SDK takes it, on this machine only (no saved key goes to a WSL or SSH host, and a
+  host's own key never stands in for it). Without its key the harness says so and does not start.
+
+Cursor has no API key and signs in only. Trebell never reads or copies the credentials a harness keeps for its own sign-in.
+
+Build external runtime environments from:
 
 ```text
 safe OS baseline
-+ required PATH/HOME/runtime values
-+ credentials required by that runtime
-+ explicitly approved user variables
++ required PATH/HOME/runtime values (homes, configs, endpoints; never a credential)
++ explicitly approved user variables (never a key or sign-in token)
++ the vendor's key, only for a profile set to API key
 ```
 
 ### 13.1 Secret broker
 
-Where feasible:
+Where feasible, for Trebell Native's own tools (its source control, its MCP servers):
 
 ```text
 tool needs credential

@@ -34,10 +34,12 @@ async function openCode2Relay(t,{serverUrl=false,onPrompt=null,sessions={}}={}){
   const fake=await startFakeOpenCode2({onPrompt,sessions});
   await writeFakeOpenCode2Serve(root);
   const instance={id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,...(serverUrl?{serverUrl:fake.url}:{})};
+  const envAsked=[];
   const runtimeManager={
     instances:()=>[{...instance}],activeInstance:()=>({...instance}),activeRuntime:()=>"opencode",compatibleInstanceIds:()=>[instance.id],
     probe:async()=>({id:instance.id,name:"OpenCode",available:true,authenticated:true,version:"2.0.24"}),
-    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...process.env,FAKE_OPENCODE2_URL:fake.url}),executable:()=>process.execPath,
+    // envAsked: the options each environment was asked with (the version the status read).
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:(_instance,options)=>{envAsked.push(options??null);return {...process.env,FAKE_OPENCODE2_URL:fake.url}},executable:()=>process.execPath,
   };
   const meta=new Map(),state={settings:()=>({activeEnvironmentId:null}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},recordUsage:()=>{}};
   const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(root,"home")});
@@ -56,7 +58,7 @@ async function openCode2Relay(t,{serverUrl=false,onPrompt=null,sessions={}}={}){
     await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});
   });
   const started=await rpc("thread/start",{cwd:root,approvalPolicy:"on-request",sandbox:"workspace-write"});
-  return {root,fake,ws,rpc,messages,threadStore,threadId:started.thread.id,completed:()=>eventually(()=>messages.find(message=>message.method==="turn/completed")?.params)};
+  return {root,fake,ws,rpc,messages,threadStore,envAsked,threadId:started.thread.id,completed:()=>eventually(()=>messages.find(message=>message.method==="turn/completed")?.params)};
 }
 const text=(emit,sessionID,words)=>{emit({type:"session.text.started",data:{sessionID,assistantMessageID:"msg_a1",ordinal:0}});emit({type:"session.text.delta",data:{sessionID,assistantMessageID:"msg_a1",delta:words}})};
 const succeeded=(emit,sessionID)=>emit({type:"session.execution.succeeded",data:{sessionID}});
@@ -70,6 +72,17 @@ test("an image sent to OpenCode 2 through the relay reaches it as a file it read
   const [prompted]=relay.fake.prompts();
   assert.deepEqual(prompted.files,[{uri:fileUri(shot),name:"shot.png"}]);
   assert.ok(prompted.text.endsWith(`What does this show?\n[Attached image "shot.png" is saved at: ${shot}]`),prompted.text);
+});
+
+// OpenCode on its API keys leaves its stored sign-ins out by its line (AgentRuntimeManager.childEnv): the relay asks for the environment
+// of the version the status read, which chose the OpenCode 2 session.
+test("the relay starts OpenCode 2 in the environment of the version its status read",async t=>{
+  const relay=await openCode2Relay(t,{onPrompt:({sessionID,emit,reply})=>{reply("Hello.");text(emit,sessionID,"Hello.");succeeded(emit,sessionID)}});
+  await relay.rpc("turn/start",{threadId:relay.threadId,input:[{type:"text",text:"Hi"}]});
+  const completed=await relay.completed();
+  assert.equal(completed.turn.status,"completed",completed.turn.error?.message);
+  assert.ok(relay.envAsked.length>0,"the session's environment was asked for");
+  assert.ok(relay.envAsked.every(options=>options?.version==="2.0.24"),JSON.stringify(relay.envAsked));
 });
 
 test("an OpenCode 2 retry reaches the window as a retrying error of the turn, and the turn then completes",async t=>{

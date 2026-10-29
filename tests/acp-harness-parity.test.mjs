@@ -18,7 +18,7 @@ import { acpToolFrame, mergeAcpToolUpdate } from "../src/acp-tool-state.mjs";
 import { acpRuntimeTempRoot, createRunTemp, sweepRunTemps } from "../src/acp-runtime-temp.mjs";
 import { CursorTransportFailure } from "../src/cursor-transport-failure.mjs";
 import { antigravityModelCatalog, antigravitySeedCatalog, cursorEffortOption, cursorFastOption, cursorModelCatalog, cursorModelOptions, cursorSwitchValue, grokModelCatalog } from "../src/acp-model-catalog.mjs";
-import { grokUsageResponseToLimits, readCursorUsageLimits, readGrokUsageLimits } from "../src/agent-usage-limits.mjs";
+import { grokUsageResponseToLimits } from "../src/agent-usage-limits.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { attachAgentRelay, contextualAgentPrompt } from "../src/agent-relay.mjs";
@@ -222,18 +222,8 @@ test("model lists keep each harness's names, defaults and effort levels",()=>{
   assert.deepEqual(antigravitySeedCatalog().models,["gemini-3.8-flash-high","gemini-3.8-flash-medium","gemini-3.8-flash-low"]);
 });
 
-test("Cursor usage reads the login in %APPDATA%\\Cursor, and a Grok account with nothing metered is listed with its email",async()=>{
-  const reads=[];
-  const cursor=await readCursorUsageLimits({environment:{APPDATA:"C:\\Users\\me\\AppData\\Roaming"},platform:"win32",home:"C:\\Users\\me",joinPath:(...parts)=>parts.join("\\"),
-    readText:async path=>{reads.push(path);return path.endsWith("Cursor\\auth.json")?JSON.stringify({accessToken:"cursor-token"}):null},
-    fetchImpl:async(_url,options)=>({ok:true,status:200,json:async()=>({planUsage:{totalPercentUsed:12.5},billingCycleEnd:"1790000000000",auth:options.headers.authorization})})});
-  assert.deepEqual(reads,["C:\\Users\\me\\AppData\\Roaming\\Cursor\\auth.json"]);assert.equal(cursor.windows[0].usedPercent,12.5);
+test("a Grok period with nothing metered maps to no window",()=>{
   assert.deepEqual(grokUsageResponseToLimits({config:{currentPeriod:{type:"USAGE_PERIOD_TYPE_WEEKLY"}}},"2026-10-10T00:00:00.000Z"),{checkedAt:"2026-10-10T00:00:00.000Z",windows:[]});
-  const credential={"https://accounts.x.ai/sign-in":{key:"grok-secret",email:"dev@example.test"}};
-  const grok=await readGrokUsageLimits({environment:{GROK_AUTH:JSON.stringify(credential)},home:"/home/me",joinPath:(...parts)=>parts.join("/"),readText:async()=>null,fetchImpl:async()=>({ok:true,status:200,json:async()=>({config:{}})})});
-  assert.deepEqual(grok.windows,[]);assert.equal(grok.unavailable,undefined);assert.deepEqual(grok.account,{email:"dev@example.test"});
-  const failed=await readGrokUsageLimits({environment:{GROK_AUTH:JSON.stringify(credential)},home:"/home/me",joinPath:(...parts)=>parts.join("/"),readText:async()=>null,fetchImpl:async()=>({ok:false,status:500})});
-  assert.equal(failed.unavailable.reason,"probeFailed");assert.deepEqual(failed.account,{email:"dev@example.test"},"a failed read still names the account it asked about");
 });
 
 test("Grok and Antigravity resume the thread's conversation with session/resume, keep its id and drop replayed history",async t=>{

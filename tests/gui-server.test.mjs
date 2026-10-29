@@ -1032,7 +1032,7 @@ test("mock GUI server serves the default Native provider catalog and direct repl
     assert.equal(unknownProvider.modelProvider,"openai");
     const providerStatus=await fetch(gui.url+"/api/providers").then(r=>r.json());
     assert.equal(providerStatus.selected,"openai");assert.equal(providerStatus.ready,true);
-    assert.deepEqual(providerStatus.providers.map(item=>item.id),["openai","anthropic","gemini","agentrouter","justworker","hcnsec","vyceai"]);
+    assert.deepEqual(providerStatus.providers.map(item=>item.id),["openai","anthropic","gemini","xai","meta","agentrouter","justworker","hcnsec","vyceai"]);
     const directResponse=await fetch(gui.url+"/api/chat/direct",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:"Summarize the release notes",model:"test/coding-large"})});
     assert.equal(directResponse.status,200);
     const direct=await directResponse.json();

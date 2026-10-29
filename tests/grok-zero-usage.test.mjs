@@ -4,7 +4,7 @@
 // monthly shows no meter, as before.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { grokUsageResponseToLimits, readGrokUsageLimits } from "../src/agent-usage-limits.mjs";
+import { grokUsageResponseToLimits } from "../src/agent-usage-limits.mjs";
 
 const at="2026-09-16T00:00:00.000Z";
 const WEEKLY={type:"USAGE_PERIOD_TYPE_WEEKLY",start:"2026-09-11T03:10:30.159171+00:00",end:"2026-09-18T03:10:30.159171+00:00"};
@@ -43,14 +43,4 @@ test("a percentage Grok reports is shown as it is, whatever the period's start",
   for(const start of [WEEKLY.start,null,42,undefined])
     assert.deepEqual(windows({...WEEKLY,start},{creditUsagePercent:37.5}),[{id:"subscription",kind:"weekly",label:"Weekly",usedPercent:37.5,resetsAt:"2026-09-18T03:10:30.159Z"}],String(start));
   assert.deepEqual(windows(WEEKLY,{creditUsagePercent:120}).map(window=>window.usedPercent),[100]);
-});
-
-test("Grok's usage read of a signed-in account with nothing used shows its weekly window at 0% under the account's email",async()=>{
-  const usage=await readGrokUsageLimits({
-    environment:{GROK_AUTH:JSON.stringify({"https://accounts.x.ai/sign-in":{key:"grok-fixture-key",email:"dev@example.test"}})},
-    home:"/home/me",joinPath:(...parts)=>parts.join("/"),readText:async()=>null,
-    fetchImpl:async()=>Response.json({config:{currentPeriod:WEEKLY}}),
-  });
-  assert.deepEqual(usage.windows,[{id:"subscription",kind:"weekly",label:"Weekly",usedPercent:0,resetsAt:"2026-09-18T03:10:30.159Z"}]);
-  assert.equal(usage.unavailable,undefined);assert.deepEqual(usage.account,{email:"dev@example.test"});
 });

@@ -22,6 +22,10 @@ test("a model-list refresh Antigravity could not run for want of IPv6 sockets te
   const windows=process.platform==="win32",wrapper=join(root,windows?"agy.cmd":"agy");
   await writeFile(wrapper,windows?`@"${process.execPath}" "${AGENT}" %*\r\n`:`#!/bin/sh\nexec "${process.execPath}" "${AGENT}" "$@"\n`,{mode:0o755});
   const env={...process.env,TEMP:join(root,"tmp"),TMP:join(root,"tmp"),HOME:join(root,"person"),USERPROFILE:join(root,"person"),TREBELL_HOME:join(root,"trebell"),TREBELL_AGY_SCENARIO:scenarioPath};
+  // Signed in with its own sign-in, as its home records it: only an Antigravity that can sign in is started for its list.
+  await mkdir(join(root,"trebell","antigravity-home","antigravity-acp"),{recursive:true});
+  await writeFile(join(root,"trebell","antigravity-home","antigravity-acp","settings.json"),JSON.stringify({auth:{type:"oauth-personal"}}));
+  await writeFile(join(root,"trebell","antigravity-home","antigravity-acp","acp_token.json"),"fixture");
   const settings={agentRuntimeInstances:[{id:"antigravity-default",kind:"antigravity",displayName:"Antigravity",enabled:true,binaryPath:wrapper,environment:{},approvedEnvironmentKeys:["TREBELL_AGY_SCENARIO"]}]};
   const manager=new AgentRuntimeManager({state:{settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch)},env});
   const heard=[];let told;const told$=new Promise(resolve=>{told=resolve});
