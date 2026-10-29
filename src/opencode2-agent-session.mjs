@@ -119,10 +119,11 @@ const STREAM_LOST=Object.freeze({
   unsent:"OpenCode never confirmed the message and is not running it, so Trebell stopped the turn. Send the message again to retry.",
 });
 // A message sent after a turn Trebell stopped following waits for OpenCode to say that turn's run has ended (T3 Code's
-// OPENCODE_2_STILL_STOPPING), so that run's text and end reach no turn of the new message's.
+// OPENCODE_2_STILL_STOPPING), so that run's text and end reach no turn of the new message's. One refused is not sent: the window keeps
+// its draft and puts the reason after "Not sent:".
 const AFTER_LOST_TURN=Object.freeze({
-  running:"OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run and did not send this message. Send the message again in a moment.",
-  unknown:"OpenCode did not say whether it still runs the turn Trebell stopped following, so Trebell did not send this message. Send the message again in a moment.",
+  running:"OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run. Send the message again in a moment.",
+  unknown:"OpenCode did not say whether it still runs the turn Trebell stopped following. Send the message again in a moment.",
 });
 const ENDED_FAILED="OpenCode ended the turn with an error while Trebell was reconnecting to it.";
 // A turn's history is read back to its own message, at most this many messages a page and this many pages.
@@ -269,7 +270,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   async prompt(parts,{agent=null,onDelivered=null}={}){
     if(!this.client||!this.sessionId)throw new Error("OpenCode session is not started.");
     if(this.activePrompt)throw new Error("OpenCode already has a running turn.");
-    await this.#afterLostTurn();
+    await this.afterLostTurn();
     await this.#addRepositoryMcp();await this.#applySelection();await this.#applyPermissionRules();
     if(agent){const agentId=this.agentIds.get(String(agent))||String(agent);await this.client.session.switchAgent({sessionID:this.sessionId,agent:agentId})}
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
@@ -306,8 +307,9 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     }finally{turn.done=true;turn.settle?.();if(this.activePrompt===turn)this.activePrompt=null}
   }
   // After a turn Trebell stopped following (#lose), OpenCode says whether it still runs that turn's message before the next one is sent,
-  // as T3 Code asks before it starts a turn on an unsettled session: a run that goes on is stopped, and this message is refused.
-  async #afterLostTurn(){
+  // as T3 Code asks before it starts a turn on an unsettled session: a run that goes on is stopped, and this message is refused. The
+  // relay asks before it makes the message's turn, so a refused message stays the person's draft.
+  async afterLostTurn(){
     if(!this.unsettled)return;
     const runs=await openCode2Within(RECONNECT_CHECK_MS,AFTER_LOST_TURN.unknown,signal=>this.client.session.active({signal})).catch(()=>null);
     if(!runs||typeof runs!=="object")throw new Error(AFTER_LOST_TURN.unknown);
