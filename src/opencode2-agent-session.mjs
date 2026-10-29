@@ -497,7 +497,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     return first.opened;
   }
   // A turn the session stopped following ends with the reason. OpenCode may still run its message, so that run is stopped (once
-  // OpenCode has the message: interrupt false when it does not yet) and the next message asks OpenCode first (#afterLostTurn).
+  // OpenCode has the message: interrupt false when it does not yet) and the next message asks OpenCode first (afterLostTurn, which the
+  // relay asks before it makes the message's turn).
   #lose(turn,reason,{interrupt=true}={}){
     if(!turn||turn.done||turn.cancelled||turn.stopError||this.activePrompt!==turn)return;
     turn.lost=true;turn.stopError=new Error(reason);this.unsettled=true;turn.settle?.();
