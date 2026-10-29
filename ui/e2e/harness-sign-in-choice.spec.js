@@ -120,6 +120,53 @@ test("each harness but Cursor offers Sign in or its provider's API key, the key 
   }
 });
 
+// A key saved in Trebell Code is removed on a harness row as on the Model provider card, which only Trebell Native's Settings draw:
+// from the one store, so Native has none either, and the row then says none is saved. A key that is not saved offers no Remove.
+test("a key saved in Trebell Code is removed on a harness's row, from the store Trebell Native reads too",async({page,request})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:900});
+  expect((await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0}})).status()).toBe(200);
+  expect((await request.post("/api/agent-runtime-auth",{data:{action:"method",runtime:"claude",instanceId:"claude-default",method:"api-key"}})).status()).toBe(200);
+  expect((await request.post("/api/agent-runtime-auth",{data:{action:"method",runtime:"opencode",instanceId:"opencode-default",method:"api-key"}})).status()).toBe(200);
+  expect((await request.post("/api/providers",{data:{provider:"anthropic",apiKey:KEY,select:false}})).status()).toBe(200);
+  try{
+    await openAgents(page);
+    const claude=harnessRow(page,"Claude Code"),panel=claude.getByTestId("harness-auth-claude");
+    await expect(panel).toContainText("Uses the Anthropic API key, saved in Trebell Code.");
+    // OpenCode offers Remove for the saved key it picks, and none for one that is not saved.
+    const openPanel=harnessRow(page,"OpenCode").getByTestId("harness-auth-opencode"),pick=openPanel.getByLabel("Key for OpenCode",{exact:true});
+    await expect(pick).toHaveValue("openai");await expect(openPanel.getByRole("button",{name:"Remove key"})).toHaveCount(0);
+    await pick.selectOption("anthropic");await expect(openPanel.getByRole("button",{name:"Remove key"})).toBeEnabled();
+    const remove=panel.getByRole("button",{name:"Remove key"});
+    await expect(remove).toBeEnabled();
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);await claude.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`claude-api-key-remove-${mode}-1280.png`});
+    }
+    await switchMode(page,"dark");
+    await remove.click();
+    await expect(page.getByTestId("agent-runtime-message")).toContainText("API key removed.");
+    await expect(panel).toContainText("Uses the Anthropic API key: none saved yet.");
+    await expect(panel.getByRole("button",{name:"Remove key"})).toHaveCount(0);
+    await expect(panel.getByRole("button",{name:"Save key"})).toBeDisabled();
+    await expect(panel.getByLabel("Anthropic API key for Claude Code")).toHaveAttribute("placeholder","Paste Anthropic API key");
+    await expect(openPanel).toContainText("Anthropic API key (none)");await expect(openPanel.getByRole("button",{name:"Remove key"})).toHaveCount(0);
+    // Gone from the one store: Native has no Anthropic key either, and Claude Code stays on its API key.
+    const providers=await (await request.get("/api/providers")).json();
+    expect(providers.providers.find(item=>item.id==="anthropic").hasKey).toBe(false);
+    expect((await (await request.get("/api/agent-runtimes")).json()).instances.find(item=>item.id==="claude-default").signIn).toEqual({method:"api-key",keys:[{provider:"anthropic",name:"Anthropic API",variable:"ANTHROPIC_API_KEY",saved:false,source:null,from:null}]});
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);await claude.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`claude-api-key-removed-${mode}-1280.png`});
+    }
+    await switchMode(page,"dark");
+  }finally{
+    await request.post("/api/agent-runtime-auth",{data:{action:"method",runtime:"claude",instanceId:"claude-default",method:"sign-in"}});
+    await request.post("/api/agent-runtime-auth",{data:{action:"method",runtime:"opencode",instanceId:"opencode-default",method:"sign-in"}});
+    await request.post("/api/providers",{data:{provider:"anthropic",apiKey:"",select:false}});
+  }
+});
+
 // A key Trebell reads from its environment (the variable Native reads) is no key saved in Trebell Code: the row says where it comes
 // from, offers Save key rather than Replace, and says that a key saved there takes its place for Trebell Native too.
 test("a key from the environment shows as from its variable with Save key, and says a key saved there replaces it for Native too",async({page,request})=>{

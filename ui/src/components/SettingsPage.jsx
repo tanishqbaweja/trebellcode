@@ -138,7 +138,8 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
 // A key Settings saves for a harness, named as the Model provider card names it: "Anthropic API" -> "Anthropic API key".
 const keyLabel=name=>/API$/.test(name)?name+" key":name+" API key";
 // How the harness a row shows signs in (Settings' choice for that profile, harness-auth.mjs): its own sign-in, or its vendor's API
-// key from Trebell's one key per provider, added or replaced here in the Model provider card's store. Cursor has no API key.
+// key from Trebell's one key per provider, added, replaced or removed here in the Model provider card's store (for Trebell Native
+// too, which reads the same store), whichever harness is active. Cursor has no API key.
 function HarnessSignIn({def,profile,busy,onMethod,onKey}){
   const info=profile?.signIn,[key,setKey]=useState(""),[provider,setProvider]=useState(""),[pending,setPending]=useState(null);
   if(!info)return null;
@@ -157,6 +158,7 @@ function HarnessSignIn({def,profile,busy,onMethod,onKey}){
       {info.keys.length>1&&<select aria-label={"Key for "+def.name} value={chosen.provider} onChange={e=>setProvider(e.target.value)}>{info.keys.map(item=><option key={item.provider} value={item.provider}>{item.name}</option>)}</select>}
       <input type="password" autoComplete="off" aria-label={keyLabel(chosen.name)+" for "+def.name} value={key} onChange={e=>setKey(e.target.value)} placeholder={kept?"Saved key ••••••••":"Paste "+keyLabel(chosen.name)}/>
       <button disabled={busy||!key.trim()} onClick={async()=>{if(await onKey(def,chosen.provider,key))setKey("")}}>{kept?"Replace key":"Save key"}</button>
+      {kept&&<button disabled={busy} onClick={()=>onKey(def,chosen.provider,"")}>Remove key</button>}
     </div>}
   </div>;
 }
@@ -567,7 +569,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     setAgentMessageTarget(def.id);setHarnessAuthBusy(true);showAgentMessage("Saving…");
     try{
       const result=await api("/api/providers",{method:"POST",body:{provider,apiKey:key,select:false}});
-      setProviderInfo(result);await loadAgentRuntimes();showAgentMessage("API key saved.");return true;
+      setProviderInfo(result);await loadAgentRuntimes();showAgentMessage(key?"API key saved.":"API key removed.");return true;
     }catch(error){showAgentMessage(error.message,true);return false}
     finally{setHarnessAuthBusy(false)}
   }

@@ -85,7 +85,7 @@ Harnesses on their API key (each official harness but Cursor, which signs in onl
 
 - [ ] For Claude Code, Codex, Grok Build, OpenCode, Muse Code and Antigravity: set it to **API key** on its row, add its vendor's key there, and check that a chat runs on that key (the vendor's console shows the use on that key) and that the Model provider card lists the same key as saved.
 - [ ] Set it back to **Sign in** and check that the next chat runs on its own login, with no key: for Codex, `codex login status` in `<Trebell home>/codex-api-key-homes/<profile>` says it is not logged in.
-- [ ] Remove the key and check that the harness's row says the key is missing and no chat starts on it.
+- [ ] Remove the key on the harness's row (or the Model provider card) and check that the row says the key is missing, no chat starts on it, and the Model provider card has no key for that provider either.
 - [ ] In a WSL or SSH environment, check that a harness on its API key says it runs on an API key only on this machine.
 - [ ] OpenCode on **API key** with a provider also signed in with `opencode auth login`: check that only the saved keys' providers are listed and serve a chat (Trebell starts it with `OPENCODE_AUTH_CONTENT={}` in place of its stored logins), and that its own login serves again on **Sign in**.
 - [ ] Grok Build on **API key** while `grok login` is also signed in: check that a chat and a commit message (Git text) both run on the xAI key.
