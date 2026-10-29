@@ -1,6 +1,7 @@
 // Cursor streams a lost backend connection as its reply and ends the turn normally. Each assistant message is classified on its own
 // (T3 656f3f409): a turn whose last message is only that diagnostic fails, even after commentary, a thought, a plan or a tool call
-// earlier in the turn, while a message that quotes the diagnostic in prose is an answer.
+// earlier in the turn, while a message that quotes the diagnostic in prose is an answer. The failed turn keeps what Cursor wrote before
+// the diagnostic as its reply, as another harness's failed turn keeps all it wrote.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { threadHistoryEntries } from "../src/thread-history-handoff.mjs";
@@ -78,6 +79,26 @@ test("the turn that ends in Cursor's dump after commentary fails in the thread, 
   assert.deepEqual(view.pills.map(pill=>[pill.outcomeTone,pill.outcomeMessage]),[["err",DUMP]],"the reply carries the failed pill, which says why the turn failed");
   assert.deepEqual(view.ends,[]);
   assert.deepEqual(handedOver(threadStore.get(threadId).turns),[["assistant","Checking the file."],["error",DUMP]]);
+});
+
+// Any other harness's turn that fails keeps all it wrote before the failure as its reply, as Cursor's keeps what it wrote before its
+// dump: the thread read again (after the next message, a reload) shows it under the failed pill, which says why the turn failed.
+test("a Grok turn that fails after commentary and a tool call keeps what Grok wrote as its reply, and the thread opened again says why it failed",async t=>{
+  const fx=await scriptedAcp(t,{initialize:{protocolVersion:1,agentCapabilities:{loadSession:true}},sessionNew:{sessionId:"grok-session"},prompts:[{steps:[chunk("Half of the answer."),...toolCall],error:{code:-32603,message:"Grok lost its model stream."}}]});
+  const {rpc,next,threadStore}=await acpRelay(t,"grok",fx);
+  const started=await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"}),threadId=started.thread.id;
+  const completed=next(message=>message.method==="turn/completed"),replied=next(message=>message.method==="item/completed"&&message.params.item?.type==="agentMessage").catch(()=>null);
+  await rpc("turn/start",{threadId,input:[{type:"text",text:"read src/app.js"}]});
+  assert.equal((await completed).params.turn.status,"failed");
+  const stored=threadStore.get(threadId).turns.at(-1),error=stored.error?.message;
+  assert.match(error,/Grok lost its model stream\./);
+  assert.equal(stored.items.find(item=>item.type==="agentMessage")?.text,"Half of the answer.","the stored turn keeps what Grok wrote");
+  assert.equal((await replied)?.params.item.text,"Half of the answer.","the open window gets the reply as it ended");
+  const view=await reopened(rpc,threadId);
+  assert.deepEqual(view.messages.map(message=>[message.role,message.text]),[["user","read src/app.js"],["assistant","Half of the answer."]]);
+  assert.deepEqual(view.pills.map(pill=>[pill.outcomeTone,pill.outcomeMessage]),[["err",error]],"the reply carries the failed pill, which says why the turn failed");
+  assert.deepEqual(view.ends,[]);
+  assert.deepEqual(handedOver(threadStore.get(threadId).turns),[["assistant","Half of the answer."],["error",error]]);
 });
 
 // A turn whose only message is the dump, alone or after a read, keeps no reply: it ends with its error, which the thread opened again

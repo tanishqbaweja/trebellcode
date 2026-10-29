@@ -1,7 +1,7 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { routeClaudeApp,startClaudeRelay } from "./claude-relay-harness.js";
+import { claudeReply,routeClaudeApp,startClaudeRelay } from "./claude-relay-harness.js";
 
 // Claude Code turn errors as a person reads them, on the real relay with Claude Code's SDK scripted: a full context says to run
 // /compact or start a new thread instead of sending them to wait for a usage reset (or showing the reply's own "Prompt is too long"),
@@ -81,5 +81,58 @@ test("a Claude turn that fills its context says to compact, and a quick retry in
     await expect.soft(page.getByText(LEAKED_TOKEN),"nowhere on the page").toHaveCount(0);
     await refused.scrollIntoViewIfNeeded();
     await page.screenshot({animations:"disabled",path:`${auditDir}claude-api-error-token-redacted-light-1280x800.png`});
+  }finally{await harness.close()}
+});
+
+// A turn that fails after Claude wrote part of its reply keeps that part under its failed pill, as a reply that completes stays, once
+// the next message is sent and after a reload. While the turn's card is on screen the card says why it failed; once the card moves on
+// to the next turn, and in the thread opened again, the reply says it under its pill, once.
+test("a Claude turn that fails after Claude wrote part of its reply keeps that part, and says why it failed, after the next message and a reload",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const PARTIAL="Picking the summary up on the fallback model.",FAILED="Claude gave up after repeated API errors.";
+  const harness=await startClaudeRelay({turn:async({message,index,emit})=>{
+    // The first turn's reply goes through, then the turn fails on the API; the next one is answered.
+    if(index===0){
+      emit({type:"assistant",uuid:"partial",parent_tool_use_id:null,message:{id:"m-partial",content:[{type:"text",text:PARTIAL}]}});
+      emit(failedResult(message,"api_error",{result:"API Error"}));return;
+    }
+    for(const frame of claudeReply(message,"All good now."))emit(frame);
+  }});
+  try{
+    harness.seedThread("Parser summary",{permissionProfile:"supervised"});
+    await routeClaudeApp(page,harness,{permissionMode:"supervised"});
+    await page.goto("/");await openThread(page,"Parser summary");
+    const conversation=page.locator(".conversation-column"),reply=page.locator(".history-assistant").filter({hasText:PARTIAL});
+    const said=()=>conversation.getByText(FAILED).filter({visible:true});
+    // The reply under the failed pill, which says why the turn failed: the only place on screen that says it, with no row of its own.
+    const keptWithReason=async when=>{
+      await expect(reply,"the reply is kept "+when).toHaveCount(1);
+      await expect(reply.getByTestId("turn-outcome"),"under the failed pill "+when).toHaveText(/^failed/);
+      await expect(reply.locator(".turn-outcome-message"),"which says why the turn failed "+when).toHaveText(FAILED);
+      await expect(said(),"said once "+when).toHaveCount(1);
+      await expect(page.getByTestId("turn-outcome-row"),"no row of its own "+when).toHaveCount(0);
+    };
+
+    await send(page,"Summarize the parser module");
+    await expect(conversation.getByText(PARTIAL,{exact:true}).first()).toBeVisible({timeout:15_000});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:15_000});
+    await expect(page.locator(".agent-block .tool-event.kind-error").filter({hasText:FAILED}),"the card says why the turn failed").toBeVisible();
+    await expect(said(),"once, while the card is on screen").toHaveCount(1);
+
+    await send(page,"Once more");
+    await expect(page.getByText("All good now.",{exact:true})).toBeVisible({timeout:15_000});
+    await keptWithReason("once the next message is sent");
+    await reply.scrollIntoViewIfNeeded();
+    await page.screenshot({animations:"disabled",path:`${auditDir}claude-failed-turn-reply-next-dark-1280x800.png`});
+
+    await page.reload();await openThread(page,"Parser summary");
+    await expect(page.getByText("All good now.",{exact:true})).toBeVisible({timeout:15_000});
+    await keptWithReason("after a reload");
+    for(const mode of ["dark","light"]){
+      if(mode==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
+      await reply.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:`${auditDir}claude-failed-turn-reply-reloaded-${mode}-1280x800.png`});
+    }
   }finally{await harness.close()}
 });

@@ -1379,13 +1379,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(thread.runtime!=="native")return;const count=Number(value);if(!Number.isFinite(count)||count<0)return;
       threadStore.updateTurn(thread.id,turn.id,{modelTurns:Math.max(0,Math.floor(count))});
     };
+    // The turn's reply, stored with it and sent to the open window as it ended.
+    const keepReply=text=>{const assistant=String(text||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}};
     const settlement=promptPromise.then(result=>{
       settleToolWrites(thread.id);endNativeDraft(session,thread.id,turn.id);
       endReasoning(thread.id,turn.id);persistUsage(result);persistModelTurns(result?.raw?.modelTurns);
       const providerMessageId=result?.providerMessageId||result?.userMessageId||null;
       const providerUserMessageId=result?.userMessageId||null;
       if(providerMessageId||providerUserMessageId)threadStore.updateTurn(thread.id,turn.id,{...(providerMessageId?{providerMessageId}:{}),...(providerUserMessageId?{providerUserMessageId}:{})});
-      const assistant=String(session.__assistant||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}
+      keepReply(session.__assistant);
       const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=threadStore.finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
       emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadMetadata(thread.id)?.status||{type:"idle"}});
       if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
@@ -1410,10 +1412,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // A Claude Code turn that failed after its prompt reached the transcript keeps its ids, so a later turn can be edited.
       if(error?.providerMessageId||error?.userMessageId)threadStore.updateTurn(thread.id,turn.id,{...(error.providerMessageId?{providerMessageId:error.providerMessageId}:{}),...(error.userMessageId?{providerUserMessageId:error.userMessageId}:{})});
       persistUsage(null);persistModelTurns(error?.nativeModelTurns);
-      // A Cursor turn that ended in Cursor's lost-connection dump keeps what Cursor wrote before it as its reply, as a turn that completes
-      // keeps its reply. The dump (the failure's last message) is the turn's error, not its answer (cursor-transport-failure.mjs), so a
-      // turn that wrote nothing before it keeps no reply and ends with that error alone.
-      if(error?.code==="CURSOR_TRANSPORT_FAILURE"){const said=String(session.__assistant||""),dump=String(error.dump||""),assistant=dump&&said.endsWith(dump)?said.slice(0,said.length-dump.length).trim():"";if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}}
+      // A turn that failed keeps what its harness wrote before the failure as its reply, as a turn that completes keeps its reply, so the
+      // thread shows it under the failed pill after the next message and opened again; a window that opens the thread while the turn
+      // waits to end has it there, not as the turn's reply so far as well (trebellLiveReply). A Cursor turn that ended in Cursor's
+      // lost-connection dump keeps what Cursor wrote before it: the dump (the failure's last message) is the turn's error, not its answer
+      // (cursor-transport-failure.mjs), so a turn that wrote nothing before it keeps no reply and ends with that error alone.
+      const said=String(session.__assistant||""),dump=error?.code==="CURSOR_TRANSPORT_FAILURE"?String(error.dump||""):null;session.__assistant="";
+      keepReply(dump==null?said:dump&&said.endsWith(dump)?said.slice(0,said.length-dump.length):"");
       const fail=message=>{const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:turn.id,message});emit("turn/completed",{threadId:thread.id,turn:completed})};
       // A turn its harness failed asks the harness again before it ends (harnessFailureMessage); one the person stopped did not fail.
       const harness=sessionHarnesses.get(session);
