@@ -21,7 +21,6 @@
     "electron"
   ],
   "type": "module",
-  "license": "Apache-2.0",
   "bin": {
     "trebell": "./bin/trebell.mjs",
     "trebell-code": "./bin/trebell.mjs"
@@ -116,9 +115,7 @@
       "branding/**/*",
       "package.json",
       "README.md",
-      "THIRD_PARTY_NOTICES.md",
-      "LICENSE",
-      "NOTICE"
+      "THIRD_PARTY_NOTICES.md"
     ],
     "asarUnpack": [
       "node_modules/@openai/codex-win32-x64/**/*",

@@ -8,7 +8,7 @@ The core product is **Trebell Native**, where Trebell controls the model/tool lo
 
 Support for Codex, Claude Code, OpenCode, and other runtimes is useful for convenience and side-by-side comparison, but **runtime switching is not the product thesis**.
 
-**Working desktop MVP · Apache-2.0 · Node.js 22+ · Windows release + macOS/Linux packaging**
+**Working desktop MVP · Node.js 22+ · Windows release + macOS/Linux packaging**
 
 ![Trebell Code workspace: Trebell Native fixes a bug, runs the tests, verifies the change and shows the diff](docs/assets/trebell-code-workspace.png)
 
@@ -184,6 +184,6 @@ Provider credentials belong in Trebell's Settings/secret paths. Repository `.env
 
 Please report security issues privately as described in [SECURITY.md](SECURITY.md).
 
-## License
+## Third-party notices
 
-Trebell Code is licensed under the [Apache License 2.0](LICENSE). Third-party attribution is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [NOTICE](NOTICE).
+Third-party attribution is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
