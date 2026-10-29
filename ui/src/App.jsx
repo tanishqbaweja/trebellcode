@@ -3374,7 +3374,8 @@ export default function App(){
           const stored=turnActivityRef.current;seedLiveRows(owner,id,stored.threadId===owner?stored.turns[String(id)]?.rows:null);
         }
         setRunning(true);setActiveTurnId(id);
-        setMessages(prev=>{const index=[...prev].reverse().findIndex(m=>m.role==="user"&&!m.turnId);if(index<0)return prev;const real=prev.length-1-index;return prev.map((m,i)=>i===real?{...m,turnId:id}:m)});
+        // The newest message with no turn is this turn's, unless it still waits for the compaction before it (startTurn's waits).
+        setMessages(prev=>{const index=[...prev].reverse().findIndex(m=>m.role==="user"&&!m.turnId);if(index<0)return prev;const real=prev.length-1-index;return prev[real].waits?prev:prev.map((m,i)=>i===real?{...m,turnId:id}:m)});
       }
     }
     else if(message.method==="turn/completed"){
@@ -4493,10 +4494,12 @@ export default function App(){
     await validateAttachmentPaths(paths||[],{extract:!checked});
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
     const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),sentMessage={id:clientId,role:"user",text,attachments:paths};
-    const showSent=()=>{followConversationEnd();setMessages(prev=>prev.some(message=>message.id===clientId)?prev:[...prev,sentMessage])};
+    const showSent=waits=>{followConversationEnd();setMessages(prev=>prev.some(message=>message.id===clientId)?prev.map(message=>message.id===clientId&&!waits?sentMessage:message):[...prev,waits?{...sentMessage,waits}:sentMessage])};
     // A message shown while the automatic compaction runs before it is the send's, as below: the live card leaves the last turn for
-    // it (that turn's card reads in its place, above the message), keeping only the compaction's row.
-    const waitShown=()=>{if(activeThreadRef.current?.id!==thread.id)return;showSent();setCardTurnId(null);setEvents(prev=>prev.filter(row=>row.id==="context-compact-"+thread.id))};
+    // it (that turn's card reads in its place, above the message), keeping only the compaction's row. Until the send goes on it waits
+    // (waits): no turn that starts meanwhile takes it (turn/started), as Codex's and Grok's compaction, which runs as a turn of its own,
+    // would, and it reads below such a turn's card (conversation-order.js).
+    const waitShown=()=>{if(activeThreadRef.current?.id!==thread.id)return;showSent(true);setCardTurnId(null);setEvents(prev=>prev.filter(row=>row.id==="context-compact-"+thread.id))};
     const autoCompaction=await maybeAutoCompactBeforeTurn(thread,held,(held||pending)&&!goalResume?waitShown:null);
     // A thread the send creates keeps its turns' cards from its first turn on, as an opened thread does. Trebell's tool catalog comes
     // first: a send that cannot start for want of it sets nothing up (no worktree, no thread). A new task left while its thread was

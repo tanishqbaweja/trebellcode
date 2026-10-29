@@ -919,7 +919,8 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    and only the card's own turn's rows move: those after the .latest-turn-start marker the conversation places (a turn that
    started without a user message, as a goal continuing, keeps the previous turn's reply above its card). The outcome row of
    the card's turn moves with them, also when it follows the turn's message directly and no marker is placed. What comes after
-   the card's block reads after them, the card of the rows that came once its turn had ended (.agent-block-after) first.
+   the card's block reads after them, the card of the rows that came once its turn had ended (.agent-block-after) first. A user's
+   message after the marker is one still waiting to be sent while a turn that comes before it runs (conversation-order.js).
    App names the card's block in the column's class (with-agent-block), never a :has() on the column: Chrome restyles everything
    inside an element a :has() rule tests whenever something under it may change the rule's match, and a streaming reply adds
    elements to the block as it grows, so each delta restyled the whole conversation (110 elements a delta, up to 459 at once, on a
@@ -927,7 +928,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .chat-workspace .conversation-column.with-agent-block{display:flex;flex-direction:column}
 .chat-workspace .conversation-column.with-agent-block>.conversation-history{display:contents}
 .chat-workspace .conversation-column.with-agent-block>.agent-block{order:2}
-.chat-workspace .conversation-column.with-agent-block>.conversation-history>.latest-turn-start~:is(.history-assistant,.reasoning-row,.turn-card){order:3}
+.chat-workspace .conversation-column.with-agent-block>.conversation-history>.latest-turn-start~:is(.history-assistant,.reasoning-row,.turn-card,.user-row){order:3}
 .chat-workspace .conversation-column.with-agent-block>.conversation-history>.turn-outcome-row.latest-turn-end{order:3}
 .chat-workspace .conversation-column.with-agent-block>.agent-block~*{order:4}
 /* A part loaded later that could not be shown (LazySlot in App.jsx) says so in its place; a dialog's, at the foot of the window. */

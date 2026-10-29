@@ -30,6 +30,16 @@ test("a card of no turn leaves every turn's rows above it",()=>{
   assert.equal(latestTurnRowsStart([user("u1","t1"),reply("a1","t1"),reply("a2",null)],null),2);
 });
 
+test("a message still waiting to be sent reads below the card of a turn that runs before it, and the send's own card below the message",()=>{
+  const waiting={id:"u2",role:"user",waits:true};
+  // Codex's compaction runs as a turn of its own before the message goes: the message moves below that turn's card.
+  assert.equal(latestTurnRowsStart([user("u1","t1"),reply("a1","t1"),waiting],"compaction"),2);
+  // While the send's own card shows (no turn yet: Muse Code's compaction runs in none), the card reads below the message.
+  assert.equal(latestTurnRowsStart([user("u1","t1"),reply("a1","t1"),waiting],null),-1);
+  // Once it is sent it is the latest turn's message again.
+  assert.equal(latestTurnRowsStart([user("u1","t1"),reply("a1","t1"),user("u2",null)],"compaction"),-1);
+});
+
 test("a steer in the running turn keeps the rows before it in place",()=>{
   const steered=[user("u1","t1"),reply("a1","t1"),user("s1","t1"),reply("a2","t1")];
   assert.equal(latestTurnRowsStart(steered,"t1"),3);

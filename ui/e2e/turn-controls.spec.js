@@ -1079,6 +1079,48 @@ test("a message's automatic compaction that Codex ends after the window's 45 sec
   }finally{await codex.close()}
 });
 
+// Where a row reads on screen, top to bottom.
+const edges=locator=>locator.evaluate(node=>{const box=node.getBoundingClientRect();return {top:Math.round(box.top),bottom:Math.round(box.bottom)}});
+
+// On a General chat, whose queue is Codex's own, a message sent with the context nearly full shows while Codex compacts first. Codex's
+// compaction runs as a turn of its own, which starts and ends before the message's turn/start is answered: that turn does not take
+// the message, so nothing under the message says a turn finished without a reply, and the compaction's card reads above the message,
+// where it stays once the message's own turn has started, as after a reload.
+test("a message shown while Codex's automatic compaction runs is no part of the compaction's own turn: nothing under it says that turn finished without a reply, and the compaction's card reads above it throughout",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex auto compact chat",settings:{autoCompactContext:true,autoCompactThresholdPercent:85}});
+  const usage=percent=>({threadId:codex.thread.id,tokenUsage:{modelContextWindow:100_000,last:{inputTokens:percent*1000},total:{totalTokens:130_000}}});
+  const message=page.locator(".user-row").filter({hasText:"Count again."}),noReply=page.getByText("Finished without a reply.",{exact:true});
+  const threadId=codex.thread.id,compactTurn="codex-auto-compact-turn",item={type:"contextCompaction",id:"auto-compaction-item-1"};
+  const card=page.locator(`[data-testid=activity-card][data-turn-id="${compactTurn}"]`);
+  // Soft, so that the old code also shows what reads under the message.
+  const above=async when=>{const [compaction,sent]=await Promise.all([edges(card),edges(message)]);expect.soft(compaction.bottom,"the compaction's card reads above the message "+when).toBeLessThanOrEqual(sent.top)};
+  try{
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [first]=codex.turns;first.answer();first.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    codex.notify("thread/tokenUsage/updated",usage(93));await expect(page.locator(".context-meter")).toHaveAttribute("aria-valuenow","93");
+    await sendTyped(page,"Count again.");
+    await expect.poll(()=>codex.calls.includes("thread/compact/start")).toBe(true);
+    await expect(message,"the message shows while Codex compacts").toHaveCount(1);
+    codex.notify("turn/started",{threadId,turn:{id:compactTurn,status:"inProgress",items:[]}});codex.notify("item/started",{threadId,turnId:compactTurn,item});
+    await expect(card).toHaveCount(1);await above("while Codex compacts");
+    codex.notify("item/completed",{threadId,turnId:compactTurn,item,completedAtMs:Date.now()});codex.notify("thread/compacted",{threadId,turnId:compactTurn});
+    codex.notify("turn/completed",{threadId,turn:{id:compactTurn,status:"completed",items:[]}});
+    // The message goes on; its turn/start is not answered yet.
+    await expect.poll(()=>codex.turns.length).toBe(2);
+    await expect.soft(noReply,"no turn reads as finished without a reply").toHaveCount(0);
+    await expect.soft(page.locator(`[data-testid=turn-outcome-row][data-turn-id="${compactTurn}"]`)).toHaveCount(0);
+    await expect(card).toHaveCount(1);await above("once the compaction has ended");
+    await shoot(page,"auto-compaction-turn-before-message");
+    const next=codex.turns[1];next.answer();next.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toHaveCount(2,{timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    await expect(noReply).toHaveCount(0);await expect(message).toHaveCount(1);
+    await expect(card).toHaveCount(1);await above("once the message's turn has started");
+  }finally{await codex.close()}
+});
+
 // Codex ends a turn and starts one of its own (a goal going on) in one moment, and the window handles both before it draws again: the
 // ended turn keeps on its own card the context step its message was sent with, which the new turn's card does not list. The page's
 // socket listener is kept so that the test hands it both frames in one task, as two frames that come at once are handled.
