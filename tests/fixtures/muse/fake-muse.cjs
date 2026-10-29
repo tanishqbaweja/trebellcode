@@ -64,7 +64,8 @@
 //                       ends once the message comes, before the rest of the report (and, when MUSE_FAKE_REPORT_COMMAND_HOLD names a
 //                       file, only once that file is there, the rest of the report and the message's turn after it, as they follow a
 //                       long command in Muse); once the file MUSE_FAKE_REPORT_ASK_HOLD names is
-//                       there, the held report asks to run `touch muse-approved.txt` ("ask approval"), and its answer ends the report
+//                       there, the held report asks to run `touch muse-approved.txt` ("ask approval"), and its answer ends the report;
+//                       once the file MUSE_FAKE_REPORT_END_HOLD names is there, a held report no message came for ends by itself
 const fs=require("node:fs"),readline=require("node:readline");
 const log=entry=>{if(process.env.MUSE_FAKE_LOG)fs.appendFileSync(process.env.MUSE_FAKE_LOG,JSON.stringify(entry)+"\n")};
 const argv=process.argv.slice(2);
@@ -199,7 +200,12 @@ function reportTurn(sessionId,turnId){
   usageStep(sessionId,turnId,{prompt:36716,output:262,cacheRead:33393,reasoning:238});
   if(process.env.MUSE_FAKE_REPORT_HOLD==="1"&&process.env.MUSE_FAKE_REPORT_COMMAND==="1")notify("item/started",sessionId,{item:reportCheck(turnId,1,"inProgress")});
   if(process.env.MUSE_FAKE_REPORT_HOLD==="1"&&process.env.MUSE_FAKE_REPORT_ASK_HOLD)later(process.env.MUSE_FAKE_REPORT_ASK_HOLD,0,()=>{if(running.has(turnId))askApproval(sessionId,turnId,false)});
-  if(process.env.MUSE_FAKE_REPORT_HOLD==="1")return void heldReports.set(sessionId,{turnId,turn});
+  if(process.env.MUSE_FAKE_REPORT_HOLD==="1"){
+    heldReports.set(sessionId,{turnId,turn});
+    // Once the file MUSE_FAKE_REPORT_END_HOLD names is there, a report no message came for says the rest and ends by itself.
+    if(process.env.MUSE_FAKE_REPORT_END_HOLD)later(process.env.MUSE_FAKE_REPORT_END_HOLD,0,()=>{if(heldReports.get(sessionId)?.turnId!==turnId)return;heldReports.delete(sessionId);reply(sessionId,turn," The rest of the report.");complete(sessionId,turnId)});
+    return;
+  }
   setTimeout(()=>complete(sessionId,turnId),20);
 }
 // A message queued behind the held report: the report says the rest of its reply in the same message and ends, with the tokens of

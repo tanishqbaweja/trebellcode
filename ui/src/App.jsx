@@ -3105,7 +3105,9 @@ export default function App(){
       else if(command==="projects")navigateSection("projects");
       else if(command==="settings")navigateSection("settings");
       else if(command==="environments")navigateSection("environments");
-      else if(command==="steerQueued"&&queued.length)runUserAction(()=>sendQueuedNow(queued[0]),"Could not send queued follow-up");
+      // Send now as the follow-up's own button runs it, in this render's mode and turn (queuedSendNow), not in those of the render
+      // this listener was added in: a mode picked since would not be the one its steer names.
+      else if(command==="steerQueued"&&queued.length)runUserAction(()=>queuedSendNow(queued[0]),"Could not send queued follow-up");
       else if(command==="undoThreadAction")undoThreadAction();
       else if(command==="copyReference")runUserAction(copyActiveReference,"Copy failed");
       else if(command==="copyPullRequestNumber")runUserAction(copyActivePullRequestNumber,"Copy failed");
@@ -3145,6 +3147,8 @@ export default function App(){
       persistLocalQueue(threadId,retry).catch(()=>{if(activeThreadRef.current?.id===threadId)setQueued(retry)});return;
     }
     onItsWay.add(next.id);
+    // The note that this follow-up was not sent (a Send now the relay refused while Muse Code wrote its report) ends as it goes.
+    setComposerAlert(current=>current?.queuedId===next.id?null:current);
     (async()=>{
       const dispatching=queued.map(item=>item.id===next.id?{...item,dispatchingAt:Date.now(),autoStartFailed:false}:item);
       try{
@@ -4817,13 +4821,14 @@ export default function App(){
       await validateAttachmentPaths(item.attachments||[]);
       if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
         // Steered into the turn, it is on its way until Codex has it: its card says so and leaves it be, and a steer that fails leaves
-        // it queued as it was (clearQueuedDispatch). One the relay refuses for the mode it is sent in says so as a steered draft does.
+        // it queued as it was (clearQueuedDispatch). One the relay refuses for the mode it is sent in says so as the queue's own note
+        // does, and that it stays queued: the queue sends it once the turn ends, unless a Stop holds it, and the note ends as it goes.
         let steered=false;
         try{
           await persistLocalQueue(activeThread.id,queueNow(activeThread.id).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now()}:q));
           await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments),...harnessThreadOptions(agentRuntime,{permissionMode})});steered=true;
           await persistLocalQueue(activeThread.id,queueNow(activeThread.id).filter(q=>q.id!==item.id));queueKeysDone(item.id);followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
-        }catch(error){if(!steered)await clearQueuedDispatch(activeThread.id,item.id);if(error?.rpcCode!==-31000)throw error;setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return}
+        }catch(error){if(!steered)await clearQueuedDispatch(activeThread.id,item.id);if(error?.rpcCode!==-31000)throw error;setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error.message)+" It stays queued.",queuedId:item.id});return}
       }
       if(running)return;
       // Its dispatch mark goes into the queue as it is now (queueNow), not the copy taken at the press.
@@ -5459,6 +5464,7 @@ export default function App(){
   const conversationCite=useLatestCallback((message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text"));
   const composerPromptEdit=useLatestCallback(()=>{setPromptHistoryIndex(-1);setComposerAlert(current=>current?.kind==="send"?null:current)});
   const composerSend=useLatestCallback(send);
+  const queuedSendNow=useLatestCallback(sendQueuedNow);
   const composerBackgroundSend=useLatestCallback(sendInBackground);
   const composerSetModel=useLatestCallback(changeComposerModel);
   const composerRemoveAttachment=useLatestCallback(path=>{dropCiteNote(path);setAttachments(prev=>prev.filter(x=>x!==path))});
