@@ -98,7 +98,7 @@ export function settledRetryRows(rows,{turnId=null,outcome="recovered"}={}){
 // What a cut text keeps is a copy: a slice of a string keeps the whole string it was cut from in memory, so a row kept after its turn
 // would hold all of a long output or diff while it shows only its cut. A text cut once is left as it was cut: cut again, it would
 // count what the first cut left out wrongly.
-const CUT_TAIL=/^\n… [\d,]+ more characters$/,CUT_HEAD=/^… [\d,]+ earlier characters not shown\n/;
+const CUT_TAIL=/^\n… [\d,]+ more characters$/,CUT_HEAD=/^… ([\d,]+) earlier characters not shown\n/;
 const copied=text=>JSON.parse(JSON.stringify(text));
 function cappedText(value){
   if(value.length<=RESTORED_TEXT_LIMIT||CUT_TAIL.test(value.slice(RESTORED_TEXT_LIMIT)))return value;
@@ -107,6 +107,13 @@ function cappedText(value){
 function cutOutputEnd(text){
   const head=CUT_HEAD.exec(text);if(head&&text.length-head[0].length===RESTORED_TEXT_LIMIT)return text;
   return copied("… "+(text.length-RESTORED_TEXT_LIMIT).toLocaleString("en-US")+" earlier characters not shown\n"+text.slice(-RESTORED_TEXT_LIMIT));
+}
+// Whether a command's output goes on from what a row holds of it: all of it, or the end a kept row holds (cutOutputEnd), which the
+// output has where the cut says it starts.
+function continuesOutput(output,held){
+  if(output.startsWith(held))return true;
+  const head=CUT_HEAD.exec(held);
+  return Boolean(head)&&output.startsWith(held.slice(head[0].length),Number(head[1].replace(/,/g,"")));
 }
 function cappedValue(value,depth=0){
   if(typeof value==="string")return cappedText(value);
@@ -138,13 +145,13 @@ export function restoredRow(row){
 // never differ. started: the item as sent. progress: only a changed name, kind or status touches the row (output streams on
 // its own), or a step that says from here that it runs on past its turn (runsPastTurn: a command Muse Code's report runs, which
 // a message took over), so that its turn's end leaves it running, and what such a step says (a command Muse Code sent to the
-// background), which outlasts the output its turn's end clears. Output that only goes on from the row's streams on its own, so a
-// command streaming past its turn does not replace its turn's card with each chunk. completed: the final item, with the output
-// streamed for it when the item carries none.
+// background), which outlasts the output its turn's end clears. Output that only goes on from the row's streams on its own, also from
+// the end a kept row holds of a long one (restoredRow), so a command streaming past its turn does not replace its turn's card with each
+// chunk. completed: the final item, with the output streamed for it when the item carries none.
 export function mergeLiveRow(old,item,{phase="started",streamed=""}={}){
   if(phase==="started"||!old)return phase==="completed"?{...item,output:item.output||streamed||""}:item;
   if(phase==="progress"){
-    const said=Boolean(item.raw?.runsPastTurn&&item.output)&&(!old.output||!item.output.startsWith(old.output));
+    const said=Boolean(item.raw?.runsPastTurn&&item.output)&&(!old.output||!continuesOutput(item.output,old.output));
     if(old.title===item.title&&old.kind===item.kind&&old.status===item.status&&!old.raw?.runsPastTurn===!item.raw?.runsPastTurn&&!said)return old;
     return {...old,...item,output:item.output||old.output};
   }

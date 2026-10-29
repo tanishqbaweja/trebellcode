@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { RESTORED_LIST_LIMIT, RESTORED_TEXT_LIMIT, RETRY_RECOVERED_TITLE, RETRY_STOPPED_TITLE, activityRow, isCardItem, mergeLiveRow, restoredRow, retryActivityRow, retryRowId, settledRetryRows, settledRow } from "../ui/src/activity-item.js";
 import { codexErrorNotice } from "../ui/src/codex-turn-options.js";
 import { toolEventFailed } from "../ui/src/tool-event-status.js";
-import { cardRowsFromItemEntries } from "../ui/src/turn-activity.js";
+import { cardRowsFromItemEntries, emptyTurnActivity, mergeTurnActivity } from "../ui/src/turn-activity.js";
 import { activityItemStatus } from "../ui/src/activity-details.js";
 import { dynamicToolLabel } from "../ui/src/tool-activity.js";
 
@@ -201,6 +201,34 @@ test("a step past its turn takes what it says from a progress update, not each c
   assert.equal(mergeLiveRow(said,item("Dev server restarted."),{phase:"progress"}).output,"Dev server restarted.","output that does not go on from the row's is what the step says now");
   // Its end still brings the whole output.
   assert.equal(mergeLiveRow(said,{...item("Running in the background.\nDev server stopped."),status:"done"},{phase:"completed"}).output,"Running in the background.\nDev server stopped.");
+});
+
+// A step past its turn whose output was over what a kept row holds keeps that output's end on its turn's card (restoredRow), and every
+// progress update still carries all of it (a Muse Code report's command a message took over after it streamed 16 KB, or one the window
+// read again from the thread as it runs). Output that only goes on from the end the row kept keeps the row and the card's turn as they
+// are too, chunk after chunk (App's trackPastTurnRow merges and keeps each update so), while what the step says instead still takes it.
+test("a step past its turn whose kept output was cut to its end keeps its row as more of that output streams",()=>{
+  const item=output=>activityRow({id:"report",type:"commandExecution",command:"npm run build -- --watch",status:"inProgress",aggregatedOutput:output,runsPastTurn:true},{turnId:"t1"});
+  const lines=count=>Array.from({length:count},(_,index)=>"compiled module "+index+" of the build\n").join("");
+  const streamed=lines(1200);assert.ok(streamed.length>RESTORED_TEXT_LIMIT);
+  const kept=restoredRow(mergeLiveRow(null,item(streamed),{phase:"started"}));
+  assert.match(kept.output,/^… [\d,]+ earlier characters not shown\n/,"the card keeps the output's end");
+  assert.ok(kept.output.endsWith("compiled module 1199 of the build\n"));
+  let row=kept,store=mergeTurnActivity(emptyTurnActivity("thread-1"),{t1:[kept]},{mode:"replace",complete:true});
+  for(const count of [1200,1201,1202,1350]){
+    const next=restoredRow(mergeLiveRow(row,item(lines(count)),{phase:"progress"}));
+    assert.equal(next,row,"output that goes on from the kept end keeps the row itself ("+count+" lines)");
+    const merged=mergeTurnActivity(store,{t1:[next]},{mode:"replace",complete:true});
+    assert.equal(merged,store,"and the card's turn ("+count+" lines)");
+    row=next;store=merged;
+  }
+  // What the step says, and output that does not go on from the end the row kept, take the row.
+  assert.equal(mergeLiveRow(kept,item("Running in the background."),{phase:"progress"}).output,"Running in the background.");
+  const rewritten=streamed.replace(/compiled module 1199 /,"skipped module 1199 ")+"compiled module 1200 of the build\n";
+  assert.notEqual(restoredRow(mergeLiveRow(kept,item(rewritten),{phase:"progress"})).output,kept.output,"output whose kept end changed is what the step says now");
+  // Its end still brings the whole output, kept to its end.
+  const ended=restoredRow(mergeLiveRow(kept,{...item(lines(1210)+"Build finished."),status:"done"},{phase:"completed"}));
+  assert.ok(ended.output.endsWith("compiled module 1209 of the build\nBuild finished."));
 });
 
 // Claude Code's TodoWrite as Trebell stored it before Claude's lists showed as the plan only: a file change that names no file, with the
