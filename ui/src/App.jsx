@@ -260,15 +260,17 @@ const LOADED_BROWSER_ENTRY_ID=BROWSER_NAVIGATION?window.history.state?.trebellNa
 // A part loaded with lazy() whose code could not load (the UI was rebuilt or updated under an open page, or the link to a remote
 // Trebell server dropped), or that failed as it drew, says so in its place: without a boundary React takes the whole app off the
 // screen with it. The browser keeps a module that failed to load as failed, so a reload is what loads it again. failed: what shows
-// instead, for a part that has no place until the person uses it (the Cite button). resetKey: what the slot holds (the right panel's
-// tab); another one draws again in its place, so a part that could not be shown takes only its own place with it.
+// instead of that reason (slotFailed), for a part that has no place until the person uses it (the Cite button), or the reason under
+// a page's heading (DeferredSurface). resetKey: what the slot holds (the right panel's tab); another one draws again in its place, so
+// a part that could not be shown takes only its own place with it.
+const slotFailed=error=><div className="lazy-slot-error" role="alert"><span>This part of Trebell could not be shown: {error.message||String(error)}</span><button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>;
 class LazySlot extends React.Component{
   state={error:null,resetKey:this.props.resetKey};
   static getDerivedStateFromError(error){return {error}}
   static getDerivedStateFromProps(props,state){return props.resetKey===state.resetKey?null:{error:null,resetKey:props.resetKey}}
   render(){
     const {error}=this.state;
-    return error?this.props.failed?this.props.failed(error):<div className="lazy-slot-error" role="alert"><span>This part of Trebell could not be shown: {error.message||String(error)}</span><button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>:<Suspense fallback={this.props.fallback??null}>{this.props.children}</Suspense>;
+    return error?(this.props.failed||slotFailed)(error):<Suspense fallback={this.props.fallback??null}>{this.props.children}</Suspense>;
   }
 }
 // The Cite button's code (idle-parts.js) that could not load says so only where the button would come, above text selected in a
@@ -303,8 +305,10 @@ function CiteUnavailable({containerRef}){
   },[containerRef]);
   return at&&<div className="lazy-slot-error cite-unavailable" role="alert" style={{left:at.x,top:at.y}} onPointerDown={event=>event.preventDefault()}><span>Cite could not load.</span><button ref={reload} type="button" tabIndex={-1} className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>;
 }
-function DeferredSurface({children,label="Loading…",compact=false,resetKey}){
-  return <LazySlot resetKey={resetKey} fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</LazySlot>;
+// heading: a page's own, for a page whose code draws it (Usage, Tools, Environments): should that code not load, the reason says so
+// under it, as on the pages whose heading App draws (History's frame), not alone on the page.
+function DeferredSurface({children,label="Loading…",compact=false,resetKey,heading=null}){
+  return <LazySlot resetKey={resetKey} failed={heading?error=><><div className="page-header"><div><h1>{heading}</h1></div></div>{slotFailed(error)}</>:null} fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</LazySlot>;
 }
 
 function sameSnapshot(left,right){
@@ -5819,9 +5823,9 @@ export default function App(){
           </div>
         </header>})()}
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onOfferUndo={offerPageUndo} isProjectOpen={projectIsOpen} onProjectUpdated={projectsPageUpdated} onProjectRemoved={projectsPageRemoved} onRunScript={(result,run,pressed)=>showActionRun((run.environmentId||"")+"\0"+run.path+"\0"+run.scriptId,result,pressed)} onOpenPreview={previewUrl=>{openRightPanel("preview");requestPreview(previewUrl)}}/></DeferredSurface></div>}
-        {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} skillsLoad={skillsLoad} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} onSkillsReload={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
-        {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage onOfferUndo={offerPageUndo}/></DeferredSurface></div>}
-      {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
+        {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…" heading="Harness capabilities"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} skillsLoad={skillsLoad} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} onSkillsReload={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
+        {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…" heading="Environments"><EnvironmentsPage onOfferUndo={offerPageUndo}/></DeferredSurface></div>}
+      {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…" heading="Usage"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
       {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runningTasks={runningTasks} onActionError={showActionError} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={(session,pressed)=>{setSection("chat");setPanel("terminal");askTerminalKeyboard(pressed);setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>navigateSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
         {/* History's list (ThreadHistoryPage, idle-parts.js) comes at idle right after the first paint; History opened before then asks

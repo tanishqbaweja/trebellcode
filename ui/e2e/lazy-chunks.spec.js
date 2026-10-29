@@ -162,7 +162,9 @@ test("the Runtime tab whose background-processes list cannot load says so there,
 // A page loads with its first visit. When its code cannot load, the page says so under its heading in the words History's list says
 // it in, with Reload (it said the browser's own "Failed to fetch dynamically imported module:" and the script's address, broken
 // across two lines), whether it is opened by a click on its destination, by Enter on it or by its key, wide and narrow; the rest of
-// the app (the sidebar and the way back to the chat) stays, and Reload brings the page back once its code can load.
+// the app (the sidebar and the way back to the chat) stays, and Reload brings the page back once its code can load. Repair of round 13's
+// fix: Usage and Environments (and Tools, below) draw their heading in their own code, so theirs said the reason with no heading over
+// it; App keeps one over the reason, as History's frame has.
 test("a page whose code cannot load says so under its heading in History's words, with Reload, by mouse and by keyboard, wide and narrow, and the way back to the chat stays",async({page,request})=>{
   test.setTimeout(60_000);
   await request.post("/api/settings",{data:NATIVE_SETTINGS});
@@ -170,7 +172,7 @@ test("a page whose code cannot load says so under its heading in History's words
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
   let refuse=true;
-  await page.route(/\/assets\/(ProjectsPage|SettingsPage|UsagePage)-[^/]*\.js$/,route=>refuse?route.abort("failed"):route.continue());
+  await page.route(/\/assets\/(ProjectsPage|SettingsPage|UsagePage|EnvironmentsPage)-[^/]*\.js$/,route=>refuse?route.abort("failed"):route.continue());
   const nav=label=>page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:label,exact:true});
   const failed=page.locator(".secondary-page .lazy-slot-error"),header=page.locator(".secondary-page > .page-header");
   const underHeading=async()=>expect(Math.round((await failed.boundingBox()).x),"the reason under the heading's left edge").toBe(Math.round((await header.boundingBox()).x));
@@ -184,6 +186,14 @@ test("a page whose code cannot load says so under its heading in History's words
   // Enter on Usage.
   await nav("Usage").focus();await page.keyboard.press("Enter");
   await expect(nav("Usage")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);
+  await expect.soft(page.getByRole("heading",{name:"Usage",level:1}),"Usage's heading over its reason").toBeVisible();
+  if(await header.count())await underHeading();
+  await shootModes(page,"lazy-chunk-usage-page-cannot-load");
+  // A click on Environments.
+  await nav("Environments").click();
+  await expect(nav("Environments")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);
+  await expect.soft(page.getByRole("heading",{name:"Environments",level:1}),"Environments' heading over its reason").toBeVisible();
+  if(await header.count())await underHeading();
   // Settings by its key, in a narrow window.
   await page.setViewportSize({width:700,height:800});
   await page.keyboard.press("Control+Comma");
@@ -201,6 +211,27 @@ test("a page whose code cannot load says so under its heading in History's words
   await expect(nav("Projects")).toBeVisible({timeout:10_000});
   await nav("Projects").click();
   await expect(page.locator(".projects-page")).toBeVisible();await expect(failed).toHaveCount(0);
+});
+
+// The Tools page, a Codex window's (Harness capabilities), draws its heading in its own code too: one whose code cannot load says so
+// under the heading App keeps for it, in History's words, with Reload, and the way back to the chat stays.
+test("a Codex window's Tools page whose code cannot load says so under its heading in History's words, with Reload",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await codexFixture(page);
+  try{
+    await page.route(/\/assets\/HarnessToolsPage-[^/]*\.js$/,route=>route.abort("failed"));
+    await page.setViewportSize({width:1280,height:800});await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const nav=label=>page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:label,exact:true});
+    const failed=page.locator(".secondary-page .lazy-slot-error"),header=page.locator(".secondary-page > .page-header");
+    await nav("Tools").click();
+    await expect(nav("Tools")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);await expect(failed).toHaveAttribute("role","alert");
+    await expect.soft(page.getByRole("heading",{name:"Harness capabilities",level:1}),"the Tools page's heading over its reason").toBeVisible();
+    if(await header.count())expect(Math.round((await failed.boundingBox()).x),"the reason under the heading's left edge").toBe(Math.round((await header.boundingBox()).x));
+    await shootModes(page,"lazy-chunk-tools-page-cannot-load");
+    await nav("New task").click();
+    await appStays(page);
+  }finally{await fixture.close()}
 });
 
 // A right-panel tab loads with its first showing. When its code cannot load, its place says so in History's words, with Reload (the
