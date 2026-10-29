@@ -3316,8 +3316,9 @@ export default function App(){
       settleRetry(threadId,completedTurnId,outcomeStatus==="completed"||!outcomeStatus?"recovered":"stopped",isCurrent);
       if(isCurrent){
         sealLiveTurn(threadId,completedTurnId);if(liveTurnKeyRef.current===turnInfoKey(threadId||activeThreadRef.current?.id,completedTurnId))liveTurnKeyRef.current=null;
-        // Its steps still running or pending end with it, done, but for those of work that runs on past it (settledRow's keepPast) and
-        // the row of a compaction that runs in no turn (Muse Code's), which only its own end ends.
+        // Its steps still running end with it, done, and its calls that never started, not run (one a stopped or failed turn cut off the
+        // relay has ended stopped already), but for those of work that runs on past it (settledRow's keepPast) and the row of a
+        // compaction that runs in no turn (Muse Code's), which only its own end ends.
         const compacting=compactionWaitersRef.current.get(String(threadId||""))?.turnless;
         setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>compacting&&e.kind==="contextCompaction"&&!e.turnId?e:settledRow(e,{keepPast:true}));return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{},turnId:completedTurnId?String(completedTurnId):null}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
         if(codexFailure)desktopNotify("Trebell Code error",codexFailure.message);else if(!codexGoalContinues)desktopNotify("Trebell Code finished",titleOf(activeThreadRef.current)+" is ready for review.");

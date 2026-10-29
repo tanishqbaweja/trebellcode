@@ -223,7 +223,8 @@ const acpEntries=list=>(Array.isArray(list)?list:[]).filter(entry=>entry&&typeof
 function acpToolItem(update){
   const id=String(update.toolCallId||randomUUID()),locations=acpEntries(update.locations);
   // A call ACP calls pending has not started yet (its input still streams, it waits on its approval, or a Muse Code workflow's agent is
-  // only scheduled): its row reads pending, as a plan's step that has not started does, and ends with its turn as a running one does.
+  // only scheduled): its row reads pending, as a plan's step that has not started does. One still pending when its turn completed did
+  // not run; one its turn was stopped or failed with ends stopped (the relay's finishTurn), as a harness may run a call it calls pending.
   const status=update.status==="completed"?"completed":update.status==="failed"?"failed":update.status==="pending"?"pending":"inProgress";
   if(update.namespace)return {type:"dynamicToolCall",id,namespace:String(update.namespace),tool:String(update.tool||update.title||update.kind||"tool"),arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations,rawOutput:update.rawOutput};
   // ACP sessions merge each tool update into the tool's last state and normalize its output (acp-tool-state.mjs): aggregatedOutput and
@@ -839,6 +840,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const prefix=String(threadId||"")+":";
     for(const key of liveToolOutput.keys())if(key.startsWith(prefix))liveToolOutput.delete(key);
   }
+  // A turn that was stopped or failed ends the calls it still had pending as stopped, in the thread and in the open window before its
+  // turn/completed: a harness may run a call it calls pending (Antigravity's commands and Cursor's edits go from pending to completed with
+  // nothing between), so one cut off with its turn may have run, and the ACP client marks a turn's unfinished calls cancelled. A call still
+  // pending once its turn completed did not run, which the window says (activity-item.js settledRow). Work that runs on past its turn
+  // (runsPastTurn) is left to its own updates.
+  function finishTurn(threadId,turnId,{status="completed",error=null}={}){
+    if(status!=="completed"){
+      flushToolWrites(threadId);
+      const cut=(peekThread(threadId)?.turns?.find(turn=>turn.id===turnId)?.items||[]).filter(item=>item?.status==="pending"&&item.runsPastTurn!==true);
+      for(const item of cut){const stopped=threadStore.addItem(threadId,turnId,{...item,status:"stopped"});if(stopped)emit("item/completed",{threadId,turnId,item:stopped,completedAtMs:Date.now()})}
+    }
+    return threadStore.finishTurn(threadId,turnId,{status,error});
+  }
   // A harness's thinking streams as one Codex-shaped reasoning item per run of thought chunks; the run ends at the reply's text,
   // a tool call, a thought of another message or the turn's end (T3 Code's ACP adapter closes its reasoning segment there), and
   // the thread keeps its text.
@@ -1391,7 +1405,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const providerUserMessageId=result?.userMessageId||null;
       if(providerMessageId||providerUserMessageId)threadStore.updateTurn(thread.id,turn.id,{...(providerMessageId?{providerMessageId}:{}),...(providerUserMessageId?{providerUserMessageId}:{})});
       keepReply(session.__assistant);
-      const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=threadStore.finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
+      const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
       emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadMetadata(thread.id)?.status||{type:"idle"}});
       if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
     }).catch(error=>{
@@ -1422,7 +1436,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // (cursor-transport-failure.mjs), so a turn that wrote nothing before it keeps no reply and ends with that error alone.
       const said=String(session.__assistant||""),dump=error?.code==="CURSOR_TRANSPORT_FAILURE"?String(error.dump||""):null;session.__assistant="";
       keepReply(dump==null?said:dump&&said.endsWith(dump)?said.slice(0,said.length-dump.length):"");
-      const fail=message=>{const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:turn.id,message});emit("turn/completed",{threadId:thread.id,turn:completed})};
+      const fail=message=>{const completed=finishTurn(thread.id,turn.id,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:turn.id,message});emit("turn/completed",{threadId:thread.id,turn:completed})};
       // A turn its harness failed asks the harness again before it ends (harnessFailureMessage); one the person stopped did not fail.
       const harness=sessionHarnesses.get(session);
       if(stoppedTurns.get(session)===turn.id||!failedWhereItRuns(harness,error,generation,session))return fail(error.message);
@@ -1480,7 +1494,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       }catch(error){
         // The open window says what the turn stores, so the error reads the same live and after a reload.
         const message=`Could not continue after restart: ${error.message}`;
-        const failed=threadStore.finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
+        const failed=finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
       }
     }
     for(const thread of threadStore.list()){
@@ -1691,7 +1705,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     return session;
   }
   function endStoppedTurn(threadId,turnId){
-    const turn=threadStore.finishTurn(threadId,turnId,{status:"cancelled"});
+    const turn=finishTurn(threadId,turnId,{status:"cancelled"});
     emit("turn/completed",{threadId,turn});emit("thread/status/changed",{threadId,status:threadMetadata(threadId)?.status||{type:"idle"}});
     return turn;
   }

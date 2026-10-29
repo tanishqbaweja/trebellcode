@@ -196,3 +196,87 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",asy
     await relay.close();await new Promise(resolve=>server.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});
   }
 });
+
+// Cursor runs an edit while it calls it pending (its edits go from pending to completed with nothing between, as Antigravity's commands
+// do), so a call still pending when the person stops the turn may have run, and may have changed the file: it reads stopped, as its
+// turn does, not "not run" as a call its completed turn never started, on the turn's card as the turn ends and after a reload.
+test("a Cursor edit still pending when the person stops its turn reads stopped, not not run, also after a reload",async({page})=>{
+  test.setTimeout(60_000);
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-stopped-")),fixture=join(root,"fake-cursor.mjs");
+  await writeFile(fixture,String.raw`
+import readline from "node:readline";
+const send=value=>process.stdout.write(JSON.stringify(value)+"\n");
+const select=(id,category,currentValue,values)=>({id,name:id,category,type:"select",currentValue,options:values.map(([value,name])=>({value,name}))});
+let options=[select("mode","mode","agent",[["agent","Agent"],["plan","Plan"],["ask","Ask"]]),select("model","model","default",[["default","Auto"]])],stop=null;
+readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",async line=>{
+  let m;try{m=JSON.parse(line)}catch{return}
+  // Stop ends the prompt, as Cursor answers a cancelled one.
+  if(m.method==="session/cancel"){stop?.();return}
+  if(m.id==null||!m.method)return;
+  const reply=result=>send({jsonrpc:"2.0",id:m.id,result});
+  if(m.method==="initialize")return reply({protocolVersion:1,agentInfo:{name:"fixture",version:"1"},agentCapabilities:{loadSession:true}});
+  if(m.method==="session/new"||m.method==="session/load")return reply({sessionId:"fixture-session",configOptions:options});
+  if(m.method==="session/set_config_option"){options=options.map(option=>option.id===m.params.configId?{...option,currentValue:m.params.value}:option);return reply({configOptions:options})}
+  if(m.method==="session/prompt"){
+    send({jsonrpc:"2.0",method:"session/update",params:{sessionId:m.params.sessionId,update:{sessionUpdate:"tool_call",toolCallId:"edit-notes",title:"Edit File",kind:"edit",status:"pending",locations:[{path:"notes.txt"}]}}});
+    await new Promise(resolve=>{stop=resolve});
+    return reply({stopReason:"cancelled"});
+  }
+  reply({});
+});
+`,"utf8");
+  const env={...process.env,TREBELL_HOME:join(root,"home")},threadStore=new AgentThreadStore(env);
+  const seed=threadStore.create({runtime:"cursor",cwd:root,providerSessionId:"",model:"default",name:"Stopped edit"});
+  const instance={id:"cursor-default",kind:"cursor",displayName:"Cursor",enabled:true};
+  const runtimeManager={
+    activeRuntime:()=>"cursor",activeInstance:()=>instance,instances:()=>[instance],
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>process.env,
+    executable:()=>process.execPath,acpArgs:()=>[fixture],compatibleInstanceIds:()=>[instance.id],
+    probe:async()=>({id:instance.id,name:instance.displayName,available:true,authenticated:true,version:"fixture"}),
+  };
+  const meta=new Map([[seed.id,{projectless:true,environmentId:null}]]);
+  const state={settings:()=>({activeEnvironmentId:null,continueThreadsAfterRestart:false}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},recordUsage:()=>{}};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:null,state,version:"fixture"});
+  const port=await listen(server),json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  try{
+    await keepThreadMeta(page);
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default",modelProvider:"openai",defaultPermissionMode:"full",defaultWorkspaceMode:"current"};
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(settings,route.request().postDataJSON()||{});return json(route,settings)});
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+port+"/api/agent/ws",cwd:root,platform:"win32",version:"fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{[seed.id]:{projectless:true,environmentId:null}}}));
+    await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,{models:["default"],metadata:{provider:"cursor",models:[{id:"default",name:"Auto",provider:"cursor",agent:"Cursor"}]}}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const listed=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Stopped edit"]')});
+    await listed.locator(".thread-main").click();
+    const composer=page.getByTestId("composer");await expect(composer).toBeEnabled();
+    await composer.click();await page.keyboard.type("Add a line to the notes",{delay:5});await page.keyboard.press("Enter");
+    const edit=page.locator(".tool-event").filter({has:page.locator("summary strong",{hasText:"Editing files"})});
+    await expect(edit.locator("summary em"),"Cursor's edit as it runs").toHaveText("pending",{timeout:20_000});
+    const stop=page.getByRole("button",{name:"Stop",exact:true});await stop.click();
+    await expect(stop).toHaveCount(0,{timeout:15_000});
+    // What the turn's card says once the turn was stopped: the edit stopped with it, without a check, and not that it did not run.
+    const said=async()=>({edit:await edit.locator("summary em").innerText(),checked:await edit.locator("summary .timeline-marker svg.lucide-check").count()});
+    await expect.poll(said,{message:"the turn's card as the turn was stopped",timeout:10_000}).toEqual({edit:"stopped",checked:0});
+    for(const mode of ["dark","light"]){
+      if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").first().click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);await edit.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:auditDir+`agent-tool-stopped-${mode}-1280x800.png`});
+    }
+    // The window reloaded and the thread opened again: its card, rebuilt from the thread's history, says the same.
+    await page.reload();
+    await listed.locator(".thread-main").click();await expect(listed).toHaveClass(/active/);
+    await expect(page.locator(".user-bubble p").filter({hasText:"Add a line to the notes"})).toBeVisible({timeout:20_000});
+    const card=page.getByTestId("activity-card").last();await expect(card).toBeVisible({timeout:20_000});
+    if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click();
+    await expect.poll(said,{message:"the card after a reload",timeout:10_000}).toEqual({edit:"stopped",checked:0});
+    await page.setViewportSize({width:700,height:800});await edit.scrollIntoViewIfNeeded();
+    await expect(edit.locator("summary em"),"a narrow window says the same").toHaveText("stopped");
+    await page.screenshot({animations:"disabled",path:auditDir+`agent-tool-stopped-reloaded-${await page.evaluate(()=>document.documentElement.dataset.mode)}-700x800.png`});
+  }finally{
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});
+  }
+});

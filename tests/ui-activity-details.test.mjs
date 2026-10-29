@@ -118,9 +118,11 @@ test("finished steps count every step with an outcome, notice rows included, and
 });
 
 // A harness's call that never started before its turn ended reads "not run" (activity-item.js settledRow): that is its outcome, so the
-// Runtime tab counts it complete with the call beside it that ran, not as a step still waiting.
+// Runtime tab counts it complete with the call beside it that ran, not as a step still waiting. So is one a stopped or failed turn cut
+// off, which the relay ends stopped (agent-relay.mjs finishTurn).
 test("a call its turn ended before it started has its outcome, so the Runtime tab counts it complete",()=>{
   assert.equal(finishedActivitySteps([{status:"done"},{status:"notRun"}]),2);
+  assert.equal(finishedActivitySteps([{status:"stopped"},{status:"pending"}]),1);
 });
 
 test("a Native exact edit that went through reads as a file change with the diff Trebell returned, one pair or an edits list",()=>{

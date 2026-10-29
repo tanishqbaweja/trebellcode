@@ -715,6 +715,36 @@ test("Stop withdraws an ACP harness's waiting approval card and answers the harn
   assert.deepEqual(reply(await fx.log(),"session/request_permission"),{outcome:{outcome:"cancelled"}});
 });
 
+// A harness may run a call it calls pending: Antigravity's commands and Cursor's edits go from pending to completed with nothing in
+// between. One its turn was stopped or failed with may have run, so it ends stopped, in the thread and in the open window before the
+// turn's end, where it read "not run" (the ACP client marks a turn's unfinished calls cancelled). A call still pending once its turn
+// completed did not run; work that runs on past its turn (runsPastTurn) is left to its own updates.
+test("a call still pending when its turn is stopped or fails ends stopped before the turn's end, and one its completed turn never started stays pending",async t=>{
+  const pending=(toolCallId,title,kind,extra={})=>({update:{sessionUpdate:"tool_call",toolCallId,title,kind,status:"pending",...extra}});
+  const fx=await scenario(t,{...GROK,prompts:[
+    {steps:[pending("edit","Edit File","edit"),pending("agent","Workflow · ping","other",{runsPastTurn:true}),{hang:true}]},
+    {steps:[pending("echo","echo PARITY","execute")],error:{code:-32603,message:"Internal error",data:{message:"The connection to the model dropped."}}},
+    {steps:[pending("lint","npm run lint","execute")]},
+  ]});
+  const {ws,rpc,next,threadStore}=await relayHarness(t,"grok",fx);
+  const started=await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"}),threadId=started.thread.id;
+  const sent=[];ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method==="item/completed"||message.method==="turn/completed")sent.push(message)});
+  // What the window was told of each call by the turn's end, and the turn's status: the completions before turn/completed, then its status.
+  // stopAt: the call whose start the person sees before pressing Stop.
+  const ended=async(start,stopAt=null)=>{
+    const first=sent.length,began=stopAt?next(message=>message.method==="item/started"&&message.params.item?.id===stopAt):null,completed=next(message=>message.method==="turn/completed");
+    await rpc("turn/start",{threadId,input:[{type:"text",text:start}]});
+    if(stopAt){await began;await rpc("turn/interrupt",{threadId})}
+    const turn=(await completed).params.turn,before=sent.slice(first,sent.indexOf(sent.find((message,index)=>index>=first&&message.method==="turn/completed")));
+    return {status:turn.status,told:before.filter(message=>message.method==="item/completed").map(message=>[message.params.item.id,message.params.item.status])};
+  };
+  const stored=()=>Object.fromEntries(threadStore.get(threadId).turns.flatMap(turn=>turn.items).filter(item=>item.type!=="userMessage"&&item.type!=="agentMessage").map(item=>[item.id,item.status]));
+  assert.deepEqual(await ended("edit the notes","agent"),{status:"cancelled",told:[["edit","stopped"]]},"the stopped turn's pending edit ends stopped; the workflow's agent is left to its own updates");
+  assert.deepEqual(await ended("run it"),{status:"failed",told:[["echo","stopped"]]});
+  assert.deepEqual(await ended("lint it"),{status:"completed",told:[]},"a completed turn leaves its call pending, which the window reads as not run");
+  assert.deepEqual(stored(),{edit:"stopped",agent:"pending",echo:"stopped",lint:"pending"});
+});
+
 test("in Grok Auto the requests Grok asks about reach the user even when Trebell's policy would allow them",async t=>{
   const fx=await scenario(t,{...GROK,prompts:[{steps:[{request:{method:"session/request_permission",params:{sessionId:"$sessionId",toolCall:{toolCallId:"t1",title:"Read src/a.js",kind:"read"},options:[{optionId:"once",kind:"allow_once"},{optionId:"no",kind:"reject_once"}]}}}]}]});
   const {ws,rpc,next}=await relayHarness(t,"grok",fx);

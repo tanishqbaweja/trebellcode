@@ -47,11 +47,12 @@ export function activityRow(item={},{turnId=null}={}){
 }
 
 // A step of a turn that has ended is not running any more: a harness that sends no status, a subtask stored as it started and
-// a tool cut off by a stop all read done, as the live card marks them when the turn completes, while a harness's call that never
-// started (pending; a plan's pending steps are no items and stay) did not run, and says so (notRun). Its title stays: a compaction
-// still running when its turn ended (stopped, or failed) did not compact, so only one the thread's history stores (storedRow) reads
-// so. keepPast: the live window's turn end, which leaves a step of work that runs on past its turn (its item says runsPastTurn) for
-// that work's own events.
+// a tool cut off by a stop all read done, as the live card marks them when the turn completes, while a harness's call still pending
+// as its turn completed never started, and says it did not run (notRun; a plan's pending steps are no items and stay). A call still
+// pending as its turn was stopped or failed may have run (a harness may run a call it calls pending), and the relay has ended it stopped
+// before the turn's end (agent-relay.mjs finishTurn). Its title stays: a compaction still running when its turn ended (stopped, or
+// failed) did not compact, so only one the thread's history stores (storedRow) reads so. keepPast: the live window's turn end, which
+// leaves a step of work that runs on past its turn (its item says runsPastTurn) for that work's own events.
 export function settledRow(row,{keepPast=false}={}){
   if(keepPast&&row?.raw?.runsPastTurn)return row;
   return row?.status==="running"?{...row,status:"done"}:row?.fromItem&&row.status==="pending"?{...row,status:"notRun"}:row;
