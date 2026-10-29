@@ -275,3 +275,12 @@ test("the settings evidence says what each value rests on: the ceilings and back
   const model=nativeConfiguration.NATIVE_CONTAINER_ONLY.find(item=>/^Model/.test(item.what));
   assert.match(model.app,/nativeDefaultModel/);assert.match(model.runner,/shared default/);
 });
+
+test("the long context on gpt-6-luna rests on the readouts: it was never compared on fresh tasks with the client read cooling the app ran",()=>{
+  // Second review of native-one-config (2026-10-29); the value stays.
+  const longContext=nativeConfiguration.NATIVE_SETTINGS_EVIDENCE.find(item=>item.setting==="OpenAI long context for gpt-6-luna");
+  assert.equal(longContext.measured,false);assert.equal(longContext.basis,"readouts");
+  assert.equal(longContext.value,"272,000-token window, server compaction at 245,000 armed at half");
+  assert.match(longContext.evidence,/every readout since 2026-10-01/);assert.match(longContext.evidence,/C4[^.]*cost v1/);assert.match(longContext.evidence,/3\.9%[^.]*since replaced/);
+  assert.deepEqual(nativeConfiguration.nativeMeasuredModel("openai","gpt-6-luna"),{reasoningEffort:"max",contextWindow:272_000,serverCompactionThreshold:245_000});
+});
