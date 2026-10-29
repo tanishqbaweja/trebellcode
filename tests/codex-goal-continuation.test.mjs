@@ -166,6 +166,99 @@ test("the server pauses a Codex goal Codex started no turn for after the window 
   }finally{await fixture.close()}
 });
 
+// Repair of round 13's fix: an owed pause was made from Trebell's own copy of the goal, which no window updates while none is there, so
+// a goal Codex had ended meanwhile on a turn no window saw (complete, or its budget spent) was set paused over Codex's own. The owed
+// pause asks Codex for the goal first: one Codex ended is read as Codex has it, and one Codex worked on meanwhile (its accounting moved:
+// a turn ran and ended unseen, and Codex may be between the goal's turns) waits 5 s more, on the window that read it, for a next turn.
+test("a pause owed while no window was there is made only as Codex has the goal: one Codex ended meanwhile reads as it is, and one it worked on waits 5 s more for its next turn",async()=>{
+  const fixture=await startCodexGui("trebell-goal-continuation-owed-"),{upstream}=fixture,[completedId,budgetId,workedId]=["goal-completed-unseen","goal-budget-unseen","goal-worked-unseen"];
+  const ids=[completedId,budgetId,workedId];
+  try{
+    for(const threadId of ids)await fixture.thread(threadId);
+    const first=await fixture.window();await first.request("initialize",{clientInfo:{name:"goal-owed-first-window"}});
+    for(const threadId of ids)await first.request("thread/goal/set",{threadId,objective:"Make the release notes complete",status:"active"});
+    const heard=(method,count)=>until(()=>first.notifications(method).length>=count,5000),sets=upstream.calls("thread/goal/set").length;
+    mock.timers.enable({apis:["setTimeout"]});
+    try{
+      for(const threadId of ids)upstream.notify("turn/started",{threadId,turn:{id:threadId+"-turn-1",status:"inProgress",items:[]}});
+      assert.ok(await heard("turn/started",ids.length));
+      for(const threadId of ids)upstream.notify("turn/completed",{threadId,turn:{id:threadId+"-turn-1",status:"completed",items:[]}});
+      assert.ok(await heard("turn/completed",ids.length),"the window has every turn's end, so the server started each wait");
+      // The window goes during the wait, and the 5 s end with no window there: each pause is owed.
+      const open=upstream.connections();first.close();assert.ok(await until(()=>upstream.connections()<open),"the window has gone");
+      mock.timers.tick(5000);await sleep(80);
+    }finally{mock.timers.reset()}
+    assert.equal(upstream.calls("thread/goal/set").length,sets,"nothing is paused with no window there");
+    // Codex, on turns no window saw: it completes one goal, stops another on its token budget, and works on the third, whose turn ended.
+    const was=threadId=>upstream.goals.get(threadId),moved=(threadId,patch)=>upstream.goals.set(threadId,{...was(threadId),updatedAt:was(threadId).updatedAt+30,...patch});
+    moved(completedId,{status:"complete",tokensUsed:1800,timeUsedSeconds:42});moved(budgetId,{status:"budgetLimited",tokensUsed:50_000,timeUsedSeconds:90});moved(workedId,{tokensUsed:900,timeUsedSeconds:30});
+    const later=await fixture.window();await later.request("initialize",{clientInfo:{name:"goal-owed-later-window"}});
+    assert.equal((await later.request("thread/goal/get",{threadId:completedId})).goal.status,"complete","the goal Codex completed reads complete");
+    assert.equal((await later.request("thread/goal/get",{threadId:budgetId})).goal.status,"budgetLimited","the goal whose budget Codex spent reads so");
+    assert.equal(upstream.calls("thread/goal/set").length,sets,"no goal Codex ended is set paused");
+    mock.timers.enable({apis:["setTimeout"]});
+    try{
+      await later.request("thread/resume",{threadId:workedId});
+      assert.equal((await later.request("thread/goal/get",{threadId:workedId})).goal.status,"active","the goal Codex worked on meanwhile reads active");
+      mock.timers.tick(4999);await sleep(80);
+      assert.equal(upstream.calls("thread/goal/set").length,sets,"nor is it paused within 5 s of that read");
+      mock.timers.tick(1);
+      assert.ok(await until(()=>upstream.goals.get(workedId)?.status==="paused"),"Codex started no turn for it in those 5 s: it is paused, on the window that read it");
+      assert.ok(await until(()=>later.notifications("thread/goal/updated").some(item=>item.params?.threadId===workedId&&item.params.goal?.pauseReason==="continuationExpired")),"the window is told, and why");
+    }finally{mock.timers.reset()}
+    assert.deepEqual(upstream.calls("thread/goal/set").slice(sets).map(call=>call.params),[{threadId:workedId,status:"paused"}],"only that one");
+    assert.equal((await later.request("thread/goal/get",{threadId:workedId})).goal.status,"paused");
+  }finally{await fixture.close()}
+});
+
+// Repair of round 13's fix: the wait and the pause it owes lived only in the server's memory, so a server that stopped during the 5 s
+// (the desktop app quits as its last window closes while Background mode is off, as it is by default) left the goal reading Active
+// with nothing running once Trebell was opened again. The wait is kept in the thread's meta: a server started again on the same home
+// pauses the goal at its first read once the 5 s are over (once, though two windows read it at once), waits 5 s for Codex's next turn
+// on the window that reads it within them, and leaves a goal Codex ended meanwhile as Codex has it.
+test("a Codex goal whose turn ended as the server stopped, within the 5 s, is paused by the server started again on the same home once Codex has started no next turn for it",async()=>{
+  const fixture=await startCodexGui("trebell-goal-continuation-restart-"),{upstream}=fixture,[lateId,earlyId,endedId]=["goal-read-after-wait","goal-read-during-wait","goal-completed-meanwhile"];
+  const ids=[lateId,earlyId,endedId];
+  try{
+    for(const threadId of ids)await fixture.thread(threadId);
+    const first=await fixture.window();await first.request("initialize",{clientInfo:{name:"goal-before-restart"}});
+    for(const threadId of ids)await first.request("thread/goal/set",{threadId,objective:"Make the release notes complete",status:"active"});
+    const heard=(method,count)=>until(()=>first.notifications(method).length>=count,5000),sets=upstream.calls("thread/goal/set").length;
+    for(const threadId of ids)upstream.notify("turn/started",{threadId,turn:{id:threadId+"-turn-1",status:"inProgress",items:[]}});
+    assert.ok(await heard("turn/started",ids.length));
+    const ended=Date.now();
+    for(const threadId of ids)upstream.notify("turn/completed",{threadId,turn:{id:threadId+"-turn-1",status:"completed",items:[]}});
+    assert.ok(await heard("turn/completed",ids.length),"the window has every turn's end, so the server started each wait");
+    // The server stops within the 5 s, and one starts on the same home. Codex meanwhile completed the third's goal, on a turn no window saw.
+    await fixture.restart();
+    const done=upstream.goals.get(endedId);upstream.goals.set(endedId,{...done,status:"complete",tokensUsed:1800,timeUsedSeconds:42,updatedAt:done.updatedAt+30});
+    const second=await fixture.window();await second.request("initialize",{clientInfo:{name:"goal-after-restart"}});
+    // A goal read within the 5 s reads active: the server waits 5 s for Codex's next turn on the window that read it.
+    await second.request("thread/resume",{threadId:earlyId});
+    assert.ok(Date.now()-ended<4000,`the server stopped, started again and was asked for a goal within the 5 s (${Date.now()-ended} ms)`);
+    assert.equal((await second.request("thread/goal/get",{threadId:earlyId})).goal.status,"active");
+    // Once the 5 s are over, the first read of another's goal pauses it before it answers: Codex has it active, and its thread runs no turn.
+    // Another window reads it while that pause is on its way (Codex not yet answered whether the thread runs a turn): it reads the goal
+    // as Codex has it yet, makes no second pause, and is told of the one made.
+    await sleep(Math.max(0,CODEX_GOAL_CONTINUATION_GRACE_MS+200-(Date.now()-ended)));
+    const third=await fixture.window();await third.request("initialize",{clientInfo:{name:"goal-after-restart-too"}});
+    const release=upstream.hold("thread/read"),reading=second.request("thread/goal/get",{threadId:lateId});
+    assert.ok(await until(()=>upstream.calls("thread/read").some(call=>call.params?.threadId===lateId)),"Codex was asked whether the thread runs a turn");
+    assert.equal((await third.request("thread/goal/get",{threadId:lateId})).goal.status,"active","a read while the pause is on its way reads the goal as Codex has it yet");
+    release();
+    const read=(await reading).goal;
+    assert.equal(read.status,"paused","the goal whose turn ended as the server stopped reads paused");assert.equal(read.pauseReason,"continuationExpired");
+    assert.ok(await until(()=>third.notifications("thread/goal/updated").some(item=>item.params?.threadId===lateId&&item.params.goal?.pauseReason==="continuationExpired")),"the other window is told, and why");
+    assert.ok(await until(()=>upstream.goals.get(earlyId)?.status==="paused",8000),"the goal read within the 5 s is paused once Codex has started no turn for it, on the window that read it");
+    assert.ok(await until(()=>second.notifications("thread/goal/updated").some(item=>item.params?.threadId===earlyId&&item.params.goal?.pauseReason==="continuationExpired")),"that window is told, and why");
+    // The goal Codex completed meanwhile reads complete, and nothing pauses it.
+    assert.equal((await second.request("thread/goal/get",{threadId:endedId})).goal.status,"complete");
+    const byThread=(left,right)=>left.threadId.localeCompare(right.threadId);
+    assert.deepEqual(upstream.calls("thread/goal/set").slice(sets).map(call=>call.params).sort(byThread),[{threadId:earlyId,status:"paused"},{threadId:lateId,status:"paused"}].sort(byThread));
+    for(const threadId of [lateId,earlyId])assert.equal((await fixture.traces(threadId)).find(item=>item.name==="goal.continuation_expired")?.status,"paused");
+  }finally{await fixture.close()}
+});
+
 test("a new Codex goal reaches every window as it ends up, never through the cleared and paused steps Codex took on the way",async()=>{
   const fixture=await startCodexGui("trebell-goal-final-"),{upstream}=fixture,threadId="goal-replaced";
   try{

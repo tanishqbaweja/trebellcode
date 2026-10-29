@@ -76,13 +76,18 @@ async function windowSocket(url){
 
 export async function startCodexGui(prefix){
   const home=await mkdtemp(join(tmpdir(),prefix)),[port,appPort]=await Promise.all([freePort(),freePort()]),upstream=await fakeCodex(appPort);
-  const gui=await createGuiServer({port,appPort,mock:true,env:{...process.env,TREBELL_HOME:home}});
+  const start=()=>createGuiServer({port,appPort,mock:true,env:{...process.env,TREBELL_HOME:home}});
+  let gui=await start();
   const windows=[];
   return {
-    home,gui,upstream,
+    home,upstream,
+    get gui(){return gui},
     async thread(threadId,patch={}){await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,patch:{runtime:"codex",runtimeInstanceId:"codex-default",environmentId:null,cwd:home,...patch}})})},
     async window(){const socket=await windowSocket(gui.url.replace(/^http/,"ws")+"/api/codex/ws");windows.push(socket);return socket},
     traces:async threadId=>(await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&limit=200").then(response=>response.json())).items||[],
+    // The Trebell server stops, its windows with it (the desktop app quitting as its last window closes), and a new one starts on the
+    // same port and home, the fake Codex keeping what it had, as Codex keeps its threads and goals.
+    async restart(){for(const socket of windows.splice(0))socket.close();await gui.close();gui=await start();return gui},
     async close(){for(const socket of windows)socket.close();await gui.close();await upstream.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})},
   };
 }

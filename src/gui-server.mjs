@@ -1298,19 +1298,50 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     const window=windows.find(item=>item.connected?.()!==false);if(!window)return false;
     void pauseUncontinuedCodexGoal(threadId,turnId,window.requestUpstream);
   }});
-  async function pauseUncontinuedCodexGoal(threadId,turnId,requestUpstream,{owed=false}={}){
-    // A turn that runs, or whose start a window has on its way (a follow-up sent just now), goes on with the thread; so does one Codex
-    // says runs when the pause was owed, which it may have started while no window was there to see it start.
-    const meta=state.threadMeta(threadId);if(!meta?.goal?.native||meta.goal.status!=="active"||threadTurnRuns(threadId))return;
-    const route=codexGoalRoute(threadId);let written=null;
+  // The wait outlives this server as well (the desktop app quits as its last window closes while Background mode is off, as it is by
+  // default): the thread's meta keeps it (codexGoalWait: the turn that ended, and when) until it ends, so a server started later on the
+  // same home makes the pause it owes at the thread's next goal read (strandedCodexGoalWait). It lived only in memory, and the goal
+  // read Active with nothing running once Trebell was opened again.
+  function noteCodexGoalWait(threadId,turnId){
+    const wait=state.threadMeta(threadId)?.codexGoalWait;if(wait&&turnId!=null&&wait.turnId===turnId)return;
+    state.updateThreadMeta(threadId,{codexGoalWait:{turnId,endedAt:Date.now()}});
+  }
+  function forgetCodexGoalWait(threadId){if(state.threadMeta(threadId)?.codexGoalWait)state.updateThreadMeta(threadId,{codexGoalWait:undefined})}
+  function endCodexGoalWait(threadId){codexGoalContinuations.cancel(threadId);forgetCodexGoalWait(threadId)}
+  // The threads whose pause is on its way: the meta keeps their wait until it is made, and a goal read meanwhile must not make it again.
+  const codexGoalPausing=new Set();
+  // A wait the thread's meta keeps that this server is not waiting on, one a server before it began: its 5 s over, the pause is owed
+  // now; within them, the window reading the goal waits 5 s from its read for Codex's next turn, as a window that saw the turn end does.
+  function strandedCodexGoalWait(threadId,window){
+    if(codexGoalContinuations.waiting(threadId)||codexGoalPausing.has(String(threadId)))return null;
+    const wait=state.threadMeta(threadId)?.codexGoalWait;if(!wait)return null;
+    if(Date.now()-(Number(wait.endedAt)||0)>=CODEX_GOAL_CONTINUATION_GRACE_MS)return {turnId:wait.turnId??null};
+    codexGoalContinuations.turnCompleted(threadId,{turnId:wait.turnId??null,windows:[window]});return null;
+  }
+  async function pauseUncontinuedCodexGoal(threadId,turnId,requestUpstream,{owed=false,connected=null}={}){
+    const pausing=String(threadId);if(codexGoalPausing.has(pausing))return;
+    // A turn that runs, or whose start a window has on its way (a follow-up sent just now), goes on with the thread.
+    const meta=state.threadMeta(threadId);if(!meta?.goal?.native||meta.goal.status!=="active"||threadTurnRuns(threadId)){forgetCodexGoalWait(threadId);return}
+    const route=codexGoalRoute(threadId);let written=null;codexGoalPausing.add(pausing);
     try{
-      if(owed&&(await requestUpstream("thread/read",{threadId,includeTurns:false},route))?.thread?.status?.type==="active")return;
+      // An owed pause (no window was there as the wait ended, or the server stopped during it) goes by Codex's goal as it is now, not by
+      // Trebell's copy, which no window kept up meanwhile: Codex may have gone on with the goal unseen. A goal Codex has ended or paused
+      // since (complete, budgetLimited), or whose thread runs a turn Codex started, is left as Codex has it, not set paused over that;
+      // one whose accounting moved (a turn ran and ended unseen, and Codex may be between its turns) waits 5 s more, on the window
+      // reading it, for Codex's next turn.
+      if(owed){
+        const current=(await requestUpstream("thread/goal/get",{threadId},route))?.goal||null;
+        if(codexGoalStatus(current?.status)!=="active"||(await requestUpstream("thread/read",{threadId,includeTurns:false},route))?.thread?.status?.type==="active"){forgetCodexGoalWait(threadId);return}
+        const now=codexGoalRecord(current,{threadId,previous:meta.goal}),was=meta.goal;
+        if(!now||now.updatedAt!==was.updatedAt||now.native.tokensUsed!==was.native?.tokensUsed||now.native.timeUsedSeconds!==was.native?.timeUsedSeconds){codexGoalContinuations.turnCompleted(threadId,{turnId,windows:connected?[{requestUpstream,connected}]:[]});return}
+      }
       // The windows get the goal as it ends up, saying why it paused (pauseReason), as a window that reads it later does.
       written=codexGoalWriting(threadId);const paused=await requestUpstream("thread/goal/set",{threadId,status:"paused"},route);
       relay.broadcast("thread/goal/updated",{threadId,goal:mirrorCodexGoal(threadId,paused?.goal||null,{patch:{pauseReason:"continuationExpired"}})});
       eventJournal.record({runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId:meta.environmentId??state.settings().activeEnvironmentId??null,threadId,turnId,category:"goal",name:"goal.continuation_expired",status:"paused",data:{completedTurnId:turnId,graceMs:CODEX_GOAL_CONTINUATION_GRACE_MS,owed}});
+      forgetCodexGoalWait(threadId);
     }catch(error){appServer?.logs?.push({at:Date.now(),stream:"relay",text:safeLogText("Could not pause the Codex goal Codex stopped working toward: "+(error?.message||String(error))+"\n")})}
-    finally{written?.()}
+    finally{codexGoalPausing.delete(pausing);written?.()}
   }
   function durableCodexContinuity(threadId){
     const meta=state.threadMeta(threadId);
@@ -3437,7 +3468,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       // saw its turn end go (codexGoalContinuations); its read of the goal makes one owed first, so it reads the goal as it ends up.
       if(threadId&&(message.method==="thread/resume"||message.method==="thread/read"||message.method==="thread/goal/get"))codexGoalContinuations.follow(threadId,{requestUpstream,connected});
       if(message.method==="thread/goal/get"){
-        const owed=threadId?codexGoalContinuations.take(threadId):null;if(owed)await pauseUncontinuedCodexGoal(threadId,owed.turnId,requestUpstream,{owed:true});
+        const owed=threadId?codexGoalContinuations.take(threadId)||strandedCodexGoalWait(threadId,{requestUpstream,connected}):null;
+        if(owed)await pauseUncontinuedCodexGoal(threadId,owed.turnId,requestUpstream,{owed:true,connected});
         return {handled:true,result:{goal:threadId?await readCodexGoal(threadId,requestUpstream):null}};
       }
       if(message.method==="thread/goal/set"){
@@ -3506,7 +3538,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         const turnId=params.turn?.id||params.turnId||null,goal=state.threadMeta(threadId)?.goal;
         void pauseCodexGoalOverBudget(threadId,turnId,requestUpstream);
         // A completed turn of an active goal: Codex is to start the goal's next turn (codex-goal-continuation.mjs).
-        if((params.turn?.status||"completed")==="completed"&&goal?.native&&goal.status==="active")codexGoalContinuations.turnCompleted(threadId,{turnId,windows:[{requestUpstream,connected}]});
+        if((params.turn?.status||"completed")==="completed"&&goal?.native&&goal.status==="active"){codexGoalContinuations.turnCompleted(threadId,{turnId,windows:[{requestUpstream,connected}]});noteCodexGoalWait(threadId,turnId)}
       }
       return message;
     },
@@ -3542,9 +3574,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       recordCodexBudgetEvidence(state,message);
       recordCodexRecoveryItemEvidence(state,message);
       noteCodexFileChanges(message);
-      if(params.threadId&&["thread/closed","thread/archived","thread/deleted"].includes(message?.method)){codexSessionApprovals.end(params.threadId);codexGoalContinuations.cancel(params.threadId)}
+      if(params.threadId&&["thread/closed","thread/archived","thread/deleted"].includes(message?.method)){codexSessionApprovals.end(params.threadId);endCodexGoalWait(params.threadId)}
       // Codex goes on with the goal, or the goal stopped being active: no goal waits for its next turn (codex-goal-continuation.mjs).
-      if(params.threadId&&(message?.method==="turn/started"||message?.method==="thread/goal/cleared"||message?.method==="thread/goal/updated"&&codexGoalStatus(params.goal?.status)!=="active"))codexGoalContinuations.cancel(params.threadId);
+      if(params.threadId&&(message?.method==="turn/started"||message?.method==="thread/goal/cleared"||message?.method==="thread/goal/updated"&&codexGoalStatus(params.goal?.status)!=="active"))endCodexGoalWait(params.threadId);
       const traceMethod=message?.method||route?.requestMethod||"";
       if(traceMethod&&!NOISY_METHOD.test(traceMethod)){
         const traceThreadId=params.threadId||params.thread?.id||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
