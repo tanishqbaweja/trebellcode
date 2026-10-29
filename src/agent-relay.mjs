@@ -1024,9 +1024,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // The starts closeRuntimeSessions ended (a harness's key changed while they started), refused as a reset refuses its own.
   const endedStarts=new WeakSet();
   const restartedWhileStarting=()=>new Error("The harness was restarted while this conversation was starting.");
-  async function startTracked(runtime,options,generation){
+  // harness: the runtime profile and environment the start is for (startingHarnesses), which closeRuntimeSessions goes by.
+  const startingHarnesses=new WeakMap();
+  async function startTracked(runtime,options,generation,harness=null){
     if(generation!==sessionGeneration)throw restartedWhileStarting();
-    startingSessions.add(runtime);
+    startingSessions.add(runtime);if(harness)startingHarnesses.set(runtime,harness);
     try{return await runtime.start(options)}finally{startingSessions.delete(runtime)}
   }
   // A harness that failed where it runs (its session did not start, or a turn ended in its error) is asked again, once
@@ -1099,6 +1101,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(instance.kind==="codex")throw new Error("Codex uses the native Codex relay");
     const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
     const status=await runtimeManager.probe(instance,{environmentId});if(!status.available)throw new Error(status.message||`${status.name} is unavailable`);
+    // A profile on an API key starts only with its key, whatever status was kept from before the key went (keyRefusal): without it the
+    // harness would run on a login of its own.
+    const keyRefused=runtimeManager.keyRefusal?.(instance,environmentId);if(keyRefused)throw new Error(keyRefused.message);
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
     const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),authMethod:runtimeManager.authMethod?.(instance)||"sign-in",permissionMode:effectivePermissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
     if(instance.kind==="native"){
@@ -1262,7 +1267,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const startFailure=async error=>failedWhereItRuns(harness,error,generation)?withMessage(error,await harnessFailureMessage(harness,error)):error;
     // A start that a close or reset of the relay, or of this harness's sessions, ended is refused, never kept or failed as the harness's.
     const ended=()=>generation!==sessionGeneration||endedStarts.has(runtime);
-    try{started=await startTracked(runtime,{providerSessionId:savedSessionId,model:requestedModel},generation)}
+    try{started=await startTracked(runtime,{providerSessionId:savedSessionId,model:requestedModel},generation,harness)}
     catch(error){
       reportModels();await runtime.close().catch(()=>{});
       if(ended())throw restartedWhileStarting();
@@ -1272,7 +1277,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(!freshIfLost||!savedSessionId||!isHarnessSessionLost(error))throw await startFailure(error);
       lost={previousSessionId:String(savedSessionId),reason:error.message};
       runtime=create();prepare();
-      try{started=await startTracked(runtime,{providerSessionId:null,model:requestedModel},generation)}
+      try{started=await startTracked(runtime,{providerSessionId:null,model:requestedModel},generation,harness)}
       catch(freshError){reportModels();await runtime.close().catch(()=>{});if(ended())throw restartedWhileStarting();recordResumeFallback(thread,{...lost,sessionId:null,error:freshError});throw await startFailure(freshError)}
     }
     if(ended()){await runtime.close().catch(()=>{});throw restartedWhileStarting()}
@@ -2447,12 +2452,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // signed in with another method of its own, and any harness's once Settings changed how its profile signs in (everywhere: on a WSL
   // or SSH host too), as each process keeps the sign-in or key it started with (T3 closes a provider instance whose settings
   // changed). The next turn starts the harness again; a start this ends is refused (endedStarts). Without everywhere only the
-  // sessions on this machine (here): Antigravity runs nowhere else. Answers how many sessions it closed.
-  async function closeRuntimeSessions(kind,{everywhere=false}={}){
-    const closes=[],here=session=>everywhere||!session?.remoteIo;
-    for(const runtime of [...startingSessions])if(runtime?.runtime===kind&&here(runtime)){endedStarts.add(runtime);closes.push(runtime.close().catch(()=>{}))}
+  // sessions on this machine (here): Antigravity runs nowhere else. Answers how many sessions it closed. instanceIds: only the sessions
+  // of these runtime profiles (one whose method changed, the ones on a key saved or removed), never another profile's of the kind.
+  async function closeRuntimeSessions(kind,{everywhere=false,instanceIds=null}={}){
+    const closes=[],here=session=>everywhere||!session?.remoteIo,ids=Array.isArray(instanceIds)?new Set(instanceIds.map(String)):null;
+    const ours=(runtime,harness)=>ids?Boolean(harness?.instance)&&ids.has(String(harness.instance.id)):(harness?.instance?.kind||runtime?.runtime)===kind;
+    if(ids&&!ids.size)return 0;
+    for(const runtime of [...startingSessions])if(ours(runtime,startingHarnesses.get(runtime))&&here(runtime)){endedStarts.add(runtime);closes.push(runtime.close().catch(()=>{}))}
     for(const [threadId,session] of [...sessions]){
-      if((sessionHarnesses.get(session)?.instance?.kind||session?.runtime)!==kind||!here(session))continue;
+      if(!ours(session,sessionHarnesses.get(session))||!here(session))continue;
       sessions.delete(threadId);if(session.busy)try{session.cancel?.()}catch{}
       closes.push(closeThreadSession(session,threadId).catch(()=>{}).then(()=>emit("thread/closed",{threadId})));
     }

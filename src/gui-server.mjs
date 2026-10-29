@@ -1130,6 +1130,21 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     codexThreadServerKeys.clear();codexThreadReleases.clear();codexSessionApprovals.clear();
     await Promise.all(servers.map(server=>stopAppServer(server)));
   }
+  // The Codex app-servers these profiles run (a thread's, a thread start's, the catalog's) stop, whether a profile is the active one or
+  // not: each keeps the sign-in or key it started with, so one whose profile's method changed, or whose OpenAI key was saved or removed,
+  // would go on serving its threads on the one before. A start on its way ends first. The next request starts the profile's Codex on
+  // what it has now. Git text's own app-servers end with their request (stopCodexAppServers keepGitText). Answers how many stopped.
+  async function stopCodexProfileServers(instanceIds){
+    const ids=new Set([...instanceIds||[]].map(String));if(!ids.size)return 0;
+    if(codexAppServerStarts.size)await Promise.allSettled([...codexAppServerStarts.values()]);
+    const keys=[...codexAppServers.keys()].filter(key=>!key.startsWith("git-text:")&&ids.has(String(codexAppServers.get(key)?.runtimeInstanceId||"")));
+    const servers=keys.map(key=>codexAppServers.get(key)),stopped=new Set(keys);
+    for(const key of keys)codexAppServers.delete(key);
+    for(const [threadId,key] of [...codexThreadServerKeys])if(stopped.has(key)){codexThreadServerKeys.delete(threadId);codexSessionApprovals.end(threadId)}
+    if(servers.includes(appServer)){appServer={logs:[],idle:true};appServerStart=null}
+    await Promise.all(servers.map(server=>stopAppServer(server)));
+    return servers.length;
+  }
   async function releaseCodexThreadServer(threadId){
     const id=String(threadId||"").trim();if(!id)return;
     if(codexThreadReleases.has(id))return codexThreadReleases.get(id);
@@ -2033,12 +2048,13 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
             // A profile saved with another sign-in method closes its open chats, as Settings' choice in its row does.
             const before=agentRuntimes.instances().find(item=>item.id===String(body.instance?.id||""));
             const instance=agentRuntimes.upsertInstance(body.instance||{});
-            if(before&&harnessAuthMethod(before)!==harnessAuthMethod(instance)){
-              await agentRelay?.closeRuntimeSessions?.(instance.kind,{everywhere:true});
-              if(instance.kind==="codex"&&harnessAuthMethod(instance)!=="api-key"&&!mock)await agentRuntimes.codexApiKeyLogout(instance);
-            }
-            const active=agentRuntimes.activeInstance().id===instance.id;
+            const active=agentRuntimes.activeInstance().id===instance.id,methodChanged=Boolean(before&&harnessAuthMethod(before)!==harnessAuthMethod(instance));
+            // Only this profile's chats close, and its Codex app-servers stop (the active one's restart), before a Codex profile back on
+            // Sign in signs its home of Trebell's own for a key out.
+            if(methodChanged)await agentRelay?.closeRuntimeSessions?.(instance.kind,{everywhere:true,instanceIds:[instance.id]});
             if(instance.kind==="codex"&&active)await restartAppServer();
+            else if(instance.kind==="codex"&&methodChanged)await stopCodexProfileServers([instance.id]);
+            if(methodChanged&&instance.kind==="codex"&&harnessAuthMethod(instance)!=="api-key"&&!mock)await agentRuntimes.codexApiKeyLogout(instance);
             const snapshot=await agentRuntimes.snapshot();
             return json(res,200,{instance,...snapshot,...(active?await runtimeRefreshPayload(req,{agentSnapshot:snapshot}):{})});
           }
@@ -2069,8 +2085,11 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       if(req.method==="DELETE"){
         const id=url.searchParams.get("id");if(!id)return json(res,400,{error:"id is required"});
         try{
-          const removed=agentRuntimes.removeInstance(id);
+          const {instance:removedInstance,...removed}=agentRuntimes.removeInstance(id);
           if(removed.resetTo&&removed.kind==="codex")await restartAppServer();
+          // A removed Codex profile's app-servers stop, and its home of Trebell's own for a key keeps no copy of the OpenAI key.
+          else if(removed.ok&&removed.kind==="codex")await stopCodexProfileServers([id]);
+          if(removed.ok&&removed.kind==="codex"&&!mock)await agentRuntimes.codexApiKeyLogout(removedInstance);
           const snapshot=await agentRuntimes.snapshot();
           return json(res,200,{...removed,...snapshot,...(removed.resetTo?await runtimeRefreshPayload(req,{agentSnapshot:snapshot}):{})});
         }catch(error){return json(res,400,{error:error.message});}
@@ -2081,21 +2100,25 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         const body=await readJsonBody(req),action=String(body.action||"login");
         // method: how a profile signs in (Settings' choice: "sign-in", its own login, or "api-key", its vendor's key).
         if(action!=="login"&&action!=="method")throw new Error("Unsupported runtime authentication action");
+        if(action==="method"){
+          // Only the profile the row names: an id no profile has (a row another window removed) changes no other profile's method.
+          const target=agentRuntimes.instances().find(item=>item.id===String(body.instanceId||""));
+          if(!target)return json(res,404,{ok:false,error:"Runtime profile was not found"});
+          // A profile that changes its method starts again where it runs: each chat's process, and a Codex app-server, keeps the
+          // sign-in or key it started with, so its open chats close and its Codex app-servers stop, active or not (the next turn
+          // starts it with the new method). Another profile of the harness keeps its chats.
+          const {instance:saved,changed}=agentRuntimes.setAuthMethod(target.id,body.method);
+          // Antigravity's home names the method it starts with: the key method on an API key, none a key left on Sign in.
+          if(saved.kind==="antigravity"&&!mock)await prepareAntigravityHome({env,method:harnessAuthMethod(saved)==="api-key"?ANTIGRAVITY_API_KEY_METHOD:null});
+          const stoppedChats=changed?await agentRelay?.closeRuntimeSessions?.(saved.kind,{everywhere:true,instanceIds:[saved.id]})||0:0;
+          if(changed&&saved.kind==="codex"){if(agentRuntimes.activeInstance().id===saved.id)await restartAppServer();else await stopCodexProfileServers([saved.id])}
+          // A Codex profile back on Sign in keeps no copy of the key in its home of Trebell's own for it.
+          if(changed&&saved.kind==="codex"&&harnessAuthMethod(saved)!=="api-key"&&!mock)await agentRuntimes.codexApiKeyLogout(saved);
+          return json(res,200,{ok:true,instanceId:saved.id,method:harnessAuthMethod(saved),stoppedChats,agentSnapshot:await agentRuntimes.snapshot()});
+        }
         const instance=agentRuntimes.instances().find(item=>item.id===String(body.instanceId||""))
           ||agentRuntimes.instances().find(item=>item.kind===String(body.runtime||""))
           ||agentRuntimes.activeInstance();
-        if(action==="method"){
-          // A profile that changes its method starts again where it runs: each chat's process, and a Codex app-server, keeps the
-          // sign-in or key it started with, so its open chats close (the next turn starts it with the new method).
-          const {instance:saved,changed}=agentRuntimes.setAuthMethod(instance.id,body.method);
-          // Antigravity's home names the method it starts with: the key method on an API key, none a key left on Sign in.
-          if(saved.kind==="antigravity"&&!mock)await prepareAntigravityHome({env,method:harnessAuthMethod(saved)==="api-key"?ANTIGRAVITY_API_KEY_METHOD:null});
-          const stoppedChats=changed?await agentRelay?.closeRuntimeSessions?.(saved.kind,{everywhere:true})||0:0;
-          // A Codex profile back on Sign in keeps no copy of the key in its home of Trebell's own for it.
-          if(changed&&saved.kind==="codex"&&harnessAuthMethod(saved)!=="api-key"&&!mock)await agentRuntimes.codexApiKeyLogout(saved);
-          if(changed&&saved.kind==="codex"&&agentRuntimes.activeInstance().id===saved.id)await restartAppServer();
-          return json(res,200,{ok:true,instanceId:saved.id,method:harnessAuthMethod(saved),stoppedChats,agentSnapshot:await agentRuntimes.snapshot()});
-        }
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
           ?requestedEnvironmentId(body.environmentId,{fallback:false})
           :requestedEnvironmentId(null);
@@ -2172,18 +2195,20 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
               }
             }else providers.setKey(provider,body.apiKey);
           }
-          // A harness on its API key keeps the key its process started with: a key of its vendor saved or removed here stops its chats
-          // on this machine (a WSL or SSH host's run on the host's own variable), and restarts a Codex app-server on it, so the next
-          // message runs on the key saved now.
+          // A harness on its API key keeps the key its process started with: a key of its vendor saved or removed here stops the chats
+          // of the profiles on it (only theirs: a profile of the harness on Sign in keeps its chats), and stops their Codex app-servers,
+          // the active one's restarting, so the next message runs on the key saved now; their kept statuses are read again. A profile on
+          // an API key runs on this machine only (a WSL or SSH host is refused), so only chats here run on it.
           let stoppedChats=0;
           if("apiKey" in body){
-            // The OpenAI key removed: no Codex home of Trebell's own keeps a copy of it.
-            if(provider==="openai"&&!String(body.apiKey||"").trim()&&!mock)for(const item of agentRuntimes.instances().filter(item=>item.kind==="codex"))await agentRuntimes.codexApiKeyLogout(item);
             const onKey=agentRuntimes.instances().filter(item=>harnessAuthMethod(item)==="api-key"&&Object.hasOwn(HARNESS_KEY_VARIABLES[item.kind]||{},provider));
-            for(const kind of new Set(onKey.map(item=>item.kind))){
-              if(kind==="codex"){if(agentRuntimes.activeRuntime()==="codex"&&onKey.some(item=>item.id===agentRuntimes.activeInstance().id))await restartAppServer();continue}
-              stoppedChats+=await agentRelay?.closeRuntimeSessions?.(kind)||0;
-            }
+            agentRuntimes.forgetProbes(onKey.map(item=>item.id));
+            stoppedChats+=await agentRelay?.closeRuntimeSessions?.(null,{instanceIds:onKey.filter(item=>item.kind!=="codex").map(item=>item.id)})||0;
+            const codexOnKey=onKey.filter(item=>item.kind==="codex").map(item=>item.id);
+            if(agentRuntimes.activeRuntime()==="codex"&&codexOnKey.includes(agentRuntimes.activeInstance().id))await restartAppServer();
+            else await stopCodexProfileServers(codexOnKey);
+            // The OpenAI key removed: no Codex home of Trebell's own keeps a copy of it, a removed profile's included.
+            if(provider==="openai"&&!String(body.apiKey||"").trim()&&!mock)await agentRuntimes.codexApiKeyLogoutAll();
           }
           // select:false (a key saved for a harness on its API key, from its row) keeps the provider Native calls.
           const changed=provider!==selectedProvider&&body.select!==false;

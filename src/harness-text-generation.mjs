@@ -7,6 +7,7 @@ import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "./acp-session-c
 import { withProbeAdvice } from "./agent-runtime-manager.mjs";
 import { claudeExplainedApiError, claudeRejectedLimit, claudeResultFailure, claudeSignedOutMessage, claudeUsageLimitHint, claudeUsageLimited } from "./claude-agent-session.mjs";
 import { hasClaudeManagedMcpConfig } from "./claude-managed-mcp.mjs";
+import { acpApiKeyMethod } from "./harness-auth.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexApprovalResponse, isCodexApprovalRequest } from "./codex-policy-adapter.mjs";
 import { museApprovalChoices, museApprovalToolCall } from "./muse-agent-session.mjs";
@@ -324,6 +325,14 @@ async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=f
   // Cursor lists its base model ids (the ids in Trebell's model list) only to a client with the parameterized model picker.
   const capabilities={fs:{readTextFile:false,writeTextFile:false},terminal:false,...(instance.kind==="cursor"?{_meta:{parameterizedModelPicker:true}}:{})};
   const initialized=await client.initialize({version:ctx.version,capabilities,timeoutMs:ctx.remaining()});ctx.check();
+  // A Grok on its API key signs in with its key method before the session, as a chat of it does (acpApiKeyMethod): a login it
+  // cached itself never writes the Git text.
+  const keyMethod=acpApiKeyMethod({runtime:instance.kind,authMethod:runtimeManager.authMethod?.(instance),env,initializeResult:initialized});
+  if(keyMethod){
+    try{await client.authenticate(keyMethod,{timeoutMs:ctx.remaining()})}
+    catch(failure){throw new Error(`${ctx.name} could not sign in with '${keyMethod}': ${failure?.message||failure}`)}
+    ctx.check();
+  }
   deleteViaAcp=Boolean(deleteSession&&initialized?.agentCapabilities?.sessionCapabilities?.delete);
   let setup=await client.createSession({cwd,mcpServers:[]});
   sessionId=String(setup?.sessionId||"")||null;if(!sessionId)throw new Error(`${ctx.name} did not create the Git text session`);ctx.check();
@@ -449,6 +458,9 @@ export async function generateTextWithHarness({runtimeManager,instance=null,prom
       const status=await runtimeManager.probe(target,{environmentId});context.runtimeStatus=status;check();
       if(!status?.available)throw Object.assign(new Error(status?.message||`${name} is unavailable`),{code:"HARNESS_UNAVAILABLE"});
     }
+    // A profile on an API key writes Git text only with its key, whatever status was kept from before the key went (keyRefusal).
+    const keyRefused=runtimeManager?.keyRefusal?.(target,environmentId);
+    if(keyRefused)throw Object.assign(new Error(keyRefused.message),{code:"HARNESS_UNAVAILABLE"});
     return adapter(context);
   })();
   running.catch(()=>{});

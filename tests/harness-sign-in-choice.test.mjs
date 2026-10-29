@@ -59,7 +59,8 @@ test("each harness on API key gets only its vendor's key: the one saved in Trebe
   const expectFrom=source=>({
     claude:{ANTHROPIC_API_KEY:source.anthropic},codex:{OPENAI_API_KEY:source.openai},muse:{META_API_KEY:source.meta},
     grok:{XAI_API_KEY:source.xai},antigravity:{GEMINI_API_KEY:source.gemini},
-    opencode:{OPENAI_API_KEY:source.openai,ANTHROPIC_API_KEY:source.anthropic,GEMINI_API_KEY:source.gemini,XAI_API_KEY:source.xai},
+    // OpenCode also reads an empty set of stored sign-ins in place of its own logins (no key: "{}").
+    opencode:{OPENAI_API_KEY:source.openai,ANTHROPIC_API_KEY:source.anthropic,GEMINI_API_KEY:source.gemini,XAI_API_KEY:source.xai,OPENCODE_AUTH_CONTENT:"{}"},
   });
   const check=(source,label)=>{
     for(const [kind,keys] of Object.entries(expectFrom(source))){

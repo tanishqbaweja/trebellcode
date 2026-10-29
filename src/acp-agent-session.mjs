@@ -9,6 +9,7 @@ import { cursorEffortOption, cursorEffortValue, cursorFastOption, cursorSwitchVa
 import { acpToolFrame, mergeAcpToolUpdate } from "./acp-tool-state.mjs";
 import { CursorTransportFailure } from "./cursor-transport-failure.mjs";
 import { fileUriPath } from "./file-uri.mjs";
+import { acpApiKeyMethod } from "./harness-auth.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizeModelOptionValues } from "./model-options.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
@@ -450,14 +451,10 @@ export class AcpAgentSession{
     if(this.runtime==="grok"){const id=onKey?"xai.api_key":"cached_token";return methods.some(method=>text(method?.id)===id)?id:null}
     return text(methods.find(method=>text(method?.id)&&(method.type==null||method.type==="agent"))?.id)||null;
   }
-  // The key method a harness on its API key signs in with as it starts: Grok's xai.api_key, when its initialize lists it and its launch
-  // has the key. Antigravity's key method is named in its home's settings (prepareAntigravityHome) and asked for once it says it needs
-  // one (#signInMethod).
-  #apiKeyMethod(){
-    if(this.authMethod!=="api-key"||this.runtime!=="grok"||!text(this.env?.XAI_API_KEY))return null;
-    const methods=Array.isArray(this.initializeResult?.authMethods)?this.initializeResult.authMethods:[];
-    return methods.some(method=>text(method?.id)==="xai.api_key")?"xai.api_key":null;
-  }
+  // The key method a harness on its API key signs in with as it starts (acpApiKeyMethod, which Git text shares): Grok's xai.api_key,
+  // when its initialize lists it and its launch has the key. Antigravity's key method is named in its home's settings
+  // (prepareAntigravityHome) and asked for once it says it needs one (#signInMethod).
+  #apiKeyMethod(){return acpApiKeyMethod({runtime:this.runtime,authMethod:this.authMethod,env:this.env,initializeResult:this.initializeResult})}
 
   // T3 keeps the id it asked for: session/load and session/resume answers carry no sessionId.
   // A conversation the harness refuses to load or resume is a lost session (HarnessSessionLostError): the relay continues the

@@ -36,6 +36,20 @@ export function normalizeHarnessAuthMethod(kind,value){
   return method;
 }
 
+// An OpenCode profile with a server URL runs on the server it names, started elsewhere with that server's own sign-in: Trebell starts
+// no OpenCode for it, so it has no launch to hand a key to, and such a profile cannot be set to an API key.
+export const OPENCODE_SERVER_KEY_MESSAGE="OpenCode at a server URL runs on that server's own sign-in: Trebell Code cannot hand it a key. Clear the profile's server URL to run OpenCode on an API key, or set it to Sign in.";
+export function harnessApiKeyProfileRefusal(instance){return instance?.kind==="opencode"&&String(instance?.serverUrl||"").trim()?OPENCODE_SERVER_KEY_MESSAGE:null}
+
+// The key method a harness on its API key signs in with as an ACP session of it starts, a chat's or Git text's: Grok's xai.api_key,
+// when its initialize lists it and its launch has XAI_API_KEY, so a login Grok cached itself (`grok login`) never stands in for the
+// key the person chose. Antigravity's key method is named in its home's settings (prepareAntigravityHome).
+export function acpApiKeyMethod({runtime,authMethod,env,initializeResult}={}){
+  if(authMethod!==HARNESS_API_KEY||runtime!=="grok"||!String(env?.XAI_API_KEY||"").trim())return null;
+  const methods=Array.isArray(initializeResult?.authMethods)?initializeResult.authMethods:[];
+  return methods.some(method=>String(method?.id||"").trim()==="xai.api_key")?"xai.api_key":null;
+}
+
 // The keys a harness on API key starts with: {env:{VARIABLE:key}, providers:[{provider, variable, source}], missing:[provider ids]}.
 // keyFor: the provider key reader (ProviderManager.keyFor). Never a key of another vendor.
 export function harnessKeyEnvironment(kind,keyFor){
