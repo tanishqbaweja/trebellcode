@@ -284,3 +284,31 @@ test("the long context on gpt-6-luna rests on the readouts: it was never compare
   assert.match(longContext.evidence,/every readout since 2026-10-01/);assert.match(longContext.evidence,/C4[^.]*cost v1/);assert.match(longContext.evidence,/3\.9%[^.]*since replaced/);
   assert.deepEqual(nativeConfiguration.nativeMeasuredModel("openai","gpt-6-luna"),{reasoningEffort:"max",contextWindow:272_000,serverCompactionThreshold:245_000});
 });
+
+test("Native's developer text has no web-research sentence, in the app and the runner alike, while other harnesses' threads keep it",async t=>{
+  const {trebellDeveloperInstructions}=nativeConfiguration;
+  assert.equal(trebellDeveloperInstructions({}),"Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.");
+  // The window builds a new thread's developer text for every harness (createThreadFor): Native's without the sentence.
+  const app=await readFile(new URL("../ui/src/App.jsx",import.meta.url),"utf8");
+  assert.match(app,/trebellDeveloperInstructions\(\{projectless,dynamicTools:Boolean\(runtimeCapabilities\.dynamicTools\),browser:specializedTools\.browser,delegation:specializedTools\.delegation,webResearch:agentRuntime!=="native"\}\)/);
+  // What the window sent every harness before 2026-10-29 (ui/src/App.jsx at 338045c2): other harnesses' threads still get it byte for
+  // byte, and Native's is it without that one sentence.
+  const sentence="Web research is available when useful. Use it when current or external information materially improves the task.";
+  const before=({projectless,dynamicTools,browser,delegation})=>{const research=sentence+(browser?" Use trebell_browser for interactive pages.":"")+(dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"")+(delegation?" Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.":"");return projectless?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+research:research};
+  for(const projectless of [false,true])for(const dynamicTools of [false,true])for(const browser of [false,true])for(const delegation of [false,true]){
+    const options={projectless,dynamicTools,browser,delegation},name=JSON.stringify(options);
+    assert.equal(trebellDeveloperInstructions({...options,webResearch:true}),before(options),name);
+    assert.equal(trebellDeveloperInstructions(options),before(options).replace(sentence,"").replace(/ {2,}/g," ").trim(),name);
+    assert.doesNotMatch(trebellDeveloperInstructions(options),/web research/i,name);
+  }
+  // The runner's developer message, and the configuration hash's text.
+  const root=await mkdtemp(join(tmpdir(),"trebell-developer-text-")),repo=join(root,"repo");t.after(()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250}));
+  await mkdir(repo,{recursive:true});await writeFile(join(repo,"a.py"),"x=1\n","utf8");git(repo,"init","-q");git(repo,"add","-A");git(repo,"commit","-qm","base");
+  const run=await createHarborNativeRun({root:repo,instruction:"Fix the off-by-one bug in a.py.",manager:{status:()=>({hasKey:true}),close(){}},env:{...SAFE_ENV(),TREBELL_HOME:join(root,"home"),TREBELL_TOOL_OUTPUT_DIR:join(root,"out"),TREBELL_METRICS_PATH:join(root,"m.json"),TREBELL_EVENTS_PATH:join(root,"e.jsonl"),TREBELL_TOOL_CALLS_PATH:join(root,"t.jsonl"),TREBELL_FINAL_DIFF_PATH:join(root,"f.diff")}});
+  try{assert.equal(run.session.messages.find(message=>message.role==="developer")?.content,trebellDeveloperInstructions({}))}finally{await run.session.close()}
+  assert.equal(nativeConfiguration.nativeConfigurationSnapshot().developerInstructions,trebellDeveloperInstructions({}));
+  // The settings evidence says it was dropped, and why.
+  const research=nativeConfiguration.NATIVE_SETTINGS_EVIDENCE.find(item=>item.setting==="Web research sentence in the developer text");
+  assert.ok(research,"a row for the dropped sentence");assert.equal(research.measured,false);assert.equal(research.basis,"new");
+  for(const reason of [/no benchmark ran with it/,/no web search tool/,/upstream fix/,/caddy-6370/])assert.match(research.evidence,reason);
+});

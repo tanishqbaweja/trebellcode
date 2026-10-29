@@ -10,7 +10,9 @@ import { BENCHMARK_PATH_FIXTURE_URL, BENCHMARK_PATH_SCENARIOS, runBenchmarkPathS
 // (so prompt_cache_key changed), and what is derived from them followed (message counts, request bytes and hashes,
 // requestedServiceTier null); nothing else changed. Later that day each turn's usage update gained its context reading (the last
 // request's usage, which the app's context meter and automatic compaction read): an update the runner only records, with no request,
-// payload or fetch changed.
+// payload or fetch changed. Then the developer text lost its web-research sentence (113 characters, dropped for the app and the
+// runner alike on the second review): the instructions and what follows from them changed (prompt_cache_key, request bytes, the
+// developer and prefix sizes and hashes in the request metrics); nothing else did.
 const fixture=JSON.parse(await readFile(BENCHMARK_PATH_FIXTURE_URL,"utf8"));
 
 test("Harbor Native runner never opts into reply streaming",async()=>{

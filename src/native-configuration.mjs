@@ -13,7 +13,7 @@
 // No imports and no work at load: the UI's first bundle reads the tool selection, the developer text and the effort default from
 // here, so everything else must tree-shake away (B11, tests/bundle-budgets.test.mjs).
 
-export const NATIVE_CONFIGURATION_VERSION="2026-10-29.3";
+export const NATIVE_CONFIGURATION_VERSION="2026-10-29.4";
 
 // The loop options every Native message runs with (runNativeAgentTurn in src/native-agent-loop.mjs). The semantic completion gate is
 // off, and with it every mid-task controller checkpoint (midTaskProgressEnabled) and the gate's recovery; one recovery epoch is kept
@@ -157,11 +157,16 @@ export function nativeToolNamespaceOptions({projectless=false,stableOutputTools=
 }
 
 // The developer message a thread starts with, after the system prompt (the app sends it for every harness it gives dynamic tools).
-export function trebellDeveloperInstructions({projectless=false,dynamicTools=true,browser=false,delegation=false}={}){
-  const research="Web research is available when useful. Use it when current or external information materially improves the task."+(browser?" Use trebell_browser for interactive pages.":"")+(dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"")+(delegation?" Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.":"");
-  return projectless
-    ?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+research
-    :research;
+// Native's, the app's and the runner's alike, has no web-research sentence (dropped 2026-10-29, NATIVE_SETTINGS_EVIDENCE); the window
+// passes webResearch for other harnesses' threads, which keep it as before.
+export function trebellDeveloperInstructions({projectless=false,dynamicTools=true,browser=false,delegation=false,webResearch=false}={}){
+  return [
+    projectless&&"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project.",
+    webResearch&&"Web research is available when useful. Use it when current or external information materially improves the task.",
+    browser&&"Use trebell_browser for interactive pages.",
+    dynamicTools&&"Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.",
+    delegation&&"Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.",
+  ].filter(Boolean).join(" ");
 }
 
 // The working context a Native message carries (repositoryContextEntries in src/context-provenance.mjs): the seed only.
@@ -314,7 +319,8 @@ export const NATIVE_SETTINGS_EVIDENCE=/*#__PURE__*/Object.freeze([
   {setting:"Source control tools (trebell_source_control)",value:"when the message asks for Git work: a git command, a pull or merge request to open, a commit, branch, push, rebase or merge said as such, or an everyday ask (commit, push it, fix it and commit, commit and push, new branch, PR this, revert or amend the last commit, what changed in the last commit, which branch am I on)",measured:false,basis:"new",evidence:"A new rule, narrowed from the product's word rule on 2026-10-29 and unmeasured: the word rule (git, branch, commit, push, PR and the like anywhere) selected all 300 SWE-bench Multilingual task texts (a GitHub link, a cited commit); links and the words' other senses now select nothing. It selects 23 of 300 SWE-bench Multilingual tasks (issue texts that offer or ask for a PR or quote a git command), 1 of 89 Terminal-Bench 2.0 and 4 of 200 Terminal-Bench Pro tasks (Git tasks); the everyday asks the second review found it dropped were added back and select none of them. The window also picks every harness's first-message tools with it, so whether a Codex thread gets trebell_source_control is decided from its first message only (Codex takes its tools once, at thread/start, and has no tool expansion). The integrity audit reviews Native's fetch, pull_ff and push calls."},
   {setting:"Automatic between-turn compaction",value:"before a message once the last request's input reaches the person's threshold (on at 85% by default) of a known window",measured:false,basis:"app default",evidence:"The app's product default (Settings, src/trebell-state.mjs); never benchmarked, as a benchmark is one message. It reads the last request's input (NativeAgentSession's context reading), not the turn's summed input."},
   {setting:"Between-turn compaction brief",value:"the provider's own effort, 4,096-token cap (NATIVE_COMPACTION)",measured:false,basis:"app default",evidence:"What a thread with no Thinking pick sent before 2026-10-29; never benchmarked. A Max level could spend the cap on reasoning and return no brief."},
-  {setting:"Developer text",value:"trebellDeveloperInstructions",measured:false,basis:"app default",evidence:"The app's product default. Native's 'web research' is its terminal's network access."},
+  {setting:"Developer text",value:"trebellDeveloperInstructions: the repository-lookup sentence and those of the namespaces the message selected",measured:false,basis:"app default",evidence:"The app's product default, never benchmarked: the runner sent no developer text before 2026-10-29. Without its web-research sentence (the next row)."},
+  {setting:"Web research sentence in the developer text",value:"dropped for Native, in the app and the runner alike; other harnesses' threads keep it",measured:false,basis:"new",evidence:"The lead's decision on the second review of native-one-config (2026-10-29): 'Web research is available when useful. Use it when current or external information materially improves the task.' was an unmeasured app default and no benchmark ran with it (the runner sent no developer text before 2026-10-29); Native has no web search tool, only its terminal's network access; and it invites looking up the upstream fix, which voided a benchmark lane before (arm J1, 2026-10-21: a caddy-6370 lane curled the upstream pull request's diff)."},
   {setting:"Default service tier",value:"none (Standard)",measured:false,basis:"app default",evidence:"The app's product default; Fast changes serving speed, not the model, and bills 2x. Benchmarks run every lane at the same tier."},
   {setting:"Repository knowledge",value:"the project's store (empty for a fresh project or a container)",measured:false,basis:"app default",evidence:"The app's product default."},
   {setting:"First message's continuity block",value:"no checkpoint not yet linked to a turn",measured:false,basis:"app default",evidence:"A defect fix toward the measured runner shape: the block restated the window's own pre-turn checkpoint as an artifact created."},

@@ -4262,8 +4262,9 @@ export default function App(){
     const specializedTools=specializedToolSelection(taskText,specializedToolAvailability({projectless}));
     const {sharedDynamicToolNamespaces}=await loadSharedToolCatalog();
     const dynamicTools=sharedDynamicToolNamespaces(specializedTools);
-    // The developer text every thread starts with is shared with the benchmark runner (src/native-configuration.mjs).
-    const developerInstructions=trebellDeveloperInstructions({projectless,dynamicTools:Boolean(runtimeCapabilities.dynamicTools),browser:specializedTools.browser,delegation:specializedTools.delegation});
+    // The developer text every thread starts with, Native's shared with the benchmark runner (src/native-configuration.mjs); only other
+    // harnesses' threads keep the web-research sentence.
+    const developerInstructions=trebellDeveloperInstructions({projectless,dynamicTools:Boolean(runtimeCapabilities.dynamicTools),browser:specializedTools.browser,delegation:specializedTools.delegation,webResearch:agentRuntime!=="native"});
     let nativeProjectId=null;
     if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&!projectless&&!workspaceEnvironmentId){
       let trebellProject=currentProject&&sameWorkspacePath(currentProject.path,cwd)?currentProject:null;
