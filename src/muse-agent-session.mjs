@@ -288,6 +288,22 @@ export function museApprovalToolCall(params={}){
   const policyKind=kind==="shell"?"execute":kind==="fileAccess"?(subject.access==="read"?"read":"edit"):kind==="network"?"network":"other";
   return {toolCallId:text(params.toolCallId||params.itemId||params.approvalId),title,kind:policyKind,rawInput};
 }
+// The approval card's words for what a Muse approval asks (the relay's card): a title for a file access or network approval, a
+// protected write and a read outside the workspace by name (Muse names a path inside its workspace relative to it), else the card's
+// own; the stage a staged command's choices answer, with the whole command under it; and the workflow agent a child's approval comes
+// from (agent: its name, as its row shows it), which runs on past the turn that started it, so Stop leaves its card waiting.
+export function museApprovalCard(params={},{agent=""}={}){
+  const subject=params.subject&&typeof params.subject==="object"?params.subject:{},kind=text(subject.kind),asked=museApprovalToolCall(params).title;
+  const outside=/^(?:[a-z]:)?[\\/]|^\.\.(?:[\\/]|$)/i.test(text(subject.path).trim());
+  const title=kind==="network"?"Network access needs approval":kind!=="fileAccess"?"":subject.access==="read"?outside?"Read outside the workspace needs approval":"File read needs approval"
+    :params.protectedWrite===true?"Write to a protected file needs approval":"File write needs approval";
+  const index=params.currentRequirementId?.sourceIndex,stage=kind==="shell"&&Array.isArray(subject.stages)?subject.stages.find(item=>item?.requirementId?.sourceIndex===index):null;
+  const words=(Array.isArray(stage?.argv)?stage.argv:[]).map(word=>text(word)).map(word=>word&&!/\s/.test(word)?word:`"${word}"`).join(" ");
+  const staged=Number(stage?.totalStages)>1&&words?`Stage ${Number(stage.position)||index+1} of ${stage.totalStages}: ${words}`:"";
+  const asker=params.subagentOrigin?`Asked by ${agent?"the "+agent:"a Muse Code workflow agent"}, which runs on past the turn that started it.`:"";
+  const reason=[asker,staged].filter(Boolean).join(" ");
+  return {...(title?{title}:{}),reason:reason||asked,...(reason?{command:asked}:{})};
+}
 // Muse's questions as the relay's question dialog asks them (T3 publishRequest): the header, question and options, several choices
 // for a multiple-selection question, and the person's own words for every one, as Muse takes a free-text answer to any question.
 // notes: what an answer to a question lacked, said beside it when Trebell asks again.
@@ -378,8 +394,9 @@ export class MuseAgentSession{
     this.args=museServeArgs(this.permissionMode);this.launched=null;this.host=null;this.connection=null;this.initializeResult=null;this.sessionSetup=null;
     this.sessionId=null;this.model=null;this.wantedModel=null;this.reasoningEffort=null;this.turnRoot=null;
     this.dead=false;this.deadError=null;this.closed=false;this.activePrompt=null;
-    // The approvals and questions Muse asked and has not settled ("approval:<id>", "question:<id>"), and the ones it settled.
-    this.requests=new Map();this.settledRequests=new Set();
+    // The approvals and questions Muse asked and has not settled ("approval:<id>", "question:<id>"), and the ones it settled; the names
+    // of the agents Muse runs, by the ids a child's approval names them by (#nameAgents).
+    this.requests=new Map();this.settledRequests=new Set();this.agentNames=new Map();
     // Muse's last readable usage report (usage/changed), which a turn the quota stopped reads its reset from.
     this.subscriptionUsage=null;
     // The work still running that a turn started (runningWork), by item, with its turn, whose rows it settles after the turn ended,
@@ -807,22 +824,23 @@ export class MuseAgentSession{
     return this.#askApproval(entry,{askUser:entry.automatic===stage});
   }
   // Asks the stage through the relay, as an ACP harness's request is asked: Trebell's policy answers what it allows or denies, and
-  // the person the rest, on the approval card with Muse's own choices. askUser: only the person answers. So it is in Auto, whose
-  // reviewer (':auto-review') has cleared what it could, as in Grok's Auto; for a protected write, a subject Trebell does not know,
-  // a stage with no Allow once to answer for the person with, and a file read: Muse reads its workspace unasked, so one it asks about
-  // is outside it, and goes to the person (T3 shows it) rather than to the workspace boundary that refuses what a harness does
-  // unasked (outsideReadsAsk). A card Muse settles meanwhile is withdrawn (signal); a window that never answers declines, rather than
-  // leave Muse waiting.
+  // the person the rest, on the approval card with Muse's own choices, which says what is asked and, for a child's, which agent asks
+  // (museApprovalCard). askUser: only the person answers. So it is in Auto, whose reviewer (':auto-review') has cleared what it
+  // could, as in Grok's Auto; for a protected write, a subject Trebell does not know, a stage with no Allow once to answer for the
+  // person with, and a file read: Muse reads its workspace unasked, so one it asks about is outside it, and goes to the person (T3
+  // shows it) rather than to the workspace boundary that refuses what a harness does unasked (outsideReadsAsk). A card Muse settles
+  // meanwhile is withdrawn (signal); a window that never answers declines, rather than leave Muse waiting.
   async #askApproval(entry,{askUser=false}={}){
     const params=entry.params,choices=museApprovalChoices(params.availableChoices),read=params.subject?.kind==="fileAccess"&&params.subject?.access==="read";
     // The stage and choices asked about, which the answer decides.
     const shown={requirementId:params.currentRequirementId,availableChoices:params.availableChoices};
     if(typeof this.onPermission!=="function")return this.#answerApproval(entry,"decline",shown);
     const ask=new AbortController();entry.ask=ask;entry.shown=shownKey(params);
+    const origin=params.subagentOrigin||{},agent=[origin.subagentId,origin.childRunId,origin.childSessionId].map(id=>this.agentNames.get(text(id))).find(Boolean);
     let decision="decline";
     try{
       decision=await this.onPermission({
-        method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},
+        method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},card:museApprovalCard(params,{agent}),
         options:(Array.isArray(params.availableChoices)?params.availableChoices:[]).filter(choice=>choice?.choiceId).map(choice=>({optionId:text(choice.choiceId),name:text(choice.label),kind:text(choice.decision)})),
         askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||personOnly(params)||!choices.has("accept")||read,
         approvalOptions:museApprovalOptions(params.availableChoices),signal:ask.signal,...(read?{outsideReadsAsk:true}:{}),
@@ -910,6 +928,13 @@ export class MuseAgentSession{
   #withdrawRequests(which=()=>true){
     for(const entry of [...this.requests.values()])if(which(entry)){this.requests.delete(entry.key);entry.ask?.abort()}
   }
+  // The names a child's approval card says who asks with (its subagentOrigin names the agent): a subagent's, by its subagent id and its
+  // child session, and a workflow agent's, by its child id, as their rows name them; a workflow's later revisions leave labels out.
+  #nameAgents(item){
+    if(item?.kind==="subagent"){const name=clip(item.role)||clip(item.objective);if(name)for(const id of [item.subagentId,item.childSessionId])if(text(id))this.agentNames.set(text(id),"subagent "+name)}
+    if(item?.kind==="workflow")for(const child of Array.isArray(item.children)?item.children:[])if(clip(child?.label)&&text(child.childId))this.agentNames.set(text(child.childId),"workflow agent "+clip(child.label));
+    while(this.agentNames.size>MUSE_SETTLED_LIMIT)this.agentNames.delete(this.agentNames.keys().next().value);
+  }
 
   #notification(frame){
     const method=text(frame?.method),params=frame?.params;
@@ -927,6 +952,7 @@ export class MuseAgentSession{
     if(this.compaction&&ITEM_EVENTS.has(method)&&params.item?.kind==="compaction")return void this.#compactionItem(params.item);
     // The end of a command Muse sent to the background, whichever turn runs (#backgroundEnded).
     if(ITEM_EVENTS.has(method)&&params.item?.kind==="backgroundTerminalCompletion")return void this.#backgroundEnded(params.item);
+    if(ITEM_EVENTS.has(method))this.#nameAgents(params.item);
     // An item of work a turn that ended left running settles its row in that turn (T3 observedChildren).
     const itemId=ITEM_EVENTS.has(method)?text(params.item?.itemId):method==="item/delta"?text(params.itemId):"",owner=itemId?this.observed.get(itemId):null;
     if(owner?.settled)return ITEM_EVENTS.has(method)?this.#item(owner,params.item):this.#delta(owner,params);

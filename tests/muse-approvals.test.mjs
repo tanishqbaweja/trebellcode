@@ -320,6 +320,50 @@ test("in Supervised a workflow child's approval waits for the person past its tu
   assert.equal(fixture.asks[1].withdrawn,true);
 });
 
+test("the approval card says what Muse asks: a protected write, a read outside the workspace, a file write and network access by titles of their own, the stage a staged command's choices answer, and the workflow agent a child's approval comes from, which runs on past its turn",()=>{
+  const card=(extra,agent)=>muse.museApprovalCard({...shellApproval("s-1","t-1"),...extra},agent?{agent}:undefined);
+  const fileAccess=(access,path,extra={})=>card({subject:{kind:"fileAccess",access,path},toolName:access==="read"?"read_file":"write_file",...extra});
+  assert.deepEqual(fileAccess("write",".muse/settings.json",{protectedWrite:true}),{title:"Write to a protected file needs approval",reason:".muse/settings.json"});
+  assert.deepEqual(fileAccess("write","src/app.js"),{title:"File write needs approval",reason:"src/app.js"});
+  for(const path of ["C:\\Users\\someone\\notes.txt","\\\\?\\H:\\notes.txt","/home/someone/notes.txt","../notes.txt"])assert.deepEqual(fileAccess("read",path),{title:"Read outside the workspace needs approval",reason:path},path);
+  assert.deepEqual(fileAccess("read","docs/notes.txt"),{title:"File read needs approval",reason:"docs/notes.txt"},"Muse names a path inside its workspace relative to it");
+  assert.deepEqual(card({subject:{kind:"network",host:"example.com",port:443}}),{title:"Network access needs approval",reason:"example.com"});
+  // A command keeps the card's own title (Command needs approval), and one of a single stage reads as it did.
+  assert.deepEqual(card({}),{reason:"touch result.txt"});
+  const stage=(index,argv,total=2)=>({requirementId:{approvalId:"ap-1",sourceIndex:index},position:index+1,totalStages:total,argv,argvComplete:true,resolution:{kind:"unresolved"}});
+  const staged=sourceIndex=>({subject:{kind:"shell",command:"touch a.txt && rm b.txt",stages:[stage(0,["touch","a.txt"]),stage(1,["rm","b.txt"])]},currentRequirementId:{approvalId:"ap-1",sourceIndex}});
+  assert.deepEqual(card(staged(0)),{reason:"Stage 1 of 2: touch a.txt",command:"touch a.txt && rm b.txt"});
+  assert.deepEqual(card(staged(1)),{reason:"Stage 2 of 2: rm b.txt",command:"touch a.txt && rm b.txt"});
+  assert.deepEqual(card({subject:{kind:"shell",command:"touch m.txt",stages:[stage(0,["touch","m.txt"],1)]}}),{reason:"touch m.txt"},"a command of one stage");
+  assert.equal(card({subject:{kind:"shell",command:"echo 'a b' && true",stages:[stage(0,["echo","a b"]),stage(1,["true"])]}}).reason,"Stage 1 of 2: echo \"a b\"","a word with a space in it is quoted");
+  // A workflow child's says which agent asks, by name once Trebell was told of it, and that it runs on past its turn.
+  const origin={subagentOrigin:{subagentId:"a7",childRunId:"child-run-1",childSessionId:"child-session"}};
+  assert.deepEqual(card(origin),{reason:"Asked by a Muse Code workflow agent, which runs on past the turn that started it.",command:"touch result.txt"});
+  assert.deepEqual(card({...origin,...staged(1)},"workflow agent ping"),{reason:"Asked by the workflow agent ping, which runs on past the turn that started it. Stage 2 of 2: rm b.txt",command:"touch a.txt && rm b.txt"});
+  assert.deepEqual(card({...origin,subject:{kind:"fileAccess",access:"write",path:".muse/settings.json"},protectedWrite:true},"subagent hello agent"),{title:"Write to a protected file needs approval",reason:"Asked by the subagent hello agent, which runs on past the turn that started it.",command:".muse/settings.json"});
+});
+
+test("a child's approval card names the agent that asks as its row does, a workflow agent by its label and a subagent by its role, after their turn ended too, and one Trebell was never told of as a workflow agent",async()=>{
+  const fixture=await startSession();
+  const {running,turnId,sid}=await runningTurn(fixture);
+  const item=(method,fields)=>fixture.muse.notify(method,{sessionId:sid,viewCursor:"v",item:{turnId,status:"inProgress",...fields}});
+  // A workflow's later revisions leave its agents' labels out.
+  item("item/started",{itemId:"wf-1",kind:"workflow",revision:1,entryId:"ping-pong",children:[{childId:"child-ping",attempt:1,status:"scheduled",label:"ping"}]});
+  item("item/updated",{itemId:"wf-1",kind:"workflow",revision:2,entryId:"ping-pong",children:[{childId:"child-ping",attempt:1,status:"started"}]});
+  item("item/started",{itemId:"sub-1",kind:"subagent",revision:1,subagentId:"subagent-1",role:"hello agent",objective:"Reply with exactly: Hello"});
+  complete(fixture,turnId);await running;
+  fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-1"}),subagentOrigin:{subagentId:"child-ping",childRunId:"run-ping",childSessionId:"session-ping"}});
+  fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-2"}),subagentOrigin:{subagentId:"subagent-1",childRunId:"run-hello",childSessionId:"session-hello"}});
+  fixture.muse.notify("approval/requested",childApproval(sid,{approvalId:"child-3"}));
+  await until(()=>fixture.asks.length===3,"three cards");
+  assert.deepEqual(fixture.asks.map(ask=>[ask.request.card.reason,ask.request.card.command,ask.request.runless]),[
+    ["Asked by the workflow agent ping, which runs on past the turn that started it.","touch result.txt",true],
+    ["Asked by the subagent hello agent, which runs on past the turn that started it.","touch result.txt",true],
+    ["Asked by a Muse Code workflow agent, which runs on past the turn that started it.","touch result.txt",true],
+  ]);
+  await fixture.session.close();
+});
+
 test("Trebell's policy answers a Supervised approval first; a protected write, a subject Trebell does not know and a stage with no Allow once go to the person only",async()=>{
   const fixture=await startSession({permissionMode:"edits"});
   const {running,turnId,sid}=await runningTurn(fixture);
@@ -428,6 +472,7 @@ test("through the relay, Muse's approval is the approval card with Muse's own ch
     assert.equal(card.method,"item/tool/requestApproval");
     assert.deepEqual(card.params.approvalOptions,[{decision:"accept",label:"Allow once"},{decision:"acceptAlways",label:"Always allow in this workspace: touch ..."},{decision:"decline",label:"Reject"}]);
     assert.deepEqual([card.params.threadId,card.params.reason,card.params.toolCall.title,card.params.toolCall.kind],[thread.id,"touch muse-approved.txt","touch muse-approved.txt","execute"]);
+    assert.deepEqual([card.params.trebellTitle,card.params.command],[undefined,undefined],"a command's card keeps the card's own title, its command said once");
     const [decide]=await relay.frames("approval/decide");
     assert.deepEqual([decide.params.choiceId,decide.params.requirementId.sourceIndex],["allow_once",0]);
     assert.equal(relay.reply(thread.id),"APPROVED");
@@ -465,6 +510,8 @@ test("through the relay, a file Muse asks to read outside the workspace shows on
       const card=relay.requests[index];
       assert.equal(card?.method,"item/tool/requestApproval",permissionProfile);
       assert.match(card.params.toolCall.title,/outside-notes\.txt$/,permissionProfile);
+      assert.equal(card.params.trebellTitle,"Read outside the workspace needs approval",permissionProfile);
+      assert.match(card.params.reason,/[\\/]outside-notes\.txt$/,permissionProfile);
       assert.deepEqual(card.params.approvalOptions,[{decision:"accept",label:"Allow once"},{decision:"decline",label:"Reject"}],permissionProfile);
       assert.equal(relay.reply(thread.id),"READ IT",permissionProfile);
     }
@@ -494,6 +541,7 @@ test("through the relay, Stop leaves a workflow child's approval card waiting fo
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run the workflow whose child approval waits"}]});
     await eventually(()=>relay.requests.some(request=>request.method==="item/tool/requestApproval"),"the child's card");
     const card=relay.requests.find(request=>request.method==="item/tool/requestApproval");
+    assert.deepEqual([card.params.reason,card.params.command,card.params.trebellTitle],["Asked by a Muse Code workflow agent, which runs on past the turn that started it.","touch muse-approved.txt",undefined],"the card says a workflow agent asks");
     await relay.rpc("turn/interrupt",{threadId:thread.id});
     await relay.completed(thread.id,1);
     assert.equal(relay.threadStore.get(thread.id).turns.at(-1).status,"cancelled");

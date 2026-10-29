@@ -99,6 +99,8 @@ const reply=(page,text)=>page.locator(".history-assistant").filter({hasText:text
 const shoot=async(page,name,target=null)=>{for(const mode of ["dark","light"]){await switchMode(page,mode);if(target)await target.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-1280x800.png`})}await switchMode(page,"dark")};
 async function openMuse(page,harness,options){await routeMuseApp(page,harness,options);await page.setViewportSize({width:1280,height:800});await page.goto("/")}
 const card=page=>page.locator(".inline-approval .approval-card");
+// A step of an activity card by its title: a string is a part of it, a pattern the whole of it.
+const row=(scope,title)=>scope.locator(".tool-event").filter({has:(scope.page?.()||scope).locator("summary strong",{hasText:title})});
 
 test("a staged command's card follows Muse to its next stage, with that stage's own choices, and the person's Always allow saves that stage's rule",async({page})=>{
   test.setTimeout(90_000);
@@ -108,10 +110,16 @@ test("a staged command's card follows Muse to its next stage, with that stage's 
     await send(page,"Please run the staged approval");
     await expect(card(page)).toContainText("touch a.txt && rm b.txt",{timeout:20_000});
     await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: touch ...","Reject"]);
+    // The card names the stage its choices answer, the whole command under it.
+    await expect(card(page).locator(".card-title strong")).toHaveText("Command needs approval");
+    await expect(card(page).locator(":scope > p")).toHaveText("Stage 1 of 2: touch a.txt");
+    await expect(card(page).getByTestId("approval-command")).toHaveText("touch a.txt && rm b.txt");
     await shoot(page,"muse-staged-first-stage",card(page));
     // Muse's reviewer moves the approval on to `rm b.txt`: the card shows that stage, its rule that keeps it out a choice of its own.
     await harness.release("stage");
     await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: rm ...","Reject","Always reject in this workspace: rm ..."],{timeout:20_000});
+    await expect(card(page).locator(":scope > p")).toHaveText("Stage 2 of 2: rm b.txt");
+    await expect(card(page).getByTestId("approval-command")).toHaveText("touch a.txt && rm b.txt");
     await shoot(page,"muse-staged-next-stage",card(page));
     await card(page).getByRole("button",{name:"Always allow in this workspace: rm ...",exact:true}).click();
     await expect(reply(page,"STAGE DECIDED: allow_local_prefix_rm")).toBeVisible({timeout:20_000});
@@ -130,11 +138,55 @@ test("Stop leaves a workflow child's approval card waiting, and the person's All
     const stop=page.getByRole("button",{name:"Stop",exact:true});
     await stop.click();
     await expect(stop).toHaveCount(0,{timeout:20_000});
-    // The turn ended; the workflow's child still waits on the person.
+    // The turn ended; the workflow's child still waits on the person, and its card says a workflow agent that runs on past the turn
+    // asks (this one names no agent of a workflow Trebell was told of), with the command under it.
     await expect(card(page)).toBeVisible();
     await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: touch ...","Reject"]);
+    await expect(card(page).locator(":scope > p")).toHaveText("Asked by a Muse Code workflow agent, which runs on past the turn that started it.");
+    await expect(card(page).getByTestId("approval-command")).toHaveText("touch muse-approved.txt");
     expect(await harness.frames("approval/decide")).toEqual([]);
     await shoot(page,"muse-child-card-after-stop",card(page));
+    await card(page).getByRole("button",{name:"Allow once",exact:true}).click();
+    await expect(card(page)).toHaveCount(0,{timeout:20_000});
+    await expect.poll(async()=>(await harness.frames("approval/decide")).map(frame=>frame.params.choiceId)).toEqual(["allow_once"]);
+  }finally{await harness.close()}
+});
+
+test("a workflow agent's approval card names the agent and says it runs on past the turn that started it, and Stop on the next message's turn leaves the card so while the agent runs on",async({page})=>{
+  test.setTimeout(90_000);
+  // The workflow runs on past its turn, held while its agent ping runs, and ping asks once the next message's turn runs.
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40"},holds:["workflow_agent","child_ask"]});
+  try{
+    await openMuse(page,harness);
+    await send(page,"Please run workflow ping-pong");
+    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    const stop=page.getByRole("button",{name:"Stop",exact:true});
+    await expect(stop).toHaveCount(0,{timeout:20_000});
+    await expect(row(page,/^Workflow ping-pong · ping$/)).toHaveClass(/status-running/,{timeout:20_000});
+    await send(page,"Hello Muse, hold until steered");
+    await expect(stop).toBeVisible({timeout:20_000});
+    await harness.release("child_ask");
+    const line="Asked by the workflow agent ping, which runs on past the turn that started it.";
+    await expect(card(page).locator(":scope > p")).toHaveText(line,{timeout:20_000});
+    await expect(card(page).locator(".card-title strong")).toHaveText("Command needs approval");
+    await expect(card(page).getByTestId("approval-command")).toHaveText("touch muse-approved.txt");
+    // Stop ends the message's turn; the card stays under it, still saying which agent asks, and that agent's row runs on in the card
+    // of the turn that launched the workflow.
+    await stop.click();
+    await expect(stop).toHaveCount(0,{timeout:20_000});
+    await expect(card(page).locator(":scope > p")).toHaveText(line);
+    await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Always allow in this workspace: touch ...","Reject"]);
+    expect(await harness.frames("approval/decide")).toEqual([]);
+    const [thread]=harness.threadStore.list(),launchedId=harness.threadStore.get(thread.id).turns[0].id;
+    const launched=page.locator(`.turn-card[data-turn-id="${launchedId}"] [data-testid=activity-card]`);
+    if(await launched.getAttribute("data-state")!=="open")await launched.locator(".activity-card-head").click();
+    await expect(row(launched,/^Workflow ping-pong · ping$/)).toHaveClass(/status-running/);
+    await shoot(page,"muse-workflow-agent-card-after-stop",card(page));
+    // In a narrow window the line wraps above the command.
+    await page.setViewportSize({width:700,height:800});
+    await card(page).scrollIntoViewIfNeeded();await expect(card(page)).toBeInViewport();
+    await page.screenshot({animations:"disabled",path:auditDir+"muse-workflow-agent-card-after-stop-dark-700x800.png"});
+    await page.setViewportSize({width:1280,height:800});
     await card(page).getByRole("button",{name:"Allow once",exact:true}).click();
     await expect(card(page)).toHaveCount(0,{timeout:20_000});
     await expect.poll(async()=>(await harness.frames("approval/decide")).map(frame=>frame.params.choiceId)).toEqual(["allow_once"]);
@@ -150,6 +202,10 @@ test("in Full access a workflow child's protected write shows on the approval ca
     await send(page,"Please have the protected child write its settings");
     await expect(card(page)).toContainText(".muse/settings.json",{timeout:20_000});
     await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Reject"]);
+    // Titled for what it asks: a write to a protected file, which a workflow agent asks.
+    await expect(card(page).locator(".card-title strong")).toHaveText("Write to a protected file needs approval");
+    await expect(card(page).locator(":scope > p")).toHaveText("Asked by a Muse Code workflow agent, which runs on past the turn that started it.");
+    await expect(card(page).getByTestId("approval-command")).toHaveText(".muse/settings.json");
     expect(await harness.frames("approval/decide")).toEqual([]);
     await shoot(page,"muse-protected-child-card",card(page));
     await card(page).getByRole("button",{name:"Reject",exact:true}).click();
@@ -166,6 +222,9 @@ test("a file Muse asks to read outside the workspace shows on the approval card 
     await send(page,"Please read outside the workspace");
     await expect(card(page)).toContainText("outside-notes.txt",{timeout:20_000});
     await expect(card(page).locator(".approval-actions button")).toHaveText(["Allow once","Reject"]);
+    // Titled for what it asks: a read outside the workspace, of the file whose full path it shows.
+    await expect(card(page).locator(".card-title strong")).toHaveText("Read outside the workspace needs approval");
+    await expect(card(page).locator(":scope > p")).toHaveText(/^(?:[A-Za-z]:)?[\\/].*[\\/]outside-notes\.txt$/);
     await shoot(page,"muse-outside-read-card",card(page));
     await card(page).getByRole("button",{name:"Allow once",exact:true}).click();
     await expect(reply(page,"READ IT")).toBeVisible({timeout:20_000});

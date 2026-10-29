@@ -21,7 +21,8 @@
 //   MUSE_FAKE_CONTEXT_USED how many tokens of the model's 1,007,997 the context holds after each plain turn (session/tokenUsage and
 //                          session/contextUsage), as a long conversation's does
 //   MUSE_FAKE_CHILD_ASK_HOLD  a file: once it is there, a workflow child still running from the session's last turn asks to run
-//                          `touch muse-approved.txt`, as "child approval" asks it, whether a turn runs or not
+//                          `touch muse-approved.txt`, as "child approval" asks it, whether a turn runs or not. A child's approval
+//                          names, as its subagent id, the child id of the agent of "run workflow" running then, if one runs
 // A turn whose message says one of these runs as T3's recorded sessions (muse_permission) and Muse 1.4.13's schema shape them:
 //   "ask approval"      asks to run `touch muse-approved.txt` (approval/request and approval/requested, with Muse's own choices),
 //                       settles it with the choice decided, and replies APPROVED, ALWAYS ALLOWED or REJECTED
@@ -53,7 +54,8 @@
 //                       whose result is ready MUSE_FAKE_SUBAGENT_MS (200) ms later; two model steps report their tokens
 //   "run workflow"      launches the ping-pong workflow and completes the turn while it runs; its agents ping and pong run
 //                       MUSE_FAKE_WORKFLOW_MS (300) ms apart, pong failing on its budget, and going on past ping's scheduling only
-//                       once the file MUSE_FAKE_WORKFLOW_HOLD names is there, when it names one; MUSE_FAKE_REPORT_DELAY_MS (0) ms after
+//                       once the file MUSE_FAKE_WORKFLOW_HOLD names is there, when it names one, and past ping's start only once the
+//                       file MUSE_FAKE_WORKFLOW_AGENT_HOLD names is there, when it names one; MUSE_FAKE_REPORT_DELAY_MS (0) ms after
 //                       the workflow has completed, or once the file MUSE_FAKE_REPORT_START_HOLD names is there, Muse starts a report
 //                       turn of its own. With MUSE_FAKE_REPORT_HOLD "1" the report
 //                       holds after its first sentence until a message comes, which Muse queues behind it (ifBusy queue): the report
@@ -156,15 +158,19 @@ function runWorkflow(sessionId,turnId,turn){
   const ping={childId:itemId+"-ping",attempt:1},pong={childId:itemId+"-pong",attempt:1},pingDone={...ping,status:"terminal",terminal:"completed",durationMs:2360};
   const revisions=[[{...ping,status:"scheduled",label:"ping"}],[{...ping,status:"started"}],[{...ping,status:"started"},{...pong,status:"scheduled",label:"pong"}],[pingDone,{...pong,status:"started"}],
     [pingDone,{...pong,status:"terminal",terminal:"completed",failureKind:"budget_exhausted",durationMs:2639}]];
-  // Each revision step ms after the one before, the one after ping's scheduling once the hold's file is there.
+  // Each revision step ms after the one before, the one after ping's scheduling, or after its start, once its hold's file is there.
+  // The agent running (ping while it alone runs, then pong) is the one a child's approval comes from.
+  const state=sessions.get(sessionId);
   const revise=index=>{
+    if(state)state.workflowAgent=index===1||index===2?ping.childId:index===3?pong.childId:null;
     if(index===revisions.length){
       notify("item/completed",sessionId,{item:workflow(revisions.at(-1),{status:"completed",finalSummary:"{\"status\":\"ok\"}",durationMs:3616,stopAvailable:false})});
       return later(process.env.MUSE_FAKE_REPORT_START_HOLD,Number(process.env.MUSE_FAKE_REPORT_DELAY_MS||0),()=>reportTurn(sessionId,turnId+"-report"));
     }
     notify("item/updated",sessionId,{item:workflow(revisions[index])});
     const next=()=>setTimeout(()=>revise(index+1),step);
-    if(index===0&&process.env.MUSE_FAKE_WORKFLOW_HOLD)later(process.env.MUSE_FAKE_WORKFLOW_HOLD,0,next);else next();
+    if(index===0&&process.env.MUSE_FAKE_WORKFLOW_HOLD)later(process.env.MUSE_FAKE_WORKFLOW_HOLD,0,next);
+    else if(index===1&&process.env.MUSE_FAKE_WORKFLOW_AGENT_HOLD)later(process.env.MUSE_FAKE_WORKFLOW_AGENT_HOLD,0,next);else next();
   };
   setTimeout(()=>revise(0),step);
 }
@@ -219,8 +225,8 @@ const READ_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved
 const RM_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"allow_local_prefix_rm",label:"Always allow in this workspace: rm ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: rm ..."},{choiceId:"deny_once",label:"Reject",decision:"denied",scope:"once"},{choiceId:"deny_local_prefix_rm",label:"Always reject in this workspace: rm ...",decision:"deniedPolicyAmendment",scope:"localPersistent",rulePreview:"Always reject in this workspace: rm ..."}];
 let nextRequest=900;
 function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false,protectedWrite=false,staged=false}={}){
-  // A workflow child's approval names the child's own run as its turn, and its origin.
-  const turnId=child?parentTurnId+"-child-run":parentTurnId,origin=child?{subagentOrigin:{subagentId:"agent-7",childRunId:turnId,childSessionId:parentTurnId+"-child-session"}}:{};
+  // A workflow child's approval names the child's own run as its turn, and its origin: the workflow agent running, if one runs.
+  const turnId=child?parentTurnId+"-child-run":parentTurnId,origin=child?{subagentOrigin:{subagentId:sessions.get(sessionId)?.workflowAgent||"agent-7",childRunId:turnId,childSessionId:parentTurnId+"-child-session"}}:{};
   const approvalId=turnId+"-approval",requirement={approvalId,sourceIndex:0},workspaceRoot=sessions.get(sessionId)?.workspaceRoot||"";
   const outside=read?require("node:path").resolve(workspaceRoot||process.cwd(),"..","outside-notes.txt"):"",choices=read||protectedWrite?READ_CHOICES:SHELL_CHOICES;
   const command=staged?"touch a.txt && rm b.txt":"touch muse-approved.txt",stage=(index,argv)=>({requirementId:{approvalId,sourceIndex:index},position:index+1,totalStages:staged?2:1,argv,argvComplete:true,resolution:{kind:"unresolved"},suggestedPrefix:{argvPrefix:[argv[0]],label:`Always allow in this workspace: ${argv[0]} ...`}});

@@ -691,7 +691,8 @@ function ApprovalCard({request,onResolve,threadLabel=""}){
   const p=request.params||{};
   const permissions=request.method==="item/permissions/requestApproval";
   const network=permissions?p.permissions?.network:null;const fileSystem=permissions?p.permissions?.fileSystem:null;
-  const title=permissions?"Additional access requested":request.method.includes("fileChange")||request.method==="applyPatchApproval"?"File changes need approval":p.networkApprovalContext?.host?"Network access needs approval":"Command needs approval";
+  // A harness's own title for what it asks comes first (trebellTitle: Muse Code's file access and network approvals).
+  const title=p.trebellTitle||(permissions?"Additional access requested":request.method.includes("fileChange")||request.method==="applyPatchApproval"?"File changes need approval":p.networkApprovalContext?.host?"Network access needs approval":"Command needs approval");
   // The command is shown even when the harness gives a reason, so nobody approves "Run the tests" without seeing what runs. A file
   // change lists the files it touches, which the server finds for Codex's request (trebellFileChanges), with or without a reason.
   const commandText=Array.isArray(p.command)?p.command.map(part=>String(part)).join(" "):typeof p.command==="string"?p.command:"";
