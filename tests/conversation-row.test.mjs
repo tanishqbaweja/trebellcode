@@ -38,4 +38,8 @@ test("conversation row memoization rerenders when the turn heading or outcome pi
   const done=props(base.message,{heading:"Codex",outcomeLabel:"stopped",outcomeTone:"warn"});
   assert.equal(sameConversationMessageRowProps(done,props(base.message,{heading:"Codex",outcomeLabel:"stopped",outcomeTone:"err"})),false);
   assert.equal(sameConversationMessageRowProps(props(base.message),props(base.message,{heading:"",outcomeLabel:""})),true);
+  // The error a failed turn's reply says under its pill comes once the live card that said it moves on.
+  const failed=props(base.message,{heading:"Codex",outcomeLabel:"failed",outcomeTone:"err"});
+  assert.equal(sameConversationMessageRowProps(failed,props(base.message,{heading:"Codex",outcomeLabel:"failed",outcomeTone:"err",outcomeMessage:"Connection lost."})),false);
+  assert.equal(sameConversationMessageRowProps(failed,props(base.message,{heading:"Codex",outcomeLabel:"failed",outcomeTone:"err",outcomeMessage:""})),true);
 });

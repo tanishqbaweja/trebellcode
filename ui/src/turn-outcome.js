@@ -1,7 +1,7 @@
 // What the conversation shows around a turn's replies: the first reply of a turn names the harness (and the access mode
-// it was sent with, when this window sent it), and the last reply carries how the turn ended ("done · 3.2s"). A turn that
-// failed or was stopped before any reply ends with a row of its own saying so. Only real facts are shown: a mode nobody
-// recorded, a duration nobody measured and an error nobody sent are left out, never guessed.
+// it was sent with, when this window sent it), and the last reply carries how the turn ended ("done · 3.2s", a failure with
+// its error). A turn that failed or was stopped before any reply ends with a row of its own saying so. Only real facts are
+// shown: a mode nobody recorded, a duration nobody measured and an error nobody sent are left out, never guessed.
 import { codexErrorNotice } from "./codex-turn-options.js";
 
 const PERMISSION_MODE_LABELS=Object.freeze({supervised:"Supervised",edits:"Auto-accept edits",auto:"Auto",full:"Full access","read-only":"Read only"});
@@ -145,8 +145,10 @@ export function turnOutcomePill(info){
 function turnHeading(harnessLabel,info){return harnessLabel?[harnessLabel,info?.model,info?.mode].filter(Boolean).join(" · "):""}
 
 // Per assistant message id: the heading its row shows (first reply of a turn) and the outcome pill (last reply of a
-// finished turn). Consecutive replies of one turn form a group; a user message in between starts a new group, a thought does not.
-export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=null,threadId=null}={}){
+// finished turn), with the error a turn that failed or was stopped ended with (outcomeMessage), as the row of a turn without a reply
+// says it, unless the live card lists that failure (cardFailedTurnIds, turnEndPlacement). Consecutive replies of one turn form a group;
+// a user message in between starts a new group, a thought does not.
+export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=null,threadId=null,cardFailedTurnIds=null}={}){
   const out=new Map();const list=(Array.isArray(messages)?messages:[]).filter(message=>message?.role!=="reasoning");
   for(let index=0;index<list.length;index++){
     const message=list[index];if(message?.role!=="assistant")continue;
@@ -157,7 +159,8 @@ export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=nu
     const heading=first?turnHeading(harnessLabel,info):"";
     const pill=last?turnOutcomePill(info):null;
     if(!heading&&!pill)continue;
-    out.set(String(message.id),{heading,outcomeLabel:pill?.label||"",outcomeTone:pill?.tone||""});
+    const error=pill&&pill.tone!=="ok"&&!(pill.tone==="err"&&cardFailedTurnIds?.has?.(String(turnId)))?String(info.error||""):"";
+    out.set(String(message.id),{heading,outcomeLabel:pill?.label||"",outcomeTone:pill?.tone||"",...(error?{outcomeMessage:error}:{})});
   }
   return out;
 }

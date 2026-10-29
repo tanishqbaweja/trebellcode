@@ -565,13 +565,13 @@ function InlineVisualization({visualization,src}){
   useEffect(()=>{const told=event=>{const said=event.data?.trebellVisualization;if(event.source&&event.source===frame.current?.contentWindow&&(said==="missing"||said==="failed"))setFound(said)};window.addEventListener("message",told);return()=>window.removeEventListener("message",told)},[]);
   return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div>{found==="yes"&&<iframe ref={frame} title={label} src={src} sandbox="allow-scripts" referrerPolicy="no-referrer" className={loaded?undefined:"loading"} onLoad={()=>setLoaded(true)}/>}{found&&found!=="yes"?<p className="inline-visualization-missing" data-testid="visualization-missing">{found==="missing"?"Visualization not found: ":"Could not show visualization "}{label}</p>:!loaded&&<p className="inline-visualization-wait" role="status">Loading visualization {label}…</p>}</div>;
 }
-const ConversationMessageRow=memo(function ConversationMessageRow({message,activeFind,allowRevert,projectPath,environmentId,threadId,onEditFromHere,heading="",outcomeLabel="",outcomeTone=""}){
+const ConversationMessageRow=memo(function ConversationMessageRow({message,activeFind,allowRevert,projectPath,environmentId,threadId,onEditFromHere,heading="",outcomeLabel="",outcomeTone="",outcomeMessage=""}){
   const parsed=useMemo(()=>message.role==="user"||message.role==="handoff"?null:parseVisualizationMessage(message.text),[message.role,message.text]);
   if(message.role==="reasoning")return <ReasoningRow id={message.id} messageId={message.id} text={message.text}/>;
   if(message.role==="handoff")return <SessionHandoffRow message={message}/>;
   // A message sent with files names them under its text, as the composer's chips did.
   if(message.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="user-bubble"><p>{message.text}</p>{message.attachments?.length>0&&<div className="user-attachments">{message.attachments.map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/><bdi>{attachmentDisplayName(path)}</bdi></span>)}</div>}{allowRevert&&message.turnId&&<button className="message-action" onClick={()=>onEditFromHere(message)}>Edit from here</button>}</div></div>;
-  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text chat-markdown" data-assistant-citation-source={message.id}><ChatMarkdown text={parsed.text}/></div>}{(parsed?.visualizations||[]).map((visualization,index)=><InlineVisualization key={(visualization.path||visualization.file)+":"+index} visualization={visualization} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})}/>)}{outcomeLabel&&<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/>}</div></div>;
+  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div className="history-assistant-body">{heading&&<div className="assistant-heading" data-testid="assistant-heading">{heading}</div>}{parsed?.text&&<div className="assistant-message-text chat-markdown" data-assistant-citation-source={message.id}><ChatMarkdown text={parsed.text}/></div>}{(parsed?.visualizations||[]).map((visualization,index)=><InlineVisualization key={(visualization.path||visualization.file)+":"+index} visualization={visualization} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})}/>)}{outcomeLabel&&<TurnOutcomePill label={outcomeLabel} tone={outcomeTone}/>}{outcomeMessage&&<p className={"turn-outcome-message tone-"+outcomeTone}>{outcomeMessage}</p>}</div></div>;
 },sameConversationMessageRowProps);
 // How a turn that failed, was stopped or completed before any reply ended (turn-outcome.js turnTrailers), where its reply would
 // have been: the heading and pill on one line, then the error it ended with in full ("Finished without a reply." for a completed
@@ -618,13 +618,15 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
   // The rows of the live card's turn read below the card (shell.css orders the rows after this marker). A turn that started
   // without a user message (a goal continuing) leaves the previous turn's reply above the card.
   const latestStart=useMemo(()=>virtualized?-1:latestTurnRowsStart(messages,cardTurnId),[messages,cardTurnId,virtualized]);
-  // A turn's first reply names the harness (and the mode this window sent it with); its last reply says how it ended.
-  const decorations=useMemo(()=>assistantRowDecorations(messages,{harnessLabel,turnInfo,threadId}),[messages,harnessLabel,turnInfo,threadId]);
+  // The turns whose failure the live card says, and nothing else does.
+  const cardFailedTurnSet=useMemo(()=>new Set(String(cardFailedTurns||"").split("\n").filter(Boolean)),[cardFailedTurns]);
+  // A turn's first reply names the harness (and the mode this window sent it with); its last reply says how it ended, and the error
+  // of a failure the live card does not list.
+  const decorations=useMemo(()=>assistantRowDecorations(messages,{harnessLabel,turnInfo,threadId,cardFailedTurnIds:cardFailedTurnSet}),[messages,harnessLabel,turnInfo,threadId,cardFailedTurnSet]);
   // Each earlier turn's activity card, and the row that ends a turn which failed, was stopped or completed before any reply,
   // unless the live card lists that failure (one with no rows at all ends after the turn before it, or opens the thread); a turn
   // whose steps are not all loaded never reads as finished without a reply, nor does a compaction, whose card says it compacted.
   // The turn lists are strings, so the placement is worked out again only when they change, not with every step a card adds.
-  const cardFailedTurnSet=useMemo(()=>new Set(String(cardFailedTurns||"").split("\n").filter(Boolean)),[cardFailedTurns]);
   const gapBeforeId=historyGap?.beforeId??null,boundaryTurnId=turnActivity?.boundaryTurnId??null;
   const cardTurns=useMemo(()=>storeCardTurnIds(turnActivity).join("\n"),[turnActivity]),incompleteTurns=useMemo(()=>storeIncompleteTurnIds(turnActivity).join("\n"),[turnActivity]),compactionTurns=useMemo(()=>storeCompactionTurnIds(turnActivity).join("\n"),[turnActivity]);
   const trailers=useMemo(()=>turnTrailers(messages,{harnessLabel,turnInfo,threadId,cardFailedTurnIds:cardFailedTurnSet,cardTurnId,reorder:!virtualized,turnOrder,gapBeforeId,startLoaded:!canLoadEarlier,cardTurnIds:cardTurns?cardTurns.split("\n"):[],liveCardTurnId,boundaryTurnId,incompleteTurnIds:new Set(incompleteTurns?incompleteTurns.split("\n"):[]),compactionTurnIds:compactionTurns?compactionTurns.split("\n"):[]}),[messages,harnessLabel,turnInfo,threadId,cardFailedTurnSet,cardTurnId,virtualized,turnOrder,gapBeforeId,canLoadEarlier,cardTurns,liveCardTurnId,boundaryTurnId,incompleteTurns,compactionTurns]);
@@ -665,6 +667,7 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
       heading={decoration?.heading||""}
       outcomeLabel={decoration?.outcomeLabel||""}
       outcomeTone={decoration?.outcomeTone||""}
+      outcomeMessage={decoration?.outcomeMessage||""}
     />
     {renderTrailers(trailers.after.get(id))}
   </React.Fragment>},[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere,decorations,trailers,renderTrailers,historyGap,historyBusy,historyError,loadingGap,onLoadGap]);

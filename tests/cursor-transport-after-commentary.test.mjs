@@ -75,7 +75,7 @@ test("the turn that ends in Cursor's dump after commentary fails in the thread, 
   assert.equal((await replied).params.item.text,"Checking the file.");
   const view=await reopened(rpc,threadId);
   assert.deepEqual(view.messages.map(message=>[message.role,message.text]),[["user","read src/app.js"],["assistant","Checking the file."]]);
-  assert.deepEqual(view.pills.map(pill=>pill.outcomeTone),["err"],"the reply carries the failed pill");
+  assert.deepEqual(view.pills.map(pill=>[pill.outcomeTone,pill.outcomeMessage]),[["err",DUMP]],"the reply carries the failed pill, which says why the turn failed");
   assert.deepEqual(view.ends,[]);
   assert.deepEqual(handedOver(threadStore.get(threadId).turns),[["assistant","Checking the file."],["error",DUMP]]);
 });
