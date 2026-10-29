@@ -99,6 +99,10 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // the source-control rule that reads Git work a message asks for instead of the bare words, and the Thinking picker that lists a
 // measured model's level instead of a Default) and 0.0 / 0.1 KB to the lazy chunks (the first bundle's new name in their import
 // lines): 780.1 / 257.9 KB, 0.9 / 0.1 KB under the limit.
+// Its second repair then added 0.4 / 0.1 KB to the first bundle (620.9 / 199.6 KB, 0.4 KB gzip of room left: the everyday Git asks the
+// source-control rule selects again, read in linear time, and the developer text's web-research sentence kept for other harnesses
+// only) and took 0.0 / 0.1 KB from the lazy chunks (the first bundle's new name in their import lines): 780.1 / 257.8 KB, 0.9 / 0.2 KB
+// under the limit.
 const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:781,gzipKB:258}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
