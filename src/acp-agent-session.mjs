@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, extname, join, resolve, relative, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AcpClient, defaultAcpClientCapabilities } from "./acp-client.mjs";
-import { ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_KEY_NEEDED, antigravityIpv6Failure } from "./antigravity-auth.mjs";
+import { ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_KEY_NEEDED } from "./antigravity-auth.mjs";
+import { acpStartFailure } from "./acp-start-exit.mjs";
 import { acpApplyValue, acpConfigChoices, acpConfigSelect, acpReadOnlyMode, acpSetupWithConfigOptions, acpSetupWithValue } from "./acp-session-config.mjs";
 import { cursorEffortOption, cursorEffortValue, cursorFastOption, cursorSwitchValue, GROK_INITIALIZE_META } from "./acp-model-catalog.mjs";
 import { acpToolFrame, mergeAcpToolUpdate } from "./acp-tool-state.mjs";
@@ -344,20 +345,6 @@ function requestedModel(runtime,model){
   return runtime==="cursor"?id.replace(/\[.*$/,"")||null:id;
 }
 
-// A start that failed because the harness's process ended (as it initialized, signed in or took the conversation up again), in plain
-// words: the harness, how it ended and what it printed. A log that asks for a Google sign-in is not repeated, as the link it points to
-// is hidden ([sign-in-url], acp-client.mjs): the message names where the harness signs in instead, for Antigravity its Gemini API key.
-// Null for a start that failed otherwise.
-function startExitFailure(runtime,label,error,env){
-  const exit=error?.processExit||error?.cause?.processExit;if(!exit)return null;
-  const said=text(exit.excerpt),ended=Number.isInteger(exit.code)?`${label} stopped as it started, with exit code ${exit.code}`:exit.signal?`${label} was stopped by ${exit.signal} as it started`:`${label} stopped as it started`;
-  const message=!said?ended+".":!said.includes("[sign-in-url]")?`${ended}: ${said}`
-    :runtime!=="antigravity"?`${ended}, asking for a Google sign-in. Sign in to ${label} in Settings, then try again.`
-    :text(env?.GEMINI_API_KEY)?`${ended}, asking for a Google sign-in, which Trebell Code does not offer: it runs Antigravity on the Gemini API key saved in Settings. Check that key there, then try again.`
-    :`${ended}, asking for a Google sign-in, which Trebell Code does not offer. ${ANTIGRAVITY_KEY_NEEDED}`;
-  return new Error(message,{cause:error});
-}
-
 export class AcpAgentSession{
   constructor({runtime,command,args=[],cwd,processCwd=null,env=process.env,permissionMode="supervised",onUpdate,onPermission,onQuestion=null,onElicitation,onWakeTurn=null,argsForPermission=null,runTempRoot=null,version="0.0.0",spawnProcess=null,remoteIo=null,mcpServers=[],attachmentsDir=null}={}){
     this.runtime=runtime;this.command=command;this.args=[...(args||[])];this.cwd=remoteIo?String(cwd||remoteIo.root||"/"):resolve(cwd||process.cwd());this.env=env;
@@ -423,8 +410,8 @@ export class AcpAgentSession{
   }
 
   // Why a start failed, as the person reads it: an Antigravity this machine gives no IPv6 sockets says so, and a harness whose process
-  // ended says that in plain words (startExitFailure).
-  #startFailure(error){return (this.runtime==="antigravity"&&antigravityIpv6Failure(error))||startExitFailure(this.runtime,this.label,error,this.env)||error}
+  // ended says that in plain words (acp-start-exit.mjs).
+  #startFailure(error){return acpStartFailure(this.runtime,this.label,error,this.env)}
 
   // ACP's auth_required (-32000) from session/new, load or resume: the harness signs in once with its own advertised method, and the
   // same setup runs once more (T3 authenticateAfterRequired). Without such a method, or still signed out after it, the start fails as

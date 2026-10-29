@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { HARNESS_TEXT_INSTRUCTIONS, HARNESS_TEXT_TIMEOUT_MS, OPENCODE_GIT_TEXT_CONFIG, acpReadOnlyMode, claudeTextModel, codexGitTextConfig, declineCodexServerRequest, denyAcpRequest, generateTextWithHarness, harnessTextTimeout, OPENCODE_GIT_TEXT_PERMISSION, OPENCODE_GIT_TEXT_REFUSAL } from "../src/harness-text-generation.mjs";
 
@@ -511,6 +512,27 @@ test("ACP adapter cancels a prompt that is still running when the request times 
     assert.ok(record.order.indexOf("session/cancel")<record.order.indexOf("session/close"),"the prompt is cancelled before the session closes");
     await scratchRemoved(record.sessionCwd);
   }finally{await acp.cleanup()}
+});
+
+// An ACP harness whose process ends as it starts (it printed Google's sign-in line, or crashed) says so in its Git text failure as a
+// chat's message says it: the harness, its exit code and what it printed, and for a sign-in, where the harness signs in, not the ACP
+// client's "ACP runtime exited code=3 signal=null" with a link the message hides. The stand-in is Antigravity's (antigravity-acp-agent.mjs).
+test("an ACP harness that stops as it starts says why in plain words when it cannot write the Git text",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-git-text-exit-"));t.after(()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100}));
+  const agent=fileURLToPath(new URL("./fixtures/antigravity-acp-agent.mjs",import.meta.url)),KEY="AIzaSyTrebellFixtureKey0123456789abcdef";
+  const write=async(kind,scenario,env={})=>{
+    const path=join(root,kind+"-scenario.json");await writeFile(path,JSON.stringify(scenario));
+    const manager=fakeRuntimeManager(kind,{executable:()=>process.execPath,childEnv:()=>({...childBaseEnv(),TREBELL_AGY_SCENARIO:path,...env}),acpArgs:()=>[agent]});
+    return generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",cwd:root});
+  };
+  const SIGN_IN="Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture&state=oauth-state-value&redirect_uri=http://127.0.0.1:4567/\n";
+  await assert.rejects(()=>write("antigravity",{exitAt:"initialize",exitCode:3,stderr:SIGN_IN},{GEMINI_API_KEY:KEY}),error=>{
+    assert.equal(error.code,"HARNESS_TEXT_FAILED");
+    assert.equal(error.message,"Antigravity could not write the Git text: Antigravity stopped as it started, with exit code 3, asking for a Google sign-in, which Trebell Code does not offer: it runs Antigravity on the Gemini API key saved in Settings. Check that key there, then try again.");
+    return true;
+  });
+  await assert.rejects(()=>write("cursor",{exitAt:"initialize",exitCode:3,stderr:SIGN_IN}),{message:"Cursor could not write the Git text: Cursor stopped as it started, with exit code 3, asking for a Google sign-in. Sign in to Cursor in Settings, then try again."});
+  await assert.rejects(()=>write("grok",{exitAt:"session/new",exitCode:4,stderr:"panic: the session store is locked\n"},{GEMINI_API_KEY:KEY}),{message:"Grok Build could not write the Git text: Grok Build stopped as it started, with exit code 4: panic: the session store is locked"});
 });
 
 function remoteOpenCodeManager(acp,{env={},spawned=[]}={}){

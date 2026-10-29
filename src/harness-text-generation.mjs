@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { AcpClient } from "./acp-client.mjs";
 import { acpRuntimeTempRoot } from "./acp-runtime-temp.mjs";
+import { acpStartFailure } from "./acp-start-exit.mjs";
 import { acpApplyValue, acpConfigSelect, acpReadOnlyMode } from "./acp-session-config.mjs";
 import { withProbeAdvice } from "./agent-runtime-manager.mjs";
 import { claudeExplainedApiError, claudeRejectedLimit, claudeResultFailure, claudeSignedOutMessage, claudeUsageLimitHint, claudeUsageLimited } from "./claude-agent-session.mjs";
@@ -320,12 +321,15 @@ async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=f
     const update=params?.update||{};if(!sessionId||params?.sessionId!==sessionId)return;
     if(update.sessionUpdate==="agent_message_chunk"&&update.content?.type==="text")text+=String(update.content.text||"");
   });
-  await client.start();ctx.check();
+  // A harness whose process ends as it starts says so in plain words, as a chat's message does (acp-start-exit.mjs): not the client's
+  // "ACP runtime exited code=3 signal=null" with a sign-in link the message hides.
+  const starting=async step=>{try{return await step()}catch(error){throw acpStartFailure(instance.kind,ctx.name,error,env)}};
+  await starting(()=>client.start());ctx.check();
   // Cursor lists its base model ids (the ids in Trebell's model list) only to a client with the parameterized model picker.
   const capabilities={fs:{readTextFile:false,writeTextFile:false},terminal:false,...(instance.kind==="cursor"?{_meta:{parameterizedModelPicker:true}}:{})};
-  const initialized=await client.initialize({version:ctx.version,capabilities,timeoutMs:ctx.remaining()});ctx.check();
+  const initialized=await starting(()=>client.initialize({version:ctx.version,capabilities,timeoutMs:ctx.remaining()}));ctx.check();
   deleteViaAcp=Boolean(deleteSession&&initialized?.agentCapabilities?.sessionCapabilities?.delete);
-  let setup=await client.createSession({cwd,mcpServers:[]});
+  let setup=await starting(()=>client.createSession({cwd,mcpServers:[]}));
   sessionId=String(setup?.sessionId||"")||null;if(!sessionId)throw new Error(`${ctx.name} did not create the Git text session`);ctx.check();
   // A required mode (Cursor's ask, the restricted OpenCode agent) is never skipped: without it the prompt is not sent.
   const modes=acpConfigSelect(setup,"mode");
