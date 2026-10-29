@@ -1,28 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { specializedToolNamespaceNames, specializedToolSelection } from "../ui/src/lazy-tool-exposure.js";
+import { nativeSpecializedSelection, nativeToolNamespaceOptions } from "../src/native-configuration.mjs";
 
 const all={browser:true,computer:true,sourceControl:true,delegation:true,process:true};
 
 test("plain coding tasks do not receive unrelated specialized tool groups",()=>{
-  assert.deepEqual(specializedToolSelection("Fix the parser bug and add targeted tests",all),{browser:false,computer:false,sourceControl:false,delegation:false,process:false});
+  assert.deepEqual(specializedToolSelection("Fix the parser bug and add targeted tests",all),{browser:false,computer:false,sourceControl:false,delegation:false});
 });
 
 test("specialized task language exposes only relevant capability groups",()=>{
-  assert.deepEqual(specializedToolSelection("Fix the responsive CSS layout and verify it with a browser screenshot",all),{browser:true,computer:false,sourceControl:false,delegation:false,process:false});
-  assert.deepEqual(specializedToolSelection("Check this Android app in the emulator",all),{browser:false,computer:false,sourceControl:false,delegation:false,process:false});
-  assert.deepEqual(specializedToolSelection("Create a git branch, commit the fix, and open a pull request",all),{browser:false,computer:false,sourceControl:true,delegation:false,process:false});
-  assert.deepEqual(specializedToolSelection("Use computer use to click the Windows desktop with the mouse",all),{browser:false,computer:true,sourceControl:false,delegation:false,process:false});
-  assert.deepEqual(specializedToolSelection("Delegate two independent subtasks and run them in parallel",all),{browser:false,computer:false,sourceControl:false,delegation:true,process:false});
-  assert.deepEqual(specializedToolSelection("Start the dev server in the background and keep it running",all),{browser:false,computer:false,sourceControl:false,delegation:false,process:true});
+  assert.deepEqual(specializedToolSelection("Fix the responsive CSS layout and verify it with a browser screenshot",all),{browser:true,computer:false,sourceControl:false,delegation:false});
+  assert.deepEqual(specializedToolSelection("Check this Android app in the emulator",all),{browser:false,computer:false,sourceControl:false,delegation:false});
+  assert.deepEqual(specializedToolSelection("Create a git branch, commit the fix, and open a pull request",all),{browser:false,computer:false,sourceControl:true,delegation:false});
+  assert.deepEqual(specializedToolSelection("Use computer use to click the Windows desktop with the mouse",all),{browser:false,computer:true,sourceControl:false,delegation:false});
+  assert.deepEqual(specializedToolSelection("Delegate two independent subtasks and run them in parallel",all),{browser:false,computer:false,sourceControl:false,delegation:true});
+  // Background processes are no longer chosen by wording: Native always has them (nativeToolNamespaceOptions).
+  assert.deepEqual(specializedToolSelection("Start the dev server in the background and keep it running",all),{browser:false,computer:false,sourceControl:false,delegation:false});
 });
 
 test("unavailable capability groups never become exposed from task wording",()=>{
-  assert.deepEqual(specializedToolSelection("Take a browser screenshot, then push a git branch",{}),{browser:false,computer:false,sourceControl:false,delegation:false,process:false});
+  assert.deepEqual(specializedToolSelection("Take a browser screenshot, then push a git branch",{}),{browser:false,computer:false,sourceControl:false,delegation:false});
 });
 
 test("specialized task selection maps to stable Trebell namespace names for later-turn expansion",()=>{
   assert.deepEqual(specializedToolNamespaceNames("Now verify the responsive page in a browser and commit the fix",all),["trebell_browser","trebell_source_control"]);
-  assert.deepEqual(specializedToolNamespaceNames("Start a background watcher and keep it running",all),["trebell_process"]);
+  assert.deepEqual(specializedToolNamespaceNames("Start a background watcher and keep it running",all),[]);
   assert.deepEqual(specializedToolNamespaceNames("Keep debugging the parser",all),[]);
+});
+
+// The window and the benchmark runner choose a message's tools with the same rule (src/native-configuration.mjs).
+test("the window's selection is Native's shared one, and every Native session has background processes",()=>{
+  for(const text of ["Fix the parser bug","Commit the fix and open a PR","Check the page in a browser","Run the watcher in the background"])assert.deepEqual(specializedToolSelection(text,all),nativeSpecializedSelection(text,all),text);
+  const plain=nativeToolNamespaceOptions({projectless:false,stableOutputTools:true,selected:nativeSpecializedSelection("Fix the parser bug",all)});
+  assert.deepEqual(plain,{repository:true,progressiveRepository:true,output:true,workspaceTools:true,terminal:true,process:true,browser:false,computer:false,sourceControl:false,delegation:false});
+  assert.equal(nativeToolNamespaceOptions({projectless:true,selected:{sourceControl:true}}).sourceControl,false,"no source control without a project");
+  assert.equal(nativeToolNamespaceOptions({projectless:true}).process,true);
 });

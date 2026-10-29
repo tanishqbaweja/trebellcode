@@ -67,19 +67,23 @@ test("Harbor Native adapter uploads the instruction's exact bytes, not text-mode
 });
 
 test("Harbor Native runner keeps durable output retrieval available and avoids a smaller private task budget",async()=>{
-  const source=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
-  assert.match(source,/output:true/);
-  assert.match(source,/process:true/);
+  const source=await readFile(new URL("../benchmarks/harbor/native-harbor-run.mjs",import.meta.url),"utf8");
+  const {NATIVE_BUDGETS,nativeHarborRunConfiguration,nativeToolNamespaceOptions}=await import("../src/native-configuration.mjs");
+  // The tools are the app's (nativeToolNamespaceOptions): output where the provider caches prompts, background processes always.
+  assert.match(source,/platformDynamicToolNamespaces\(nativeToolNamespaceOptions\(\{projectless:false,stableOutputTools,selected\}\)\)/);
+  assert.equal(nativeToolNamespaceOptions({stableOutputTools:true}).output,true);assert.equal(nativeToolNamespaceOptions({}).process,true);
   assert.match(source,/NativeBackgroundProcessManager/);
   assert.match(source,/backgroundProcesses,threadId:"trebell-harbor"/);
   assert.match(source,/"trebell_workspace","trebell_terminal","trebell_process"/);
   // The run's end leaves the agent's processes running (a server the task asked for is part of the result); it never stops them all.
   assert.match(source,/backgroundProcesses\.releaseAll\(\)/);assert.doesNotMatch(source,/backgroundProcesses\.closeAll\(\)/);
   assert.match(source,/backgroundProcessesAtEnd:/);
-  assert.match(source,/TREBELL_HARBOR_MAX_MODEL_TURNS\)\|\|500/);
-  assert.match(source,/TREBELL_HARBOR_MAX_TOOL_CALLS\)\|\|5000/);
-  assert.match(source,/maxWallTimeMs=.*null/);
-  assert.match(source,/TREBELL_OPENAI_REASONING_CONTEXT/);
+  // The ceilings are the shared ones (the app's too); the environment can only lower them, as a registered experiment switch.
+  assert.deepEqual(NATIVE_BUDGETS,{maxModelTurns:500,maxToolCalls:5000,maxWallTimeMs:null});
+  assert.deepEqual(nativeHarborRunConfiguration({}).budgets,{maxModelTurns:500,maxToolCalls:5000,maxWallTimeMs:null});
+  assert.deepEqual(nativeHarborRunConfiguration({TREBELL_HARBOR_MAX_MODEL_TURNS:"9000",TREBELL_HARBOR_MAX_TOOL_CALLS:"24"}).budgets,{maxModelTurns:500,maxToolCalls:24,maxWallTimeMs:null});
+  assert.equal(nativeHarborRunConfiguration({TREBELL_OPENAI_REASONING_CONTEXT:"all_turns"}).experimentSwitches.TREBELL_OPENAI_REASONING_CONTEXT,"all_turns");
+  assert.match(source,/const promptOptions=\{\.\.\.config\.budgets\};/);
   assert.match(source,/effectiveReasoningContexts/);
 });
 
@@ -88,11 +92,11 @@ test("Harbor Native runner keeps durable output retrieval available and avoids a
 // makes as root before any early return of install() and opens like the pinned Codex lanes' CODEX_HOME, since the agent can be
 // the image's own USER, whom Harbor gives no default_user to chown it to.
 test("Harbor Native keeps its tool-output store out of /tmp, in a folder the adapter makes and opens to the agent's user",async()=>{
-  const runner=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
+  const runner=await readFile(new URL("../benchmarks/harbor/native-harbor-run.mjs",import.meta.url),"utf8");
   const adapter=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
   assert.doesNotMatch(runner,/directory:"\/tmp\//,"no store directory under /tmp");
-  assert.match(runner,/const outputDirectory=String\(process\.env\.TREBELL_TOOL_OUTPUT_DIR\|\|"\/installed-agent\/tool-output"\);/);
-  assert.match(runner,/new NativeToolOutputStore\(\{directory:outputDirectory,environment:process\.env\}\)/);
+  assert.match(runner,/const outputDirectory=String\(env\.TREBELL_TOOL_OUTPUT_DIR\|\|"\/installed-agent\/tool-output"\);/);
+  assert.match(runner,/new NativeToolOutputStore\(\{directory:outputDirectory,environment:env\}\)/);
   assert.ok(adapter.includes('_TOOL_OUTPUT_DIR = "/installed-agent/tool-output"'));
   const install=adapter.slice(adapter.indexOf("async def install("),adapter.indexOf("async def _upload_config_text("));
   const made=install.indexOf('command=f"mkdir -p /installed-agent {store}; chmod 0777 {store}"');
@@ -102,8 +106,11 @@ test("Harbor Native keeps its tool-output store out of /tmp, in a folder the ada
 });
 
 test("Harbor Native runner records when OpenAI server compaction arms in its context policy",async()=>{
-  const source=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
+  const source=await readFile(new URL("../benchmarks/harbor/native-harbor-run.mjs",import.meta.url),"utf8");
   assert.match(source,/import \{ NativeAgentSession, openAiServerCompactionArmTokens \} from "\.\.\/\.\.\/src\/native-agent-session\.mjs"/);
-  assert.match(source,/openAiServerCompactionThreshold:compactionThreshold/);
-  assert.match(source,/contextPolicy:\{operatingContextWindow:contextWindow,serverCompactionThreshold:compactionThreshold,serverCompactionArming:\{armAtMaxObservedInputTokens:openAiServerCompactionArmTokens\(compactionThreshold\),staysArmed:true\},retroactiveOpenAiReadCooling:false\}/);
+  assert.match(source,/openAiServerCompactionThreshold:config\.compactionThreshold/);
+  assert.match(source,/contextPolicy:\{operatingContextWindow:contextWindow,serverCompactionThreshold:compactionThreshold,serverCompactionArming:\{armAtMaxObservedInputTokens:openAiServerCompactionArmTokens\(compactionThreshold\),staysArmed:true\},retroactiveOpenAiReadCooling:!compactionThreshold\}/);
+  // The window and threshold are gpt-6-luna's measured ones in the shared configuration, which the app applies too.
+  const {nativeHarborRunConfiguration}=await import("../src/native-configuration.mjs");
+  const config=nativeHarborRunConfiguration({});assert.equal(config.contextWindow,272_000);assert.equal(config.compactionThreshold,245_000);
 });

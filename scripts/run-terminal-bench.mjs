@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { windowsHarborEnv } from "./harbor-process-env.mjs";
+import { NATIVE_SERVICE_TIER_DEFAULT } from "../src/native-configuration.mjs";
 
 const here=dirname(fileURLToPath(import.meta.url));
 const root=resolve(here,"..");
@@ -19,7 +20,8 @@ const dataset=String(values.dataset||"terminal-bench/terminal-bench@4.0.0").trim
 const task=String(values.task||"terminal-bench/session-window-debug").trim();
 const model=String(values.model||"gpt-6-luna").trim();
 const effort=String(values.effort||"max").trim();
-const serviceTier=String(values["service-tier"]||process.env.TREBELL_TERMINAL_BENCH_SERVICE_TIER||"fast").trim().toLowerCase();
+// The tier the app's Native runs with no Speed pick (src/native-configuration.mjs), for every agent this runs.
+const serviceTier=String(values["service-tier"]||process.env.TREBELL_TERMINAL_BENCH_SERVICE_TIER||NATIVE_SERVICE_TIER_DEFAULT||"default").trim().toLowerCase();
 if(!new Set(["default","fast"]).has(serviceTier))throw new Error("Terminal-Bench service tier must be default or fast.");
 const setupTimeoutMultiplier=Number(values["agent-setup-timeout-multiplier"]||process.env.TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER||3);
 if(!Number.isFinite(setupTimeoutMultiplier)||setupTimeoutMultiplier<1)throw new Error("Terminal-Bench setup timeout multiplier must be >= 1.");

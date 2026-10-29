@@ -70,6 +70,7 @@ import { sidebarAutoCollapses } from "./sidebar-layout.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
 import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, modelProviderLabel } from "./provider-labels.js";
 import { specializedToolNamespaceNames, specializedToolSelection } from "./lazy-tool-exposure.js";
+import { nativeTurnContextOptions, trebellDeveloperInstructions } from "../../src/native-configuration.mjs";
 import { configuredReasoningEffort, modelReasoningEffortKey, supportedReasoningEfforts } from "../../src/model-reasoning-effort.mjs";
 import { CODEX_STANDARD_SERVICE_TIER, configuredModelServiceTier, modelServiceTierKey, modelServiceTierLabel, supportedModelServiceTiers } from "../../src/model-service-tier.mjs";
 import { configuredModelOptions, modelOptionSettingsWith, supportedModelOptions } from "../../src/model-options.mjs";
@@ -4258,10 +4259,8 @@ export default function App(){
     const specializedTools=specializedToolSelection(taskText,specializedToolAvailability({projectless}));
     const {sharedDynamicToolNamespaces}=await loadSharedToolCatalog();
     const dynamicTools=sharedDynamicToolNamespaces(specializedTools);
-    const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task."+(specializedTools.browser?" Use trebell_browser for interactive pages.":"")+(runtimeCapabilities.dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"")+(specializedTools.delegation?" Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.":"");
-    const developerInstructions=projectless
-      ?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+researchInstruction
-      :researchInstruction;
+    // The developer text every thread starts with is shared with the benchmark runner (src/native-configuration.mjs).
+    const developerInstructions=trebellDeveloperInstructions({projectless,dynamicTools:Boolean(runtimeCapabilities.dynamicTools),browser:specializedTools.browser,delegation:specializedTools.delegation});
     let nativeProjectId=null;
     if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&!projectless&&!workspaceEnvironmentId){
       let trebellProject=currentProject&&sameWorkspacePath(currentProject.path,cwd)?currentProject:null;
@@ -4443,7 +4442,7 @@ export default function App(){
       const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
       const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
       reached(true);const contextPacket=await contextReady;
-      const turnContext={...repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
+      const turnContext={...repositoryContextEntries(contextPacket,agentRuntime==="native"?nativeTurnContextOptions(text):{seedOnly:false,currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
       if(pendingSend.stopped)throw sendStoppedError();pendingSend.requested=true;
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(inputText??text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;if(shown())setActiveTurnId(turnId);if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
@@ -4497,7 +4496,7 @@ export default function App(){
       const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
       turnRequestStarted=true;
       const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
-      const contextPacket=await contextReady,contextEntries=repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text});
+      const contextPacket=await contextReady,contextEntries=repositoryContextEntries(contextPacket,agentRuntime==="native"?nativeTurnContextOptions(text):{seedOnly:false,currentTask:text});
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(contextEntries).length?{additionalContext:contextEntries}:{})});const turnId=result?.turn?.id||null;
       // The sidebar row shows the task running even when the harness sends no turn/started for a thread that is not open.
       if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);

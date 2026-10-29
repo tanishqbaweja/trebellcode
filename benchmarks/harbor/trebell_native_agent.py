@@ -310,12 +310,6 @@ class TrebellNativeAgent(BaseInstalledAgent):
             "TREBELL_HOME": "/tmp/trebell-home",
             "TREBELL_METRICS_PATH": self._METRICS,
             "TREBELL_TOOL_OUTPUT_DIR": self._TOOL_OUTPUT_DIR,
-            "TREBELL_HARBOR_CONTEXT_WINDOW": os.environ.get(
-                "TREBELL_HARBOR_CONTEXT_WINDOW", "272000"
-            ),
-            "TREBELL_HARBOR_COMPACT_THRESHOLD": os.environ.get(
-                "TREBELL_HARBOR_COMPACT_THRESHOLD", "245000"
-            ),
             **(
                 {
                     "TREBELL_HARBOR_LIVE_PROBE": "1",
@@ -325,6 +319,12 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 else {}
             ),
         }
+        # The runner takes every setting from Native's shared configuration (src/native-configuration.mjs). These benchmark
+        # switches reach it only when set, and it records each one in its metrics; a readout carries none.
+        for switch in ("TREBELL_HARBOR_CONTEXT_WINDOW", "TREBELL_HARBOR_COMPACT_THRESHOLD"):
+            value = os.environ.get(switch, "").strip()
+            if value:
+                env[switch] = value
         reasoning_context = os.environ.get("TREBELL_OPENAI_REASONING_CONTEXT", "").strip()
         if reasoning_context:
             env["TREBELL_OPENAI_REASONING_CONTEXT"] = reasoning_context
