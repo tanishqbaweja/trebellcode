@@ -15,6 +15,7 @@ import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { normalizePermissionKind, normalizePermissionMode, permissionDisposition } from "./permission-policy.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
+import { isUserResponseTimeout } from "./user-response-timeout.mjs";
 
 // OpenCode's SDK clients load with the first OpenCode server Trebell talks to, before it starts one, not with the server (budget B25).
 let openCodeSdk=null,openCodeV2Sdk=null,openCode2Client=null;
@@ -998,8 +999,10 @@ export class OpenCodeAgentSession{
       const toolCall=asked
         ?{title:openCodePermissionTitle(p),toolCallId:p.tool?.callID||requestID,rawInput:{...(p.metadata||{}),patterns:Array.isArray(p.patterns)?p.patterns:[]},kind:normalizePermissionKind(kind)}
         :{title:p.title,toolCallId:p.callID||requestID,rawInput:p.metadata,kind:normalizePermissionKind(kind)};
-      // A request that never got an answer (the approval timed out, or the app disconnected) is refused: OpenCode still needs a reply.
-      decision=await Promise.resolve().then(()=>this.onPermission({method:"permission",params:{toolCall,permissionType:kind,options}})).then(value=>value||"decline",()=>"decline");
+      // A request that never got an answer is refused: OpenCode still needs a reply, and goes on. One the relay stopped waiting for is
+      // refused saying it was not answered in time, not that the person declined it; one whose wait ended otherwise (the app closing) is
+      // declined.
+      decision=await Promise.resolve().then(()=>this.onPermission({method:"permission",params:{toolCall,permissionType:kind,options}})).then(value=>value||"decline",error=>isUserResponseTimeout(error)?"unanswered":"decline");
     }
     const response=permissionResponse(decision),refusal=openCodeRefusal(decision,{disposition,mode:this.permissionMode,action:kind,resources:p.patterns});
     // OpenCode waits for this reply before the tool runs, so an unanswered request would hold the turn forever.

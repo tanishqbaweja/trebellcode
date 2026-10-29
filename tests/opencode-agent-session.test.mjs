@@ -594,8 +594,8 @@ test("OpenCode requests Auto allows are answered once, so nothing is remembered 
 
 test("an OpenCode permission request the app never answered is refused, and the session still handles later requests",async()=>{
   const fixture=await fakeOpenCode();let asked=0;
-  // The first approval fails as the relay's does when nobody answers in time or the app disconnects.
-  const {session}=await startedSession(fixture,{permissionMode:"supervised",onPermission:async()=>{if(++asked===1)throw new Error("item/tool/requestApproval user response timed out");return "accept"}});
+  // The first approval's wait fails as the relay's does when the app closes; one its own time-out ends is told so (opencode-approval-unanswered.test.mjs).
+  const {session}=await startedSession(fixture,{permissionMode:"supervised",onPermission:async()=>{if(++asked===1)throw new Error("The relay closed");return "accept"}});
   try{
     fixture.emit({type:"permission.asked",properties:{id:"per_1",sessionID:"ses_fixture",permission:"external_directory",patterns:["/outside/*"],metadata:{},always:[]}});
     await eventually(()=>fixture.called("POST /permission/per_1/reply").length,{message:"OpenCode was left waiting for an answer"});
