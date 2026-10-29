@@ -817,12 +817,15 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // sized again then, and App hears the room the header and the composer with a line of draft and its shelf need above the drawer,
   // 12px under the header and 12px above the drawer (onRoom), which the drawer's tallest leaves them. The draft is watched too: a row
   // that grows in a composer held under the header (a chip's row, a note, the controls in another row) leaves the box as it is and
-  // squeezes the draft, and the rows are read with what of them hangs below the box once the draft has nothing left to give, to the
-  // foot of the last of them (the status line): a / or @ menu that opens under the composer, over the drawer (overlays.css), hangs
-  // below the box too, and read with it the drawer's tallest went down by the menu's height as an @ word typed on took the draft to a
-  // second line. A draft whose view shrinks from below while it shows its last line, where the person types, keeps its foot where it
-  // was, so that line stays in view (as typed, Chrome leaves the line's padding under it out of view): it is moved before the frame is
-  // drawn.
+  // squeezes the draft. That room is read from what the drawer's height moves none of: the box's edges and the heights of its rows in
+  // its flow but the draft, each whole, also where it hangs below the box once the draft has nothing left to give. The box and the
+  // draft, which the drawer moves and resizes, are not read: at a fractional scale (125% display scaling, a window zoomed to 110%)
+  // their whole pixels round one way or the other as the box lands on the device's pixels, and the room read from them went between
+  // two values a pixel apart every frame with no input, each moving the composer to where it read the other. Nor is what stands out of
+  // its flow: a / or @ menu that opens under the composer, over the drawer (overlays.css), hangs below the box too, and read with it
+  // the drawer's tallest went down by the menu's height as an @ word typed on took the draft to a second line. A draft whose view
+  // shrinks from below while it shows its last line, where the person types, keeps its foot where it was, so that line stays in view
+  // (as typed, Chrome leaves the line's padding under it out of view): it is moved before the frame is drawn.
   useEffect(()=>{
     const wrap=wrapRef.current,host=wrap?.parentElement,shelf=shelfRef.current,draft=composerRef.current;if(!host||!draft||typeof ResizeObserver==="undefined")return;
     const set=(name,px)=>host.style.setProperty(name,px+"px");
@@ -833,7 +836,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
       cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{
         const shelved=shelf?.offsetHeight||0;resizeTextarea(draft,{min:40,max:160});
         set("--composer-height",wrap.offsetHeight);set("--composer-chips",wrap.querySelector(":scope>.context-chip-row")?.offsetHeight||0);set("--composer-shelf",shelved);pickerFoot(wrap);
-        const foot=wrap.lastElementChild;onRoom?.((host.querySelector(".workspace-header")?.getBoundingClientRect().bottom||0)+64+wrap.offsetHeight+Math.max(0,foot.offsetTop+foot.offsetHeight-wrap.clientHeight)-draft.offsetHeight+shelved);
+        const style=getComputedStyle(wrap);let need=(host.querySelector(".workspace-header")?.getBoundingClientRect().bottom||0)+64+shelved;
+        for(const edge of ["borderTopWidth","paddingTop","paddingBottom","borderBottomWidth"])need+=parseFloat(style[edge]);
+        for(const row of wrap.children)if(row!==draft&&getComputedStyle(row).position!=="absolute")need+=row.getBoundingClientRect().height;onRoom?.(need);
       });
     });
     observer.observe(wrap);observer.observe(draft);if(shelf)observer.observe(shelf);

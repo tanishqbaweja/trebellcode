@@ -3308,6 +3308,89 @@ for(const [shell,mode] of [["browser","dark"],["browser","light"],["desktop","da
   }finally{await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
 
+// The composer's room keeps at rest at a fractional scale (UI lane D, round 13). At 125% display scaling in the desktop app, and
+// zoomed in a step (110%) in a browser and in the desktop app, with two files on the composer's shelf and the terminal drawer at its
+// tallest beside the inspector, the room App keeps above the drawer for the composer (--terminal-room) went between two values a
+// pixel apart every frame with no input (290 and 291 at 125%, 280 and 281 zoomed to 110%, 312 and 313 in the desktop app): the
+// composer read the room it needs from whole pixels of its own box, which the drawer's height moves and which round one way or the
+// other as the box lands on the device's pixels, so each room moved the composer to where it read the other one. The composer and
+// the drawer's top shimmered by under a pixel, and the page's main thread never rested (a second of work in a second). So at those
+// scales, beside the inspector at its first width (460px) and at its widest, in windows 1280 to 1536 by 680 to 864 CSS pixels (1210
+// to 1440 by 680 to 840 window pixels zoomed): once the room has kept ten frames running it keeps over the second after, the main
+// thread all but idle, and the drawer is as tall as its handle says, with the composer 12px above it and under the header.
+// roomAtRest: whether the room keeps ten frames running within 3s, then how often it changes over the second after and the main
+// thread's work in that second (Chrome's TaskDuration, in seconds).
+async function roomAtRest(page,cdp){
+  const kept=await page.evaluate(()=>new Promise(resolve=>{
+    const shell=document.querySelector(".app-shell"),start=performance.now();let room=shell.style.getPropertyValue("--terminal-room"),frames=0;
+    const frame=()=>{const now=shell.style.getPropertyValue("--terminal-room");frames=now===room?frames+1:0;room=now;if(frames>=10||performance.now()-start>3000)resolve(frames>=10);else requestAnimationFrame(frame)};
+    requestAnimationFrame(frame);
+  }));
+  const busy=async()=>(await cdp.send("Performance.getMetrics")).metrics.find(metric=>metric.name==="TaskDuration").value,before=await busy();
+  const rooms=await page.evaluate(()=>new Promise(resolve=>{
+    const shell=document.querySelector(".app-shell"),rooms=[shell.style.getPropertyValue("--terminal-room")];
+    const observer=new MutationObserver(()=>{const room=shell.style.getPropertyValue("--terminal-room");if(room!==rooms.at(-1))rooms.push(room)});
+    observer.observe(shell,{attributes:true,attributeFilter:["style"]});setTimeout(()=>{observer.disconnect();resolve(rooms)},1000);
+  }));
+  return {kept,changes:rooms.length-1,rooms:[...new Set(rooms)].join(" "),work:+(await busy()-before).toFixed(3)};
+}
+for(const [shell,mode,scale,zoomed] of [["desktop","dark",1.25,false],["browser","light",1.1,true],["desktop","dark",1.1,true]])test(`${zoomed?`zoomed to ${Math.round(scale*100)}%`:`at ${Math.round(scale*100)}% display scaling`}, with two files on the composer's shelf and the terminal drawer at its tallest beside the inspector at its first width and at its widest, the composer's room keeps at rest in windows ${zoomed?"1210 to 1440 by 680 to 840":"1280 to 1536 by 680 to 864"}px, with the drawer as tall as its handle says and the composer 12px above it, in the ${shell} shell in ${mode} mode`,async({playwright,baseURL,proxy,headless,channel})=>{
+  test.setTimeout(300_000);
+  const threads=roomThreads(),harness=await startHarness(threads),percent=Math.round(scale*100),tag=`${shell}-${mode}-${zoomed?"zoom":"scale"}-${percent}`;
+  const dir=await mkdtemp(join(tmpdir(),"trebell-rest-")),files=["ledger-export.csv","refunds.log"].map(name=>join(dir,name)),extension=join(dir,"extension");
+  let browser=null,context=null;
+  try{
+    for(const file of files)writeFileSync(file,"refund 1\n");
+    // Zoomed as Ctrl+= zooms the window (an extension's chrome.tabs.setZoom), or in a browser of the test's own whose device scale
+    // factor is set as a display's scaling sets it.
+    if(zoomed){
+      mkdirSync(extension);for(const [name,text] of Object.entries(ZOOM_EXTENSION))writeFileSync(join(extension,name),text);
+      context=await playwright.chromium.launchPersistentContext(join(dir,"profile"),{channel:"chromium",headless,baseURL,proxy,viewport:{width:1280,height:900},args:["--disable-extensions-except="+extension,"--load-extension="+extension]});
+    }else{
+      browser=await playwright.chromium.launch({headless,channel,args:["--force-device-scale-factor="+scale]});
+      context=await browser.newContext({baseURL,proxy,viewport:{width:1280,height:900},deviceScaleFactor:scale});
+    }
+    const zoom=zoomed?context.serviceWorkers()[0]||await context.waitForEvent("serviceworker"):null,page=context.pages()[0]||await context.newPage(),cdp=await context.newCDPSession(page);
+    await cdp.send("Performance.enable");
+    if(shell==="desktop")await asDesktop(page);
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),panelHandle=page.getByTestId("right-panel-resizer");
+    if(!(await right.isVisible())){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible()}
+    // At 1280 by 900 the drawer opened and set to its tallest with End on its handle, and two files attached from Attach files.
+    await openTerminalDrawer(page);await focusTerminalHandle(page);await page.keyboard.press("End");
+    await expect.poll(async()=>(await readRoom(page)).now,{message:"End takes the drawer to its tallest at 1280 by 900"}).toBe(620);
+    const [chooser]=await Promise.all([page.waitForEvent("filechooser"),page.getByRole("button",{name:"Attach files",exact:true}).click()]);await chooser.setFiles(files);
+    await expect(page.locator(".attachment-shelf > span:not(.uploading)")).toHaveCount(2);
+    let level=1;
+    if(zoomed){await zoom.evaluate(factor=>self.zoomTo(factor),scale);level=scale}
+    await expect.poll(()=>page.evaluate(()=>devicePixelRatio),{message:`the page's device pixels to a CSS pixel ${zoomed?`zoomed to ${percent}%`:`at ${percent}% display scaling`}`}).toBeCloseTo(scale,3);
+    // The window set to width by height (window pixels zoomed, CSS pixels at a display's scaling), once the page has its size.
+    const size=async(width,height)=>{await page.setViewportSize({width,height});await expect.poll(()=>page.evaluate(([width,height])=>Math.abs(innerWidth-width)<1&&Math.abs(innerHeight-height)<1,[width/level,height/level]),{message:`the page at ${width} by ${height}`}).toBe(true)};
+    const widths=zoomed?[1210,1280,1366,1440]:[1280,1366,1440,1536],heights=zoomed?[680,720,800,840]:[680,720,800,864],seen=[];
+    for(const panel of ["at its first width","at its widest"]){
+      // The inspector set to its widest at 1280 by 900 CSS pixels (622px) with End on its handle, Shift+Tab from its first tab.
+      if(panel==="at its widest"){
+        await size(Math.round(1280*level),Math.round(900*level));
+        await right.locator(".context-panel-tab").first().focus();await page.keyboard.press("Shift+Tab");await expect(panelHandle).toBeFocused();await page.keyboard.press("End");
+        await expect.poll(async()=>Math.round((await right.boundingBox()).width),{message:"End takes the inspector to its widest at 1280 by 900 CSS pixels"}).toBe(1280-258-400);
+      }
+      for(const width of widths)for(const height of heights){
+        await size(width,height);
+        const rest=await roomAtRest(page,cdp),state=await readRoom(page),where=`at ${width} by ${height}${zoomed?` zoomed to ${percent}%`:""} beside the inspector ${panel} (room ${rest.rooms})`;
+        seen.push(`${width}x${height}${panel==="at its widest"?"/widest":""}:${rest.rooms.replace(/px/g,"")}${rest.changes?`(${rest.changes}x)`:""}/${rest.work}s`);
+        expect.soft([rest.kept,rest.changes],`the composer's room ${where}: kept ten frames running, and how often it changes over the second after`).toEqual([true,0]);
+        expect.soft(rest.work,`the main thread's work over that second at rest, in seconds, ${where}`).toBeLessThan(0.25);
+        expect.soft([Math.round(state.drawer.height),state.max],`the drawer's height and its handle's maximum ${where}`).toEqual([state.now,state.now]);
+        expect.soft(Math.round(state.drawer.top-state.composer.bottom),`the composer's gap above the drawer ${where}`).toBe(12);
+        expect.soft(Math.min(state.composer.top,state.shelf?.top??Infinity),`the top of the composer and its shelf against the header's foot, at ${state.header.bottom}px, ${where}`).toBeGreaterThanOrEqual(state.header.bottom);
+        if(width===widths[1]&&height===heights[0])await page.screenshot({path:join(shotsDir,`composer-room-at-rest-${tag}-${panel==="at its widest"?"inspector-widest":"inspector"}-${width}x${height}.png`),animations:"disabled"});
+      }
+    }
+    console.log(`the composer's room at rest ${tag} (window:room(changes)/main thread's work): ${seen.join(" ")}`);
+  }finally{await context?.close();await browser?.close();await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
+});
+
 // The composer's / and @ menus open from its top, up over the conversation, as tall as their lists (280px of commands, eight files of
 // 43px rows) wherever the composer stands, and above the terminal drawer it stands higher the taller the drawer is (UI lane C, round
 // 12). At the drawer's tallest, the window less 260px, a composer with a line of draft has its top 133px down at 1280 by 800, so the
