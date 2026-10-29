@@ -144,6 +144,12 @@ test("a key saved in Trebell Code is removed on a harness's row, from the store 
       await page.screenshot({animations:"disabled",path:shots+`claude-api-key-remove-${mode}-1280.png`});
     }
     await switchMode(page,"dark");
+    // At a phone's width the field and both buttons wrap inside the row, nothing cut off.
+    await page.setViewportSize({width:390,height:844});await remove.scrollIntoViewIfNeeded();
+    await expect(remove).toBeVisible();
+    expect(await panel.evaluate(node=>node.scrollWidth<=node.clientWidth+1),"the row's key panel fits its width").toBe(true);
+    await page.screenshot({animations:"disabled",path:shots+"claude-api-key-remove-dark-390.png"});
+    await page.setViewportSize({width:1280,height:900});
     await remove.click();
     await expect(page.getByTestId("agent-runtime-message")).toContainText("API key removed.");
     await expect(panel).toContainText("Uses the Anthropic API key: none saved yet.");
