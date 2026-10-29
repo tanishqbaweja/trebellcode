@@ -90,6 +90,8 @@ function editTool(name){return new Set(["Edit","Write","MultiEdit","NotebookEdit
 function toolKind(name){
   const value=String(name||"").toLowerCase();
   if(["read","glob","grep","ls"].some(x=>value.includes(x)))return "read";
+  // TodoWrite writes a to-do list, not a file (T3 Code's todowrite is no file change either).
+  if(value==="todowrite")return "other";
   if(["edit","write","notebook"].some(x=>value.includes(x)))return "edit";
   if(["bash","shell","powershell"].some(x=>value.includes(x)))return "execute";
   if(value.includes("web")||value.includes("fetch"))return "fetch";
@@ -434,8 +436,9 @@ export class ClaudeAgentSession{
     // A fork or rewind that has not run yet: the first query resumes the source at the cursor into this session's new id.
     this.pendingFork=forkFromSessionId?{sourceSessionId:forkFromSessionId,targetSessionId:null,resumeSessionAt:resumeSessionAt||null}:null;
     this.live=null;this.turn=null;this.idleTimer=null;this.tools=new Map();
-    // taskCalls: the task tool calls without a result yet, by id; taskLists: each Claude session's task list, by its id.
-    this.taskCalls=new Map();this.taskLists=new Map();
+    // taskCalls: the task tool calls without a result yet, by id, and todoCalls the TodoWrite calls; taskLists: each Claude session's
+    // task list, by its id.
+    this.taskCalls=new Map();this.todoCalls=new Set();this.taskLists=new Map();
     // contextWindows: Claude Code's window for each model it ran (getContextUsage), asked once. meter: what the context meter last
     // showed (the total, its cost and the context, with the turns the total and the cost are of), and request the latest root
     // request's usage as its stream reports it.
@@ -865,16 +868,19 @@ export class ClaudeAgentSession{
     this.tools.set(block.id,tool);
     if(live&&CLAUDE_SUBAGENT_TOOLS.has(String(block.name))&&block.input?.run_in_background!==true)live.foregroundSubagents.add(block.id);
     if(CLAUDE_TASK_TOOLS.has(String(block.name)))this.taskCalls.set(block.id,{name:String(block.name),input:block.input});
+    // The root's TodoWrite list is the thread's plan (T3 Code's emitClaudePlanProjection); a subagent's is its own. Either edits no
+    // file and is no step of the turn unless it failed (#toolResult), as with Muse Code's to-do list.
+    if(block.name==="TodoWrite"){this.todoCalls.add(block.id);if(live)this.#emit({sessionUpdate:"plan",entries:claudeTodoEntries(block.input)});return}
     this.#emit({sessionUpdate:"tool_call",toolCallId:block.id,...tool,status:"in_progress"});
-    // The root's TodoWrite list is the thread's plan (T3 Code's emitClaudePlanProjection); a subagent's is its own.
-    if(live&&block.name==="TodoWrite")this.#emit({sessionUpdate:"plan",entries:claudeTodoEntries(block.input)});
   }
   // structured: the tool's structured result (tool_use_result); meta: Claude Code's notes on the message's results (tool_result_meta).
   #toolResult(block,live=null,{structured,meta}={}){
     if(!block?.tool_use_id)return;
     live?.foregroundSubagents.delete(block.tool_use_id);
     const tool=this.tools.get(block.tool_use_id)||{title:"Tool",kind:"other",rawInput:{}};this.tools.delete(block.tool_use_id);
-    this.#emit({sessionUpdate:"tool_call_update",toolCallId:block.tool_use_id,...tool,status:block.is_error?"failed":"completed",rawOutput:toolResultText(block.content)});
+    // A TodoWrite that failed shows, as the call it is, once it ends.
+    const todo=this.todoCalls.delete(block.tool_use_id);
+    if(!todo||block.is_error)this.#emit({sessionUpdate:todo?"tool_call":"tool_call_update",toolCallId:block.tool_use_id,...tool,status:block.is_error?"failed":"completed",rawOutput:toolResultText(block.content)});
     // A task tool call that failed, or that never ran (cancelled), changed no task.
     const call=this.taskCalls.get(block.tool_use_id);if(!call)return;
     this.taskCalls.delete(block.tool_use_id);
