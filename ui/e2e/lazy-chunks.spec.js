@@ -249,8 +249,9 @@ test("a right-panel tab whose code cannot load says so in its place in History's
 // The reason a right-panel tab could not be shown sits in the panel as the tab's own content does once it loads (the Runtime surface's
 // cards, 14 px in from the panel's sides and top), clear of the panel's divider and the window's edge (it lay flush on both, its
 // rounded corners against them), wide and narrow, dark and light: for the Goal and Browser tabs, whose code loads with them, and for
-// the Runtime tab, whose code (idle-parts.js) loads at idle.
-test("a right-panel tab that cannot load shows its reason inset like the tab's own content, clear of the panel's divider and the window's edge, wide and narrow, dark and light",async({page,request})=>{
+// the Runtime tab, whose code (idle-parts.js) loads at idle. Repair of round 13's fix: in the panel maximized in a wide window the tab's
+// own content keeps to a centred column no wider than 1040 px, and the reason sits in it too (it spanned the whole panel, 14 px in).
+test("a right-panel tab that cannot load shows its reason inset like the tab's own content, clear of the panel's divider and the window's edge, wide and narrow, dark and light, and maximized",async({page,request})=>{
   test.setTimeout(90_000);
   await request.post("/api/settings",{data:NATIVE_SETTINGS});
   await page.setViewportSize({width:1280,height:800});
@@ -262,6 +263,13 @@ test("a right-panel tab that cannot load shows its reason inset like the tab's o
   await tab("Runtime").click();
   const card=panel.locator(".runtime-surface > .runtime-summary");await expect(card).toBeVisible();
   const own=await insetInPanel(card);console.log("the Runtime surface's first card in the panel:",JSON.stringify(own));
+  // And in the panel maximized in a wide window, where that content keeps to its centred column.
+  const maximize=async()=>{await page.setViewportSize({width:1600,height:900});await panel.getByRole("button",{name:"Maximize right panel",exact:true}).click();await expect(panel).toHaveClass(/\bmaximized\b/)};
+  const restore=async()=>{await panel.getByRole("button",{name:"Restore right panel",exact:true}).click();await expect(panel).not.toHaveClass(/\bmaximized\b/);await page.setViewportSize({width:1280,height:800})};
+  await maximize();
+  const wide=await insetInPanel(card);console.log("the Runtime surface's first card in the maximized panel at 1600 px:",JSON.stringify(wide));
+  expect(wide.left,"the maximized panel's content column inset past 14 px at 1600 px").toBeGreaterThan(14);
+  await restore();
   await page.route(/\/assets\/(GoalPanel|PreviewPage)-[^/]*\.js$/,route=>route.abort("failed"));
   // Goal by a click, Browser by Enter, and Runtime (below) by a click.
   const open=label=>label==="Browser"?tab(label).focus().then(()=>page.keyboard.press("Enter")):tab(label).click();
@@ -276,6 +284,17 @@ test("a right-panel tab that cannot load shows its reason inset like the tab's o
     }
   };
   await placed(["Goal","Browser"]);
+  // Maximized at 1600 px, the reason sits in the tab's column, as the Runtime card does there.
+  const placedWide=async labels=>{
+    await maximize();
+    for(const label of labels){
+      await open(label);
+      await expect(tab(label)).toHaveClass(/\bactive\b/);await expect(failed).toBeVisible();
+      await shootModes(page,`lazy-chunk-${label.toLowerCase()}-tab-cannot-load-maximized`,async mode=>expect.soft(await insetInPanel(failed),`${label}'s reason in the panel maximized at 1600 px, ${mode}`).toEqual(wide));
+    }
+    await restore();
+  };
+  await placedWide(["Goal","Browser"]);
   // A Trebell opened with its idle script refused: the Runtime tab cannot load.
   await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>route.abort("failed"));
   await page.setViewportSize({width:1280,height:800});
@@ -283,6 +302,7 @@ test("a right-panel tab that cannot load shows its reason inset like the tab's o
   await expect(page.getByTestId("composer")).toBeVisible();
   await page.getByTestId("right-panel-toggle").click();
   await placed(["Runtime"]);
+  await placedWide(["Runtime"]);
   await appStays(page);
 });
 
