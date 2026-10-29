@@ -1,7 +1,8 @@
 // Settings' routes for how a profile signs in, outside mock mode, with a stand-in for the Codex CLI (TREBELL_CODEX_BIN):
 // - the method route changes only the profile its row names: an id no profile has (a row another window removed) changes none;
 // - a Codex profile that is not the active one stops the app-servers its threads run on once its method changes, or the OpenAI key it
-//   runs on is saved or removed, so none goes on serving a thread on the sign-in or key the person moved off;
+//   runs on is saved or removed, so none goes on serving a thread on the sign-in or key the person moved off; the active profile's
+//   change stops only its own (its catalog starts again), never another profile's thread's;
 // - no Codex home of Trebell's own for a key keeps a copy of the OpenAI key once its profile is removed, or the key is.
 // The stand-in answers `codex login --with-api-key` (writing its home's auth.json, as Codex does), `codex logout` (deleting it) and
 // `codex app-server` (a WebSocket that answers every request), and logs each call with its CODEX_HOME. Fixture keys, fresh folders.
@@ -129,6 +130,40 @@ test("a Codex profile that is not the active one stops its threads' app-servers 
   assert.equal(removed.status,200);
   assert.ok(await waitFor(()=>!alive(onKey.pid)),"the app-server on the removed key stopped");
   assert.equal(existsSync(join(fx.keyHome("codex-b"),"auth.json")),false);
+});
+
+// Codex A, the active profile, on its OpenAI key, runs the catalog in its home of Trebell's own; thread B runs on Codex B's own sign-in.
+async function activeOnKeyFixture(t){
+  const fx=await fixture(t,{profiles:[{id:"codex-a",kind:"codex",displayName:"Codex A",enabled:true,environment:{},auth:"api-key"},{id:"codex-b",kind:"codex",displayName:"Codex B",enabled:true,environment:{}}],
+    threads:{"thread-b":"codex-b"},settings:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-a"}});
+  assert.ok(await waitFor(async()=>serversOf(await fx.calls(),fx.keyHome("codex-a")).length>0),"the catalog runs on Codex A's key");
+  const [catalog]=serversOf(await fx.calls(),fx.keyHome("codex-a"));
+  assert.equal((await fx.codexRequest("thread/read",{threadId:"thread-b"})).thread.id,"thread-b");
+  const [threadB]=serversOf(await fx.calls(),fx.env.CODEX_HOME);
+  assert.ok(threadB&&alive(threadB.pid),"thread B's app-server runs on Codex B's own sign-in");
+  return {...fx,catalog,threadB};
+}
+// Thread B is still served by the app-server it had, not a new one.
+async function threadBGoesOn(fx,label){
+  assert.equal(await waitFor(()=>!alive(fx.threadB.pid),3000),false,label);
+  assert.equal((await fx.codexRequest("thread/read",{threadId:"thread-b"})).thread.id,"thread-b");
+  assert.equal(alive(fx.threadB.pid),true,label);
+}
+
+test("the active Codex profile's OpenAI key removed stops its own app-servers alone: another profile's thread goes on",{timeout:120_000},async t=>{
+  const fx=await activeOnKeyFixture(t);
+  // Removed from the Model provider card: Codex A's catalog on it stops; thread B's app-server, on no key, goes on.
+  assert.equal((await fx.post("/api/providers",{provider:"openai",apiKey:"",select:false})).status,200);
+  assert.ok(await waitFor(()=>!alive(fx.catalog.pid)),"the catalog on the removed key stopped");
+  await threadBGoesOn(fx,"thread B's app-server goes on");
+});
+
+test("the active Codex profile set to Sign in starts its own app-servers again alone: another profile's thread goes on",{timeout:120_000},async t=>{
+  const fx=await activeOnKeyFixture(t);
+  assert.equal((await fx.post("/api/agent-runtime-auth",{action:"method",runtime:"codex",instanceId:"codex-a",method:"sign-in"})).status,200);
+  assert.ok(await waitFor(()=>!alive(fx.catalog.pid)),"the catalog on the key stopped");
+  assert.ok(await waitFor(async()=>serversOf(await fx.calls(),fx.env.CODEX_HOME).some(entry=>entry.pid!==fx.threadB.pid&&alive(entry.pid))),"Codex A's catalog runs again, on its own sign-in");
+  await threadBGoesOn(fx,"thread B's app-server goes on");
 });
 
 test("no Codex home of Trebell's own for a key keeps the OpenAI key once its profile is removed, or the key is",{timeout:90_000},async t=>{
