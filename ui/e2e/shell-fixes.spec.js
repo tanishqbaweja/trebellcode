@@ -3916,6 +3916,65 @@ for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`the mod
   }finally{await harness.close()}
 });
 
+// Repair of UI lane C, round 13: the model picker opened under its button, over the terminal drawer, is hidden while the keyboard is
+// out of the composer and comes back with it, but it stays open meanwhile, so the press on its button that brought the keyboard back
+// toggled the unseen picker shut, and only a second press showed it; Choose model's shortcut, Ctrl+Shift+M, did the same. A hidden
+// picker shows again as it opens at one press of either. So in the desktop app at 1280 by 800 and in its smallest window, 1180 by
+// 720, and in a browser at 1280 by 800, with 30 models: with the drawer closed the picker, over its button, stays in view with the
+// keyboard out of the composer, and a press on its button shuts it, as before; at the drawer's tallest, the picker opened under its
+// button and the keyboard taken out of the composer by Shift+Tab (hidden: no press lands on its search box or checked model), one
+// press on its button, and then Ctrl+Shift+M, shows it with its search box, which has the keyboard, and the checked model in view,
+// where a press at their middle lands on them; in view, a press on its button shuts it.
+for(const [shell,mode,width,height] of [["desktop","dark",1280,800],["desktop","light",1180,720],["browser","light",1280,800]])test(`one press on the model picker's button, or Ctrl+Shift+M, shows the picker hidden over the terminal drawer at its tallest with the keyboard out of the composer, its search box and the checked model in view, and with the drawer closed a press shuts the picker in view, at ${width} by ${height} in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width,height});
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads,{respond:message=>message.method==="thread/runtimeInstances/list"?pickerProfiles:undefined}),tag=`${shell}-${mode}-${width}x${height}`;
+  try{
+    await routeMenuTerminals(page,menuTerminals());
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode},models:pickerModels});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),handle=page.getByTestId("terminal-resizer"),picker=page.getByTestId("model-picker"),menu=page.locator(".chat-workspace .composer-wrap .model-picker-menu"),search=page.getByTestId("model-picker-search");
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    await expect(picker).toContainText("Fixture Model");
+    // The picker as drawn: whether it is under its button, and whether its search box and the checked model are in view in it, a press
+    // at their middle landing on them.
+    const read=()=>menu.evaluate(node=>{
+      const box=node.getBoundingClientRect(),at=item=>{const rect=item.getBoundingClientRect(),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);return rect.top>=box.top-0.5&&rect.bottom<=box.bottom+0.5&&Boolean(hit&&item.contains(hit))};
+      return {under:box.top>=document.querySelector("[data-testid=model-picker]").getBoundingClientRect().bottom,search:at(node.querySelector(".model-picker-search")),checked:at(node.querySelector(":scope>button.selected"))};
+    });
+    const inComposer=()=>page.evaluate(()=>Boolean(document.activeElement?.closest(".composer-wrap")));
+    // Shift+Tab until the keyboard leaves the composer, as a person takes it out with no press.
+    const keysOut=async where=>{for(let presses=0;presses<40&&await inComposer();presses++)await page.keyboard.press("Shift+Tab");expect(await inComposer(),`the keyboard out of the composer by Shift+Tab ${where}`).toBe(false);await settle(page)};
+    await picker.click();await expect(menu).toBeVisible();await expect(search).toBeFocused();
+    await keysOut("with the drawer closed");
+    const kept=await read();
+    expect.soft([kept.under,kept.search],"the model picker with the drawer closed and the keyboard out of the composer: over its button, in view, its search box taking a press").toEqual([false,true]);
+    await picker.click();await expect.soft(menu,"the model picker in view with the drawer closed after a press on its button").toHaveCount(0);
+    await openTerminalDrawer(page);await focusTerminalHandle(page);await page.keyboard.press("End");
+    const tallest=Number(await handle.getAttribute("aria-valuemax"));await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:"the drawer at its tallest"}).toBe(tallest);
+    const where=`at the drawer's tallest, ${tallest}px`,shown={under:true,search:true,checked:true};
+    await picker.click();await expect(menu).toBeVisible();await expect(search).toBeFocused();await settle(page);
+    expect.soft(await read(),`the model picker opened ${where}: under its button, its search box and the checked model in view and taking a press`).toEqual(shown);
+    for(const [how,press,name] of [["one press on its button",()=>picker.click(),"button"],["Ctrl+Shift+M",()=>page.keyboard.press("Control+Shift+M"),"shortcut"]]){
+      await keysOut(where);
+      expect.soft(await read(),`the model picker ${where} with the keyboard out of the composer: hidden, no press landing on its search box or checked model`).toEqual({under:true,search:false,checked:false});
+      // Read once what the press did has been drawn (an update the shortcut makes comes in a task of its own).
+      await press();await settle(page);
+      const open=await menu.count()>0;
+      expect.soft(open,`the model picker ${where}, hidden with the keyboard out of the composer, open after ${how}`).toBe(true);
+      // The second press a person needed, so the checks go on.
+      if(!open){await press();await expect(menu).toBeVisible()}
+      await expect.soft(search,`the picker's search box after ${how} ${where}`).toBeFocused();await settle(page);
+      expect.soft(await read(),`the model picker ${where} after ${how}: under its button, its search box and the checked model in view and taking a press`).toEqual(shown);
+      await page.screenshot({path:join(shotsDir,`model-picker-hidden-shown-${tag}-${name}.png`),animations:"disabled"});
+    }
+    await picker.click();await expect.soft(menu,`the model picker in view ${where} after a press on its button`).toHaveCount(0);
+    await picker.click();await expect(menu).toBeVisible();await expect(search).toBeFocused();
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
 // Repair 2 of UI lane C, round 12: Chrome matches no :focus-within in a window in the background (another app, a browser tab or
 // DevTools in front), though the composer keeps the document's keyboard, so a / or @ menu or the model picker moved over the terminal
 // drawer went away with the window and came back with its focus, under the press that brought the window back, which then picked an
