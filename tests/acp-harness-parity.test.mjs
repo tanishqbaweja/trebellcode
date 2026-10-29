@@ -263,10 +263,10 @@ test("Cursor loads its conversation, and one the harness no longer has is a lost
   const signedOut=await scenario(t,{...CURSOR,errors:{"session/load":{code:-32000,message:"Authentication required"}}});
   const refused=harness(t,signedOut,{runtime:"cursor"});
   await assert.rejects(refused.session.start({providerSessionId:"cursor-thread"}),error=>!(error instanceof HarnessSessionLostError)&&/Cursor could not resume this conversation: Authentication required/.test(error.message));
-  // Neither is a harness whose process ends while it loads.
+  // Neither is a harness whose process ends while it loads: it says it stopped as it started.
   const crashed=await scenario(t,{...CURSOR,exitOn:{"session/load":3}});
   const dying=harness(t,crashed,{runtime:"cursor"});
-  await assert.rejects(dying.session.start({providerSessionId:"cursor-thread"}),error=>!(error instanceof HarnessSessionLostError)&&/Cursor could not resume this conversation/.test(error.message));
+  await assert.rejects(dying.session.start({providerSessionId:"cursor-thread"}),error=>!(error instanceof HarnessSessionLostError)&&error.message==="Cursor stopped as it started, with exit code 3.");
 });
 
 test("Cursor pins the thread's model in every session and sets effort with the model's own effort option",async t=>{

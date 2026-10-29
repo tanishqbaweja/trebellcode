@@ -14,9 +14,11 @@ import { keepThreadMeta } from "./test-home.js";
 // context) and as T3 sends them (buildAntigravityPrompt, 532023a24): an mp3 goes as audio after the line that names it, a PNG as an
 // image and a GIF by its saved path; a message whose image does not fit in the 50 MiB Antigravity takes in one message ends saying
 // which image and what to do. The real relay and Antigravity session run the scripted ACP agent (tests/fixtures/scripted-acp-agent.mjs)
-// as Antigravity, and its log shows what it was sent.
+// as Antigravity, and its log shows what it was sent. A chat whose Antigravity stops as it starts (the stand-in for Antigravity's own
+// server, tests/fixtures/antigravity-acp-agent.mjs) says so in plain words, never pointing to the sign-in link it hides.
 const auditDir=fileURLToPath(new URL("../../visual-audit/antigravity-attachments/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const AGENT=fileURLToPath(new URL("../../tests/fixtures/scripted-acp-agent.mjs",import.meta.url));
+const AGY_AGENT=fileURLToPath(new URL("../../tests/fixtures/antigravity-acp-agent.mjs",import.meta.url));
 const MODEL="gemini-3.8-flash-high",MiB=1024*1024;
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 const PNG=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==","base64");
@@ -28,17 +30,21 @@ const scenario=replies=>({
   prompts:replies.map(text=>({steps:[{update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text}}}]})),
 });
 
-// The app on the real agent relay with an Antigravity profile behind it, opened on its thread "Recording check".
-async function antigravityApp(page,replies,run){
-  const root=await mkdtemp(join(tmpdir(),"trebell-antigravity-app-")),scenarioPath=join(root,"scenario.json"),logPath=join(root,"agent-log.jsonl");
+// The app on the real agent relay with an Antigravity profile behind it, opened on its thread "Recording check". With exit, the chat
+// runs the stand-in for Antigravity's own server, which exits as that scenario says (exitWith changes it for the next start); the
+// chat's launch takes no Google key of the test's environment, only the Gemini API key saved for it (saveKey), as Trebell's does.
+async function antigravityApp(page,replies,run,{exit=null}={}){
+  const root=await mkdtemp(join(tmpdir(),"trebell-antigravity-app-")),scenarioPath=join(root,"scenario.json"),logPath=join(root,"agent-log.jsonl"),exitPath=join(root,"exit-scenario.json");
   await writeFile(scenarioPath,JSON.stringify(scenario(replies)),"utf8");
+  const exitWith=value=>writeFile(exitPath,JSON.stringify(value),"utf8");if(exit)await exitWith(exit);
   const instance={id:"antigravity-default",kind:"antigravity",displayName:"Antigravity",enabled:true};
-  const childEnv={...process.env,TEMP:join(root,"tmp"),TMP:join(root,"tmp"),TREBELL_ACP_SCENARIO:scenarioPath,TREBELL_ACP_LOG:logPath};
+  const childEnv={...process.env,TEMP:join(root,"tmp"),TMP:join(root,"tmp"),TREBELL_ACP_SCENARIO:scenarioPath,TREBELL_ACP_LOG:logPath,TREBELL_AGY_SCENARIO:exitPath},saved={key:null};
+  delete childEnv.GEMINI_API_KEY;delete childEnv.GOOGLE_API_KEY;
   const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(root,"home")});
   const seed=threadStore.create({runtime:"antigravity",cwd:root,providerSessionId:"",model:MODEL,name:"Recording check"});
   const runtimeManager={
     activeRuntime:()=>"antigravity",activeInstance:()=>instance,instances:()=>[instance],compatibleInstanceIds:()=>[instance.id],
-    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...childEnv}),executable:()=>process.execPath,acpArgs:()=>[AGENT],
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>({...childEnv,...(saved.key?{GEMINI_API_KEY:saved.key}:{})}),executable:()=>process.execPath,acpArgs:()=>[exit?AGY_AGENT:AGENT],
     probe:async()=>({id:instance.id,name:"Antigravity",available:true,authenticated:true,version:"1.2.1"}),env:{...process.env,TREBELL_HOME:join(root,"home")},
   };
   const meta=new Map([[seed.id,{projectless:true,environmentId:null}]]);
@@ -63,7 +69,7 @@ async function antigravityApp(page,replies,run){
     await page.goto("/");
     await page.getByRole("button",{name:/Recording check/}).click();
     await expect(page.getByTestId("composer")).toBeEnabled();
-    await run({root,log,threadStore,threadId:seed.id});
+    await run({root,log,threadStore,threadId:seed.id,exitWith,saveKey:key=>{saved.key=key}});
   }finally{
     await relay.close();await new Promise(resolve=>server.close(()=>resolve()));threadStore.close();
     await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});
@@ -130,4 +136,28 @@ test("a message whose image does not fit in what Antigravity takes in one messag
     const [prompt]=prompts(await log());
     expect(prompt.filter(part=>part.type==="resource_link").map(part=>[part.name,part.mimeType]),"the report goes as a document link").toEqual([[basename(report),"application/pdf"]]);
   });
+});
+
+test("an Antigravity that stops as it starts is named with its exit code, and one that asked for a Google sign-in is pointed to its key, not to the link it hides",async({page})=>{
+  test.setTimeout(120_000);
+  const SIGN_IN="https://accounts.google.com/o/oauth2/v2/auth?state=x&redirect_uri=http://127.0.0.1:4567/",KEY="AIzaSyE2eFixtureKeyForTrebell0123456789";
+  await antigravityApp(page,[],async({exitWith,saveKey})=>{
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert");
+    // No key saved, sent with Enter: what Antigravity asked for, and where its key goes instead.
+    await composer.click();await page.keyboard.type("Summarize the repository",{delay:5});await page.keyboard.press("Enter");
+    await expect(alert).toHaveText("Not sent: Antigravity stopped as it started, with exit code 3, asking for a Google sign-in, which Trebell Code does not offer. Antigravity needs a Gemini API key. Create one in Google AI Studio (aistudio.google.com/apikey), then add it to Antigravity in Settings. Your draft is kept.",{timeout:20_000});
+    await expect(composer).toHaveValue("Summarize the repository");
+    expect(await page.locator("body").innerText(),"no runtime words, link or address on the page").not.toMatch(/ACP runtime|code=|signal=|sign-in-url|following link|accounts\.google\.com|127\.0\.0\.1:4567/);
+    await shots(page,"start-exit-sign-in",()=>expect(alert).toBeVisible());
+    // With a key saved, sent with the Send button: the key to check.
+    saveKey(KEY);
+    await page.getByTestId("send").click();
+    await expect(alert).toHaveText("Not sent: Antigravity stopped as it started, with exit code 3, asking for a Google sign-in, which Trebell Code does not offer: it runs Antigravity on the Gemini API key saved in Settings. Check that key there, then try again. Your draft is kept.",{timeout:20_000});
+    // One that fails as it starts: what it printed, after how it ended.
+    await exitWith({exitAt:"start",exitCode:1,stderr:"ValueError: Unexpected git description\n"});
+    await page.getByTestId("send").click();
+    await expect(alert).toHaveText("Not sent: Antigravity stopped as it started, with exit code 1: ValueError: Unexpected git description. Your draft is kept.",{timeout:20_000});
+    await expect(composer).toHaveValue("Summarize the repository");
+    await shots(page,"start-exit-printed",()=>expect(alert).toBeVisible());
+  },{exit:{exitAt:"initialize",exitCode:3,stderr:"Open the following link to authenticate the ACP server: "+SIGN_IN+"\n"}});
 });
