@@ -136,7 +136,8 @@ function adoptAutomaticTurn({activeThreadRef,setRunning,setActiveTurnId},threadI
   const turn=started?.started?started.turn:null;
   if(turn?.id&&turn.status!=="completed"&&activeThreadRef.current?.id===threadId){setRunning(true);setActiveTurnId(turn.id)}
 }
-// verificationPlanFailed: App's own note of a plan that could not be made, also when this module could not load.
+// verificationPlanFailed: App's own note of a plan that could not be made, also when this module could not load. The plan's row, and
+// the row of a repair or check that could not start, are notices of the turn after its steps, on its card with them.
 export async function planCompletedTurnEvidence(deps,threadId,turnId){
   const {activeThreadRef,rpcRef,setEvents,setContinuity,automaticVerificationRepairSeenRef,automaticVerificationContinuationSeenRef,verificationPlanFailed}=deps;
   if(!threadId||!turnId)return;
@@ -154,7 +155,7 @@ export async function planCompletedTurnEvidence(deps,threadId,turnId){
         adoptAutomaticTurn(deps,threadId,repair);
         if(repair.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-repair-"+repair.recordId),{id:"verification-auto-repair-"+repair.recordId,kind:"verification",title:"Automatic same-thread repair turn",status:"running",raw:{recordId:repair.recordId,turnId:repair.turn?.id||null}}]);
       }catch(error){
-        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-repair-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification repair stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null}}]);
+        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-repair-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification repair stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null},turnId:String(turnId),notice:2}]);
       }
     }else if(result?.nextAction?.action==="verify"&&rpcRef.current){
       try{
@@ -162,7 +163,7 @@ export async function planCompletedTurnEvidence(deps,threadId,turnId){
         adoptAutomaticTurn(deps,threadId,continuation);
         if(continuation.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId),{id:"verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId,kind:"verification",title:"Automatic same-thread check turn · "+continuation.nextStepId,status:"running",raw:{recordId:continuation.recordId,nextStepId:continuation.nextStepId,turnId:continuation.turn?.id||null}}]);
       }catch(error){
-        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-continue-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification continuation stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null,nextStepId:result.nextAction?.nextStep?.id||null}}]);
+        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-continue-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification continuation stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null,nextStepId:result.nextAction?.nextStep?.id||null},turnId:String(turnId),notice:2}]);
       }
     }
   }catch(error){

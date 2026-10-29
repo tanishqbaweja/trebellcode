@@ -14,8 +14,8 @@ export async function requestTurnVerificationPlan({request,threadId,turnId,retri
 }
 
 // The row shows the assessment made when the turn ended. Checks the turn already ran count toward it, so a turn that ran them
-// reads as verified or failed rather than as a plan still waiting. It comes once the turn has ended, as a notice of that turn: it
-// reads on the turn's own card, as the turn's context does (App's turn/completed).
+// reads as verified or failed rather than as a plan still waiting. It comes once the turn has ended, as a notice of that turn after
+// its steps (notice 2): it reads on the turn's own card, after the steps it judged (App's sealLiveTurn).
 export function verificationPlanEvent(result,turnId){
   if(!result?.record)return null;
   const assessment=result.record.assessment||{},summary=assessment.summary||{},count=key=>Math.max(0,Number(summary[key])||0),required=count("required");
@@ -31,7 +31,7 @@ export function verificationPlanEvent(result,turnId){
     id:"verification-plan-"+String(turn||Date.now()),
     kind:"verification",
     ...row,
-    ...(turn?{turnId:String(turn),notice:1}:{}),
+    ...(turn?{turnId:String(turn),notice:2}:{}),
     raw:{recordId:result.record.id||null,risk,required,outcome:outcome||null,nextAction:result.nextAction?.action||null,nextStepId:nextId,changedPaths:result.changedPaths||[]},
   };
 }

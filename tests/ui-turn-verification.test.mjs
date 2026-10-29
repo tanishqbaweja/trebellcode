@@ -18,8 +18,8 @@ test("turn verification retries only the checkpoint-link race and returns the pe
   assert.equal(result.record.id,"verification-1");
   const event=verificationPlanEvent(result,"turn-1");
   assert.equal(event.status,"incomplete");assert.equal(event.title,"Verification planned · medium risk · 3 required checks · next diagnostics");
-  // It comes once the turn has ended, and reads on that turn's card as a notice of it.
-  assert.equal(event.turnId,"turn-1");assert.equal(event.notice,1);
+  // It comes once the turn has ended, and reads on that turn's card as a notice of it after the steps it judged (notice 2).
+  assert.equal(event.turnId,"turn-1");assert.equal(event.notice,2);
 });
 
 test("a turn whose checks already ran shows the assessment's outcome, not a waiting plan",()=>{

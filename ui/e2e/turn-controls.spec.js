@@ -149,7 +149,8 @@ for(const action of ["Delete","Archive"]){
 // (turn/started) and lets the answer go, in either order, as Codex sends them; an answer before the turn started names it queued
 // (startedAt null). A started turn streams its reply and completes unless turn/interrupt ends it first, and as codex-cli 0.162
 // does, an interrupt for a turn not started yet is refused ("no active turn to interrupt"). interruptDelayMs holds the interrupt's
-// answer (Codex answers once the turn has stopped), interruptError refuses every interrupt with that message, the turn going on,
+// answer (Codex answers once the turn has stopped), interruptAnswerFirst answers it at once and leaves the turn to end when the test
+// ends it (codex.endTurn), interruptError refuses every interrupt with that message, the turn going on,
 // compactError fails thread/compact/start with that message, holdTurns keeps a turn running after its reply until it is set
 // false, steerHold, a gate, holds turn/steer's answer until it opens, resumeHold, a gate, holds thread/resume's answer until it
 // opens (Codex answers with the thread as it is then), and drainQueue has Codex start the first follow-up of its
@@ -198,6 +199,8 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
   };
   // Codex closes a thread's session once no window follows it, and says so.
   codex.closeThread=threadId=>notify("thread/closed",{threadId});
+  // A turn's end, as Codex tells it, whenever a test says so.
+  codex.endTurn=(turn,status)=>end(turn,status);
   // Any other notification, as Codex sends it.
   codex.notify=notify;
   wss.on("connection",ws=>{
@@ -221,6 +224,8 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
         codex.interrupts.push({...params});const turn=codex.turns.find(item=>item.id===params.turnId);
         if(codex.interruptError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.interruptError}}));return}
         if(turn&&!turn.started){ws.send(JSON.stringify({id:message.id,error:{code:-32600,message:"no active turn to interrupt"}}));return}
+        // interruptAnswerFirst: Codex answers the interrupt at once and ends the turn only later (codex.endTurn), as its stop winds down.
+        if(codex.interruptAnswerFirst){respond({});return}
         setTimeout(()=>{if(turn?.status==="inProgress")end(turn,"interrupted");respond({})},codex.interruptDelayMs);return;
       }
       // Codex's own queue, a General chat's follow-ups: each change is told with thread/queue/changed.
@@ -1071,6 +1076,107 @@ test("a message's automatic compaction that Codex ends after the window's 45 sec
     if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click();
     await expect(rows.locator("summary strong")).toHaveText(["Context compacted"]);
     await rows.scrollIntoViewIfNeeded();await shoot(page,"auto-compact-ended-after-window-stopped-waiting");
+  }finally{await codex.close()}
+});
+
+// Codex ends a turn and starts one of its own (a goal going on) in one moment, and the window handles both before it draws again: the
+// ended turn keeps on its own card the context step its message was sent with, which the new turn's card does not list. The page's
+// socket listener is kept so that the test hands it both frames in one task, as two frames that come at once are handled.
+test("a turn Codex starts itself as the last one ends, both handled before the window draws again, leaves the last turn's context step on that turn's card",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  await page.addInitScript(()=>{const add=WebSocket.prototype.addEventListener;WebSocket.prototype.addEventListener=function(type,listener,options){if(type==="message")(window.__socketListeners||=[]).push({socket:this,listener});return add.call(this,type,listener,options)}});
+  const codex=await startCodex(page,{name:"Codex goal",project:true});
+  const step=scope=>scope.locator(".tool-event").filter({hasText:"Trebell context skipped"});
+  const together=frames=>page.evaluate(frames=>{const {socket,listener}=window.__socketListeners.filter(entry=>entry.socket.url.includes("/api/codex/ws")&&entry.socket.readyState===1).at(-1);for(const frame of frames)listener.call(socket,new MessageEvent("message",{data:JSON.stringify(frame)}))},frames);
+  try{
+    codex.holdTurns=true;
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});
+    await expect(step(page)).toHaveCount(1);
+    const threadId=codex.thread.id,next="codex-goal-turn";
+    codex.notify("item/completed",{threadId,turnId:turn.id,item:{type:"agentMessage",id:"reply-"+turn.id,text:"One two three four five six seven eight nine ten. Counting is done."}});
+    await expect(page.locator(".history-assistant").filter({hasText:"Counting is done."})).toHaveCount(1);
+    // Codex ends the turn and starts the next one itself, both handled at once.
+    turn.status="completed";clearTimeout(turn.timer);
+    await together([{method:"turn/completed",params:{threadId,turn:{id:turn.id,status:"completed",items:[]}}},{method:"turn/started",params:{threadId,turn:{id:next,status:"inProgress",items:[]}}}]);
+    await expect(stop(page)).toBeVisible();
+    const ended=page.locator(`.turn-card[data-turn-id="${turn.id}"] [data-testid=activity-card]`);
+    await expect(ended,"the ended turn has its card").toHaveCount(1);
+    if(await ended.getAttribute("data-state")!=="open")await ended.locator(".activity-card-head").click();
+    await expect(step(ended)).toHaveCount(1);
+    await expect(step(page),"the context step is listed once, on the ended turn's card").toHaveCount(1);
+    codex.notify("turn/completed",{threadId,turn:{id:next,status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
+    await expect(step(page)).toHaveCount(1);
+  }finally{await codex.close()}
+});
+
+// A Stop Codex answers before the stopped turn has ended frees the composer, and a message sent then clears the live card for its own
+// turn: the stopped turn's end, coming after that, takes none of the message's steps, and the message's turn keeps its context step.
+test("a stopped turn whose end comes after the next message was sent takes none of that message's steps, whose turn keeps its context step",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex late stop",project:true});
+  const step=scope=>scope.locator(".tool-event").filter({hasText:"Trebell context skipped"});
+  try{
+    codex.holdTurns=true;codex.interruptAnswerFirst=true;
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [first]=codex.turns;first.answer();first.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});
+    const threadId=codex.thread.id;
+    codex.notify("item/completed",{threadId,turnId:first.id,item:{type:"agentMessage",id:"reply-"+first.id,text:"One two three four five six seven eight nine ten. Counting is done."}});
+    await expect(page.locator(".history-assistant").filter({hasText:"Counting is done."})).toHaveCount(1);
+    // Stop: Codex answers at once, and the stopped turn ends only when the test ends it, whatever the next turn does meanwhile.
+    clearTimeout(first.timer);
+    await stop(page).click();
+    await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+    expect(first.status,"Codex has not ended the stopped turn yet").toBe("inProgress");
+    codex.holdTurns=false;
+    await sendTyped(page,"Count again.");
+    await expect.poll(()=>codex.turns.length).toBe(2);const second=codex.turns[1];
+    // The stopped turn ends now: after the message went, before its turn starts. Its reply then says it stopped.
+    codex.endTurn(first,"interrupted");
+    await expect(page.getByTestId("turn-outcome").filter({hasText:/^stopped/})).toHaveCount(1,{timeout:10_000});
+    second.answer();second.start();
+    await expect.poll(()=>second.status,{timeout:10_000}).toBe("completed");await expect(stop(page)).toHaveCount(0);
+    const live=page.locator(`.agent-block [data-testid=activity-card][data-turn-id="${second.id}"]`);
+    await expect(step(live),"the message's turn keeps its context step").toHaveCount(1);
+    await expect(page.locator(`.turn-card[data-turn-id="${first.id}"]`),"the stopped turn took none of it").toHaveCount(0);
+  }finally{await codex.close()}
+});
+
+// A turn's verification comes once the turn has ended, after the steps it judged, and a repair it asks for that could not start says
+// so beside it: both are that turn's, on its card after its steps, also once a turn the window did not send takes the live card.
+test("a turn's verification and the repair it could not start read on that turn's card after the steps they judged, also once another turn takes the live card",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  await page.route(/\/api\/verification\/plan-turn$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:true,record:{id:"verification-record-1",risk:"high",assessment:{status:"failed",summary:{required:3,failed:1}}},nextAction:{action:"repair"}})}));
+  const codex=await startCodex(page,{name:"Codex verified",project:true});
+  const titles=scope=>scope.locator(".tool-event summary strong");
+  const expected=[/^Trebell context skipped/,"npm test","Verification failed · high risk · 1 of 3 required checks failed","Automatic verification repair stopped: Codex could not start the repair"];
+  try{
+    codex.failing["thread/verification/repair"]="Codex could not start the repair";
+    codex.holdTurns=true;
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});
+    const threadId=codex.thread.id,command={type:"commandExecution",id:"command-1",command:"npm test",cwd:process.cwd(),status:"completed",exitCode:0,aggregatedOutput:"ok"};
+    codex.notify("item/started",{threadId,turnId:turn.id,item:{...command,status:"inProgress"}});codex.notify("item/completed",{threadId,turnId:turn.id,item:command});
+    codex.holdTurns=false;
+    await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+    const live=page.locator(`.agent-block [data-testid=activity-card][data-turn-id="${turn.id}"]`);
+    await expect(titles(live)).toContainText(expected.slice(0,3),{timeout:10_000});
+    // Soft, so that the old code also shows where the verification goes once another turn takes the live card.
+    await expect.soft(titles(live),"the repair's row is the turn's").toHaveText(expected,{timeout:10_000});
+    await expect.soft(page.locator(".agent-block-after"),"in no card of its own").toHaveCount(0);
+    await shoot(page,"verification-after-its-steps");
+    codex.notify("turn/started",{threadId,turn:{id:"codex-goal-turn",status:"inProgress",items:[]}});await expect(stop(page)).toBeVisible();
+    const ended=page.locator(`.turn-card[data-turn-id="${turn.id}"] [data-testid=activity-card]`);
+    if(await ended.getAttribute("data-state")!=="open")await ended.locator(".activity-card-head").click();
+    await expect.soft(titles(ended),"the ended turn's card keeps them after its steps").toHaveText(expected);
+    await expect.soft(titles(page.locator(".agent-block [data-testid=activity-card]")),"the new turn lists none of them").toHaveCount(0);
+    codex.notify("turn/completed",{threadId,turn:{id:"codex-goal-turn",status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
   }finally{await codex.close()}
 });
 

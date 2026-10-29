@@ -367,9 +367,11 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* Agent activity cards (TurnActivityCard): the live turn's (.agent-block) and each earlier turn's (.turn-card) read alike, one
    card whose head names the activity and counts its steps, and opens or closes the steps below it. Closed, a card is its head.
    An earlier turn's card off screen is not painted, and keeps the height it last had. */
-.conversation-column .agent-block,.conversation-column .agent-block-after{margin:0 0 22px 39px}
+.conversation-column .agent-block,.conversation-column .agent-block-after,.conversation-column .agent-block-before{margin:0 0 22px 39px}
 /* Once its turn has ended, the live card's rows of no turn read below that turn's reply in a card of their own (.agent-block-after,
-   which the order below puts after the reply): a turn with no rows of its own leaves its block empty, which takes no room. */
+   which the order below puts after the reply), and above the card of a turn the window did not send that started after them
+   (.agent-block-before, before the card's block and so before its order): a turn with no rows of its own leaves its block empty,
+   which takes no room. */
 .conversation-column .agent-block:empty{display:none}
 .conversation-column .turn-card{margin:0 0 22px 39px;content-visibility:auto;contain-intrinsic-size:auto 36px;min-width:0}
 .conversation-column .activity-card{border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2);overflow:hidden}

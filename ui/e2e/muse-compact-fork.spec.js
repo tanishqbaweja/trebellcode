@@ -571,6 +571,44 @@ test("a project's recipe sent with the context nearly full shows its message in 
   }finally{await harness.close()}
 });
 
+// A row that came after Muse Code's last turn ended (Compact's, which found nothing to compact) is no step of the report Muse starts
+// after it: it reads in a card of its own, between the turn it came after and the report, which says nothing failed.
+test("Compact's row from between Muse Code's turns stays out of the report Muse starts after it, in a card of its own above the report's reply",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_COMPACT:"noop"},holds:["report_start"]});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Please run workflow ping-pong");
+    const launched=reply(page,"Started the ping-pong workflow.");
+    await expect(launched).toBeVisible({timeout:20_000});
+    const stop=page.getByRole("button",{name:"Stop",exact:true});
+    await expect(stop).toHaveCount(0,{timeout:20_000});
+    await page.getByRole("button",{name:"Compact",exact:true}).click();
+    const failed=page.locator(".tool-event").filter({hasText:"Context compaction failed: There is no Muse Code conversation history to compact yet."});
+    await expect(failed).toHaveCount(1,{timeout:20_000});
+    // Muse reports on its workflow in a turn of its own.
+    await harness.release("report_start");
+    const report=page.locator(".history-assistant,.agent-block .assistant-answer").filter({hasText:"The workflow with ping and pong agents is complete."});
+    await expect(report).toBeVisible({timeout:20_000});
+    await expect(stop).toHaveCount(0,{timeout:20_000});
+    const [thread]=harness.threadStore.list();
+    await expect.poll(()=>harness.threadStore.get(thread.id).turns.length).toBe(2);
+    const reportId=harness.threadStore.get(thread.id).turns[1].id,launchedId=harness.threadStore.get(thread.id).turns[0].id;
+    await expect(failed).toHaveCount(1);
+    const own=cardOf(failed);
+    await expect(own,"no turn's card").not.toHaveAttribute("data-turn-id",/./);
+    await expect(page.locator(`[data-testid=activity-card][data-turn-id="${reportId}"] .tool-event`).filter({hasText:/compact/i}),"the report lists no compaction").toHaveCount(0);
+    await expect(page.locator(`[data-testid=activity-card][data-turn-id="${reportId}"] .activity-card-failed`),"and says nothing failed").toHaveCount(0);
+    const [card,before,after]=await Promise.all([edges(own),edges(launched),edges(report)]);
+    expect(card.top,"it reads below the reply it came after").toBeGreaterThanOrEqual(before.bottom);
+    expect(card.bottom,"and above the report's reply").toBeLessThanOrEqual(after.top);
+    await failed.scrollIntoViewIfNeeded();await shoot(page,"muse-compaction-row-before-report");
+    expect(launchedId).not.toBe(reportId);
+  }finally{await harness.close()}
+});
+
 test("once the window has waited its ten minutes for Muse Code's compaction, its row says the window stopped waiting while Muse may still compact, and Muse's later end replaces that row",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startMuseHarness({holds:["compact"]});
