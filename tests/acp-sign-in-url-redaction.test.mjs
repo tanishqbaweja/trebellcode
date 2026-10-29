@@ -64,6 +64,19 @@ test("a chat whose agent exits as it starts names the harness, its exit code and
     {message:"Antigravity stopped as it started, with exit code 3, asking for a Google sign-in, which Trebell Code does not offer: it runs Antigravity on the Gemini API key saved in Settings. Check that key there, then try again."});
 });
 
+// Setting the thread's model is a start's last step (Cursor sets one on every start, Antigravity for a thread with a chosen model): a
+// harness whose process ends there stopped as it started too, and says so in the same plain words, its runtime error as well, where it
+// read "Antigravity could not switch to model '…': ACP runtime exited code=3 signal=null" and the hidden link.
+test("an agent that exits as the start sets the thread's model says so as one that exits as it starts",async t=>{
+  const said="Antigravity stopped as it started, with exit code 3, asking for a Google sign-in, which Trebell Code does not offer: it runs Antigravity on the Gemini API key saved in Settings. Check that key there, then try again.";
+  const switching=await exitingSession(t,"antigravity",{exitAt:"session/set_config_option",exitCode:3,stderr:"Open the following link to authenticate the ACP server: "+SIGN_IN+"\n"},KEY);
+  await assert.rejects(switching.session.start({model:"gemini-fixture-pro"}),{message:said});
+  assert.deepEqual(switching.errors(),[said],"its runtime error says the same");
+  // One that printed what went wrong: its exit code and what it printed, the key redacted.
+  const crashed=await exitingSession(t,"antigravity",{exitAt:"session/set_config_option",exitCode:5,stderr:"RuntimeError: model store is locked by "+KEY+"\n"},KEY);
+  await assert.rejects(crashed.session.start({model:"gemini-fixture-pro"}),{message:"Antigravity stopped as it started, with exit code 5: RuntimeError: model store is locked by [redacted]"});
+});
+
 test("Trebell Native's redaction leaves a sign-in address as it was, and redacts the rest as before",()=>{
   const text=["Read "+SIGN_IN,"Authorization: Bearer bearer-value","https://localhost/pair#token=PAIRSECRET"].join("\n");
   assert.equal(redactSecretText(text,{environment:{}}),["Read "+SIGN_IN,"Authorization: Bearer [redacted]","[pairing-url]"].join("\n"));
