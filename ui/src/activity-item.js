@@ -129,12 +129,13 @@ export function restoredRow(row){
 // A live row after an item notification, shared by the live list and the per-turn record the card is sealed from, so the two
 // never differ. started: the item as sent. progress: only a changed name, kind or status touches the row (output streams on
 // its own), or a step that says from here that it runs on past its turn (runsPastTurn: a command Muse Code's report runs, which
-// a message took over), so that its turn's end leaves it running. completed: the final item, with the output streamed for it when
+// a message took over), so that its turn's end leaves it running, and what such a step says (a command Muse Code sent to the
+// background), which outlasts the output its turn's end clears. completed: the final item, with the output streamed for it when
 // the item carries none.
 export function mergeLiveRow(old,item,{phase="started",streamed=""}={}){
   if(phase==="started"||!old)return phase==="completed"?{...item,output:item.output||streamed||""}:item;
   if(phase==="progress"){
-    if(old.title===item.title&&old.kind===item.kind&&old.status===item.status&&!old.raw?.runsPastTurn===!item.raw?.runsPastTurn)return old;
+    if(old.title===item.title&&old.kind===item.kind&&old.status===item.status&&!old.raw?.runsPastTurn===!item.raw?.runsPastTurn&&!(item.raw?.runsPastTurn&&item.output&&item.output!==old.output))return old;
     return {...old,...item,output:item.output||old.output};
   }
   return {...old,...item,output:item.output||streamed||old.output||""};

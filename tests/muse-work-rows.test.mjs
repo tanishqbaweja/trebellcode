@@ -4,7 +4,7 @@ import { agentToolLifecycle } from "../src/agent-relay.mjs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activityRow, settledRow, storedRow } from "../ui/src/activity-item.js";
+import { activityRow, mergeLiveRow, settledRow, storedRow } from "../ui/src/activity-item.js";
 import { cardRowsFromItemEntries, cardRowsFromTurns } from "../ui/src/turn-activity.js";
 import { FakeMuse, event, itemFrame, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
@@ -87,11 +87,15 @@ test("Muse Code's workflow, its agents and a command it sends to the background 
   const shape=id=>rowsOf(seen,id).map(row=>[row.status,row.runsPastTurn===true]);
   assert.deepEqual(shape("wf-1"),[["in_progress",true],["completed",true]]);
   assert.deepEqual(shape("wf-1:agent:ping"),[["pending",true],["completed",true]]);
-  assert.deepEqual(shape("dev"),[["in_progress",false],["in_progress",true],["completed",true],["completed",true]],"from the update that sent it to the background");
+  assert.deepEqual(shape("dev"),[["in_progress",false],["in_progress",true],["in_progress",true],["completed",true]],"from the update that sent it to the background, running until Muse tells its end, though Muse settled the call as it went there");
   assert.deepEqual(shape("check"),[["in_progress",false],["completed",false]],"a step that ends in its turn says nothing of the kind");
   assert.ok(seen.filter(entry=>entry.update.toolCallId).every(entry=>entry.turnKey===turnId),"every row names the turn that started it");
   // Through the relay's mapping, the window gets the agent's row pending, the work's rows as running past the turn.
   assert.deepEqual(rowsOf(seen,"wf-1:agent:ping").map(row=>[mapped(row).status,mapped(row).runsPastTurn]),[["pending",true],["completed",true]]);
+  // In the window (each item notification merged as App merges it), the dev server's row runs on past the turn's end with what Muse
+  // said as it sent the command there, which the turn's end leaves it once the streamed output goes.
+  let shown=null;for(const [index,update] of rowsOf(seen,"dev").slice(0,3).entries())shown=mergeLiveRow(shown,activityRow(mapped(update),{turnId}),{phase:index?"progress":"started"});
+  assert.deepEqual([settledRow(shown,{keepPast:true}).status,shown.output],["running","Running in the background."]);
   await session.close();
 });
 

@@ -192,8 +192,9 @@ function hitsText(results){return results.map(hit=>[hit.title&&hit.url?`${hit.ti
 // One Muse item as an ACP tool update, as T3's museToolPresentation maps it: Muse's shell and the person's own shell commands run
 // as commands with their output and exit code; a write, edit or patch with a file is a file edit with its exact old and new text
 // (an ACP diff) or Muse's patch; a web search lists its hits and a fetched page its text; anything else is a tool row with its
-// arguments. Muse's tool arguments are model-written JSON, which may not parse while they stream.
-export function museToolUpdate(item={}){
+// arguments. Muse's tool arguments are model-written JSON, which may not parse while they stream. running: a command Muse sent to the
+// background still runs (runningWork), though Muse may settle its call as it goes there: its row runs on until Muse tells its end.
+export function museToolUpdate(item={},{running=false}={}){
   // A subagent's row (T3 publishNativeSubagent): titled by its role, else its objective, which is its prompt, with its result. A
   // workflow's: titled by its entry, with its final summary.
   if(WORK_KINDS.has(item.kind)){
@@ -204,7 +205,7 @@ export function museToolUpdate(item={}){
     return {toolCallId:text(item.itemId),status,kind:"other",title:detail?`${name}: ${detail}`:name,rawInput,rawOutput:[detail,result].filter(Boolean).join("\n")};
   }
   const args=jsonObject(item.args),arg=(...keys)=>{for(const key of keys)if(typeof args?.[key]==="string")return args[key];return undefined};
-  const tool=text(item.tool||item.kind)||"tool",status=museToolStatus(item),name=tool;
+  const tool=text(item.tool||item.kind)||"tool",settled=museToolStatus(item),status=running&&settled==="completed"?"in_progress":settled,name=tool;
   const detail=failureDetail(item,status);
   const body=item.visibleOutput??item.result?.summary??item.text??(Array.isArray(item.summary)?item.summary.join("\n"):undefined)??item.finalSummary??item.fallbackText??item.objective??"";
   const output=detail?[detail,text(body)].filter(Boolean).join("\n"):text(body);
@@ -1067,7 +1068,7 @@ export class MuseAgentSession{
     // (runsPastTurn): its turn's end leaves the row as it is in the window, for the work's own later rows to settle.
     if(this.observed.get(item.itemId)===turn)turn.followed.add(item.itemId);
     const past=turn.followed.has(item.itemId);
-    this.#row(turn,museToolUpdate(item),{work:WORK_KINDS.has(item.kind),past});
+    this.#row(turn,museToolUpdate(item,{running:runningWork(item,this.endedCalls)}),{work:WORK_KINDS.has(item.kind),past});
     // A workflow's agents follow its own row (T3 publishWorkflowAgents).
     if(item.kind==="workflow")for(const update of museWorkflowAgentUpdates(item,turn.labels))this.#row(turn,update,{work:true,past});
   }
