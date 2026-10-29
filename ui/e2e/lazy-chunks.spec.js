@@ -1098,8 +1098,10 @@ test("a palette whose message search cannot load says it could not search thread
 // Nor can that search run again before a reload, the browser keeping the script that failed, so the notice and its Reload stay while
 // names are typed, the results in their place under them, and the search box does not say 'Searching messages…'. Both went at every
 // key, 'Searching messages…' showing meanwhile, and came back as the search tried again failed, about 0.1 s after the last key, the
-// results moving 61 px down with them; Tab pressed straight after typing went past Reload.
-test("a palette whose message search cannot load keeps its notice and Reload in place while names are typed, without 'Searching messages…', by keyboard and by mouse",async({page})=>{
+// results moving 61 px down with them; Tab pressed straight after typing went past Reload. Repair of that fix: a palette opened again
+// in the same page started from nothing, so its first typing did all that again; it knows from the start now (the palette's own chunk
+// keeps it), and the second pass, a palette opened again, is watched from its first frame, before anything is typed.
+test("a palette whose message search cannot load keeps its notice and Reload in place while names are typed, without 'Searching messages…', by keyboard and by mouse, also in a palette opened again",async({page})=>{
   test.setTimeout(90_000);
   const needle="violet-harbor-207";
   let refused=0;
@@ -1119,13 +1121,17 @@ test("a palette whose message search cannot load keeps its notice and Reload in 
     });
     for(const [how,mode,width] of [["keyboard","dark",1280],["mouse","light",700]]){
       await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
-      // By keyboard: Ctrl+K from the composer, the word, Ctrl+A over it. By mouse: Search or jump to, the window narrowed, the word, a
-      // triple click on it.
+      // By keyboard: Ctrl+K from the composer, the word until the notice shows (the page's first palette learns it from a search), Ctrl+A
+      // over it. By mouse, in the palette opened again: Search or jump to, the window narrowed, and a triple click on the search box,
+      // watched from before anything is typed, where the notice and its Reload already show.
       if(how==="keyboard"){await page.getByTestId("composer").click();await page.keyboard.press("Control+k")}
       else await page.getByRole("button",{name:"Search or jump to"}).click();
       await expect(palette).toBeVisible();await page.setViewportSize({width,height:800});
-      await page.keyboard.type(needle,{delay:15});await expect(said).toHaveText(notice);
+      if(how==="keyboard"){await page.keyboard.type(needle,{delay:15});await expect(said).toHaveText(notice)}
+      // Its opening pop (180 ms) over, which moves the whole palette by a pixel, before its frames are watched.
+      await palette.locator(".command-palette").evaluate(node=>Promise.all(node.getAnimations().map(animation=>animation.finished)));
       await watch();
+      if(how==="mouse")await expect.soft(said,"the notice in the palette opened again, before anything is typed").toHaveText(notice);
       if(how==="keyboard")await page.keyboard.press("Control+a");else await search.click({clickCount:3});
       // A thread's name typed at a person's pace, a letter taken back and typed again, then a command's and a project's: each is found.
       await page.keyboard.type("Quill",{delay:120});await expect(item("Quill release")).toBeVisible();

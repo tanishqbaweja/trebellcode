@@ -49,6 +49,12 @@ export default function CommandPalette(props){
   return <CommandPaletteOpen {...props}/>;
 }
 
+// The warning of a message search that could not run (its code could not load), kept while the page stays: the browser keeps the
+// script that failed, so no search can run before a reload, and a palette opened again says so from the start. Each palette started
+// from nothing, so its first typing showed no notice, 'Searching messages…' and then the results jumping down as the notice came back.
+// This chunk loads once and stays, so the warning outlives the palette that met it; a search that runs clears it.
+let unsearchedWarning="";
+
 // seed: App's handoff from the stand-in search box it shows while this code loads ({opener,query}, see CommandPaletteLoading).
 // focusFallback: where focus goes when the control the palette was opened from has gone with the view a command left.
 // app: what App's render hands the palette's commands (palette-actions.js), which are built again with each one.
@@ -62,12 +68,12 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   const [actionError,setActionError]=useState("");
   // Degraded message search ("Full thread search unavailable…") is a warning, kept apart from command failures so a
   // search that finishes late can no longer replace or wipe a command's error message.
-  const [searchWarning,setSearchWarning]=useState("");
+  const [searchWarning,setSearchWarning]=useState(unsearchedWarning);
   // A message search that could not run at all (its code could not load) offers Reload, and with no message searched an empty list
   // says that no command or thread name matches, not that no thread does. It counts only while its warning shows. Nor can it run
   // before a reload (the browser keeps the script that failed), so its warning stays as the person types or runs a command, and a new
   // search tries it again without saying 'Searching messages…'.
-  const [searchFailed,setSearchFailed]=useState(false);
+  const [searchFailed,setSearchFailed]=useState(Boolean(unsearchedWarning));
   const inputRef=useRef(null);
   const resultsRef=useRef(null);
   const refocusRef=useRef(false);
@@ -123,6 +129,7 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
       catch(error){failed=true;result={matches:[],warning:"Could not search thread messages: "+(error?.message||String(error))}}
       const matches=Array.isArray(result)?result:(result?.matches||[]);
       const warning=Array.isArray(result)?"":(result?.warning||"");
+      unsearchedWarning=failed?warning:"";
       if(!cancelled){setMessageMatches(matches);setMessageSearching(false);setSearchWarning(warning);setSearchFailed(failed)}
     },180);
     return()=>{cancelled=true;clearTimeout(timer)}
