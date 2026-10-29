@@ -42,6 +42,8 @@ const CLAUDE_SUBAGENT_TOOLS=new Set(["Agent","Task"]);
 const CLAUDE_TASK_TOOLS=new Set(["TaskCreate","TaskUpdate","TaskList"]);
 const CLAUDE_TASK_STATUSES=new Set(["pending","in_progress","completed"]);
 export const CLAUDE_COMPACT_FAILED="Claude Code could not compact its context.";
+// What the row of a background task says when its Claude Code ended first (Stop, Edit from here, its release or its exit), which ends it.
+const CLAUDE_TASK_STOPPED="Claude Code stopped before this finished.";
 const CLAUDE_EFFORTS=new Set(["low","medium","high","xhigh","max"]);
 const CLAUDE_IMAGE_TYPES=new Set(["image/gif","image/jpeg","image/png","image/webp"]);
 const CLAUDE_INTERRUPT_TIMEOUT_MS=10_000;
@@ -602,7 +604,8 @@ export class ClaudeAgentSession{
   }
   async delete(){await this.close();this.#requireHostSessionHelper("delete");return (await this.#loadSdk()).deleteSession(this.sessionId,{dir:this.cwd})}
 
-  #emit(update){this.onUpdate?.({sessionId:this.sessionId,update})}
+  // turnKey: the turn that the row of work running on past its turn stays in (agent-relay handleUpdate keeps it there).
+  #emit(update,turnKey=null){this.onUpdate?.({sessionId:this.sessionId,...(turnKey?{turnKey}:{}),update})}
   #probeInput(cwd=this.cwd){return {command:this.command,cwd,env:this.env,spawnProcess:this.spawnProcess,scope:this.capabilityScope}}
   #loadInventory(){
     // This folder's commands and agents only: plan usage is the model list's machine-wide probe's to read.
@@ -693,8 +696,9 @@ export class ClaudeAgentSession{
     const runtime=this.sdk.query({prompt:input,options});
     // resumed: the session this query asked Claude Code to resume, which it may no longer have.
     // failure: what ended the process's messages; stopped: Stop or close ended it. foregroundSubagents: the root turn's subagent calls
-    // that wait on their subagent (no result yet); subagentMoves: the moves to the background steers asked for, by call.
-    const live={query:runtime,input,key,fork,proc,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),foregroundSubagents:new Set(),subagentMoves:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,failure:null,stopped:false,pump:null};
+    // that wait on their subagent (no result yet); subagentMoves: the moves to the background steers asked for, by call. id: what the
+    // turn keys of its background tasks' rows start with (#taskRow).
+    const live={id:randomUUID(),query:runtime,input,key,fork,proc,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),foregroundSubagents:new Set(),subagentMoves:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,failure:null,stopped:false,pump:null};
     this.live=live;
     live.pump=this.#pump(live);
     Promise.resolve(runtime.initializationResult?.()).then(init=>{
@@ -752,7 +756,10 @@ export class ClaudeAgentSession{
     let failure=null;
     try{for await(const message of {[Symbol.asyncIterator]:()=>live.query})this.#handle(live,message)}
     catch(error){failure=withStderrTail(error,live.proc)}
-    live.closed=true;live.failure=failure;live.input.end();live.backgroundTasks=new Map();
+    live.closed=true;live.failure=failure;live.input.end();
+    // Its background tasks end with it, each row in the turn it started in.
+    for(const [id,task] of live.backgroundTasks)this.#taskRow(live,id,task,"failed");
+    live.backgroundTasks=new Map();
     if(this.live===live)this.live=null;
     const turn=this.turn;
     if(turn&&turn.live===live&&!turn.settled){turn.queryError=failure;this.#finishTurn(turn)}
@@ -1098,13 +1105,24 @@ export class ClaudeAgentSession{
     turn.notices.add(noticeKey(text));
     this.#emit({sessionUpdate:"tool_call",toolCallId:`claude-notice:${message.uuid||randomUUID()}`,title:text,kind:"other",status:"completed",rawInput:{},rawOutput:message});
   }
+  // Claude Code's background tasks (its shells and agents in the background), listed whole on each change; an ambient one is no work
+  // of the thread's. Each has a row that runs on past the turn it started in (runsPastTurn) and stays in that turn (turnKey), until
+  // Claude Code no longer lists it, or its process ends (#pump), which ends it too. Meanwhile a read of the thread says it still runs
+  // (followsWork), as Muse Code's work past its turn does.
   #backgroundTasks(live,message){
     const next=new Map();
     for(const task of Array.isArray(message.tasks)?message.tasks:[])if(task?.task_id&&!task.ambient)next.set(task.task_id,task);
-    for(const [id,task] of live.backgroundTasks)if(!next.has(id))this.#emit({sessionUpdate:"tool_call_update",toolCallId:id,title:task.description||task.task_type||"Background task",kind:"other",status:"completed",rawOutput:task});
-    for(const [id,task] of next)if(!live.backgroundTasks.has(id))this.#emit({sessionUpdate:"tool_call_update",toolCallId:id,title:task.description||task.task_type||"Background task",kind:"other",status:"in_progress",rawOutput:task});
+    for(const [id,task] of live.backgroundTasks)if(!next.has(id))this.#taskRow(live,id,task,"completed");
+    for(const [id,task] of next)if(!live.backgroundTasks.has(id))this.#taskRow(live,id,task,"in_progress");
     live.backgroundTasks=next;
   }
+  #taskRow(live,id,task,status){
+    const title=task.description||task.task_type||"Background task";
+    this.#emit({sessionUpdate:"tool_call_update",toolCallId:id,title:status==="failed"?`${title}: ${CLAUDE_TASK_STOPPED}`:title,kind:"other",status,rawOutput:task,runsPastTurn:true},`${live.id}:${id}`);
+  }
+  // Whether the row of that id is of a background task this session's Claude Code still runs, which a read of the thread says still
+  // runs (agent-relay withLiveWork).
+  followsWork(id){const live=this.live;return Boolean(live&&!live.closed&&live.backgroundTasks.has(String(id||"")))}
   // A rejected usage window pauses the turn: say so once per window and reset time (T3 Code's usage-limit notice).
   #rateLimit(message){
     const info=message.rate_limit_info,turn=this.turn&&!this.turn.settled?this.turn:null;if(!info||!turn)return;

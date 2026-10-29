@@ -581,6 +581,34 @@ test("Claude refuses a launch-policy change that would end running background wo
   assert.equal(calls.length,1);
 });
 
+// Claude Code's background work (its shells and agents in the background) runs on past the turn that started it: each task's rows say
+// so (runsPastTurn) and name one turn key of their own (the relay keeps them in the turn they started in), and the session says it
+// still follows the task (a read of the thread says so) until Claude Code no longer lists it, which settles its row done, or until its
+// process ends, which ends the task too and says so on its row.
+test("a Claude Code background task's rows run on past their turn until Claude Code no longer lists it, and one its process ends with says it stopped",async()=>{
+  const seen=[],{sdk,calls}=fakeClaude();
+  const claude=new ClaudeAgentSession({cwd:"/repo",sdk,onUpdate:params=>seen.push(params)});
+  await claude.start();await claude.prompt([{type:"text",text:"Start the watcher and the server"}]);
+  calls[0].out.push({type:"system",subtype:"background_tasks_changed",tasks:[{task_id:"bg-1",description:"npm run watch",task_type:"local_bash"},{task_id:"bg-2",description:"npm run serve",task_type:"local_bash"},{task_id:"bg-3",description:"Live-update watcher",task_type:"local_bash",ambient:true}]});
+  await tick();
+  const followed=[["bg-1","bg-2","bg-3"].map(id=>claude.followsWork?.(id))];
+  await claude.prompt([{type:"text",text:"And now the tests"}]);
+  calls[0].out.push({type:"system",subtype:"background_tasks_changed",tasks:[{task_id:"bg-2",description:"npm run serve",task_type:"local_bash"}]});
+  await tick();
+  followed.push(["bg-1","bg-2"].map(id=>claude.followsWork?.(id)));
+  await claude.close();
+  followed.push(["bg-2"].map(id=>claude.followsWork?.(id)));
+  const rows=id=>seen.filter(entry=>entry.update.toolCallId===id),shape=id=>rows(id).map(entry=>[entry.update.status,entry.update.title,entry.update.runsPastTurn]);
+  assert.deepEqual(shape("bg-1"),[["in_progress","npm run watch",true],["completed","npm run watch",true]]);
+  assert.deepEqual(shape("bg-2"),[["in_progress","npm run serve",true],["failed","npm run serve: Claude Code stopped before this finished.",true]]);
+  assert.equal(rows("bg-3").length,0,"an ambient task is no work of the thread's");
+  const keys=id=>[...new Set(rows(id).map(entry=>entry.turnKey))];
+  assert.deepEqual([keys("bg-1").length,keys("bg-2").length,typeof keys("bg-1")[0]],[1,1,"string"],"each task's rows name one turn key");
+  assert.notEqual(keys("bg-1")[0],keys("bg-2")[0]);
+  assert.ok(seen.filter(entry=>entry.update.sessionUpdate==="agent_message_chunk").every(entry=>entry.turnKey===undefined),"the turns' own updates name none");
+  assert.deepEqual(followed,[[true,true,false],[false,true],[false]],"followed while Claude Code lists it, and no more once its process ended");
+});
+
 test("Claude manual compact sends Claude Code's /compact command through the session",async()=>{
   const {sdk,calls}=fakeClaude();
   const claude=session(sdk);await claude.start({providerSessionId:SOURCE});

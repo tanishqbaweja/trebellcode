@@ -966,11 +966,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     try{const session=await Promise.race([start,stopped]);if(waiting.stopped)throw new Error(MUSE_COMPACTION_STOPPED);return session}
     finally{if(museCompactionStarts.get(thread.id)===waiting)museCompactionStarts.delete(thread.id)}
   }
-  // The work a thread's live Muse Code session still follows past its turn (MuseAgentSession.followsWork): a read of the thread says
-  // so on copies of those stored items (stillRunning), so a window that opens the thread again, reloads or reconnects keeps their
-  // rows running until the work's own rows settle them, as T3 shows such work from its server's state. Once the session is gone
-  // nothing says so, and their stored rows settle.
-  function liveWorkSession(threadId){const session=sessions.get(String(threadId||""));return session instanceof MuseAgentSession&&session.observed.size?session:null}
+  // The work a thread's live Muse Code session still follows past its turn (MuseAgentSession.followsWork), or its Claude Code still
+  // runs in the background (ClaudeAgentSession.followsWork): a read of the thread says so on copies of those stored items
+  // (stillRunning), so a window that opens the thread again, reloads or reconnects keeps their rows running until the work's own rows
+  // settle them, as T3 shows such work from its server's state. Once the session is gone nothing says so, and their stored rows settle.
+  function liveWorkSession(threadId){const session=sessions.get(String(threadId||""));return session instanceof MuseAgentSession&&session.observed.size||session instanceof ClaudeAgentSession&&session.live?.backgroundTasks.size?session:null}
   const liveWorkItem=(session,item)=>item?.runsPastTurn===true&&(item.status==="inProgress"||item.status==="pending")&&session.followsWork(item.id)?{...item,stillRunning:true}:item;
   function withLiveWork(threadId,turns){
     const session=liveWorkSession(threadId);if(!session||!Array.isArray(turns))return turns;
@@ -2316,9 +2316,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(session instanceof ClaudeAgentSession){
         const current={...thread,providerMeta:threadMetadata(thread.id)?.providerMeta||thread.providerMeta},{index,providerMessageId}=claudeRewindCheckpoint(current,params.beforeTurnId);
         const forked=await session.rewindConversation(providerMessageId);
-        // A cursor is a turn of the conversation Claude Code holds now, so the fork keeps whatever it was handed over.
+        // A cursor is a turn of the conversation Claude Code holds now, so the fork keeps whatever it was handed over. The turns kept
+        // are read again: the rows of the background tasks the rewind's end of Claude Code ended went to them meanwhile.
         const providerMeta=revertedHistoryHandoff(claudeRewindProviderMeta(current,index,forked),thread.turns.slice(0,index),{sessionId:forked.sessionId,holdsHandoff:Boolean(providerMessageId)});
-        threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index),providerMeta});
+        threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:(threadStore.get(thread.id)||thread).turns.slice(0,index),providerMeta});
         emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }
       throw Object.assign(new Error(`${runtime} does not expose conversation rewind`),{code:-32601});
