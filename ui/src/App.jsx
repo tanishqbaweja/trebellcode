@@ -520,8 +520,10 @@ function contextUsagePercent(tokenUsage){
 
 // The live turn's block: its activity card (TurnActivityCard, open until the person closes it) and, below the card, the reply as
 // it streams, which stays in view while the card is closed. onShown hears whether the block shows, before the frame that draws it
-// or takes it away (App names it in the conversation column's class, with-agent-block).
-const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,threadId=null,turnId=null,initialAssistantText="",initialCommandOutputs,initialMcpProgress,onOpenPanel,canInspectChanges=true,onToggleLayout=null,onShown=null},ref){
+// or takes it away (App names it in the conversation column's class, with-agent-block). Once the card's turn has ended (ended), its
+// rows of no turn came after it (Compact's, a send its own file check refused, a follow-up the queue could not start): they read
+// below that turn's reply, in a card of their own (shell.css .agent-block-after).
+const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,threadId=null,turnId=null,ended=false,initialAssistantText="",initialCommandOutputs,initialMcpProgress,onOpenPanel,canInspectChanges=true,onToggleLayout=null,onShown=null},ref){
   const [assistantText,setAssistantText]=useState(initialAssistantText);
   const [commandOutputs,setCommandOutputs]=useState(()=>new Map(initialCommandOutputs||[]));
   const [mcpProgress,setMcpProgress]=useState(()=>new Map(initialMcpProgress||[]));
@@ -543,8 +545,9 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,threadI
   const shown=events.length>0||Boolean(assistantText);
   useLayoutEffect(()=>{onShown?.(shown)},[shown,onShown]);
   if(!shown)return null;
+  const after=ended&&turnId!=null?events.filter(event=>!event.turnId):[],rows=after.length?events.filter(event=>event.turnId):events;
   // A reply that streams without any tool or reasoning step has no activity to list, so it shows only its text.
-  return <div className="agent-block">{events.length>0&&<TurnActivityCard live threadId={threadId} turnId={turnId} rows={events} defaultOpen onToggleLayout={onToggleLayout} onInspectChanges={canInspectChanges?openWorkspace:null} commandOutputs={commandOutputs} mcpProgress={mcpProgress}/>}{assistantText&&<div className="assistant-answer chat-markdown"><StreamingMarkdown text={assistantText}/></div>}</div>;
+  return <><div className="agent-block">{rows.length>0&&<TurnActivityCard live threadId={threadId} turnId={turnId} rows={rows} defaultOpen onToggleLayout={onToggleLayout} onInspectChanges={canInspectChanges?openWorkspace:null} commandOutputs={commandOutputs} mcpProgress={mcpProgress}/>}{assistantText&&<div className="assistant-answer chat-markdown"><StreamingMarkdown text={assistantText}/></div>}</div>{after.length>0&&<div className="agent-block-after"><TurnActivityCard threadId={threadId} rows={after} defaultOpen onToggleLayout={onToggleLayout}/></div>}</>;
 }));
 
 function TurnOutcomePill({label,tone}){
@@ -1511,8 +1514,9 @@ export default function App(){
     setEvents(current=>{const liveIds=new Set(current.map(event=>String(event.id))),added=rows.filter(row=>!liveIds.has(String(row.id)));return added.length?[...added,...current]:current});
   }
   // A turn that ended, or that the live card left for another, keeps its steps as its own card: its live rows, settled and bounded,
-  // after any older ones history pages stored meanwhile. A turn whose history is not all loaded (running when the thread opened,
-  // cut by the first page) stays incomplete. A step of work that runs on past the turn keeps running there (trackPastTurnRow).
+  // after any older ones history pages stored meanwhile, its notices first. A turn whose history is not all loaded (running when the
+  // thread opened, cut by the first page) stays incomplete. A step of work that runs on past the turn keeps running there
+  // (trackPastTurnRow).
   function sealLiveTurn(threadId,turnId){
     const owner=threadId||activeThreadRef.current?.id,key=turnInfoKey(owner,turnId),entry=liveItemRowsRef.current.get(key);if(!entry)return;
     liveItemRowsRef.current.delete(key);
@@ -1520,7 +1524,7 @@ export default function App(){
     setTurnActivity(prev=>{
       if(prev.threadId!==entry.threadId)return prev;
       const known=prev.turns[id],older=(known?.rows||[]).filter(row=>!sealedIds.has(String(row.id)));
-      return mergeTurnActivity(prev,{[id]:[...older,...sealed]},{mode:"replace",complete:!known||known.complete});
+      return mergeTurnActivity(prev,{[id]:[...older,...sealed].sort((a,b)=>Boolean(b.notice)-Boolean(a.notice))},{mode:"replace",complete:!known||known.complete});
     });
   }
   // A turn whose harness retried its request goes on (outcome "recovered") or ends still retrying ("stopped"): the thread's current
@@ -3186,9 +3190,9 @@ export default function App(){
     client.reject(message.id,-32601,"Unsupported Trebell client request: "+message.method);
   }
   // A completed turn's verification is planned by turn-support.js (planCompletedTurnEvidence). A plan that cannot be made, also for
-  // want of that module, says so in the open thread's activity.
+  // want of that module, says so in the open thread's activity, on that turn's card as a notice of it.
   function verificationPlanFailed(threadId,turnId,error){
-    if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-plan-error-"+turnId,kind:"error",title:"Could not plan turn verification: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId}}]);
+    if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-plan-error-"+turnId,kind:"error",title:"Could not plan turn verification: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId},turnId:String(turnId),notice:1}]);
   }
   function planCompletedTurnEvidence(threadId,turnId){
     if(!threadId||!turnId)return;
@@ -3282,10 +3286,13 @@ export default function App(){
         // The live card moves to this turn: every other turn of this thread on it takes its rows into its own card and they leave the
         // list, as do the other rows that name the turn (its failure, a retry, its diff, its auto reviews); notices stay. A diff still
         // waiting to show goes in first, so one that came just before its turn ended (and Codex went on) leaves with the rest. A turn
-        // that starts again under its id gets back the steps its card holds.
+        // that starts again under its id gets back the steps its card holds. A turn the window did not send (a report Muse Code starts
+        // itself) finds the last turn's notices on the card, its context among them: they stay on that turn's own card, as its first
+        // steps. A send has left them before (startTurn): a notice is the live card's only.
         const owner=threadId||activeThreadRef.current?.id;
         if(owner&&id){
           liveTurnKeyRef.current=turnInfoKey(owner,id);
+          for(const event of events)if(event.notice&&event.turnId!==String(id))trackLiveRow(owner,event.turnId,event);
           for(const entry of [...liveItemRowsRef.current.values()])if(entry.threadId===String(owner)&&entry.turnId!==String(id))sealLiveTurn(owner,entry.turnId);
           diffEventBufferRef.current?.flush();setEvents(prev=>{const next=prev.filter(event=>!event.turnId||event.turnId===String(id));return next.length===prev.length?prev:next});
           const stored=turnActivityRef.current;seedLiveRows(owner,id,stored.threadId===owner?stored.turns[String(id)]?.rows:null);
@@ -3319,11 +3326,14 @@ export default function App(){
       // A retry the turn was still on when it ended: a turn that completed got its request through, any other one stopped retrying.
       settleRetry(threadId,completedTurnId,outcomeStatus==="completed"||!outcomeStatus?"recovered":"stopped",isCurrent);
       if(isCurrent){
-        sealLiveTurn(threadId,completedTurnId);if(liveTurnKeyRef.current===turnInfoKey(threadId||activeThreadRef.current?.id,completedTurnId))liveTurnKeyRef.current=null;
+        const key=turnInfoKey(threadId||activeThreadRef.current?.id,completedTurnId),own=Boolean(key)&&(liveTurnKeyRef.current===key||String(completedTurnId)===String(cardTurnId));
+        sealLiveTurn(threadId,completedTurnId);if(liveTurnKeyRef.current===key)liveTurnKeyRef.current=null;
         // Its steps still running or pending end with it, done, but for those of work that runs on past it (settledRow's keepPast) and
-        // the row of a compaction that runs in no turn (Muse Code's), which only its own end ends.
+        // the row of a compaction that runs in no turn (Muse Code's), which only its own end ends. The rows of no turn on its card (the
+        // notices its send added, its context among them) are its own from here (notice): a row of no turn that comes later reads after
+        // it (ActivityTimeline), and they go with it when another turn takes the live card.
         const compacting=compactionWaitersRef.current.get(String(threadId||""))?.turnless;
-        setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>compacting&&e.kind==="contextCompaction"&&!e.turnId?e:settledRow(e,{keepPast:true}));return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{},turnId:completedTurnId?String(completedTurnId):null}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
+        setRunning(false);setActiveTurnId(null);setEvents(prev=>{const done=prev.map(e=>compacting&&e.kind==="contextCompaction"&&!e.turnId?e:settledRow(e.turnId||!own?e:{...e,turnId:String(completedTurnId),notice:1},{keepPast:true}));return codexFailure?upsertEvent(done,{id:"codex-error-"+(completedTurnId||threadId),kind:"error",title:codexFailure.title,status:"done",raw:p.turn?.error||{},turnId:completedTurnId?String(completedTurnId):null}):done});loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));
         if(codexFailure)desktopNotify("Trebell Code error",codexFailure.message);else if(!codexGoalContinues)desktopNotify("Trebell Code finished",titleOf(activeThreadRef.current)+" is ready for review.");
       }else if(threadId&&backgroundThreadsRef.current.has(threadId)){
         backgroundThreadsRef.current.delete(threadId);loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Background task completed, but the thread list could not refresh"));const thread=threads.find(item=>item.id===threadId);desktopNotify("Background task finished",(thread?titleOf(thread):"A background Trebell task")+" is ready for review.");
@@ -5749,7 +5759,7 @@ export default function App(){
             <div className={"conversation-column"+(agentBlockShown?" with-agent-block":"")}>
               {worktreeSetup&&<LazySlot><WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");askTerminalKeyboard();if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/></LazySlot>}
               <Conversation messages={messages} harnessLabel={runtimeKnown?agentRuntimeLabel:""} turnInfo={turnInfo} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyDetached?historyDetached.cursor:historyPage.nextCursor)} loadingEarlier={historyPage.loading==="top"} onLoadEarlier={conversationLoadEarlier} historyGap={conversationHistoryGap} loadingGap={historyPage.loading==="gap"} onLoadGap={conversationLoadGap} historyBusy={Boolean(historyPage.loading)} historyError={historyPage.error} activeFindItemId={threadFind.activeItemId} anchorItemId={historyAnchorItemId} scrollContainerRef={conversationScrollRef} cardTurnId={cardTurnId} cardFailedTurns={cardFailedTurnIds(events).join("\n")} turnOrder={shownTurnOrder} turnActivity={shownTurnActivity} liveCardTurnId={liveCardTurnId} newestTurnId={newestTurnId} onToggleLayout={activityCardToggleLayout}/>
-              <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout} onShown={setAgentBlockShown}/>
+              <ActivityTimeline ref={activityTimelineRef} events={events} threadId={activeThread?.id||null} turnId={cardTurnId} ended={!running&&!liveTurnKeyRef.current} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel} canInspectChanges={!projectlessMode&&Boolean(gitInfo?.isGit)} onToggleLayout={activityCardToggleLayout} onShown={setAgentBlockShown}/>
               {guardianDenials.map(review=><LazySlot key={review.reviewId}><div className="inline-approval"><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div></LazySlot>)}
               {shownApproval&&<div className="inline-approval"><ApprovalCard key={shownApproval?.id??"none"} request={shownApproval} threadLabel={shownApprovalThreadLabel} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {/* A follow-up's button runs once for a double click or Enter held on it, as a thread's menu item does: the rest of the press

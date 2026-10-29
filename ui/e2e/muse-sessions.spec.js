@@ -159,6 +159,44 @@ test("a Muse Code workflow's agents settle in the turn that launched it, and Mus
   }finally{await harness.close()}
 });
 
+test("Muse Code's report on a workflow lists none of the launching turn's steps, whose card keeps the repository context its message was sent with",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"500"}});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Please run workflow ping-pong");
+    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    const context=row(page,"Trebell context skipped");
+    await expect(context).toHaveCount(1);
+    // Muse reports once the workflow is done, in a turn with no message of the person's.
+    await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
+    const [thread]=harness.threadStore.list(),[launchedTurn,reportTurn]=harness.threadStore.get(thread.id).turns;
+    expect(reportTurn,"the report is a turn of its own").toBeTruthy();
+    const launched=page.locator(`[data-testid=activity-card][data-turn-id="${launchedTurn.id}"]`);
+    await expect(launched).toHaveCount(1);
+    if(await launched.getAttribute("data-state")!=="open")await launched.locator(".activity-card-head").click();
+    // The context step reads once, first on the launching turn's card, with the workflow's steps after it; the report turn has none.
+    await expect(context).toHaveCount(1);
+    await expect(row(launched,"Trebell context skipped")).toHaveCount(1);
+    await expect(launched.locator(".tool-event summary strong").first()).toHaveText(/^Trebell context skipped/);
+    await expect(row(launched,"Workflow ping-pong")).toHaveCount(3);
+    await expect(page.locator(".agent-block [data-testid=activity-card]"),"no card of the report turn's").toHaveCount(0);
+    await expect(page.locator(`[data-testid=activity-card][data-turn-id="${reportTurn.id}"]`)).toHaveCount(0);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await launched.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-report-no-launching-steps-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    // Once the window is reloaded, the report turn still lists none of them.
+    await page.reload();
+    const listed=page.locator(".thread-row").filter({hasText:"Please run workflow ping-pong"});
+    await listed.locator(".thread-main").click();await expect(listed).toHaveClass(/active/);
+    await expect(reply(page,"The workflow with ping and pong agents is complete.")).toBeVisible({timeout:20_000});
+    await expect(page.locator(`[data-testid=activity-card][data-turn-id="${reportTurn.id}"]`)).toHaveCount(0);
+    await expect(page.locator(".agent-block [data-testid=activity-card]")).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
 test("a Muse Code workflow goes on in the card of the turn that launched it while the person's next message runs and after it ended, its agents coming and settling there and never on that message's card",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"300"},holds:["workflow","report_start"]});

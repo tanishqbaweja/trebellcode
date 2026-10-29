@@ -21,6 +21,15 @@ test("a turn started without a new message keeps the previous reply above its ca
   assert.equal(latestTurnRowsStart(goal,"t1"),1);
 });
 
+test("a card of no turn leaves every turn's rows above it",()=>{
+  // A notice of no turn (a send its own file check refused) on a thread whose turns had ended when it was opened: the last reply
+  // reads above the card, as does a whole turn after the last message.
+  assert.equal(latestTurnRowsStart([user("u1","t1"),reply("a1","t1")],null),-1);
+  assert.equal(latestTurnRowsStart([user("u1","t1"),thought("r1","t1"),reply("a1","t1")],null),-1);
+  // A reply that names no turn after it still moves below the card.
+  assert.equal(latestTurnRowsStart([user("u1","t1"),reply("a1","t1"),reply("a2",null)],null),2);
+});
+
 test("a steer in the running turn keeps the rows before it in place",()=>{
   const steered=[user("u1","t1"),reply("a1","t1"),user("s1","t1"),reply("a2","t1")];
   assert.equal(latestTurnRowsStart(steered,"t1"),3);

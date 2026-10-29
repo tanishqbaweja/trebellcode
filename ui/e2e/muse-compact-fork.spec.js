@@ -145,6 +145,54 @@ test("Compact on a Muse Code thread with nothing to compact says so, and the thr
   }finally{await harness.close()}
 });
 
+// Where a row reads on screen, top to bottom, and the activity card a step is listed in.
+const edges=locator=>locator.evaluate(node=>{const box=node.getBoundingClientRect();return {top:Math.round(box.top),bottom:Math.round(box.bottom)}});
+const cardOf=step=>step.locator("xpath=ancestor::*[@data-testid='activity-card'][1]");
+
+// Muse Code compacts between turns, in no turn of its own: Compact's row reads after the replies it compacts, below the latest one,
+// in no turn's card, while it runs and once it has ended, compacted or not, and the turn before it keeps its card as it was.
+for(const outcome of ["compacted","nothing to compact"]){
+  test(`Compact on a Muse Code thread shows its row below the latest reply, in no turn's card, when Muse ends it ${outcome}`,async({page})=>{
+    test.setTimeout(90_000);
+    const harness=await startMuseHarness({environment:outcome==="compacted"?{MUSE_FAKE_COMPACT_MS:"1500"}:{MUSE_FAKE_COMPACT:"noop"}});
+    try{
+      await routeMuseApp(page,harness);
+      await page.setViewportSize({width:1280,height:800});
+      await page.goto("/");
+      await send(page,"Hello Muse");
+      const answer=reply(page,"Muse fixture reply");
+      await expect(answer).toBeVisible({timeout:20_000});
+      await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
+      // The turn's card lists its own step, the repository context its message was sent with.
+      const card=page.locator("[data-testid=activity-card]").filter({hasText:"Trebell context skipped"});
+      await expect(card).toHaveCount(1);
+      const rows=compactRows(page),placed=async()=>{
+        await expect(card.locator(".tool-event").filter({hasText:/compact/i}),"the turn's card lists no compaction").toHaveCount(0);
+        await expect(card.locator(".activity-card-failed"),"the turn's card says nothing failed").toHaveCount(0);
+        const [{top},{bottom}]=await Promise.all([edges(cardOf(rows.first())),edges(answer)]);
+        expect(top,"the compaction's card reads below the latest reply").toBeGreaterThanOrEqual(bottom);
+      };
+      await page.getByRole("button",{name:"Compact",exact:true}).click();
+      if(outcome==="compacted"){
+        await expect(rows.locator("summary strong")).toHaveText("Compacting context");await expect(rows).toHaveClass(/status-running/);
+        await expect(page.getByRole("button",{name:"Compact",exact:true}),"Compact is not offered while Muse compacts").toHaveCount(0);
+        await placed();
+        await expect(rows.locator("summary strong")).toHaveText("Context compacted",{timeout:20_000});await expect(rows).toHaveClass(/status-done/);
+      }else await expect(rows.locator("summary strong")).toHaveText("Context compaction failed: There is no Muse Code conversation history to compact yet.",{timeout:20_000});
+      await expect(rows).toHaveCount(1);await placed();
+      await rows.scrollIntoViewIfNeeded();await shoot(page,"muse-compaction-below-reply-"+outcome.replaceAll(" ","-"));
+      // In a narrow window too.
+      await page.setViewportSize({width:700,height:800});await placed();await page.setViewportSize({width:1280,height:800});
+      // Muse Code keeps no record of the compaction: once the window is reloaded, the thread shows no row of it, nor a failed step.
+      await page.reload();
+      const listed=page.locator(".thread-row").filter({hasText:"Hello Muse"});
+      await listed.locator(".thread-main").click();await expect(listed).toHaveClass(/active/);
+      await expect(answer).toBeVisible({timeout:20_000});
+      await expect(rows).toHaveCount(0);await expect(page.locator(".activity-card-failed")).toHaveCount(0);
+    }finally{await harness.close()}
+  });
+}
+
 // What the window shows once the frame after the next one is drawn: what a timer that fired just now did is on the page.
 const drawn=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve,0)))));
 
