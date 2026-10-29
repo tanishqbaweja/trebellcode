@@ -92,6 +92,9 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // its turn kept live on that turn's card, its compaction's wait and Stop, and an attached document's extracted text named in Codex's
 // input) and 0.0 / 0.1 KB to the lazy chunks (the first bundle's new name in their import lines): 780.1 / 257.9 KB, 0.9 / 0.1 KB
 // under the limit.
+// Native's one configuration (src/native-configuration.mjs, shared with the benchmark runner) then added 0.7 / 0.2 KB to the first
+// bundle (618.6 / 198.7 KB: the measured Thinking default, and the tool selection and developer text the window now reads from it)
+// and took 0.0 / 0.1 KB from the lazy chunks: 780.1 / 257.8 KB, 0.9 / 0.2 KB under the limit.
 const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:781,gzipKB:258}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
