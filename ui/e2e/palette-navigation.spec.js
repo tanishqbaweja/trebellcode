@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
+import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 import { keepThreadMeta } from "./test-home.js";
 import { startStreamingFixture } from "./native-stream-fixture.js";
 
@@ -755,3 +755,58 @@ test("the palette finds the command for Ctrl+N by New task, the sidebar's name f
     await page.keyboard.press("Escape");await expect(palette).toHaveCount(0);
   }finally{await fixture.close()}
 });
+
+// A Native thread with a reply, in a Git project with a project action, has 25 commands in a browser and 26 in the desktop app (Open
+// workspace folder). The palette's list stopped at 24 entries, typed or not, so before anything was typed it never showed Copy
+// conversation, nor Settings in the desktop app, and nothing said that more were found by typing.
+const ACTION_THREAD_COMMANDS=["New thread","New general chat","Open workspace folder","Recent projects","Files","Changes","Source control","Trebell context","Link pull request","Terminal","Run Start the dev server","Browser","Agents & collaboration","Thread goal","Review changes","Environments","Usage","Open source licenses","Appearance: System","Appearance: Light","Appearance: Dark","Theme: Trebell","Theme: Midnight","Theme: Black","Settings","Copy conversation"];
+for(const shell of ["desktop app","browser"]){
+  test(`the palette's list before anything is typed holds every command, Settings and Copy conversation among them, to its end by wheel and by keys, in the ${shell}`,async({page})=>{
+    test.setTimeout(90_000);
+    const desktop=shell==="desktop app",json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+    if(desktop)await page.addInitScript(()=>{Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{pickDirectory:async()=>null}})});
+    const harness=await startRelayHarness();
+    harness.seedThread("Tidy the ledger export",[{user:"Tidy the ledger export",items:[replyItem("reply-ledger","The ledger export is tidy.")]}]);
+    await routeRelayApp(page,harness);
+    const project={id:"relay-history-project",name:"Relay History Project",path:harness.repo,environmentId:null,effectiveSettings:{},scripts:[{id:"dev",name:"Start the dev server",command:"npm run dev"}]};
+    await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{project}:{projects:[project]}));
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:true,cwd:harness.repo,root:harness.repo,branch:"main",branches:["main"],status:[],remotes:[],worktrees:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.route(/\/api\/settings$/,route=>route.request().method()==="POST"?json(route,route.request().postDataJSON()||{}):route.fallback());
+    try{
+      await page.setViewportSize({width:1280,height:800});
+      await page.goto("/");
+      await page.locator('.thread-main[title="Tidy the ledger export"]').click();
+      await expect(page.locator(".assistant-message-text").last()).toContainText("The ledger export is tidy.");
+      await expect(page.getByTestId("composer")).not.toHaveAttribute("placeholder","Opening thread…");
+      const palette=page.getByTestId("command-palette"),items=palette.locator(".command-palette-item"),results=palette.locator(".command-palette-results"),chosen=palette.locator(".command-palette-item.selected strong");
+      const commands=ACTION_THREAD_COMMANDS.filter(label=>desktop||label!=="Open workspace folder");
+      // Opened from the composer with Ctrl+K in the desktop app, with Search or jump to in the browser.
+      if(desktop){await page.getByTestId("composer").click();await page.keyboard.press("Control+K")}
+      else await page.getByRole("button",{name:"Search or jump to"}).click();
+      await expect(items.first()).toBeVisible();
+      await expect.poll(()=>items.locator("strong").allTextContents(),{message:"the list before anything is typed"}).toEqual(commands);
+      // The wheel over the list scrolls it to its end, Copy conversation, whole in view.
+      const box=await results.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);
+      for(let turn=0;turn<6;turn++)await page.mouse.wheel(0,500);
+      await expect.poll(()=>results.evaluate(node=>Math.round(node.scrollHeight-node.clientHeight-node.scrollTop)),{message:"how far the list goes on below its view"}).toBeLessThanOrEqual(1);
+      await expect(items.last()).toHaveText(/^Copy conversation/);await expect(items.last()).toBeInViewport({ratio:1});
+      for(const mode of ["dark","light"]){
+        await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+        await page.screenshot({animations:"disabled",path:shots+`palette-every-command-${desktop?"desktop":"browser"}-${mode}-1280.png`});
+      }
+      await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+      // ArrowDown held from the search box goes down to the last command, in view, in a narrow window too.
+      if(!desktop)await page.setViewportSize({width:700,height:800});
+      await expect(palette.getByRole("textbox")).toBeFocused();
+      for(let press=0;press<commands.length+4;press++)await page.keyboard.press("ArrowDown");
+      await expect(chosen).toHaveText("Copy conversation");await expect(chosen).toBeInViewport({ratio:1});
+      if(!desktop)await page.screenshot({animations:"disabled",path:shots+"palette-every-command-browser-dark-700.png"});
+      // Settings runs from the list as it stands: with ArrowUp and Enter in the desktop app, with a click in the browser.
+      if(desktop){await page.keyboard.press("ArrowUp");await expect(chosen).toHaveText("Settings");await page.keyboard.press("Enter")}
+      else await items.filter({hasText:/^Settings/}).click();
+      await expect(palette).toBeHidden();
+      await expect(settingsHeading(page)).toBeVisible();
+    }finally{await harness.close()}
+  });
+}
