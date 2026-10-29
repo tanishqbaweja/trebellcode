@@ -81,43 +81,47 @@ import ReasoningRow from "./components/ReasoningRow.jsx";
 import TurnActivityCard from "./components/TurnActivityCard.jsx";
 import { reasoningHistoryMessage } from "./reasoning-text.js";
 
-const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
-const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
-const SourceControlPanel=lazy(()=>import("./components/SourceControlPanel.jsx"));
-const ProjectsPage=lazy(()=>import("./components/ProjectsPage.jsx"));
-const AgentsPage=lazy(()=>import("./components/AgentsPage.jsx"));
-const PreviewPage=lazy(()=>import("./components/PreviewPage.jsx"));
-const SettingsPage=lazy(()=>import("./components/SettingsPage.jsx"));
-const HarnessToolsPage=lazy(()=>import("./components/HarnessToolsPage.jsx"));
-const EnvironmentsPage=lazy(()=>import("./components/EnvironmentsPage.jsx"));
-const GoalPanel=lazy(()=>import("./components/GoalPanel.jsx"));
+// A part whose code cannot load (the UI was rebuilt or updated under an open page, or the link to a remote Trebell server dropped)
+// fails with these words, whatever loads it, so its place (LazySlot) says so in them rather than in the browser's own error with the
+// script's address. lazyPart: a part App draws (lazy()) that loads with its first showing.
+const loadFailed=error=>Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+const lazyPart=load=>lazy(()=>load().catch(error=>{throw loadFailed(error)}));
+const TerminalPanel=lazyPart(()=>import("./components/TerminalPanel.jsx"));
+const WorkspacePanel=lazyPart(()=>import("./components/WorkspacePanel.jsx"));
+const SourceControlPanel=lazyPart(()=>import("./components/SourceControlPanel.jsx"));
+const ProjectsPage=lazyPart(()=>import("./components/ProjectsPage.jsx"));
+const AgentsPage=lazyPart(()=>import("./components/AgentsPage.jsx"));
+const PreviewPage=lazyPart(()=>import("./components/PreviewPage.jsx"));
+const SettingsPage=lazyPart(()=>import("./components/SettingsPage.jsx"));
+const HarnessToolsPage=lazyPart(()=>import("./components/HarnessToolsPage.jsx"));
+const EnvironmentsPage=lazyPart(()=>import("./components/EnvironmentsPage.jsx"));
+const GoalPanel=lazyPart(()=>import("./components/GoalPanel.jsx"));
 // Shown only while a new worktree is set up, so it loads with its first setup instead of with the app (B11).
-const WorktreeSetupCard=lazy(()=>import("./components/WorktreeSetupCard.jsx"));
-const UsagePage=lazy(()=>import("./components/UsagePage.jsx"));
-const LicensesPage=lazy(()=>import("./components/LicensesPage.jsx"));
-const ContextInspector=lazy(()=>import("./components/ContextInspector.jsx"));
+const WorktreeSetupCard=lazyPart(()=>import("./components/WorktreeSetupCard.jsx"));
+const UsagePage=lazyPart(()=>import("./components/UsagePage.jsx"));
+const LicensesPage=lazyPart(()=>import("./components/LicensesPage.jsx"));
+const ContextInspector=lazyPart(()=>import("./components/ContextInspector.jsx"));
 // The Runtime tab's trace, which the tab (RuntimeSurface, idle-parts.js) draws: its code is asked for as the tab is first asked for,
 // beside the tab's own (preloadRuntimeTrace), so it does not wait for the tab's code to come before it starts to load.
 let runtimeTraceLoad=null;
 const loadRuntimeTrace=()=>runtimeTraceLoad||=import("./components/RuntimeTrace.jsx");
 const preloadRuntimeTrace=()=>{if(!runtimeTraceLoad)loadRuntimeTrace().catch(()=>{})};
-const RuntimeTrace=lazy(loadRuntimeTrace);
+const RuntimeTrace=lazyPart(loadRuntimeTrace);
 // Shown only on the right panel's Runtime tab, so it loads when that tab first shows instead of with the app (B11).
-const AgentBackgroundTerminals=lazy(()=>import("./components/AgentBackgroundTerminals.jsx"));
+const AgentBackgroundTerminals=lazyPart(()=>import("./components/AgentBackgroundTerminals.jsx"));
 // Shown only once auto review has denied an action, so it loads with the first denial instead of with the app (B11). The approval
 // card stays in App (ApprovalCard below): a harness waits on it, so it shows the moment the request comes, and no chunk that is
 // slow or fails to load stands between the person and their answer.
-const GuardianDenialCard=lazy(()=>import("./components/GuardianDenialCard.jsx"));
-const QuestionModal=lazy(()=>import("./components/QuestionModal.jsx"));
-const McpElicitationModal=lazy(()=>import("./components/McpElicitationModal.jsx"));
-const SnoozeDialog=lazy(()=>import("./components/SnoozeDialog.jsx"));
-const CommandPalette=lazy(()=>import("./components/CommandPalette.jsx"));
-const OnboardingModal=lazy(()=>import("./components/OnboardingModal.jsx"));
+const GuardianDenialCard=lazyPart(()=>import("./components/GuardianDenialCard.jsx"));
+const QuestionModal=lazyPart(()=>import("./components/QuestionModal.jsx"));
+const McpElicitationModal=lazyPart(()=>import("./components/McpElicitationModal.jsx"));
+const SnoozeDialog=lazyPart(()=>import("./components/SnoozeDialog.jsx"));
+const CommandPalette=lazyPart(()=>import("./components/CommandPalette.jsx"));
+const OnboardingModal=lazyPart(()=>import("./components/OnboardingModal.jsx"));
 // Trebell's own tool catalog (the dynamic tools a new thread gets, and how a tool's results are put) is not needed for the first
 // paint, so it loads at idle after it instead of with the app (B11). An action that needs it before then waits for that load. A load
-// that fails rejects, so the action fails and says so rather than waiting; the browser keeps a module that failed, so a reload brings
-// it back.
-const loadFailed=error=>Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+// that fails rejects (loadFailed), so the action fails and says so rather than waiting; the browser keeps a module that failed, so a
+// reload brings it back.
 let sharedToolCatalogLoad=null;
 const loadSharedToolCatalog=()=>sharedToolCatalogLoad||=import("../../src/shared-tool-catalog.mjs").catch(error=>{
   sharedToolCatalogLoad=null;throw loadFailed(error);

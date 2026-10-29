@@ -67,6 +67,20 @@ const appStays=async page=>{
   await expect(page.locator(".sidebar"),"the sidebar").toBeVisible();
   await expect(page.getByTestId("composer"),"the composer").toBeVisible();
 };
+// What a part whose code cannot load says in its place, with Reload: the words History's list says it in (loadFailed's, in App.jsx),
+// never the browser's own error with the address of the script.
+const CANNOT_LOAD=/^This part of Trebell could not be shown: Part of Trebell could not load\. Reload Trebell to get it back\.\s*Reload$/;
+// Settings for the app on the mock server's own harness (Trebell Native), with its first-run setup done.
+const NATIVE_SETTINGS={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"};
+// The page as a person sees it, in dark and in light, at the window's width.
+async function shootModes(page,name){
+  const {width,height}=page.viewportSize();
+  for(const mode of ["dark","light"]){
+    await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+    await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${width}x${height}.png`});
+  }
+  await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+}
 // Opens the fixture's thread from the sidebar and waits until it shows: its General chat welcome. The new-task screen before the
 // click has a welcome of its own, so waiting for any welcome let the harness's messages come while the thread was still opening.
 // Those are handled as the thread shows, and steps of a turn that is not running then stay on that turn's own card only, so the
@@ -109,7 +123,7 @@ test("a denial whose card cannot load says so in its place, and the rest of the 
     fixture.send({method:"item/autoApprovalReview/started",params:{threadId:fixture.thread.id,turnId:"turn-1",startedAtMs:startedAt,reviewId:"review-1",targetItemId:"cmd-1",review:{status:"inProgress",riskLevel:null,userAuthorization:null,rationale:null},action}});
     fixture.send({method:"item/autoApprovalReview/completed",params:{threadId:fixture.thread.id,turnId:"turn-1",startedAtMs:startedAt,completedAtMs:startedAt+125,reviewId:"review-1",targetItemId:"cmd-1",decisionSource:"agent",review:{status:"denied",riskLevel:"high",userAuthorization:"low",rationale:"Deleting this file needs explicit user approval."},action}});
     const failed=page.locator(".conversation-column .lazy-slot-error");
-    await expect(failed).toContainText("This part of Trebell could not be shown:");
+    await expect(failed).toHaveText(CANNOT_LOAD);
     await expect(failed).toHaveAttribute("role","alert");
     await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
     await appStays(page);
@@ -130,7 +144,7 @@ test("the Runtime tab whose background-processes list cannot load says so there,
     const panel=page.getByTestId("right-panel");
     await panel.getByRole("button",{name:"Runtime",exact:true}).click();
     const failed=panel.locator(".lazy-slot-error");
-    await expect(failed).toContainText("This part of Trebell could not be shown:");
+    await expect(failed).toHaveText(CANNOT_LOAD);
     await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
     await expect(panel.getByText("Agent harness",{exact:true})).toBeVisible();
     await expect(panel.getByText("Latest activity",{exact:true})).toBeVisible();
@@ -139,21 +153,91 @@ test("the Runtime tab whose background-processes list cannot load says so there,
   }finally{await fixture.close()}
 });
 
-// A page loads with its first visit. When its code cannot load, the page says so and the rest of the app (the sidebar and the way
-// back to the chat) stays.
-test("a page whose code cannot load says so, and the way back to the chat stays",async({page,request})=>{
-  test.setTimeout(45_000);
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
+// A page loads with its first visit. When its code cannot load, the page says so under its heading in the words History's list says
+// it in, with Reload (it said the browser's own "Failed to fetch dynamically imported module:" and the script's address, broken
+// across two lines), whether it is opened by a click on its destination, by Enter on it or by its key, wide and narrow; the rest of
+// the app (the sidebar and the way back to the chat) stays, and Reload brings the page back once its code can load.
+test("a page whose code cannot load says so under its heading in History's words, with Reload, by mouse and by keyboard, wide and narrow, and the way back to the chat stays",async({page,request})=>{
+  test.setTimeout(60_000);
+  await request.post("/api/settings",{data:NATIVE_SETTINGS});
+  await page.setViewportSize({width:1280,height:800});
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
-  await page.route(/\/assets\/ProjectsPage-[^/]*\.js$/,route=>route.abort("failed"));
+  let refuse=true;
+  await page.route(/\/assets\/(ProjectsPage|SettingsPage|UsagePage)-[^/]*\.js$/,route=>refuse?route.abort("failed"):route.continue());
   const nav=label=>page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:label,exact:true});
+  const failed=page.locator(".secondary-page .lazy-slot-error"),header=page.locator(".secondary-page > .page-header");
+  const underHeading=async()=>expect(Math.round((await failed.boundingBox()).x),"the reason under the heading's left edge").toBe(Math.round((await header.boundingBox()).x));
+  // A click on Projects.
   await nav("Projects").click();
-  const failed=page.locator(".secondary-page .lazy-slot-error");
-  await expect(failed).toContainText("This part of Trebell could not be shown:");
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  await expect(failed).toHaveText(CANNOT_LOAD);await expect(failed).toHaveAttribute("role","alert");
+  await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
+  await underHeading();
+  await shootModes(page,"lazy-chunk-projects-page-cannot-load");
+  // Enter on Usage.
+  await nav("Usage").focus();await page.keyboard.press("Enter");
+  await expect(nav("Usage")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);
+  // Settings by its key, in a narrow window.
+  await page.setViewportSize({width:700,height:800});
+  await page.keyboard.press("Control+Comma");
+  await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
+  await expect(failed).toHaveText(CANNOT_LOAD);
+  await underHeading();
+  await shootModes(page,"lazy-chunk-settings-page-cannot-load");
+  await page.setViewportSize({width:1280,height:800});
   await nav("New task").click();
+  await appStays(page);
+  // Reload loads Trebell again, which brings the page back once its code can load.
+  await nav("Projects").click();await expect(failed).toHaveText(CANNOT_LOAD);
+  refuse=false;
+  await Promise.all([page.waitForEvent("load"),failed.getByRole("button",{name:"Reload",exact:true}).click()]);
+  await expect(nav("Projects")).toBeVisible({timeout:10_000});
+  await nav("Projects").click();
+  await expect(page.locator(".projects-page")).toBeVisible();await expect(failed).toHaveCount(0);
+});
+
+// A right-panel tab loads with its first showing. When its code cannot load, its place says so in History's words, with Reload (the
+// Goal and Browser tabs said the browser's own error with the script's address, in three lines), whether the tab is clicked, chosen
+// with Enter or opened from the sidebar's destination; the panel's other tabs still draw, and Reload brings the tab back once its code
+// can load.
+test("a right-panel tab whose code cannot load says so in its place in History's words, with Reload, by mouse, by keyboard and from the sidebar",async({page,request})=>{
+  test.setTimeout(60_000);
+  await request.post("/api/settings",{data:NATIVE_SETTINGS});
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
+  let refuse=true;
+  await page.route(/\/assets\/(GoalPanel|PreviewPage)-[^/]*\.js$/,route=>refuse?route.abort("failed"):route.continue());
+  const panel=page.getByTestId("right-panel"),tab=label=>panel.getByRole("button",{name:label,exact:true}),failed=panel.locator(".lazy-slot-error");
+  const files=panel.locator(".workspace-panel"),browser=()=>page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"Browser",exact:true}).click();
+  // What the Goal tab's own code shows on the new task, which has no thread yet.
+  const goal=panel.getByText("Start or open a thread before setting a durable goal.",{exact:true});
+  await page.getByTestId("right-panel-toggle").click();
+  await expect(tab("Files")).toHaveClass(/\bactive\b/);await expect(files).toBeVisible();
+  // A click on Goal.
+  await tab("Goal").click();
+  await expect(failed).toHaveText(CANNOT_LOAD);await expect(failed).toHaveAttribute("role","alert");
+  await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
+  await expect(goal).toHaveCount(0);
+  // Enter on Browser.
+  await tab("Browser").focus();await page.keyboard.press("Enter");
+  await expect(tab("Browser")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);
+  // Files draws again: a tab that could not be shown takes only its own place with it.
+  await tab("Files").click();await expect(files).toBeVisible();await expect(failed).toHaveCount(0);
+  // The sidebar's Browser opens the panel on its tab, which says the same.
+  await panel.getByRole("button",{name:"Close right panel",exact:true}).click();await expect(panel).toHaveCount(0);
+  await browser();
+  await expect(tab("Browser")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);
+  await appStays(page);
+  // Reload loads Trebell again, which brings the tabs back once their code can load.
+  refuse=false;
+  await Promise.all([page.waitForEvent("load"),failed.getByRole("button",{name:"Reload",exact:true}).click()]);
+  await expect(page.getByTestId("composer")).toBeVisible({timeout:10_000});
+  await browser();
+  await expect(panel.locator(".preview-page")).toBeVisible();await expect(failed).toHaveCount(0);
+  await tab("Goal").click();
+  await expect(goal).toBeVisible();await expect(failed).toHaveCount(0);
 });
 
 // Trebell's own tool catalog loads at idle after the first paint (B11). A new task sent before it has come waits for it and starts
