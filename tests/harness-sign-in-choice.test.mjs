@@ -263,6 +263,31 @@ test("an Antigravity key saved by the old key form moves into the empty Gemini s
   assert.equal(other.settings().agentRuntimeInstances.find(item=>item.id==="antigravity-default").auth,"api-key");
 });
 
+test("an old Antigravity key that takes the place of Native's Gemini variable, or one not kept, is said on Antigravity's row until the key or its method changes",async t=>{
+  const write=fx=>{mkdirSync(fx.base.TREBELL_HOME,{recursive:true});writeFileSync(join(fx.base.TREBELL_HOME,"harness-secrets.json"),JSON.stringify({"antigravity.geminiApiKey":"old-antigravity-key"}))};
+  // Native read its Gemini key from GEMINI_API_KEY: the old key now stands in for it, and Antigravity's row says so.
+  const env=fixture(t,{env:{GEMINI_API_KEY:"env-gemini-native"}});write(env);
+  const moved=migrateHarnessSecrets({env:env.base,providers:env.providers,state:env.state});
+  assert.equal(moved.moved,true);assert.equal(env.providers.keyFor("gemini").key,"old-antigravity-key");
+  const note=env.settings().antigravityKeyNote;
+  assert.match(note,/Trebell Native also uses now in place of GEMINI_API_KEY\. Remove it in Trebell Native's Model provider card to go back to GEMINI_API_KEY\./);
+  for(const value of ["old-antigravity-key","env-gemini-native"])assert.equal(note.includes(value),false,"no key in the note");
+  mkdirSync(join(env.base.TREBELL_HOME,"agent-runtimes","antigravity","current"),{recursive:true});
+  // Antigravity as Trebell installs it (its record and its server, never started by a status check).
+  writeFileSync(join(env.base.TREBELL_HOME,"agent-runtimes","antigravity","current","install.json"),JSON.stringify({version:"1.4.3"}));
+  writeFileSync(join(env.base.TREBELL_HOME,"agent-runtimes","antigravity","current","agy_acp_server.par"),"");
+  const status=await env.manager.probe(env.settings().agentRuntimeInstances.find(item=>item.id==="antigravity-default"),{fresh:true});
+  assert.equal(status.available,true);assert.ok(status.message.endsWith(note),status.message);
+  // A Gemini slot with another key saved keeps it, and the row says the old key was not kept.
+  const saved=fixture(t);saved.providers.setKey("gemini","native-gemini");write(saved);
+  assert.equal(migrateHarnessSecrets({env:saved.base,providers:saved.providers,state:saved.state}).keptSlot,true);
+  assert.match(saved.settings().antigravityKeyNote,/The other key Antigravity's old key form held was not kept/);
+  // The same key in the slot already, or no key anywhere before: nothing to say.
+  const same=fixture(t);same.providers.setKey("gemini","old-antigravity-key");write(same);migrateHarnessSecrets({env:same.base,providers:same.providers,state:same.state});
+  const empty=fixture(t);write(empty);migrateHarnessSecrets({env:empty.base,providers:empty.providers,state:empty.state});
+  assert.equal(same.settings().antigravityKeyNote,undefined);assert.equal(empty.settings().antigravityKeyNote,undefined);
+});
+
 test("Native still reads its keys: the one saved, else its environment variable, and its approved names still pass",t=>{
   const {providers}=fixture(t,{env:{OPENAI_API_KEY:"env-openai",GOOGLE_API_KEY:"env-google"}});
   assert.equal(providers.key("openai"),"env-openai");assert.equal(providers.key("gemini"),"env-google");

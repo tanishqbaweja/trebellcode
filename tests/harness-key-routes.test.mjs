@@ -145,3 +145,15 @@ test("no Codex home of Trebell's own for a key keeps the OpenAI key once its pro
   assert.ok((await fx.calls()).some(entry=>entry.call==="logout"&&resolve(entry.home)===resolve(fx.keyHome("codex-gone"))));
 });
 
+test("what the move of Antigravity's old key said on its row ends once the Gemini key or Antigravity's method changes",{timeout:60_000},async t=>{
+  const note="The other key Antigravity's old key form held was not kept: one Google Gemini API key serves Trebell Native and Antigravity, and the one saved in Trebell Code stays.";
+  const fx=await fixture(t,{profiles:[{id:"antigravity-default",kind:"antigravity",displayName:"Antigravity",enabled:true,environment:{},auth:"api-key"}],settings:{antigravityKeyNote:note}});
+  assert.equal((await fx.settingsNow()).antigravityKeyNote,note);
+  assert.equal((await fx.post("/api/providers",{provider:"xai",apiKey:"",select:false})).status,200);
+  assert.equal((await fx.settingsNow()).antigravityKeyNote,note,"another provider's key changes nothing of it");
+  assert.equal((await fx.post("/api/providers",{provider:"gemini",apiKey:"",select:false})).status,200);
+  assert.equal((await fx.settingsNow()).antigravityKeyNote??null,null);
+  const again=await fixture(t,{profiles:[{id:"antigravity-default",kind:"antigravity",displayName:"Antigravity",enabled:true,environment:{},auth:"api-key"}],settings:{antigravityKeyNote:note}});
+  assert.equal((await again.post("/api/agent-runtime-auth",{action:"method",runtime:"antigravity",instanceId:"antigravity-default",method:"sign-in"})).status,200);
+  assert.equal((await again.settingsNow()).antigravityKeyNote??null,null);
+});

@@ -2111,6 +2111,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           // Antigravity's home names the method it starts with: the key method on an API key, none a key left on Sign in.
           if(saved.kind==="antigravity"&&!mock)await prepareAntigravityHome({env,method:harnessAuthMethod(saved)==="api-key"?ANTIGRAVITY_API_KEY_METHOD:null});
           const stoppedChats=changed?await agentRelay?.closeRuntimeSessions?.(saved.kind,{everywhere:true,instanceIds:[saved.id]})||0:0;
+          // What the move of Antigravity's old key said on its row has been seen to: the person chose its method since.
+          if(changed&&saved.kind==="antigravity"&&state.settings().antigravityKeyNote)state.updateSettings({antigravityKeyNote:null});
           if(changed&&saved.kind==="codex"){if(agentRuntimes.activeInstance().id===saved.id)await restartAppServer();else await stopCodexProfileServers([saved.id])}
           // A Codex profile back on Sign in keeps no copy of the key in its home of Trebell's own for it.
           if(changed&&saved.kind==="codex"&&harnessAuthMethod(saved)!=="api-key"&&!mock)await agentRuntimes.codexApiKeyLogout(saved);
@@ -2201,6 +2203,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           // an API key runs on this machine only (a WSL or SSH host is refused), so only chats here run on it.
           let stoppedChats=0;
           if("apiKey" in body){
+            // A Gemini key saved or removed: what the move of Antigravity's old key said on its row is over.
+            if(provider==="gemini"&&state.settings().antigravityKeyNote)state.updateSettings({antigravityKeyNote:null});
             const onKey=agentRuntimes.instances().filter(item=>harnessAuthMethod(item)==="api-key"&&Object.hasOwn(HARNESS_KEY_VARIABLES[item.kind]||{},provider));
             agentRuntimes.forgetProbes(onKey.map(item=>item.id));
             stoppedChats+=await agentRelay?.closeRuntimeSessions?.(null,{instanceIds:onKey.filter(item=>item.kind!=="codex").map(item=>item.id)})||0;

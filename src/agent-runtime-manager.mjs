@@ -1281,7 +1281,10 @@ export class AgentRuntimeManager{
       // settings.json names, and its token file there (never read). No status check starts it: each launch unpacks about 1 GB.
       if(install?.version&&!instance.binaryPath?.trim()){
         const base={id:instance.id,kind:instance.kind,name:def.name,installed:true,protocol:def.protocol,managed:true,version:String(install.version),binary:command};
-        if(this.authMethod(instance)===HARNESS_API_KEY)return {...base,available:true,authenticated:null,account:{authMethod:ANTIGRAVITY_API_KEY_METHOD,label:"Google Gemini API key"},message:ANTIGRAVITY_KEY_READY};
+        // What the move of the old key form's key did that the person would not see (legacy-harness-key-migration.mjs) is said here,
+        // on its row, until the Gemini key or Antigravity's method next changes.
+        const moveNote=String(this.state?.settings?.()?.antigravityKeyNote||"").trim();
+        if(this.authMethod(instance)===HARNESS_API_KEY)return {...base,available:true,authenticated:null,account:{authMethod:ANTIGRAVITY_API_KEY_METHOD,label:"Google Gemini API key"},message:moveNote?ANTIGRAVITY_KEY_READY+" "+moveNote:ANTIGRAVITY_KEY_READY};
         const own=await antigravitySignInState({env:this.env});
         return {...base,available:own.signedIn,authenticated:own.signedIn?null:false,account:own.signedIn?{authMethod:own.method,label:"Antigravity sign-in"}:null,message:own.signedIn?ANTIGRAVITY_SIGNED_IN:ANTIGRAVITY_SIGN_IN_NEEDED};
       }
