@@ -2060,11 +2060,12 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
             const before=agentRuntimes.instances().find(item=>item.id===String(body.instance?.id||""));
             const instance=agentRuntimes.upsertInstance(body.instance||{});
             const active=agentRuntimes.activeInstance().id===instance.id,methodChanged=Boolean(before&&harnessAuthMethod(before)!==harnessAuthMethod(instance));
-            // Only this profile's chats close, and its Codex app-servers stop (the active one's restart), before a Codex profile back on
-            // Sign in signs its home of Trebell's own for a key out.
+            // Only this profile's chats close, and its Codex app-servers stop (the active one's catalog starting again, as the method
+            // route's), before a Codex profile back on Sign in signs its home of Trebell's own for a key out. Another edit of the active
+            // Codex profile restarts Codex as before.
             if(methodChanged)await agentRelay?.closeRuntimeSessions?.(instance.kind,{everywhere:true,instanceIds:[instance.id]});
-            if(instance.kind==="codex"&&active)await restartAppServer();
-            else if(instance.kind==="codex"&&methodChanged)await stopCodexProfileServers([instance.id]);
+            if(instance.kind==="codex"&&methodChanged)await restartCodexProfileServers([instance.id]);
+            else if(instance.kind==="codex"&&active)await restartAppServer();
             if(methodChanged&&instance.kind==="codex"&&harnessAuthMethod(instance)!=="api-key"&&!mock)await agentRuntimes.codexApiKeyLogout(instance);
             const snapshot=await agentRuntimes.snapshot();
             return json(res,200,{instance,...snapshot,...(active?await runtimeRefreshPayload(req,{agentSnapshot:snapshot}):{})});

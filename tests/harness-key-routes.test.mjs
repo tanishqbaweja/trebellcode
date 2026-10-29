@@ -166,6 +166,15 @@ test("the active Codex profile set to Sign in starts its own app-servers again a
   await threadBGoesOn(fx,"thread B's app-server goes on");
 });
 
+test("the active Codex profile saved from its editor with another sign-in method starts its own app-servers again alone",{timeout:120_000},async t=>{
+  const fx=await activeOnKeyFixture(t);
+  const saved=await fx.post("/api/agent-runtimes",{action:"upsert",instance:{id:"codex-a",kind:"codex",displayName:"Codex A",enabled:true,environment:{},auth:"sign-in"}});
+  assert.equal(saved.status,200);assert.equal(saved.body.instance.auth,"sign-in");
+  assert.ok(await waitFor(()=>!alive(fx.catalog.pid)),"the catalog on the key stopped");
+  assert.ok(await waitFor(async()=>serversOf(await fx.calls(),fx.env.CODEX_HOME).some(entry=>entry.pid!==fx.threadB.pid&&alive(entry.pid))),"Codex A's catalog runs again, on its own sign-in");
+  await threadBGoesOn(fx,"thread B's app-server goes on");
+});
+
 test("no Codex home of Trebell's own for a key keeps the OpenAI key once its profile is removed, or the key is",{timeout:90_000},async t=>{
   const fx=await fixture(t,{profiles:[{id:"codex-c",kind:"codex",displayName:"Codex C",enabled:true,environment:{},auth:"api-key"}]});
   // Homes a key sign-in left: the listed profile's, and one of a profile removed before (whose row is gone).
