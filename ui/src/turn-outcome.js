@@ -147,9 +147,11 @@ function turnHeading(harnessLabel,info){return harnessLabel?[harnessLabel,info?.
 // Per assistant message id: the heading its row shows (first reply of a turn) and the outcome pill (last reply of a
 // finished turn), with the error a turn that failed or was stopped ended with (outcomeMessage), as the row of a turn without a reply
 // says it, unless the live card lists that failure (cardFailedTurnIds, turnEndPlacement). Consecutive replies of one turn form a group;
-// a user message in between starts a new group, a thought does not.
+// a user message in between starts a new group (a message steered into the turn has its id), a thought does not. Each group has its
+// heading and pill, and only the turn's last reply says the error, so it is said once.
 export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=null,threadId=null,cardFailedTurnIds=null}={}){
   const out=new Map();const list=(Array.isArray(messages)?messages:[]).filter(message=>message?.role!=="reasoning");
+  const lastReply=new Map();list.forEach((message,index)=>{if(message?.role==="assistant")lastReply.set(message.turnId||null,index)});
   for(let index=0;index<list.length;index++){
     const message=list[index];if(message?.role!=="assistant")continue;
     const turnId=message.turnId||null;
@@ -159,7 +161,7 @@ export function assistantRowDecorations(messages=[],{harnessLabel="",turnInfo=nu
     const heading=first?turnHeading(harnessLabel,info):"";
     const pill=last?turnOutcomePill(info):null;
     if(!heading&&!pill)continue;
-    const error=pill&&pill.tone!=="ok"&&!(pill.tone==="err"&&cardFailedTurnIds?.has?.(String(turnId)))?String(info.error||""):"";
+    const error=pill&&pill.tone!=="ok"&&lastReply.get(turnId)===index&&!(pill.tone==="err"&&cardFailedTurnIds?.has?.(String(turnId)))?String(info.error||""):"";
     out.set(String(message.id),{heading,outcomeLabel:pill?.label||"",outcomeTone:pill?.tone||"",...(error?{outcomeMessage:error}:{})});
   }
   return out;

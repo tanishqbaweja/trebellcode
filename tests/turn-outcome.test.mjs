@@ -95,6 +95,21 @@ test("the last reply of a turn that failed or was stopped says the error the tur
   assert.equal(live.get("a3").outcomeMessage,"Stopped while the tests ran.","the card never says a stop");
 });
 
+// A message steered into a running turn (Steer, or Send now on a queued follow-up) carries the turn's id and starts a new group of its
+// replies, each with its heading and pill: Codex stores every reply of a turn. The error the turn ended with is said once, under the
+// turn's last reply, not under each group's last.
+test("a turn whose replies a steered message split says its error once, under its last reply",()=>{
+  const turnInfo={[turnInfoKey("th","t1")]:{status:"failed",durationMs:2400,error:"stream disconnected before completion"},[turnInfoKey("th","t2")]:{status:"interrupted",error:"Stopped while the tests ran."}};
+  const messages=[user("u1","t1"),reply("a1","t1"),user("s1","t1"),thought("r1","t1"),reply("a2","t1"),user("u2","t2"),reply("a3","t2"),user("s2","t2"),reply("a4","t2"),reply("a5","t2")];
+  const rows=assistantRowDecorations(messages,{harnessLabel:"Codex",turnInfo,threadId:"th"});
+  assert.deepEqual(rows.get("a1"),{heading:"Codex",outcomeLabel:"failed · 2.4s",outcomeTone:"err"},"the reply before the steer keeps its pill, not the error");
+  assert.deepEqual(rows.get("a2"),{heading:"Codex",outcomeLabel:"failed · 2.4s",outcomeTone:"err",outcomeMessage:"stream disconnected before completion"});
+  assert.deepEqual(rows.get("a3"),{heading:"Codex",outcomeLabel:"stopped",outcomeTone:"warn"});
+  assert.deepEqual(rows.get("a4"),{heading:"Codex",outcomeLabel:"",outcomeTone:""});
+  assert.deepEqual(rows.get("a5"),{heading:"",outcomeLabel:"stopped",outcomeTone:"warn",outcomeMessage:"Stopped while the tests ran."});
+  assert.deepEqual([...rows.values()].map(row=>row.outcomeMessage).filter(Boolean),["stream disconnected before completion","Stopped while the tests ran."],"each turn's error is said once");
+});
+
 test("a turn's error reads as the activity card worded it, and a turn that recorded none has no message",()=>{
   assert.equal(turnFailureText({status:"failed",error:{message:"Grok usage limit reached. Try again later."}}),"Grok usage limit reached. Try again later.");
   assert.equal(turnFailureText({status:"failed",error:{message:"You've hit your usage limit.",codexErrorInfo:"usageLimitExceeded"}}),"You've hit your usage limit. · See Usage for your Codex limits.");
