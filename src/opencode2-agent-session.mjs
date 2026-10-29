@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { fileUri, fileUriPath } from "./file-uri.mjs";
-import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeQuestionText, openCodeReadOutput, openCodeRefusal, openCodeRequestName, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
+import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeQuestionText, openCodeReadOutput, openCodeRefusal, openCodeToolTitle, openCodeRequestName, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
 import { PROMPT_IMAGE_PATH, textExtractedTo } from "./prompt-attachments.mjs";
@@ -147,6 +147,12 @@ function outputText(content){
 }
 // A read's row opens to what it read, and a question's to what was asked and answered, not to the item's JSON.
 const textRow=name=>name==="read"||name==="question"?{textOutput:true}:{};
+// A question's row text from the questions it was called with: once answered with the answers, otherwise with what OpenCode said.
+function questionRow(call,answers,said){
+  if(call.name!=="question"||!Array.isArray(call.input.questions))return said;
+  const known=Array.isArray(answers)?answers:null;
+  return openCodeQuestionText(call.input.questions,known,known?"":said);
+}
 
 export class OpenCode2AgentSession extends OpenCodeAgentSession{
   // loadClient: the @opencode/client module the session drives (tests pass a stand-in).
@@ -162,7 +168,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     this.sessionRules=[];
     this.messageText=new Map();
     this.reasoningText=new Map();
-    this.toolNames=new Map();
+    // The tool calls that have not ended, by call ID: {name, input}.
+    this.toolCalls=new Map();
     // The row text of each question whose answer OpenCode refused, by the message its tool fails with.
     this.refusedAnswers=new Map();
     this.sessionParents=new Map();
@@ -571,14 +578,24 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
       const tokens=data.tokens||{},used=Number(tokens.input||0)+Number(tokens.output||0)+Number(tokens.reasoning||0);
       this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"usage_update",used,size:this.contextByModel.get(this.model)||0,cost:data.cost!=null?{amount:Number(data.cost),currency:"USD"}:null,usage:{input_tokens:Number(tokens.input||0),output_tokens:Number(tokens.output||0),reasoning_tokens:Number(tokens.reasoning||0),cache_read_input_tokens:Number(tokens.cache?.read||0),cache_write_input_tokens:Number(tokens.cache?.write||0)}}});return;
     }
-    if(event.type==="session.tool.input.started"){this.toolNames.set(String(data.id),String(data.name||"tool"));this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call",toolCallId:String(data.id),title:String(data.name||"Tool"),kind:normalizePermissionKind(data.name),status:"in_progress",rawInput:{},...textRow(data.name)}});return}
-    if(event.type==="session.tool.called"){const id=String(data.id),name=this.toolNames.get(id)||"tool";this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"in_progress",rawInput:data.input||{},...textRow(name)}});return}
-    if(event.type==="session.tool.success"){const id=String(data.id),name=this.toolNames.get(id)||"tool",output=outputText(data.content);this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"completed",rawOutput:name==="read"?openCodeReadOutput(output):output,...textRow(name)}});return}
+    // A call whose input still streams has not started: it reads pending until OpenCode calls it, as OpenCode 1.x's pending part does.
+    if(event.type==="session.tool.input.started"){const id=String(data.id),call={name:String(data.name||"tool"),input:{}};this.toolCalls.set(id,call);this.#toolRow("tool_call",id,call,{status:"pending"});return}
+    if(event.type==="session.tool.called"){const id=String(data.id),call=this.#toolCall(id);call.input=data.input&&typeof data.input==="object"?data.input:{};this.#toolRow("tool_call_update",id,call,call.name==="question"?{status:"in_progress",rawOutput:questionRow(call,null,"")}:{status:"in_progress"});return}
+    if(event.type==="session.tool.success"){const id=String(data.id),call=this.#toolCall(id),output=outputText(data.content);this.toolCalls.delete(id);this.#toolRow("tool_call_update",id,call,{status:"completed",rawOutput:call.name==="read"?openCodeReadOutput(output):questionRow(call,data.metadata?.answers,output)});return}
     // A question whose answer OpenCode refused fails with the message the session cancelled it with, and its row says it in the person's words.
-    if(event.type==="session.tool.failed"){const id=String(data.id),name=this.toolNames.get(id)||"tool",failure=errorText(data.error),refused=this.refusedAnswers.get(failure);this.refusedAnswers.delete(failure);this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"failed",rawOutput:refused||failure,...textRow(name)}});return}
+    if(event.type==="session.tool.failed"){const id=String(data.id),call=this.#toolCall(id),failure=errorText(data.error),refused=this.refusedAnswers.get(failure);this.toolCalls.delete(id);this.refusedAnswers.delete(failure);this.#toolRow("tool_call_update",id,call,{status:"failed",rawOutput:refused||questionRow(call,null,failure)});return}
     if(event.type==="session.execution.succeeded"&&turn&&sessionID===this.sessionId){turn.settle?.();return}
     if(event.type==="session.execution.failed"&&turn&&sessionID===this.sessionId){const failure=executionFailure(data.error);turn.error=failure.text;turn.usageLimit=failure.usageLimit;turn.settle?.();return}
     if(event.type==="session.execution.interrupted"&&turn&&sessionID===this.sessionId){turn.cancelled=true;turn.settle?.();return}
+  }
+  #toolCall(id){
+    if(!this.toolCalls.has(id))this.toolCalls.set(id,{name:"tool",input:{}});
+    return this.toolCalls.get(id);
+  }
+  // OpenCode 2 names a call by its tool only, and its updates after session.tool.called leave out the input: each update is titled as
+  // OpenCode 1.x titles the call (openCodeToolTitle: a command by its description), from the input the call was called with, and carries it.
+  #toolRow(sessionUpdate,id,{name,input},fields){
+    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate,toolCallId:id,title:openCodeToolTitle(name,{title:input.description,input,cwd:this.cwd}),kind:normalizePermissionKind(name),rawInput:input,...textRow(name),...fields}});
   }
   // A retry OpenCode schedules for this turn's request, or a subagent's, shows while Trebell waits for it (openCodeRetryNotice); one that
   // is hours away, or past OPENCODE_RETRY_LIMITS, ends the turn with the provider's reason (openCodeRetryStop), as OpenCode 1.x's does.

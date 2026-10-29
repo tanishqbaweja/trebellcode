@@ -169,3 +169,45 @@ test("an OpenCode 2 question is the question dialog, and the turn goes on with t
     await shots(page,"opencode2-question-answered");
   });
 });
+
+// OpenCode 2 sends session.tool.input.started as the model starts a call and session.tool.called once its input is whole and the tool
+// runs. The row read running from the first, as a tool that ran, and carried OpenCode's raw tool name ("bash", "read") where OpenCode
+// 1.x's rows read "Run command" pending, then running. OpenCode 2.0.24's own read output names the file it read.
+test("an OpenCode 2 call whose input still streams reads pending until OpenCode calls it, and its rows are titled as OpenCode 1.x titles them",async({page})=>{
+  test.setTimeout(120_000);
+  const READ="Read file notes.txt, lines 1-2\n1: alpha line\n2: beta line",ANSWER="The tests pass, and notes.txt has two lines.";
+  let call=()=>{},finish=()=>{},folder="";const called=new Promise(resolve=>{call=resolve}),finished=new Promise(resolve=>{finish=resolve});
+  await openCode2App(page,async({sessionID,emit,reply:keep})=>{
+    const tool=(type,id,data)=>emit({type:`session.tool.${type}`,data:{sessionID,assistantMessageID:"msg_a1",id,...data}});
+    tool("input.started","call_bash",{name:"bash"});
+    await called;tool("called","call_bash",{input:{command:"npm test"},executed:false});
+    await finished;tool("success","call_bash",{content:[{type:"text",text:"12 passing"}],executed:true});
+    tool("input.started","call_read",{name:"read"});tool("called","call_read",{input:{filePath:join(folder,"notes.txt")},executed:false});
+    tool("success","call_read",{content:[{type:"text",text:READ}],executed:true});
+    keep(ANSWER);reply(emit,sessionID,ANSWER);
+  },async({root})=>{
+    folder=root;
+    await send(page,"Run the tests, then read notes.txt");
+    const rows=page.locator(".tool-event"),command=rows.first();
+    await expect(command,"a call whose input still streams has not started").toHaveClass(/status-pending/,{timeout:20_000});
+    await expect(command.locator("summary strong")).toHaveText("Run command");await expect(command.locator("summary em")).toHaveText("pending");
+    await shots(page,"opencode2-call-pending",()=>expect(command.locator("summary em")).toHaveText("pending"));
+    call();
+    await expect(command,"OpenCode called it: it runs").toHaveClass(/status-running/);
+    await expect(command.locator("summary strong")).toHaveText("Run command");await expect(command.locator("summary em")).toHaveText("running");
+    await command.locator("summary").click();
+    await expect(command.locator(".tool-event-body pre").first(),"the row opens to the command it runs").toHaveText("npm test");
+    finish();
+    await expect(page.locator(".assistant-message-text").filter({hasText:ANSWER})).toBeVisible({timeout:20_000});
+    await expect(stopButton(page)).toHaveCount(0);
+    await expect(rows.locator("summary strong"),"named as OpenCode 1.x names them").toHaveText(["Run command","Read notes.txt"]);
+    await expect(rows.locator("summary em")).toHaveText(["done","done"]);
+    await rows.nth(1).locator("summary").press("Enter");
+    await expect(rows.nth(1).locator(".tool-event-body pre")).toHaveJSProperty("textContent",READ);
+    await shots(page,"opencode2-call-titles",()=>expect(rows.nth(1).locator(".tool-event-body pre")).toBeVisible());
+    // The thread opened again after a reload names them the same.
+    await page.reload();await page.getByRole("button",{name:/Theme check/}).click();
+    await expect(rows.locator("summary strong")).toHaveText(["Run command","Read notes.txt"],{timeout:20_000});
+    await expect(rows.locator("summary em")).toHaveText(["done","done"]);
+  });
+});
