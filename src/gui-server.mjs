@@ -2098,6 +2098,10 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         const id=url.searchParams.get("id");if(!id)return json(res,400,{error:"id is required"});
         try{
           const {instance:removedInstance,...removed}=agentRuntimes.removeInstance(id);
+          // A removed profile's open chats stop, each process keeping the sign-in or key it started with (a key removed later would
+          // not reach it): the next message runs its harness's default profile, on what that has now.
+          const stoppedChats=removed.ok&&removed.kind!=="codex"?await agentRelay?.closeRuntimeSessions?.(removed.kind,{everywhere:true,instanceIds:[id]})||0:0;
+          if(stoppedChats)removed.stoppedChats=stoppedChats;
           if(removed.resetTo&&removed.kind==="codex")await restartAppServer();
           // A removed Codex profile's app-servers stop, and its home of Trebell's own for a key keeps no copy of the OpenAI key.
           else if(removed.ok&&removed.kind==="codex")await stopCodexProfileServers([id]);
