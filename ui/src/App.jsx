@@ -2383,9 +2383,9 @@ export default function App(){
         if((!modelData.agentRuntime||modelData.agentRuntime===agentRuntimeRef.current)&&(!modelData.provider||modelData.provider===providerRef.current)){
           const availableModels=modelData.models||[];
           const fallback=availableModels.length?availableModels:(boot.mock?["test/coding-fast","test/coding-large"]:[]);
-          const initialModel=startupModelChoice(fallback,modelData.defaultModel);
-          setModelError(modelData.error||"");setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item])));
-          setModels(fallback);setModel(initialModel);setSelectedModels(initialModel?[initialModel]:[]);
+          // Applied as a refresh applies it, with its inventory: the harness's own commands, agents and skills fill a new chat's menus
+          // and those of a thread opened later.
+          applyModelCatalog({...modelData,models:fallback},{preferredModel:startupModelChoice(fallback,modelData.defaultModel)});
         }
         settleModels();
       }

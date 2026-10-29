@@ -23,18 +23,18 @@ async function openThread(page,title){
   await expect(row).toBeVisible({timeout:15_000});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
 }
 
-test("after Claude Code's usage read failed and it keeps timing out, a reload still offers Claude's models while the Usage card says it could not read the limits",async({page})=>{
-  test.setTimeout(90_000);
-  await page.setViewportSize({width:1280,height:800});
+// The window on Claude Code with its thread "Parser fix". Claude Code's probe lists the models Default (recommended) and Haiku and
+// the given slash commands and agents.
+async function claudeProbeWindow(page,{answers,commands=[{name:"review",description:"Review the change"}],agents=[]}){
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-models-usage-"));
   const {ANTHROPIC_BASE_URL:_endpoint,...processEnv}=process.env;
   const env={...processEnv,TREBELL_HOME:home,CLAUDE_CONFIG_DIR:join(home,"claude")},state=new TrebellStateStore(env);
   state.updateSettings({agentRuntime:"claude",agentRuntimeInstanceId:"claude-default",activeEnvironmentId:null,agentRuntimeInstances:[{id:"claude-default",kind:"claude",displayName:"Claude Code",enabled:true,binaryPath:"claude"}]});
-  const answers=[{usageError:"Claude Code did not report usage in time."},SLOW,SLOW,SLOW,SLOW,SLOW],claude={probes:0};
+  const claude={probes:0};
   const query=()=>{
     const reply=answers[Math.min(claude.probes++,answers.length-1)];
     return {
-      initializationResult:async()=>{if(reply.initError)throw new Error(reply.initError);return {models:[{value:"default",displayName:"Default (recommended)"},{value:"haiku",displayName:"Haiku"}],commands:[{name:"review",description:"Review the change"}],agents:[],account:SIGNED_IN}},
+      initializationResult:async()=>{if(reply.initError)throw new Error(reply.initError);return {models:[{value:"default",displayName:"Default (recommended)"},{value:"haiku",displayName:"Haiku"}],commands,agents,account:SIGNED_IN}},
       usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET:async()=>{if(reply.usageError)throw new Error(reply.usageError);return reply.usage},
       close(){},
     };
@@ -42,6 +42,7 @@ test("after Claude Code's usage read failed and it keeps timing out, a reload st
   const manager=new AgentRuntimeManager({state,env,claudeCapabilitiesCache:createClaudeCapabilitiesCache({probe:input=>probeClaudeCapabilities({...input,query,managedMcpExists:()=>false})})});
   manager.probe=async()=>({available:true,installed:true,authenticated:true});
   const harness=await startClaudeRelay({turn:async()=>{}});
+  const close=async()=>{await harness.close();await rm(home,{recursive:true,force:true,maxRetries:8,retryDelay:100})};
   const reply=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
   try{
     harness.seedThread("Parser fix");
@@ -57,6 +58,15 @@ test("after Claude Code's usage read failed and it keeps timing out, a reload st
       const instance=manager.activeInstance(),limits=await manager.usageLimits(instance);
       await reply(route,{runtime:instance.kind,instanceId:instance.id,environmentId:null,...limits});
     });
+  }catch(error){await close();throw error}
+  return {claude,close};
+}
+
+test("after Claude Code's usage read failed and it keeps timing out, a reload still offers Claude's models while the Usage card says it could not read the limits",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const app=await claudeProbeWindow(page,{answers:[{usageError:"Claude Code did not report usage in time."},SLOW,SLOW,SLOW,SLOW,SLOW]}),claude=app.claude;
+  try{
     const picker=page.getByTestId("model-picker"),status=page.getByTestId("composer-model-status");
 
     await page.goto("/");await openThread(page,"Parser fix");
@@ -78,5 +88,50 @@ test("after Claude Code's usage read failed and it keeps timing out, a reload st
       if(mode==="light"){await page.keyboard.press("Escape");await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");await picker.click()}
       await page.screenshot({animations:"disabled",path:`${auditDir}claude-models-after-usage-failure-${mode}-1280x800.png`});
     }
-  }finally{await harness.close();await rm(home,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+  }finally{await app.close()}
+});
+
+// The same probe's slash commands and agents come with the model list. A freshly opened window offers them before a new chat's first
+// message, and a thread opened then offers them too while its own session has listed none of its own.
+test("after a page load on Claude Code, a new chat's / menu and agent picker offer the commands and agents of Claude Code's probe, and so does a thread opened then",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const app=await claudeProbeWindow(page,{answers:[{}],commands:[{name:"review",description:"Review the change"},{name:"security-review",description:"Review the change for security issues"}],agents:[{name:"code-reviewer",description:"Reviews code"}]});
+  try{
+    const composer=page.getByTestId("composer"),menu=page.locator(".composer-wrap .slash-menu"),agents=page.locator(".agent-picker");
+    const command=menu.locator("button").filter({has:page.locator("strong",{hasText:/^\/security-review$/})});
+    const shots=async name=>{
+      for(const width of [1280,900]){
+        await page.setViewportSize({width,height:800});
+        for(const mode of ["dark","light"]){
+          if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await composer.click()}
+          await expect(page.locator("html")).toHaveAttribute("data-mode",mode);await expect(command).toBeInViewport();await expect(agents).toBeInViewport();
+          await page.screenshot({animations:"disabled",path:`${auditDir}${name}-${mode}-${width}x800.png`});
+        }
+      }
+      await page.setViewportSize({width:1280,height:800});
+    };
+    await page.goto("/");
+    await expect(page.getByTestId("model-picker")).toContainText("Default (recommended)",{timeout:15_000});
+    await expect(composer).toBeEnabled();
+    // New task: / lists Claude Code's /security-review with Trebell's own commands, and /sec narrows the menu to it.
+    await composer.click();await page.keyboard.type("/");
+    await expect(command,"New task's / menu offers Claude Code's /security-review from its probe").toBeVisible();
+    await page.keyboard.type("sec");
+    await expect(menu.locator("strong")).toHaveText(["/security-review"]);
+    await expect(command.locator("span")).toHaveText("Review the change for security issues");
+    await expect(agents,"New task offers Claude Code's agents beside the model picker").toBeVisible();
+    await expect(agents.locator("option")).toHaveText(["Default agent","code-reviewer"]);
+    await shots("claude-new-chat-probe-commands");
+    await page.keyboard.press("Enter");await expect(composer).toHaveValue("/security-review ");
+    await agents.selectOption("code-reviewer");await expect(agents).toHaveValue("code-reviewer");
+    await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+    // The thread opened then: its session has not started, so the menus are still Claude Code's.
+    await openThread(page,"Parser fix");
+    await expect(composer).toBeEnabled();
+    await composer.click();await page.keyboard.type("/sec");
+    await expect(command,"the opened thread's / menu offers /security-review").toBeVisible();
+    await expect(agents.locator("option")).toHaveText(["Default agent","code-reviewer"]);
+    await shots("claude-thread-probe-commands");
+  }finally{await app.close()}
 });
