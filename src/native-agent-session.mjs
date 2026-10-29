@@ -519,8 +519,9 @@ export class NativeAgentSession{
   setReasoningEffort(value){const next=value==null||String(value).trim()===""?null:String(value).trim();if(next!==this.reasoningEffort)this.lastProviderResponseId=null;this.reasoningEffort=next;return {reasoningEffort:this.reasoningEffort}}
   setServiceTier(value){const next=value==null||String(value).trim()===""?null:String(value).trim().toLowerCase();if(next!==this.serviceTier)this.lastProviderResponseId=null;this.serviceTier=next;return {serviceTier:this.serviceTier}}
   setContextWindow(value){const number=Number(value);this.contextWindow=Number.isFinite(number)&&number>0?Math.trunc(number):null;return {contextWindow:this.contextWindow}}
-  // The model's measured server compaction threshold (nativeModelSettings in native-configuration.mjs), applied with its window on
-  // every turn: a switch to a model without a measured row disarms it, and the armed state lasts only while the threshold does.
+  // The server compaction threshold of the model's NATIVE_MEASURED_MODELS row (nativeModelSettings in native-configuration.mjs; it
+  // rests on the readouts), applied with its window on every turn: a switch to a model without a row disarms it, and the armed state
+  // lasts only while the threshold does.
   setServerCompactionThreshold(value){const number=Math.trunc(Number(value)),next=Number.isFinite(number)&&number>0?number:null;if(next!==this.openAiServerCompactionThreshold)this.openAiServerCompactionArmed=false;this.openAiServerCompactionThreshold=next;return {openAiServerCompactionThreshold:this.openAiServerCompactionThreshold}}
   openAiServerCompactionRequest(){
     const threshold=this.openAiServerCompactionThreshold;

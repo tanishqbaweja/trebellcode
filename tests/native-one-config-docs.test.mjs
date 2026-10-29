@@ -40,3 +40,10 @@ test("the overview and the benchmark page say the source-control rule is new and
   assert.match(overviewRow(overview,"Tools"),/a new rule, narrowed from the product's word rule on 2026-10-29 and unmeasured, which also decides whether a Codex thread gets `trebell_source_control`, from its first message only/);
   assert.match(benchmarks,/a new rule, narrowed from the app's word rule on 2026-10-29 and unmeasured/);
 });
+
+test("the overview and the benchmark page say the long context on gpt-6-luna rests on the readouts",async()=>{
+  const [overview,benchmarks]=await Promise.all(["docs/technical/TECHNICAL_OVERVIEW.md","BENCHMARKS.md"].map(read));
+  assert.match(overviewRow(overview,"Long context on `gpt-6-luna`"),/rests on the readouts/);
+  assert.match(overview,/what every readout ran without a fresh comparison/);
+  assert.match(benchmarks,/the long context on `gpt-6-luna`[^.]*rest on the readouts/);
+});

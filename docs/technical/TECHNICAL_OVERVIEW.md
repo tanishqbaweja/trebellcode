@@ -524,14 +524,14 @@ Public benchmark comparisons live in **[../../BENCHMARKS.md](../../BENCHMARKS.md
 
 ### One Native for the app and the benchmarks
 
-The Trebell Native a person runs and the one the benchmark runner (`benchmarks/harbor/native-harbor-run.mjs`) runs are one program with one configuration, **`src/native-configuration.mjs`**, which both read. It holds every setting that changes what Native does, each with its evidence (measured on fresh benchmark tasks, or the app's product default where nothing was measured):
+The Trebell Native a person runs and the one the benchmark runner (`benchmarks/harbor/native-harbor-run.mjs`) runs are one program with one configuration, **`src/native-configuration.mjs`**, which both read. It holds every setting that changes what Native does, each with its evidence: measured on fresh benchmark tasks, what every readout ran without a fresh comparison, the app's product default, or new (the last three unmeasured):
 
 | Setting | Value |
 |---|---|
 | Model | `gpt-6-luna` on OpenAI when the catalog lists it, unless the person picks another; only `gpt-6-luna` has measured settings, and another model runs the unmeasured defaults below |
 | Semantic completion gate, its recovery and the mid-task controller checkpoints | Off (measured: no extra resolution, about a third more cost) |
 | Ceilings per message | 500 model turns, 5,000 tool calls, no wall-time cap (what every readout ran, the owner's choice for the app; not compared with the app's old 24 and 100); Stop and a goal's budgets stay the person's controls, and a goal's remaining budgets lower them |
-| Long context on `gpt-6-luna` | A 272,000-token window with OpenAI server compaction at 245,000 (armed once an input reaches half of it); other models keep the catalog window and client-side read cooling |
+| Long context on `gpt-6-luna` | A 272,000-token window with OpenAI server compaction at 245,000 (armed once an input reaches half of it), which rests on the readouts: every readout since 2026-10-01 ran it, but it was never compared on fresh tasks with the client-side read cooling the app ran; other models keep the catalog window and client-side read cooling |
 | Reasoning | `reasoning.context` `current_turn` on OpenAI; Thinking defaults to Max on `gpt-6-luna` (the provider's default on other models) unless the person picks a level |
 | Speed | No service tier unless the person picks Fast |
 | Tools | Repository, workspace, terminal and background processes in every request; output tools from the first request on prompt-caching providers (elsewhere once an output is stored); source control when the message asks for Git work (a git command, a pull or merge request to open, a commit, branch, push, rebase or merge said as such, or an everyday ask such as "fix it and commit", "push it", "new branch" or "revert the last commit"; never a link or a cited commit), a new rule, narrowed from the product's word rule on 2026-10-29 and unmeasured, which also decides whether a Codex thread gets `trebell_source_control`, from its first message only; browser, desktop control and delegation where the window has them. Background processes were seen only on OpenAI, a prompt-caching provider; elsewhere their tool JSON goes uncached (unmeasured) |

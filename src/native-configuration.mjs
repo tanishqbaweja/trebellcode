@@ -7,7 +7,8 @@
 // compares what they send byte for byte, apart from NATIVE_CONTAINER_ONLY below.
 //
 // Each value is the one the benchmarks found best by the mission's rule (goal.md section 1: as many or more resolved tasks first, then
-// lower cost); where nothing was measured it is the app's product default, marked unmeasured in NATIVE_SETTINGS_EVIDENCE.
+// lower cost) where it was compared on fresh tasks; otherwise it is what every readout ran, the app's product default or new, each
+// marked unmeasured in NATIVE_SETTINGS_EVIDENCE.
 //
 // No imports and no work at load: the UI's first bundle reads the tool selection, the developer text and the effort default from
 // here, so everything else must tree-shake away (B11, tests/bundle-budgets.test.mjs).
@@ -53,8 +54,9 @@ export function nativePromptBudgets(goal=null){
 // sometimes much costlier). Other providers get none, as before.
 export const NATIVE_REASONING_CONTEXT="current_turn";
 
-// What a model was measured with. A model without a row keeps the app's rule: the catalog's window, client-side read cooling and the
-// provider's own effort.
+// What the benchmarks ran a model with: Max effort on gpt-6-luna was measured on fresh tasks, its window and server compaction rest on
+// the readouts (NATIVE_SETTINGS_EVIDENCE). A model without a row keeps the app's rule: the catalog's window, client-side read cooling
+// and the provider's own effort.
 export const NATIVE_MEASURED_MODELS=/*#__PURE__*/Object.freeze({
   "openai:gpt-6-luna":/*#__PURE__*/Object.freeze({reasoningEffort:"max",contextWindow:272_000,serverCompactionThreshold:245_000}),
 });
@@ -64,7 +66,7 @@ export function nativeMeasuredModel(provider,model){
   return Object.prototype.hasOwnProperty.call(NATIVE_MEASURED_MODELS,key)?NATIVE_MEASURED_MODELS[key]:null;
 }
 
-// The model's settings for a session: the measured row's, else the catalog's window and no server compaction.
+// The model's settings for a session: its NATIVE_MEASURED_MODELS row's, else the catalog's window and no server compaction.
 export function nativeModelSettings({provider=null,model=null,catalogContextWindow=null}={}){
   const measured=nativeMeasuredModel(provider,model),catalog=Math.trunc(Number(catalogContextWindow));
   return {
@@ -304,7 +306,7 @@ export function nativeConfigurationSnapshot(){
 export const NATIVE_SETTINGS_EVIDENCE=/*#__PURE__*/Object.freeze([
   {setting:"Semantic completion gate, its recovery and the mid-task checkpoints",value:"off",measured:true,basis:"fresh tasks",evidence:"3906e454 (2026-10-09): 8 fresh SWE-bench Verified pairs, gate off 6/8 at $0.252 vs gate on 5/8 at $0.366 (-31%); the gate overturned a correct sympy-20801 fix. Recovery: 0 of ~35 runs that entered it reached reward 1 (memory recovery-cost-findings)."},
   {setting:"Per-message ceilings",value:"500 model turns / 5,000 tool calls / no wall cap",measured:false,basis:"readouts",evidence:"Every readout ran 500/5000 and the owner chose them for the app on 2026-10-29 (no other harness in the app caps a message); never compared with the app's 24/100 on fresh tasks. 79c8b056 made them non-binding after a consumed TB4 task (make-mips-interpreter) was lost at a 48-turn ceiling, a causal loss but not a fresh A/B. The turn-36 budget checkpoint they bring into the app is unvalidated."},
-  {setting:"OpenAI long context for gpt-6-luna",value:"272,000-token window, server compaction at 245,000 armed at half",measured:true,basis:"fresh tasks",evidence:"ba0c8e69 (2026-10-01); retroactive read cooling broke response continuation (cache hit 3.9%); every readout since ran this policy. Other models: the catalog window and client read cooling (unmeasured)."},
+  {setting:"OpenAI long context for gpt-6-luna",value:"272,000-token window, server compaction at 245,000 armed at half",measured:false,basis:"readouts",evidence:"ba0c8e69 (2026-10-01), a runner change with no A/B: every readout since 2026-10-01 ran this policy, but it was never compared on fresh tasks with the client read cooling the app ran (postfix-r1's: from 160K input when the window is unknown, about 70% of a known one). Only its arming at half (C4) had a fresh A/B, inside cost v1's bundled one (2026-10-09, 12 SWE-bench Verified tasks, 6/12 v 6/12 at -25.9%), and that compared two arming points of server compaction, not server compaction with cooling. The 3.9% cache hit (cooling that rewrote history broke response continuation) came from cache-pressure r1, an intermediate cooling configuration since replaced. Other models: the catalog window and client read cooling (unmeasured)."},
   {setting:"Background processes (trebell_process)",value:"always on",measured:false,basis:"readouts",evidence:"38c76f98 (2026-10-02): every readout since had it; readout 6: kv-store-grpc and pypi-server resolved by Native through trebell_process where every Codex try failed. Never compared with the app's text-selected exposure. Seen on OpenAI gpt-6-luna only, a prompt-caching provider; on providers without prompt caching (local models, some OpenRouter or xAI rows) it is unmeasured, and its ~1.6 KB of tool JSON goes uncached in every request."},
   {setting:"Default reasoning effort for gpt-6-luna",value:"max",measured:true,basis:"fresh tasks",evidence:"Adaptive reasoning evaluation (2026-10-13, 32 fresh SWE-bench tasks): lower effort lost resolved tasks (17 or 18 v 20). Other models: the provider default (unmeasured)."},
   {setting:"Reasoning context",value:"current_turn",measured:true,basis:"fresh tasks",evidence:"Memory native-tuning-guardrails: auto and all_turns were conflicting and sometimes much costlier."},

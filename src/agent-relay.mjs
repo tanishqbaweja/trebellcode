@@ -2152,8 +2152,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         if(params.model&&params.model!==thread.model){await session.setModel(params.model);threadStore.update(thread.id,{model:session.model||params.model})}
       }
       else if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
-      // The window (the measured one, else the catalog's) and the server compaction threshold of the model this message runs
-      // (nativeModelSettings), so a model switch takes its own and a measured model keeps its window over a catalog without one.
+      // The window (the model's NATIVE_MEASURED_MODELS row's, which rests on the readouts, else the catalog's) and the server
+      // compaction threshold of the model this message runs (nativeModelSettings), so a model switch takes its own and a model with a
+      // row keeps its window over a catalog without one.
       if(runtime==="native"&&typeof session.setContextWindow==="function"){
         let contextWindow=null;
         if(typeof nativeModelContextWindow==="function")try{contextWindow=await nativeModelContextWindow({provider:requestedProvider||thread.providerMeta?.modelProvider||null,model:params.model||thread.model||null,thread:threadStore.get(thread.id)||thread})}catch(error){log("Native model context metadata unavailable: "+(error?.message||String(error)))}
