@@ -289,7 +289,7 @@ test("an old Antigravity key that takes the place of Native's Gemini variable, o
   const moved=migrateHarnessSecrets({env:env.base,providers:env.providers,state:env.state});
   assert.equal(moved.moved,true);assert.equal(env.providers.keyFor("gemini").key,"old-antigravity-key");
   const note=env.settings().antigravityKeyNote;
-  assert.match(note,/Trebell Native also uses now in place of GEMINI_API_KEY\. Remove it in Trebell Native's Model provider card to go back to GEMINI_API_KEY\./);
+  assert.match(note,/Trebell Native also uses now in place of GEMINI_API_KEY\. Remove it with Remove key on this row to go back to GEMINI_API_KEY\./);
   for(const value of ["old-antigravity-key","env-gemini-native"])assert.equal(note.includes(value),false,"no key in the note");
   mkdirSync(join(env.base.TREBELL_HOME,"agent-runtimes","antigravity","current"),{recursive:true});
   // Antigravity as Trebell installs it (its record and its server, never started by a status check).

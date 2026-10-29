@@ -109,7 +109,7 @@ test("Antigravity signs in with its own sign-in from its row, and set to its API
     expect(keyPosts).toEqual([{provider:"gemini",apiKey:KEY,select:false}]);
     await expect(said(antigravity)).toHaveText("1.4.3 · Runs on the Google Gemini API key.");
     await expect(action(antigravity)).toHaveText("Switch");
-    await expect(panel).toContainText("Uses the Google Gemini API key, saved in Trebell Code.");
+    await expect(panel).toContainText("Uses the Google Gemini API key, saved in Trebell Code, shared with Trebell Native.");
     expect(await page.evaluate(key=>document.body.innerText.includes(key)||[...document.querySelectorAll("input")].some(input=>input.value.includes(key)),KEY),"the key is nowhere on the page").toBe(false);
     // The launch it now runs with carries that key as GEMINI_API_KEY, and its own sign-in stays in its home for Sign in.
     const launch=manager.childEnv(manager.instances().find(item=>item.id==="antigravity-default"));

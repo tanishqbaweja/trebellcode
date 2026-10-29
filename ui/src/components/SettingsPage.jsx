@@ -146,9 +146,10 @@ function HarnessSignIn({def,profile,busy,onMethod,onKey}){
   // The choice shows at once, as the server saves it.
   const choose=value=>{setPending(value);Promise.resolve(onMethod(profile,value)).finally(()=>setPending(null))};
   const onKeyMethod=(pending||info.method)==="api-key",chosen=info.keys.find(item=>item.provider===provider)||info.keys[0],group="harness-auth-"+profile.id;
-  // A key from the environment is none saved in Trebell Code: one saved here takes its place, for Trebell Native too.
+  // A key from the environment is none saved in Trebell Code: one saved here takes its place, for Trebell Native too. A saved one is
+  // said to be shared with Trebell Native, as its Remove key removes it there too.
   const env=item=>item.source==="environment",kept=chosen.saved&&!env(chosen);
-  const uses=info.keys.length>1?"Uses each saved key: "+info.keys.map(item=>keyLabel(item.name)+(item.saved?env(item)?` (from ${item.from})`:" (saved)":" (none)")).join(", ")+".":`Uses the ${keyLabel(chosen.name)}${chosen.saved?(env(chosen)?` from ${chosen.from}; a key saved here replaces it, for Trebell Native too.`:", saved in Trebell Code."):": none saved yet."}`;
+  const uses=info.keys.length>1?"Uses each saved key, shared with Trebell Native: "+info.keys.map(item=>keyLabel(item.name)+(item.saved?env(item)?` (from ${item.from})`:" (saved)":" (none)")).join(", ")+".":`Uses the ${keyLabel(chosen.name)}${chosen.saved?(env(chosen)?` from ${chosen.from}; a key saved here replaces it, for Trebell Native too.`:", saved in Trebell Code, shared with Trebell Native."):": none saved yet."}`;
   return <div className="harness-auth" data-testid={"harness-auth-"+def.id}>
     <div role="radiogroup" aria-label={def.name+" signs in with"}>
       <label><input type="radio" name={group} checked={!onKeyMethod} disabled={busy} onChange={()=>choose("sign-in")}/>Sign in</label>
@@ -561,7 +562,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     try{
       const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action:"method",instanceId:profile.id,method}});
       if(result?.agentSnapshot)setAgentInfo(result.agentSnapshot);
-      showAgentMessage(`${name} ${method==="api-key"?"runs on its API key":"signs in with its own sign-in"}.${result?.stoppedChats?" Its open chats stopped.":""}`);
+      showAgentMessage(`${name} ${method==="api-key"?"runs on its API key":"signs in with its own sign-in"}.${result?.stoppedChats?" Open chats on it stopped.":""}`);
     }catch(error){showAgentMessage(error.message,true)}
     finally{setHarnessAuthBusy(false)}
   }
@@ -569,7 +570,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     setAgentMessageTarget(def.id);setHarnessAuthBusy(true);showAgentMessage("Saving…");
     try{
       const result=await api("/api/providers",{method:"POST",body:{provider,apiKey:key,select:false}});
-      setProviderInfo(result);await loadAgentRuntimes();showAgentMessage(key?"API key saved.":"API key removed.");return true;
+      setProviderInfo(result);await loadAgentRuntimes();showAgentMessage((key?"API key saved.":"API key removed.")+(result.stoppedChats?" Open chats on it stopped.":""));
+      // With Trebell Native active, the key of the provider it calls: the app's readiness and model list follow it, as after the
+      // Model provider card's (which only Native's Settings draw); on another harness, switching to Native reads them again.
+      if(selectedAgent==="native"&&provider===result.selected)await onProviderUpdated?.({provider,catalog:result,refreshBootstrap:false});
+      return true;
     }catch(error){showAgentMessage(error.message,true);return false}
     finally{setHarnessAuthBusy(false)}
   }

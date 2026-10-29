@@ -68,7 +68,7 @@ test("each harness but Cursor offers Sign in or its provider's API key, the key 
     await expect(save).toBeEnabled();
     await save.click();
     await expect(page.getByTestId("agent-runtime-message")).toContainText("API key saved.");
-    await expect(panel).toContainText("Uses the Anthropic API key, saved in Trebell Code.");
+    await expect(panel).toContainText("Uses the Anthropic API key, saved in Trebell Code, shared with Trebell Native.");
     await expect(field).toHaveValue("");await expect(field).toHaveAttribute("placeholder","Saved key ••••••••");
     await expect(panel.getByRole("button",{name:"Replace key"})).toBeDisabled();
     // On its API key Claude Code offers no sign-in of its own.
@@ -91,7 +91,7 @@ test("each harness but Cursor offers Sign in or its provider's API key, the key 
     await page.reload();await openAgents(page);
     const again=harnessRow(page,"Claude Code");
     await expect(again.getByRole("radiogroup",{name:"Claude Code signs in with"}).getByRole("radio",{name:"API key"})).toBeChecked();
-    await expect(again.getByTestId("harness-auth-claude")).toContainText("Uses the Anthropic API key, saved in Trebell Code.");
+    await expect(again.getByTestId("harness-auth-claude")).toContainText("Uses the Anthropic API key, saved in Trebell Code, shared with Trebell Native.");
     await expect(harnessRow(page,"Codex").getByRole("radiogroup",{name:"Codex signs in with"}).getByRole("radio",{name:"Sign in"})).toBeChecked();
     for(const mode of ["dark","light"]){
       await switchMode(page,mode);await again.scrollIntoViewIfNeeded();
@@ -107,7 +107,7 @@ test("each harness but Cursor offers Sign in or its provider's API key, the key 
     const opencode=harnessRow(page,"OpenCode");
     await opencode.getByRole("radiogroup",{name:"OpenCode signs in with"}).getByRole("radio",{name:"API key"}).check();
     const openPanel=opencode.getByTestId("harness-auth-opencode");
-    await expect(openPanel).toContainText("Uses each saved key: OpenAI API key (none), Anthropic API key (saved), Google Gemini API key (none), xAI API key (none).");
+    await expect(openPanel).toContainText("Uses each saved key, shared with Trebell Native: OpenAI API key (none), Anthropic API key (saved), Google Gemini API key (none), xAI API key (none).");
     await expect(openPanel.getByLabel("Key for OpenCode",{exact:true})).toHaveValue("openai");
     await opencode.scrollIntoViewIfNeeded();
     await page.screenshot({animations:"disabled",path:shots+"opencode-api-keys-dark-1280.png"});
@@ -132,7 +132,7 @@ test("a key saved in Trebell Code is removed on a harness's row, from the store 
   try{
     await openAgents(page);
     const claude=harnessRow(page,"Claude Code"),panel=claude.getByTestId("harness-auth-claude");
-    await expect(panel).toContainText("Uses the Anthropic API key, saved in Trebell Code.");
+    await expect(panel).toContainText("Uses the Anthropic API key, saved in Trebell Code, shared with Trebell Native.");
     // OpenCode offers Remove for the saved key it picks, and none for one that is not saved.
     const openPanel=harnessRow(page,"OpenCode").getByTestId("harness-auth-opencode"),pick=openPanel.getByLabel("Key for OpenCode",{exact:true});
     await expect(pick).toHaveValue("openai");await expect(openPanel.getByRole("button",{name:"Remove key"})).toHaveCount(0);
@@ -173,6 +173,61 @@ test("a key saved in Trebell Code is removed on a harness's row, from the store 
   }
 });
 
+// A key saved or removed on a harness's row for the provider Trebell Native calls is Native's key too: the app's readiness and model
+// list follow it at once, as after the Model provider card (which only Native's Settings draw), not at the next start-up read; and the
+// row says when chats open on that key stopped, as its Sign in / API key choice does. The server's answer is the mock's, with the
+// model list it read after the key and one stopped chat stood in for, so each answer can be told apart in the composer.
+test("a key saved or removed on a harness's row for Native's provider brings Native's model list along, and says the open chats on it stopped",async({page,request})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:900});
+  expect((await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"anthropic"}})).status()).toBe(200);
+  expect((await request.post("/api/agent-runtime-auth",{data:{action:"method",runtime:"claude",instanceId:"claude-default",method:"api-key"}})).status()).toBe(200);
+  expect((await request.post("/api/providers",{data:{provider:"anthropic",apiKey:"",select:false}})).status()).toBe(200);
+  const answered=[],providersRoute=/\/api\/providers$/;
+  await page.route(providersRoute,async route=>{
+    if(route.request().method()!=="POST")return route.fallback();
+    const response=await route.fetch(),body=await response.json(),model="claude-e2e-row-key-"+(answered.length+1);
+    answered.push({selected:body.selected,agentRuntime:body.agentRuntime});
+    return route.fulfill({response,json:{...body,models:[model],defaultModel:model,metadata:null,stoppedChats:1}});
+  });
+  const toAgents=async()=>{
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    await expect(harnessRow(page,"Claude Code")).toBeVisible({timeout:15_000});
+  };
+  try{
+    await openAgents(page);
+    const claude=harnessRow(page,"Claude Code"),panel=claude.getByTestId("harness-auth-claude"),message=page.getByTestId("agent-runtime-message");
+    await panel.getByLabel("Anthropic API key for Claude Code").click();await page.keyboard.type(KEY,{delay:2});
+    await panel.getByRole("button",{name:"Save key"}).click();
+    await expect(message).toContainText("API key saved. Open chats on it stopped.");
+    await expect(panel).toContainText("Uses the Anthropic API key, saved in Trebell Code, shared with Trebell Native.");
+    expect(answered).toEqual([{selected:"anthropic",agentRuntime:"native"}]);
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);await claude.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`claude-row-key-saved-native-provider-${mode}-1280.png`});
+    }
+    await switchMode(page,"dark");
+    // The composer already lists what the server read after the key, with no reload.
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    const picker=page.getByTestId("model-picker");
+    await expect(picker).toContainText("claude-e2e-row-key-1",{timeout:15_000});
+    // Removed on the row: Native's list follows again, and the row says so with the chats that stopped.
+    await toAgents();
+    await panel.getByRole("button",{name:"Remove key"}).click();
+    await expect(message).toContainText("API key removed. Open chats on it stopped.");
+    await expect(panel).toContainText("Uses the Anthropic API key: none saved yet.");
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    await expect(picker).toContainText("claude-e2e-row-key-2",{timeout:15_000});
+    expect(answered.length).toBe(2);
+  }finally{
+    await page.unroute(providersRoute).catch(()=>{});
+    await request.post("/api/agent-runtime-auth",{data:{action:"method",runtime:"claude",instanceId:"claude-default",method:"sign-in"}});
+    await request.post("/api/providers",{data:{provider:"anthropic",apiKey:"",select:false}});
+    await request.post("/api/settings",{data:{modelProvider:"openai"}});
+  }
+});
+
 // A key Trebell reads from its environment (the variable Native reads) is no key saved in Trebell Code: the row says where it comes
 // from, offers Save key rather than Replace, and says that a key saved there takes its place for Trebell Native too.
 test("a key from the environment shows as from its variable with Save key, and says a key saved there replaces it for Native too",async({page,request})=>{
@@ -197,7 +252,7 @@ test("a key from the environment shows as from its variable with Save key, and s
     await expect(panel.getByRole("button",{name:"Save key"})).toBeDisabled();
     await expect(panel.getByRole("button",{name:"Replace key"})).toHaveCount(0);
     const openPanel=harnessRow(page,"OpenCode").getByTestId("harness-auth-opencode");
-    await expect(openPanel).toContainText("Uses each saved key: OpenAI API key (none), Anthropic API key (from ANTHROPIC_API_KEY), Google Gemini API key (none), xAI API key (none).");
+    await expect(openPanel).toContainText("Uses each saved key, shared with Trebell Native: OpenAI API key (none), Anthropic API key (from ANTHROPIC_API_KEY), Google Gemini API key (none), xAI API key (none).");
     await openPanel.getByLabel("Key for OpenCode",{exact:true}).selectOption("anthropic");
     await expect(openPanel.getByLabel("Anthropic API key for OpenCode")).toHaveAttribute("placeholder","Paste Anthropic API key");
     await expect(openPanel.getByRole("button",{name:"Save key"})).toBeDisabled();
@@ -285,7 +340,7 @@ test("an installed harness on its API key with no key says so on its row and is 
     await expect(said).toHaveText("2.1.311 (Claude Code) · Runs on the Anthropic API key.");
     await expect(chip).toHaveText("Switch");
     await expect(claude.locator("button").first()).toBeEnabled();
-    await expect(panel).toContainText("Uses the Anthropic API key, saved in Trebell Code.");
+    await expect(panel).toContainText("Uses the Anthropic API key, saved in Trebell Code, shared with Trebell Native.");
     await expect(claude.getByRole("button",{name:"Sign in",exact:true})).toHaveCount(0);
     expect(launches.at(-1),"its check now runs with the key saved on its row").toBe(KEY);
     expect(posted).toEqual([{provider:"anthropic",apiKey:KEY,select:false}]);

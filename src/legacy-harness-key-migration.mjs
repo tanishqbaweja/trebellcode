@@ -15,7 +15,7 @@ export const LEGACY_HARNESS_SECRETS_FILE="harness-secrets.json";
 const ANTIGRAVITY_ENTRY="antigravity.geminiApiKey";
 export const ANTIGRAVITY_KEY_NOT_KEPT="The other key Antigravity's old key form held was not kept: one Google Gemini API key serves Trebell Native and Antigravity, and the one saved in Trebell Code stays.";
 export function antigravityKeyReplacedVariable(variable){
-  return `The key Antigravity's old key form held is now the Google Gemini API key saved in Trebell Code, which Trebell Native also uses now in place of ${variable}. Remove it in Trebell Native's Model provider card to go back to ${variable}.`;
+  return `The key Antigravity's old key form held is now the Google Gemini API key saved in Trebell Code, which Trebell Native also uses now in place of ${variable}. Remove it with Remove key on this row to go back to ${variable}.`;
 }
 
 export function migrateHarnessSecrets({env=process.env,providers,state}={}){
