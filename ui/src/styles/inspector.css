@@ -740,6 +740,8 @@
 :root:root .context-panel .goal-budget-alert :is(strong,span){display:block}
 :root:root .context-panel .goal-budget-alert strong{font-size:12.5px;font-weight:600;color:var(--err)!important}
 :root:root .context-panel .goal-budget-alert span{margin-top:3px;font-size:12px;line-height:1.5;color:var(--tx1)!important}
+:root:root .context-panel .goal-pause-note{border-color:var(--warnb)!important;background:var(--warnt)!important;color:var(--warn)!important}
+:root:root .context-panel .goal-pause-note strong{color:var(--warn)!important}
 :root:root .context-panel .goal-budget-note{margin:0;font-size:11.5px;line-height:1.55;color:var(--tx3)!important}
 :root:root .context-panel .goal-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 :root:root .context-panel .goal-metrics>div{min-width:0;padding:10px 12px;border:1px solid var(--line)!important;border-radius:10px;background:var(--bg2)!important}

@@ -46,7 +46,7 @@ async function fakeCodex(port){
   await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
   return {
     requests,goals,notify,calls:method=>requests.filter(item=>item.method===method),
-    connected:()=>sockets.size>0,
+    connected:()=>sockets.size>0,connections:()=>sockets.size,
     // The next request of the method waits for release() before it is answered.
     hold(method){let release=()=>{};holds.set(method,new Promise(resolve=>{release=resolve}));return ()=>release()},
     // Every request of the method is answered with result from now on.

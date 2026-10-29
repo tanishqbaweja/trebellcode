@@ -265,6 +265,8 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   return <div className={"goal-panel"+(covered?" opening-covered":"")} data-testid="goal-panel">
     <div className="goal-panel-head"><Target size={19}/><div><strong>Thread goal</strong><span>Durable objective stored with this thread, independent of the chat transcript.</span></div><em className={"goal-status status-"+String(status).replace(/[^a-z]/gi,"").toLowerCase()}>{status}</em></div>
     {blocked&&<div className="goal-budget-alert" role="alert" data-testid="goal-budget-alert"><AlertTriangle size={16}/><div><strong>Goal budget exhausted</strong><span>New turns are blocked. Increase the exhausted budget, or pause, complete, or clear this goal.</span></div></div>}
+    {/* A goal Trebell paused once Codex started no next turn for it (the server's pauseReason) says why while it stays paused. */}
+    {goal?.status==="paused"&&goal.pauseReason==="continuationExpired"&&<div className="goal-budget-alert goal-pause-note" role="status" data-testid="goal-pause-note"><Pause size={16}/><div><strong>Goal paused</strong><span>Codex started no next turn for this goal after its last turn ended. Send /goal resume to continue.</span></div></div>}
     <label>Objective<textarea aria-label="Objective" value={objective} onChange={e=>setObjective(e.target.value)} maxLength={4000} placeholder="What should this thread keep working toward?"/></label>
     <div className="goal-budget-grid">
       <label>Token budget <span>(optional)</span><input aria-label="Token budget" type="number" min="1" step="1" value={tokenBudget} onChange={e=>setTokenBudget(e.target.value)} placeholder="No token cap"/></label>

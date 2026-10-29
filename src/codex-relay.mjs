@@ -30,7 +30,7 @@ export function attachCodexRelay(httpServer, {
   // Synchronous (message, {targetKey, targetUrl, requestUpstream, connected}) => message: rewrites a Codex notification before the
   // renderer gets it, so notifications keep their order. false keeps it from the renderer (a goal Trebell is still writing).
   // connected() says whether the renderer is still there: a request made for it later, once it has gone, opens a connection no one
-  // closes.
+  // closes. handleRequest gets requestUpstream and connected the same way.
   transformServerMessage = null,
   // Synchronous (message, {targetKey}) => message: rewrites a Codex request the renderer is to answer before it gets it.
   transformServerRequest = null,
@@ -250,7 +250,7 @@ export function attachCodexRelay(httpServer, {
         try{onClientMessage(message,{primaryKey:context.primaryKey})}catch{}
         if(message?.method&&Object.prototype.hasOwnProperty.call(message,"id")&&handleRequest){
           try{
-            const handled=await handleRequest(message,{request,primaryKey:context.primaryKey,resolveTarget:routeFor,requestUpstream});
+            const handled=await handleRequest(message,{request,primaryKey:context.primaryKey,resolveTarget:routeFor,requestUpstream,connected:()=>!context.closed});
             if(handled?.handled){
               if(handled.error)sendBrowser({id:message.id,error:handled.error});else sendBrowser({id:message.id,result:handled.result??null});
               return;

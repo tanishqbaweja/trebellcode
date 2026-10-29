@@ -22,17 +22,21 @@ function epochMs(value){
 }
 
 // The Trebell record of a Codex goal: Codex's objective, status, token budget, times and accounting, with Trebell's
-// guidance and extra budgets from the previous record and the patch. `native` marks a record mirrored from Codex.
+// guidance and extra budgets from the previous record and the patch. `native` marks a record mirrored from Codex. pauseReason
+// (the patch's, or the previous record's) says why Trebell paused the goal, while it stays paused: continuationExpired, Codex
+// started no next turn for it (codex-goal-continuation.mjs).
 export function codexGoalRecord(goal,{threadId,previous=null,patch={}}={}){
   const objective=String(goal?.objective??"").trim();if(!objective)return null;
   const base=normalizeGoal({threadId:threadId||goal.threadId,previous,patch:{...(patch||{}),objective,status:"paused",tokenBudget:null}});
   const status=codexGoalStatus(goal.status)||"active",updatedAt=epochMs(goal.updatedAt)||Date.now();
+  const pauseReason=status==="paused"?(own(patch,"pauseReason")?patch.pauseReason:previous?.pauseReason):null;
   return {
     ...base,status,
     tokenBudget:Number.isInteger(goal.tokenBudget)&&goal.tokenBudget>0?goal.tokenBudget:null,
     createdAt:epochMs(goal.createdAt)||base.createdAt,updatedAt,
     completedAt:status==="complete"?(Number(previous?.completedAt)||updatedAt):null,
     native:{tokensUsed:Math.max(0,Number(goal.tokensUsed)||0),timeUsedSeconds:Math.max(0,Number(goal.timeUsedSeconds)||0)},
+    ...(pauseReason?{pauseReason}:{}),
   };
 }
 
