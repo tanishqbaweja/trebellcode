@@ -114,3 +114,15 @@ test("Harbor Native runner records when OpenAI server compaction arms in its con
   const {nativeHarborRunConfiguration}=await import("../src/native-configuration.mjs");
   const config=nativeHarborRunConfiguration({});assert.equal(config.contextWindow,272_000);assert.equal(config.compactionThreshold,245_000);
 });
+
+// The adapter's own option defaults are the shared configuration's (src/native-configuration.mjs), and the benchmark switches reach the
+// runner only when the operator sets them: a run with nothing set runs the Native the app ships and names no switch in its metrics.
+test("Harbor Native adapter defaults to the shared effort and tier and forwards benchmark switches only when set",async()=>{
+  const adapter=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
+  const {nativeHarborRunConfiguration}=await import("../src/native-configuration.mjs");
+  const shared=nativeHarborRunConfiguration({});
+  assert.ok(adapter.includes(`] = Field(default="${shared.reasoningEffort}", description="OpenAI reasoning effort.")`),"effort default");
+  assert.ok(adapter.includes(`service_tier: Literal["default", "fast"] = Field(\n        default="${shared.serviceTier}",`),"tier default");
+  assert.equal(adapter.includes('"272000"')||adapter.includes('"245000"'),false,"no window or threshold of its own");
+  assert.match(adapter,/for switch in \("TREBELL_HARBOR_CONTEXT_WINDOW", "TREBELL_HARBOR_COMPACT_THRESHOLD"\):\n\s+value = os\.environ\.get\(switch, ""\)\.strip\(\)\n\s+if value:\n\s+env\[switch\] = value/);
+});
