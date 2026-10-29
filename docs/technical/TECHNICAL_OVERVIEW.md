@@ -99,7 +99,8 @@ to Sign in, which uses its own login there. An OpenCode profile with a server UR
 set to API key. Every start of a profile on API key checks its key again (`AgentRuntimeManager.keyRefusal`: the relay's sessions, Git
 text, and a status kept from before the key went): with none, its status says so and it does not start. A key saved or removed, or a
 profile's method changed, closes the chats of the profiles concerned only, and stops their Codex app-servers whether a profile is the
-active one or not, since each process keeps the sign-in or key it started with. Cursor signs in only. No key reaches a harness any
+active one or not (only theirs: the active one's catalog starts again, and another Codex profile's threads go on), since each process
+keeps the sign-in or key it started with. Cursor signs in only. No key reaches a harness any
 other way: `src/runtime-environment.mjs` keeps every credential name (`isHarnessCredentialName`) out of what each harness gets of
 Trebell's environment, a profile's approved names and its variables (on a WSL or SSH host too, in the variables its Codex app-server
 starts with), and Cursor's, Grok's and OpenCode's usage meters read none of their stored sign-ins.
