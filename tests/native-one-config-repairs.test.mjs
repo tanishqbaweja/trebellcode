@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,8 @@ import * as nativeConfiguration from "../src/native-configuration.mjs";
 import { platformDynamicToolNamespaces } from "../src/platform-tool-catalog.mjs";
 import { providerTurnToResponses } from "../src/provider-turn.mjs";
 import { RepositoryKnowledgeService } from "../src/repository-knowledge-service.mjs";
+import { sharedRuntimeCapabilities } from "../src/runtime-capabilities.mjs";
+import { sharedDynamicToolNamespaces } from "../src/shared-tool-catalog.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 import { autoCompactionDecision } from "../ui/src/auto-compaction.js";
 import { specializedToolSelection } from "../ui/src/lazy-tool-exposure.js";
@@ -176,6 +178,27 @@ test("source-control tools follow Git work the message asks for, not a link or t
     "Merge main into this branch",
     "Undo my last commit",
     "amend the last commit with the test fix",
+    // The second review's (2026-10-29): asks the word rule selected and the narrowed rule dropped.
+    "Fix the failing test and commit",
+    "fix it then commit",
+    "Fix the bug. Commit.",
+    "commit",
+    "push",
+    "push it",
+    "revert the last commit",
+    "new branch",
+    "can you PR this?",
+    "what changed in the last commit?",
+    // More of them, none of which selects a benchmark task.
+    "commit please",
+    "Please commit.",
+    "commit with message 'fix bug'",
+    "publish the branch",
+    "rebase",
+    "sync with upstream",
+    "show me the last commit",
+    "fix bug and push.",
+    "New branch for this, please",
   ];
   // The review's examples, each of which the word rule selected, and the other senses of commit and merge.
   const not=[
@@ -189,6 +212,14 @@ test("source-control tools follow Git work the message asks for, not a link or t
     "Merge the two branches of the conditional into one return.",
     "raw_hits.json must include every commit that contains a secret.",
     "I tried to commit it but the pre-commit hook failed.",
+    // And the everyday asks' words in their other senses: a stack machine's push, a code path's branch, a log's last commit, SQL's
+    // COMMIT, a DNS upstream.
+    "The VM supports these opcodes:\npush\npop\nadd",
+    "Each element is a new branch of the tree.",
+    "Add a new branch to the match statement for None.",
+    "The last commit of the transaction log must be durable.",
+    "BEGIN;\nINSERT INTO t VALUES (1);\nCOMMIT;\nSELECT * FROM t;",
+    "Sync with the upstream DNS server.",
   ];
   for(const text of asks){assert.equal(nativeConfiguration.nativeSpecializedSelection(text,all).sourceControl,true,text);assert.equal(specializedToolSelection(text,all).sourceControl,true,text)}
   for(const text of not){assert.equal(nativeConfiguration.nativeSpecializedSelection(text,all).sourceControl,false,text);assert.equal(specializedToolSelection(text,all).sourceControl,false,text)}
@@ -200,12 +231,42 @@ test("source-control tools follow Git work the message asks for, not a link or t
   try{assert.equal(run.tools.some(namespace=>namespace.name==="trebell_source_control"),false)}finally{await run.session.close()}
 });
 
-test("the settings evidence says what each value rests on: the ceilings and background processes on the readouts, the compactions as app defaults",()=>{
+test("a Codex thread whose first message asks for Git work starts with trebell_source_control, as the window picks every harness's first tools by the shared rule",()=>{
+  // createThreadFor (ui/src/App.jsx) sends specializedToolSelection's pick as thread/start's dynamicTools for every harness. Codex takes
+  // its tools there, once: it has no tool expansion, so its first message alone decides.
+  assert.equal(sharedRuntimeCapabilities("codex").dynamicTools,true);assert.equal(sharedRuntimeCapabilities("codex").dynamicToolExpansion,false);
+  const availability={browser:false,computer:false,sourceControl:true,delegation:true};
+  const names=text=>sharedDynamicToolNamespaces(specializedToolSelection(text,availability)).map(namespace=>namespace.name);
+  for(const text of ["Fix the failing test and commit","fix it then commit","Fix the bug. Commit.","push it","revert the last commit","new branch","can you PR this?","what changed in the last commit?"])assert.ok(names(text).includes("trebell_source_control"),text);
+  assert.equal(names("Explain what src/a.mjs exports").includes("trebell_source_control"),false);
+});
+
+test("the source-control rule reads a message as long as the composer holds in linear time, with no spaces or with line after line",()=>{
+  // 120,000 characters, the composer's most (App.jsx MAX_COMPOSER_CHARS): the window runs the rule on its main thread for every new
+  // thread and every Native message. At 5ae45215 the link removal (\S*:\/\/\S*) and the sentence starts ([.!?;:\n]\s*) went back over
+  // the rest of such a run from each of its characters: seconds each.
+  const all={browser:true,computer:true,sourceControl:true,delegation:true};
+  for(const [name,text] of [["no spaces","a".repeat(120_000)],["base64",Buffer.from("x".repeat(90_000)).toString("base64")],["line breaks","\n".repeat(120_000)+"x"],["CRLF line breaks","\r\n".repeat(60_000)+"x"],["dots, then spaces",".".repeat(60_000)+" ".repeat(60_000)+"x"]]){
+    const started=performance.now(),selected=nativeConfiguration.nativeSpecializedSelection(text,all).sourceControl,ms=performance.now()-started;
+    assert.equal(selected,false,name);assert.ok(ms<1_000,name+": "+ms.toFixed(0)+" ms");
+  }
+  // A link is still read without its address (the whole word that holds it), and an ask beside it still selects.
+  assert.equal(nativeConfiguration.nativeSpecializedSelection("Details: (https://github.com/o/r/pull/1/commits/new-branch-push)",all).sourceControl,false);
+  assert.equal(nativeConfiguration.nativeSpecializedSelection("Push the branch to origin, then reply on https://github.com/o/r/pull/1",all).sourceControl,true);
+});
+
+test("the settings evidence says what each value rests on: the ceilings and background processes on the readouts, the compactions as app defaults, the source-control rule as new",()=>{
   const rows=nativeConfiguration.NATIVE_SETTINGS_EVIDENCE,row=name=>rows.find(item=>item.setting===name);
   for(const item of rows){
-    assert.ok(["fresh tasks","readouts","app default"].includes(item.basis),item.setting);
+    assert.ok(["fresh tasks","readouts","app default","new"].includes(item.basis),item.setting);
     assert.equal(item.measured,item.basis==="fresh tasks",item.setting+": measured only when compared on fresh tasks");
   }
+  // The source-control rule is new and unmeasured, and it also decides a Codex thread's trebell_source_control from its first message
+  // (second review of native-one-config, 2026-10-29).
+  const sourceControl=row("Source control tools (trebell_source_control)");
+  assert.equal(sourceControl.measured,false);assert.equal(sourceControl.basis,"new");
+  assert.match(sourceControl.evidence,/new rule, narrowed from the product's word rule on 2026-10-29/);assert.match(sourceControl.evidence,/unmeasured/);
+  assert.match(sourceControl.evidence,/Codex thread gets trebell_source_control[^.]*first message only/);
   const ceilings=row("Per-message ceilings");assert.equal(ceilings.measured,false);assert.equal(ceilings.basis,"readouts");assert.match(ceilings.evidence,/owner/);assert.match(ceilings.evidence,/not a fresh A\/B/);
   const processes=row("Background processes (trebell_process)");assert.equal(processes.basis,"readouts");assert.match(processes.evidence,/without prompt caching[^.]*unmeasured/);
   for(const name of ["Automatic between-turn compaction","Between-turn compaction brief"])assert.equal(row(name)?.basis,"app default",name);
