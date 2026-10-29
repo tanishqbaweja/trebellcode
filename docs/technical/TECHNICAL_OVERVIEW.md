@@ -90,13 +90,19 @@ Examples:
 Each external harness signs in as the person sets it in Settings for its runtime profile (`src/harness-auth.mjs`): **Sign in**, its own
 login in its own home (the default), or **API key**, its vendor's key from Native's key store in the form its official CLI takes it
 (`ANTHROPIC_API_KEY` for Claude Code, `META_API_KEY` for Muse Code, `XAI_API_KEY` with Grok's key method, `GEMINI_API_KEY` with Antigravity's
-key method, each saved provider's variable for OpenCode; Codex signs in with `codex login --with-api-key` in a home of Trebell's own
-over its shared home; Grok signs in with its key method before each session starts). A harness on API key runs on this machine only:
-Trebell sends no saved key to a WSL or SSH environment, and a key the host's shell holds never stands in for it, so there it signs in
-with its own login. With no key, its status says so and it does not start. Cursor signs in only. No key reaches a harness any other
-way: `src/runtime-environment.mjs` keeps every credential name (`isHarnessCredentialName`) out of what each harness gets of Trebell's
-environment, a profile's approved names and its variables, and Cursor's, Grok's and OpenCode's usage meters read none of their stored
-sign-ins.
+key method, each saved provider's variable for OpenCode, which then reads an empty set of its own stored logins,
+`OPENCODE_AUTH_CONTENT={}`; Codex signs in with `codex login --with-api-key` in a home of Trebell's own over its shared home, which
+`codex logout` empties again once the profile is back on Sign in or removed, or the OpenAI key is removed; Grok signs in with its key
+method before each chat session and each Git text session starts). A harness on API key runs on this machine only: Trebell sends no
+saved key to a WSL or SSH environment, and a key the host's shell holds never stands in for it, so there it is refused until it is set
+to Sign in, which uses its own login there. An OpenCode profile with a server URL of its own runs on that server's sign-in and cannot be
+set to API key. Every start of a profile on API key checks its key again (`AgentRuntimeManager.keyRefusal`: the relay's sessions, Git
+text, and a status kept from before the key went): with none, its status says so and it does not start. A key saved or removed, or a
+profile's method changed, closes the chats of the profiles concerned only, and stops their Codex app-servers whether a profile is the
+active one or not, since each process keeps the sign-in or key it started with. Cursor signs in only. No key reaches a harness any
+other way: `src/runtime-environment.mjs` keeps every credential name (`isHarnessCredentialName`) out of what each harness gets of
+Trebell's environment, a profile's approved names and its variables (on a WSL or SSH host too, in the variables its Codex app-server
+starts with), and Cursor's, Grok's and OpenCode's usage meters read none of their stored sign-ins.
 
 External harnesses are not forced through Trebell Native's provider layer merely to make the UI look symmetrical.
 
