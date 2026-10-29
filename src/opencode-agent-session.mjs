@@ -429,11 +429,17 @@ function permissionResponse(decision){return decision==="acceptForSession"?"alwa
 const PERMISSION_MODE_NAMES=Object.freeze({"read-only":"Read only",supervised:"Supervised",edits:"Auto-accept edits",auto:"Auto",full:"Full access"});
 // A reject without a message is OpenCode's stop: it ends the whole run, which only a Stop (cancel) means. Any other refusal goes with
 // its reason, which OpenCode hands the model as the tool's answer, so the turn carries on and the model can say what it could not do.
+// unanswered: the window stopped waiting for the person's answer.
 export function openCodeRefusal(decision,{disposition=null,mode=null,action="",resources=[]}={}){
   if(["accept","acceptForSession","cancel"].includes(decision))return null;
-  const shown=(Array.isArray(resources)?resources:[]).map(String).filter(Boolean).slice(0,3),what=`The ${String(action||"tool")} request`+(shown.length?` (${shown.join(", ")})`:"");
-  const reason=disposition==="deny"?`${what} was refused: this thread is in Trebell's ${PERMISSION_MODE_NAMES[normalizePermissionMode(mode)]} mode.`:`${what} was declined.`;
+  const what=`The ${openCodeRequestName(action,resources)}`;
+  const reason=disposition==="deny"?`${what} was refused: this thread is in Trebell's ${PERMISSION_MODE_NAMES[normalizePermissionMode(mode)]} mode.`:decision==="unanswered"?`${what} was not answered in time, so it was declined.`:`${what} was declined.`;
   return {reason,note:reason+" Do not retry it; continue without it, and tell the user what it would need."};
+}
+// A permission request by its action and what it is for: "shell request (npm test)".
+export function openCodeRequestName(action="",resources=[]){
+  const shown=(Array.isArray(resources)?resources:[]).map(String).filter(Boolean).slice(0,3);
+  return `${String(action||"tool")} request`+(shown.length?` (${shown.join(", ")})`:"");
 }
 
 export async function configureOpenCodeMcpServers(client,{cwd,servers=[]}={}){

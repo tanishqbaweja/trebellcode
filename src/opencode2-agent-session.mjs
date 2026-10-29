@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { fileUri, fileUriPath } from "./file-uri.mjs";
-import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeReadOutput, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
+import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeReadOutput, openCodeRefusal, openCodeRequestName, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
 import { PROMPT_IMAGE_PATH, textExtractedTo } from "./prompt-attachments.mjs";
@@ -407,23 +407,30 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     const requestID=String(data?.id||"");if(!requestID||this.permissionsHandled.has(requestID))return;
     if(!(await this.#belongs(data?.sessionID)))return;
     if(this.permissionsHandled.has(requestID))return;this.permissionsHandled.add(requestID);
-    const kind=String(data?.action||""),disposition=openCodePermissionDisposition(this.permissionMode,kind);
+    const kind=String(data?.action||""),disposition=openCodePermissionDisposition(this.permissionMode,kind),turn=this.activePrompt;
     let decision=disposition==="allow"?"accept":disposition==="deny"?"decline":"decline";
     if(disposition==="ask"&&this.onPermission){
       const options=[{optionId:"once",name:"Allow once",kind:"allow_once"},...(Array.isArray(data?.save)&&data.save.length?[{optionId:"always",name:"Allow session",kind:"allow_always"}]:[]),{optionId:"reject",name:"Reject",kind:"reject_once"}];
       const toolCall={title:permissionTitle(data),toolCallId:String(data?.id||""),rawInput:{...(data?.metadata||{}),resources:Array.isArray(data?.resources)?data.resources:[]},kind:normalizePermissionKind(kind)};
-      decision=await Promise.resolve().then(()=>this.onPermission({method:"permission",params:{toolCall,permissionType:kind,options}})).then(value=>value||"decline",()=>"decline");
+      // One the window stopped waiting for (left unanswered until the relay's wait ran out) got no answer of the person's.
+      decision=await Promise.resolve().then(()=>this.onPermission({method:"permission",params:{toolCall,permissionType:kind,options}})).then(value=>value||"decline",()=>"unanswered");
     }
     if(decision==="acceptForSession"&&String(data.sessionID)===this.sessionId){
       const resources=(Array.isArray(data?.save)&&data.save.length?data.save:data?.resources)||[];
       for(const resource of resources.map(String).filter(Boolean))if(!this.sessionGrants.some(grant=>grant.action===kind&&grant.resource===resource))this.sessionGrants.push({action:kind,resource,effect:"allow"});
       await this.#applyPermissionRules().catch(()=>{});
     }
-    const refusal=openCodeRefusal(decision,{disposition,mode:this.permissionMode,action:kind,resources:data?.resources});
+    // An approval left unanswered ends this session's turn saying so, as an unanswered question does (FORM_UNANSWERED): rejected without a
+    // message, which stops OpenCode's run, the reason set before OpenCode says the run stopped. A subagent's, or one asked while no turn
+    // runs, is refused saying it was not answered, and the model goes on.
+    const ends=decision==="unanswered"&&String(data.sessionID)===this.sessionId&&turn&&this.activePrompt===turn&&!turn.done&&!turn.cancelled&&!turn.stopError;
+    if(ends)turn.stopError=new Error(`OpenCode's ${openCodeRequestName(kind,data?.resources)} was not answered in time, so Trebell declined it and stopped the turn.`);
+    const refusal=ends?null:openCodeRefusal(decision,{disposition,mode:this.permissionMode,action:kind,resources:data?.resources});
     // A refused shell call reaches the model only as "Unable to execute command", which it retries, so the reason is steered into the
     // session before the refusal (as T3 Code does); the refusal stands without it.
     if(refusal)await this.client.session.synthetic({sessionID:String(data.sessionID),text:refusal.note,delivery:"steer",resume:false}).catch(()=>{});
-    await this.client.permission.reply({sessionID:String(data.sessionID),requestID:String(data.id),decision:permissionDecision(decision),...(refusal?{message:refusal.reason}:{})}).catch(()=>{});
+    const replied=await this.client.permission.reply({sessionID:String(data.sessionID),requestID:String(data.id),decision:permissionDecision(decision),...(refusal?{message:refusal.reason}:{})}).then(()=>true,()=>false);
+    if(ends){if(!replied)await this.#interrupt();turn.settle?.()}
   }
   // One subscription to the event stream: opened resolves true at its first chunk (OpenCode 2 sends server.connected at once) and false
   // if it ends before; ended once it has ended, however it ended; drop lets go of it. Every chunk the stream receives counts (onActivity),
