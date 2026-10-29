@@ -965,6 +965,61 @@ test("a palette whose message search cannot load says it could not search thread
   }finally{await harness.close()}
 });
 
+// Nor can that search run again before a reload, the browser keeping the script that failed, so the notice and its Reload stay while
+// names are typed, the results in their place under them, and the search box does not say 'Searching messages…'. Both went at every
+// key, 'Searching messages…' showing meanwhile, and came back as the search tried again failed, about 0.1 s after the last key, the
+// results moving 61 px down with them; Tab pressed straight after typing went past Reload.
+test("a palette whose message search cannot load keeps its notice and Reload in place while names are typed, without 'Searching messages…', by keyboard and by mouse",async({page})=>{
+  test.setTimeout(90_000);
+  const needle="violet-harbor-207";
+  let refused=0;
+  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const {harness}=await openRelayThreads(page,[{name:"Quill release",user:"Plan the release",reply:"The release plan is ready."},{name:"Beta notes",user:"Write the notes",reply:`The notes mention ${needle} once.`}]);
+  try{
+    await expect.poll(()=>refused,{message:"the parts asked for at idle"}).toBeGreaterThan(0);
+    const palette=page.getByTestId("command-palette"),said=palette.getByRole("alert"),reload=said.getByRole("button",{name:"Reload",exact:true});
+    const notice=/^Could not search thread messages: Part of Trebell could not load\. Reload Trebell to get it back\.\s*Reload$/;
+    const search=palette.getByPlaceholder("Search commands, threads, and messages…"),item=text=>palette.locator(".command-palette-item").filter({hasText:text});
+    // Each frame from then on: the search, whether the notice shows with its Reload, whether the box says 'Searching messages…', and
+    // where the results start.
+    const watch=()=>page.evaluate(()=>{
+      const frames=window.__paletteFrames=[];
+      const note=()=>{const node=document.querySelector("[data-testid=command-palette]");if(!node)return;frames.push({query:node.querySelector("input").value,reload:Boolean(node.querySelector("[role=alert] button")),searching:Boolean(node.querySelector(".command-palette-searching")),top:Math.round(node.querySelector(".command-palette-results").getBoundingClientRect().top)});requestAnimationFrame(note)};
+      requestAnimationFrame(note);
+    });
+    for(const [how,mode,width] of [["keyboard","dark",1280],["mouse","light",700]]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      // By keyboard: Ctrl+K from the composer, the word, Ctrl+A over it. By mouse: Search or jump to, the window narrowed, the word, a
+      // triple click on it.
+      if(how==="keyboard"){await page.getByTestId("composer").click();await page.keyboard.press("Control+k")}
+      else await page.getByRole("button",{name:"Search or jump to"}).click();
+      await expect(palette).toBeVisible();await page.setViewportSize({width,height:800});
+      await page.keyboard.type(needle,{delay:15});await expect(said).toHaveText(notice);
+      await watch();
+      if(how==="keyboard")await page.keyboard.press("Control+a");else await search.click({clickCount:3});
+      // A thread's name typed at a person's pace, a letter taken back and typed again, then a command's and a project's: each is found.
+      await page.keyboard.type("Quill",{delay:120});await expect(item("Quill release")).toBeVisible();
+      await page.screenshot({animations:"disabled",path:auditDir+`palette-message-search-cannot-load-typing-${mode}-${width}x800.png`});
+      await page.keyboard.press("Backspace");await page.keyboard.type("l release",{delay:120});await expect(item("Quill release")).toBeVisible();
+      await page.keyboard.press("Control+a");await page.keyboard.type("Settings",{delay:120});await expect(item(/^Settings/)).toBeVisible();
+      await page.keyboard.press("Control+a");await page.keyboard.type("Relay History",{delay:120});await expect(palette.locator(".command-palette-item.kind-project")).toHaveCount(1);
+      // Tab straight after typing reaches Reload.
+      await page.keyboard.press("Control+a");await page.keyboard.type("Beta",{delay:120});await page.keyboard.press("Tab");
+      await expect.soft(reload,"where Tab straight after typing puts the keyboard").toBeFocused();await expect(item("Beta notes")).toBeVisible();
+      // Nor does anything change once the typing stops, as the search is tried again.
+      await page.waitForTimeout(500);
+      const frames=await page.evaluate(()=>window.__paletteFrames),searches=list=>[...new Set(list.map(frame=>frame.query))];
+      expect.soft(searches(frames.filter(frame=>!frame.reload)),"the searches shown without the notice and its Reload").toEqual([]);
+      expect.soft(searches(frames.filter(frame=>frame.searching)),"the searches shown with 'Searching messages…'").toEqual([]);
+      expect([...new Set(frames.map(frame=>frame.top))],"where the results started").toHaveLength(1);
+      await expect(said).toHaveText(notice);
+      await page.keyboard.press("Escape");await expect(palette).toHaveCount(0);
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1280,height:800});
+    await appStays(page);
+  }finally{await harness.close()}
+});
+
 // Nor does Cite's: the end of a conversation says nothing (no reply reads as failed to show, and nothing there is announced or in
 // Tab's order). Text selected in a reply says it, where Cite would come and for as long as the selection lasts, with Reload.
 test("a Cite whose script cannot load says so only where its button would come, above text selected in a reply, by mouse and by keyboard",async({page})=>{

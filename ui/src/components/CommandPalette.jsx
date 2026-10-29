@@ -64,7 +64,9 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   // search that finishes late can no longer replace or wipe a command's error message.
   const [searchWarning,setSearchWarning]=useState("");
   // A message search that could not run at all (its code could not load) offers Reload, and with no message searched an empty list
-  // says that no command or thread name matches, not that no thread does. It counts only while its warning shows.
+  // says that no command or thread name matches, not that no thread does. It counts only while its warning shows. Nor can it run
+  // before a reload (the browser keeps the script that failed), so its warning stays as the person types or runs a command, and a new
+  // search tries it again without saying 'Searching messages…'.
   const [searchFailed,setSearchFailed]=useState(false);
   const inputRef=useRef(null);
   const resultsRef=useRef(null);
@@ -112,8 +114,9 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   useEffect(()=>{
     if(!open)return;
     const raw=query.trim();const q=raw.startsWith(">")?raw.slice(1).trim():raw;
-    if(raw.startsWith(">")||q.length<2||!messageSearchRef.current){setMessageMatches(current=>current.length?[]:current);setMessageSearching(false);setActionError("");setSearchWarning("");return}
-    let cancelled=false;setMessageSearching(true);setActionError("");setSearchWarning("");
+    setActionError("");if(!searchFailed)setSearchWarning("");
+    if(raw.startsWith(">")||q.length<2||!messageSearchRef.current){setMessageMatches(current=>current.length?[]:current);setMessageSearching(false);return}
+    let cancelled=false;setMessageSearching(!searchFailed);
     const timer=setTimeout(async()=>{
       let result,failed=false;
       try{result=await messageSearchRef.current(q)}
@@ -168,7 +171,7 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   useEffect(()=>{if(!runningId&&refocusRef.current){refocusRef.current=false;inputRef.current?.focus()}},[runningId]);
   async function run(item){
     if(!item||runningId)return;
-    setRunningId(item.id);setActionError("");setSearchWarning("");
+    setRunningId(item.id);setActionError("");if(!searchFailed)setSearchWarning("");
     try{await item.onRun?.();onClose?.()}
     catch(error){setActionError(error?.message||String(error)||"The command failed.");refocusRef.current=true;setRunningId(null)}
   }
@@ -208,7 +211,7 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   const warningOnly=Boolean(searchWarning)&&!dataError&&!actionError,unsearched=searchFailed&&Boolean(searchWarning);
   return <div className="command-palette-backdrop" data-testid="command-palette" onMouseDown={event=>event.target===event.currentTarget&&onClose?.()}>
     <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={dialogRef} tabIndex={-1}>
-      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} value={query} onChange={event=>{handedKeysRef.current=null;setQuery(event.target.value);setSelected(0);setActionError("");setSearchWarning("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)} spellCheck={false} autoComplete="off"/>{messageSearching&&<span className="command-palette-searching">Searching messages…</span>}<kbd className="tb-kbd">Esc</kbd></div>
+      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} value={query} onChange={event=>{handedKeysRef.current=null;setQuery(event.target.value);setSelected(0);setActionError("");if(!searchFailed)setSearchWarning("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)} spellCheck={false} autoComplete="off"/>{messageSearching&&<span className="command-palette-searching">Searching messages…</span>}<kbd className="tb-kbd">Esc</kbd></div>
       {visibleError&&<div className={"command-palette-error"+(warningOnly?" is-warning":"")} role="alert"><span>{visibleError}</span>{unsearched&&<button type="button" className="tb-btn tb-btn--sm" onKeyDown={reloadKeyDown} onClick={()=>window.location.reload()}>Reload</button>}</div>}
       <div className="command-palette-results" ref={resultsRef} onKeyDown={resultsKeyDown}>
         {items.map((item,index)=><React.Fragment key={item.id}>
