@@ -186,6 +186,56 @@ test("Claude's to-do lists update the plan only, with no step saying files were 
   }finally{listSeen.open();await harness.close()}
 });
 
+// A Claude thread recorded before Claude's to-do lists showed as the plan only kept each TodoWrite as a file change that names no file
+// (the relay read Claude's TodoWrite as an edit). Opened again, from another thread and after a reload, its card shows no step saying
+// files were edited for them, only Claude's real edit, and the TodoWrite that failed reads as the failed call it is.
+test("a Claude thread that stored its to-do lists as file changes shows no step saying files were edited for them, opened again and after a reload",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  const harness=await startClaudeRelay({turn:async()=>{}});
+  try{
+    const thread=harness.seedThread("Release prep");harness.seedThread("Hotfix");
+    // The turn's items as the relay stored them then: each TodoWrite a file change with no file and the list as its input, the subagent's
+    // still running as the turn ended, beside Claude's edit of the changelog.
+    const todoWrite=(id,status,todos,rawOutput)=>({type:"fileChange",id,status,changes:[],rawInput:{todos},...(rawOutput?{rawOutput}:{})});
+    const turn=harness.threadStore.addTurn(thread.id,{inputText:"Prepare the release",items:[
+      todoWrite("toolu_todo_1","completed",TODOS,"Todos have been modified successfully."),
+      {type:"fileChange",id:"toolu_edit",status:"completed",changes:[{path:"CHANGELOG.md",kind:"update",oldText:"## Unreleased\n",newText:"## 2.0.0\n"}],rawInput:{file_path:"CHANGELOG.md",old_string:"## Unreleased",new_string:"## 2.0.0"},rawOutput:"The file was updated."},
+      todoWrite("toolu_todo_sub","inProgress",[{content:"A subagent's own step",status:"pending",activeForm:"Taking its own step"}]),
+      todoWrite("toolu_todo_bad","failed",[{content:"A subagent's next step"}],"<tool_use_error>InputValidationError: The required parameter `todos[0].status` is missing</tool_use_error>"),
+      todoWrite("toolu_todo_2","completed",TODOS,"Todos have been modified successfully."),
+      {type:"agentMessage",id:"assistant-release",text:"The checklist is read; the changelog is next."},
+    ]});
+    harness.threadStore.finishTurn(thread.id,turn.id,{status:"completed"});
+    await routeClaudeApp(page,harness,{permissionMode:"supervised"});
+    await page.goto("/");await openThread(page,"Release prep");
+    const card=page.getByTestId("activity-card").last(),rows=card.locator("details.tool-event");
+    const titled=title=>rows.filter({has:page.locator("summary strong",{hasText:title})});
+    const shown=async when=>{
+      await expect(page.getByText("The checklist is read; the changelog is next.",{exact:true})).toBeVisible({timeout:15_000});
+      await expect(card).toBeVisible({timeout:15_000});if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click();
+      await expect(card.locator(".activity-card-summary"),`the card counts the edit and the list that failed, no other list (${when})`).toHaveText(/^2 steps/);
+      await expect(titled(/^Editing files$/),`only Claude's edit says it edits files (${when})`).toHaveCount(1);
+      await expect(titled(/^TodoWrite$/).locator("summary em"),`the list that failed reads as the failed call it is (${when})`).toHaveText(["failed"]);
+      const editing=titled(/^Editing files$/);if(!await editing.evaluate(node=>node.open))await editing.locator("summary").click();
+      await expect(editing.locator(".tool-event-body"),`the edit names its file (${when})`).toContainText("CHANGELOG.md");
+    };
+    await shown("opened");
+    await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:`${auditDir}claude-todo-stored-opened-dark-1280x800.png`});
+    await openThread(page,"Hotfix");await openThread(page,"Release prep");
+    await shown("opened again");
+    await page.reload();
+    await expect(page.locator('.thread-main[title="Hotfix"]'),"the thread list has loaded").toHaveCount(1,{timeout:15_000});
+    await openThread(page,"Release prep");
+    await shown("after a reload");
+    await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
+    await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:`${auditDir}claude-todo-stored-reloaded-light-1280x800.png`});
+    await page.setViewportSize({width:700,height:800});
+    await expect(titled(/^Editing files$/),"a narrow window shows the same steps").toHaveCount(1);
+    await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:`${auditDir}claude-todo-stored-reloaded-light-700x800.png`});
+  }finally{await harness.close()}
+});
+
 test("after Trebell restarts, Claude's next change to its task list keeps the tasks Claude Code already has",async({page})=>{
   test.setTimeout(90_000);
   await page.setViewportSize({width:1280,height:800});

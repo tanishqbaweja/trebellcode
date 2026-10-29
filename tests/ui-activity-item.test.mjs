@@ -203,6 +203,26 @@ test("a step past its turn takes what it says from a progress update, not each c
   assert.equal(mergeLiveRow(said,{...item("Running in the background.\nDev server stopped."),status:"done"},{phase:"completed"}).output,"Running in the background.\nDev server stopped.");
 });
 
+// Claude Code's TodoWrite as Trebell stored it before Claude's lists showed as the plan only: a file change that names no file, with the
+// list as its input. A thread recorded then shows no "Editing files" step for it when opened again, and one that failed reads as the
+// failed TodoWrite call a new one shows.
+test("a TodoWrite a Claude thread stored as a file change is no step when the thread is read again, unless it failed",()=>{
+  const todos=[{content:"Update the changelog",status:"pending",activeForm:"Updating the changelog"}];
+  const stored=(id,status,extra={})=>({type:"fileChange",id,status,changes:[],rawInput:{todos},rawOutput:"Todos have been modified successfully.",...extra});
+  for(const status of ["completed","inProgress",undefined])assert.equal(isCardItem(stored("todo",status)),false,String(status));
+  const failed=stored("todo-bad","failed",{rawOutput:"InputValidationError: The required parameter `todos[0].status` is missing"});
+  assert.equal(isCardItem(failed),true);
+  const row=activityRow(failed,{turnId:"t1"});
+  assert.deepEqual({kind:row.kind,title:row.title,status:row.status},{kind:"dynamicToolCall",title:"TodoWrite",status:"failed"});
+  assert.deepEqual(row.raw,{type:"dynamicToolCall",id:"todo-bad",namespace:"agent",tool:"TodoWrite",arguments:{todos},status:"failed",contentItems:null,success:false,durationMs:null,locations:[],rawOutput:failed.rawOutput},"as a failed TodoWrite reads now");
+  // Claude's edit stays an edit, and a file change that names no file and holds no list still shows as it did.
+  const edit={type:"fileChange",id:"edit",status:"completed",changes:[{path:"CHANGELOG.md",kind:"update"}],rawInput:{file_path:"CHANGELOG.md",old_string:"a",new_string:"b"}};
+  assert.equal(isCardItem(edit),true);assert.equal(activityRow(edit).title,"Editing files");
+  assert.equal(isCardItem({type:"fileChange",id:"x",status:"completed",changes:[],rawInput:{}}),true);
+  const cards=cardRowsFromItemEntries([stored("todo-1","completed"),edit,stored("todo-sub","inProgress"),failed].map(item=>({turnId:"t1",item})));
+  assert.deepEqual(cards.t1.map(entry=>[entry.title,entry.status]),[["Editing files","done"],["TodoWrite","failed"]]);
+});
+
 test("a harness's own retry is one running row per turn, not a failed step, and it settles once the turn goes on or ends",()=>{
   // Native waiting for the network, and Codex reconnecting its stream, as their `error` notifications with willRetry read.
   const native=codexErrorNotice({threadId:"th",turnId:"t1",willRetry:true,error:{message:"Waiting for the network (getaddrinfo ENOTFOUND api.openai.com). Trying again in 15 s."}});

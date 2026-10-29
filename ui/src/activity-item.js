@@ -10,12 +10,18 @@ export const RESTORED_TEXT_LIMIT=16_384;
 export const RESTORED_LIST_LIMIT=200;
 const RESTORED_DEPTH=8;
 
+// Claude Code's TodoWrite as the relay stored it before Claude's lists showed as the turn's plan only: a file change that names no file,
+// with the list as its input. A to-do list is no step of its turn, unless it failed, which reads as the failed TodoWrite call a new one
+// shows; a thread recorded then keeps those items.
+const storedTodoWrite=item=>item?.type==="fileChange"&&Array.isArray(item.rawInput?.todos)&&!item.changes?.length&&!item.rawInput.file_path&&!item.rawInput.notebook_path;
+
 export function isCardItem(item){
-  return Boolean(item&&typeof item==="object")&&!MESSAGE_ITEM_TYPES.has(item.type);
+  return Boolean(item&&typeof item==="object")&&!MESSAGE_ITEM_TYPES.has(item.type)&&!(storedTodoWrite(item)&&item.status!=="failed");
 }
 
 // turnId: the turn the item belongs to, so the rows of a turn stay its own (ids are only unique inside a turn).
 export function activityRow(item={},{turnId=null}={}){
+  if(storedTodoWrite(item))item={type:"dynamicToolCall",id:item.id,namespace:"agent",tool:"TodoWrite",arguments:item.rawInput,status:item.status,contentItems:null,success:item.status==="failed"?false:null,durationMs:null,locations:[],rawOutput:item.rawOutput};
   const type=item.type||"tool";
   let title=item.title||item.name||item.description||"Agent activity";
   if(type==="plan")title="Plan";
