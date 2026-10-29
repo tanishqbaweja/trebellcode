@@ -12,7 +12,7 @@
 // No imports and no work at load: the UI's first bundle reads the tool selection, the developer text and the effort default from
 // here, so everything else must tree-shake away (B11, tests/bundle-budgets.test.mjs).
 
-export const NATIVE_CONFIGURATION_VERSION="2026-10-29.1";
+export const NATIVE_CONFIGURATION_VERSION="2026-10-29.2";
 
 // The loop options every Native message runs with (runNativeAgentTurn in src/native-agent-loop.mjs). The semantic completion gate is
 // off, and with it every mid-task controller checkpoint (midTaskProgressEnabled) and the gate's recovery; one recovery epoch is kept
@@ -84,6 +84,20 @@ export function nativeSessionSettings({provider=null,model=null,catalogContextWi
 // No tier unless the person picks Speed > Fast (Standard: the cheaper of the two at the same model).
 export const NATIVE_SERVICE_TIER_DEFAULT=null;
 
+// The model a Native message runs when nobody picked one (no thread model, no project or app default): the provider's measured model
+// when its catalog lists it, so a person who never picks runs what the benchmarks measured; else the catalog's own default.
+export const NATIVE_DEFAULT_MODELS=/*#__PURE__*/Object.freeze({openai:"gpt-6-luna"});
+
+export function nativeDefaultModel(provider,models=[],catalogDefault=null){
+  const preferred=NATIVE_DEFAULT_MODELS[String(provider||"").trim().toLowerCase()]||null;
+  return preferred&&Array.isArray(models)&&models.map(String).includes(preferred)?preferred:(catalogDefault||null);
+}
+
+// A between-turn compaction's brief (NativeAgentSession.compact: the window's Compact and its automatic compaction): the provider's own
+// effort whatever the Thinking level, under a 4,096-token cap. OpenAI counts reasoning in that cap, so at Max a long thread's summary
+// could spend it all and come back empty. What a thread with no Thinking pick sent before 2026-10-29 (unmeasured).
+export const NATIVE_COMPACTION=/*#__PURE__*/Object.freeze({reasoningEffort:null,maxOutputTokens:4096});
+
 // The provider turn's transport options (src/native-provider-turn.mjs applies them, with the reasoning context).
 export function nativeProviderTurnOptions(provider){
   return {promptCaching:provider==="anthropic",streamResponses:provider==="openai"};
@@ -93,7 +107,12 @@ export function nativeProviderTurnOptions(provider){
 // longer selected: Native always has them.
 const BROWSER_TASK=/\b(browser|website|web\s?page|webpage|playwright|dom|frontend|front-end|css|html|responsive|screenshot|browser console|network (?:request|error)|page load|url)\b/i;
 const COMPUTER_TASK=/\b(computer use|desktop control|mouse|keyboard|screen coordinates?|primary display|desktop screenshot|windows desktop)\b/i;
-const SOURCE_CONTROL_TASK=/\b(git|github|gitlab|branch|commit|push|pull request|merge request|source control|rebase|cherry-pick|upstream|remote branch|pr)\b/i;
+// Source-control work the message asks for: a git command, source or version control, a pull or merge request to open, a commit, branch,
+// push, rebase or merge said as Git work, and the everyday asks (commit and push, commit this, amend or undo the last commit, which
+// branch am I on). A link (an issue on GitHub) is read without its address, and the words' other senses select nothing:
+// a commit an issue cites, a database transaction's commit, branch prediction, an nginx upstream, push notifications (review of
+// native-one-config, 2026-10-29: the word rule gave a benchmark task the namespace whenever its issue text linked GitHub).
+const SOURCE_CONTROL_TASK=/\bgit\s+(?:add|am|apply|bisect|blame|branch|checkout|cherry-pick|commit|diff|fetch|init|log|merge|pull|push|rebase|remote|reset|restore|revert|show|stash|status|switch|tag)\b|\b(?:source|version) control\b|\bcherry-pick|\b(?:open|create|make|submit|raise|draft|file|send|prepare|update|push|for)\s+(?:(?:a|an|the|this|that|my|your|our|new)\s+)*(?:pr|pull request|merge request)s?\b|\b(?:commit|stage)\s+(?:(?:a|an|the|this|that|these|those|all|my|your|our)\s+)*(?:changes?|fix(?:es)?|work|edits?|files?|patch|updates?)\b|\b(?:make|create|add|amend)\s+(?:(?:a|an|the|new)\s+)*commits?\b|\b(?:create|make|open|start|switch to|check ?out|cut|delete|rename)\s+(?:(?:a|an|the|this|that|my|your|new)\s+)?(?:[\w./-]+\s+)?branch(?:es)?\b|\b(?:on|to|from|off)\s+(?:(?:a|an|the)\s+)?(?:new|separate|feature|topic|release|remote|local)\s+branch\b|\bpush\s+(?:(?:a|an|the|this|that|these|those|all|my|your|our)\s+)*(?:changes?|commits?|branch(?:es)?|tags?|fix(?:es)?|work)\b|\bpush(?:ed)?\s+(?:it\s+|them\s+)?(?:to\s+)?(?:origin|upstream|the remote|github|gitlab|main|master)\b|\brebase\s+(?:onto|on top of|against|on main|on master|the branch|this branch|my branch)\b|\b(?:commit|stage|add)\s+(?:and|&)\s+(?:then\s+)?(?:commit|push)\b|(?:^|[.!?;:\n]\s*|\b(?:please|then|and|now|just|also|so)\s+)commit\s+(?:it|this|them|everything|all)\b(?!\s+(?:transactions?|tx|writes?|records?|offsets?|sessions?|batch(?:es)?)\b)|\b(?:undo|amend|squash|reword)\s+(?:(?:the|my|your|our|that|this|last|latest|previous|recent|two|three|\d+)\s+)*commits?\b|\bmerge\s+(?:origin\/|upstream\/)?(?:main|master|develop|trunk)\s+into\b|\bmerge\s+(?:the|this|that|my|your|a)\s+(?:(?:feature|topic|release|remote|local|current|other)\s+)?branch\b|\b(?:what|which)\s+branch\s+(?:am\s+i|are\s+we|is\s+(?:this|checked\s+out))\b|\bcurrent\s+git\s+branch\b/i;
 const DELEGATION_TASK=/\b(delegate|delegation|parallel(?:ize|ized|ism)?|multi[- ]agent|fan[- ]out|independent subtasks?|in parallel)\b/i;
 
 export function nativeSpecializedSelection(taskText,{browser=false,computer=false,sourceControl=false,delegation=false}={}){
@@ -101,7 +120,7 @@ export function nativeSpecializedSelection(taskText,{browser=false,computer=fals
   return {
     browser:Boolean(browser&&BROWSER_TASK.test(task)),
     computer:Boolean(computer&&COMPUTER_TASK.test(task)),
-    sourceControl:Boolean(sourceControl&&SOURCE_CONTROL_TASK.test(task)),
+    sourceControl:Boolean(sourceControl&&SOURCE_CONTROL_TASK.test(task.replace(/\S*:\/\/\S*/g," "))),
     delegation:Boolean(delegation&&DELEGATION_TASK.test(task)),
   };
 }
@@ -166,7 +185,7 @@ export const NATIVE_CONTAINER_ONLY=/*#__PURE__*/Object.freeze([
   {what:"MCP servers",app:"the servers the person configured (trebell_mcp exists only when there are some)",runner:"none",reason:"A person's own servers; none in a container."},
   {what:"Permission mode",app:"the person's pick (a new thread starts Supervised)",runner:"Full access",reason:"The runner stands for a person who picked Full access: the system prompt's profile line and approvals follow the mode."},
   {what:"Reply drafts",app:"on",runner:"off",reason:"They change no request: the stream observer only reads the response (the parity test shows identical wire bytes)."},
-  {what:"Model",app:"the person's pick",runner:"the model the benchmark names for every lane",reason:"A person's pick like the permission mode; the measured per-model rows apply to whichever model runs."},
+  {what:"Model pick",app:"the person's pick, else the shared default model (nativeDefaultModel: gpt-6-luna on OpenAI when the catalog lists it)",runner:"TREBELL_MODEL, else the shared default (gpt-6-luna)",reason:"A person's pick like the permission mode; with no pick both run the shared default. Only gpt-6-luna has measured rows (NATIVE_MEASURED_MODELS): another pick runs the app's unmeasured defaults (the catalog window, client read cooling, the provider's effort)."},
   {what:"Reasoning effort and service tier picks",app:"the person's Thinking and Speed picks, else the shared defaults",runner:"TREBELL_REASONING_EFFORT and TREBELL_SERVICE_TIER, else the shared defaults",reason:"A person's picks; a readout must run the shared defaults (the pipeline refuses others)."},
   {what:"Machine data",app:"this machine's workspace, environment, SSH/WSL profiles, tool-output folder, session id, stored knowledge and journal, key store",runner:"the container's",reason:"Data, not configuration: the shared command-environment allowlist filters the environment in both."},
   {what:"The person's controls and later messages",app:"Stop, steering, the queue, goals and their budgets, recipe allowlists, between-turn compaction, restarts, approvals, tool expansion on later messages",runner:"not reached",reason:"A benchmark is one message."},
@@ -206,7 +225,7 @@ const setValue=(env,name)=>{const value=String(env?.[name]??"").trim();return va
 
 // The benchmark runner's whole configuration from its environment: the shared values, the picks, and every switch that is set.
 export function nativeHarborRunConfiguration(env={}){
-  const provider="openai",model=setValue(env,"TREBELL_MODEL")||"gpt-6-luna",measured=nativeModelSettings({provider,model});
+  const provider="openai",model=setValue(env,"TREBELL_MODEL")||NATIVE_DEFAULT_MODELS[provider],measured=nativeModelSettings({provider,model});
   const effortPick=setValue(env,"TREBELL_REASONING_EFFORT")?.toLowerCase()||null;
   if(effortPick&&!EFFORTS.includes(effortPick))throw new Error("TREBELL_REASONING_EFFORT must be one of "+EFFORTS.join(", ")+".");
   const tierPick=setValue(env,"TREBELL_SERVICE_TIER")?.toLowerCase()||null;
@@ -263,6 +282,8 @@ export function nativeConfigurationSnapshot(){
     budgets:{...NATIVE_BUDGETS},
     reasoningContext:NATIVE_REASONING_CONTEXT,
     measuredModels:JSON.parse(JSON.stringify(NATIVE_MEASURED_MODELS)),
+    defaultModels:{...NATIVE_DEFAULT_MODELS},
+    compaction:{...NATIVE_COMPACTION},
     serviceTierDefault:NATIVE_SERVICE_TIER_DEFAULT,
     providerTurnOptions:{openai:nativeProviderTurnOptions("openai"),anthropic:nativeProviderTurnOptions("anthropic")},
     specializedTaskPatterns:{browser:BROWSER_TASK.source,computer:COMPUTER_TASK.source,sourceControl:SOURCE_CONTROL_TASK.source,delegation:DELEGATION_TASK.source},
@@ -274,17 +295,22 @@ export function nativeConfigurationSnapshot(){
   };
 }
 
-// The evidence behind each setting, measured or not (the owner's rule: measured-better first, else the app's default, marked).
+// The evidence behind each setting (the owner's rule: measured better on fresh tasks first, else the app's default, marked). basis says
+// which: "fresh tasks" (compared on fresh benchmark tasks: measured), "readouts" (what every readout ran, supported by their results but
+// never compared with the app's old value: kept on that and the owner's word, not measured better) or "app default" (unmeasured).
 export const NATIVE_SETTINGS_EVIDENCE=/*#__PURE__*/Object.freeze([
-  {setting:"Semantic completion gate, its recovery and the mid-task checkpoints",value:"off",measured:true,evidence:"3906e454 (2026-10-09): 8 fresh SWE-bench Verified pairs, gate off 6/8 at $0.252 vs gate on 5/8 at $0.366 (-31%); the gate overturned a correct sympy-20801 fix. Recovery: 0 of ~35 runs that entered it reached reward 1 (memory recovery-cost-findings)."},
-  {setting:"Per-message ceilings",value:"500 model turns / 5,000 tool calls / no wall cap",measured:true,evidence:"79c8b056: ceilings made non-binding so hard tasks are not scored under a smaller private budget than Codex (TB4 make-mips-interpreter lost at a 48-turn ceiling); every readout ran 500/5000."},
-  {setting:"OpenAI long context for gpt-6-luna",value:"272,000-token window, server compaction at 245,000 armed at half",measured:true,evidence:"ba0c8e69 (2026-10-01); retroactive read cooling broke response continuation (cache hit 3.9%); every readout since ran this policy. Other models: the catalog window and client read cooling (unmeasured)."},
-  {setting:"Background processes (trebell_process)",value:"always on",measured:true,evidence:"38c76f98 (2026-10-02); readout 6: kv-store-grpc and pypi-server resolved by Native through trebell_process where every Codex try failed."},
-  {setting:"Default reasoning effort for gpt-6-luna",value:"max",measured:true,evidence:"Adaptive reasoning evaluation (2026-10-13, 32 fresh SWE-bench tasks): lower effort lost resolved tasks (17 or 18 v 20). Other models: the provider default (unmeasured)."},
-  {setting:"Reasoning context",value:"current_turn",measured:true,evidence:"Memory native-tuning-guardrails: auto and all_turns were conflicting and sometimes much costlier."},
-  {setting:"Source control tools (trebell_source_control)",value:"when the message names git, commit, branch, PR and similar",measured:false,evidence:"The app's product default; never benchmarked. The integrity audit reviews its fetch, pull_ff and push calls."},
-  {setting:"Developer text",value:"trebellDeveloperInstructions",measured:false,evidence:"The app's product default. Native's 'web research' is its terminal's network access."},
-  {setting:"Default service tier",value:"none (Standard)",measured:false,evidence:"The app's product default; Fast changes serving speed, not the model, and bills 2x. Benchmarks run every lane at the same tier."},
-  {setting:"Repository knowledge",value:"the project's store (empty for a fresh project or a container)",measured:false,evidence:"The app's product default."},
-  {setting:"First message's continuity block",value:"no checkpoint not yet linked to a turn",measured:false,evidence:"A defect fix toward the measured runner shape: the block restated the window's own pre-turn checkpoint as an artifact created."},
+  {setting:"Semantic completion gate, its recovery and the mid-task checkpoints",value:"off",measured:true,basis:"fresh tasks",evidence:"3906e454 (2026-10-09): 8 fresh SWE-bench Verified pairs, gate off 6/8 at $0.252 vs gate on 5/8 at $0.366 (-31%); the gate overturned a correct sympy-20801 fix. Recovery: 0 of ~35 runs that entered it reached reward 1 (memory recovery-cost-findings)."},
+  {setting:"Per-message ceilings",value:"500 model turns / 5,000 tool calls / no wall cap",measured:false,basis:"readouts",evidence:"Every readout ran 500/5000 and the owner chose them for the app on 2026-10-29 (no other harness in the app caps a message); never compared with the app's 24/100 on fresh tasks. 79c8b056 made them non-binding after a consumed TB4 task (make-mips-interpreter) was lost at a 48-turn ceiling, a causal loss but not a fresh A/B. The turn-36 budget checkpoint they bring into the app is unvalidated."},
+  {setting:"OpenAI long context for gpt-6-luna",value:"272,000-token window, server compaction at 245,000 armed at half",measured:true,basis:"fresh tasks",evidence:"ba0c8e69 (2026-10-01); retroactive read cooling broke response continuation (cache hit 3.9%); every readout since ran this policy. Other models: the catalog window and client read cooling (unmeasured)."},
+  {setting:"Background processes (trebell_process)",value:"always on",measured:false,basis:"readouts",evidence:"38c76f98 (2026-10-02): every readout since had it; readout 6: kv-store-grpc and pypi-server resolved by Native through trebell_process where every Codex try failed. Never compared with the app's text-selected exposure. Seen on OpenAI gpt-6-luna only, a prompt-caching provider; on providers without prompt caching (local models, some OpenRouter or xAI rows) it is unmeasured, and its ~1.6 KB of tool JSON goes uncached in every request."},
+  {setting:"Default reasoning effort for gpt-6-luna",value:"max",measured:true,basis:"fresh tasks",evidence:"Adaptive reasoning evaluation (2026-10-13, 32 fresh SWE-bench tasks): lower effort lost resolved tasks (17 or 18 v 20). Other models: the provider default (unmeasured)."},
+  {setting:"Reasoning context",value:"current_turn",measured:true,basis:"fresh tasks",evidence:"Memory native-tuning-guardrails: auto and all_turns were conflicting and sometimes much costlier."},
+  {setting:"Default model",value:"gpt-6-luna on OpenAI when the catalog lists it, else the catalog's default",measured:false,basis:"readouts",evidence:"Every readout ran gpt-6-luna, the one model with measured rows; never compared with another model. The default since 2026-10-29 so a person who picks no model runs the measured configuration, where the catalog's newest flagship (gpt-6.1-sol) ran none of it."},
+  {setting:"Source control tools (trebell_source_control)",value:"when the message asks for Git work: a git command, a pull or merge request to open, a commit, branch, push, rebase or merge said as such, or an everyday ask (commit and push, amend the last commit, which branch am I on)",measured:false,basis:"app default",evidence:"The app's product default, never benchmarked, tightened 2026-10-29 so links and the words' other senses select nothing: the word rule selected all 300 SWE-bench Multilingual task texts (a GitHub link, a cited commit), the shared rule 23 (issue texts that offer or ask for a PR or quote a git command), 1 of 89 Terminal-Bench 2.0 and 4 of 200 Terminal-Bench Pro tasks (Git tasks). The integrity audit reviews its fetch, pull_ff and push calls."},
+  {setting:"Automatic between-turn compaction",value:"before a message once the last request's input reaches the person's threshold (on at 85% by default) of a known window",measured:false,basis:"app default",evidence:"The app's product default (Settings, src/trebell-state.mjs); never benchmarked, as a benchmark is one message. It reads the last request's input (NativeAgentSession's context reading), not the turn's summed input."},
+  {setting:"Between-turn compaction brief",value:"the provider's own effort, 4,096-token cap (NATIVE_COMPACTION)",measured:false,basis:"app default",evidence:"What a thread with no Thinking pick sent before 2026-10-29; never benchmarked. A Max level could spend the cap on reasoning and return no brief."},
+  {setting:"Developer text",value:"trebellDeveloperInstructions",measured:false,basis:"app default",evidence:"The app's product default. Native's 'web research' is its terminal's network access."},
+  {setting:"Default service tier",value:"none (Standard)",measured:false,basis:"app default",evidence:"The app's product default; Fast changes serving speed, not the model, and bills 2x. Benchmarks run every lane at the same tier."},
+  {setting:"Repository knowledge",value:"the project's store (empty for a fresh project or a container)",measured:false,basis:"app default",evidence:"The app's product default."},
+  {setting:"First message's continuity block",value:"no checkpoint not yet linked to a turn",measured:false,basis:"app default",evidence:"A defect fix toward the measured runner shape: the block restated the window's own pre-turn checkpoint as an artifact created."},
 ]);

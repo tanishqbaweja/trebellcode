@@ -65,7 +65,10 @@ test("Trebell Native relay executes repository tools and switches inference prov
     const threadId=started.thread.id;assert.equal(started.thread.runtime,"native");assert.equal(started.thread.providerMeta.modelProvider,"agentrouter");assert.equal(started.thread.providerSessionId.startsWith("native_"),true);
     const first=await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"Find SessionManager"}]});
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.turn.id);
-    const firstTelemetry=await rpc.waitFor(message=>message.method==="thread/tokenUsage/updated"&&message.params?.turnId===first.turn.id);assert.equal(firstTelemetry.params.tokenUsage.modelContextWindow,128000);assert.equal(firstTelemetry.params.tokenUsage.last.inputTokens,12);assert.equal(firstTelemetry.params.tokenUsage.last.reasoningOutputTokens,3);
+    const firstTelemetry=await rpc.waitFor(message=>message.method==="thread/tokenUsage/updated"&&message.params?.turnId===first.turn.id);assert.equal(firstTelemetry.params.tokenUsage.modelContextWindow,128000);
+    // The context reading is the turn's last request (its answer, 8 input and 2 reasoning tokens); the total is the turn's two requests.
+    assert.equal(firstTelemetry.params.tokenUsage.last.inputTokens,8);assert.equal(firstTelemetry.params.tokenUsage.last.reasoningOutputTokens,2);
+    assert.equal(firstTelemetry.params.tokenUsage.total.inputTokens,12);assert.equal(firstTelemetry.params.tokenUsage.total.reasoningOutputTokens,3);
     const firstUsage=state.threadUsage(threadId);assert.equal(firstUsage.totalTokens,16);assert.equal(firstUsage.inputTokens,12);assert.equal(firstUsage.outputTokens,4);assert.equal(firstUsage.reasoningOutputTokens,3);
     const firstUsageRecord=state.usage({days:1,limit:20}).records.find(record=>record.turnId===first.turn.id);assert.equal(firstUsageRecord.provider,"agentrouter");
     const afterFirst=(await rpc.request("thread/read",{threadId})).thread;assert.equal(afterFirst.id,threadId);assert.equal(afterFirst.turns.length,1);

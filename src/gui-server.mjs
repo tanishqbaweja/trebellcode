@@ -35,6 +35,7 @@ import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { importClaudeHistory, publicHistoryCandidate, scanLocalAgentHistory } from "./agent-history-import.mjs";
 import { agentPermissionModeFromStart, attachAgentRelay } from "./agent-relay.mjs";
 import { nativeProviderTurn as sharedNativeProviderTurn } from "./native-provider-turn.mjs";
+import { nativeDefaultModel } from "./native-configuration.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexAppServerToken, codexUpstreamToken } from "./codex-app-server-auth.mjs";
 import { extendConnectAttemptTimeout } from "./connect-attempt-timeout.mjs";
@@ -1808,7 +1809,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     }
     if(mock) return finish({models:fakeModels(provider),defaultModel:fakeDefaultModel(provider),metadata:{provider:provider,models:fakeModels(provider).map(id=>({id,provider:provider}))}});
     const result=nativeProviderCatalog||await providers.models(provider);
-    return finish({models:result.models||[],defaultModel:result.defaultModel||null,metadata:{provider:provider,source:result.source,models:result.metadata||[]},error:result.error||null});
+    // Native's default is the provider's measured model when the catalog lists it (native-configuration.mjs), so a person who picks
+    // no model runs the configuration the benchmarks measured; else the catalog's own.
+    return finish({models:result.models||[],defaultModel:nativeDefaultModel(provider,result.models||[],result.defaultModel||null),metadata:{provider:provider,source:result.source,models:result.metadata||[]},error:result.error||null});
   }
   async function selectedModelsPayload(){
     const catalog=await selectedModels(),runtime=catalog.scope.agentRuntime;
