@@ -2,12 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { configuredReasoningEffort, defaultReasoningEffort, modelReasoningEffortKey, normalizeReasoningEffort, normalizeRuntimeReasoningEffort, supportedReasoningEfforts } from "../src/model-reasoning-effort.mjs";
 
-test("reasoning effort helpers preserve provider defaults unless the user explicitly overrides them",()=>{
-  assert.equal(defaultReasoningEffort("native","openai","gpt-6-luna"),null);
+// Native's default is the effort a model was measured with (src/native-configuration.mjs: Max for gpt-6-luna, which the benchmarks
+// run); a model without a measured row keeps the provider's default, and a saved Thinking level always wins.
+test("reasoning effort helpers give the measured default and keep the provider default for unmeasured models unless the user overrides them",()=>{
+  assert.equal(defaultReasoningEffort("native","openai","gpt-6-luna"),"max");
   assert.equal(defaultReasoningEffort("native","openai","gpt-6-sol"),null);
+  assert.equal(defaultReasoningEffort("native","openai","gpt-5"),null);
+  assert.equal(defaultReasoningEffort("codex","openai","gpt-6-luna"),null,"only Native's default comes from its configuration");
   const key=modelReasoningEffortKey("native","openai","gpt-6-luna");
   assert.equal(configuredReasoningEffort({modelReasoningEfforts:{[key]:"high"}},"native","openai","gpt-6-luna"),"high");
-  assert.equal(configuredReasoningEffort({},"native","openai","gpt-6-luna"),null);
+  assert.equal(configuredReasoningEffort({},"native","openai","gpt-6-luna"),"max");
+  assert.equal(configuredReasoningEffort({},"native","openai","gpt-6-sol"),null);
   assert.equal(normalizeReasoningEffort(" MAX "),"max");
   assert.equal(normalizeReasoningEffort("turbo"),null);
 });

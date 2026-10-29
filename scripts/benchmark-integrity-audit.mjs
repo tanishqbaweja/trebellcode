@@ -648,7 +648,10 @@ export function auditNativeEventsText(text,{file=null,context=null,toolCalls=nul
     const data=row?.data||{};
     if(row?.name==="native.tool.requested"){
       const tool=`${data.namespace}.${data.name}`,audit=data.terminalAudit&&typeof data.terminalAudit==="object"?data.terminalAudit:null,callId=data.callId||null,call=callRow(data);
-      if(!/^trebell_(?:repo|workspace|output|terminal|process)\./.test(tool))findings.push({kind:"unknown-tool",tool,file,line,callId,snippet:JSON.stringify(data).slice(0,SNIPPET_CHARS)});
+      if(!/^trebell_(?:repo|workspace|output|terminal|process|source_control)\./.test(tool))findings.push({kind:"unknown-tool",tool,file,line,callId,snippet:JSON.stringify(data).slice(0,SNIPPET_CHARS)});
+      // Native's source-control tools (the app's rule, shared with the runner since 2026-10-29) run git locally; fetch, pull_ff and
+      // push reach a remote, which can hold the task's upstream fix, so a reviewer looks at each.
+      if(/^trebell_source_control\.(?:fetch|pull_ff|push)$/.test(tool))findings.push({kind:"source-control-network",tool,file,line,callId,snippet:JSON.stringify(data.arguments??data).slice(0,SNIPPET_CHARS)});
       if(NATIVE_BACKGROUND_START_TOOL.test(tool)&&!audit){const unlogged={kind:"unlogged-command",tool,file,line,callId,snippet:"process command is not recorded in the event log"};findings.push(unlogged);pendingStarts.push(unlogged);continue}
       const gate=audit?.gateCommand!=null?String(audit.gateCommand):null,redacted=audit?.redactedCommand!=null?String(audit.redactedCommand):null,command=gate??redacted??"";
       if(gate==null&&redacted==null){if(NATIVE_COMMAND_TOOL.test(tool))findings.push({kind:"unaudited-command",tool,file,line,callId,snippet:"command is not recorded in the event log"});continue}
@@ -681,10 +684,12 @@ export function auditNativeEventsText(text,{file=null,context=null,toolCalls=nul
 }
 
 function integrityStatus(summary){
-  if(summary.hostedWebCalls>0||summary.upstreamLeaks>0)return "invalid";
+  // A lane that ran a benchmark switch (metrics.experimentSwitches) or another effort or tier than the shared configuration's did not
+  // run the Native the app ships: it is never readout evidence (src/native-configuration.mjs).
+  if(summary.hostedWebCalls>0||summary.upstreamLeaks>0||summary.experimentSwitches?.length)return "invalid";
   const unrecorded=(summary.unauditedCommands||0)+(summary.unloggedCommands||0);
   if(unrecorded>0&&!(summary.auditedCommands>0))return "unaudited";
-  return summary.networkCommands||summary.writtenNetworkCode||summary.gitHistoryCommands||summary.verifierPathReads||summary.projectCopyReads||summary.userInputRequests||summary.hostedWebAttempts||summary.unknownTools?.length||unrecorded||summary.truncatedCommands||summary.partialCommands?"review":"clean";
+  return summary.networkCommands||summary.sourceControlNetworkCalls||summary.writtenNetworkCode||summary.gitHistoryCommands||summary.verifierPathReads||summary.projectCopyReads||summary.userInputRequests||summary.hostedWebAttempts||summary.unknownTools?.length||unrecorded||summary.truncatedCommands||summary.partialCommands?"review":"clean";
 }
 
 export function summarizeIntegrityFindings(findings=[],stats=null){
@@ -704,6 +709,8 @@ export function summarizeIntegrityFindings(findings=[],stats=null){
     projectCopyReads:commands.filter(finding=>finding.kinds.includes("project-copy")).length,
     userInputRequests:list.filter(finding=>finding.kind==="user-input").length,
     unknownTools:[...new Set(list.filter(finding=>finding.kind==="unknown-tool").map(finding=>finding.tool))],
+    sourceControlNetworkCalls:count("source-control-network"),
+    experimentSwitches:[...new Set(list.filter(finding=>finding.kind==="experiment-switch").map(finding=>finding.tool))],
     unloggedCommands:count("unlogged-command"),
     unauditedCommands:count("unaudited-command"),
     truncatedCommands:count("truncated-command"),
@@ -747,6 +754,8 @@ function findingSeverity(finding){
     if(finding.hosts?.length||finding.outputHosts?.length)return finding.networkFailureSeen?45:60;
     return 40;
   }
+  if(finding.kind==="experiment-switch")return 98;
+  if(finding.kind==="source-control-network")return 65;
   if(finding.kind==="user-input")return 55;
   if(finding.kind==="unknown-tool")return 52;
   if(finding.kind==="truncated-command"||finding.kind==="partial-command")return 20;
@@ -811,6 +820,13 @@ export async function auditTrialDirectory(trialDir){
     const callsName=name.replace(/trebell-native-events\.jsonl$/,"trebell-native-tool-calls.jsonl"),callsText=nativeToolCallLogs.has(callsName)?await readText(nativeToolCallLogs.get(callsName)):null;
     consume(auditNativeEventsText(text,{file:name,context,toolCalls:callsText!=null?nativeToolCallsByNumber(callsText):null}),name);
     if(callsText!=null)logFiles.push(callsName);
+  }
+  // The run's metrics name every benchmark switch it carried and whether its effort or tier differ from the shared configuration's.
+  if(nativeMetrics){
+    let metrics=null;try{metrics=JSON.parse((await readText(nativeMetrics))||"null")}catch{}
+    const file=String(nativeMetrics).split("\\").join("/"),switches=metrics?.experimentSwitches&&typeof metrics.experimentSwitches==="object"?metrics.experimentSwitches:{};
+    for(const [name,value] of Object.entries(switches))findings.push({kind:"experiment-switch",tool:name,file,line:null,snippet:`${name}=${String(value).slice(0,200)} was set: not the shared Native configuration`});
+    if(metrics?.picksDifferFromShared===true)findings.push({kind:"experiment-switch",tool:"effort-or-tier",file,line:null,snippet:`reasoning effort ${metrics.reasoningEffort} and service tier ${metrics.serviceTier}: not the shared configuration's`});
   }
   if(!nativeEvents.length&&(nativeLog||nativeMetrics)){
     const toolCalls=await nativeToolCallsWithoutEvents(nativeLog,nativeMetrics);

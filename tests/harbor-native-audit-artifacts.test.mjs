@@ -92,7 +92,7 @@ test("Native final diff records why it is unavailable outside a Git workspace",a
 });
 
 test("Harbor Native runner saves tool calls and the final diff as audit artifacts outside probe runs",async()=>{
-  const source=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
+  const source=await readFile(new URL("../benchmarks/harbor/native-harbor-run.mjs",import.meta.url),"utf8");
   assert.ok(source.includes("executeTool:toolCallLog.wrap(executor)"));
   assert.ok(source.includes('"/logs/agent/trebell-native-tool-calls.jsonl"'));
   assert.ok(source.includes('"/logs/agent/trebell-native-final.diff"'));

@@ -44,16 +44,27 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/dockerImagePrewarm/);
   assert.match(source,/--sequential/);
   assert.match(source,/cannot be both --parallel and --sequential/);
-  assert.match(nativeRunnerSource,/const semanticCompletionGate=String\(process\.env\.TREBELL_HARBOR_SEMANTIC_GATE\|\|""\)\.trim\(\)==="1";/);
-  assert.match(nativeRunnerSource,/^  semanticCompletionGate,$/m);
+  // The runner runs the app's Native (src/native-configuration.mjs): the gate is a registered switch, off unless set.
+  const nativeRunSource=await readFile(new URL("../benchmarks/harbor/native-harbor-run.mjs",import.meta.url),"utf8");
+  const {nativeHarborRunConfiguration,nativeReadoutRefusal}=await import("../src/native-configuration.mjs");
+  assert.match(nativeRunnerSource,/createHarborNativeRun\(\{root:process\.cwd\(\),instruction,env:process\.env\}\)/);
+  assert.match(nativeRunSource,/semanticCompletionGate:config\.semanticCompletionGate,/);
+  assert.equal(nativeHarborRunConfiguration({}).semanticCompletionGate,false);assert.equal(nativeHarborRunConfiguration({TREBELL_HARBOR_SEMANTIC_GATE:"1"}).semanticCompletionGate,true);
   assert.match(nativeAdapterSource,/TREBELL_HARBOR_SEMANTIC_GATE/);
-  assert.match(source,/NATIVE_CONTEXT_WINDOW/);
-  assert.match(source,/272_000/);
-  assert.match(source,/NATIVE_COMPACT_THRESHOLD/);
-  assert.match(source,/245_000/);
+  // The pair report records the shared window and threshold, which the launcher no longer sets for the runner; a readout refuses a
+  // Native lane with any switch set or another effort or tier than the shared ones.
+  assert.match(source,/const NATIVE_CONTEXT_WINDOW=NATIVE_RUN\.contextWindow;/);
+  assert.match(source,/const NATIVE_COMPACT_THRESHOLD=NATIVE_RUN\.compactionThreshold;/);
   assert.match(source,/nativeContextPolicy:/);
-  assert.match(source,/TREBELL_HARBOR_CONTEXT_WINDOW:String\(NATIVE_CONTEXT_WINDOW\)/);
-  assert.match(source,/TREBELL_HARBOR_COMPACT_THRESHOLD:String\(NATIVE_COMPACT_THRESHOLD\)/);
+  assert.doesNotMatch(source,/TREBELL_HARBOR_CONTEXT_WINDOW:String\(/);
+  assert.doesNotMatch(source,/TREBELL_HARBOR_COMPACT_THRESHOLD:String\(/);
+  assert.match(source,/if\(NATIVE_READOUT_REFUSAL&&!NATIVE_EXPERIMENT&&\(!only\.size\|\|only\.has\("native"\)\)\)throw new Error\("Refusing a Native benchmark readout: "/);
+  assert.match(source,/nativeExperiment:NATIVE_EXPERIMENT,nativeExperimentSwitches:NATIVE_RUN\.experimentSwitches,nativeReadoutRefusal:NATIVE_READOUT_REFUSAL,/);
+  assert.equal(nativeReadoutRefusal({TREBELL_MODEL:"gpt-6-luna",TREBELL_REASONING_EFFORT:"max",TREBELL_SERVICE_TIER:"default"}),null);
+  assert.match(nativeReadoutRefusal({TREBELL_REASONING_EFFORT:"max",TREBELL_SERVICE_TIER:"fast"}),/tier fast/);
+  assert.match(nativeReadoutRefusal({TREBELL_HARBOR_SEMANTIC_GATE:"1"}),/TREBELL_HARBOR_SEMANTIC_GATE/);
+  assert.match(nativeReadoutRefusal({TREBELL_HARBOR_CONTEXT_WINDOW:"272000"}),/TREBELL_HARBOR_CONTEXT_WINDOW/);
+  assert.match(source,/TREBELL_TERMINAL_BENCH_SERVICE_TIER\|\|NATIVE_SERVICE_TIER_DEFAULT\|\|"default"/);
   assert.match(source,/--agent-timeout-multiplier/);
   assert.match(source,/agentExecutionMs:elapsedMs\(trial\?\.agent_execution\)/);
   assert.match(source,/taskChecksum:trial\?\.task_checksum/);
@@ -80,7 +91,6 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/Terminal-Bench Codex auth mode must be api, oauth, or both/);
   assert.match(source,/CODEX_AUTH_MODE==="both"\?\["api","oauth"\]/);
   assert.match(source,/codexAuthMode:CODEX_AUTH_MODE/);
-  assert.match(source,/TREBELL_TERMINAL_BENCH_SERVICE_TIER\|\|"fast"/);
   assert.match(source,/Terminal-Bench service tier must be default or fast/);
   assert.match(source,/sameServiceTier:true/);
   assert.match(source,/sameHostedWebSearchPolicy:true/);
@@ -89,8 +99,9 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/service_tier=fast/);
   assert.match(source,/web_search=disabled/);
   assert.match(source,/Fast comparison requires the pinned Codex adapter/);
-  assert.match(nativeRunnerSource,/TREBELL_SERVICE_TIER\|\|"fast"/);
-  assert.match(nativeRunnerSource,/serviceTier:serviceTier==="default"\?null:serviceTier/);
+  // The runner's tier is the shared default (none, so Standard) unless the lane names one.
+  assert.equal(nativeHarborRunConfiguration({}).serviceTier,"default");assert.equal(nativeHarborRunConfiguration({TREBELL_SERVICE_TIER:"fast"}).serviceTier,"fast");
+  assert.match(nativeRunSource,/serviceTier:config\.serviceTier==="default"\?null:config\.serviceTier/);
   assert.match(nativeAdapterSource,/service_tier: Literal\["default", "fast"\]/);
   assert.match(nativeAdapterSource,/"TREBELL_SERVICE_TIER": self\.options\.service_tier/);
   assert.match(pinnedCodexAdapterSource,/class PinnedCodexOptions\(CodexOptions\)/);
@@ -957,7 +968,7 @@ test("Terminal-Bench single runner uses pinned Node staging, an absolute output 
   assert.match(source,/TREBELL_NODE_PINNED_TARBALL:nativePinnedNodeTarballPath/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER\|\|3/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER\|\|1/);
-  assert.match(source,/TREBELL_TERMINAL_BENCH_SERVICE_TIER\|\|"fast"/);
+  assert.match(source,/TREBELL_TERMINAL_BENCH_SERVICE_TIER\|\|NATIVE_SERVICE_TIER_DEFAULT\|\|"default"/);
   assert.match(source,/serviceTier==="fast"\?\["--ak","service_tier=fast"\]/);
   assert.match(source,/Terminal-Bench service tier must be default or fast/);
   assert.match(source,/const output=resolve\(root,/);

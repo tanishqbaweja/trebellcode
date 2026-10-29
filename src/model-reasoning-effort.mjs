@@ -1,3 +1,5 @@
+import { nativeModelSettings } from "./native-configuration.mjs";
+
 export const REASONING_EFFORTS=Object.freeze(["none","minimal","low","medium","high","xhigh","max"]);
 const ALLOWED=new Set(REASONING_EFFORTS);
 
@@ -60,8 +62,10 @@ export function supportedReasoningEfforts(runtime,provider,model,metadata={}){
   return runtime==="codex"?advertised:[];
 }
 
+// Native's effort when the person picked none: the level a model was measured with (native-configuration.mjs: max for gpt-6-luna),
+// else none, so the provider's own default applies.
 export function defaultReasoningEffort(runtime,provider,model){
-  return null;
+  return runtime==="native"?nativeModelSettings({provider,model}).reasoningEffort:null;
 }
 
 // metadata is the model's catalog row, which may list its own levels. Native sends a saved level to the provider as is, and
