@@ -61,9 +61,11 @@ const SIGN_IN_READ_BY_PROBE=new Set(["claude","cursor","grok","opencode"]);
 const keptProbeAnswer=value=>Boolean(value?.available)&&!(value.authenticated==null&&SIGN_IN_READ_BY_PROBE.has(value.kind));
 // A harness failure's message, with the advice of a probe answer that the harness cannot run or is not signed in after it ('Run
 // `claude auth login` and try again.'): the harness's own words stay. A ready answer, or advice the message already has, adds none.
+// An answer with a reason of its own advises that, not its message for Settings (Muse Code's failed model list, which names Settings'
+// Refresh), so a host that failed as its check did says it once.
 export function withProbeAdvice(message,status){
   // So does one whose version check did not answer (versionCheckFailed): its words are all a failed chat has of why.
-  const said=String(message||"").trim(),advice=status&&(status.available===false||status.authenticated===false||status.versionCheckFailed)?String(status.message||"").trim():"";
+  const said=String(message||"").trim(),advice=status&&(status.available===false||status.authenticated===false||status.versionCheckFailed)?String(status.reason||status.message||"").trim():"";
   if(!advice||said.includes(advice))return message;
   return said?`${/[.!?…]$/.test(said)?said:said+"."} ${advice}`:advice;
 }
@@ -984,10 +986,12 @@ export class AgentRuntimeManager{
   // is a Claude Code profile with a custom API endpoint, whose sign-in only a session can check (`claude auth status` has nothing new
   // to say). And a caller that joined another answer that cannot run asks again (or joins a probe started after it asked): a thread
   // start refuses on it, and the person may just have signed in outside Trebell, or its check timed out under load. fresh starts a
-  // new one, which the next callers share. Each caller gets its own copy.
-  async probe(instanceOrKind,{environmentId=undefined,fresh=false,refresh=false,keepCatalog=false}={}){
+  // new one, which the next callers share. Each caller gets its own copy. starting: a session's start (agent-relay), which reads again
+  // a Muse Code model list whose read failed, kept a minute for the polls (#museCatalog): the person may have mended Muse Code since.
+  async probe(instanceOrKind,{environmentId=undefined,fresh=false,refresh=false,keepCatalog=false,starting=false}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     if(instance.kind==="native")return this.#probeNow(instance,{environmentId});
+    if(starting&&instance.kind==="muse")this.#museCatalogDue(instance,{failed:true});
     const key=this.#probeKey(instance,environmentId),owner=this.#probeOwner(instance,environmentId),cached=this.#probes.get(key);
     if(!fresh&&cached?.pending){
       const value=await cached.pending;if(value?.available||versionCheckOnly(value))return structuredClone(value);
@@ -1188,8 +1192,10 @@ export class AgentRuntimeManager{
     }
     const version=parseMuseVersion(said),compatibility=runtimeCompatibility("muse",version),known={installed:true,version,...(compatibility?{compatibility}:{})};
     let catalog;
+    // Settings says what failed and to press its Refresh. A refused session start and a failure's advice (withProbeAdvice) say Muse's
+    // own words (reason): the conversation has no Refresh, and its next message checks again (probe's starting).
     try{catalog=await this.#museCatalog(instance,version)}
-    catch(error){const reason=String(error?.message||error).trim().slice(0,400);return answer({...known,available:false,message:`Muse Code could not list its models: ${/[.!?…]$/.test(reason)?reason:reason+"."} Press Refresh to check it again.`})}
+    catch(error){const reason=String(error?.message||error).trim().slice(0,400);return answer({...known,available:false,reason,message:`Muse Code could not list its models: ${/[.!?…]$/.test(reason)?reason:reason+"."} Press Refresh to check it again.`})}
     if(!catalog.models.length)return answer({...known,available:false,message:"Muse Code listed no models. Sign in with muse login, then press Refresh."});
     return answer({...known,available:true,message:"Muse Code checks its sign-in when a turn runs. Sign in with muse login if a turn says it is signed out."});
   }
@@ -1198,7 +1204,8 @@ export class AgentRuntimeManager{
   // approved names): each read starts the 400 MB muse binary, so every status check reuses the last list, an empty one too (Settings'
   // polls, thread starts, model lists, and the listings that answer a harness switch, a profile saved or removed and an install),
   // and a failed read for PROBE_REUSE_MS, after which the next check reads again. Settings' own listing (its open and Refresh), a
-  // failed turn's recheck and picking a Muse Code whose list has no models read it again (#museCatalogDue). Reads at once share one.
+  // failed turn's recheck and picking a Muse Code whose list has no models read it again, and a session's start a failed one
+  // (#museCatalogDue). Reads at once share one.
   async #museCatalog(instance,version){
     const command=this.executable(instance),key=JSON.stringify([command,binarySignature(this.#binaryPaths(instance)),version||null,normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys),instance.environment||{}]);
     const cached=this.#museCatalogs.get(instance.id),current=cached?.key===key&&!cached.due?cached:null;
@@ -1216,10 +1223,10 @@ export class AgentRuntimeManager{
       throw error;
     }
   }
-  // Has the next status check of a Muse Code profile (or of each) read its list again; keepListed keeps a list with models. A read
-  // on its way is new enough.
-  #museCatalogDue(instance=null,{keepListed=false}={}){
-    for(const [id,entry] of this.#museCatalogs)if((!instance||id===instance.id)&&!entry.pending&&!(keepListed&&!entry.error&&entry.value?.models?.length))this.#museCatalogs.set(id,{...entry,due:true});
+  // Has the next status check of a Muse Code profile (or of each) read its list again; keepListed keeps a list with models, and
+  // failed keeps every list but one whose read failed. A read on its way is new enough.
+  #museCatalogDue(instance=null,{keepListed=false,failed=false}={}){
+    for(const [id,entry] of this.#museCatalogs)if((!instance||id===instance.id)&&!entry.pending&&!(keepListed&&!entry.error&&entry.value?.models?.length)&&!(failed&&!entry.error))this.#museCatalogs.set(id,{...entry,due:true});
   }
   // The list a Muse Code session resolves the thread's model and Thinking level against: the last one read for the profile, or null.
   museModelCatalog(instance){return this.#museCatalogs.get(instance?.id)?.value||null}

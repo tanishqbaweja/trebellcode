@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,8 @@ import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 // Muse Code's turn failures, usage limits and host recovery (T3 93ea95cf4, 4bf8b476f, 300a35670, d6f47ff97): a turn the subscription
 // quota stopped says the usage limit was reached and when it resets, a retry Muse schedules is the turn's retry row, a delivery gap or
 // a host that exits ends the turn once and takes its cards with it, a host that died between turns says so as no turn's and comes
-// back on the next message, and a notice Trebell cannot read is skipped with a log line.
+// back on the next message, a message whose host fails is refused once in Muse's own words, and a notice Trebell cannot read is
+// skipped with a log line.
 
 // T3's usageLimits.test.ts: Muse's usage report, observed at nowMs, and the refusal Meta relayed through Muse.
 const USAGE={observedAtMs:1791447762610,tier:"tier-1",window:{usedPercent:0,windowDurationMins:300,resetsAtMs:1791465557000},weekly:{usedPercent:5,resetsAtMs:1791763200000}};
@@ -220,6 +221,35 @@ test("a Muse Code host that died between turns is relaunched on the next message
     assert.notEqual(relay.threadStore.get(thread.id).providerSessionId,sessionId);
     assert.match(JSON.stringify(turns.at(-1).params.input),/Are you back\?/,"the earlier messages went with the fresh session's first turn");
     assert.equal(relay.threadStore.get(thread.id).providerMeta.historyHandoff?.status,"delivered");
+  }finally{await relay.close()}
+});
+
+test("through the relay, a message whose Muse Code host fails is refused in Muse's own words once, and once Muse Code works again the next message goes, within the minute the polls keep the failed check",{timeout:120_000},async()=>{
+  const relay=await museRelay("trebell-muse-host-fails-");
+  try{
+    // While this file is there, the stand-in's host exits as Muse does with a malformed settings file.
+    const failing=join(relay.root,"serve-fails");relay.state.settings().agentRuntimeInstances[0].environment.MUSE_FAKE_SERVE_FAIL=failing;
+    assert.equal((await relay.manager.probe("muse",{fresh:true})).available,true,"Muse Code listed its models while it worked");
+    await writeFile(failing,"3");
+    const said="Muse Code could not load its settings; check ~/.config/muse/settings.json (exit code 3): load settings for serve composition: malformed settings file at ~/.config/muse/settings.json";
+    const refused=async()=>{try{await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"})}catch(error){return error.message}assert.fail("the thread started")};
+    const serves=async()=>(await readFile(relay.log,"utf8")).split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line)).filter(entry=>entry.start?.[0]==="serve").length;
+    // The session's host fails, and so does the model list the check after it reads: said once.
+    assert.equal(await refused(),said);
+    // Sent again while Muse Code still fails: the start reads its list again, and says the same once.
+    const asked=await serves();
+    assert.equal(await refused(),said);
+    assert.equal(await serves(),asked+1,"the start read Muse Code's list again");
+    // Settings' poll keeps the failure for its minute, in its own words with its Refresh, and starts no host.
+    assert.equal((await relay.manager.probe("muse")).message,`Muse Code could not list its models: ${said}. Press Refresh to check it again.`);
+    assert.equal(await serves(),asked+1);
+    // Muse Code works again (its settings mended outside Trebell): the next message goes at once.
+    await rm(failing);
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Hello again"}]});
+    await relay.completed(thread.id,1);
+    assert.equal(relay.threadStore.get(thread.id).turns.at(-1).status,"completed");
+    assert.match(relay.reply(thread.id),/Muse fixture reply/);
   }finally{await relay.close()}
 });
 

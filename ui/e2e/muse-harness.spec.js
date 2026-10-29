@@ -14,9 +14,9 @@ import { keepThreadMeta } from "./test-home.js";
 
 // Muse Code as a person meets it in Trebell: Settings' Agents & models lists it with its version and signs in with Muse's own
 // `muse login` in a terminal, and the composer lists Muse's models with the Thinking levels each offers, runs a turn on the model and
-// level picked, and names Muse Code in the sidebar. A host that exits between turns says so after the last reply. Behind the page
-// run the real agent relay and runtime manager, on a stand-in Muse Code (tests/fixtures/muse/fake-muse.cjs) laid out as Meta's
-// installer lays Muse out; the app's own endpoints answer from them.
+// level picked, and names Muse Code in the sidebar. A host that fails refuses a message once in Muse's own words, and one that exits
+// between turns says so after the last reply. Behind the page run the real agent relay and runtime manager, on a stand-in Muse
+// Code (tests/fixtures/muse/fake-muse.cjs) laid out as Meta's installer lays Muse out; the app's own endpoints answer from them.
 const auditDir=fileURLToPath(new URL("../../visual-audit/muse-harness/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const FAKE_MUSE=fileURLToPath(new URL("../../tests/fixtures/muse/fake-muse.cjs",import.meta.url));
 const MODEL_LIST=fileURLToPath(new URL("../../tests/fixtures/muse/model-list-1.4.13.json",import.meta.url));
@@ -48,16 +48,17 @@ function offlineGlobalFetch(){
   return {external,restore(){globalThis.fetch=ownFetch;if(external.length)throw new Error("Requests left this machine: "+external.join(", "))}};
 }
 
-// serveFails: while the file it names is there, the stand-in's host exits as Muse does with a malformed settings file.
+// failing: while the file it names is there (from the start with serveFails), the stand-in's host exits as Muse does with a
+// malformed settings file.
 async function startMuseHarness({serveFails=false}={}){
   const offline=offlineGlobalFetch();
   const root=await mkdtemp(join(tmpdir(),"trebell-muse-e2e-")),repo=join(root,"muse-repo"),log=join(root,"muse.log");await mkdir(repo,{recursive:true});
-  const failing=serveFails?join(root,"serve-fails"):null;if(failing)await writeFile(failing,"3");
+  const failing=join(root,"serve-fails");if(serveFails)await writeFile(failing,"3");
   const folder=windows?join(root,"AppData","Local","Programs","muse"):join(root,"home",".local","bin");await mkdir(folder,{recursive:true});
   const launcher=join(folder,windows?"muse.cmd":"muse");
   await writeFile(launcher,windows?`@echo off\r\nsetlocal\r\n"${process.execPath}" "${FAKE_MUSE}" %*\r\nexit /b %ERRORLEVEL%\r\n`:`#!/bin/sh\nexec "${process.execPath}" "${FAKE_MUSE}" "$@"\n`);
   if(!windows)await chmod(launcher,0o755);
-  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,...(failing?{MUSE_FAKE_SERVE_FAIL:failing}:{})}}]},meta=new Map();
+  const settings={agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",activeEnvironmentId:null,agentRuntimeInstances:[{id:"muse-default",kind:"muse",displayName:"Muse Code",enabled:true,binaryPath:null,environment:{MUSE_FAKE_LOG:log,MUSE_FAKE_MODELS:MODEL_LIST,MUSE_FAKE_SERVE_FAIL:failing}}]},meta=new Map();
   const state={settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next}};
   const env={...process.env,TREBELL_HOME:join(root,"trebell"),CODEX_HOME:join(root,"codex"),CLAUDE_CONFIG_DIR:join(root,"claude"),MUSE_INSTALL_DIR:"",...(windows?{LOCALAPPDATA:join(root,"AppData","Local")}:{HOME:join(root,"home")})};
   // Meta's channel manifest is not read from here: the update reading of Settings' listings finds it unavailable.
@@ -66,9 +67,12 @@ async function startMuseHarness({serveFails=false}={}){
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
   const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,version:"muse-e2e-fixture"});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
-  const frames=async method=>(await readFile(log,"utf8").catch(()=>"")).split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line)).filter(entry=>entry.frame?.method===method).map(entry=>entry.frame);
+  const entries=async()=>(await readFile(log,"utf8").catch(()=>"")).split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line));
+  const frames=async method=>(await entries()).filter(entry=>entry.frame?.method===method).map(entry=>entry.frame);
+  // Every `muse serve` started: a session's host, and the read-only one that lists the models.
+  const serves=async()=>(await entries()).filter(entry=>entry.start?.[0]==="serve");
   return {
-    root,repo,launcher,failing,runtimeManager,threadStore,frames,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,
+    root,repo,launcher,failing,runtimeManager,threadStore,frames,serves,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,
     async close(){try{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})}finally{offline.restore()}},
   };
 }
@@ -119,6 +123,8 @@ async function switchMode(page,mode){
   await page.getByTestId("appearance-toggle").first().click();await expect(html).toHaveAttribute("data-mode",mode);
 }
 async function type(page,text){await page.getByTestId("composer").click();await page.keyboard.type(text)}
+// Waits up to ms for check() to hold, and says whether it did.
+async function within(check,ms){const end=Date.now()+ms;while(!(await check())){if(Date.now()>end)return false;await new Promise(done=>setTimeout(done,50))}return true}
 const reply=(page,text)=>page.locator(".history-assistant").filter({hasText:text});
 // Where a row reads on screen, top to bottom, and the activity card a step is listed in.
 const edges=locator=>locator.evaluate(node=>{const box=node.getBoundingClientRect();return {top:Math.round(box.top),bottom:Math.round(box.bottom)}});
@@ -181,6 +187,44 @@ test("Settings says Muse Code could not list its models and to press Refresh, an
     // Settings' next poll finds Muse Code ready too: its status checks read the list Refresh read.
     await expect(page.locator(".settings-card").filter({hasText:"Harness connection:"})).toContainText("Agent runtime: ready",{timeout:15_000});
     for(const mode of ["dark","light"]){await switchMode(page,mode);await status.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`settings-muse-list-refreshed-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
+
+// The conversation has no Refresh (Settings' is in Agents & models): a send checks Muse Code itself, and its refusal says Muse's
+// failure once, so once Muse Code works again the next message goes, within the minute Settings' polls keep a failed check.
+test("a message sent while Muse Code's host fails is not sent, saying why once in Muse's own words, and once Muse Code works again the next message goes",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness();
+  try{
+    // Settings' check listed the models while Muse Code worked; then its host fails as Muse does with a malformed settings file.
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await expect(page.locator(".sidebar-provider strong")).toHaveText("Muse Code");
+    await writeFile(harness.failing,"3");
+    const failure="Muse Code could not load its settings; check ~/.config/muse/settings.json (exit code 3): load settings for serve composition: malformed settings file at ~/.config/muse/settings.json";
+    const composer=page.getByTestId("composer"),alert=page.getByTestId("composer-alert");
+    await type(page,"First try while Muse is broken");await page.keyboard.press("Enter");
+    await expect(alert).toContainText("Not sent:",{timeout:20_000});
+    await expect.soft(alert,"Muse's failure once, with no Refresh to press").toHaveText(`Not sent: ${failure}. Your draft is kept.`);
+    await expect(composer).toHaveValue("First try while Muse is broken");
+    // All of it shows in a narrow window too.
+    await page.setViewportSize({width:900,height:800});
+    expect.soft(await alert.evaluate(node=>node.scrollHeight<=node.clientHeight),"nothing of the refusal scrolls out of its alert at 900 wide").toBe(true);
+    for(const [width,mode] of [[1280,"dark"],[1280,"light"],[900,"dark"],[900,"light"]]){await page.setViewportSize({width,height:800});await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`composer-muse-host-failed-${mode}-${width}x800.png`})}
+    await switchMode(page,"dark");await page.setViewportSize({width:1280,height:800});
+    // Sent again with the Send button while Muse Code still fails: the send asks Muse Code again, and says so once. The send takes
+    // the draft from the composer, and its refusal gives it back.
+    const asked=(await harness.serves()).length;
+    await page.getByTestId("send").click();
+    expect.soft(await within(async()=>(await harness.serves()).length>asked,10_000),"the send asked Muse Code again").toBe(true);
+    await expect(composer).toHaveValue("First try while Muse is broken",{timeout:20_000});
+    await expect.soft(alert,"the same failure, once, with no Refresh to press").toHaveText(`Not sent: ${failure}. Your draft is kept.`);
+    // Muse Code works again (its settings mended outside Trebell), and the person presses Enter: the message goes.
+    await rm(harness.failing);
+    await composer.click();await page.keyboard.press("Enter");
+    await expect(reply(page,"Muse fixture reply"),"the next message goes once Muse Code works again").toBeVisible({timeout:20_000});
+    await expect(alert).toHaveCount(0);
   }finally{await harness.close()}
 });
 

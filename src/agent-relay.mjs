@@ -1102,7 +1102,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const instance=instances.find(item=>item.id===thread.runtimeInstanceId)||instances.find(item=>item.kind===thread.runtime)||runtimeManager.activeInstance();
     if(instance.kind==="codex")throw new Error("Codex uses the native Codex relay");
     const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
-    const status=await runtimeManager.probe(instance,{environmentId});if(!status.available)throw new Error(status.message||`${status.name} is unavailable`);
+    // The start checks again a Muse Code whose model list failed (starting), and a harness that cannot run refuses it in the words
+    // of its check's reason, when it has one, not those for Settings (its Refresh).
+    const status=await runtimeManager.probe(instance,{environmentId,starting:true});if(!status.available)throw new Error(status.reason||status.message||`${status.name} is unavailable`);
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
     const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode:effectivePermissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
     if(instance.kind==="native"){
