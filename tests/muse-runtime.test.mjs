@@ -238,7 +238,9 @@ test("Muse Code's list is read again only by Settings' own listing, a failed tur
     assert.equal(await count(),2,"a failed turn's recheck reads it again");
     await manager.snapshot({refresh:true});
     assert.equal(await count(),3,"so does Settings' Refresh");
-    // A change to what the profile runs Muse Code with reads it again at the next check.
+    // A change to what the profile runs Muse Code with reads it again at the next check: here its API key, with a Meta key (with
+    // none, its status says so and no host starts).
+    fixture.env.META_API_KEY="meta-fixture-key";
     fixture.state.settings().agentRuntimeInstances[0].auth="api-key";
     await manager.snapshot();
     assert.equal(await count(),4,"a profile saved with another sign-in method");

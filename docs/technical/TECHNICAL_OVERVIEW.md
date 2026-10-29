@@ -101,7 +101,9 @@ method before each chat session and each Git text session starts). A harness on 
 saved key to a WSL or SSH environment, and a key the host's shell holds never stands in for it, so there it is refused until it is set
 to Sign in, which uses its own login there. An OpenCode profile with a server URL of its own runs on that server's sign-in and cannot be
 set to API key. Every start of a profile on API key checks its key again (`AgentRuntimeManager.keyRefusal`: the relay's sessions, Git
-text, and a status kept from before the key went): with none, its status says so and it does not start. A key saved or removed, or a
+text, and a status kept from before the key went): with none, its status says so once its version is read, and nothing of the
+harness starts for it, no chat, Git text, sign-in check (`claude auth status`), account read (Codex's), model-list host (`muse serve`,
+OpenCode's catalog server) or usage read (Claude Code's capability probe), each of which would run on the person's own login. A key saved or removed, or a
 profile's method changed, closes the chats of the profiles concerned only, and stops their Codex app-servers whether a profile is the
 active one or not (only theirs: the active one's catalog starts again, and another Codex profile's threads go on), since each process
 keeps the sign-in or key it started with. Cursor signs in only. No key reaches a harness any

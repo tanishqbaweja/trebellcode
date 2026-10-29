@@ -1249,6 +1249,14 @@ export class AgentRuntimeManager{
     const refusal=this.keyRefusal(instance,environmentId);if(!refusal)return value;
     return {...value,available:false,authenticated:false,account:null,...(refusal.keyMissing?{keyMissing:true}:{}),message:refusal.message};
   }
+  // The status of an installed profile on an API key that cannot start now (keyRefusal), answered once its version check has: no
+  // sign-in check, account read or model-list host of the harness starts for it, as each would run on the person's own login
+  // (`claude auth status`, Codex's account read, OpenCode's catalog server, `muse serve`). #keyGate says why. null for any other.
+  #refusedAfterVersion(instance,environmentId,fields={}){
+    const refusal=this.keyRefusal(instance,environmentId);if(!refusal)return null;
+    const compatibility=runtimeCompatibility(instance.kind,fields.version);
+    return {id:instance.id,kind:instance.kind,name:RUNTIMES[instance.kind].name,available:false,installed:true,authenticated:false,managed:false,account:null,...fields,message:refusal.message,...(compatibility?{compatibility}:{})};
+  }
   // Settings saved or removed a key these profiles run on: their kept statuses go (and the Codex account reads), so the next status
   // asks each harness again on the key it has now.
   forgetProbes(instanceIds=[]){
@@ -1272,6 +1280,7 @@ export class AgentRuntimeManager{
         return {id:instance.id,kind:"codex",name:def.name,available:false,installed:!host&&!missing,authenticated:false,protocol:"codex",version:null,binary:this.executable(instance,{environmentId}),message:missing?"Codex CLI was not found. Install it (npm install -g @openai/codex), then sign in with codex login.":(checked.stderr||checked.error||"Codex CLI is unavailable").trim().slice(0,500)};
       }
       const version=failure?null:(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null;
+      const refused=this.#refusedAfterVersion(instance,environmentId,{protocol:"codex",version,binary:this.executable(instance,{environmentId})});if(refused)return refused;
       // Readiness is Codex's own account/read answer (T3 accountProbeStatus), so non-OpenAI model providers need no login.
       const probed=await this.#codexAccount(instance,environmentId);
       if(probed.error)return {id:instance.id,kind:"codex",name:def.name,available:false,installed:true,authenticated:null,protocol:"codex",version,binary:this.executable(instance,{environmentId}),message:("Codex app-server account check failed: "+probed.error).slice(0,500)};
@@ -1312,6 +1321,7 @@ export class AgentRuntimeManager{
       return {id:instance.id,kind:instance.kind,name:def.name,available:!versionless,installed:true,authenticated:null,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version:null,account:null,versionCheckFailed:true,message:versionless?`${/[.!?…]$/.test(said)?said:said+"."} Trebell Code needs its version (1.x or 2.x) to start it.`:said};
     }
     if(failure)return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:!host&&failure!=="missing",authenticated:false,protocol:def.protocol,managed:Boolean(def.managed),binary:command,message:runtimeProbeFailure(def,versionResult)};
+    const refused=this.#refusedAfterVersion(instance,environmentId,{protocol:def.protocol,managed:Boolean(def.managed),binary:command,version:(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null});if(refused)return refused;
     let authenticated=true,account=null,message="Ready";
     if(instance.kind==="claude"){
       // `claude auth status` prints {"loggedIn":…} (exiting 1 when signed out). A check that printed nothing, or was cut off before it
@@ -1397,6 +1407,8 @@ export class AgentRuntimeManager{
       return answer({available:false,installed:true,version:parseMuseVersion(said),message:checked.error==="probe timed out"?"Muse Code did not answer `muse --version` in time. Press Refresh to check it again.":`Muse Code is installed, but \`muse --version\` failed${Number.isInteger(checked.code)?` with exit code ${checked.code}`:""}. Check its executable path, or install Muse Code again.`});
     }
     const version=parseMuseVersion(said),compatibility=runtimeCompatibility("muse",version),known={installed:true,version,...(compatibility?{compatibility}:{})};
+    // On its API key with no key, `muse serve` would list the models of the person's own `muse login`: it does not start.
+    const refusal=this.keyRefusal(instance,environmentId);if(refusal)return answer({...known,available:false,authenticated:false,message:refusal.message});
     let catalog;
     try{catalog=await this.#museCatalog(instance,version)}
     catch(error){const reason=String(error?.message||error).trim().slice(0,400);return answer({...known,available:false,message:`Muse Code could not list its models: ${/[.!?…]$/.test(reason)?reason:reason+"."} Press Refresh to check it again.`})}
@@ -1583,6 +1595,9 @@ export class AgentRuntimeManager{
   museUsageReport=({museHome=null}={})=>latestMuseSubscriptionUsage({museHome});
   async usageLimits(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
+    // A profile on an API key that cannot start now reads no usage: Claude Code's probe would read the person's own plan instead.
+    const refusal=this.keyRefusal(instance,environmentId);
+    if(refusal)return {checkedAt:new Date(this.now()).toISOString(),windows:[],unavailable:{reason:"unsupported",message:refusal.message}};
     if(instance.kind==="claude")return readAgentRuntimeUsage("claude",{readCapabilities:()=>this.claudeCapabilities(instance,{environmentId})});
     // Muse Code's are the windows of the last report its sessions keep for the profile's Muse home (the one its status check's host
     // named), as no read asks Muse: MSP's usage/read answers only the host's last report too. A Muse Code runs only on this machine.

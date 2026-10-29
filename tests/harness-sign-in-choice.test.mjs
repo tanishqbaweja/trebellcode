@@ -145,7 +145,7 @@ test("a harness on API key without its key says so in its status, and one with i
   providers.setKey("anthropic","store-anthropic");
   const ready=await manager.probe(claude,{fresh:true});
   assert.deepEqual([ready.available,ready.authMethod,ready.keyMissing,ready.message],[true,"api-key",undefined,"Runs on the Anthropic API key."]);
-  assert.deepEqual(authSeen,[undefined,"store-anthropic"],"Claude Code's own check reads the key its launch has, the one saved in Trebell");
+  assert.deepEqual(authSeen,["store-anthropic"],"with no key Claude Code's own check does not run; with it, it reads the key its launch has, the one saved in Trebell");
   // On Sign in its own check runs with no key, and a signed-out Claude Code is told to run claude auth login.
   const own=await manager.probe({id:"claude-own",kind:"claude",binaryPath:process.execPath},{fresh:true});
   assert.deepEqual([own.available,own.authenticated,own.authMethod,authSeen.at(-1)],[false,false,"sign-in",undefined]);

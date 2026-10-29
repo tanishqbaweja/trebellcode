@@ -272,8 +272,7 @@ test("an installed harness on its API key with no key says so on its row and is 
     await expect(claude.getByRole("radiogroup",{name:"Claude Code signs in with"}).getByRole("radio",{name:"API key"})).toBeChecked();
     const panel=claude.getByTestId("harness-auth-claude");
     await expect(panel).toContainText("Uses the Anthropic API key: none saved yet.");
-    expect(launches.length,"Claude Code's own check ran").toBeGreaterThan(0);
-    expect(launches.every(key=>key===null),"with no key, none reached it").toBe(true);
+    expect(launches,"with no key, Claude Code's own sign-in check does not run, which would read the person's own login").toEqual([]);
     for(const mode of ["dark","light"]){
       await switchMode(page,mode);await claude.scrollIntoViewIfNeeded();
       await page.screenshot({animations:"disabled",path:shots+`claude-installed-key-missing-${mode}-1280.png`});
