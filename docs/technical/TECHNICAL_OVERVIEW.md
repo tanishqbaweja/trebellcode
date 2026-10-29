@@ -6,7 +6,7 @@ Trebell's primary goal is to make a capable model **more economically effective 
 
 The desktop workspace, runtime adapters, terminals, Git/worktrees, browser verification, durable context, source control, and recovery systems all support that goal. Multiple agent runtimes are an interoperability and convenience feature; they are not the core product thesis.
 
-**Version:** 2.0.0 · **Runtime:** Node.js 22+ · **License:** Apache-2.0 · **Desktop:** Windows / macOS / Linux packaging targets
+**Version:** 2.0.0 · **Runtime:** Node.js 22+ · **Desktop:** Windows / macOS / Linux packaging targets
 
 Trebell Code is not a chat box with a terminal glued beside it. It is a **desktop agent harness** designed around the boring-but-important parts of software engineering that make autonomous coding workflows trustworthy:
 
@@ -622,17 +622,9 @@ Updater failures remain visible instead of being converted into fake success.
 
 ---
 
-## Licensing and attribution
+## Third-party attribution
 
-Trebell Code wrapper/integration code is licensed under **Apache-2.0**.
-
-Trebell integrates the OpenAI Codex runtime and retains upstream attribution.
-
-See:
-
-- **LICENSE**
-- **NOTICE**
-- **THIRD_PARTY_NOTICES.md**
+Trebell integrates the OpenAI Codex runtime and retains upstream attribution; see **THIRD_PARTY_NOTICES.md**.
 
 ---
 

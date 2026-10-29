@@ -33,6 +33,5 @@ Local modifications: the frames T3 Code's client sent are reduced to their metho
 tokens a test binds to Trebell's own, T3 Code's runtime notes are cut from the user-message items, and the first turn of the
 permission transcript is left out.
 
-The Trebell repository root contains Trebell's Apache-2.0 LICENSE and NOTICE. The
-exact Codex package/version used by Trebell is recorded above; upstream Codex
+The exact Codex package/version used by Trebell is recorded above; upstream Codex
 license/notice material remains available from the linked OpenAI source release.
