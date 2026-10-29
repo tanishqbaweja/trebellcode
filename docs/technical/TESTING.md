@@ -81,6 +81,13 @@ Failure checks:
 - [ ] Provider refresh failure does not erase the last valid config.
 - [ ] No raw key appears in visible diagnostics/log output.
 
+Harnesses on their API key (each official harness but Cursor, which signs in only):
+
+- [ ] For Claude Code, Codex, Grok Build, OpenCode, Muse Code and Antigravity: set it to **API key** on its row, add its vendor's key there, and check that a chat runs on that key (the vendor's console shows the use on that key) and that the Model provider card lists the same key as saved.
+- [ ] Set it back to **Sign in** and check that the next chat runs on its own login, with no key: for Codex, `codex login status` in `<Trebell home>/codex-api-key-homes/<profile>` says it is not logged in.
+- [ ] Remove the key and check that the harness's row says the key is missing and no chat starts on it.
+- [ ] In a WSL or SSH environment, check that a harness on its API key says it runs on an API key only on this machine.
+
 ---
 
 ## 3. Trebell Native with a real provider
@@ -204,6 +211,7 @@ Live adapter smoke on **2026-09-27**:
 - Trebell detected the installed runtime, opened a real authenticated ACP session, the model used coding tools to create a proof file, and Trebell independently verified the file contents.
 
 - [ ] Connect/install Antigravity.
+- [ ] Sign in with Antigravity's own sign-in from its row (it opens Google's page); then set it to API key with a Google Gemini key and check that a chat runs on the key.
 - [ ] Start a text-only coding task.
 - [ ] Perform a repository change.
 - [ ] Attempt to attach a video.

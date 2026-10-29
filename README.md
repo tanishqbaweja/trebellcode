@@ -133,7 +133,16 @@ npm run ui:dev
 
 ### Model provider
 
-Trebell Native calls the model provider you select with your own API key: OpenAI (the default), Anthropic, Google Gemini, xAI, the Meta Model API, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi. Every provider needs a key, so add one in **Settings → Agents & models** before the first Native turn (without one, each provider reads its own environment variable, such as `OPENAI_API_KEY`, `XAI_API_KEY` or `META_API_KEY`). Codex, Claude Code, OpenCode, and the other runtimes keep using their own accounts and configuration.
+Trebell Native calls the model provider you select with your own API key: OpenAI (the default), Anthropic, Google Gemini, xAI, the Meta Model API, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi. Every provider needs a key, so add one in **Settings → Agents & models** before the first Native turn (without one, each provider reads its own environment variable, such as `OPENAI_API_KEY`, `XAI_API_KEY` or `META_API_KEY`).
+
+### How each harness signs in
+
+Trebell Native always runs on API keys, as above. Every other harness runs as its own official CLI or SDK, and you choose in **Settings → Agents & models**, on the harness or on each of its runtime profiles, how it signs in:
+
+- **Sign in** (the default): the harness's own login in its own home (`codex login`, `claude auth login`, `grok login`, `opencode auth login`, `muse login`, or Antigravity's own sign-in, which its row's **Sign in** runs). Trebell never reads or copies the credentials a harness keeps for it.
+- **API key**: the harness runs on its vendor's key from the same store the Model provider card uses (Claude Code on the Anthropic key, Codex on the OpenAI key, Muse Code on the Meta Model API key, Grok Build on the xAI key, Antigravity on the Google Gemini key, OpenCode on each saved key of a provider it supports). The row names the key and lets you add or replace it; with none saved, the provider's environment variable counts, and with neither the row says the key is missing and the harness does not start. A harness runs on an API key on this machine only: in a WSL or SSH environment it signs in with its own login there, as Trebell never sends a saved key to another machine.
+
+Cursor has no API key: it signs in with `cursor-agent login` only. A key in `.env`, in Trebell's environment or in a profile's approved variables never reaches a harness on Sign in, and never moves one to its API key: only the choice above does.
 
 ## Validation
 

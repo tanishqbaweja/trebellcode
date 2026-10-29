@@ -87,6 +87,17 @@ Examples:
 - Codex using Codex's own account/provider/model configuration;
 - Claude Code using Claude Code's own model/auth semantics.
 
+Each external harness signs in as the person sets it in Settings for its runtime profile (`src/harness-auth.mjs`): **Sign in**, its own
+login in its own home (the default), or **API key**, its vendor's key from Native's key store in the form its official CLI takes it
+(`ANTHROPIC_API_KEY` for Claude Code, `META_API_KEY` for Muse Code, `XAI_API_KEY` with Grok's key method, `GEMINI_API_KEY` with Antigravity's
+key method, each saved provider's variable for OpenCode; Codex signs in with `codex login --with-api-key` in a home of Trebell's own
+over its shared home; Grok signs in with its key method before each session starts). A harness on API key runs on this machine only:
+Trebell sends no saved key to a WSL or SSH environment, and a key the host's shell holds never stands in for it, so there it signs in
+with its own login. With no key, its status says so and it does not start. Cursor signs in only. No key reaches a harness any other
+way: `src/runtime-environment.mjs` keeps every credential name (`isHarnessCredentialName`) out of what each harness gets of Trebell's
+environment, a profile's approved names and its variables, and Cursor's, Grok's and OpenCode's usage meters read none of their stored
+sign-ins.
+
 External harnesses are not forced through Trebell Native's provider layer merely to make the UI look symmetrical.
 
 ---
@@ -126,7 +137,7 @@ Every provider requires an API key, so Trebell Native needs one before its first
 
 xAI and the Meta Model API are called on their Responses APIs without server-side state: each request carries the whole conversation with `store: false`, asks for `reasoning.encrypted_content` and sends back the reasoning the current turn's replies returned, which both providers document for keeping a model's reasoning across tool calls. A model that refuses `include` gets the request again without it, and its later requests leave it out. Their replies come back whole (`stream: false`), as for every provider but OpenAI, until a live check shows their streamed replies match (`src/native-reply-streaming.mjs`); Meta documents a server-side time limit for unstreamed requests (HTTP 504 `gateway_timeout`), which a live check of a long turn should measure.
 
-`ProviderManager.keyFor(provider)` is the one way the server reads a provider's key for a consumer other than Native's own calls (a harness the person put on API key): the key saved in Settings, else the environment variable Native reads for that provider, through the same code; an id that is not a model provider is refused.
+`ProviderManager.keyFor(provider)` is the one way the server reads a provider's key for a consumer other than Native's own calls (a harness the person put on API key, `AgentRuntimeManager.harnessKeys`): the key saved in Settings, else the environment variable Native reads for that provider, through the same code; an id that is not a model provider is refused.
 
 > **.env is not product configuration.** A local ignored .env may be used for developer/live-provider tests only.
 
