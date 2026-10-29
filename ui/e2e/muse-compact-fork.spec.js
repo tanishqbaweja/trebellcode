@@ -516,21 +516,71 @@ test("another window that opens the thread while a message waits there for Muse 
   }finally{await other?.close().catch(()=>{});await harness?.close()}
 });
 
-test("a message whose window closed while it waited for Muse Code's automatic compaction is left to retry in the person's other window once that window could hold it no longer, and is never sent by itself",async({page})=>{
+// A tab duplicated from the window whose message waits (or a window opened from it) starts with a copy of that window's
+// sessionStorage, as browsers copy it. It is another window all the same: it shows the message on its way in the first one, with
+// nothing to send it twice, and the first window sends it once Muse has compacted.
+test("a tab duplicated from the window whose message waits for Muse Code's automatic compaction shows that message on its way there, with nothing to send it twice",async({page})=>{
   test.setTimeout(120_000);
+  const meta={};let harness=null,other=null;
+  try{
+    harness=await heldInFirstWindow(page,meta);
+    const copied=await page.evaluate(()=>Object.fromEntries(Object.keys(sessionStorage).map(key=>[key,sessionStorage.getItem(key)])));
+    other=await page.context().newPage();
+    await other.addInitScript(entries=>{try{if(!sessionStorage.length)for(const [key,value] of Object.entries(entries))sessionStorage.setItem(key,value)}catch{}},copied);
+    const elsewhere=await openElsewhere(other,harness,meta);
+    await expect(elsewhere.locator(":scope > span")).toHaveText("Sending…");
+    await expect(elsewhere.locator(":scope > span")).toHaveAttribute("title",ELSEWHERE);
+    for(const name of ["Send now","Edit","Remove"])await expect(elsewhere.getByRole("button",{name,exact:true}),name+" is off").toBeDisabled();
+    await harness.release("compact");
+    await expect(reply(page,"Muse fixture reply")).toHaveCount(2,{timeout:20_000});
+    await expect(elsewhere,"the message leaves the duplicate's queue").toHaveCount(0,{timeout:20_000});
+    expect((await harness.frames("turn/start")).length,"sent once").toBe(2);
+  }finally{await other?.close().catch(()=>{});await harness?.close()}
+});
+
+// crypto.randomUUID exists only in secure contexts, so a page served on an http origin other than localhost (TREBELL_GUI_HOST, or
+// behind a proxy that says http) has none: the window opens there all the same, and its messages go.
+test("a window without crypto.randomUUID, as on an http origin other than localhost, opens and its message goes",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness(),errors=[];
+  try{
+    await page.addInitScript(()=>{delete Crypto.prototype.randomUUID});
+    page.on("pageerror",error=>errors.push(error.message));
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    expect(await page.evaluate(()=>typeof crypto.randomUUID)).toBe("undefined");
+    await send(page,"Hello Muse");
+    await expect(reply(page,"Muse fixture reply")).toBeVisible({timeout:20_000});
+    expect(errors,"nothing failed on the page").toEqual([]);
+  }finally{await harness.close()}
+});
+
+// The window whose message waits renews its hold on it every 30 seconds, for two minutes from then, so the person's other window
+// shows the message on its way there for as long as that window is open. Once it is closed, its hold ends within two minutes: the
+// other window then leaves the message to retry, and nothing sends it by itself. Both windows' timers run on one clock the test moves
+// on, and the first window renews its hold at each move.
+test("a message waiting for Muse Code's automatic compaction stays on its way in the person's other window while its own window renews its hold, and is left to retry there within two minutes of that window closing, never sent by itself",async({page})=>{
+  test.setTimeout(150_000);
   const meta={};let harness=null,first=null;
   try{
-    // The first window is closed while its message waits.
+    await page.clock.install();
     first=await page.context().newPage();
     harness=await heldInFirstWindow(first,meta);
-    await first.close();first=null;
-    // The other window opens the thread: the message is on its way in the closed window until that window could hold it no longer,
-    // then left to retry. Its timers run on a clock the test moves on.
-    await page.clock.install();
     const kept=await openElsewhere(page,harness,meta);
     await expect(kept.locator(":scope > span")).toHaveText("Sending…");
     await expect(kept.locator(":scope > span")).toHaveAttribute("title",ELSEWHERE);
-    await page.clock.fastForward("11:30");
+    // Past the two minutes of its first hold the message is still on its way in the first window, with nothing here to send it.
+    // Soft, so that the old code also shows what a closed window leaves.
+    const holdEnd=()=>Object.values(meta).flatMap(entry=>entry.trebellQueue||[]).find(item=>item.text==="Go on with the long conversation")?.heldUntil||0;
+    const renewed=async before=>{for(let tries=0;tries<50;tries++){if(holdEnd()>before)return true;await new Promise(resolve=>setTimeout(resolve,200))}return false};
+    for(let step=1;step<=5;step++){const before=holdEnd();await page.clock.fastForward("00:31");expect.soft(await renewed(before),"the first window renewed its hold, move "+step).toBe(true)}
+    await drawn(page);
+    await expect.soft(kept.locator(":scope > span")).toHaveText("Sending…");
+    for(const name of ["Send now","Edit","Remove"])await expect.soft(kept.getByRole("button",{name,exact:true}),name+" is off").toBeDisabled();
+    // The first window is closed while its message waits: its hold ends within two minutes, and the message is left to retry.
+    await first.close();first=null;
+    await page.clock.fastForward("02:05");
     await expect(kept.locator(":scope > span")).toHaveText("Queued · retry needed",{timeout:20_000});
     await expect(kept.getByRole("button",{name:"Send now",exact:true})).toBeEnabled();
     await shoot(page,"muse-auto-compaction-message-left-to-retry");

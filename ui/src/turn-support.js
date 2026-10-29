@@ -502,13 +502,14 @@ export async function prepareTurnContext(deps,thread,cwd,text,paths,{background=
 // context as it was, and the message goes on with a row saying why, as Grok's stopped one does: stopping it ends the compaction, not
 // the message waiting for it. One the window stopped waiting for says so, as a compaction whose end is not known (status unknown),
 // and the compaction's own end, should it come, takes that row (thread/compacted). held: the composer's message, which no queue
-// holds: it waits meanwhile in its thread's queue as being sent, held by this window (heldBy: windowKey) for as long as it can wait
-// (heldUntil: holdMs from now, its harness's limit and a margin), whose card says what it waits for. That shows it; another window
-// that opens the thread meanwhile shows it as on its way there, and a window that opens the thread again, or is reloaded or closed
-// meanwhile, keeps it for the person to send (persistent-queue.js hydratePersistedQueue, heldElsewhere). It leaves the queue before
-// the send goes on, never after its turn may have started. A message with no draft of the composer's (a project's recipe) shows as
-// on its way meanwhile (onWait: its message in the conversation). compacted: the context is compacted; row: the turn's row saying how
-// the compaction went.
+// holds: it waits meanwhile in its thread's queue as being sent, held by this window (heldBy: windowKey; heldUntil: holdMs from now),
+// whose card says what it waits for. The window renews its hold a quarter of holdMs apart while it waits, so a window closed or lost
+// meanwhile holds the message no longer once holdMs has passed since it last did. That shows it; another window that opens the
+// thread meanwhile shows it as on its way there, and a window that opens the thread again, or is reloaded or closed meanwhile, keeps
+// it for the person to send (persistent-queue.js hydratePersistedQueue, heldElsewhere). It leaves the queue before the send goes on,
+// never after its turn may have started, and after a renewal still on its way, which would put it back. A message with no draft of
+// the composer's (a project's recipe) shows as on its way meanwhile (onWait: its message in the conversation). compacted: the context
+// is compacted; row: the turn's row saying how the compaction went.
 export async function compactBeforeTurn(deps,thread,held,onWait=null){
   const {activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,windowKey,holdMs,persistLocalQueue,queueNow}=deps;
   const usage=threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
@@ -518,6 +519,8 @@ export async function compactBeforeTurn(deps,thread,held,onWait=null){
   const now=Date.now(),kept=held&&{...held,id:crypto.randomUUID(),createdAt:now,dispatchingAt:now,heldBy:windowKey,heldUntil:now+holdMs},onItsWay=localQueueStartRef.current;
   if(kept){onItsWay.add(kept.id);await persistLocalQueue(thread.id,[...queueNow(thread.id),kept]).catch(()=>{})}
   else onWait?.();
+  let renewed=Promise.resolve();
+  const renew=kept&&setInterval(()=>{renewed=renewed.then(()=>{const items=queueNow(thread.id);if(items.some(item=>item.id===kept.id))return persistLocalQueue(thread.id,items.map(item=>item.id===kept.id?{...item,heldUntil:Date.now()+holdMs}:item))}).catch(()=>{})},holdMs/4);
   try{
     await requestThreadCompaction(thread.id);
     updateThreadTelemetry(thread.id,{tokenUsage:null,lastActivityAt:Date.now()});
@@ -526,5 +529,5 @@ export async function compactBeforeTurn(deps,thread,held,onWait=null){
   }catch(error){
     const message=error?.message||String(error);
     return {compacted:false,row:row(error?.waited?{status:"unknown",title:message,waited:true}:{kind:"error",title:"Automatic context compaction failed; continuing: "+message})};
-  }finally{if(kept){await persistLocalQueue(thread.id,queueNow(thread.id).filter(item=>item.id!==kept.id)).catch(()=>{});onItsWay.delete(kept.id)}}
+  }finally{if(kept){clearInterval(renew);await renewed;await persistLocalQueue(thread.id,queueNow(thread.id).filter(item=>item.id!==kept.id)).catch(()=>{});onItsWay.delete(kept.id)}}
 }

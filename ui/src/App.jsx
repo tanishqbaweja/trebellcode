@@ -251,9 +251,17 @@ function focusNewTask(){
 const BROWSER_NAVIGATION=typeof window!=="undefined"&&!window.trebellDesktop&&typeof window.history?.pushState==="function";
 // The tab history entry this page load opened on: another one when the app starts means Back or Forward was pressed meanwhile.
 const LOADED_BROWSER_ENTRY_ID=BROWSER_NAVIGATION?window.history.state?.trebellNav?.id||null:null;
-// This window's own key, which a reload of it keeps (sessionStorage, the window's own): a message it holds in its thread's queue for
-// an automatic compaction names it (persistent-queue.js heldElsewhere).
-const WINDOW_KEY=(()=>{const key="trebell-window-key";try{const kept=sessionStorage.getItem(key);if(kept)return kept;const made=crypto.randomUUID();sessionStorage.setItem(key,made);return made}catch{return crypto.randomUUID()}})();
+// This window's own key: a message it holds in its thread's queue for an automatic compaction names it (persistent-queue.js
+// heldElsewhere). A reload of the window keeps it: the page leaving puts it in the tab's sessionStorage, and the next page takes it
+// out at once, so a tab duplicated from this one, or a window opened from it, which start with a copy of that storage, have their
+// own. It is made without crypto.randomUUID too, which only a secure context has (not an http origin other than localhost).
+const WINDOW_KEY=(()=>{
+  const name="trebell-window-key",store=value=>{try{if(value)sessionStorage.setItem(name,value);else sessionStorage.removeItem(name)}catch{}};
+  let key=null;try{key=sessionStorage.getItem(name)}catch{}store(null);
+  key||=globalThis.crypto?.randomUUID?.()||Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
+  if(typeof window!=="undefined"){window.addEventListener("pagehide",()=>store(key));window.addEventListener("pageshow",event=>{if(event.persisted)store(null)})}
+  return key;
+})();
 
 // A part loaded with lazy() whose code could not load (the UI was rebuilt or updated under an open page, or the link to a remote
 // Trebell server dropped), or that failed as it drew, says so in its place: without a boundary React takes the whole app off the
@@ -3170,21 +3178,22 @@ export default function App(){
   // its way that no send of this window has (a copy of the queue from before its send ended) may have gone already: it waits for the
   // person, marked to retry as one a reload left (hydratePersistedQueue), and is never started a second time by itself. A message
   // another window holds for its automatic compaction (heldElsewhere) is on its way there, and nothing of this queue starts here
-  // meanwhile: this window reads the thread's queue again now, as each of its turns starts or ends, and once that window can hold it
-  // no longer. The message leaves this window's queue once it has left the thread's (before its turn starts), and is left to retry
-  // once nothing holds it there; this window writes nothing of it.
+  // meanwhile: this window reads the thread's queue again now, as each of its turns starts or ends, and at the end of the hold it read
+  // last, which that window renews while it lives. The message leaves this window's queue once it has left the thread's (before its
+  // turn starts), and is left to retry once a read finds nothing holds it there; this window writes nothing of it.
   useEffect(()=>{
     if(runtimeCapabilities.nativeQueue&&(queueMode==="native"||queued[0]?.native))return;
     const threadId=activeThreadRef.current?.id||null,elsewhere=threadId?queued.find(item=>heldElsewhere(item,WINDOW_KEY)):null;
     if(elsewhere){
-      let current=true;
+      let current=true,timer=0;
       const reread=()=>api("/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(meta=>{
-        const there=(meta?.trebellQueue||[]).find(item=>item.id===elsewhere.id);
-        if(!current||activeThreadRef.current?.id!==threadId||there&&heldElsewhere(there,WINDOW_KEY))return;
-        const [left]=there?hydratePersistedQueue([there],localQueueStartRef.current,WINDOW_KEY):[];
+        const now=Date.now(),there=(meta?.trebellQueue||[]).find(item=>item.id===elsewhere.id);
+        if(!current||activeThreadRef.current?.id!==threadId)return;
+        if(there&&heldElsewhere(there,WINDOW_KEY,now)){timer=setTimeout(reread,Math.min(Number(there.heldUntil)-now,120_000)+100);return}
+        const [left]=there?hydratePersistedQueue([there],localQueueStartRef.current,WINDOW_KEY,now):[];
         setQueued(shown=>shown.some(item=>item.id===elsewhere.id)?left?shown.map(item=>item.id===elsewhere.id?left:item):shown.filter(item=>item.id!==elsewhere.id):shown);
-      }).catch(()=>{});
-      reread();const timer=setTimeout(reread,Math.max(0,Number(elsewhere.heldUntil)-Date.now())+100);
+      },()=>{if(current)timer=setTimeout(reread,30_000)});
+      reread();
       return()=>{current=false;clearTimeout(timer)};
     }
     if(running||!queued.length||queuedEditId||heldQueues.has(String(threadId)))return;
@@ -4422,7 +4431,7 @@ export default function App(){
   async function maybeAutoCompactBeforeTurn(thread,held,onWait){
     if(!thread?.id||!runtimeCapabilities.compaction||rpcStatus!=="connected")return {};
     let support;try{support=await loadTurnSupport()}catch{return {}}
-    return support.compactBeforeTurn({activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,windowKey:WINDOW_KEY,holdMs:(LONG_COMPACTION_RUNTIMES.has(agentRuntime)?600_000:45_000)+60_000,persistLocalQueue,queueNow},thread,queueMode==="local"&&held,onWait);
+    return support.compactBeforeTurn({activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,windowKey:WINDOW_KEY,holdMs:120_000,persistLocalQueue,queueNow},thread,queueMode==="local"&&held,onWait);
   }
   // A packet that could not be made, also for want of turn-support.js: the send goes on without it, and its activity says why.
   async function contextUnavailable(thread,error,{background=false}={}){
