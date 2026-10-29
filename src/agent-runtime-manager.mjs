@@ -1544,7 +1544,7 @@ export class AgentRuntimeManager{
   rememberAcpSessionModels(instance,setup,{environmentId=undefined}={}){
     if(instance?.kind!=="antigravity")return;
     const catalog=antigravityModelCatalog(setup);if(!catalog.models.length)return;
-    const environment=this.activeEnvironment(environmentId)?.id||null,key=[instance.id,environment||"local"].join("|");
+    const environment=this.activeEnvironment(environmentId)?.id||null,key=this.#antigravityListKey(instance,environmentId);
     const served=this.#antigravityModelLists.get(key)||antigravitySeedCatalog(),signature=list=>JSON.stringify([list.models,list.preferred||null,list.metadata||[]]);
     this.#antigravityModelLists.set(key,catalog);
     if(signature(served)===signature(catalog))return;
@@ -1556,8 +1556,11 @@ export class AgentRuntimeManager{
   // Its session signs in with the key method on an API key when Antigravity asks (never by itself on Sign in); a refresh that ended because the machine gives Antigravity
   // no IPv6 sockets says so with the stand-in list (#antigravityModelFailures), as nothing of Antigravity's can run there.
   #antigravityModelFailures=new Map();
+  // The list a profile's sessions reported is kept per sign-in as well (#signInMark): one read on the person's own sign-in never
+  // stands for the Gemini key's, nor one key's for another's.
+  #antigravityListKey(instance,environmentId){return [instance.id,this.activeEnvironment(environmentId)?.id||"local",this.#signInMark(instance)].join("|")}
   #antigravityModels(instance,environmentId){
-    const key=[instance.id,this.activeEnvironment(environmentId)?.id||"local"].join("|"),known=this.#antigravityModelLists.get(key);
+    const key=this.#antigravityListKey(instance,environmentId),known=this.#antigravityModelLists.get(key);
     if(known)return {models:known.models,metadata:known.metadata,preferred:known.preferred,source:"session"};
     if(!this.#antigravityRefreshes.has(key)&&!this.processSpawner(instance,environmentId)){
       const refresh=(async()=>{
