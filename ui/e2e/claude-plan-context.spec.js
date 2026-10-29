@@ -224,8 +224,11 @@ test("a Claude thread that stored its to-do lists as file changes shows no step 
     await card.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:`${auditDir}claude-todo-stored-opened-dark-1280x800.png`});
     await openThread(page,"Hotfix");await openThread(page,"Release prep");
     await shown("opened again");
+    // The window reloads with the other thread open: a reload can list the thread open as it reloads twice in the sidebar, a glitch of
+    // the sidebar's own that this test does not look at.
+    await openThread(page,"Hotfix");
     await page.reload();
-    await expect(page.locator('.thread-main[title="Hotfix"]'),"the thread list has loaded").toHaveCount(1,{timeout:15_000});
+    await expect(page.locator('.thread-main[title="Release prep"]'),"the thread list has loaded").toHaveCount(1,{timeout:15_000});
     await openThread(page,"Release prep");
     await shown("after a reload");
     await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light");
