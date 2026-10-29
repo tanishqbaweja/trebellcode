@@ -886,7 +886,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   useEffect(()=>{
     const onPicker=event=>{
       const action=event.detail?.action;
-      if(action==="toggle"){if(pickerHidden())showModelMenu();else setModelOpen(value=>!value);return}
+      // A shut picker opened while the keyboard is out of the composer takes it on its button, as a hidden one shown again does: one
+      // of 24 models or fewer has no search box to take it, so opened under its button over the terminal drawer it stayed hidden.
+      if(action==="toggle"){if(!modelMenuRef.current&&!wrapRef.current?.matches(":focus-within,[data-kept]"))modelButtonRef.current?.focus();if(pickerHidden())showModelMenu();else setModelOpen(value=>!value);return}
       if(action==="open"){setModelOpen(true);return}
       if(action==="jump"){
         const index=Math.max(0,Number(event.detail?.index)||0);const id=models[index];
