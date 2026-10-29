@@ -10,6 +10,8 @@ import { runtimeInstructions } from "./runtime-instructions.mjs";
 import { isUserResponseTimeout } from "./user-response-timeout.mjs";
 
 const STOPPED=Symbol("opencode2-stopped");
+// The tools OpenCode titles by their input's description (#toolRow).
+const DESCRIBED_TOOLS=new Set(["bash","shell","task"]);
 // OpenCode 2.x's client loads with the first OpenCode 2.x session, before it starts its server, not with the server (budget B25).
 let openCodeClient=null;
 const loadOpenCodeClient=()=>openCodeClient??=import("@opencode/client");
@@ -596,9 +598,12 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     return this.toolCalls.get(id);
   }
   // OpenCode 2 names a call by its tool only, and its updates after session.tool.called leave out the input: each update is titled as
-  // OpenCode 1.x titles the call (openCodeToolTitle: a command by its description), from the input the call was called with, and carries it.
+  // OpenCode 1.x titles the call (openCodeToolTitle), from the input the call was called with, and carries it. OpenCode titles a command
+  // and a task by their description; another tool's arguments may hold a description of their own (an MCP tool's), which is no title,
+  // so it keeps its name, as OpenCode 1.x shows an MCP tool.
   #toolRow(sessionUpdate,id,{name,input},fields){
-    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate,toolCallId:id,title:openCodeToolTitle(name,{title:input.description,input,cwd:this.cwd}),kind:normalizePermissionKind(name),rawInput:input,...textRow(name),...fields}});
+    const title=DESCRIBED_TOOLS.has(name)?input.description:"";
+    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate,toolCallId:id,title:openCodeToolTitle(name,{title,input,cwd:this.cwd}),kind:normalizePermissionKind(name),rawInput:input,...textRow(name),...fields}});
   }
   // A retry OpenCode schedules for this turn's request, or a subagent's, shows while Trebell waits for it (openCodeRetryNotice); one that
   // is hours away, or past OPENCODE_RETRY_LIMITS, ends the turn with the provider's reason (openCodeRetryStop), as OpenCode 1.x's does.

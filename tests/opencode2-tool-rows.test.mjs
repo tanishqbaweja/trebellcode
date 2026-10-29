@@ -28,6 +28,11 @@ test("an OpenCode 2 call reads pending while its input streams and running once 
     tool("success","call_outside",{content:[{type:"text",text:"1: 127.0.0.1 localhost"}],executed:true});
     tool("input.started","call_question",{name:"question"});tool("called","call_question",{input:{questions:QUESTIONS},executed:false});
     tool("success","call_question",{content:[{type:"text",text:"User has answered your questions: \"Which color should the theme use?\"=\"Amber\". You can now continue with the user's answers in mind."}],metadata:{answers:[["Amber"]]},executed:true});
+    // An MCP server's tool whose arguments hold a description of their own, and OpenCode's task tool, which OpenCode titles by its description.
+    tool("input.started","call_mcp",{name:"linear_create_issue"});tool("called","call_mcp",{input:{title:"Safari login",description:"Login fails on Safari"},executed:false});
+    tool("success","call_mcp",{content:[{type:"text",text:"Created LIN-42"}],executed:true});
+    tool("input.started","call_task",{name:"task"});tool("called","call_task",{input:{description:"Explore the parser",prompt:"Find where the parser reads numbers.",subagent_type:"explore"},executed:false});
+    tool("success","call_task",{content:[{type:"text",text:"The parser reads numbers in lexer.js."}],executed:true});
     fake.emit({type:"session.execution.succeeded",data:{sessionID:"ses_main"}});await turn;
     const rows=shown(updates);
     assert.deepEqual(rows("call_bash"),[
@@ -48,5 +53,8 @@ test("an OpenCode 2 call reads pending while its input streams and running once 
       ["Asked 1 question","in_progress","Which color should the theme use?"],
       ["Asked 1 question","completed","Which color should the theme use?\nAnswer: Amber"],
     ]);
+    // A tool OpenCode does not title by its description keeps its name, whatever its arguments say, as OpenCode 1.x shows an MCP tool.
+    assert.deepEqual(rows("call_mcp").map(row=>row.title),["linear_create_issue","linear_create_issue","linear_create_issue"]);
+    assert.deepEqual(rows("call_task").map(row=>row.title),["task","Explore the parser","Explore the parser"],"a task is titled by its description, as OpenCode 1.x titles it");
   }finally{await session.close()}
 });
