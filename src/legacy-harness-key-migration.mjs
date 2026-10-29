@@ -21,7 +21,9 @@ export function antigravityKeyReplacedVariable(variable){
 export function migrateHarnessSecrets({env=process.env,providers,state}={}){
   const path=join(trebellHome(env),LEGACY_HARNESS_SECRETS_FILE);
   let secrets;
-  try{secrets=JSON.parse(readFileSync(path,"utf8"))}catch(error){if(error?.code==="ENOENT")return {migrated:false};secrets={}}
+  // A file it cannot read or parse now (another program holding it, a write cut short) is left as it is, for the next start to try
+  // again: a key in it is never removed unread.
+  try{secrets=JSON.parse(readFileSync(path,"utf8"))}catch(error){return error?.code==="ENOENT"?{migrated:false}:{migrated:false,unreadable:true}}
   if(!secrets||typeof secrets!=="object"||Array.isArray(secrets))secrets={};
   const key=typeof secrets[ANTIGRAVITY_ENTRY]==="string"?secrets[ANTIGRAVITY_ENTRY].trim():"";
   let moved=false,keptSlot=false,note=null;

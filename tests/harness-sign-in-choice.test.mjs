@@ -263,6 +263,25 @@ test("an Antigravity key saved by the old key form moves into the empty Gemini s
   assert.equal(other.settings().agentRuntimeInstances.find(item=>item.id==="antigravity-default").auth,"api-key");
 });
 
+test("an old Antigravity key file that cannot be read or parsed now is left as it is for the next start, never removed unread",t=>{
+  const {base,providers,state,settings}=fixture(t);
+  const path=join(base.TREBELL_HOME,"harness-secrets.json"),cut='{"antigravity.geminiApiKey":"old-antigravity-key"';
+  mkdirSync(base.TREBELL_HOME,{recursive:true});
+  // A write cut short: not JSON. Nothing moves and the file stays, key and all.
+  writeFileSync(path,cut);
+  assert.deepEqual(migrateHarnessSecrets({env:base,providers,state}),{migrated:false,unreadable:true});
+  assert.equal(readFileSync(path,"utf8"),cut);assert.equal(providers.keyFor("gemini"),null);
+  assert.equal((settings().agentRuntimeInstances||[]).some(item=>item.id==="antigravity-default"),false);
+  // One it cannot read as a file at all now (here a folder in its place): no throw, nothing removed.
+  rmSync(path);mkdirSync(path);writeFileSync(join(path,"kept"),"x");
+  assert.deepEqual(migrateHarnessSecrets({env:base,providers,state}),{migrated:false,unreadable:true});
+  assert.equal(readFileSync(join(path,"kept"),"utf8"),"x");
+  // Readable again at a later start: the key moves then.
+  rmSync(path,{recursive:true});writeFileSync(path,cut+"}");
+  assert.equal(migrateHarnessSecrets({env:base,providers,state}).moved,true);
+  assert.equal(providers.keyFor("gemini").key,"old-antigravity-key");assert.equal(existsSync(path),false);
+});
+
 test("an old Antigravity key that takes the place of Native's Gemini variable, or one not kept, is said on Antigravity's row until the key or its method changes",async t=>{
   const write=fx=>{mkdirSync(fx.base.TREBELL_HOME,{recursive:true});writeFileSync(join(fx.base.TREBELL_HOME,"harness-secrets.json"),JSON.stringify({"antigravity.geminiApiKey":"old-antigravity-key"}))};
   // Native read its Gemini key from GEMINI_API_KEY: the old key now stands in for it, and Antigravity's row says so.
