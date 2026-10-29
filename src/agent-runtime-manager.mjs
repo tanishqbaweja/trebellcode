@@ -1,6 +1,6 @@
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, posix, resolve, win32 } from "node:path";
 import spawn from "cross-spawn";
@@ -363,6 +363,11 @@ async function run(command,args=[],{env=process.env,cwd=process.cwd(),timeoutMs=
 
 // The home of Trebell's own a Codex profile on an API key signs in to (AgentRuntimeManager.codexHomeConfig), one per profile.
 export function codexApiKeyHome(env,instance){return join(trebellHome(env),"codex-api-key-homes",String(instance?.id||"codex-default").replace(/[^A-Za-z0-9._-]/g,"_"))}
+// The database of Trebell's own an OpenCode 2.x profile on its API keys runs on (OPENCODE_DB), one per profile. OpenCode 2.x keeps
+// the sign-ins `opencode auth login` makes in its database, ahead of a key in its environment, and reads no OPENCODE_AUTH_CONTENT;
+// a new database holds none of them (the logins an older install kept are imported only into a database it converts). Its sessions
+// live there too, so a thread whose session is in the other database continues in a new one, its earlier messages handed over.
+export function openCodeApiKeyDatabase(env,instance){return join(trebellHome(env),"opencode-api-key-homes",String(instance?.id||"opencode-default").replace(/[^A-Za-z0-9._-]/g,"_"),"opencode.db")}
 // What npm runs with for an install or update (and the harness package's own install script with it): Trebell's environment
 // without any variable that holds a provider's key or a sign-in (runtime-environment.mjs isHarnessCredentialName), so no API key in
 // it reaches a harness's install script; npm keeps its own settings, the proxy and the toolchain.
@@ -662,8 +667,9 @@ export class AgentRuntimeManager{
   // The environment a harness's processes run with: the baseline, its own non-secret names and the profile's approved names and
   // variables (runtime-environment.mjs), with no credential of any kind (a last guard, whatever a profile saved before), plus, only
   // for a profile set to an API key, its own vendor's key in the variable its CLI reads. key false leaves that key out too (an
-  // update or install, which needs none).
-  childEnv(instance,{key=true}={}){
+  // update or install, which needs none). version: the version of the OpenCode it starts (its status's), which chooses how OpenCode
+  // on its API keys leaves its stored sign-ins out.
+  childEnv(instance,{key=true,version=null}={}){
     const kind=instance?.kind,env=buildRuntimeEnvironment(kind,{parent:this.env,approved:instance?.approvedEnvironmentKeys,overrides:instance?.environment,platform:this.platform});
     if(kind!=="native")for(const name of Object.keys(env))if(isHarnessCredentialName(name)&&name.toUpperCase()!=="OPENCODE_SERVER_PASSWORD")delete env[name];
     const keys=key&&kind!=="native"?this.harnessKeys(instance).env:{};
@@ -677,9 +683,15 @@ export class AgentRuntimeManager{
     if(kind==="muse"&&env.MUSE_NO_AUTO_UPDATE==null)env.MUSE_NO_AUTO_UPDATE="1";
     // Antigravity runs in Trebell's home for it, with no Google credential of anyone else's, and the Gemini key only on an API key.
     if(kind==="antigravity")return antigravityEnvironment(env,{home:antigravityHome(this.env),apiKey:keys.GEMINI_API_KEY||null});
-    // OpenCode on its API keys starts with an empty set of stored sign-ins (OPENCODE_AUTH_CONTENT, which it reads in place of the
-    // logins `opencode auth login` keeps in its data home), so only the keys the person chose serve it. Trebell never reads that file.
-    if(kind==="opencode"&&key&&harnessAuthMethod(instance)===HARNESS_API_KEY)return {...env,...keys,OPENCODE_AUTH_CONTENT:"{}"};
+    // OpenCode on its API keys runs with none of the sign-ins `opencode auth login` keeps, so only the keys the person chose serve it:
+    // OpenCode 1.x on an empty set of them (OPENCODE_AUTH_CONTENT, which it reads in place of the ones in its data home), OpenCode 2.x
+    // on a database of Trebell's own for the profile (openCodeApiKeyDatabase), and an OpenCode whose version is not given on both.
+    // Trebell never reads the person's sign-ins.
+    if(kind==="opencode"&&key&&harnessAuthMethod(instance)===HARNESS_API_KEY){
+      const said=String(version||""),line=/(?:^|\s)v?2\./i.test(said)?2:said.trim()?1:null,database=line===1?null:openCodeApiKeyDatabase(this.env,instance);
+      if(database)try{mkdirSync(dirname(database),{recursive:true})}catch{}
+      return {...env,...keys,...(line===2?{}:{OPENCODE_AUTH_CONTENT:"{}"}),...(database?{OPENCODE_DB:database}:{})};
+    }
     return {...env,...keys};
   }
   // The names a harness on a WSL or SSH host gets from the host's own shell: its non-secret names and approved names, never a key or
@@ -1087,7 +1099,7 @@ export class AgentRuntimeManager{
     if(cached?.pending){if(read)read.entry=cached;return await cached.pending}
     if(cached&&this.now()-cached.at<(cached.complete?reuseMs:incompleteMs))return cached.value;
     let isUp=()=>{};const entry={pending:null,starting:false,up:new Promise(resolve=>{isUp=resolve})};if(read)read.entry=entry;
-    const pending=entry.pending=Promise.resolve().then(()=>this.openCodeCatalogReader({version,command,cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null,
+    const pending=entry.pending=Promise.resolve().then(()=>this.openCodeCatalogReader({version,command,cwd:process.cwd(),env:this.childEnv(instance,{version}),serverUrl:instance.serverUrl||null,
       onServerStart:start=>{entry.starting=true;Promise.resolve(start).then(isUp,()=>{})}}));
     this.#openCodeCatalogs.set(key,entry);
     try{

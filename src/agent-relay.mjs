@@ -1105,7 +1105,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // harness would run on a login of its own.
     const keyRefused=runtimeManager.keyRefusal?.(instance,environmentId);if(keyRefused)throw new Error(keyRefused.message);
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
-    const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),authMethod:runtimeManager.authMethod?.(instance)||"sign-in",permissionMode:effectivePermissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
+    // The environment of the version the status read: OpenCode on its API keys leaves its stored sign-ins out by its line (childEnv).
+    const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance,{version:status.version||null}),authMethod:runtimeManager.authMethod?.(instance)||"sign-in",permissionMode:effectivePermissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
     if(instance.kind==="native"){
       if(typeof nativeProviderTurn!=="function")throw new Error("Trebell Native provider transport is unavailable");
       const namespaceNames=new Set(thread.providerMeta?.dynamicToolNamespaces||[]),projectless=Boolean(thread.providerMeta?.projectless);

@@ -90,8 +90,12 @@ Examples:
 Each external harness signs in as the person sets it in Settings for its runtime profile (`src/harness-auth.mjs`): **Sign in**, its own
 login in its own home (the default), or **API key**, its vendor's key from Native's key store in the form its official CLI takes it
 (`ANTHROPIC_API_KEY` for Claude Code, `META_API_KEY` for Muse Code, `XAI_API_KEY` with Grok's key method, `GEMINI_API_KEY` with Antigravity's
-key method, each saved provider's variable for OpenCode, which then reads an empty set of its own stored logins,
-`OPENCODE_AUTH_CONTENT={}`; Codex signs in with `codex login --with-api-key` in a home of Trebell's own over its shared home, which
+key method, each saved provider's variable for OpenCode, which then runs with none of the logins `opencode auth login` keeps: OpenCode
+1.x on an empty set of them, `OPENCODE_AUTH_CONTENT={}`, which it reads in place of its `auth.json`, and OpenCode 2.x, which keeps
+them in its database ahead of a key in its environment and reads no `OPENCODE_AUTH_CONTENT`, on a database of Trebell's own for the
+profile, `OPENCODE_DB=<Trebell home>/opencode-api-key-homes/<profile>/opencode.db`, which holds none of them; its 2.x sessions live
+there too, so a thread whose session is in the other database continues in a new session with its earlier messages handed over;
+Codex signs in with `codex login --with-api-key` in a home of Trebell's own over its shared home, which
 `codex logout` empties again once the profile is back on Sign in or removed, or the OpenAI key is removed; Grok signs in with its key
 method before each chat session and each Git text session starts). A harness on API key runs on this machine only: Trebell sends no
 saved key to a WSL or SSH environment, and a key the host's shell holds never stands in for it, so there it is refused until it is set

@@ -234,7 +234,7 @@ function refuseOpenCodeAsks({client,v2Client,directory,sessionId}){
 async function openCode2Text(ctx){
   const {runtimeManager,instance,environmentId}=ctx,cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx),chunks=[];
   const session=new OpenCode2AgentSession({
-    command:runtimeManager.executable(instance,{environmentId}),cwd,env:runtimeManager.childEnv(instance),serverUrl:instance.serverUrl||null,
+    command:runtimeManager.executable(instance,{environmentId}),cwd,env:runtimeManager.childEnv(instance,{version:ctx.runtimeStatus?.version||null}),serverUrl:instance.serverUrl||null,
     version:ctx.runtimeStatus?.version||"",permissionMode:"read-only",repositoryMcp:null,
     onUpdate:event=>{const update=event?.update||{};if(update.sessionUpdate==="agent_message_chunk"&&update.content?.type==="text")chunks.push(String(update.content.text||""))},
     onPermission:async()=>"decline",
@@ -259,7 +259,7 @@ async function openCodeText(ctx){
   // code would run as the user and see the diff). A profile's own server URL keeps the repository as its directory: Trebell does not own
   // that server's working folder, and a local temp path may not exist on its host.
   const createClient=ctx.deps.openCodeClient||(await loadOpenCodeSdk()).createOpencodeClient,createV2Client=ctx.deps.openCodeV2Client||(await loadOpenCodeV2Sdk()).createOpencodeClient;
-  const cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx),env=runtimeManager.childEnv(instance);
+  const cwd=instance.serverUrl?ctx.cwd:await scratchFolder(ctx),env=runtimeManager.childEnv(instance,{version:ctx.runtimeStatus?.version||null});
   const server=await (ctx.deps.openCodeServer||startOpenCodeServer)({command:runtimeManager.executable(instance,{environmentId}),cwd,env,serverUrl:instance.serverUrl||null});
   ctx.defer(()=>server?.close?.());ctx.check();
   // A server Trebell started with the profile's OPENCODE_SERVER_PASSWORD answers only its clients that send it (startOpenCodeServer).
