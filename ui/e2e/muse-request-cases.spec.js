@@ -13,8 +13,9 @@ import { keepThreadMeta } from "./test-home.js";
 
 // Muse Code's harder asks, as the person meets them in Trebell: a staged command whose card follows Muse to its next stage, a workflow
 // child's card that Stop leaves waiting, a protected write a workflow child asks in Full access, a file Muse asks to read outside the
-// workspace, a turn that could not run signed out, and a message sent in another mode while Muse compacts. Behind the page run the
-// real agent relay and runtime manager on the stand-in Muse Code (tests/fixtures/muse/fake-muse.cjs), which records what Trebell sends.
+// workspace, a turn that could not run signed out, and a message sent in another mode while Muse compacts or writes its report on
+// the work it finished. Behind the page run the real agent relay and runtime manager on the stand-in Muse Code
+// (tests/fixtures/muse/fake-muse.cjs), which records what Trebell sends.
 const auditDir=fileURLToPath(new URL("../../visual-audit/muse-request-cases/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const FAKE_MUSE=fileURLToPath(new URL("../../tests/fixtures/muse/fake-muse.cjs",import.meta.url));
 const MODEL_LIST=fileURLToPath(new URL("../../tests/fixtures/muse/model-list-1.4.13.json",import.meta.url));
@@ -60,12 +61,12 @@ async function startMuseHarness({environment={},holds=[],relayOptions={}}={}){
     async close(){await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})},
   };
 }
-// The app's endpoints for a window on Muse Code in the given access mode, answered from the harness's runtime manager as the GUI
-// server answers.
-async function routeMuseApp(page,harness,{mode="supervised"}={}){
+// The app's endpoints for a window on Muse Code in the given access mode and follow-up mode, answered from the harness's runtime
+// manager as the GUI server answers.
+async function routeMuseApp(page,harness,{mode="supervised",followUpMode="queue"}={}){
   const manager=harness.runtimeManager,status=await manager.probe("muse",{fresh:true}),listed=await manager.models("muse");
   const project={id:"muse-project",name:"Muse Project",path:harness.repo,environmentId:null,effectiveSettings:{}};
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",modelProvider:"openai",defaultPermissionMode:mode,defaultWorkspaceMode:"current",followUpMode:"queue"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",modelProvider:"openai",defaultPermissionMode:mode,defaultWorkspaceMode:"current",followUpMode};
   await keepThreadMeta(page);
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",runtimeCapabilities:manager.capabilities("muse"),agentRuntimeReady:true,agentRuntimeStatus:status,provider:"openai",providerReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:harness.repo,platform:process.platform,version:"muse-request-cases-fixture",activeEnvironment:null,activeEnvironmentId:null}));
   await page.route(/\/api\/runtime$/,async route=>json(route,{agentRuntime:"muse",agentRuntimeInstanceId:"muse-default",agentRuntimeStatus:await manager.probe("muse"),provider:"openai",providerReady:true,appServerReady:true,appServerExitCode:null,activeEnvironment:null,appServerError:null,logs:[]}));
@@ -210,6 +211,87 @@ test("a message sent in Supervised while a Full access thread's compaction runs 
     expect((await harness.frames("turn/start")).length).toBe(1);
     expect(await harness.hosts()).toEqual([["serve","--trust-workspace","--disable-sandbox"]]);
     await shoot(page,"muse-mode-change-while-compacting",alert);
+  }finally{await harness.close()}
+});
+
+// Muse's report on the work it finished runs as a turn, which the window steers a message into: Enter or the Steer button with steer
+// follow-ups, Send now or its shortcut on a queued follow-up. One in a mode the report's host was not launched for is not sent, as one
+// sent while Muse compacts, and never goes into the report on that host; one in the report's own mode still does.
+const REPORT_NOT_SENT="Not sent: Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. Wait for it to finish (or stop it), or keep the current mode, then send the message again. Your draft is kept.";
+test("a message steered in Supervised while Muse Code writes its report on a Full access thread is not sent, saying to wait for the report, keeps its draft and never reaches the Full access host, and back in Full access it steers into the report",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
+  try{
+    await openMuse(page,harness,{mode:"full",followUpMode:"steer"});
+    await send(page,"Please run workflow ping-pong");
+    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    const live=page.locator(".agent-block .assistant-answer"),stop=page.getByRole("button",{name:"Stop",exact:true}),picker=page.locator("select.permission-picker").first();
+    await expect(live).toContainText("The workflow with ping and pong agents is complete.",{timeout:20_000});
+    await expect(stop).toHaveAttribute("title","Stop the running turn");
+    await picker.selectOption("supervised");
+    await send(page,"Ask before you run anything");
+    const alert=page.getByTestId("composer-alert");
+    await expect(alert).toHaveText(REPORT_NOT_SENT,{timeout:20_000});
+    await expect(page.getByTestId("composer")).toHaveValue("Ask before you run anything");
+    await expect(stop,"the report goes on").toBeVisible();
+    await expect(page.locator(".tool-event").filter({hasText:"Could not steer the agent"})).toHaveCount(0);
+    expect(await harness.frames("turn/steer")).toEqual([]);
+    expect((await harness.frames("turn/start")).length).toBe(1);
+    expect(await harness.hosts()).toEqual([["serve","--trust-workspace","--disable-sandbox"]]);
+    await shoot(page,"muse-steer-mode-change-while-reporting",alert);
+    // In a narrow window the note wraps beside the composer, the draft above it.
+    await page.setViewportSize({width:700,height:800});
+    await expect(alert).toBeInViewport();await expect(page.getByTestId("composer")).toBeInViewport();
+    await page.screenshot({animations:"disabled",path:auditDir+"muse-steer-mode-change-while-reporting-dark-700x800.png"});
+    await page.setViewportSize({width:1280,height:800});
+    // Back in Full access, the report's own mode, the kept draft steers into the report, which ends with it.
+    await picker.selectOption("full");
+    await page.getByRole("button",{name:"Steer agent",exact:true}).click();
+    await expect(reply(page,"Steered: Ask before you run anything.")).toBeVisible({timeout:20_000});
+    await expect(alert).toHaveCount(0);
+    await expect(page.getByTestId("composer")).toHaveValue("");
+    expect((await harness.frames("turn/steer")).length).toBe(1);
+    expect(await harness.hosts()).toEqual([["serve","--trust-workspace","--disable-sandbox"]]);
+  }finally{await harness.close()}
+});
+
+test("a queued message sent now in Full access while Muse Code writes its report on a Supervised thread, by its shortcut or Send now, is not sent, saying to wait for the report, stays queued and never reaches the Supervised host, and after Stop it goes on a Full access host",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
+  try{
+    await openMuse(page,harness);
+    await send(page,"Please run workflow ping-pong");
+    await expect(reply(page,"Started the ping-pong workflow.")).toBeVisible({timeout:20_000});
+    const live=page.locator(".agent-block .assistant-answer"),stop=page.getByRole("button",{name:"Stop",exact:true});
+    await expect(live).toContainText("The workflow with ping and pong agents is complete.",{timeout:20_000});
+    await page.locator("select.permission-picker").first().selectOption("full");
+    await send(page,"Now in Full access");
+    const queued=page.locator(".queued-message"),alert=page.getByTestId("composer-alert");
+    await expect(queued.locator("p")).toHaveText(["Now in Full access"]);
+    // The shortcut that sends the oldest queued follow-up now, from the composer.
+    await page.keyboard.press("Control+Shift+Enter");
+    await expect(alert).toHaveText(REPORT_NOT_SENT,{timeout:20_000});
+    // The next message waits behind it, and its own Send now is refused alike.
+    await send(page,"And run the tests");
+    await expect(alert).toHaveCount(0);
+    await expect(queued.locator("p")).toHaveText(["Now in Full access","And run the tests"]);
+    await queued.filter({hasText:"And run the tests"}).getByRole("button",{name:"Send now"}).click();
+    await expect(alert).toHaveText(REPORT_NOT_SENT,{timeout:20_000});
+    await expect(queued.locator(":scope > span")).toHaveText(["Queued","Queued"]);
+    await expect(page.getByTestId("app-action-error")).toHaveCount(0);
+    await expect(stop,"the report goes on").toBeVisible();
+    expect(await harness.frames("turn/steer")).toEqual([]);
+    expect(await harness.hosts()).toEqual([["serve","--trust-workspace"]]);
+    await shoot(page,"muse-send-now-mode-change-while-reporting",alert);
+    // Stop ends the report and holds the queue; Send now then starts Muse Code for Full access, and the queue goes on after it.
+    await stop.click();
+    await expect(stop).toHaveCount(0,{timeout:20_000});
+    await queued.filter({hasText:"Now in Full access"}).getByRole("button",{name:"Send now"}).click();
+    await expect(queued).toHaveCount(0,{timeout:20_000});
+    await expect(reply(page,"Muse fixture reply")).toHaveCount(2,{timeout:20_000});
+    expect((await harness.frames("turn/start")).length).toBe(3);
+    expect(await harness.frames("turn/steer")).toEqual([]);
+    expect(await harness.hosts()).toEqual([["serve","--trust-workspace"],["serve","--trust-workspace","--disable-sandbox"]]);
   }finally{await harness.close()}
 });
 

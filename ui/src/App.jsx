@@ -4661,10 +4661,11 @@ export default function App(){
     }
     // A follow-up waits in the queue of the thread it follows, which sends it once the turn ends; with no thread shown there is no
     // such queue, and the draft starts a thread of its own. A steer that fails says why, as a queueing that fails does: it was thrown
-    // to a send no one waited for, and nothing said it had not gone.
+    // to a send no one waited for, and nothing said it had not gone. A steer names the mode it is sent in, and one the relay refuses
+    // for it (-31000: Muse Code writes its report on a host of another mode) says beside the composer that it was not sent.
     if(running&&activeThread?.id){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
-      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,attachments:draft.attachments,turnId:activeTurnId}])}catch(error){restoreSentDraft(draft);setEvents(prev=>[...prev,{id:"steer-error-"+Date.now(),kind:"error",title:"Could not steer the agent: "+(error.message||String(error)),status:"done",raw:{}}])}return}
+      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments),...harnessThreadOptions(agentRuntime,{permissionMode})});followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,attachments:draft.attachments,turnId:activeTurnId}])}catch(error){restoreSentDraft(draft);if(error?.rpcCode===-31000)setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});else setEvents(prev=>[...prev,{id:"steer-error-"+Date.now(),kind:"error",title:"Could not steer the agent: "+(error.message||String(error)),status:"done",raw:{}}])}return}
       if(runtimeCapabilities.nativeQueue&&rpc&&activeThread&&queueMode!=="local"){
         try{
           if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips))return;
@@ -4804,13 +4805,13 @@ export default function App(){
       await validateAttachmentPaths(item.attachments||[]);
       if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
         // Steered into the turn, it is on its way until Codex has it: its card says so and leaves it be, and a steer that fails leaves
-        // it queued as it was (clearQueuedDispatch).
+        // it queued as it was (clearQueuedDispatch). One the relay refuses for the mode it is sent in says so as a steered draft does.
         let steered=false;
         try{
           await persistLocalQueue(activeThread.id,queueNow(activeThread.id).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now()}:q));
-          await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});steered=true;
+          await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments),...harnessThreadOptions(agentRuntime,{permissionMode})});steered=true;
           await persistLocalQueue(activeThread.id,queueNow(activeThread.id).filter(q=>q.id!==item.id));queueKeysDone(item.id);followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
-        }catch(error){if(!steered)await clearQueuedDispatch(activeThread.id,item.id);throw error}
+        }catch(error){if(!steered)await clearQueuedDispatch(activeThread.id,item.id);if(error?.rpcCode!==-31000)throw error;setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return}
       }
       if(running)return;
       // Its dispatch mark goes into the queue as it is now (queueNow), not the copy taken at the press.

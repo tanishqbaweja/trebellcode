@@ -212,6 +212,29 @@ test("through the relay, a message sent in another mode while Muse writes its ow
   }finally{await relay.close()}
 });
 
+// The window steers a message into the report's turn (steer follow-ups, or Send now on a queued one), naming the mode it was sent in.
+test("through the relay, a message steered in another mode while Muse writes its own report is refused as not sent, nothing of it reaching the report's host, and one in the thread's mode steers into the report",{timeout:90_000},async()=>{
+  const relay=await museRelay("trebell-muse-report-steer-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"full"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}],permissionProfile:"full"});
+    await relay.completed(thread.id,1);
+    await eventually(()=>relay.threadStore.get(thread.id).turns.length===2,"Muse's report turn");
+    const report=relay.threadStore.get(thread.id).turns[1];
+    // Refused with the code that tells the window the message was not sent (it keeps the draft), and nothing of it is stored.
+    await assert.rejects(relay.rpc("turn/steer",{threadId:thread.id,expectedTurnId:report.id,input:[{type:"text",text:"Now in Supervised"}],permissionProfile:"supervised"}),{message:REPORT_BLOCKS_MODE,code:-31000});
+    assert.deepEqual(relay.threadStore.get(thread.id).turns.map(turn=>turn.status),["completed","inProgress"],"the report goes on");
+    assert.equal(relay.threadStore.get(thread.id).turns[1].items.some(item=>item.type==="userMessage"),false,"no message stored in the report");
+    assert.equal((await relay.frames("turn/steer")).length,0,"nothing reached the Full access host");
+    // In the thread's mode the message goes into the report, which ends with it, on the one host.
+    await relay.rpc("turn/steer",{threadId:thread.id,expectedTurnId:report.id,input:[{type:"text",text:"Go on in Full access"}],permissionProfile:"full"});
+    await relay.completed(thread.id,2);
+    assert.match(relay.reply(thread.id),/Steered: Go on in Full access\./);
+    assert.equal((await relay.frames("turn/steer")).length,1);
+    assert.deepEqual((await relay.hosts()).map(entry=>entry.start),[["serve","--trust-workspace","--disable-sandbox"]]);
+  }finally{await relay.close()}
+});
+
 test("through the relay, a message refused in Full access while Muse writes its report on a Supervised thread leaves the thread in Supervised: what the report asks next goes to the person on the card, never answered by Full access's policy",{timeout:90_000},async()=>{
   const holds=await mkdtemp(join(tmpdir(),"trebell-muse-report-ask-")),ask=join(holds,"report-ask");
   const relay=await museRelay("trebell-muse-report-mode-policy-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_ASK_HOLD:ask}});

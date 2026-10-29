@@ -58,6 +58,10 @@ const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
 const TOOL_WRITE_MS=500;
 // How many harness turns the relay remembers the Trebell turn of (harnessTurnId).
 const HARNESS_TURN_LIMIT=1000;
+// The code of a message the relay refuses before it reaches the harness, which the window says was not sent, keeping its draft, as
+// for a send that failed: a steer in a mode Muse Code's host cannot take while Muse writes its report there. It is Trebell's own,
+// outside the JSON-RPC range of the harnesses' codes, which the relay passes on (Muse Code's own run from -32001 to -32057).
+const MESSAGE_NOT_SENT=-31000;
 const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_process","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
 const RETIRED_NATIVE_TOOL_NAMESPACES=new Set(["trebell_device"]);
 // ACP harnesses, OpenCode and Muse Code run processes per thread; reopening one of their threads does not start them (see
@@ -2217,6 +2221,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const activeTurn=[...(thread.turns||[])].reverse().find(turn=>turn?.status==="inProgress");if(!activeTurn)throw new Error(`${label} has no active turn to steer.`);
         if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error(`The active ${label} turn changed before steering could be applied.`);
         const session=sessions.get(thread.id);if(!(session instanceof steerable))throw new Error(`The active ${label} session is unavailable for steering.`);
+        // A Muse Code message in a mode its host cannot take while Muse writes its report there is refused before it goes, as turn/start
+        // refuses it (MuseAgentSession.modeRefusal), so the person keeps the draft and the report goes on; one in the host's mode goes in.
+        const museRefusal=session instanceof MuseAgentSession?session.modeRefusal(agentPermissionProfilePatch(params).permissionProfile):null;if(museRefusal)throw Object.assign(new Error(museRefusal),{code:MESSAGE_NOT_SENT});
         const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread),home:documentHome}));
         const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env})},...fileInputs(params.input)]};
         threadStore.addItem(thread.id,activeTurn.id,item);emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});
