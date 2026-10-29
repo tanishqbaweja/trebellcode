@@ -242,6 +242,9 @@ export function agentToolLifecycle(update,previousOutput=""){
   // Work its harness follows past the end of the turn that started it (a Muse Code workflow, subagent or command in the background)
   // says so on its item: the window keeps its row as it is when that turn ends, for the work's own later updates to settle.
   if(update.runsPastTurn===true)item.runsPastTurn=true;
+  // A harness's tool whose output is text to read as it is (an OpenCode read's lines, a question's answers) says so on its item, whose
+  // row then opens to that text instead of the item's JSON.
+  if(update.textOutput===true&&item.type==="dynamicToolCall")item.textOutput=true;
   const terminal=item.status==="completed"||item.status==="failed";
   let output="",outputDelta="";
   if(item.type==="commandExecution"&&typeof item.aggregatedOutput==="string"){

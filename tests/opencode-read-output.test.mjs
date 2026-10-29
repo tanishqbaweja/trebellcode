@@ -40,6 +40,9 @@ test("an OpenCode 1.x read row carries what was read, without OpenCode's tags, a
     await session.prompt([{type:"text",text:"Read notes.txt and src"}]);
     const outputs=await eventuallyReal(()=>{const done=updates.filter(update=>update.sessionUpdate==="tool_call_update"&&update.status==="completed");return done.length===3&&Object.fromEntries(done.map(update=>[update.toolCallId,update.rawOutput]))});
     assert.deepEqual(outputs,{call_file:"1: alpha line\n2: beta line\n\n(End of file - total 2 lines)",call_folder:"env.ts\nlib/\n\n(2 entries)",call_bash:FILE_READ});
+    // A read's row names what it read (outside the thread's folder, the whole path) and opens to it as text; a command's row is its own.
+    const rows=Object.fromEntries(updates.filter(update=>update.status==="completed").map(update=>[update.toolCallId,[update.title,update.textOutput===true]]));
+    assert.deepEqual(rows,{call_file:["Read H:\\work\\notes.txt",true],call_folder:["Read H:\\work\\src",true],call_bash:["cat notes.xml",false]});
   }finally{await session.close();await fake.close()}
 });
 

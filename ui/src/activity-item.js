@@ -36,9 +36,10 @@ export function activityRow(item={},{turnId=null}={}){
   if(type==="enteredReviewMode")title="Reviewing changes";
   if(type==="exitedReviewMode")title="Finished review";
   // A command's output, or the text a Trebell tool answered with (Native's repository searches answer with their hits
-  // grouped by file), which the expanded row shows as written instead of inside the item's JSON.
+  // grouped by file) or a harness's tool whose item says its output is text (textOutput: an OpenCode read's lines, a question's
+  // answers), which the expanded row shows as written instead of inside the item's JSON.
   const output=type==="commandExecution"?String(item.aggregatedOutput??item.output??"")
-    :type==="dynamicToolCall"&&String(item.namespace||"").startsWith("trebell_")&&typeof item.rawOutput==="string"?item.rawOutput:"";
+    :type==="dynamicToolCall"&&(item.textOutput||String(item.namespace||"").startsWith("trebell_"))&&typeof item.rawOutput==="string"?item.rawOutput:"";
   // Codex and the relay mark a running item "inProgress"; the timeline calls it running, as plan steps already do. A command
   // that exited non-zero reads as failed whichever harness ran it.
   const status=activityItemStatus(item);

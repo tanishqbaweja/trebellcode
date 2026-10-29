@@ -158,6 +158,15 @@ test("a Trebell tool that answered with text shows that text as its output, and 
   assert.equal(kept.output.split("\n")[0].length,RESTORED_TEXT_LIMIT);
 });
 
+test("a harness's tool whose item says its output is text (an OpenCode read) shows that text, and other harnesses' tools keep the item's JSON",()=>{
+  const read={id:"oc-read",type:"dynamicToolCall",namespace:"agent",tool:"Read notes.txt",arguments:{filePath:"/repo/notes.txt"},status:"completed",contentItems:null,success:true,durationMs:null,locations:[],rawOutput:"1: alpha line\n2: beta line",textOutput:true};
+  const row=activityRow(read,{turnId:"t1"});
+  assert.equal(row.title,"Read notes.txt");
+  assert.equal(row.output,"1: alpha line\n2: beta line","the expanded row shows the lines as written, not inside the item's JSON");
+  assert.equal(activityRow({...read,textOutput:undefined}).output,"");
+  assert.equal(activityRow({...read,rawOutput:{lines:2}}).output,"");
+});
+
 test("live rows merge the same way in the list and in the record a card is sealed from",()=>{
   const started=activityRow({id:"c",type:"commandExecution",command:"npm test",status:"inProgress"},{turnId:"t1"});
   assert.equal(mergeLiveRow(null,started,{phase:"started"}),started);

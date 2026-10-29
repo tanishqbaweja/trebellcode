@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { fileUri, fileUriPath } from "./file-uri.mjs";
-import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeReadOutput, openCodeRefusal, openCodeRequestName, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
+import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeQuestionText, openCodeReadOutput, openCodeRefusal, openCodeRequestName, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
 import { PROMPT_IMAGE_PATH, textExtractedTo } from "./prompt-attachments.mjs";
@@ -145,6 +145,8 @@ function outputText(content){
   if(!Array.isArray(content))return "";
   return content.map(item=>typeof item==="string"?item:typeof item?.text==="string"?item.text:"").join("");
 }
+// A read's row opens to what it read, and a question's to what was asked and answered, not to the item's JSON.
+const textRow=name=>name==="read"||name==="question"?{textOutput:true}:{};
 
 export class OpenCode2AgentSession extends OpenCodeAgentSession{
   // loadClient: the @opencode/client module the session drives (tests pass a stand-in).
@@ -161,6 +163,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     this.messageText=new Map();
     this.reasoningText=new Map();
     this.toolNames=new Map();
+    // The row text of each question whose answer OpenCode refused, by the message its tool fails with.
+    this.refusedAnswers=new Map();
     this.sessionParents=new Map();
     this.sessionGrants=[];
     this.agentIds=new Map();
@@ -567,10 +571,11 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
       const tokens=data.tokens||{},used=Number(tokens.input||0)+Number(tokens.output||0)+Number(tokens.reasoning||0);
       this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"usage_update",used,size:this.contextByModel.get(this.model)||0,cost:data.cost!=null?{amount:Number(data.cost),currency:"USD"}:null,usage:{input_tokens:Number(tokens.input||0),output_tokens:Number(tokens.output||0),reasoning_tokens:Number(tokens.reasoning||0),cache_read_input_tokens:Number(tokens.cache?.read||0),cache_write_input_tokens:Number(tokens.cache?.write||0)}}});return;
     }
-    if(event.type==="session.tool.input.started"){this.toolNames.set(String(data.id),String(data.name||"tool"));this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call",toolCallId:String(data.id),title:String(data.name||"Tool"),kind:normalizePermissionKind(data.name),status:"in_progress",rawInput:{}}});return}
-    if(event.type==="session.tool.called"){const id=String(data.id),name=this.toolNames.get(id)||"tool";this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"in_progress",rawInput:data.input||{}}});return}
-    if(event.type==="session.tool.success"){const id=String(data.id),name=this.toolNames.get(id)||"tool",output=outputText(data.content);this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"completed",rawOutput:name==="read"?openCodeReadOutput(output):output}});return}
-    if(event.type==="session.tool.failed"){const id=String(data.id),name=this.toolNames.get(id)||"tool";this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"failed",rawOutput:errorText(data.error)}});return}
+    if(event.type==="session.tool.input.started"){this.toolNames.set(String(data.id),String(data.name||"tool"));this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call",toolCallId:String(data.id),title:String(data.name||"Tool"),kind:normalizePermissionKind(data.name),status:"in_progress",rawInput:{},...textRow(data.name)}});return}
+    if(event.type==="session.tool.called"){const id=String(data.id),name=this.toolNames.get(id)||"tool";this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"in_progress",rawInput:data.input||{},...textRow(name)}});return}
+    if(event.type==="session.tool.success"){const id=String(data.id),name=this.toolNames.get(id)||"tool",output=outputText(data.content);this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"completed",rawOutput:name==="read"?openCodeReadOutput(output):output,...textRow(name)}});return}
+    // A question whose answer OpenCode refused fails with the message the session cancelled it with, and its row says it in the person's words.
+    if(event.type==="session.tool.failed"){const id=String(data.id),name=this.toolNames.get(id)||"tool",failure=errorText(data.error),refused=this.refusedAnswers.get(failure);this.refusedAnswers.delete(failure);this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"failed",rawOutput:refused||failure,...textRow(name)}});return}
     if(event.type==="session.execution.succeeded"&&turn&&sessionID===this.sessionId){turn.settle?.();return}
     if(event.type==="session.execution.failed"&&turn&&sessionID===this.sessionId){const failure=executionFailure(data.error);turn.error=failure.text;turn.usageLimit=failure.usageLimit;turn.settle?.();return}
     if(event.type==="session.execution.interrupted"&&turn&&sessionID===this.sessionId){turn.cancelled=true;turn.settle?.();return}
@@ -634,8 +639,12 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     catch(error){
       if(FORM_GONE.has(error?.name))return;
       // OpenCode refused the answer (one that is not among the choices, say): the cancel's message fails the question tool with the reason,
-      // which tells the model, and the person on the tool's row, while the turn goes on. (An error notice would end the window's turn.)
-      await this.#cancelForm(form,`The user's answer could not be given: ${errorText(error)}. Continue without it, and tell the user what you would need from them.`);
+      // which tells the model, while the turn goes on. (An error notice would end the window's turn.) The tool's row tells the person, in
+      // their words: what was asked, their answer and OpenCode's reason.
+      const reason=errorText(error),message=`The user's answer could not be given: ${reason}. Continue without it, and tell the user what you would need from them.`;
+      const given=mapped.questions.map(question=>[answer[question.id]].flat().filter(Boolean).map(value=>question.options.find(option=>option.value===value)?.label||value));
+      this.refusedAnswers.set(message,openCodeQuestionText(mapped.questions,given,`OpenCode refused the answer (${reason.replace(/[\s.]+$/,"")}), so the turn went on without it.`));
+      await this.#cancelForm(form,message);
     }
   }
 }

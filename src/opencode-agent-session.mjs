@@ -571,9 +571,19 @@ export function openCodeReadOutput(output){
   return wrapped?wrapped[1]+body.slice(wrapped[0].length):output;
 }
 
-function toolTitle(tool,stateTitle){
+// A path as a tool's row names it: from the thread's folder when it is in it (as OpenCode titles its reads), whole when it is not.
+function folderPath(path,cwd){
+  const file=String(path||"").trim(),root=String(cwd||"").replace(/[\\/]+$/,"");
+  if(!root||file.length<=root.length+1||!"\\/".includes(file[root.length]))return file;
+  const head=file.slice(0,root.length);
+  return head===root||(/^[a-z]:/i.test(root)&&head.toLowerCase()===root.toLowerCase())?file.slice(root.length+1):file;
+}
+// A tool call's row title: what it does, the file or folder a read reads, how many questions a question asks (as OpenCode titles it once
+// they are answered), and OpenCode's own title of a command or another tool.
+export function openCodeToolTitle(tool,{title:stateTitle="",input=null,cwd=""}={}){
   const id=String(tool||"").toLowerCase();
-  if(id==="read")return "Read file";
+  if(id==="read"){const path=folderPath(input?.filePath??input?.path,cwd);return path?`Read ${path}`:"Read file"}
+  if(id==="question"){const asked=Array.isArray(input?.questions)?input.questions.length:0;return asked?`Asked ${asked} question${asked===1?"":"s"}`:"Ask a question"}
   if(id==="write")return "Write file";
   if(id==="edit"||id==="patch")return "Edit files";
   if(id==="bash"||id==="shell")return stateTitle&&stateTitle.length<120?stateTitle:"Run command";
@@ -581,6 +591,17 @@ function toolTitle(tool,stateTitle){
   if(id==="glob")return "Find files";
   if(id==="webfetch"||id==="fetch")return "Fetch URL";
   return stateTitle&&stateTitle.length<120?stateTitle:String(tool||"Tool");
+}
+// What a question's row shows: each question OpenCode asked, then the answer it got once there are answers, and a note (why OpenCode
+// refused the answer, or what it said when the answers are not known).
+export function openCodeQuestionText(questions,answers=null,note=""){
+  const lines=[];
+  for(const [index,item] of (Array.isArray(questions)?questions:[]).entries()){
+    lines.push(String(item?.question||item?.header||"").trim()||`Question ${index+1}`);
+    if(Array.isArray(answers)){const answer=[answers[index]].flat().map(value=>String(value??"").trim()).filter(Boolean).join(", ");lines.push(answer?`Answer: ${answer}`:"No answer")}
+  }
+  if(note)lines.push(String(note));
+  return lines.join("\n");
 }
 // A tool's ACP kind. OpenCode's own ACP server calls grep and glob searches and webfetch a fetch; list, codesearch and websearch only
 // read too. The relay keeps a session whose harness ran a tool of another kind past the idle sweep (a command or a subagent can
@@ -1065,7 +1086,11 @@ export class OpenCodeAgentSession{
         else if(delta)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:delta}}});
       }else if(part.type==="tool"){
         const status=part.state?.status==="running"?"in_progress":part.state?.status==="completed"?"completed":part.state?.status==="error"?"failed":"pending";
-        const update={sessionUpdate:part.state?.status==="pending"?"tool_call":"tool_call_update",toolCallId:part.callID||part.id,title:toolTitle(part.tool,part.state?.title),kind:toolKind(part.tool),status,rawInput:part.state?.input||{},rawOutput:(part.tool==="read"?openCodeReadOutput(part.state?.output):part.state?.output)||part.state?.error||null};
+        // A read's row opens to what it read, and a question's to what was asked and answered (textOutput), not to the item's JSON.
+        const state=part.state||{},input=state.input||{},read=part.tool==="read",question=part.tool==="question"&&Array.isArray(input.questions);
+        const answers=Array.isArray(state.metadata?.answers)?state.metadata.answers:null;
+        const output=read?openCodeReadOutput(state.output):question?openCodeQuestionText(input.questions,answers,state.status==="error"?state.error:answers?"":state.output):state.output;
+        const update={sessionUpdate:state.status==="pending"?"tool_call":"tool_call_update",toolCallId:part.callID||part.id,title:openCodeToolTitle(part.tool,{title:state.title,input,cwd:this.cwd}),kind:toolKind(part.tool),status,rawInput:input,rawOutput:output||state.error||null,...(read||question?{textOutput:true}:{})};
         this.onUpdate?.({sessionId:this.sessionId,update});
         // The task tool names the subagent's session once it has created it.
         if(part.tool==="task"&&part.state?.metadata?.sessionId)await this.#applyChildRules(part.state.metadata.sessionId);
