@@ -145,7 +145,9 @@ function HarnessSignIn({def,profile,busy,onMethod,onKey}){
   // The choice shows at once, as the server saves it.
   const choose=value=>{setPending(value);Promise.resolve(onMethod(profile,value)).finally(()=>setPending(null))};
   const onKeyMethod=(pending||info.method)==="api-key",chosen=info.keys.find(item=>item.provider===provider)||info.keys[0],group="harness-auth-"+profile.id;
-  const uses=info.keys.length>1?"Uses each saved key: "+info.keys.map(item=>keyLabel(item.name)+(item.saved?" (saved)":" (none)")).join(", ")+".":`Uses the ${keyLabel(chosen.name)}${chosen.saved?(chosen.source==="environment"?" from "+chosen.from+".":", saved in Trebell Code."):": none saved yet."}`;
+  // A key from the environment is none saved in Trebell Code: one saved here takes its place, for Trebell Native too.
+  const env=item=>item.source==="environment",kept=chosen.saved&&!env(chosen);
+  const uses=info.keys.length>1?"Uses each saved key: "+info.keys.map(item=>keyLabel(item.name)+(item.saved?env(item)?` (from ${item.from})`:" (saved)":" (none)")).join(", ")+".":`Uses the ${keyLabel(chosen.name)}${chosen.saved?(env(chosen)?` from ${chosen.from}; a key saved here replaces it, for Trebell Native too.`:", saved in Trebell Code."):": none saved yet."}`;
   return <div className="harness-auth" data-testid={"harness-auth-"+def.id}>
     <div role="radiogroup" aria-label={def.name+" signs in with"}>
       <label><input type="radio" name={group} checked={!onKeyMethod} disabled={busy} onChange={()=>choose("sign-in")}/>Sign in</label>
@@ -153,8 +155,8 @@ function HarnessSignIn({def,profile,busy,onMethod,onKey}){
     </div>
     {onKeyMethod&&<div className="harness-auth-key"><small>{uses}</small>
       {info.keys.length>1&&<select aria-label={"Key for "+def.name} value={chosen.provider} onChange={e=>setProvider(e.target.value)}>{info.keys.map(item=><option key={item.provider} value={item.provider}>{item.name}</option>)}</select>}
-      <input type="password" autoComplete="off" aria-label={keyLabel(chosen.name)+" for "+def.name} value={key} onChange={e=>setKey(e.target.value)} placeholder={chosen.saved?"Saved key ••••••••":"Paste "+keyLabel(chosen.name)}/>
-      <button disabled={busy||!key.trim()} onClick={async()=>{if(await onKey(def,chosen.provider,key))setKey("")}}>{chosen.saved?"Replace key":"Save key"}</button>
+      <input type="password" autoComplete="off" aria-label={keyLabel(chosen.name)+" for "+def.name} value={key} onChange={e=>setKey(e.target.value)} placeholder={kept?"Saved key ••••••••":"Paste "+keyLabel(chosen.name)}/>
+      <button disabled={busy||!key.trim()} onClick={async()=>{if(await onKey(def,chosen.provider,key))setKey("")}}>{kept?"Replace key":"Save key"}</button>
     </div>}
   </div>;
 }

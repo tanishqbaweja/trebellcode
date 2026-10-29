@@ -120,6 +120,42 @@ test("each harness but Cursor offers Sign in or its provider's API key, the key 
   }
 });
 
+// A key Trebell reads from its environment (the variable Native reads) is no key saved in Trebell Code: the row says where it comes
+// from, offers Save key rather than Replace, and says that a key saved there takes its place for Trebell Native too.
+test("a key from the environment shows as from its variable with Save key, and says a key saved there replaces it for Native too",async({page,request})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:900});
+  expect((await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0}})).status()).toBe(200);
+  // This run's mock server has no key in its environment: its listing answers as one whose environment holds ANTHROPIC_API_KEY,
+  // with Claude Code and OpenCode on their keys.
+  const listing=/\/api\/agent-runtimes(?:\?|$)/;
+  await page.route(listing,async route=>{
+    if(route.request().method()!=="GET")return route.fallback();
+    const response=await route.fetch(),body=await response.json();
+    const fromEnvironment=key=>key.provider==="anthropic"?{...key,saved:true,source:"environment",from:"ANTHROPIC_API_KEY"}:key;
+    for(const item of body.instances||[])if(item.signIn&&["claude-default","opencode-default"].includes(item.id))item.signIn={...item.signIn,method:"api-key",keys:item.signIn.keys.map(fromEnvironment)};
+    return route.fulfill({response,json:body});
+  });
+  try{
+    await openAgents(page);
+    const claude=harnessRow(page,"Claude Code"),panel=claude.getByTestId("harness-auth-claude");
+    await expect(panel).toContainText("Uses the Anthropic API key from ANTHROPIC_API_KEY; a key saved here replaces it, for Trebell Native too.");
+    await expect(panel.getByLabel("Anthropic API key for Claude Code")).toHaveAttribute("placeholder","Paste Anthropic API key");
+    await expect(panel.getByRole("button",{name:"Save key"})).toBeDisabled();
+    await expect(panel.getByRole("button",{name:"Replace key"})).toHaveCount(0);
+    const openPanel=harnessRow(page,"OpenCode").getByTestId("harness-auth-opencode");
+    await expect(openPanel).toContainText("Uses each saved key: OpenAI API key (none), Anthropic API key (from ANTHROPIC_API_KEY), Google Gemini API key (none), xAI API key (none).");
+    await openPanel.getByLabel("Key for OpenCode",{exact:true}).selectOption("anthropic");
+    await expect(openPanel.getByLabel("Anthropic API key for OpenCode")).toHaveAttribute("placeholder","Paste Anthropic API key");
+    await expect(openPanel.getByRole("button",{name:"Save key"})).toBeDisabled();
+    for(const mode of ["dark","light"]){
+      await switchMode(page,mode);await claude.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`claude-api-key-from-environment-${mode}-1280.png`});
+    }
+    await switchMode(page,"dark");
+  }finally{await page.unroute(listing)}
+});
+
 test("a profile's approved names refuse a key on Save, saying how a harness signs in instead",async({page,request})=>{
   test.setTimeout(90_000);
   await page.setViewportSize({width:1280,height:900});
