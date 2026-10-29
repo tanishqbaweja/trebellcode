@@ -26,7 +26,7 @@ The target is:
 
 **same or better verified quality → lower total model cost.**
 
-Public benchmark work compares Trebell Native against mature harnesses using the **same model and reasoning settings**, then measures the quality-normalized cost required to finish the task.
+Public benchmark work compares Trebell Native against mature harnesses using the **same model and reasoning settings**, then measures the quality-normalized cost required to finish the task. The Native the benchmarks run is the Native you download: both read one configuration ([`src/native-configuration.mjs`](src/native-configuration.mjs)), and a test compares what each sends byte for byte.
 
 ## What works today
 

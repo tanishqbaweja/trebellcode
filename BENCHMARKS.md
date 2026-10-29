@@ -18,6 +18,10 @@ This page reports verifier-grounded benchmark results that demonstrate Trebell N
 
 This matters because token count alone is not the product metric. Different input/output mixes, retries, recovery loops, and cache behavior can make a lower-token run more expensive. Trebell optimizes for **verified result per dollar**.
 
+## The Native that is benchmarked is the Native that ships
+
+Since 2026-10-29 the app's Trebell Native and the benchmark runner read one configuration, [`src/native-configuration.mjs`](src/native-configuration.mjs), and a test compares what each sends byte for byte. The app took the benchmarked settings: no semantic completion gate, ceilings of 500 model turns and 5,000 tool calls, a 272,000-token window with server compaction at 245,000 on `gpt-6-luna`, background-process tools in every session, and Max thinking on `gpt-6-luna` unless the person picks another level. The runner took the app's settings where nothing had been measured: no service tier (every lane now runs Standard; earlier comparisons ran every lane at Fast), the app's developer text, and source-control tools on tasks whose text names Git work. Results below were measured before that change; the unified Native has not been re-measured on fresh tasks yet.
+
 ## Results
 
 ### coq-block-bound — full-quality parity, lower cost

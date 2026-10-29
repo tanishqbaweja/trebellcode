@@ -200,6 +200,7 @@ Common engineering primitives stay available without bloating every turn:
 
 - workspace/file operations;
 - terminal operations;
+- background processes (Trebell Native has them in every session, for servers, watchers and daemons a task needs running);
 - repository search/intelligence;
 - bounded context helpers.
 
@@ -520,6 +521,22 @@ These may optionally read an ignored root **.env** containing test credentials o
 ### Benchmarks
 
 Public benchmark comparisons live in **[../../BENCHMARKS.md](../../BENCHMARKS.md)**.
+
+### One Native for the app and the benchmarks
+
+The Trebell Native a person runs and the one the benchmark runner (`benchmarks/harbor/native-harbor-run.mjs`) runs are one program with one configuration, **`src/native-configuration.mjs`**, which both read. It holds every setting that changes what Native does, each with its evidence (measured on fresh benchmark tasks, or the app's product default where nothing was measured):
+
+| Setting | Value |
+|---|---|
+| Semantic completion gate, its recovery and the mid-task controller checkpoints | Off (measured: no extra resolution, about a third more cost) |
+| Ceilings per message | 500 model turns, 5,000 tool calls, no wall-time cap; Stop and a goal's budgets stay the person's controls, and a goal's remaining budgets lower them |
+| Long context on `gpt-6-luna` | A 272,000-token window with OpenAI server compaction at 245,000 (armed once an input reaches half of it); other models keep the catalog window and client-side read cooling |
+| Reasoning | `reasoning.context` `current_turn` on OpenAI; Thinking defaults to Max on `gpt-6-luna` (the provider's default on other models) unless the person picks a level |
+| Speed | No service tier unless the person picks Fast |
+| Tools | Repository, output, workspace, terminal and background processes always; source control when the message names Git work; browser, desktop control and delegation where the window has them |
+| First message | The repository seed; the continuity block lists only checkpoints already linked to a turn |
+
+The runner differs only where a task container cannot have the thing (the browser panel, desktop control, delegation, a person's MCP servers, the permission mode, which stands for Full access, and reply drafts, which change no request); `NATIVE_CONTAINER_ONLY` lists each with its reason. `tests/native-one-config-parity.test.mjs` builds the app's Native and the runner's for the same task and compares their settings, tools, prompts and every byte they send. Benchmark-only environment switches are registered in `NATIVE_RUN_SWITCHES`, off by default and written to each run's metrics; the comparison launcher refuses a readout with any of them set (or with another effort or tier) unless it is named as an experiment, and the integrity audit fails such a lane.
 
 ---
 
