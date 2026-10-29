@@ -132,12 +132,14 @@ export function restoredRow(row){
 // never differ. started: the item as sent. progress: only a changed name, kind or status touches the row (output streams on
 // its own), or a step that says from here that it runs on past its turn (runsPastTurn: a command Muse Code's report runs, which
 // a message took over), so that its turn's end leaves it running, and what such a step says (a command Muse Code sent to the
-// background), which outlasts the output its turn's end clears. completed: the final item, with the output streamed for it when
-// the item carries none.
+// background), which outlasts the output its turn's end clears. Output that only goes on from the row's streams on its own, so a
+// command streaming past its turn does not replace its turn's card with each chunk. completed: the final item, with the output
+// streamed for it when the item carries none.
 export function mergeLiveRow(old,item,{phase="started",streamed=""}={}){
   if(phase==="started"||!old)return phase==="completed"?{...item,output:item.output||streamed||""}:item;
   if(phase==="progress"){
-    if(old.title===item.title&&old.kind===item.kind&&old.status===item.status&&!old.raw?.runsPastTurn===!item.raw?.runsPastTurn&&!(item.raw?.runsPastTurn&&item.output&&item.output!==old.output))return old;
+    const said=Boolean(item.raw?.runsPastTurn&&item.output)&&(!old.output||!item.output.startsWith(old.output));
+    if(old.title===item.title&&old.kind===item.kind&&old.status===item.status&&!old.raw?.runsPastTurn===!item.raw?.runsPastTurn&&!said)return old;
     return {...old,...item,output:item.output||old.output};
   }
   return {...old,...item,output:item.output||streamed||old.output||""};

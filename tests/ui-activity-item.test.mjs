@@ -188,6 +188,21 @@ test("live rows merge the same way in the list and in the record a card is seale
   assert.equal(mergeLiveRow(undefined,done,{phase:"completed"}).output,"");
 });
 
+// A command that runs on past its turn (a command Muse Code sent to the background, its report's command a message took over) has its
+// row on its turn's card, which a progress update replaces. What the step says takes the row's output ("Running in the background."), but
+// output that only goes on from the row's streams in every update, and each chunk would replace the card's turn and its conversation.
+test("a step past its turn takes what it says from a progress update, not each chunk of output it streams",()=>{
+  const item=output=>activityRow({id:"dev",type:"commandExecution",command:"npm run dev",status:"inProgress",aggregatedOutput:output,runsPastTurn:true},{turnId:"t1"});
+  const started=mergeLiveRow(null,item(""),{phase:"started"});
+  const said=mergeLiveRow(started,item("Running in the background."),{phase:"progress"});
+  assert.equal(said.output,"Running in the background.","what the step says is its output");
+  assert.equal(mergeLiveRow(said,item("Running in the background.\nListening on 5173"),{phase:"progress"}),said,"a chunk that goes on from the output keeps the row itself");
+  assert.equal(mergeLiveRow(said,item("Running in the background."),{phase:"progress"}),said);
+  assert.equal(mergeLiveRow(said,item("Dev server restarted."),{phase:"progress"}).output,"Dev server restarted.","output that does not go on from the row's is what the step says now");
+  // Its end still brings the whole output.
+  assert.equal(mergeLiveRow(said,{...item("Running in the background.\nDev server stopped."),status:"done"},{phase:"completed"}).output,"Running in the background.\nDev server stopped.");
+});
+
 test("a harness's own retry is one running row per turn, not a failed step, and it settles once the turn goes on or ends",()=>{
   // Native waiting for the network, and Codex reconnecting its stream, as their `error` notifications with willRetry read.
   const native=codexErrorNotice({threadId:"th",turnId:"t1",willRetry:true,error:{message:"Waiting for the network (getaddrinfo ENOTFOUND api.openai.com). Trying again in 15 s."}});
