@@ -905,6 +905,7 @@
 :root:root .context-panel .runtime-trace-row>summary>span:is([data-status="completed"],[data-status="complete"],[data-status="ok"],[data-status="success"],[data-status="succeeded"],[data-status="passed"],[data-status="done"]){background:var(--okt);color:var(--ok)!important}
 :root:root .context-panel .runtime-trace-row>summary>span:is([data-status="failed"],[data-status="error"],[data-status="errored"],[data-status="denied"],[data-status="cancelled"],[data-status="timeout"]){background:var(--errt);color:var(--err)!important}
 :root:root .context-panel .runtime-trace-row>summary>span:is([data-status="started"],[data-status="running"],[data-status="pending"],[data-status="queued"]){background:var(--acsoft);color:var(--ac)!important}
+:root:root .context-panel .runtime-trace-row>summary>span[data-status="warning"]{background:var(--warnt);color:var(--warn)!important}
 :root:root .context-panel .runtime-trace-row[open]>summary{background:var(--surf)}
 :root:root .context-panel .runtime-trace-row>div{padding:0 14px 12px}
 :root:root .context-panel .runtime-trace-row p{margin:0 0 6px;font:400 10.5px/1.45 var(--mono);color:var(--tx3)!important;overflow-wrap:anywhere}
