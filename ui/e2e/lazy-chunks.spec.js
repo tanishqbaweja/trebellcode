@@ -72,11 +72,17 @@ const appStays=async page=>{
 const CANNOT_LOAD=/^This part of Trebell could not be shown: Part of Trebell could not load\. Reload Trebell to get it back\.\s*Reload$/;
 // Settings for the app on the mock server's own harness (Trebell Native), with its first-run setup done.
 const NATIVE_SETTINGS={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"};
-// The page as a person sees it, in dark and in light, at the window's width.
-async function shootModes(page,name){
+// Where a box sits in the right panel's body: how far in from the body's sides (its scrollbar left out) and from its top.
+const insetInPanel=locator=>locator.evaluate(node=>{
+  const body=node.closest(".context-panel-body"),edge=body.getBoundingClientRect(),box=node.getBoundingClientRect(),left=edge.left+body.clientLeft;
+  return {left:Math.round(box.left-left),right:Math.round(left+body.clientWidth-box.right),top:Math.round(box.top-edge.top-body.clientTop)};
+});
+// The page as a person sees it, in dark and in light, at the window's width; check(mode) runs in each before its shot.
+async function shootModes(page,name,check=async()=>{}){
   const {width,height}=page.viewportSize();
   for(const mode of ["dark","light"]){
     await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+    await check(mode);
     await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${width}x${height}.png`});
   }
   await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
@@ -238,6 +244,46 @@ test("a right-panel tab whose code cannot load says so in its place in History's
   await expect(panel.locator(".preview-page")).toBeVisible();await expect(failed).toHaveCount(0);
   await tab("Goal").click();
   await expect(goal).toBeVisible();await expect(failed).toHaveCount(0);
+});
+
+// The reason a right-panel tab could not be shown sits in the panel as the tab's own content does once it loads (the Runtime surface's
+// cards, 14 px in from the panel's sides and top), clear of the panel's divider and the window's edge (it lay flush on both, its
+// rounded corners against them), wide and narrow, dark and light: for the Goal and Browser tabs, whose code loads with them, and for
+// the Runtime tab, whose code (idle-parts.js) loads at idle.
+test("a right-panel tab that cannot load shows its reason inset like the tab's own content, clear of the panel's divider and the window's edge, wide and narrow, dark and light",async({page,request})=>{
+  test.setTimeout(90_000);
+  await request.post("/api/settings",{data:NATIVE_SETTINGS});
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  const panel=page.getByTestId("right-panel"),tab=label=>panel.getByRole("button",{name:label,exact:true}),failed=panel.locator(".context-panel-body > .lazy-slot-error");
+  await page.getByTestId("right-panel-toggle").click();
+  // Where the tab's own content sits: the Runtime surface's first card.
+  await tab("Runtime").click();
+  const card=panel.locator(".runtime-surface > .runtime-summary");await expect(card).toBeVisible();
+  const own=await insetInPanel(card);console.log("the Runtime surface's first card in the panel:",JSON.stringify(own));
+  await page.route(/\/assets\/(GoalPanel|PreviewPage)-[^/]*\.js$/,route=>route.abort("failed"));
+  // Goal by a click, Browser by Enter, and Runtime (below) by a click.
+  const open=label=>label==="Browser"?tab(label).focus().then(()=>page.keyboard.press("Enter")):tab(label).click();
+  const placed=async(labels,widths=[1280,900,700])=>{
+    for(const width of widths){
+      await page.setViewportSize({width,height:800});
+      for(const label of labels){
+        await open(label);
+        await expect(tab(label)).toHaveClass(/\bactive\b/);await expect(failed).toBeVisible();await expect(failed).toHaveAttribute("role","alert");
+        await shootModes(page,`lazy-chunk-${label.toLowerCase()}-tab-cannot-load`,async mode=>expect(await insetInPanel(failed),`${label}'s reason at ${width} px, ${mode}`).toEqual(own));
+      }
+    }
+  };
+  await placed(["Goal","Browser"]);
+  // A Trebell opened with its idle script refused: the Runtime tab cannot load.
+  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>route.abort("failed"));
+  await page.setViewportSize({width:1280,height:800});
+  await page.reload();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByTestId("right-panel-toggle").click();
+  await placed(["Runtime"]);
+  await appStays(page);
 });
 
 // Trebell's own tool catalog loads at idle after the first paint (B11). A new task sent before it has come waits for it and starts
