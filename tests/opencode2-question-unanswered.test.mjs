@@ -41,13 +41,30 @@ test("an OpenCode 2 question the person dismisses is cancelled without a message
 });
 
 test("an OpenCode 2 question left unanswered until the window stops waiting for it is cancelled the same way, and the turn says it was not answered",async()=>{
-  const fake=fakeOpenCode2Client(),session=await startedSession(fake,{onQuestion:async()=>{throw new Error("item/tool/requestUserInput user response timed out")}});
+  // The relay's wait running out, as its time-out says so (USER_RESPONSE_TIMED_OUT, user-response-timeout.mjs).
+  const fake=fakeOpenCode2Client(),session=await startedSession(fake,{onQuestion:async()=>{throw Object.assign(new Error("item/tool/requestUserInput user response timed out"),{code:"USER_RESPONSE_TIMED_OUT"})}});
   try{
     const {ended}=await asked(fake,session);
     await eventually(()=>fake.called("session.form.cancel").length===1);
     assert.deepEqual(fake.called("session.form.cancel"),[{sessionID:"ses_main",formID:"frm_1"}]);
     assert.equal(await outcome(ended),UNANSWERED);
   }finally{await session.close()}
+});
+
+// Only the relay's own time-out leaves a question unanswered. Quitting Trebell rejects the waits it still holds ("The relay closed")
+// before it closes the sessions one by one: the question is cancelled as a Stop cancels it, and the turn ends stopped as its session
+// closes, not failed saying the question was not answered in time.
+test("an OpenCode 2 question whose wait ends because Trebell closes is cancelled with the turn, not as unanswered",async()=>{
+  const fake=fakeOpenCode2Client(),session=await startedSession(fake,{onQuestion:async()=>{throw new Error("The relay closed")}});
+  let closed=false;
+  try{
+    const {ended}=await asked(fake,session);
+    await eventually(()=>fake.called("session.form.cancel").length===1);
+    assert.deepEqual(fake.called("session.form.cancel"),[{sessionID:"ses_main",formID:"frm_1"}]);
+    assert.equal(await outcome(ended),"running","nothing ends the turn as unanswered");
+    closed=true;await session.close();
+    assert.equal(await outcome(ended),"cancelled","the turn ends stopped as its session closes");
+  }finally{if(!closed)await session.close()}
 });
 
 test("a dismissed question whose cancel OpenCode does not take stops the run with Stop, and a subagent's is cancelled while the turn goes on",async()=>{

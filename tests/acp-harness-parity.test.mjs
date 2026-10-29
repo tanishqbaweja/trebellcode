@@ -253,10 +253,10 @@ test("Cursor loads its conversation, and one the harness no longer has is a lost
   const signedOut=await scenario(t,{...CURSOR,errors:{"session/load":{code:-32000,message:"Authentication required"}}});
   const refused=harness(t,signedOut,{runtime:"cursor"});
   await assert.rejects(refused.session.start({providerSessionId:"cursor-thread"}),error=>!(error instanceof HarnessSessionLostError)&&/Cursor could not resume this conversation: Authentication required/.test(error.message));
-  // Neither is a harness whose process ends while it loads.
+  // Neither is a harness whose process ends while it loads: it says it stopped as it started.
   const crashed=await scenario(t,{...CURSOR,exitOn:{"session/load":3}});
   const dying=harness(t,crashed,{runtime:"cursor"});
-  await assert.rejects(dying.session.start({providerSessionId:"cursor-thread"}),error=>!(error instanceof HarnessSessionLostError)&&/Cursor could not resume this conversation/.test(error.message));
+  await assert.rejects(dying.session.start({providerSessionId:"cursor-thread"}),error=>!(error instanceof HarnessSessionLostError)&&error.message==="Cursor stopped as it started, with exit code 3.");
 });
 
 test("Cursor pins the thread's model in every session and sets effort with the model's own effort option",async t=>{
@@ -704,6 +704,65 @@ test("Stop withdraws an ACP harness's waiting approval card and answers the harn
   assert.equal((await completed).params.turn.status,"cancelled");
   assert.ok(await until(async()=>reply(await fx.log(),"session/request_permission")));
   assert.deepEqual(reply(await fx.log(),"session/request_permission"),{outcome:{outcome:"cancelled"}});
+});
+
+// A harness may run a call it calls pending: Antigravity's commands and Cursor's edits go from pending to completed with nothing in
+// between. One its turn was stopped or failed with may have run, so it ends stopped, in the thread and in the open window before the
+// turn's end, where it read "not run" (the ACP client marks a turn's unfinished calls cancelled). A call still pending once its turn
+// completed did not run; work that runs on past its turn (runsPastTurn) is left to its own updates.
+test("a call still pending when its turn is stopped or fails ends stopped before the turn's end, and one its completed turn never started stays pending",async t=>{
+  const pending=(toolCallId,title,kind,extra={})=>({update:{sessionUpdate:"tool_call",toolCallId,title,kind,status:"pending",...extra}});
+  const fx=await scenario(t,{...GROK,prompts:[
+    {steps:[pending("edit","Edit File","edit"),pending("agent","Workflow · ping","other",{runsPastTurn:true}),{hang:true}]},
+    {steps:[pending("echo","echo PARITY","execute")],error:{code:-32603,message:"Internal error",data:{message:"The connection to the model dropped."}}},
+    {steps:[pending("lint","npm run lint","execute")]},
+  ]});
+  const {ws,rpc,next,threadStore}=await relayHarness(t,"grok",fx);
+  const started=await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"}),threadId=started.thread.id;
+  const sent=[];ws.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method==="item/completed"||message.method==="turn/completed")sent.push(message)});
+  // What the window was told of each call by the turn's end, and the turn's status: the completions before turn/completed, then its status.
+  // stopAt: the call whose start the person sees before pressing Stop.
+  const ended=async(start,stopAt=null)=>{
+    const first=sent.length,began=stopAt?next(message=>message.method==="item/started"&&message.params.item?.id===stopAt):null,completed=next(message=>message.method==="turn/completed");
+    await rpc("turn/start",{threadId,input:[{type:"text",text:start}]});
+    if(stopAt){await began;await rpc("turn/interrupt",{threadId})}
+    const turn=(await completed).params.turn,before=sent.slice(first,sent.indexOf(sent.find((message,index)=>index>=first&&message.method==="turn/completed")));
+    return {status:turn.status,told:before.filter(message=>message.method==="item/completed").map(message=>[message.params.item.id,message.params.item.status])};
+  };
+  const stored=()=>Object.fromEntries(threadStore.get(threadId).turns.flatMap(turn=>turn.items).filter(item=>item.type!=="userMessage"&&item.type!=="agentMessage").map(item=>[item.id,item.status]));
+  assert.deepEqual(await ended("edit the notes","agent"),{status:"cancelled",told:[["edit","stopped"]]},"the stopped turn's pending edit ends stopped; the workflow's agent is left to its own updates");
+  assert.deepEqual(await ended("run it"),{status:"failed",told:[["echo","stopped"]]});
+  assert.deepEqual(await ended("lint it"),{status:"completed",told:[]},"a completed turn leaves its call pending, which the window reads as not run");
+  assert.deepEqual(stored(),{edit:"stopped",agent:"pending",echo:"stopped",lint:"pending"});
+});
+
+// A build before the relay ended such calls stopped stored them pending in their stopped or failed turn, and a turn a Trebell restart
+// ended (interrupted, or failed) kept them so too: every read of the thread gives them stopped, as the relay ends them now, whichever
+// read the window opens the thread with. A call its completed turn never started stays pending (the window reads it not run), and
+// work that runs on past its turn is left to its own updates. The stored thread is left as it was.
+test("a call an earlier build stored pending in a turn that was stopped, failed or cut off by a restart reads stopped in every read of the thread",async t=>{
+  const fx=await scenario(t,{...GROK,prompts:[]});
+  const {rpc,threadStore}=await relayHarness(t,"grok",fx);
+  const thread=threadStore.create({runtime:"grok",cwd:fx.root,providerSessionId:"grok-session"});
+  const pending=(id,extra={})=>({type:"commandExecution",id,command:"Run "+id,cwd:"",processId:null,source:"agent",status:"pending",commandActions:[],aggregatedOutput:null,exitCode:null,durationMs:null,...extra});
+  const ended=(status,items)=>{const turn=threadStore.addTurn(thread.id,{inputText:"turn "+status,items});threadStore.finishTurn(thread.id,turn.id,{status});return turn.id};
+  const ids=[
+    ended("cancelled",[{type:"fileChange",id:"edit",status:"pending",changes:[{path:"notes.txt",kind:"edit"}]},pending("agent",{runsPastTurn:true}),pending("ran",{status:"completed",aggregatedOutput:"ok"})]),
+    ended("failed",[pending("echo")]),ended("interrupted",[pending("deploy")]),ended("completed",[pending("lint")]),
+  ];
+  const statuses=items=>Object.fromEntries((items||[]).filter(item=>item.type!=="userMessage").map(item=>[item.id,item.status]));
+  const byTurn=turns=>Object.fromEntries((turns||[]).map(turn=>[turn.id,statuses(turn.items)]));
+  const read={[ids[0]]:{edit:"stopped",agent:"pending",ran:"completed"},[ids[1]]:{echo:"stopped"},[ids[2]]:{deploy:"stopped"},[ids[3]]:{lint:"pending"}};
+  const entries=(await rpc("thread/items/list",{threadId:thread.id,sortDirection:"asc"})).data,oneTurn={};
+  for(const id of ids)oneTurn[id]=statuses((await rpc("thread/items/list",{threadId:thread.id,turnId:id,sortDirection:"desc"})).data.map(entry=>entry.item));
+  assert.deepEqual({
+    "thread/read":byTurn((await rpc("thread/read",{threadId:thread.id})).thread.turns),
+    "thread/resume":byTurn((await rpc("thread/resume",{threadId:thread.id})).thread.turns),
+    "thread/turns/list":byTurn((await rpc("thread/turns/list",{threadId:thread.id,sortDirection:"asc",itemsView:"full"})).data),
+    "thread/items/list":Object.fromEntries(ids.map(id=>[id,statuses(entries.filter(entry=>entry.turnId===id).map(entry=>entry.item))])),
+    "thread/items/list of one turn":oneTurn,
+  },{"thread/read":read,"thread/resume":read,"thread/turns/list":read,"thread/items/list":read,"thread/items/list of one turn":read});
+  assert.deepEqual(byTurn(threadStore.get(thread.id).turns),{[ids[0]]:{edit:"pending",agent:"pending",ran:"completed"},[ids[1]]:{echo:"pending"},[ids[2]]:{deploy:"pending"},[ids[3]]:{lint:"pending"}},"the stored thread is left as it was");
 });
 
 test("in Grok Auto the requests Grok asks about reach the user even when Trebell's policy would allow them",async t=>{

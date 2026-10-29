@@ -34,6 +34,8 @@ export function threadHistoryEntry(item){
     return {role:"activity",label:`command · exit code ${Number.isInteger(item.exitCode)?item.exitCode:"unknown"}`,text:[command,output?tail(output,HISTORY_COMMAND_OUTPUT_LIMIT):""].filter(Boolean).join("\n")};
   }
   if(item.type==="fileChange"){
+    // Claude Code's TodoWrite as the relay stored it before Claude's lists showed as the plan only: a to-do list, no file change.
+    if(Array.isArray(item.rawInput?.todos)&&!item.changes?.length&&!item.rawInput.file_path&&!item.rawInput.notebook_path)return null;
     const files=(Array.isArray(item.changes)?item.changes:[]).map(change=>{const kind=change?.kind?.type||change?.kind||"edit";return `${kind} ${String(change?.path||"").trim()}`.trim()}).filter(Boolean);
     return {role:"activity",label:"file change",text:files.join("\n")||"(files not named)"};
   }

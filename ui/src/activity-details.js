@@ -123,10 +123,11 @@ export function nativeEditChanges(item){
   return [{path,kind:"edit",diff}];
 }
 
-// The Runtime panel's "N/M steps complete": a step is complete once it has an outcome. It succeeded, failed or was declined, or
-// it is a notice (a warning or an error row, or a verification whose checks could not run). A step that runs or waits to run is
-// not, and neither is a planned verification (incomplete) whose checks have not run yet, nor a status this list does not know.
-const FINISHED_STEP_STATUSES=new Set(["done","completed","failed","declined","error","warning","cancelled","canceled","interrupted"]);
+// The Runtime panel's "N/M steps complete": a step is complete once it has an outcome. It succeeded, failed or was declined, its
+// turn ended before it started (notRun, activity-item.js settledRow) or was stopped or failed with it cut off (stopped), or it is a
+// notice (a warning or an error row, or a verification whose checks could not run). A step that runs or waits to run is not, and
+// neither is a planned verification (incomplete) whose checks have not run yet, nor a status this list does not know.
+const FINISHED_STEP_STATUSES=new Set(["done","completed","failed","declined","error","warning","cancelled","canceled","interrupted","notRun","stopped"]);
 export function finishedActivitySteps(events){
   return (events||[]).filter(event=>FINISHED_STEP_STATUSES.has(event?.status)).length;
 }

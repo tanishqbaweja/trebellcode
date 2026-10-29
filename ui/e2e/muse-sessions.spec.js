@@ -271,6 +271,53 @@ test("a Muse Code workflow still running past its turn keeps running on that tur
   }finally{await harness.close()}
 });
 
+test("a command Muse Code sends to the background reads running on its turn's card past that turn's end, after a reload and the next message, until Muse tells its end, then done there",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness({holds:["background"]});
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    await send(page,"Please start the dev server in the background");
+    await expect(reply(page,"The dev server runs in the background.")).toBeVisible({timeout:20_000});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
+    // Muse settles the call as it sends it to the background, and the dev server runs on until the test lets Muse tell its end. Soft,
+    // so that the old code also shows what the row says at each step.
+    const [thread]=harness.threadStore.list(),launchedId=harness.threadStore.get(thread.id).turns[0].id;
+    const card=page.locator(`[data-testid=activity-card][data-turn-id="${launchedId}"]`),dev=row(card,/^npm run dev$/);
+    const open=async()=>{if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click()};
+    await expect(card).toHaveCount(1);await open();
+    await expect.soft(dev,"the dev server runs on past its turn's end").toHaveClass(/status-running/);
+    await expect.soft(dev.locator("summary em")).toHaveText("running");
+    await dev.locator("summary").click();
+    await expect(dev.locator(".tool-event-body")).toContainText("Running in the background.");
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await dev.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-background-command-runs-past-turn-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    // The window reloaded and the thread opened again: its card, rebuilt from the thread's history, has the command still running.
+    await page.reload();
+    const listed=page.locator(".thread-row").filter({hasText:"Please start the dev server in the background"});
+    await listed.locator(".thread-main").click();await expect(listed).toHaveClass(/active/);
+    await expect(reply(page,"The dev server runs in the background.")).toBeVisible({timeout:20_000});
+    await expect(card).toHaveCount(1);await open();
+    await expect.soft(dev,"still running after a reload").toHaveClass(/status-running/);
+    // The person's next message runs and ends; the command still runs on its own turn's card, on no other.
+    await send(page,"Hello Muse");
+    await expect(reply(page,"Muse fixture reply")).toBeVisible({timeout:20_000});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:20_000});
+    await open();
+    await expect.soft(dev,"still running past the next message").toHaveClass(/status-running/);
+    // Muse tells the command's end: the row settles there, done with the command's last words.
+    await harness.release("background");
+    await expect(dev,"its end settles it").toHaveClass(/status-done/,{timeout:20_000});
+    await expect(dev.locator("summary em")).toHaveText("done");
+    if(!await dev.locator(".tool-event-body").count())await dev.locator("summary").click();
+    await expect(dev.locator(".tool-event-body")).toContainText("Dev server stopped.");
+    await expect(page.locator(".activity-card").filter({hasText:"npm run dev"}),"on that card only").toHaveCount(1);
+    await expect(page.locator(".tool-event").filter({hasText:"npm run dev"})).toHaveCount(1);
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await dev.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-background-command-ended-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
+
 test("a command Muse Code's report still runs when the person's message takes the report over goes on running in the report's card past the report's end and settles there, never in that message's",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startMuseHarness({environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1",MUSE_FAKE_REPORT_COMMAND:"1"},holds:["report_command"]});

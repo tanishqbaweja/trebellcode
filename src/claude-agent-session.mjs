@@ -42,6 +42,8 @@ const CLAUDE_SUBAGENT_TOOLS=new Set(["Agent","Task"]);
 const CLAUDE_TASK_TOOLS=new Set(["TaskCreate","TaskUpdate","TaskList"]);
 const CLAUDE_TASK_STATUSES=new Set(["pending","in_progress","completed"]);
 export const CLAUDE_COMPACT_FAILED="Claude Code could not compact its context.";
+// What the row of a background task says when its Claude Code ended first (Stop, Edit from here, its release or its exit), which ends it.
+const CLAUDE_TASK_STOPPED="Claude Code stopped before this finished.";
 const CLAUDE_EFFORTS=new Set(["low","medium","high","xhigh","max"]);
 const CLAUDE_IMAGE_TYPES=new Set(["image/gif","image/jpeg","image/png","image/webp"]);
 const CLAUDE_INTERRUPT_TIMEOUT_MS=10_000;
@@ -88,6 +90,8 @@ function editTool(name){return new Set(["Edit","Write","MultiEdit","NotebookEdit
 function toolKind(name){
   const value=String(name||"").toLowerCase();
   if(["read","glob","grep","ls"].some(x=>value.includes(x)))return "read";
+  // TodoWrite writes a to-do list, not a file (T3 Code's todowrite is no file change either).
+  if(value==="todowrite")return "other";
   if(["edit","write","notebook"].some(x=>value.includes(x)))return "edit";
   if(["bash","shell","powershell"].some(x=>value.includes(x)))return "execute";
   if(value.includes("web")||value.includes("fetch"))return "fetch";
@@ -432,8 +436,9 @@ export class ClaudeAgentSession{
     // A fork or rewind that has not run yet: the first query resumes the source at the cursor into this session's new id.
     this.pendingFork=forkFromSessionId?{sourceSessionId:forkFromSessionId,targetSessionId:null,resumeSessionAt:resumeSessionAt||null}:null;
     this.live=null;this.turn=null;this.idleTimer=null;this.tools=new Map();
-    // taskCalls: the task tool calls without a result yet, by id; taskLists: each Claude session's task list, by its id.
-    this.taskCalls=new Map();this.taskLists=new Map();
+    // taskCalls: the task tool calls without a result yet, by id, and todoCalls the TodoWrite calls; taskLists: each Claude session's
+    // task list, by its id.
+    this.taskCalls=new Map();this.todoCalls=new Set();this.taskLists=new Map();
     // contextWindows: Claude Code's window for each model it ran (getContextUsage), asked once. meter: what the context meter last
     // showed (the total, its cost and the context, with the turns the total and the cost are of), and request the latest root
     // request's usage as its stream reports it.
@@ -602,7 +607,8 @@ export class ClaudeAgentSession{
   }
   async delete(){await this.close();this.#requireHostSessionHelper("delete");return (await this.#loadSdk()).deleteSession(this.sessionId,{dir:this.cwd})}
 
-  #emit(update){this.onUpdate?.({sessionId:this.sessionId,update})}
+  // turnKey: the turn that the row of work running on past its turn stays in (agent-relay handleUpdate keeps it there).
+  #emit(update,turnKey=null){this.onUpdate?.({sessionId:this.sessionId,...(turnKey?{turnKey}:{}),update})}
   #probeInput(cwd=this.cwd){return {command:this.command,cwd,env:this.env,spawnProcess:this.spawnProcess,scope:this.capabilityScope}}
   #loadInventory(){
     // This folder's commands and agents only: plan usage is the model list's machine-wide probe's to read.
@@ -693,8 +699,9 @@ export class ClaudeAgentSession{
     const runtime=this.sdk.query({prompt:input,options});
     // resumed: the session this query asked Claude Code to resume, which it may no longer have.
     // failure: what ended the process's messages; stopped: Stop or close ended it. foregroundSubagents: the root turn's subagent calls
-    // that wait on their subagent (no result yet); subagentMoves: the moves to the background steers asked for, by call.
-    const live={query:runtime,input,key,fork,proc,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),foregroundSubagents:new Set(),subagentMoves:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,failure:null,stopped:false,pump:null};
+    // that wait on their subagent (no result yet); subagentMoves: the moves to the background steers asked for, by call. id: what the
+    // turn keys of its background tasks' rows start with (#taskRow).
+    const live={id:randomUUID(),query:runtime,input,key,fork,proc,resumed:!fork&&this.startedOnce?this.sessionId:null,closed:false,sawInit:false,echoes:false,costBase:0,backgroundTasks:new Map(),foregroundSubagents:new Set(),subagentMoves:new Map(),permissionMode:policy.permissionMode,openedPermissionMode:policy.permissionMode,failure:null,stopped:false,pump:null};
     this.live=live;
     live.pump=this.#pump(live);
     Promise.resolve(runtime.initializationResult?.()).then(init=>{
@@ -752,7 +759,10 @@ export class ClaudeAgentSession{
     let failure=null;
     try{for await(const message of {[Symbol.asyncIterator]:()=>live.query})this.#handle(live,message)}
     catch(error){failure=withStderrTail(error,live.proc)}
-    live.closed=true;live.failure=failure;live.input.end();live.backgroundTasks=new Map();
+    live.closed=true;live.failure=failure;live.input.end();
+    // Its background tasks end with it, each row in the turn it started in.
+    for(const [id,task] of live.backgroundTasks)this.#taskRow(live,id,task,"failed");
+    live.backgroundTasks=new Map();
     if(this.live===live)this.live=null;
     const turn=this.turn;
     if(turn&&turn.live===live&&!turn.settled){turn.queryError=failure;this.#finishTurn(turn)}
@@ -858,16 +868,19 @@ export class ClaudeAgentSession{
     this.tools.set(block.id,tool);
     if(live&&CLAUDE_SUBAGENT_TOOLS.has(String(block.name))&&block.input?.run_in_background!==true)live.foregroundSubagents.add(block.id);
     if(CLAUDE_TASK_TOOLS.has(String(block.name)))this.taskCalls.set(block.id,{name:String(block.name),input:block.input});
+    // The root's TodoWrite list is the thread's plan (T3 Code's emitClaudePlanProjection); a subagent's is its own. Either edits no
+    // file and is no step of the turn unless it failed (#toolResult), as with Muse Code's to-do list.
+    if(block.name==="TodoWrite"){this.todoCalls.add(block.id);if(live)this.#emit({sessionUpdate:"plan",entries:claudeTodoEntries(block.input)});return}
     this.#emit({sessionUpdate:"tool_call",toolCallId:block.id,...tool,status:"in_progress"});
-    // The root's TodoWrite list is the thread's plan (T3 Code's emitClaudePlanProjection); a subagent's is its own.
-    if(live&&block.name==="TodoWrite")this.#emit({sessionUpdate:"plan",entries:claudeTodoEntries(block.input)});
   }
   // structured: the tool's structured result (tool_use_result); meta: Claude Code's notes on the message's results (tool_result_meta).
   #toolResult(block,live=null,{structured,meta}={}){
     if(!block?.tool_use_id)return;
     live?.foregroundSubagents.delete(block.tool_use_id);
     const tool=this.tools.get(block.tool_use_id)||{title:"Tool",kind:"other",rawInput:{}};this.tools.delete(block.tool_use_id);
-    this.#emit({sessionUpdate:"tool_call_update",toolCallId:block.tool_use_id,...tool,status:block.is_error?"failed":"completed",rawOutput:toolResultText(block.content)});
+    // A TodoWrite that failed shows, as the call it is, once it ends.
+    const todo=this.todoCalls.delete(block.tool_use_id);
+    if(!todo||block.is_error)this.#emit({sessionUpdate:todo?"tool_call":"tool_call_update",toolCallId:block.tool_use_id,...tool,status:block.is_error?"failed":"completed",rawOutput:toolResultText(block.content)});
     // A task tool call that failed, or that never ran (cancelled), changed no task.
     const call=this.taskCalls.get(block.tool_use_id);if(!call)return;
     this.taskCalls.delete(block.tool_use_id);
@@ -1098,13 +1111,24 @@ export class ClaudeAgentSession{
     turn.notices.add(noticeKey(text));
     this.#emit({sessionUpdate:"tool_call",toolCallId:`claude-notice:${message.uuid||randomUUID()}`,title:text,kind:"other",status:"completed",rawInput:{},rawOutput:message});
   }
+  // Claude Code's background tasks (its shells and agents in the background), listed whole on each change; an ambient one is no work
+  // of the thread's. Each has a row that runs on past the turn it started in (runsPastTurn) and stays in that turn (turnKey), until
+  // Claude Code no longer lists it, or its process ends (#pump), which ends it too. Meanwhile a read of the thread says it still runs
+  // (followsWork), as Muse Code's work past its turn does.
   #backgroundTasks(live,message){
     const next=new Map();
     for(const task of Array.isArray(message.tasks)?message.tasks:[])if(task?.task_id&&!task.ambient)next.set(task.task_id,task);
-    for(const [id,task] of live.backgroundTasks)if(!next.has(id))this.#emit({sessionUpdate:"tool_call_update",toolCallId:id,title:task.description||task.task_type||"Background task",kind:"other",status:"completed",rawOutput:task});
-    for(const [id,task] of next)if(!live.backgroundTasks.has(id))this.#emit({sessionUpdate:"tool_call_update",toolCallId:id,title:task.description||task.task_type||"Background task",kind:"other",status:"in_progress",rawOutput:task});
+    for(const [id,task] of live.backgroundTasks)if(!next.has(id))this.#taskRow(live,id,task,"completed");
+    for(const [id,task] of next)if(!live.backgroundTasks.has(id))this.#taskRow(live,id,task,"in_progress");
     live.backgroundTasks=next;
   }
+  #taskRow(live,id,task,status){
+    const title=task.description||task.task_type||"Background task";
+    this.#emit({sessionUpdate:"tool_call_update",toolCallId:id,title:status==="failed"?`${title}: ${CLAUDE_TASK_STOPPED}`:title,kind:"other",status,rawOutput:task,runsPastTurn:true},`${live.id}:${id}`);
+  }
+  // Whether the row of that id is of a background task this session's Claude Code still runs, which a read of the thread says still
+  // runs (agent-relay withLiveWork).
+  followsWork(id){const live=this.live;return Boolean(live&&!live.closed&&live.backgroundTasks.has(String(id||"")))}
   // A rejected usage window pauses the turn: say so once per window and reset time (T3 Code's usage-limit notice).
   #rateLimit(message){
     const info=message.rate_limit_info,turn=this.turn&&!this.turn.settled?this.turn:null;if(!info||!turn)return;

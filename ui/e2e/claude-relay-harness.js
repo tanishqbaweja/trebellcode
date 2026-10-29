@@ -91,11 +91,14 @@ export async function startClaudeRelay({turn,control={},mcpServers=null,claudeHo
 // composer in permissionMode, and a message sent while a turn runs queued or steered into it (followUpMode).
 export async function routeClaudeApp(page,harness,{permissionMode="full",followUpMode="queue"}={}){
   const repo=harness.repo,project={id:"claude-relay-project",name:"Claude Relay Project",path:repo,environmentId:null,effectiveSettings:{}};
-  let uiMeta={projectless:false,environmentId:null,cwd:repo,runtime:"claude",runtimeInstanceId:CLAUDE.id,permissionMode};
+  const baseMeta={projectless:false,environmentId:null,cwd:repo,runtime:"claude",runtimeInstanceId:CLAUDE.id,permissionMode};
+  // Each thread's meta is its own, as the server keeps it: a patch the page posts for one thread changes only that thread's.
+  const metaById=new Map(),metaOf=id=>metaById.get(id)||baseMeta;
+  let uiMeta=baseMeta;
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:CLAUDE.id,modelProvider:"openai",defaultPermissionMode:permissionMode,defaultWorkspaceMode:"current",followUpMode};
   const status={id:CLAUDE.id,kind:"claude",name:"Claude Code",available:true,installed:true,authenticated:true,version:"fixture"};
   await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"claude",agentRuntimeInstanceId:CLAUDE.id,agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:repo,platform:process.platform,version:"claude-relay-fixture",activeEnvironmentId:null,activeEnvironment:null}));
-  await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[project],activeProjectId:project.id,threadMeta:Object.fromEntries(harness.threads.map(thread=>[thread.id,uiMeta]))}));
+  await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[project],activeProjectId:project.id,threadMeta:Object.fromEntries(harness.threads.map(thread=>[thread.id,metaOf(thread.id)]))}));
   // A setting the page saves (the light and dark toggle) holds for its later reads.
   await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(settings,route.request().postDataJSON()||{});return json(route,settings)});
   await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,MODELS));
@@ -103,7 +106,16 @@ export async function routeClaudeApp(page,harness,{permissionMode="full",followU
   await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{project}:{projects:[project]}));
   await page.route(/\/api\/worktree\/ensure$/,route=>json(route,{ok:true}));
   await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:false,cwd:repo,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]}));
-  await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST")uiMeta={...uiMeta,...(route.request().postDataJSON()?.patch||{})};await json(route,uiMeta)});
+  await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{
+    const request=route.request();
+    if(request.method()==="POST"){
+      const {threadId,patch={}}=request.postDataJSON()||{},meta={...metaOf(threadId),...patch};
+      if(threadId)metaById.set(threadId,meta);uiMeta={...uiMeta,...patch};
+      return json(route,meta);
+    }
+    const threadId=new URL(request.url()).searchParams.get("threadId");
+    await json(route,threadId?metaOf(threadId):uiMeta);
+  });
   await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{id:"claude-relay-checkpoint-"+Date.now(),threadId:harness.threads[0]?.id||null}:{checkpoints:[]}));
   await page.route(/\/api\/checkpoints\/link$/,route=>json(route,{ok:true}));
   await page.route(/\/api\/context\/packet$/,route=>json(route,{id:"claude-relay-context",skipped:true,budget:{reserveTokens:1024}}));

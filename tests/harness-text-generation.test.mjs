@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { HARNESS_TEXT_INSTRUCTIONS, HARNESS_TEXT_TIMEOUT_MS, OPENCODE_GIT_TEXT_CONFIG, acpReadOnlyMode, claudeTextModel, codexGitTextConfig, declineCodexServerRequest, denyAcpRequest, generateTextWithHarness, harnessTextTimeout, OPENCODE_GIT_TEXT_PERMISSION, OPENCODE_GIT_TEXT_REFUSAL } from "../src/harness-text-generation.mjs";
 
@@ -430,6 +431,8 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",asy
   let m;try{m=JSON.parse(line)}catch{return}
   if(m.id!=null&&!m.method){const resolve=pending.get(m.id);pending.delete(m.id);resolve?.(m);return}
   if(m.method){record.order.push(m.method);save()}
+  // TREBELL_ACP_EXIT_AT: the request at which the process prints TREBELL_ACP_EXIT_STDERR and exits with TREBELL_ACP_EXIT_CODE.
+  if(m.method&&m.method===env.TREBELL_ACP_EXIT_AT)return process.stderr.write(env.TREBELL_ACP_EXIT_STDERR||"",()=>process.exit(Number(env.TREBELL_ACP_EXIT_CODE)||1));
   if(m.method==="initialize"){record.initialize=m.params;save();return send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"git-text-fixture"},agentCapabilities:{sessionCapabilities:env.TREBELL_ACP_DELETE==="1"?{close:{},delete:{}}:{close:{}}}}})}
   if(m.method==="session/new"){record.sessionCwd=m.params.cwd;save();return send({jsonrpc:"2.0",id:m.id,result:{sessionId:"acp-git-text",models:{currentModelId:"fast",availableModels:[{modelId:"fast",name:"Fast"},{modelId:"smart",name:"Smart"}]},modes:{currentModeId:modes[0]||null,availableModes:modes.map(id=>({id,name:id}))}}})}
   if(m.method==="session/set_mode"||m.method==="session/set_config_option"){
@@ -511,6 +514,58 @@ test("ACP adapter cancels a prompt that is still running when the request times 
     assert.ok(record.order.indexOf("session/cancel")<record.order.indexOf("session/close"),"the prompt is cancelled before the session closes");
     await scratchRemoved(record.sessionCwd);
   }finally{await acp.cleanup()}
+});
+
+// An ACP harness whose process ends as it starts (it printed Google's sign-in line, or crashed) says so in its Git text failure as a
+// chat's message says it: the harness, its exit code and what it printed, and for a sign-in, where the harness signs in, not the ACP
+// client's "ACP runtime exited code=3 signal=null" with a link the message hides. The stand-in is Antigravity's (antigravity-acp-agent.mjs).
+test("an ACP harness that stops as it starts says why in plain words when it cannot write the Git text",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-git-text-exit-"));t.after(()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100}));
+  const agent=fileURLToPath(new URL("./fixtures/antigravity-acp-agent.mjs",import.meta.url)),KEY="AIzaSyTrebellFixtureKey0123456789abcdef";
+  const write=async(kind,scenario,env={})=>{
+    const path=join(root,kind+"-scenario.json");await writeFile(path,JSON.stringify(scenario));
+    const manager=fakeRuntimeManager(kind,{executable:()=>process.execPath,childEnv:()=>({...childBaseEnv(),TREBELL_AGY_SCENARIO:path,...env}),acpArgs:()=>[agent]});
+    return generateTextWithHarness({runtimeManager:manager,prompt:"PROMPT",cwd:root});
+  };
+  const SIGN_IN="Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture&state=oauth-state-value&redirect_uri=http://127.0.0.1:4567/\n";
+  await assert.rejects(()=>write("antigravity",{exitAt:"initialize",exitCode:3,stderr:SIGN_IN},{GEMINI_API_KEY:KEY}),error=>{
+    assert.equal(error.code,"HARNESS_TEXT_FAILED");
+    assert.equal(error.message,"Antigravity could not write the Git text: Antigravity stopped as it started, with exit code 3, asking for a Google sign-in, though it runs on the Google Gemini API key saved in Settings. Check that key there, then try again.");
+    return true;
+  });
+  await assert.rejects(()=>write("cursor",{exitAt:"initialize",exitCode:3,stderr:SIGN_IN}),{message:"Cursor could not write the Git text: Cursor stopped as it started, with exit code 3, asking for a Google sign-in. Sign in to Cursor in Settings, then try again."});
+  await assert.rejects(()=>write("grok",{exitAt:"session/new",exitCode:4,stderr:"panic: the session store is locked\n"},{GEMINI_API_KEY:KEY}),{message:"Grok Build could not write the Git text: Grok Build stopped as it started, with exit code 4: panic: the session store is locked"});
+});
+
+// Setting the Git text session's read-only mode and its model are the start's last steps (Cursor gets an explicit model on every
+// request): a harness whose process ends there ended as it started too, and says so in the same plain words, not that it "could not
+// switch to model ...: ACP runtime exited code=3 signal=null" with the link the message hides, nor only that it could not switch modes.
+test("an ACP harness that stops as it sets the Git text session's mode or model says why in plain words",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-git-text-config-exit-"));t.after(()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100}));
+  const SIGN_IN="Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture&state=oauth-state-value&redirect_uri=http://127.0.0.1:4567/\n";
+  // Antigravity sets the thread's model through its model config option (antigravity-acp-agent.mjs), which it ends at.
+  const agent=fileURLToPath(new URL("./fixtures/antigravity-acp-agent.mjs",import.meta.url)),KEY="AIzaSyTrebellFixtureKey0123456789abcdef",scenario=join(root,"antigravity-scenario.json");
+  await writeFile(scenario,JSON.stringify({exitAt:"session/set_config_option",exitCode:3,stderr:SIGN_IN}));
+  const antigravity=fakeRuntimeManager("antigravity",{executable:()=>process.execPath,childEnv:()=>({...childBaseEnv(),TREBELL_AGY_SCENARIO:scenario,GEMINI_API_KEY:KEY}),acpArgs:()=>[agent]});
+  const failure=async run=>{try{await run();return "written"}catch(error){return [error.code,error.message]}};
+  const said=[await failure(()=>generateTextWithHarness({runtimeManager:antigravity,prompt:"PROMPT",cwd:root,models:["gemini-fixture-pro"]}))];
+  // Cursor switches to its read-only ask mode (it opens in agent), then to the thread's model; it ends at the one, then at the other.
+  for(const env of [
+    {TREBELL_ACP_EXIT_AT:"session/set_mode",TREBELL_ACP_EXIT_CODE:"5",TREBELL_ACP_EXIT_STDERR:"panic: the ask mode's sandbox could not start\n"},
+    {TREBELL_ACP_MODES:"ask,agent",TREBELL_ACP_EXIT_AT:"session/set_model",TREBELL_ACP_EXIT_CODE:"3",TREBELL_ACP_EXIT_STDERR:SIGN_IN},
+  ]){
+    const acp=await acpFixture("trebell-acp-git-text-config-exit-");
+    try{
+      said.push(await failure(()=>generateTextWithHarness({runtimeManager:localAcpManager("cursor",acp,env),prompt:"PROMPT",cwd:acp.root,models:["smart"]})));
+      const record=await acp.record();
+      assert.equal(record.order.at(-1),env.TREBELL_ACP_EXIT_AT,"the process ended at that step");assert.equal(record.prompt,null,"no prompt was sent");
+    }finally{await acp.cleanup()}
+  }
+  assert.deepEqual(said,[
+    ["HARNESS_TEXT_FAILED","Antigravity could not write the Git text: Antigravity stopped as it started, with exit code 3, asking for a Google sign-in, though it runs on the Google Gemini API key saved in Settings. Check that key there, then try again."],
+    ["HARNESS_TEXT_FAILED","Cursor could not write the Git text: Cursor stopped as it started, with exit code 5: panic: the ask mode's sandbox could not start"],
+    ["HARNESS_TEXT_FAILED","Cursor could not write the Git text: Cursor stopped as it started, with exit code 3, asking for a Google sign-in. Sign in to Cursor in Settings, then try again."],
+  ]);
 });
 
 function remoteOpenCodeManager(acp,{env={},spawned=[]}={}){

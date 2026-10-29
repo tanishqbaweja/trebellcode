@@ -23,10 +23,11 @@ function processError(command,error){
   const detail=error instanceof Error?error.message:String(error);
   return new Error(`Could not start ACP runtime '${command}': ${detail}`);
 }
+// processExit: how the process ended and its log excerpt, for what started it to say in plain words (acp-start-exit.mjs).
 function processExitError(code,signal,stderr,environment){
   const base=`ACP runtime exited code=${code} signal=${signal}`;
   const detail=sanitizeAcpStderrExcerpt(stderr,environment);
-  return new Error(detail?base+"\n"+detail:base);
+  return Object.assign(new Error(detail?base+"\n"+detail:base),{processExit:{code,signal,excerpt:detail}});
 }
 
 // A JSON-RPC error keeps its code and data. Agents put the useful text in data.message (or in

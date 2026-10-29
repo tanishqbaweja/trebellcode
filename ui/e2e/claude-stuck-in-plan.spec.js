@@ -45,7 +45,7 @@ test("a message to Claude Code stuck in the Plan mode Claude switched to, with a
     control:{setPermissionMode:mode=>{throw new Error(`Cannot set permission mode to ${mode} now`)}},
   });
   try{
-    harness.seedThread("Watcher fix",{permissionProfile:"edits"});
+    const thread=harness.seedThread("Watcher fix",{permissionProfile:"edits"});
     await routeClaudeApp(page,harness,{permissionMode:"edits"});
     await page.goto("/");await openThread(page,"Watcher fix");
     const composer=page.getByTestId("composer");
@@ -58,6 +58,12 @@ test("a message to Claude Code stuck in the Plan mode Claude switched to, with a
     const refusal=page.locator(".agent-block .tool-event.kind-error").filter({hasText:"Plan mode"});
     await expect.soft(refusal,"the refusal names what holds the message back, and how to go on").toContainText(STUCK_IN_PLAN,{timeout:15_000});
     await expect.soft(page.getByText("this model or setting change would end them"),"no change of the person's is blamed").toHaveCount(0);
+    // The watcher's row on the first turn's card agrees with the refusal: the watcher still runs.
+    const card=page.locator(`[data-testid=activity-card][data-turn-id="${harness.threadStore.get(thread.id).turns[0].id}"]`);
+    const watcherRow=card.locator(".tool-event").filter({has:page.locator("summary strong",{hasText:/^npm run watch/})});
+    const openCard=async()=>{if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click()};
+    await openCard();
+    await expect.soft(watcherRow.locator("summary em"),"the watcher's row says it still runs, as the refusal does").toHaveText("running");
     await shootBoth(page,"claude-stuck-in-plan-refusal");
     expect(watcher.ended,"the refusal leaves the watcher running").toBe(false);
 
@@ -68,11 +74,68 @@ test("a message to Claude Code stuck in the Plan mode Claude switched to, with a
     await expect(composer).toBeFocused({timeout:15_000});
     await expect.poll(()=>watcher.ended,{message:"the watcher ended with its Claude Code"}).toBe(true);
     await expect(refusal,"the refused message's turn went with Edit from here").toHaveCount(0);
+    // The watcher's row says it ended, with its Claude Code.
+    await openCard();
+    await expect.soft(watcherRow.locator("summary strong"),"the watcher's row says how it ended").toHaveText("npm run watch: Claude Code stopped before this finished.");
+    await expect.soft(watcherRow.locator("summary em")).toHaveText("failed");
     await page.getByTestId("send").click();
     await expect(page.getByText("Fixed the crash the watcher showed.",{exact:true})).toBeVisible({timeout:15_000});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:15_000});
     await expect(page.getByText(STUCK_IN_PLAN),"the message is not refused again").toHaveCount(0);
     expect(modes,"one new Claude Code, at the thread's Auto-accept edits").toEqual(["acceptEdits"]);
     await shootBoth(page,"claude-stuck-in-plan-edit-from-here");
+  }finally{await harness.close()}
+});
+
+// A watcher Claude Code runs in the background runs past the turn that started it: the row it has on that turn's card reads running
+// through the person's next messages, a reload and the thread opened again, until Claude Code no longer lists it, and then done there,
+// on no other card. The thread is in Auto, which this model's Claude Code opened in Manual: every follow-up runs in that one process.
+test("a watcher Claude Code runs in the background reads running on the card of the turn that started it until Claude Code says it ended, through the next message and a reload, then done there",async({page})=>{
+  test.setTimeout(90_000);
+  await page.setViewportSize({width:1280,height:800});
+  let claudeCode=null;
+  const harness=await startClaudeRelay({
+    turn:async({message,index,emit})=>{
+      if(index===0){claudeCode=emit;emit({type:"system",subtype:"background_tasks_changed",tasks:[{task_id:"bg-watch",description:"npm run watch",task_type:"local_bash"}]})}
+      for(const frame of claudeReply(message,["Started the watcher.","Ran the tests."][index]||"Done."))emit(frame);
+    },
+    control:{init:()=>({permissionMode:"default"}),setPermissionMode:mode=>{if(mode==="auto")throw new Error("Auto mode is unavailable for this model")}},
+  });
+  try{
+    const thread=harness.seedThread("Watcher auto",{permissionProfile:"auto"});
+    await routeClaudeApp(page,harness,{permissionMode:"auto"});
+    await page.goto("/");await openThread(page,"Watcher auto");
+    const stop=page.getByRole("button",{name:"Stop",exact:true});
+    await send(page,"Start the watcher");
+    await expect(page.getByText("Started the watcher.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(stop).toHaveCount(0,{timeout:15_000});
+    // Soft, so that the old code also shows what the row says at each step.
+    const started=harness.threadStore.get(thread.id).turns[0].id,card=page.locator(`[data-testid=activity-card][data-turn-id="${started}"]`);
+    const watcher=card.locator(".tool-event").filter({has:page.locator("summary strong",{hasText:/^npm run watch$/})});
+    const open=async()=>{await expect(card).toHaveCount(1);if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click()};
+    await open();
+    await expect.soft(watcher.locator("summary em"),"the watcher runs on past the turn that started it").toHaveText("running");
+    await expect.soft(watcher.locator("summary .timeline-marker svg.lucide-check"),"with no check").toHaveCount(0);
+    await send(page,"And now the tests");
+    await expect(page.getByText("Ran the tests.",{exact:true})).toBeVisible({timeout:15_000});
+    await expect(stop).toHaveCount(0,{timeout:15_000});
+    await open();
+    await expect.soft(watcher.locator("summary em"),"still running past the next message").toHaveText("running");
+    await expect.soft(page.locator(".tool-event").filter({hasText:"npm run watch"}),"on that card only").toHaveCount(1);
+    await watcher.scrollIntoViewIfNeeded();await shootBoth(page,"claude-background-watcher-runs-past-turn");
+    // The window reloaded and the thread opened again: the card, rebuilt from the thread's history, has the watcher still running.
+    await page.reload();await openThread(page,"Watcher auto");
+    await expect(page.getByText("Ran the tests.",{exact:true})).toBeVisible({timeout:15_000});
+    await open();
+    await expect.soft(watcher.locator("summary em"),"still running after a reload").toHaveText("running");
+    // Claude Code no longer lists the watcher: it ended, and its row settles on its turn's card.
+    claudeCode({type:"system",subtype:"background_tasks_changed",tasks:[]});
+    await expect(watcher.locator("summary em"),"its end settles it there").toHaveText("done",{timeout:15_000});
+    await expect(page.locator(".tool-event").filter({hasText:"npm run watch"}),"on that card only").toHaveCount(1);
+    await page.reload();await openThread(page,"Watcher auto");
+    await expect(page.getByText("Ran the tests.",{exact:true})).toBeVisible({timeout:15_000});
+    await open();
+    await expect(watcher.locator("summary em"),"done after a reload too").toHaveText("done");
+    await expect(page.locator(".tool-event").filter({hasText:"npm run watch"})).toHaveCount(1);
   }finally{await harness.close()}
 });

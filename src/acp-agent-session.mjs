@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, extname, join, resolve, relative, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { AcpClient, defaultAcpClientCapabilities } from "./acp-client.mjs";
-import { ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_SIGN_IN_NEEDED, antigravityIpv6Failure } from "./antigravity-auth.mjs";
+import { ANTIGRAVITY_API_KEY_METHOD, ANTIGRAVITY_SIGN_IN_NEEDED } from "./antigravity-auth.mjs";
+import { acpStartFailure } from "./acp-start-exit.mjs";
 import { acpApplyValue, acpConfigChoices, acpConfigSelect, acpReadOnlyMode, acpSetupWithConfigOptions, acpSetupWithValue } from "./acp-session-config.mjs";
 import { cursorEffortOption, cursorEffortValue, cursorFastOption, cursorSwitchValue, GROK_INITIALIZE_META } from "./acp-model-catalog.mjs";
 import { acpToolFrame, mergeAcpToolUpdate } from "./acp-tool-state.mjs";
@@ -362,7 +363,7 @@ export class AcpAgentSession{
     // so a prompt that one overtook does not count its notes as kept (T3 compactionMarkers).
     this.runtimeContextSent=false;this.runtimeContextModel=null;this.compactions=0;
     this.label=runtimeHarnessLabel(runtime);
-    this.dead=false;this.deadError=null;this.closing=false;this.starting=false;this.loading=false;
+    this.dead=false;this.deadError=null;this.closing=false;this.starting=false;this.settingModel=false;this.loading=false;
     this.activePrompt=null;this.wake=null;this.userWaits=new Set();this.tools=new Map();this.todos=new Map();
     this.reasoningEffort=null;this.grokEffort=null;this.grokEffortSet=false;this.defaultMode=null;
     this.serviceTier=undefined;this.modelOptions={};this.collaborationMode="default";
@@ -385,7 +386,8 @@ export class AcpAgentSession{
     client.on("terminated",error=>{
       if(this.client!==client)return;
       this.dead=true;this.deadError=error;this.#cancelUserWaits();this.#finishWake("cancelled");
-      this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:error.message}});
+      // One that ended as it started (its last step setting the thread's model too) says so as the start's failure does.
+      this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:(this.starting||this.settingModel?this.#startFailure(error):error).message}});
     });
     try{
       await client.start();
@@ -407,13 +409,21 @@ export class AcpAgentSession{
       this.grokEffort=this.runtime==="grok"?text(this.#grokModelMeta(acpConfigSelect(this.sessionSetup,"model").current).reasoningEffort).toLowerCase()||null:null;
       this.grokEffortSet=false;
       this.defaultMode=acpConfigSelect(this.sessionSetup,"mode").current;
-    }catch(error){throw (this.runtime==="antigravity"&&antigravityIpv6Failure(error))||error}
+    }catch(error){throw this.#startFailure(error)}
     finally{this.starting=false}
     this.runtimeContextSent=false;
-    await this.#applyModel(model);
+    // Setting the thread's model is the start's last step (Cursor sets one on every start): a process that ends there ended as it
+    // started too. The session's updates pass meanwhile, as after any start.
+    this.settingModel=true;
+    try{await this.#applyModel(model)}catch(error){throw this.#startFailure(error)}
+    finally{this.settingModel=false}
     this.#emitInventory();
     return {initialize:this.initializeResult,session:this.sessionSetup};
   }
+
+  // Why a start failed, as the person reads it: an Antigravity this machine gives no IPv6 sockets says so, and a harness whose process
+  // ended says that in plain words (acp-start-exit.mjs).
+  #startFailure(error){return acpStartFailure(this.runtime,this.label,error,this.env)}
 
   // ACP's auth_required (-32000) from session/new, load or resume: the harness signs in once with its own advertised method, and the
   // same setup runs once more (T3 authenticateAfterRequired). Without such a method, or still signed out after it, the start fails as
@@ -614,7 +624,7 @@ export class AcpAgentSession{
       const effort=this.#grokEffortFor(target),changed=target!==current.current,effortChanged=Boolean(effort)&&effort!==this.grokEffort;
       if(changed||effortChanged){
         try{await this.client.setModel(this.sessionId,target,effort?{reasoningEffort:effort}:null)}
-        catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`),{code:error?.code})}
+        catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`,{cause:error}),{code:error?.code})}
         this.sessionSetup=acpSetupWithValue(this.sessionSetup,"model",target);
         this.grokEffort=effort||(changed?text(this.#grokModelMeta(target).reasoningEffort).toLowerCase()||null:this.grokEffort);
         this.grokEffortSet=Boolean(effort&&this.reasoningEffort);
@@ -626,7 +636,7 @@ export class AcpAgentSession{
       const target=requestedModel("cursor",requested)||"default";
       if(current.choices.length&&!current.choices.some(choice=>choice.value===target))throw new Error(`Cursor model '${target}' is not available for this account. Select an available model.`);
       try{this.sessionSetup=await acpApplyValue(this.client,this.sessionId,this.sessionSetup,"model",target)}
-      catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`),{code:error?.code})}
+      catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`,{cause:error}),{code:error?.code})}
       this.model=acpConfigSelect(this.sessionSetup,"model").current||target;
       await this.#applyCursorOptions();
       return;
@@ -636,14 +646,14 @@ export class AcpAgentSession{
       if(!target){this.model=current.current;return}
       if(!current.choices.some(choice=>choice.value===target))throw new Error(`Antigravity model '${target}' is unavailable for this Google account. Select an available model.`);
       try{this.sessionSetup=await acpApplyValue(this.client,this.sessionId,this.sessionSetup,"model",target)}
-      catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`),{code:error?.code})}
+      catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`,{cause:error}),{code:error?.code})}
       this.model=target;return;
     }
     const target=text(requested);
     if(!target||target===current.current){this.model=current.current||target||null;return}
     if(current.choices.length&&!current.choices.some(choice=>choice.value===target))throw new Error(`${this.label} does not offer the model '${target}'. Select an available model.`);
     try{this.sessionSetup=await acpApplyValue(this.client,this.sessionId,this.sessionSetup,"model",target)}
-    catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`),{code:error?.code})}
+    catch(error){throw Object.assign(new Error(`${this.label} could not switch to model '${target}': ${error?.message||error}`,{cause:error}),{code:error?.code})}
     this.model=acpConfigSelect(this.sessionSetup,"model").current||target;
   }
 
@@ -694,7 +704,7 @@ export class AcpAgentSession{
   async #setCursorOption(option,value,label){
     if(String(option.currentValue??"")===String(value))return;
     try{await this.setConfigOption(option.id,value)}
-    catch(error){throw Object.assign(new Error(`${this.label} could not set ${text(option.name)||label} to ${value}: ${error?.message||error}`),{code:error?.code})}
+    catch(error){throw Object.assign(new Error(`${this.label} could not set ${text(option.name)||label} to ${value}: ${error?.message||error}`,{cause:error}),{code:error?.code})}
     // An answer without the option list still means the value took effect.
     const updated=(this.sessionSetup?.configOptions||[]).find(entry=>text(entry?.id)===text(option.id));
     if(updated&&String(updated.currentValue??"")!==String(value))this.sessionSetup={...this.sessionSetup,configOptions:(this.sessionSetup.configOptions||[]).map(entry=>entry===updated?{...entry,currentValue:value}:entry)};
@@ -728,7 +738,7 @@ export class AcpAgentSession{
     const target=this.#targetMode(agent);if(!target)return;
     if(acpConfigSelect(this.sessionSetup,"mode").current===target)return;
     try{this.sessionSetup=await acpApplyValue(this.client,this.sessionId,this.sessionSetup,"mode",target)}
-    catch(error){throw Object.assign(new Error(`${this.label} could not switch to its ${target} mode, so the turn was not sent: ${error?.message||error}`),{code:error?.code})}
+    catch(error){throw Object.assign(new Error(`${this.label} could not switch to its ${target} mode, so the turn was not sent: ${error?.message||error}`,{cause:error}),{code:error?.code})}
   }
 
   #rememberCommands(commands){this.commandNames=new Set(commands.map(command=>command.name));return commands}

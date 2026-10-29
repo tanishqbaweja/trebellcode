@@ -1,7 +1,8 @@
 // A scripted ACP agent over stdio, run by the tests as the harness: it answers from the JSON scenario named by
 // TREBELL_ACP_SCENARIO and logs each message it receives, and each answer to a request of its own, to TREBELL_ACP_LOG.
-// Scenario: {initialize, sessionNew, prompts:[{steps:[{update} | {notify:{method,params}} | {request:{method,params}}], stopReason}]};
-// "$sessionId" in a step is the session's id. errors: {method: JSON-RPC error} answers that method with the error every time.
+// Scenario: {initialize, sessionNew, prompts:[{steps:[{update} | {notify:{method,params}} | {request:{method,params}}], stopReason, error}]};
+// "$sessionId" in a step is the session's id; a prompt's error is the JSON-RPC error it is answered with after its steps. errors:
+// {method: JSON-RPC error} answers that method with the error every time.
 // signIn: {methodId, env, keepRefusing} plays a signed-out harness: session/new, load and resume answer ACP's auth_required (-32000)
 // until an authenticate with methodId arrives, with the variable env set in the agent's own environment when one is named;
 // keepRefusing accepts that authenticate and stays signed out.
@@ -29,7 +30,7 @@ async function runPrompt(message){
     if(step.notify)send({jsonrpc:"2.0",method:step.notify.method,params:step.notify.params});
     if(step.request)record({reply:step.request.method,message:await request(step.request.method,step.request.params)});
   }
-  send({jsonrpc:"2.0",id:message.id,result:{stopReason:script.stopReason||"end_turn"}});
+  send({jsonrpc:"2.0",id:message.id,...(script.error?{error:script.error}:{result:{stopReason:script.stopReason||"end_turn"}})});
 }
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{
   let message;try{message=JSON.parse(line)}catch{return}

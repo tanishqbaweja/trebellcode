@@ -7,12 +7,13 @@ import { fileURLToPath } from "node:url";
 import * as muse from "../src/muse-agent-session.mjs";
 import { itemFrame, settle, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
+import { historyFromItemEntries } from "../ui/src/thread-history.js";
 
 // Muse Code's turn failures, usage limits and host recovery (T3 93ea95cf4, 4bf8b476f, 300a35670, d6f47ff97): a turn the subscription
 // quota stopped says the usage limit was reached and when it resets, a retry Muse schedules is the turn's retry row, a delivery gap or
-// a host that exits ends the turn once and takes its cards with it, a host that died between turns says so as no turn's and comes
-// back on the next message, a message whose host fails is refused once in Muse's own words, and a notice Trebell cannot read is
-// skipped with a log line.
+// a host that exits ends the turn once and takes its cards with it (the reply Muse wrote before stays), a host that died between turns
+// says so as no turn's and comes back on the next message, a message whose host fails is refused once in Muse's own words, and a notice
+// Trebell cannot read is skipped with a log line.
 
 // T3's usageLimits.test.ts: Muse's usage report, observed at nowMs, and the refusal Meta relayed through Muse.
 const USAGE={observedAtMs:1791447762610,tier:"tier-1",window:{usedPercent:0,windowDurationMins:300,resetsAtMs:1791465557000},weekly:{usedPercent:5,resetsAtMs:1791763200000}};
@@ -250,6 +251,23 @@ test("through the relay, a message whose Muse Code host fails is refused in Muse
     await relay.completed(thread.id,1);
     assert.equal(relay.threadStore.get(thread.id).turns.at(-1).status,"completed");
     assert.match(relay.reply(thread.id),/Muse fixture reply/);
+  }finally{await relay.close()}
+});
+
+// What Muse wrote before its host went away is the failed turn's reply, as a reply that completes is: the thread read again (after the
+// next message, a reload) shows it under the failed pill instead of the turn's error alone.
+test("through the relay, a turn whose host exits after Muse wrote its reply fails with the exit and keeps that reply, as the thread read again lists it",{timeout:120_000},async()=>{
+  const relay=await museRelay("trebell-muse-exit-mid-turn-");
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Reply, then exit mid-turn"}]});
+    await relay.completed(thread.id,1);
+    const failed=relay.threadStore.get(thread.id).turns.at(-1);
+    assert.equal(failed.status,"failed");
+    assert.match(failed.error.message,/exited unexpectedly \(code 1\): panic: the model stream went away/);
+    assert.match(relay.reply(thread.id),/^Muse fixture reply on muse-wonder-1\.0 /,"the turn keeps the reply Muse wrote before its host went away");
+    const listed=historyFromItemEntries((await relay.rpc("thread/items/list",{threadId:thread.id,limit:50})).data);
+    assert.deepEqual(listed.filter(message=>message.role==="assistant").map(message=>message.text),[relay.reply(thread.id)],"the thread read again lists it");
   }finally{await relay.close()}
 });
 

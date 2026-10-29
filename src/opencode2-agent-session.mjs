@@ -2,13 +2,16 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { fileUri, fileUriPath } from "./file-uri.mjs";
-import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeReadOutput, openCodeRefusal, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
+import { OpenCodeAgentSession, inferOpenCodeDefaultVariant, openCode2InventoryReads, openCode2ModelId, openCode2PrimaryAgents, openCode2ServerInfo, openCode2Within, openCodeListsAsListed, openCodePermissionDisposition, openCodePermissionRules, openCodeQuestionText, openCodeReadOutput, openCodeRefusal, openCodeToolTitle, openCodeRequestName, openCodeRetryNotice, openCodeRetryStop, startOpenCode2Server, waitForOpenCode2Models } from "./opencode-agent-session.mjs";
 import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
 import { PROMPT_IMAGE_PATH, textExtractedTo } from "./prompt-attachments.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
+import { isUserResponseTimeout } from "./user-response-timeout.mjs";
 
 const STOPPED=Symbol("opencode2-stopped");
+// The tools OpenCode titles by their input's description (#toolRow).
+const DESCRIBED_TOOLS=new Set(["bash","shell","task"]);
 // OpenCode 2.x's client loads with the first OpenCode 2.x session, before it starts its server, not with the server (budget B25).
 let openCodeClient=null;
 const loadOpenCodeClient=()=>openCodeClient??=import("@opencode/client");
@@ -119,12 +122,14 @@ const STREAM_LOST=Object.freeze({
   unsent:"OpenCode never confirmed the message and is not running it, so Trebell stopped the turn. Send the message again to retry.",
 });
 // A message sent after a turn Trebell stopped following waits for OpenCode to say that turn's run has ended (T3 Code's
-// OPENCODE_2_STILL_STOPPING), so that run's text and end reach no turn of the new message's.
+// OPENCODE_2_STILL_STOPPING), so that run's text and end reach no turn of the new message's. One refused is not sent: the window keeps
+// its draft and puts the reason after "Not sent:".
 const AFTER_LOST_TURN=Object.freeze({
-  running:"OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run and did not send this message. Send the message again in a moment.",
-  unknown:"OpenCode did not say whether it still runs the turn Trebell stopped following, so Trebell did not send this message. Send the message again in a moment.",
+  running:"OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run. Send the message again in a moment.",
+  unknown:"OpenCode did not say whether it still runs the turn Trebell stopped following. Send the message again in a moment.",
 });
 const ENDED_FAILED="OpenCode ended the turn with an error while Trebell was reconnecting to it.";
+const RUN_LOST="OpenCode lost this turn's run while Trebell was reconnecting to it, so the turn did not finish. Send the message again to retry.";
 // A turn's history is read back to its own message, at most this many messages a page and this many pages.
 const HISTORY_PAGE=50,HISTORY_PAGES=20;
 const after=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -143,6 +148,14 @@ function outputText(content){
   if(!Array.isArray(content))return "";
   return content.map(item=>typeof item==="string"?item:typeof item?.text==="string"?item.text:"").join("");
 }
+// A read's row opens to what it read, and a question's to what was asked and answered, not to the item's JSON.
+const textRow=name=>name==="read"||name==="question"?{textOutput:true}:{};
+// A question's row text from the questions it was called with: once answered with the answers, otherwise with what OpenCode said.
+function questionRow(call,answers,said){
+  if(call.name!=="question"||!Array.isArray(call.input.questions))return said;
+  const known=Array.isArray(answers)?answers:null;
+  return openCodeQuestionText(call.input.questions,known,known?"":said);
+}
 
 export class OpenCode2AgentSession extends OpenCodeAgentSession{
   // loadClient: the @opencode/client module the session drives (tests pass a stand-in).
@@ -158,7 +171,10 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     this.sessionRules=[];
     this.messageText=new Map();
     this.reasoningText=new Map();
-    this.toolNames=new Map();
+    // The tool calls that have not ended, by call ID: {name, input}.
+    this.toolCalls=new Map();
+    // The row text of each question whose answer OpenCode refused, by the message its tool fails with.
+    this.refusedAnswers=new Map();
     this.sessionParents=new Map();
     this.sessionGrants=[];
     this.agentIds=new Map();
@@ -269,7 +285,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   async prompt(parts,{agent=null,onDelivered=null}={}){
     if(!this.client||!this.sessionId)throw new Error("OpenCode session is not started.");
     if(this.activePrompt)throw new Error("OpenCode already has a running turn.");
-    await this.#afterLostTurn();
+    await this.afterLostTurn();
     await this.#addRepositoryMcp();await this.#applySelection();await this.#applyPermissionRules();
     if(agent){const agentId=this.agentIds.get(String(agent))||String(agent);await this.client.session.switchAgent({sessionID:this.sessionId,agent:agentId})}
     try{await this.client.session.instructions.entry.put({sessionID:this.sessionId,key:"trebell.runtime",value:runtimeInstructions({harness:"OpenCode",model:this.model})})}catch{}
@@ -306,8 +322,9 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     }finally{turn.done=true;turn.settle?.();if(this.activePrompt===turn)this.activePrompt=null}
   }
   // After a turn Trebell stopped following (#lose), OpenCode says whether it still runs that turn's message before the next one is sent,
-  // as T3 Code asks before it starts a turn on an unsettled session: a run that goes on is stopped, and this message is refused.
-  async #afterLostTurn(){
+  // as T3 Code asks before it starts a turn on an unsettled session: a run that goes on is stopped, and this message is refused. The
+  // relay asks before it makes the message's turn, so a refused message stays the person's draft.
+  async afterLostTurn(){
     if(!this.unsettled)return;
     const runs=await openCode2Within(RECONNECT_CHECK_MS,AFTER_LOST_TURN.unknown,signal=>this.client.session.active({signal})).catch(()=>null);
     if(!runs||typeof runs!=="object")throw new Error(AFTER_LOST_TURN.unknown);
@@ -407,23 +424,31 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     const requestID=String(data?.id||"");if(!requestID||this.permissionsHandled.has(requestID))return;
     if(!(await this.#belongs(data?.sessionID)))return;
     if(this.permissionsHandled.has(requestID))return;this.permissionsHandled.add(requestID);
-    const kind=String(data?.action||""),disposition=openCodePermissionDisposition(this.permissionMode,kind);
+    const kind=String(data?.action||""),disposition=openCodePermissionDisposition(this.permissionMode,kind),turn=this.activePrompt;
     let decision=disposition==="allow"?"accept":disposition==="deny"?"decline":"decline";
     if(disposition==="ask"&&this.onPermission){
       const options=[{optionId:"once",name:"Allow once",kind:"allow_once"},...(Array.isArray(data?.save)&&data.save.length?[{optionId:"always",name:"Allow session",kind:"allow_always"}]:[]),{optionId:"reject",name:"Reject",kind:"reject_once"}];
       const toolCall={title:permissionTitle(data),toolCallId:String(data?.id||""),rawInput:{...(data?.metadata||{}),resources:Array.isArray(data?.resources)?data.resources:[]},kind:normalizePermissionKind(kind)};
-      decision=await Promise.resolve().then(()=>this.onPermission({method:"permission",params:{toolCall,permissionType:kind,options}})).then(value=>value||"decline",()=>"decline");
+      // One the window stopped waiting for (left unanswered until the relay's wait ran out) got no answer of the person's. A wait that
+      // ended otherwise (Trebell closing) is stopped, as the session's close stops the run.
+      decision=await Promise.resolve().then(()=>this.onPermission({method:"permission",params:{toolCall,permissionType:kind,options}})).then(value=>value||"decline",error=>isUserResponseTimeout(error)?"unanswered":"cancel");
     }
     if(decision==="acceptForSession"&&String(data.sessionID)===this.sessionId){
       const resources=(Array.isArray(data?.save)&&data.save.length?data.save:data?.resources)||[];
       for(const resource of resources.map(String).filter(Boolean))if(!this.sessionGrants.some(grant=>grant.action===kind&&grant.resource===resource))this.sessionGrants.push({action:kind,resource,effect:"allow"});
       await this.#applyPermissionRules().catch(()=>{});
     }
-    const refusal=openCodeRefusal(decision,{disposition,mode:this.permissionMode,action:kind,resources:data?.resources});
+    // An approval left unanswered ends this session's turn saying so, as an unanswered question does (FORM_UNANSWERED): rejected without a
+    // message, which stops OpenCode's run, the reason set before OpenCode says the run stopped. A subagent's, or one asked while no turn
+    // runs, is refused saying it was not answered, and the model goes on.
+    const ends=decision==="unanswered"&&String(data.sessionID)===this.sessionId&&turn&&this.activePrompt===turn&&!turn.done&&!turn.cancelled&&!turn.stopError;
+    if(ends)turn.stopError=new Error(`OpenCode's ${openCodeRequestName(kind,data?.resources)} was not answered in time, so Trebell declined it and stopped the turn.`);
+    const refusal=ends?null:openCodeRefusal(decision,{disposition,mode:this.permissionMode,action:kind,resources:data?.resources});
     // A refused shell call reaches the model only as "Unable to execute command", which it retries, so the reason is steered into the
     // session before the refusal (as T3 Code does); the refusal stands without it.
     if(refusal)await this.client.session.synthetic({sessionID:String(data.sessionID),text:refusal.note,delivery:"steer",resume:false}).catch(()=>{});
-    await this.client.permission.reply({sessionID:String(data.sessionID),requestID:String(data.id),decision:permissionDecision(decision),...(refusal?{message:refusal.reason}:{})}).catch(()=>{});
+    const replied=await this.client.permission.reply({sessionID:String(data.sessionID),requestID:String(data.id),decision:permissionDecision(decision),...(refusal?{message:refusal.reason}:{})}).then(()=>true,()=>false);
+    if(ends){if(!replied)await this.#interrupt();turn.settle?.()}
   }
   // One subscription to the event stream: opened resolves true at its first chunk (OpenCode 2 sends server.connected at once) and false
   // if it ends before; ended once it has ended, however it ended; drop lets go of it. Every chunk the stream receives counts (onActivity),
@@ -474,7 +499,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     return first.opened;
   }
   // A turn the session stopped following ends with the reason. OpenCode may still run its message, so that run is stopped (once
-  // OpenCode has the message: interrupt false when it does not yet) and the next message asks OpenCode first (#afterLostTurn).
+  // OpenCode has the message: interrupt false when it does not yet) and the next message asks OpenCode first (afterLostTurn, which the
+  // relay asks before it makes the message's turn).
   #lose(turn,reason,{interrupt=true}={}){
     if(!turn||turn.done||turn.cancelled||turn.stopError||this.activePrompt!==turn)return;
     turn.lost=true;turn.stopError=new Error(reason);this.unsettled=true;turn.settle?.();
@@ -514,14 +540,15 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     }
   }
   // A run that ended while Trebell was not listening ends as the session's history says (T3 Code's reconcile): by the idle item OpenCode
-  // keeps for a run's end, since the turn's own message. Without one (a restarted server keeps none for the run it lost) the run was
-  // stopped, and so is the turn.
+  // keeps for a run's end, since the turn's own message. Without one (a restarted server keeps none for the run it lost) OpenCode lost
+  // the run, and the turn ends saying so: nobody stopped it.
   #endedMeanwhile(turn,since){
     const outcome=String(since?.findLast(item=>item?.type==="idle")?.outcome||"");
     if(outcome==="failed"){
       const error=since.findLast(item=>item?.type==="assistant")?.error,failure=error?executionFailure(error):{text:ENDED_FAILED,usageLimit:false};
       turn.error=failure.text;turn.usageLimit=failure.usageLimit;
-    }else if(outcome!=="succeeded")turn.cancelled=true;
+    }else if(!outcome)turn.stopError=new Error(RUN_LOST);
+    else if(outcome!=="succeeded")turn.cancelled=true;
     turn.settle?.();
   }
   async #askOpenRequests(sessionID){
@@ -556,13 +583,27 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
       const tokens=data.tokens||{},used=Number(tokens.input||0)+Number(tokens.output||0)+Number(tokens.reasoning||0);
       this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"usage_update",used,size:this.contextByModel.get(this.model)||0,cost:data.cost!=null?{amount:Number(data.cost),currency:"USD"}:null,usage:{input_tokens:Number(tokens.input||0),output_tokens:Number(tokens.output||0),reasoning_tokens:Number(tokens.reasoning||0),cache_read_input_tokens:Number(tokens.cache?.read||0),cache_write_input_tokens:Number(tokens.cache?.write||0)}}});return;
     }
-    if(event.type==="session.tool.input.started"){this.toolNames.set(String(data.id),String(data.name||"tool"));this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call",toolCallId:String(data.id),title:String(data.name||"Tool"),kind:normalizePermissionKind(data.name),status:"in_progress",rawInput:{}}});return}
-    if(event.type==="session.tool.called"){const id=String(data.id),name=this.toolNames.get(id)||"tool";this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"in_progress",rawInput:data.input||{}}});return}
-    if(event.type==="session.tool.success"){const id=String(data.id),name=this.toolNames.get(id)||"tool",output=outputText(data.content);this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"completed",rawOutput:name==="read"?openCodeReadOutput(output):output}});return}
-    if(event.type==="session.tool.failed"){const id=String(data.id),name=this.toolNames.get(id)||"tool";this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"tool_call_update",toolCallId:id,title:name,kind:normalizePermissionKind(name),status:"failed",rawOutput:errorText(data.error)}});return}
+    // A call whose input still streams has not started: it reads pending until OpenCode calls it, as OpenCode 1.x's pending part does.
+    if(event.type==="session.tool.input.started"){const id=String(data.id),call={name:String(data.name||"tool"),input:{}};this.toolCalls.set(id,call);this.#toolRow("tool_call",id,call,{status:"pending"});return}
+    if(event.type==="session.tool.called"){const id=String(data.id),call=this.#toolCall(id);call.input=data.input&&typeof data.input==="object"?data.input:{};this.#toolRow("tool_call_update",id,call,call.name==="question"?{status:"in_progress",rawOutput:questionRow(call,null,"")}:{status:"in_progress"});return}
+    if(event.type==="session.tool.success"){const id=String(data.id),call=this.#toolCall(id),output=outputText(data.content);this.toolCalls.delete(id);this.#toolRow("tool_call_update",id,call,{status:"completed",rawOutput:call.name==="read"?openCodeReadOutput(output):questionRow(call,data.metadata?.answers,output)});return}
+    // A question whose answer OpenCode refused fails with the message the session cancelled it with, and its row says it in the person's words.
+    if(event.type==="session.tool.failed"){const id=String(data.id),call=this.#toolCall(id),failure=errorText(data.error),refused=this.refusedAnswers.get(failure);this.toolCalls.delete(id);this.refusedAnswers.delete(failure);this.#toolRow("tool_call_update",id,call,{status:"failed",rawOutput:refused||questionRow(call,null,failure)});return}
     if(event.type==="session.execution.succeeded"&&turn&&sessionID===this.sessionId){turn.settle?.();return}
     if(event.type==="session.execution.failed"&&turn&&sessionID===this.sessionId){const failure=executionFailure(data.error);turn.error=failure.text;turn.usageLimit=failure.usageLimit;turn.settle?.();return}
     if(event.type==="session.execution.interrupted"&&turn&&sessionID===this.sessionId){turn.cancelled=true;turn.settle?.();return}
+  }
+  #toolCall(id){
+    if(!this.toolCalls.has(id))this.toolCalls.set(id,{name:"tool",input:{}});
+    return this.toolCalls.get(id);
+  }
+  // OpenCode 2 names a call by its tool only, and its updates after session.tool.called leave out the input: each update is titled as
+  // OpenCode 1.x titles the call (openCodeToolTitle), from the input the call was called with, and carries it. OpenCode titles a command
+  // and a task by their description; another tool's arguments may hold a description of their own (an MCP tool's), which is no title,
+  // so it keeps its name, as OpenCode 1.x shows an MCP tool.
+  #toolRow(sessionUpdate,id,{name,input},fields){
+    const title=DESCRIBED_TOOLS.has(name)?input.description:"";
+    this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate,toolCallId:id,title:openCodeToolTitle(name,{title,input,cwd:this.cwd}),kind:normalizePermissionKind(name),rawInput:input,...textRow(name),...fields}});
   }
   // A retry OpenCode schedules for this turn's request, or a subagent's, shows while Trebell waits for it (openCodeRetryNotice); one that
   // is hours away, or past OPENCODE_RETRY_LIMITS, ends the turn with the provider's reason (openCodeRetryStop), as OpenCode 1.x's does.
@@ -602,8 +643,10 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
       if(!(await this.#cancelForm(form)))await Promise.resolve(this.client?.session?.interrupt?.({sessionID})).catch(()=>{});
       turn.settle?.();return;
     }
-    let answers=null;
-    if(typeof this.onQuestion==="function")answers=await untilAborted(Promise.resolve().then(()=>this.onQuestion({toolName:"question",input:{questions:mapped.questions},signal:pending.controller.signal})),pending.controller.signal).catch(()=>null);
+    // unanswered: no answer came in time (the relay's wait ran out), or there is no one to ask. A wait that ended otherwise (Trebell
+    // closing) is no answer either, nor one left unanswered: the question is cancelled as the session's close stops the run.
+    let answers=null,unanswered=typeof this.onQuestion!=="function";
+    if(!unanswered)answers=await untilAborted(Promise.resolve().then(()=>this.onQuestion({toolName:"question",input:{questions:mapped.questions},signal:pending.controller.signal})),pending.controller.signal).catch(error=>{unanswered=isUserResponseTimeout(error);return null});
     // Settled elsewhere, or the session closed: there is nothing to send.
     if(pending.controller.signal.aborted||this.closed)return;
     pending.answering=true;
@@ -613,7 +656,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(!Object.keys(answer).length){
       // The cancel stops the asking session's run: this session's turn ends with the reason, set before OpenCode says the run stopped.
       // A subagent's question ends the subagent's run only, and the turn goes on as OpenCode goes on.
-      const ends=own&&turn&&!turn.done&&!turn.cancelled&&!turn.stopError;
+      const ends=own&&turn&&!turn.done&&!turn.cancelled&&!turn.stopError&&Boolean(answers||unanswered);
       if(ends)turn.stopError=new Error(answers?FORM_UNANSWERED.dismissed:FORM_UNANSWERED.unanswered);
       if(!(await this.#cancelForm(form))&&own)await Promise.resolve(this.client?.session?.interrupt?.({sessionID})).catch(()=>{});
       if(ends)turn.settle?.();
@@ -623,8 +666,12 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     catch(error){
       if(FORM_GONE.has(error?.name))return;
       // OpenCode refused the answer (one that is not among the choices, say): the cancel's message fails the question tool with the reason,
-      // which tells the model, and the person on the tool's row, while the turn goes on. (An error notice would end the window's turn.)
-      await this.#cancelForm(form,`The user's answer could not be given: ${errorText(error)}. Continue without it, and tell the user what you would need from them.`);
+      // which tells the model, while the turn goes on. (An error notice would end the window's turn.) The tool's row tells the person, in
+      // their words: what was asked, their answer and OpenCode's reason.
+      const reason=errorText(error),message=`The user's answer could not be given: ${reason}. Continue without it, and tell the user what you would need from them.`;
+      const given=mapped.questions.map(question=>[answer[question.id]].flat().filter(Boolean).map(value=>question.options.find(option=>option.value===value)?.label||value));
+      this.refusedAnswers.set(message,openCodeQuestionText(mapped.questions,given,`OpenCode refused the answer (${reason.replace(/[\s.]+$/,"")}), so the turn went on without it.`));
+      await this.#cancelForm(form,message);
     }
   }
 }

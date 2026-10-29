@@ -29,6 +29,23 @@ test("history covers messages, commands with exit code and trimmed output, error
   assert.equal(renderHistoryEntry(entries[1]),"[turn 1 · assistant]\nREMEMBERED");
 });
 
+// Claude Code's TodoWrite as Trebell stored it before Claude's lists showed as the plan only: a file change that names no file, with the
+// list as its input. A to-do list is no file change, so it is not handed over as one ("(files not named)"), failed or not, as a
+// TodoWrite stored now (a failed one's tool call) is not.
+test("a TodoWrite a Claude thread stored as a file change is not handed over as a file change",()=>{
+  const todos=[{content:"Tag the release",status:"pending",activeForm:"Tagging the release"}];
+  const entries=threadHistoryEntries([turn("t1",[
+    user("t1","Prepare the release"),
+    {type:"fileChange",id:"todo-1",status:"completed",changes:[],rawInput:{todos}},
+    {type:"fileChange",id:"f1",status:"completed",changes:[{path:"CHANGELOG.md",kind:"update"}],rawInput:{file_path:"CHANGELOG.md"}},
+    {type:"fileChange",id:"todo-bad",status:"failed",changes:[],rawInput:{todos:[{content:"Next"}]},rawOutput:"InputValidationError"},
+    reply("t1","The changelog is updated."),
+  ])]);
+  assert.deepEqual(entries.map(entry=>[entry.label,entry.text]),[["user","Prepare the release"],["file change","update CHANGELOG.md"],["assistant","The changelog is updated."]]);
+  // A file change that names no file and holds no list is still handed over as one.
+  assert.deepEqual(threadHistoryEntries([turn("t2",[{type:"fileChange",id:"f2",changes:[]}])]).map(entry=>entry.text),["(files not named)"]);
+});
+
 test("selection keeps T3's priority within the budget and omits an entry too large for it whole",()=>{
   const entry=(turn,role,size,tag)=>({turn,role,label:role,text:tag+"·".repeat(Math.max(0,size-tag.length))});
   const entries=[entry(1,"user",40,"FIRST"),entry(1,"assistant",40,"A1"),entry(2,"user",40,"U2"),entry(2,"activity",40,"CMD"),entry(3,"user",40,"LAST"),entry(3,"assistant",900,"HUGE"),entry(3,"assistant",40,"REPLY")];

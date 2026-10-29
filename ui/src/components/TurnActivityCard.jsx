@@ -74,15 +74,16 @@ function EventIcon({event}){
   if(event.kind==="mcpToolCall")return <Zap size={13}/>;
   return <Sparkles size={13}/>;
 }
-// A row's pill: an error says error, a retry what became of it, any other step its status.
+// A row's pill: an error says error, a retry what became of it, a call that never started that it did not run, any other step its
+// status.
 function eventPill(event){
   if(event.kind==="error")return "error";
   if(event.kind==="retry")return event.status==="running"?"retrying":event.status==="done"?"recovered":event.status;
-  return event.status;
+  return event.status==="notRun"?"not run":event.status;
 }
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
   const [expanded,setExpanded]=useState(false);
-  return <details className={"tool-event status-"+(toolEventFailed(event)?"error":event.status)+" kind-"+(event.kind||"event")} onToggle={toggle=>setExpanded(toggle.currentTarget.open)}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{eventPill(event)}</em></summary>
+  return <details className={"tool-event status-"+(toolEventFailed(event)?"error":event.status)+" kind-"+(event.kind||"event")} onToggle={toggle=>setExpanded(toggle.currentTarget.open)}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong title={event.title}>{event.title}</strong><em>{eventPill(event)}</em></summary>
     {expanded&&<ActivityEventBody event={event} onInspectChanges={onInspectChanges}/>}
   </details>;
 });
@@ -94,12 +95,14 @@ function PathTail({as:Tag="code",path,title=path,className=""}){
   return <Tag className={"path-tail"+(className?" "+className:"")} title={title}><bdi>{path}</bdi></Tag>;
 }
 // An expanded row shows what the step did, once each: a command's line (the one it ran, when the harness titled it with a
-// description) with its exit code, folder and duration, then its output; a change's files with what happened to each and its
-// diff, which a General chat or a folder without Git has no other place to show. The raw event is shown only for a step that
-// has none of those (an MCP call, for example), not as a third copy of the command under its output.
+// description) with its exit code, folder and duration, then its output; the file or folder a read whose output is its text read
+// (an OpenCode read, whose title, cut at its end in a narrow window, holds the path), then what it read; a change's files with what
+// happened to each and its diff, which a General chat or a folder without Git has no other place to show. The raw event is shown only
+// for a step that has none of those (an MCP call, for example), not as a third copy of the command under its output.
 function ActivityEventBody({event,onInspectChanges}){
   const raw=event.raw&&typeof event.raw==="object"?event.raw:null;
   const command=raw?.command?commandLine(raw):"",facts=command?commandFacts(raw):[];
+  const readPath=raw?.textOutput&&typeof raw.arguments?.filePath==="string"?raw.arguments.filePath.trim():"";
   // Worked out once per version of the step: an open row re-renders as the turn goes on (a turn diff on every update).
   const changes=useMemo(()=>{
     if(Array.isArray(raw?.changes))return fileChangeRows(raw.changes);
@@ -110,6 +113,7 @@ function ActivityEventBody({event,onInspectChanges}){
   return <div className="tool-event-body">
     {command&&<pre>{command}</pre>}
     {facts.length>0&&<div className="tool-event-facts" data-testid="tool-event-facts">{facts.map((fact,index)=><React.Fragment key={fact.key}>{index>0&&<i className="fact-sep" aria-hidden="true">·</i>}{fact.key==="cwd"?<PathTail as="span" className="fact-cwd" path={fact.label} title={fact.title}/>:<span className={"fact-"+fact.key+(fact.tone?" tone-"+fact.tone:"")} title={fact.title}>{fact.label}</span>}</React.Fragment>)}</div>}
+    {readPath&&<div className="tool-event-change-head" data-testid="tool-event-path"><PathTail path={readPath}/></div>}
     {event.output&&<pre>{event.output}</pre>}
     {changes?.length>0&&<div className="tool-event-changes" data-testid="tool-event-changes">{changes.map((change,index)=><div className="tool-event-change" key={change.path+":"+index}><div className="tool-event-change-head"><FileDiff size={12} aria-hidden="true"/><PathTail path={change.path||"Unnamed file"}/>{change.kind&&<em className={"change-kind kind-"+change.kind}>{change.kind}</em>}{change.movePath&&<><span className="change-move-to">to</span><PathTail path={change.movePath}/></>}</div>{change.lines.length>0&&<DiffBlock lines={change.lines}/>}</div>)}</div>}
     {turnDiff.length>0&&<DiffBlock lines={turnDiff}/>}

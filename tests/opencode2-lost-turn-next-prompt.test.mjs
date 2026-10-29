@@ -6,10 +6,11 @@ import { eventually, fakeOpenCode2Client, flush } from "./fixtures/fake-opencode
 // A turn Trebell stops following because its OpenCode 2 event stream was lost may leave OpenCode running its message. Trebell ended such
 // a turn ("Send the message again to retry") and left the run going, and the next turn took that run's events: its text, and its end
 // as the new turn's end. As T3 Code does, a stream that opens again counts only once OpenCode says which sessions it runs (another try
-// otherwise), a turn Trebell stops following has its run stopped, and the next prompt asks OpenCode first: a run still going is
-// stopped and the message refused, saying so (T3's OPENCODE_2_STILL_STOPPING). On mocked timers.
+// otherwise), a turn Trebell stops following has its run stopped, and the next message asks OpenCode first: a run still going is
+// stopped and the message refused, saying so (T3's OPENCODE_2_STILL_STOPPING), before its turn starts (afterLostTurn, which the relay
+// asks before it makes the message's turn, so the person keeps the draft). On mocked timers.
 const UNKNOWN="Trebell lost OpenCode's event stream, and OpenCode did not say whether it still runs the turn, so Trebell stopped following it. Send the message again to retry.";
-const STILL_STOPPING="OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run and did not send this message. Send the message again in a moment.";
+const STILL_STOPPING="OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run. Send the message again in a moment.";
 const RUNNING={ses_main:{type:"running"}};
 async function along(t,promise,stepMs=250){
   let done=false;promise.then(()=>{done=true},()=>{done=true});
@@ -69,11 +70,12 @@ test("a turn Trebell stops following has its OpenCode 2 run stopped, and the nex
     for(let step=0;step<80&&first.value==="running";step++){t.mock.timers.tick(500);await settle()}
     assert.equal(first.value,UNKNOWN);
     assert.ok(fake.called("session.interrupt").length>=1,"the run Trebell stopped following is stopped");
-    // OpenCode answers again, and still runs the first message.
+    // OpenCode answers again, and still runs the first message: the next message is refused before its turn starts.
     answering=true;
-    const second=running(session,"Fix the parser again");
-    await eventually(()=>second.value!=="running");
-    assert.equal(second.value,STILL_STOPPING);
+    const checked={value:"running"};session.afterLostTurn().then(()=>{checked.value="sent"},error=>{checked.value=error.message});
+    await eventually(()=>checked.value!=="running");
+    assert.equal(checked.value,STILL_STOPPING);
+    assert.equal(session.activePrompt,null,"no turn was started for it");
     assert.equal(fake.called("session.prompt").length,1,"the message is not sent while OpenCode runs the last one");
     assert.ok(fake.called("session.interrupt").length>=2,"the run still going is stopped");
     // What the first run said on its way out reaches no turn.

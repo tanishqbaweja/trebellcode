@@ -1,8 +1,8 @@
 // Claude Code's to-do list is the thread's plan, as Cursor's and OpenCode's are: the root's TodoWrite list, and the one task list per
 // Claude session its Task tools keep (TaskCreate, TaskUpdate, TaskList), from their structured results and from the text that is all
 // a subagent's call returns (T3 Code's emitClaudePlanProjection, applyClaudeTaskTool and bda042aad), and from Claude Code's own list on
-// disk for a session Trebell has not followed since it started (29aec6b88). The SDK is scripted: nothing runs, and each session has a
-// Claude home of its own.
+// disk for a session Trebell has not followed since it started (29aec6b88). A TodoWrite edits no file: it is no step of the turn, unless
+// it failed. The SDK is scripted: nothing runs, and each session has a Claude home of its own.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -30,13 +30,17 @@ const answer=(id,text,{structured,parent=null,failed=false,meta}={})=>({
 const created=(id,subject,parent=null)=>[call("create-"+id,"TaskCreate",{subject,description:subject+"."},parent),answer("create-"+id,`Task #${id} created successfully: ${subject}`,parent?{parent}:{structured:{task:{id,subject}}})];
 const updated=(id,input,parent=null,callId="update-"+id+"-"+(input.status||"subject"))=>[call(callId,"TaskUpdate",{taskId:id,...input},parent),answer(callId,`Updated task #${id} ${Object.keys(input).join(", ")}`,parent?{parent}:{structured:{success:true,taskId:id,updatedFields:Object.keys(input)}})];
 
-test("the root's TodoWrite list is the thread's plan, each list replacing the last, while its call still shows as a row",async()=>{
+test("the root's TodoWrite list is the thread's plan, each list replacing the last, and a TodoWrite is no step of the turn unless it failed",async()=>{
   const {sdk}=scriptedClaudeSdk({turn:({message,emit})=>{
     emit(call("todo-1","TodoWrite",{todos:[{content:"Read the release checklist",status:"in_progress",activeForm:"Reading the checklist"},{content:"Update the changelog",status:"pending",activeForm:"Updating the changelog"}]}));
     emit(answer("todo-1","Todos have been modified successfully.",{structured:{oldTodos:[],newTodos:[]}}));
     // A subagent's own list is not the thread's.
     emit(call("todo-sub","TodoWrite",{todos:[{content:"A subagent's own step",status:"pending"}]},"agent-1"));
     emit(call("todo-2","TodoWrite",{todos:[{content:"Read the release checklist",status:"completed"},{content:"Update the changelog",status:"in_progress"},{content:"  "},null,{content:"Tag the release",status:"later"}]}));
+    // One that failed shows as the call it is, which edits no file; Claude's edits stay edits.
+    emit(call("todo-failed","TodoWrite",{todos:[{content:"A subagent's next step"}]},"agent-1"));
+    emit(answer("todo-failed","<tool_use_error>InputValidationError: The required parameter `todos[0].status` is missing</tool_use_error>",{parent:"agent-1",failed:true}));
+    for(const [id,name,input] of [["edit","Edit",{file_path:"CHANGELOG.md"}],["write","Write",{file_path:"NOTES.md"}],["multi","MultiEdit",{file_path:"package.json"}],["notebook","NotebookEdit",{notebook_path:"checks.ipynb"}]]){emit(call(id,name,input));emit(answer(id,"Done."))}
     emit(claudeResult(message));
   }});
   const claude=session(sdk);await claude.start();
@@ -45,7 +49,9 @@ test("the root's TodoWrite list is the thread's plan, each list replacing the la
     [{content:"Read the release checklist",status:"in_progress"},{content:"Update the changelog",status:"pending"}],
     [{content:"Read the release checklist",status:"completed"},{content:"Update the changelog",status:"in_progress"},{content:"Tag the release",status:"pending"}],
   ]);
-  assert.ok(claude.updates.some(update=>update.sessionUpdate==="tool_call"&&update.toolCallId==="todo-1"&&update.title==="TodoWrite"),"the call's own row");
+  const rows=claude.updates.filter(update=>update.sessionUpdate==="tool_call"||update.sessionUpdate==="tool_call_update").map(({sessionUpdate,toolCallId,title,kind,status})=>({sessionUpdate,toolCallId,title,kind,status}));
+  assert.deepEqual(rows.filter(row=>row.toolCallId.startsWith("todo-")),[{sessionUpdate:"tool_call",toolCallId:"todo-failed",title:"TodoWrite",kind:"other",status:"failed"}],"no to-do list is a row but the one that failed");
+  assert.deepEqual(rows.filter(row=>!row.toolCallId.startsWith("todo-")).map(row=>[row.sessionUpdate,row.title,row.kind]),["Edit","Write","MultiEdit","NotebookEdit"].flatMap(name=>[["tool_call",name,"edit"],["tool_call_update",name,"edit"]]));
 });
 
 test("Claude's Task tools keep one task list for the Claude session, from the root's structured results and a subagent's text, over turns",async()=>{

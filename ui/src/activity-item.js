@@ -10,12 +10,18 @@ export const RESTORED_TEXT_LIMIT=16_384;
 export const RESTORED_LIST_LIMIT=200;
 const RESTORED_DEPTH=8;
 
+// Claude Code's TodoWrite as the relay stored it before Claude's lists showed as the turn's plan only: a file change that names no file,
+// with the list as its input. A to-do list is no step of its turn, unless it failed, which reads as the failed TodoWrite call a new one
+// shows; a thread recorded then keeps those items.
+const storedTodoWrite=item=>item?.type==="fileChange"&&Array.isArray(item.rawInput?.todos)&&!item.changes?.length&&!item.rawInput.file_path&&!item.rawInput.notebook_path;
+
 export function isCardItem(item){
-  return Boolean(item&&typeof item==="object")&&!MESSAGE_ITEM_TYPES.has(item.type);
+  return Boolean(item&&typeof item==="object")&&!MESSAGE_ITEM_TYPES.has(item.type)&&!(storedTodoWrite(item)&&item.status!=="failed");
 }
 
 // turnId: the turn the item belongs to, so the rows of a turn stay its own (ids are only unique inside a turn).
 export function activityRow(item={},{turnId=null}={}){
+  if(storedTodoWrite(item))item={type:"dynamicToolCall",id:item.id,namespace:"agent",tool:"TodoWrite",arguments:item.rawInput,status:item.status,contentItems:null,success:item.status==="failed"?false:null,durationMs:null,locations:[],rawOutput:item.rawOutput};
   const type=item.type||"tool";
   let title=item.title||item.name||item.description||"Agent activity";
   if(type==="plan")title="Plan";
@@ -36,9 +42,10 @@ export function activityRow(item={},{turnId=null}={}){
   if(type==="enteredReviewMode")title="Reviewing changes";
   if(type==="exitedReviewMode")title="Finished review";
   // A command's output, or the text a Trebell tool answered with (Native's repository searches answer with their hits
-  // grouped by file), which the expanded row shows as written instead of inside the item's JSON.
+  // grouped by file) or a harness's tool whose item says its output is text (textOutput: an OpenCode read's lines, a question's
+  // answers), which the expanded row shows as written instead of inside the item's JSON.
   const output=type==="commandExecution"?String(item.aggregatedOutput??item.output??"")
-    :type==="dynamicToolCall"&&String(item.namespace||"").startsWith("trebell_")&&typeof item.rawOutput==="string"?item.rawOutput:"";
+    :type==="dynamicToolCall"&&(item.textOutput||String(item.namespace||"").startsWith("trebell_"))&&typeof item.rawOutput==="string"?item.rawOutput:"";
   // Codex and the relay mark a running item "inProgress"; the timeline calls it running, as plan steps already do. A command
   // that exited non-zero reads as failed whichever harness ran it.
   const status=activityItemStatus(item);
@@ -46,13 +53,16 @@ export function activityRow(item={},{turnId=null}={}){
 }
 
 // A step of a turn that has ended is not running any more: a harness that sends no status, a subtask stored as it started and
-// a tool cut off by a stop all read done, as the live card marks them when the turn completes, and so does a harness's call that
-// never started (pending; a plan's pending steps are no items and stay). Its title stays: a compaction still running when its turn
-// ended (stopped, or failed) did not compact, so only one the thread's history stores (storedRow) reads so. keepPast: the live
-// window's turn end, which leaves a step of work that runs on past its turn (its item says runsPastTurn) for that work's own events.
+// a tool cut off by a stop all read done, as the live card marks them when the turn completes, while a harness's call still pending
+// as its turn completed never started, and says it did not run (notRun; a plan's pending steps are no items and stay). A call still
+// pending as its turn was stopped or failed may have run (a harness may run a call it calls pending), and the relay has ended it stopped
+// before the turn's end (agent-relay.mjs finishTurn), as a Trebell restart ends one (reconcileRestart), and a read of the thread gives
+// one an earlier build stored pending as stopped too (withCutOffCalls). Its title stays: a compaction still running when its turn ended
+// (stopped, or failed) did not compact, so only one the thread's history stores (storedRow) reads so. keepPast: the live window's turn
+// end, which leaves a step of work that runs on past its turn (its item says runsPastTurn) for that work's own events.
 export function settledRow(row,{keepPast=false}={}){
   if(keepPast&&row?.raw?.runsPastTurn)return row;
-  return row?.status==="running"||row?.fromItem&&row.status==="pending"?{...row,status:"done"}:row;
+  return row?.status==="running"?{...row,status:"done"}:row?.fromItem&&row.status==="pending"?{...row,status:"notRun"}:row;
 }
 // A stored step of a turn that has ended, read from the thread's history. Codex stores a compaction's item, with no status, only
 // once the compaction is done, so it reads as compacted. A step of work the thread's live session still follows past its turn (the
@@ -89,7 +99,7 @@ export function settledRetryRows(rows,{turnId=null,outcome="recovered"}={}){
 // What a cut text keeps is a copy: a slice of a string keeps the whole string it was cut from in memory, so a row kept after its turn
 // would hold all of a long output or diff while it shows only its cut. A text cut once is left as it was cut: cut again, it would
 // count what the first cut left out wrongly.
-const CUT_TAIL=/^\n… [\d,]+ more characters$/,CUT_HEAD=/^… [\d,]+ earlier characters not shown\n/;
+const CUT_TAIL=/^\n… [\d,]+ more characters$/,CUT_HEAD=/^… ([\d,]+) earlier characters not shown\n/;
 const copied=text=>JSON.parse(JSON.stringify(text));
 function cappedText(value){
   if(value.length<=RESTORED_TEXT_LIMIT||CUT_TAIL.test(value.slice(RESTORED_TEXT_LIMIT)))return value;
@@ -98,6 +108,13 @@ function cappedText(value){
 function cutOutputEnd(text){
   const head=CUT_HEAD.exec(text);if(head&&text.length-head[0].length===RESTORED_TEXT_LIMIT)return text;
   return copied("… "+(text.length-RESTORED_TEXT_LIMIT).toLocaleString("en-US")+" earlier characters not shown\n"+text.slice(-RESTORED_TEXT_LIMIT));
+}
+// Whether a command's output goes on from what a row holds of it: all of it, or the end a kept row holds (cutOutputEnd), which the
+// output has where the cut says it starts.
+function continuesOutput(output,held){
+  if(output.startsWith(held))return true;
+  const head=CUT_HEAD.exec(held);
+  return Boolean(head)&&output.startsWith(held.slice(head[0].length),Number(head[1].replace(/,/g,"")));
 }
 function cappedValue(value,depth=0){
   if(typeof value==="string")return cappedText(value);
@@ -128,12 +145,15 @@ export function restoredRow(row){
 // A live row after an item notification, shared by the live list and the per-turn record the card is sealed from, so the two
 // never differ. started: the item as sent. progress: only a changed name, kind or status touches the row (output streams on
 // its own), or a step that says from here that it runs on past its turn (runsPastTurn: a command Muse Code's report runs, which
-// a message took over), so that its turn's end leaves it running. completed: the final item, with the output streamed for it when
-// the item carries none.
+// a message took over), so that its turn's end leaves it running, and what such a step says (a command Muse Code sent to the
+// background), which outlasts the output its turn's end clears. Output that only goes on from the row's streams on its own, also from
+// the end a kept row holds of a long one (restoredRow), so a command streaming past its turn does not replace its turn's card with each
+// chunk. completed: the final item, with the output streamed for it when the item carries none.
 export function mergeLiveRow(old,item,{phase="started",streamed=""}={}){
   if(phase==="started"||!old)return phase==="completed"?{...item,output:item.output||streamed||""}:item;
   if(phase==="progress"){
-    if(old.title===item.title&&old.kind===item.kind&&old.status===item.status&&!old.raw?.runsPastTurn===!item.raw?.runsPastTurn)return old;
+    const said=Boolean(item.raw?.runsPastTurn&&item.output)&&(!old.output||!continuesOutput(item.output,old.output));
+    if(old.title===item.title&&old.kind===item.kind&&old.status===item.status&&!old.raw?.runsPastTurn===!item.raw?.runsPastTurn&&!said)return old;
     return {...old,...item,output:item.output||old.output};
   }
   return {...old,...item,output:item.output||streamed||old.output||""};

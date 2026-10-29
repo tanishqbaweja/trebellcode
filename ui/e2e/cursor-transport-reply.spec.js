@@ -11,8 +11,9 @@ import { keepThreadMeta } from "./test-home.js";
 
 // A Cursor turn that loses its backend connection, which Cursor streams as its reply's last message ("Error: ConnectError:
 // [unavailable] ...", with a stack line) before it ends the turn normally. The turn fails with that error (T3 656f3f409). The dump is
-// the turn's error, not its answer: a turn keeps what Cursor wrote before it as its reply, and a turn whose only message is the dump
-// keeps none and ends with a row of its own under the failed pill, its error in it.
+// the turn's error, not its answer: a turn keeps what Cursor wrote before it as its reply, whose failed pill says that error once the
+// card that said it is gone, and a turn whose only message is the dump keeps none and ends with a row of its own under the failed
+// pill, its error in it.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const COMMENTARY="Checking the notes file first.",FAILURE="Error: ConnectError: [unavailable] upstream connect error or disconnect/reset before headers";
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
@@ -106,7 +107,7 @@ async function cursorTurn(page,scenario,run){
 }
 async function reopen(page){await page.reload();await page.getByRole("button",{name:/Notes check/}).click()}
 
-test("a Cursor turn that loses its connection after a line and a read fails, and keeps that line, not the dump, as its reply",async({page})=>{
+test("a Cursor turn that loses its connection after a line and a read fails, and keeps that line, not the dump, as its reply, which says why it failed opened again",async({page})=>{
   test.setTimeout(60_000);
   await cursorTurn(page,"commentary",async({threadStore,threadId})=>{
     // While the turn is on screen the line is its reply and the dump shows once, as the card's error.
@@ -114,15 +115,20 @@ test("a Cursor turn that loses its connection after a line and a read fails, and
     await expect(reply,"what Cursor wrote shows while the turn is on screen").toBeVisible();
     await expect(reply,"the reply is what Cursor wrote before the dump").toHaveText(COMMENTARY);
     expect(threadStore.get(threadId).turns.at(-1).items.find(item=>item.type==="agentMessage")?.text,"the stored reply").toBe(COMMENTARY);
+    const said=()=>page.locator(".conversation-column").getByText(FAILURE).filter({visible:true});
+    await expect(said(),"the dump shows once, in the card").toHaveCount(1);
     await page.screenshot({animations:"disabled",path:`${auditDir}cursor-transport-reply-live-dark-1280x800.png`});
 
-    // Opened again, the thread shows the turn's read and the line Cursor wrote under the failed pill.
+    // Opened again, the thread shows the turn's read and the line Cursor wrote under the failed pill, which says why the turn failed:
+    // the card that said it live is gone.
     await reopen(page);
     await expect(page.locator(".tool-event").filter({hasText:"Read notes.txt"}).first(),"the turn's read is listed").toBeVisible({timeout:10_000});
     const kept=page.locator(".assistant-message-text").filter({hasText:COMMENTARY});
     await expect(kept,"the reply is kept").toBeVisible();await expect(kept,"without the dump").toHaveText(COMMENTARY);
     const row=page.locator(".history-assistant:not([data-testid=turn-outcome-row])").filter({hasText:COMMENTARY});
     await expect(row.getByTestId("turn-outcome")).toHaveText(/^failed/);
+    await expect(row.locator(".turn-outcome-message"),"the reply says why the turn failed").toHaveText(FAILURE);
+    await expect(said(),"once").toHaveCount(1);
     await expect(page.getByTestId("turn-outcome-row"),"the reply carries how the turn ended").toHaveCount(0);
     await shots(page,"cursor-transport-reply");
   });

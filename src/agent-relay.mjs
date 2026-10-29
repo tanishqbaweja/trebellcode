@@ -48,9 +48,10 @@ import { providerFeatureEnabled } from "./provider-capabilities.mjs";
 import { normalizeProviderId } from "./provider-manager.mjs";
 import { isRetiredModelProvider, isRetiredProviderModel, migrateLegacyNativeThread } from "./legacy-provider-migration.mjs";
 import { NativeToolOutputStore } from "./native-tool-output-store.mjs";
-import { threadTitleFromText } from "./agent-thread-store.mjs";
+import { cutOffCall, cutOffTurn, threadTitleFromText, turnWithCutOffCallsStopped } from "./agent-thread-store.mjs";
 import { compareSectionOrder, sectionMovePlacement, sectionRanks, threadSectionId, withSectionPlace } from "./thread-section-order.mjs";
 import { trebellHome } from "./paths.mjs";
+import { userResponseTimeout } from "./user-response-timeout.mjs";
 import { dirname, join } from "node:path";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
@@ -227,7 +228,8 @@ const acpEntries=list=>(Array.isArray(list)?list:[]).filter(entry=>entry&&typeof
 function acpToolItem(update){
   const id=String(update.toolCallId||randomUUID()),locations=acpEntries(update.locations);
   // A call ACP calls pending has not started yet (its input still streams, it waits on its approval, or a Muse Code workflow's agent is
-  // only scheduled): its row reads pending, as a plan's step that has not started does, and ends with its turn as a running one does.
+  // only scheduled): its row reads pending, as a plan's step that has not started does. One still pending when its turn completed did
+  // not run; one its turn was stopped or failed with ends stopped (the relay's finishTurn), as a harness may run a call it calls pending.
   const status=update.status==="completed"?"completed":update.status==="failed"?"failed":update.status==="pending"?"pending":"inProgress";
   if(update.namespace)return {type:"dynamicToolCall",id,namespace:String(update.namespace),tool:String(update.tool||update.title||update.kind||"tool"),arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations,rawOutput:update.rawOutput};
   // ACP sessions merge each tool update into the tool's last state and normalize its output (acp-tool-state.mjs): aggregatedOutput and
@@ -246,6 +248,9 @@ export function agentToolLifecycle(update,previousOutput=""){
   // Work its harness follows past the end of the turn that started it (a Muse Code workflow, subagent or command in the background)
   // says so on its item: the window keeps its row as it is when that turn ends, for the work's own later updates to settle.
   if(update.runsPastTurn===true)item.runsPastTurn=true;
+  // A harness's tool whose output is text to read as it is (an OpenCode read's lines, a question's answers) says so on its item, whose
+  // row then opens to that text instead of the item's JSON.
+  if(update.textOutput===true&&item.type==="dynamicToolCall")item.textOutput=true;
   const terminal=item.status==="completed"||item.status==="failed";
   let output="",outputDelta="";
   if(item.type==="commandExecution"&&typeof item.aggregatedOutput==="string"){
@@ -840,6 +845,20 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const prefix=String(threadId||"")+":";
     for(const key of liveToolOutput.keys())if(key.startsWith(prefix))liveToolOutput.delete(key);
   }
+  // A turn that was stopped or failed ends the calls it still had pending as stopped, in the thread and in the open window before its
+  // turn/completed: a harness may run a call it calls pending (Antigravity's commands and Cursor's edits go from pending to completed with
+  // nothing between), so one cut off with its turn may have run, and the ACP client marks a turn's unfinished calls cancelled. A call still
+  // pending once its turn completed did not run, which the window says (activity-item.js settledRow). Work that runs on past its turn
+  // (runsPastTurn) is left to its own updates (cutOffCall). A turn a Trebell restart ends gets the same (reconcileRestart), and a read of a
+  // thread a build before them stored gives such calls stopped too (withCutOffCalls).
+  function finishTurn(threadId,turnId,{status="completed",error=null}={}){
+    if(status!=="completed"){
+      flushToolWrites(threadId);
+      const cut=(peekThread(threadId)?.turns?.find(turn=>turn.id===turnId)?.items||[]).filter(cutOffCall);
+      for(const item of cut){const stopped=threadStore.addItem(threadId,turnId,{...item,status:"stopped"});if(stopped)emit("item/completed",{threadId,turnId,item:stopped,completedAtMs:Date.now()})}
+    }
+    return threadStore.finishTurn(threadId,turnId,{status,error});
+  }
   // A harness's thinking streams as one Codex-shaped reasoning item per run of thought chunks; the run ends at the reply's text,
   // a tool call, a thought of another message or the turn's end (T3 Code's ACP adapter closes its reasoning segment there), and
   // the thread keeps its text.
@@ -970,11 +989,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     try{const session=await Promise.race([start,stopped]);if(waiting.stopped)throw new Error(MUSE_COMPACTION_STOPPED);return session}
     finally{if(museCompactionStarts.get(thread.id)===waiting)museCompactionStarts.delete(thread.id)}
   }
-  // The work a thread's live Muse Code session still follows past its turn (MuseAgentSession.followsWork): a read of the thread says
-  // so on copies of those stored items (stillRunning), so a window that opens the thread again, reloads or reconnects keeps their
-  // rows running until the work's own rows settle them, as T3 shows such work from its server's state. Once the session is gone
-  // nothing says so, and their stored rows settle.
-  function liveWorkSession(threadId){const session=sessions.get(String(threadId||""));return session instanceof MuseAgentSession&&session.observed.size?session:null}
+  // The work a thread's live Muse Code session still follows past its turn (MuseAgentSession.followsWork), or its Claude Code still
+  // runs in the background (ClaudeAgentSession.followsWork): a read of the thread says so on copies of those stored items
+  // (stillRunning), so a window that opens the thread again, reloads or reconnects keeps their rows running until the work's own rows
+  // settle them, as T3 shows such work from its server's state. Once the session is gone nothing says so, and their stored rows settle.
+  function liveWorkSession(threadId){const session=sessions.get(String(threadId||""));return session instanceof MuseAgentSession&&session.observed.size||session instanceof ClaudeAgentSession&&session.live?.backgroundTasks.size?session:null}
   const liveWorkItem=(session,item)=>item?.runsPastTurn===true&&(item.status==="inProgress"||item.status==="pending")&&session.followsWork(item.id)?{...item,stillRunning:true}:item;
   function withLiveWork(threadId,turns){
     const session=liveWorkSession(threadId);if(!session||!Array.isArray(turns))return turns;
@@ -983,6 +1002,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   function withLiveWorkEntries(threadId,page){
     const session=liveWorkSession(threadId);if(!session||!Array.isArray(page?.data))return page;
     return {...page,data:page.data.map(entry=>{const item=liveWorkItem(session,entry?.item);return item===entry?.item?entry:{...entry,item}})};
+  }
+  // A read of the thread gives the calls a turn that was stopped, failed or ended by a restart still had pending stopped, as finishTurn
+  // ends them now: a build before it stored them pending, and the window would read them as calls that never ran (not run). The stored
+  // thread is left as it is; the same list or page when no call changed.
+  function withCutOffCalls(turns){
+    if(!Array.isArray(turns))return turns;
+    const read=turns.map(turnWithCutOffCallsStopped);return read.some((turn,index)=>turn!==turns[index])?read:turns;
+  }
+  function withCutOffCallEntries(thread,page){
+    if(!Array.isArray(page?.data)||!page.data.some(entry=>cutOffCall(entry?.item)))return page;
+    const cut=new Set((thread?.turns||[]).filter(cutOffTurn).map(turn=>turn.id));let changed=false;
+    const data=page.data.map(entry=>{if(!cut.has(entry?.turnId)||!cutOffCall(entry.item))return entry;changed=true;return {...entry,item:{...entry.item,status:"stopped"}}});
+    return changed?{...page,data}:page;
   }
   // The sessions the sweep may let go: an ACP or OpenCode harness's, but not one it keeps until its thread closes (see sessionLeftWork
   // above), whose harness ran a tool that can outlive its turn or can neither load nor resume a conversation, and a Muse Code one that
@@ -1391,14 +1423,16 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(thread.runtime!=="native")return;const count=Number(value);if(!Number.isFinite(count)||count<0)return;
       threadStore.updateTurn(thread.id,turn.id,{modelTurns:Math.max(0,Math.floor(count))});
     };
+    // The turn's reply, stored with it and sent to the open window as it ended.
+    const keepReply=text=>{const assistant=String(text||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}};
     const settlement=promptPromise.then(result=>{
       settleToolWrites(thread.id);endNativeDraft(session,thread.id,turn.id);
       endReasoning(thread.id,turn.id);persistUsage(result);persistModelTurns(result?.raw?.modelTurns);
       const providerMessageId=result?.providerMessageId||result?.userMessageId||null;
       const providerUserMessageId=result?.userMessageId||null;
       if(providerMessageId||providerUserMessageId)threadStore.updateTurn(thread.id,turn.id,{...(providerMessageId?{providerMessageId}:{}),...(providerUserMessageId?{providerUserMessageId}:{})});
-      const assistant=String(session.__assistant||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}
-      const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=threadStore.finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
+      keepReply(session.__assistant);
+      const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
       emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadMetadata(thread.id)?.status||{type:"idle"}});
       if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
     }).catch(error=>{
@@ -1422,11 +1456,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // A Claude Code turn that failed after its prompt reached the transcript keeps its ids, so a later turn can be edited.
       if(error?.providerMessageId||error?.userMessageId)threadStore.updateTurn(thread.id,turn.id,{...(error.providerMessageId?{providerMessageId:error.providerMessageId}:{}),...(error.userMessageId?{providerUserMessageId:error.userMessageId}:{})});
       persistUsage(null);persistModelTurns(error?.nativeModelTurns);
-      // A Cursor turn that ended in Cursor's lost-connection dump keeps what Cursor wrote before it as its reply, as a turn that completes
-      // keeps its reply. The dump (the failure's last message) is the turn's error, not its answer (cursor-transport-failure.mjs), so a
-      // turn that wrote nothing before it keeps no reply and ends with that error alone.
-      if(error?.code==="CURSOR_TRANSPORT_FAILURE"){const said=String(session.__assistant||""),dump=String(error.dump||""),assistant=dump&&said.endsWith(dump)?said.slice(0,said.length-dump.length).trim():"";if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}}
-      const fail=message=>{const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:turn.id,message});emit("turn/completed",{threadId:thread.id,turn:completed})};
+      // A turn that failed keeps what its harness wrote before the failure as its reply, as a turn that completes keeps its reply, so the
+      // thread shows it under the failed pill after the next message and opened again; a window that opens the thread while the turn
+      // waits to end has it there, not as the turn's reply so far as well (trebellLiveReply). A Cursor turn that ended in Cursor's
+      // lost-connection dump keeps what Cursor wrote before it: the dump (the failure's last message) is the turn's error, not its answer
+      // (cursor-transport-failure.mjs), so a turn that wrote nothing before it keeps no reply and ends with that error alone.
+      const said=String(session.__assistant||""),dump=error?.code==="CURSOR_TRANSPORT_FAILURE"?String(error.dump||""):null;session.__assistant="";
+      keepReply(dump==null?said:dump&&said.endsWith(dump)?said.slice(0,said.length-dump.length):"");
+      const fail=message=>{const completed=finishTurn(thread.id,turn.id,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:turn.id,message});emit("turn/completed",{threadId:thread.id,turn:completed})};
       // A turn its harness failed asks the harness again before it ends (harnessFailureMessage); one the person stopped did not fail.
       const harness=sessionHarnesses.get(session);
       if(stoppedTurns.get(session)===turn.id||!failedWhereItRuns(harness,error,generation,session))return fail(error.message);
@@ -1484,7 +1521,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       }catch(error){
         // The open window says what the turn stores, so the error reads the same live and after a reload.
         const message=`Could not continue after restart: ${error.message}`;
-        const failed=threadStore.finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
+        const failed=finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
       }
     }
     for(const thread of threadStore.list()){
@@ -1696,7 +1733,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     return session;
   }
   function endStoppedTurn(threadId,turnId){
-    const turn=threadStore.finishTurn(threadId,turnId,{status:"cancelled"});
+    const turn=finishTurn(threadId,turnId,{status:"cancelled"});
     emit("turn/completed",{threadId,turn});emit("thread/status/changed",{threadId,status:threadMetadata(threadId)?.status||{type:"idle"}});
     return turn;
   }
@@ -1734,7 +1771,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(method==="thread/search")return searchAgentThreads(typeof threadStore.searchCandidates==="function"?threadStore.searchCandidates(runtime,params.searchTerm,{archived:params.archived===true}):threadStore.list(runtime),params,{ranks:params.archived===true?null:sectionRanks(threadStore.list(runtime))});
     if(method==="thread/read"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
-      return {thread:params.includeTurns===false?{...thread,turns:[]}:{...thread,turns:withLiveWork(thread.id,thread.turns)}};
+      return {thread:params.includeTurns===false?{...thread,turns:[]}:{...thread,turns:withLiveWork(thread.id,withCutOffCalls(thread.turns))}};
     }
     if(method==="thread/runtimeInstances/list"){
       const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
@@ -1811,16 +1848,16 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const turn=lastTurnOf(thread.id),session=sessions.get(thread.id),draft=session?.__nativeDraft?.turnId===turn?.id?session.__nativeDraft:null;
       const liveText=turn?.status==="inProgress"&&session?(draft?draft.emitted:String(session.__assistant||"")):"";
       // The composer shows the collaboration mode the thread last ran in (Claude Code's and Cursor's Plan mode).
-      const liveTurns=resumed?.thread?.turns?.length?withLiveWork(thread.id,resumed.thread.turns):null,live=liveTurns&&liveTurns!==resumed.thread.turns?{thread:{...resumed.thread,turns:liveTurns}}:{};
+      const liveTurns=resumed?.thread?.turns?.length?withLiveWork(thread.id,withCutOffCalls(resumed.thread.turns)):null,live=liveTurns&&liveTurns!==resumed.thread.turns?{thread:{...resumed.thread,turns:liveTurns}}:{};
       return {...resumed,...live,...(collaborationMode?.mode?{collaborationMode}:{}),...(liveText?{trebellLiveReply:{turnId:turn.id,text:liveText}}:{})};
     }
     if(method==="thread/items/list"){
       const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
-      return withLiveWorkEntries(thread.id,paginateAgentThreadItems(thread,params));
+      return withLiveWorkEntries(thread.id,withCutOffCallEntries(thread,paginateAgentThreadItems(thread,params)));
     }
     if(method==="thread/turns/list"){
       const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
-      const page=paginateAgentThreadTurns(thread,params),turns=withLiveWork(thread.id,page.data);
+      const page=paginateAgentThreadTurns(thread,params),turns=withLiveWork(thread.id,withCutOffCalls(page.data));
       return turns===page.data?page:{...page,data:turns};
     }
     if(method==="thread/searchOccurrences"){
@@ -2131,6 +2168,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // A message in a mode Muse Code's host cannot take while Muse's own work holds it (a compaction, its report) is refused before its
       // turn starts, so the person keeps their draft and the work goes on (MuseAgentSession.modeRefusal).
       const museRefusal=session instanceof MuseAgentSession?session.modeRefusal():null;if(museRefusal)throw new Error(museRefusal);
+      // So is a message OpenCode 2 refuses while it may still run the turn Trebell stopped following (OpenCode2AgentSession.afterLostTurn).
+      if(session instanceof OpenCode2AgentSession)await session.afterLostTurn();
       if(requestedProvider&&typeof session.setProvider==="function")session.setProvider(requestedProvider);
       if(runtime==="native"&&typeof session.setReasoningEffort==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setReasoningEffort(Object.prototype.hasOwnProperty.call(params,"reasoningEffort")?params.reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",providerId,nextModel))}
       if(runtime==="native"&&typeof session.setServiceTier==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setServiceTier(Object.prototype.hasOwnProperty.call(params,"serviceTier")?params.serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",providerId,nextModel))}
@@ -2329,9 +2368,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(session instanceof ClaudeAgentSession){
         const current={...thread,providerMeta:threadMetadata(thread.id)?.providerMeta||thread.providerMeta},{index,providerMessageId}=claudeRewindCheckpoint(current,params.beforeTurnId);
         const forked=await session.rewindConversation(providerMessageId);
-        // A cursor is a turn of the conversation Claude Code holds now, so the fork keeps whatever it was handed over.
+        // A cursor is a turn of the conversation Claude Code holds now, so the fork keeps whatever it was handed over. The turns kept
+        // are read again: the rows of the background tasks the rewind's end of Claude Code ended went to them meanwhile.
         const providerMeta=revertedHistoryHandoff(claudeRewindProviderMeta(current,index,forked),thread.turns.slice(0,index),{sessionId:forked.sessionId,holdsHandoff:Boolean(providerMessageId)});
-        threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index),providerMeta});
+        threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:(threadStore.get(thread.id)||thread).turns.slice(0,index),providerMeta});
         emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }
       throw Object.assign(new Error(`${runtime} does not expose conversation rewind`),{code:-32601});
@@ -2354,8 +2394,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         serverRequest(method,params,owner=params?.threadId,signal=null,{runless=false}={}){
           const id=`agent-${nextServerId++}`,holder=openContext(context);
           return new Promise((resolve,reject)=>{
-            // One left unanswered this long is refused to the harness and taken off the screen, where it could no longer be answered.
-            const timer=setTimeout(()=>{const pending=pendingServer.get(id);pendingServer.delete(id);reject(new Error(`${method} user response timed out`));if(isOpen(pending?.holder))pending.holder.ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:pending.threadId}}))},5*60_000);
+            // One left unanswered this long is refused to the harness and taken off the screen, where it could no longer be answered. The
+            // rejection says it is this time-out (USER_RESPONSE_TIMED_OUT), which a close's rejection of the waits it holds is not.
+            const timer=setTimeout(()=>{const pending=pendingServer.get(id);pendingServer.delete(id);reject(userResponseTimeout(method));if(isOpen(pending?.holder))pending.holder.ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:pending.threadId}}))},5*60_000);
             pendingServer.set(id,{resolve,reject,timer,method,params,threadId:owner?String(owner):null,holder,runless:Boolean(runless)});
             holder?.ws.send(JSON.stringify({id,method,params}));
             if(signal?.aborted)withdrawServerRequest(id);else signal?.addEventListener?.("abort",()=>withdrawServerRequest(id),{once:true});
