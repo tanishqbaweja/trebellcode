@@ -208,7 +208,7 @@ function swallowSecondClick(){
 
 // runningTasks: the tasks whose turns run, as their sidebar rows say ({title,runtime,open}, open for the open thread's). onActionError(error,
 // label) says a failure in the app's alert.
-export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTasks=[],onActionError,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
+export default function SettingsPage({settings,runtimeKnown=true,harnessReady=null,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTasks=[],onActionError,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
   const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||lastSettingsSection);
   useEffect(()=>{lastSettingsSection=settingsSection},[settingsSection]);
   // The harness rows are on screen while this page shows Agents & models (agentRowsShown), and so is what an install said there. It
@@ -355,6 +355,16 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   // The profile the server runs comes from settings, which the app keeps current through every switch. agentInfo can be the snapshot cached on an
   // earlier visit (opening another harness's thread switches profiles meanwhile), so it decides neither the Active markers nor the gated reload path.
   const activeInstanceId=(runtimeKnown?settings.agentRuntimeInstanceId:null)||(appRuntime?`${appRuntime}-default`:agentInfo?.selectedInstanceId)||null;
+  // The app's composer, model picker and harness status go by its own read of whether the harness that runs is ready (harnessReady,
+  // null in mock mode). A harness list that says otherwise has the app read its status and models again, so a sign-in, a sign-in
+  // method or key change, an install, a profile change or a Refresh after a sign-in in its terminal shows there with no reload. The
+  // list a page opens with, this window's last one, was compared when it came.
+  const openedAgentInfo=useRef(agentInfo);
+  useEffect(()=>{
+    if(agentInfo===openedAgentInfo.current||typeof harnessReady!=="boolean"||switchingAgent||agentInfo?.selectedInstanceId!==activeInstanceId)return;
+    const status=runtimeStatusForKind(agentInfo,appRuntime,{preferSelected:true});
+    if(status&&Boolean(status.available)!==harnessReady)Promise.resolve(onProviderUpdated?.({agentRuntime:appRuntime})).catch(()=>{});
+  },[agentInfo]);
   const selectedManagedInference=Boolean(sharedRuntimeCapabilities(selectedAgent).managedInference);
   const keybindingRules=useMemo(()=>normalizeKeybindingRules(settings),[settings.keybindingRules,settings.keyboardShortcuts]);
   // A shortcut another command takes over is said on both rows: the one that never runs names the commands that run instead, and
