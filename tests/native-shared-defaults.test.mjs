@@ -86,8 +86,8 @@ async function relayHarness(t,{model="gpt-6-luna",script}){
   const waitFor=async predicate=>{const until=Date.now()+60_000;while(Date.now()<until){const found=notifications.find(predicate);if(found)return found;await new Promise(resolve=>setTimeout(resolve,20))}throw new Error("Timed out waiting for a relay notification")};
   t.after(async()=>{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})});
   const thread=(await request("thread/start",{model,modelProvider:"openai",cwd:repo,projectless:false,approvalPolicy:"never",sandbox:"danger-full-access",dynamicTools:[]})).thread;
-  const send=async text=>{const turn=(await request("turn/start",{threadId:thread.id,model,modelProvider:"openai",approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text}]})).turn;await waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);return turn};
-  return {state,thread,requests,notifications,send,repo};
+  const send=async(text,extra={})=>{const turn=(await request("turn/start",{threadId:thread.id,model,modelProvider:"openai",approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text}],...extra})).turn;await waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);return turn};
+  return {state,thread,requests,notifications,send,repo,request};
 }
 const userText=request=>JSON.stringify(request.messages.findLast(message=>message.role==="user")?.content??"");
 
@@ -173,4 +173,13 @@ test("the integrity audit fails a lane that ran a benchmark switch and reviews s
   assert.equal(audited.summary.status,"invalid");assert.deepEqual(audited.summary.experimentSwitches,["TREBELL_HARBOR_SEMANTIC_GATE"]);
   await writeFile(join(trial,"agent","trebell-native-metrics.json"),JSON.stringify({experimentSwitches:{},picksDifferFromShared:false,toolCalls:0}),"utf8");
   assert.notEqual((await auditTrialDirectory(trial)).summary.status,"invalid","a lane with the shared configuration is not failed for it");
+});
+
+test("a later message that asks for background processes neither expands the thread's tools nor restarts its Native session",async t=>{
+  const harness=await relayHarness(t,{model:"gpt-5",script:(request,count)=>({id:"answer-"+count,provider:"openai",model:request.model,text:"Done.",toolCalls:[],usage:{inputTokens:1,outputTokens:1,totalTokens:2}})});
+  await harness.send("Explain src/a.mjs");
+  await harness.send("Start the dev server in the background and keep it running",{dynamicToolNamespaces:["trebell_process"]});
+  assert.equal(harness.notifications.some(message=>message.method==="thread/tools/updated"),false,"nothing to add");
+  assert.deepEqual((await harness.request("thread/read",{threadId:harness.thread.id})).thread.providerMeta.dynamicToolNamespaces,[]);
+  for(const request of harness.requests)assert.ok(request.tools.some(namespace=>namespace.name==="trebell_process"));
 });
