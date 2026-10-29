@@ -103,21 +103,28 @@ test("Stop clears a streaming Native draft and the turn shows as stopped without
   }finally{await fixture.close()}
 });
 
-test("a coding prompt the completion gate judges is never streamed",async({page})=>{
+// Native runs without the semantic completion gate (src/native-configuration.mjs, the benchmarked configuration), so a coding prompt's
+// answer streams like any other: the edit call's preamble (commentary, held) never shows, and the answer is the turn's last request.
+test("a coding prompt's answer streams, with no completion gate after it",async({page})=>{
   test.setTimeout(60_000);
   await page.setViewportSize({width:1280,height:800});
   const fixture=await startStreamingFixture(page);
+  // Long enough to show as a draft (160 characters with a paragraph break, native-agent-session.mjs).
+  const FIXED="refresh() in session.js now returns false.\n\nThe method's only caller already treats a false refresh as an expired session and signs the user in again, so nothing else needed to change for the fix to take effect.";
+  const streamed=gate(),finish=gate();
   fixture.script.push(
-    async(request,hook)=>{hook({type:"text",delta:PREAMBLE});return reply(request,"",{toolCalls:[{id:"stream-edit",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"session.js",old_text:"return true",new_text:"return false"})}],finishReason:"tool_calls"})},
-    async(request,hook)=>{hook({type:"text",delta:ANSWER_HEAD});return reply(request,"refresh() in session.js now returns false.")},
-    async request=>reply(request,'{"status":"complete","unresolved":[],"reason":"session.js now returns false from refresh()."}'),
+    async(request,hook)=>{hook({type:"text",delta:PREAMBLE,hold:true});hook({type:"tool_call"});return reply(request,"",{toolCalls:[{id:"stream-edit",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"session.js",old_text:"return true",new_text:"return false"})}],finishReason:"tool_calls"})},
+    async(request,hook)=>{for(const part of FIXED.split(/(?<=\n\n)/))hook({type:"text",delta:part});streamed.open();await finish.promise;return reply(request,FIXED)},
   );
   try{
     await fixture.open("Native streaming");const seen=await watchLiveReply(page);
     await fixture.send("Fix the bug in session.js so refresh returns false.");
+    // The answer shows while its call still runs, as any other reply does.
+    await streamed.promise;await expect(live(page)).toContainText("refresh() in session.js now returns false.");
+    finish.open();
     await expect(page.locator(".history-assistant").filter({hasText:"refresh() in session.js now returns false."})).toHaveCount(1,{timeout:15_000});
-    expect(fixture.requests.length).toBeGreaterThanOrEqual(3);expect(fixture.requests.every(request=>request.hooked===false),JSON.stringify(fixture.requests)).toBe(true);
-    const shown=await seen();expect(shown.every(text=>"refresh() in session.js now returns false.".startsWith(text.trim())),JSON.stringify(shown)).toBe(true);
+    expect(fixture.requests,JSON.stringify(fixture.requests)).toEqual([{hooked:true,gate:false},{hooked:true,gate:false}]);
+    const shown=await seen();expect(shown.length).toBeGreaterThan(0);expect(shown.every(text=>FIXED.replace(/\s+/g," ").startsWith(text.replace(/\s+/g," ").trim())),JSON.stringify(shown)).toBe(true);
     await expect(page.getByText("searching the repository for the SessionManager class",{exact:false})).toHaveCount(0);
   }finally{await fixture.close()}
 });
