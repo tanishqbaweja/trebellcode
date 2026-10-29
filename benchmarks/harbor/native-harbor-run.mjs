@@ -22,7 +22,7 @@ import { withWorkingContext } from "../../src/working-context-envelope.mjs";
 import { repositoryContextEntries } from "../../ui/src/context-provenance.js";
 import { createNativeStrategyMetrics, observeNativeStrategyEvent } from "./native-strategy-metrics.mjs";
 import { createGateSnapshotter, parseGateSnapshotArtifacts } from "./native-gate-snapshots.mjs";
-import { captureFinalDiff, createToolCallLogger } from "./native-audit-artifacts.mjs";
+import { captureFinalDiff, createToolCallLogger, gitHeadCommit } from "./native-audit-artifacts.mjs";
 
 export const HARBOR_NATIVE_VERSION="trebell-native-harbor/1";
 
@@ -154,6 +154,8 @@ export async function createHarborNativeRun({root=process.cwd(),instruction,env=
   });
   await session.start({providerSessionId:"trebell-harbor",model});
 
+  // The commit the task starts from: the final diff is taken against it, so work the agent commits stays in it.
+  const startCommit=await gitHeadCommit({root,environment:env});
   const packet=await contextEngine.buildPacket({root,task,focusPaths:[]});
   // The task reaches Native as the app sends a person's message: with its working context fenced in front of it.
   const prompt=withWorkingContext([{type:"text",text:task}],Object.entries(repositoryContextEntries(packet,nativeTurnContextOptions(task))));
@@ -168,7 +170,7 @@ export async function createHarborNativeRun({root=process.cwd(),instruction,env=
       error=failure;
     }
     const elapsedMs=Math.round(performance.now()-started);
-    const finalDiff=probeOnly||liveProbe?null:await captureFinalDiff({root,path:finalDiffPath,environment:env});
+    const finalDiff=probeOnly||liveProbe?null:await captureFinalDiff({root,path:finalDiffPath,environment:env,base:startCommit});
     await toolCallLog.flush();
     const raw=result?.raw||{};
     const failureUsage=error?.nativeUsage&&typeof error.nativeUsage==="object"?error.nativeUsage:null;
@@ -225,5 +227,5 @@ export async function createHarborNativeRun({root=process.cwd(),instruction,env=
     if(error)throw error;
     return metrics;
   }
-  return {config,tools,session,prompt,promptOptions,selected,executor,run};
+  return {config,tools,session,prompt,promptOptions,selected,executor,startCommit,run};
 }

@@ -5,9 +5,12 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import * as auditArtifacts from "../benchmarks/harbor/native-audit-artifacts.mjs";
 import { captureFinalDiff, createToolCallLogger } from "../benchmarks/harbor/native-audit-artifacts.mjs";
+import { createHarborNativeRun } from "../benchmarks/harbor/native-harbor-run.mjs";
 
 const git=(cwd,...args)=>execFileSync("git",args,{cwd,encoding:"utf8",windowsHide:true});
+const SAFE_ENV=()=>{const env={};for(const key of ["PATH","Path","PATHEXT","SystemRoot","SYSTEMROOT","ComSpec","COMSPEC","WINDIR","TEMP","TMP","HOME","USERPROFILE"])if(process.env[key])env[key]=process.env[key];return env};
 
 test("Native tool-call log records arguments and results, redacts secret environment values, and rethrows failures",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-tool-call-log-")),path=join(root,"calls.jsonl");
@@ -78,6 +81,31 @@ test("Native final diff captures tracked edits and untracked files without touch
   }finally{
     await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250});
   }
+});
+
+// Native's source-control tools reach a benchmark task that asks for Git work (the shared rule, src/native-configuration.mjs), and their
+// commit_all, like git commit in the terminal, moves HEAD: a diff against HEAD would then lose the agent's committed work (review of
+// native-one-config, 2026-10-29).
+test("the runner's final diff is taken from the commit the task started at, so work the agent committed stays in it",async t=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-final-diff-base-")),repo=join(root,"repo"),path=join(root,"final.diff");t.after(()=>rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250}));
+  execFileSync("git",["init","-q",repo],{windowsHide:true});
+  git(repo,"config","user.email","test@example.com");git(repo,"config","user.name","Test");
+  await writeFile(join(repo,"fixture.py"),"def public():\n    pass\n");
+  git(repo,"add",".");git(repo,"commit","-q","-m","base");const start=git(repo,"rev-parse","HEAD").trim();
+  const run=await createHarborNativeRun({root:repo,instruction:"Explain fixture.py",manager:{status:()=>({hasKey:true}),close(){}},env:{...SAFE_ENV(),TREBELL_HOME:join(root,"home"),TREBELL_TOOL_OUTPUT_DIR:join(root,"out"),TREBELL_METRICS_PATH:join(root,"m.json"),TREBELL_EVENTS_PATH:join(root,"e.jsonl"),TREBELL_TOOL_CALLS_PATH:join(root,"t.jsonl"),TREBELL_FINAL_DIFF_PATH:path}});
+  await run.session.close();
+  assert.equal(run.startCommit,start,"the run records the commit it starts from");
+  // The agent's work, committed as commit_all or git commit in its terminal would.
+  await writeFile(join(repo,"fixture.py"),"def public():\n    return 42\n");git(repo,"commit","-q","-am","agent work");
+  const summary=await captureFinalDiff({root:repo,path,environment:SAFE_ENV(),base:run.startCommit});
+  assert.equal(summary.captured,true);assert.equal(summary.base,start);
+  assert.match(await readFile(path,"utf8"),/\+    return 42/);
+  assert.equal(typeof auditArtifacts.gitHeadCommit,"function");
+  assert.equal(await auditArtifacts.gitHeadCommit({root:repo,environment:SAFE_ENV()}),git(repo,"rev-parse","HEAD").trim());
+  assert.equal(await auditArtifacts.gitHeadCommit({root,environment:{...SAFE_ENV(),GIT_CEILING_DIRECTORIES:root}}),null,"no repository: no start commit");
+  const source=await readFile(new URL("../benchmarks/harbor/native-harbor-run.mjs",import.meta.url),"utf8");
+  assert.ok(source.includes("captureFinalDiff({root,path:finalDiffPath,environment:env,base:startCommit})"),"the runner diffs from the start commit");
+  assert.ok(source.indexOf("const startCommit=await gitHeadCommit(")<source.indexOf("await session.prompt("),"the start commit is read before the agent runs");
 });
 
 test("Native final diff records why it is unavailable outside a Git workspace",async()=>{
