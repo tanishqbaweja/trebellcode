@@ -974,6 +974,32 @@ test("restart recovery refuses to auto-repeat an unresolved tool action", async(
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
+// A turn a Trebell restart ends after a crash or kill keeps no call pending, as a turn the relay stops or fails does (finishTurn): a
+// harness may run a call it calls pending (Antigravity's commands, Cursor's edits), so one cut off may have run and ends stopped, not as
+// a call its completed turn never started. It is still what blocks an automatic continuation, as it was pending when Trebell stopped.
+// Work that runs on past its turn (runsPastTurn) is left as it was, as the relay leaves it.
+test("a call still pending when Trebell restarts ends stopped with its turn, and still blocks the turn's automatic continuation", async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-restart-pending-"));
+  const env={...process.env,TREBELL_HOME:home};
+  try{
+    const first=new AgentThreadStore(env);
+    const deploy=first.create({runtime:"antigravity",cwd:home,providerSessionId:"agy-saved",model:"fixture/model"}),deployTurn=first.addTurn(deploy.id,{inputText:"Deploy the docs"});
+    first.addItem(deploy.id,deployTurn.id,{type:"commandExecution",id:"deploy",command:"npm run deploy",cwd:"",processId:null,source:"agent",status:"pending",commandActions:[],aggregatedOutput:null,exitCode:null,durationMs:null});
+    first.addItem(deploy.id,deployTurn.id,{type:"dynamicToolCall",id:"agent",namespace:"agent",tool:"Workflow · ping",arguments:{},status:"pending",runsPastTurn:true});
+    const notes=first.create({runtime:"cursor",cwd:home,providerSessionId:""}),notesTurn=first.addTurn(notes.id,{inputText:"Edit the notes"});
+    first.addItem(notes.id,notesTurn.id,{type:"fileChange",id:"read",status:"completed",changes:[{path:"todo.md",kind:"edit"}]});
+    first.addItem(notes.id,notesTurn.id,{type:"fileChange",id:"edit",status:"pending",changes:[{path:"notes.txt",kind:"edit"}]});
+    const restarted=new AgentThreadStore(env);assert.deepEqual(restarted.reconcileRestart({continueAfterRestart:true}),[]);
+    const statuses=id=>Object.fromEntries(restarted.get(id).turns[0].items.filter(item=>item.type!=="userMessage").map(item=>[item.id,item.status]));
+    const blocked=restarted.get(deploy.id);
+    assert.equal(blocked.turns[0].status,"interrupted");assert.equal(blocked.recovery?.blocked,true);
+    assert.deepEqual(blocked.recovery.uncertainTools.map(tool=>[tool.id,tool.status]),[["deploy","pending"],["agent","pending"]],"the calls pending when Trebell stopped block its continuation");
+    assert.deepEqual(statuses(deploy.id),{deploy:"stopped",agent:"pending"});
+    assert.equal(restarted.get(notes.id).turns[0].status,"failed");
+    assert.deepEqual(statuses(notes.id),{read:"completed",edit:"stopped"});
+  }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
 test("restart recovery still auto-resumes when all recorded tool actions are settled", async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-agent-settled-recovery-"));
   const env={...process.env,TREBELL_HOME:home};

@@ -280,3 +280,85 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",asy
     await relay.close();await new Promise(resolve=>server.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});
   }
 });
+
+// A build before the relay ended such calls stopped kept a Cursor edit still pending as the person stopped its turn, and Trebell killed
+// while a command was still pending left its turn running, which the next start ends (the restart's failure). Both may have run, so both
+// read stopped when the thread is opened, and after a reload, as a call cut off now does; the lint its completed turn never started still
+// reads not run, and the tests that ran read done.
+test("a Cursor call still pending in a turn stopped before this build or ended by a Trebell restart reads stopped, not not run",async({page})=>{
+  test.setTimeout(60_000);
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-stored-stopped-"));
+  const env={...process.env,TREBELL_HOME:join(root,"home")};
+  const command=(id,title,status,output=null)=>({type:"commandExecution",id,command:title,cwd:"",processId:null,source:"agent",status,commandActions:[],aggregatedOutput:output,exitCode:null,durationMs:null});
+  // The thread as an earlier build stored it, up to its last turn, which ran when Trebell was killed.
+  const before=new AgentThreadStore(env);
+  const seed=before.create({runtime:"cursor",cwd:root,providerSessionId:"",model:"default",name:"Earlier calls"});
+  const stoppedTurn=before.addTurn(seed.id,{inputText:"Add a line to the notes",items:[{type:"fileChange",id:"edit-notes",status:"pending",changes:[{path:"notes.txt",kind:"edit"}]}]});
+  before.finishTurn(seed.id,stoppedTurn.id,{status:"cancelled"});
+  const completedTurn=before.addTurn(seed.id,{inputText:"Run the tests and the lint",items:[command("run-tests","Run npm test","completed","12 passing"),command("lint","Run npm run lint","pending"),{type:"agentMessage",id:"lint-reply",text:"The tests pass; I left the lint for later."}]});
+  before.finishTurn(seed.id,completedTurn.id,{status:"completed"});
+  const cutTurn=before.addTurn(seed.id,{inputText:"Deploy the docs site",items:[command("deploy","Run npm run deploy","pending")]});
+  before.close();
+  // Trebell starts again: the turn it was killed in ends as a restart ends it.
+  const threadStore=new AgentThreadStore(env);threadStore.reconcileRestart({continueAfterRestart:false});
+  const instance={id:"cursor-default",kind:"cursor",displayName:"Cursor",enabled:true};
+  const runtimeManager={
+    activeRuntime:()=>"cursor",activeInstance:()=>instance,instances:()=>[instance],
+    runtimeCwd:cwd=>cwd,processSpawner:()=>null,remoteIo:()=>null,childEnv:()=>process.env,
+    executable:()=>process.execPath,acpArgs:()=>[join(root,"never-started.mjs")],compatibleInstanceIds:()=>[instance.id],
+    probe:async()=>({id:instance.id,name:instance.displayName,available:true,authenticated:true,version:"fixture"}),
+  };
+  const meta=new Map([[seed.id,{projectless:true,environmentId:null}]]);
+  const state={settings:()=>({activeEnvironmentId:null,continueThreadsAfterRestart:false}),threadMeta:id=>meta.get(id)||{},updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},recordUsage:()=>{}};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:null,state,version:"fixture"});
+  const port=await listen(server),json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
+  try{
+    await keepThreadMeta(page);
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default",modelProvider:"openai",defaultPermissionMode:"full",defaultWorkspaceMode:"current"};
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="POST")Object.assign(settings,route.request().postDataJSON()||{});return json(route,settings)});
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+port+"/api/agent/ws",cwd:root,platform:"win32",version:"fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{[seed.id]:{projectless:true,environmentId:null}}}));
+    await page.route(/\/api\/models(?:\?.*)?$/,route=>json(route,{models:["default"],metadata:{provider:"cursor",models:[{id:"default",name:"Auto",provider:"cursor",agent:"Cursor"}]}}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const listed=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Earlier calls"]')});
+    const card=turnId=>page.locator(`[data-testid=activity-card][data-turn-id="${turnId}"]`);
+    const step=(turnId,title)=>card(turnId).locator(".tool-event").filter({has:page.locator("summary strong",{hasText:title})});
+    // The thread opened: each turn's card open, as the person opens them.
+    const opened=async when=>{
+      await listed.locator(".thread-main").click();await expect(listed).toHaveClass(/active/);
+      await expect(page.locator(".assistant-message-text").filter({hasText:"The tests pass; I left the lint for later."}),`the thread shows (${when})`).toBeVisible({timeout:20_000});
+      for(const turn of [stoppedTurn,completedTurn,cutTurn]){
+        const shown=card(turn.id);await expect(shown,`the card of "${turn.items[0]?.content?.[0]?.text}" (${when})`).toBeVisible({timeout:20_000});
+        if(await shown.getAttribute("data-state")!=="open")await shown.locator(".activity-card-head").click();
+        await expect(shown).toHaveAttribute("data-state","open");
+      }
+    };
+    // Each row's pill as the page holds it: a row out of view is not laid out (content-visibility:auto), so its rendered text reads
+    // empty until a frame after it scrolls into view. A row a screenshot shows is scrolled to and waited for until it reads its pill.
+    const pill=async(turnId,title)=>{const row=step(turnId,title);return {status:await row.locator("summary em").textContent(),checked:await row.locator("summary .timeline-marker svg.lucide-check").count()}};
+    const inView=async(turnId,title,status,message)=>{const row=step(turnId,title);await row.scrollIntoViewIfNeeded();await expect(row.locator("summary em"),message).toHaveText(status,{useInnerText:true})};
+    const said=async()=>({edit:await pill(stoppedTurn.id,"Editing files"),tests:(await pill(completedTurn.id,"Run npm test")).status,lint:await pill(completedTurn.id,"Run npm run lint"),deploy:await pill(cutTurn.id,"Run npm run deploy")});
+    const expected={edit:{status:"stopped",checked:0},tests:"done",lint:{status:"not run",checked:0},deploy:{status:"stopped",checked:0}};
+    await opened("opened");
+    await expect.poll(said,{message:"the cards as the thread opened",timeout:10_000}).toEqual(expected);
+    await expect(page.getByText("Agent session was interrupted by a Trebell restart.",{exact:false}).first(),"the restart's failure is the last turn's").toBeVisible();
+    for(const mode of ["dark","light"]){
+      if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").first().click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);await inView(stoppedTurn.id,"Editing files","stopped");
+      await page.screenshot({animations:"disabled",path:auditDir+`agent-tool-stored-stopped-${mode}-1280x800.png`});
+      await inView(cutTurn.id,"Run npm run deploy","stopped");
+      await page.screenshot({animations:"disabled",path:auditDir+`agent-tool-restart-stopped-${mode}-1280x800.png`});
+    }
+    await page.reload();
+    await opened("after a reload");
+    await expect.poll(said,{message:"the cards after a reload",timeout:10_000}).toEqual(expected);
+    await page.setViewportSize({width:700,height:800});await inView(cutTurn.id,"Run npm run deploy","stopped","a narrow window says the same");
+    await page.screenshot({animations:"disabled",path:auditDir+`agent-tool-restart-stopped-reloaded-${await page.evaluate(()=>document.documentElement.dataset.mode)}-700x800.png`});
+  }finally{
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));threadStore.close?.();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100});
+  }
+});

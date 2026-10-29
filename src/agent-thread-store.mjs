@@ -20,6 +20,21 @@ function recoveryToolSummary(item={}){
   };
 }
 
+// A call still pending as its turn was stopped, failed or ended by a Trebell restart may have run (a harness may run a call it calls
+// pending: Antigravity's commands and Cursor's edits go from pending to completed with nothing between), so it ends stopped, not as one
+// its completed turn never started (which the window reads not run, activity-item.js settledRow). Work that runs on past its turn
+// (runsPastTurn) is left to its own updates.
+export const cutOffCall=item=>item?.status==="pending"&&item.runsPastTurn!==true;
+const CUT_OFF_TURN_STATUSES=new Set(["cancelled","failed","interrupted"]);
+export const cutOffTurn=turn=>CUT_OFF_TURN_STATUSES.has(turn?.status);
+// A turn as a read of its thread gives it: one that was stopped, failed or ended by a restart has the calls it still had pending
+// stopped, as the relay's finishTurn and reconcileRestart end them now and a build before them stored them pending. The same turn when
+// it has none.
+export function turnWithCutOffCallsStopped(turn){
+  if(!cutOffTurn(turn)||!Array.isArray(turn.items)||!turn.items.some(cutOffCall))return turn;
+  return {...turn,items:turn.items.map(item=>cutOffCall(item)?{...item,status:"stopped"}:item)};
+}
+
 export function interruptedTurnRecoverySafety(turn={}){
   const uncertainTools=[];
   for(const item of Array.isArray(turn?.items)?turn.items:[]){
@@ -181,6 +196,9 @@ export class AgentThreadStore{
         if(activeTurn){activeTurn.status="failed";activeTurn.completedAt=now;activeTurn.durationMs=activeTurn.startedAt?Math.max(0,(now-activeTurn.startedAt)*1000):null;activeTurn.error={message:"Agent session was interrupted by a Trebell restart. Send a new message to continue."}}
         thread.status={type:"systemError"};delete thread.recovery;
       }
+      // A turn that does not go on ends with the calls it still had pending stopped, as the relay ends a stopped or failed turn's
+      // (cutOffCall); they still block its continuation, as they were pending when Trebell stopped. A queued continuation has none.
+      if(activeTurn&&!thread.recovery?.pending)activeTurn.items=turnWithCutOffCallsStopped(activeTurn).items;
       thread.updatedAt=now;
     }
     for(const thread of changed){this.#persistThread(thread,{replaceTurns:true});this.#cacheMetadata(thread)}return clone(recoverable);

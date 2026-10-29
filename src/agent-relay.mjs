@@ -48,7 +48,7 @@ import { providerFeatureEnabled } from "./provider-capabilities.mjs";
 import { normalizeProviderId } from "./provider-manager.mjs";
 import { isRetiredModelProvider, isRetiredProviderModel, migrateLegacyNativeThread } from "./legacy-provider-migration.mjs";
 import { NativeToolOutputStore } from "./native-tool-output-store.mjs";
-import { threadTitleFromText } from "./agent-thread-store.mjs";
+import { cutOffCall, cutOffTurn, threadTitleFromText, turnWithCutOffCallsStopped } from "./agent-thread-store.mjs";
 import { compareSectionOrder, sectionMovePlacement, sectionRanks, threadSectionId, withSectionPlace } from "./thread-section-order.mjs";
 import { trebellHome } from "./paths.mjs";
 import { userResponseTimeout } from "./user-response-timeout.mjs";
@@ -845,11 +845,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // turn/completed: a harness may run a call it calls pending (Antigravity's commands and Cursor's edits go from pending to completed with
   // nothing between), so one cut off with its turn may have run, and the ACP client marks a turn's unfinished calls cancelled. A call still
   // pending once its turn completed did not run, which the window says (activity-item.js settledRow). Work that runs on past its turn
-  // (runsPastTurn) is left to its own updates.
+  // (runsPastTurn) is left to its own updates (cutOffCall). A turn a Trebell restart ends gets the same (reconcileRestart), and a read of a
+  // thread a build before them stored gives such calls stopped too (withCutOffCalls).
   function finishTurn(threadId,turnId,{status="completed",error=null}={}){
     if(status!=="completed"){
       flushToolWrites(threadId);
-      const cut=(peekThread(threadId)?.turns?.find(turn=>turn.id===turnId)?.items||[]).filter(item=>item?.status==="pending"&&item.runsPastTurn!==true);
+      const cut=(peekThread(threadId)?.turns?.find(turn=>turn.id===turnId)?.items||[]).filter(cutOffCall);
       for(const item of cut){const stopped=threadStore.addItem(threadId,turnId,{...item,status:"stopped"});if(stopped)emit("item/completed",{threadId,turnId,item:stopped,completedAtMs:Date.now()})}
     }
     return threadStore.finishTurn(threadId,turnId,{status,error});
@@ -997,6 +998,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   function withLiveWorkEntries(threadId,page){
     const session=liveWorkSession(threadId);if(!session||!Array.isArray(page?.data))return page;
     return {...page,data:page.data.map(entry=>{const item=liveWorkItem(session,entry?.item);return item===entry?.item?entry:{...entry,item}})};
+  }
+  // A read of the thread gives the calls a turn that was stopped, failed or ended by a restart still had pending stopped, as finishTurn
+  // ends them now: a build before it stored them pending, and the window would read them as calls that never ran (not run). The stored
+  // thread is left as it is; the same list or page when no call changed.
+  function withCutOffCalls(turns){
+    if(!Array.isArray(turns))return turns;
+    const read=turns.map(turnWithCutOffCallsStopped);return read.some((turn,index)=>turn!==turns[index])?read:turns;
+  }
+  function withCutOffCallEntries(thread,page){
+    if(!Array.isArray(page?.data)||!page.data.some(entry=>cutOffCall(entry?.item)))return page;
+    const cut=new Set((thread?.turns||[]).filter(cutOffTurn).map(turn=>turn.id));let changed=false;
+    const data=page.data.map(entry=>{if(!cut.has(entry?.turnId)||!cutOffCall(entry.item))return entry;changed=true;return {...entry,item:{...entry.item,status:"stopped"}}});
+    return changed?{...page,data}:page;
   }
   // The sessions the sweep may let go: an ACP or OpenCode harness's, but not one it keeps until its thread closes (see sessionLeftWork
   // above), whose harness ran a tool that can outlive its turn or can neither load nor resume a conversation, and a Muse Code one that
@@ -1744,7 +1758,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(method==="thread/search")return searchAgentThreads(typeof threadStore.searchCandidates==="function"?threadStore.searchCandidates(runtime,params.searchTerm,{archived:params.archived===true}):threadStore.list(runtime),params,{ranks:params.archived===true?null:sectionRanks(threadStore.list(runtime))});
     if(method==="thread/read"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
-      return {thread:params.includeTurns===false?{...thread,turns:[]}:{...thread,turns:withLiveWork(thread.id,thread.turns)}};
+      return {thread:params.includeTurns===false?{...thread,turns:[]}:{...thread,turns:withLiveWork(thread.id,withCutOffCalls(thread.turns))}};
     }
     if(method==="thread/runtimeInstances/list"){
       const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
@@ -1821,16 +1835,16 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const turn=lastTurnOf(thread.id),session=sessions.get(thread.id),draft=session?.__nativeDraft?.turnId===turn?.id?session.__nativeDraft:null;
       const liveText=turn?.status==="inProgress"&&session?(draft?draft.emitted:String(session.__assistant||"")):"";
       // The composer shows the collaboration mode the thread last ran in (Claude Code's and Cursor's Plan mode).
-      const liveTurns=resumed?.thread?.turns?.length?withLiveWork(thread.id,resumed.thread.turns):null,live=liveTurns&&liveTurns!==resumed.thread.turns?{thread:{...resumed.thread,turns:liveTurns}}:{};
+      const liveTurns=resumed?.thread?.turns?.length?withLiveWork(thread.id,withCutOffCalls(resumed.thread.turns)):null,live=liveTurns&&liveTurns!==resumed.thread.turns?{thread:{...resumed.thread,turns:liveTurns}}:{};
       return {...resumed,...live,...(collaborationMode?.mode?{collaborationMode}:{}),...(liveText?{trebellLiveReply:{turnId:turn.id,text:liveText}}:{})};
     }
     if(method==="thread/items/list"){
       const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
-      return withLiveWorkEntries(thread.id,paginateAgentThreadItems(thread,params));
+      return withLiveWorkEntries(thread.id,withCutOffCallEntries(thread,paginateAgentThreadItems(thread,params)));
     }
     if(method==="thread/turns/list"){
       const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
-      const page=paginateAgentThreadTurns(thread,params),turns=withLiveWork(thread.id,page.data);
+      const page=paginateAgentThreadTurns(thread,params),turns=withLiveWork(thread.id,withCutOffCalls(page.data));
       return turns===page.data?page:{...page,data:turns};
     }
     if(method==="thread/searchOccurrences"){

@@ -745,6 +745,35 @@ test("a call still pending when its turn is stopped or fails ends stopped before
   assert.deepEqual(stored(),{edit:"stopped",agent:"pending",echo:"stopped",lint:"pending"});
 });
 
+// A build before the relay ended such calls stopped stored them pending in their stopped or failed turn, and a turn a Trebell restart
+// ended (interrupted, or failed) kept them so too: every read of the thread gives them stopped, as the relay ends them now, whichever
+// read the window opens the thread with. A call its completed turn never started stays pending (the window reads it not run), and
+// work that runs on past its turn is left to its own updates. The stored thread is left as it was.
+test("a call an earlier build stored pending in a turn that was stopped, failed or cut off by a restart reads stopped in every read of the thread",async t=>{
+  const fx=await scenario(t,{...GROK,prompts:[]});
+  const {rpc,threadStore}=await relayHarness(t,"grok",fx);
+  const thread=threadStore.create({runtime:"grok",cwd:fx.root,providerSessionId:"grok-session"});
+  const pending=(id,extra={})=>({type:"commandExecution",id,command:"Run "+id,cwd:"",processId:null,source:"agent",status:"pending",commandActions:[],aggregatedOutput:null,exitCode:null,durationMs:null,...extra});
+  const ended=(status,items)=>{const turn=threadStore.addTurn(thread.id,{inputText:"turn "+status,items});threadStore.finishTurn(thread.id,turn.id,{status});return turn.id};
+  const ids=[
+    ended("cancelled",[{type:"fileChange",id:"edit",status:"pending",changes:[{path:"notes.txt",kind:"edit"}]},pending("agent",{runsPastTurn:true}),pending("ran",{status:"completed",aggregatedOutput:"ok"})]),
+    ended("failed",[pending("echo")]),ended("interrupted",[pending("deploy")]),ended("completed",[pending("lint")]),
+  ];
+  const statuses=items=>Object.fromEntries((items||[]).filter(item=>item.type!=="userMessage").map(item=>[item.id,item.status]));
+  const byTurn=turns=>Object.fromEntries((turns||[]).map(turn=>[turn.id,statuses(turn.items)]));
+  const read={[ids[0]]:{edit:"stopped",agent:"pending",ran:"completed"},[ids[1]]:{echo:"stopped"},[ids[2]]:{deploy:"stopped"},[ids[3]]:{lint:"pending"}};
+  const entries=(await rpc("thread/items/list",{threadId:thread.id,sortDirection:"asc"})).data,oneTurn={};
+  for(const id of ids)oneTurn[id]=statuses((await rpc("thread/items/list",{threadId:thread.id,turnId:id,sortDirection:"desc"})).data.map(entry=>entry.item));
+  assert.deepEqual({
+    "thread/read":byTurn((await rpc("thread/read",{threadId:thread.id})).thread.turns),
+    "thread/resume":byTurn((await rpc("thread/resume",{threadId:thread.id})).thread.turns),
+    "thread/turns/list":byTurn((await rpc("thread/turns/list",{threadId:thread.id,sortDirection:"asc",itemsView:"full"})).data),
+    "thread/items/list":Object.fromEntries(ids.map(id=>[id,statuses(entries.filter(entry=>entry.turnId===id).map(entry=>entry.item))])),
+    "thread/items/list of one turn":oneTurn,
+  },{"thread/read":read,"thread/resume":read,"thread/turns/list":read,"thread/items/list":read,"thread/items/list of one turn":read});
+  assert.deepEqual(byTurn(threadStore.get(thread.id).turns),{[ids[0]]:{edit:"pending",agent:"pending",ran:"completed"},[ids[1]]:{echo:"pending"},[ids[2]]:{deploy:"pending"},[ids[3]]:{lint:"pending"}},"the stored thread is left as it was");
+});
+
 test("in Grok Auto the requests Grok asks about reach the user even when Trebell's policy would allow them",async t=>{
   const fx=await scenario(t,{...GROK,prompts:[{steps:[{request:{method:"session/request_permission",params:{sessionId:"$sessionId",toolCall:{toolCallId:"t1",title:"Read src/a.js",kind:"read"},options:[{optionId:"once",kind:"allow_once"},{optionId:"no",kind:"reject_once"}]}}}]}]});
   const {ws,rpc,next}=await relayHarness(t,"grok",fx);
