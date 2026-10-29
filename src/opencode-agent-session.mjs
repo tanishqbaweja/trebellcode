@@ -572,12 +572,13 @@ export function openCodeReadOutput(output){
   return wrapped?wrapped[1]+body.slice(wrapped[0].length):output;
 }
 
-// A path as a tool's row names it: from the thread's folder when it is in it (as OpenCode titles its reads), whole when it is not.
+// A path as a tool's row names it: from the thread's folder when it is in it (as OpenCode titles its reads), whole when it is not. A
+// Windows folder (on a drive or a share) holds the path whichever separators and case the model wrote it with, as Windows reads it.
 function folderPath(path,cwd){
   const file=String(path||"").trim(),root=String(cwd||"").replace(/[\\/]+$/,"");
   if(!root||file.length<=root.length+1||!"\\/".includes(file[root.length]))return file;
-  const head=file.slice(0,root.length);
-  return head===root||(/^[a-z]:/i.test(root)&&head.toLowerCase()===root.toLowerCase())?file.slice(root.length+1):file;
+  const head=file.slice(0,root.length),windows=/^(?:[a-z]:|[\\/]{2})/i.test(root),same=value=>value.replace(/\\/g,"/").toLowerCase();
+  return head===root||(windows&&same(head)===same(root))?file.slice(root.length+1):file;
 }
 // A tool call's row title: what it does, the file or folder a read reads, how many questions a question asks (as OpenCode titles it once
 // they are answered), and OpenCode's own title of a command or another tool.

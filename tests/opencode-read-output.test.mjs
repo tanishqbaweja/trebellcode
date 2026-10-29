@@ -62,3 +62,18 @@ test("an OpenCode 2 read row carries what was read, without OpenCode's tags, and
     assert.deepEqual(outputs,{call_1:"1: hello\n\n(End of file - total 1 lines)\n\n<system-reminder>\nProject instructions\n</system-reminder>",call_2:"Read file notes.txt, lines 1-2\n1: alpha line\n2: beta line",call_3:FOLDER_READ});
   }finally{await session.close()}
 });
+
+// A read in the thread's folder is titled from that folder however the model wrote the path: on Windows with forward slashes or
+// backslashes, either case of the drive letter and folder names. A folder whose name only starts like the thread's is outside it, and a
+// POSIX path keeps its case.
+test("a read in the thread's folder is titled from the folder whichever separators and case the model wrote its path with",async()=>{
+  const {openCodeToolTitle}=await import("../src/opencode-agent-session.mjs");
+  const title=(filePath,cwd)=>openCodeToolTitle("read",{input:{filePath},cwd});
+  assert.equal(title("H:/work/notes.txt","H:\\work"),"Read notes.txt");
+  assert.equal(title("h:/Work/src/env.ts","H:\\work\\"),"Read src/env.ts");
+  assert.equal(title("H:\\work\\notes.txt","H:/work"),"Read notes.txt");
+  assert.equal(title("H:\\work\\src\\env.ts","H:\\work"),"Read src\\env.ts");
+  assert.equal(title("H:/workbench/notes.txt","H:\\work"),"Read H:/workbench/notes.txt");
+  assert.equal(title("/repo/src/a.js","/repo"),"Read src/a.js");
+  assert.equal(title("/Repo/src/a.js","/repo"),"Read /Repo/src/a.js");
+});
