@@ -96,7 +96,8 @@ them in its database ahead of a key in its environment and reads no `OPENCODE_AU
 profile, `OPENCODE_DB=<Trebell home>/opencode-api-key-homes/<profile>/opencode.db`, which holds none of them; its 2.x sessions live
 there too, so a thread whose session is in the other database continues in a new session with its earlier messages handed over;
 Codex signs in with `codex login --with-api-key` in a home of Trebell's own over its shared home, which
-`codex logout` empties again once the profile is back on Sign in or removed, or the OpenAI key is removed; Grok signs in with its key
+`codex logout` empties again once the profile is back on Sign in or removed, or the OpenAI key is removed or replaced (every such
+home, a profile's that is not running included, once the app-servers on the key have stopped); Grok signs in with its key
 method before each chat session and each Git text session starts). A harness on API key runs on this machine only: Trebell sends no
 saved key to a WSL or SSH environment, and a key the host's shell holds never stands in for it, so there it is refused until it is set
 to Sign in, which uses its own login there. An OpenCode profile with a server URL of its own runs on that server's sign-in and cannot be

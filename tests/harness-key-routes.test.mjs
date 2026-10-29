@@ -3,7 +3,8 @@
 // - a Codex profile that is not the active one stops the app-servers its threads run on once its method changes, or the OpenAI key it
 //   runs on is saved or removed, so none goes on serving a thread on the sign-in or key the person moved off; the active profile's
 //   change stops only its own (its catalog starts again), never another profile's thread's;
-// - no Codex home of Trebell's own for a key keeps a copy of the OpenAI key once its profile is removed, or the key is.
+// - no Codex home of Trebell's own for a key keeps a copy of the OpenAI key once its profile is removed, or the key is, nor of the
+//   key before once another is saved.
 // The stand-in answers `codex login --with-api-key` (writing its home's auth.json, as Codex does), `codex logout` (deleting it) and
 // `codex app-server` (a WebSocket that answers every request), and logs each call with its CODEX_HOME. Fixture keys, fresh folders.
 import test from "node:test";
@@ -52,7 +53,7 @@ else if(args[0]==="app-server"){
 
 // A Trebell home with Native active, Codex profiles of the test's own (codex-default and the others given) and the thread named in
 // threads on its profile, the OpenAI key saved in Trebell's store, and the stand-in as the Codex CLI.
-async function fixture(t,{profiles=[],threads={},settings={}}={}){
+async function fixture(t,{profiles=[],threads={},settings={},fetchFn=null}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-key-routes-")),log=join(root,"codex-calls.jsonl"),script=join(root,"fake-codex.mjs");
   let gui=null;t.after(async()=>{await gui?.close();await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:100})});
   await mkdir(join(root,"codex-home"),{recursive:true});await writeFile(log,"");
@@ -72,7 +73,7 @@ async function fixture(t,{profiles=[],threads={},settings={}}={}){
   state.close();
   new ProviderManager({env}).setKey("openai",KEY);
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
-  gui=await createGuiServer({port,appPort,mock:false,env,fetchFn:offlineE2eFetch()});
+  gui=await createGuiServer({port,appPort,mock:false,env,fetchFn:fetchFn||offlineE2eFetch()});
   const calls=async()=>(await readFile(log,"utf8")).split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line));
   const post=async(path,body)=>{const response=await fetch(gui.url+path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});return {status:response.status,body:await response.json().catch(()=>null)}};
   const methods=async()=>Object.fromEntries(((await fetch(gui.url+"/api/agent-runtimes").then(response=>response.json())).instances||[]).filter(item=>item.signIn).map(item=>[item.id,item.signIn.method]));
@@ -187,6 +188,27 @@ test("no Codex home of Trebell's own for a key keeps the OpenAI key once its pro
   assert.equal((await fx.post("/api/providers",{provider:"openai",apiKey:"",select:false})).status,200);
   assert.equal(existsSync(join(fx.keyHome("codex-gone"),"auth.json")),false,"a removed profile's home signs out with the key");
   assert.ok((await fx.calls()).some(entry=>entry.call==="logout"&&resolve(entry.home)===resolve(fx.keyHome("codex-gone"))));
+});
+
+// OpenAI's model list, as the key check of a key saved reads it; no request leaves the machine.
+const openAiModels=async url=>{
+  if(!String(url).startsWith("https://api.openai.com/"))throw new Error("no other request: "+url);
+  return new Response(JSON.stringify({object:"list",data:[{id:"gpt-6.1-sol",object:"model",created:2}]}),{status:200,headers:{"content-type":"application/json"}});
+};
+test("the OpenAI key replaced leaves no copy of the one before in any Codex home of Trebell's own, and the active profile signs in with the new one",{timeout:120_000},async t=>{
+  const NEW="sk-fixture-openai-routes-new";
+  const fx=await fixture(t,{profiles:[{id:"codex-a",kind:"codex",displayName:"Codex A",enabled:true,environment:{},auth:"api-key"},{id:"codex-c",kind:"codex",displayName:"Codex C",enabled:true,environment:{},auth:"api-key"}],
+    settings:{agentRuntime:"codex",agentRuntimeInstanceId:"codex-a"},fetchFn:openAiModels});
+  assert.ok(await waitFor(async()=>serversOf(await fx.calls(),fx.keyHome("codex-a")).length>0),"the catalog runs on Codex A's key");
+  // Codex C, on the key too, does not run: its home keeps the key it signed in with before, as does a home a removed profile left.
+  for(const id of ["codex-c","codex-gone"]){await mkdir(fx.keyHome(id),{recursive:true});await writeFile(join(fx.keyHome(id),"auth.json"),JSON.stringify({auth_mode:"apikey",OPENAI_API_KEY:KEY}))}
+  const saved=await fx.post("/api/providers",{provider:"openai",apiKey:NEW,select:false});
+  assert.equal(saved.status,200,JSON.stringify(saved.body));
+  for(const id of ["codex-c","codex-gone"])assert.equal(existsSync(join(fx.keyHome(id),"auth.json")),false,id+" keeps no copy of the key before");
+  assert.ok((await fx.calls()).some(entry=>entry.call==="logout"&&resolve(entry.home)===resolve(fx.keyHome("codex-c"))),"with codex logout");
+  // The active profile's catalog starts again, signed in with the key saved now.
+  const signedInWith=async id=>{try{return JSON.parse(await readFile(join(fx.keyHome(id),"auth.json"),"utf8")).OPENAI_API_KEY}catch{return null}};
+  assert.ok(await waitFor(async()=>await signedInWith("codex-a")===NEW),"Codex A signs in with the new key");
 });
 
 test("what the move of Antigravity's old key said on its row ends once the Gemini key or Antigravity's method changes",{timeout:60_000},async t=>{

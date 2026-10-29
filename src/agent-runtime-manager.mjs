@@ -634,7 +634,7 @@ export class AgentRuntimeManager{
     return {ran};
   }
   // Signs a Codex profile's home of Trebell's own for an API key out (`codex logout`), so no copy of a key stays there once the
-  // profile is set back to Sign in or removed, or the OpenAI key is removed from Trebell; the next start on an API key signs in again.
+  // profile is set back to Sign in or removed, or the OpenAI key is removed or replaced; the next start on an API key signs in again.
   // Only a home that is there, best effort, never thrown: a Codex that could not run (its binary gone) would leave its sign-in file
   // there, so that copy of the key goes all the same, unread (the home is Trebell's own, and only Trebell's `codex login
   // --with-api-key` writes it). home: another home of Trebell's own for a key, a removed profile's (codexApiKeyLogoutAll).
@@ -647,8 +647,8 @@ export class AgentRuntimeManager{
     this.#codexKeyLogins.delete(home);this.#codexAccounts.clear();
     return {ran:true,ok:Boolean(result?.ok)};
   }
-  // The OpenAI key removed from Trebell: every Codex home of Trebell's own for a key signs out, a listed profile's with its own Codex and
-  // one a removed profile left with the default Codex, so no copy of the key stays in any of them.
+  // The OpenAI key removed or replaced in Trebell: every Codex home of Trebell's own for a key signs out, a listed profile's with its own
+  // Codex and one a removed profile left with the default Codex, so no copy of the key, or of the one before, stays in any of them.
   async codexApiKeyLogoutAll(){
     const root=join(trebellHome(this.env),"codex-api-key-homes");let names=[];
     try{names=readdirSync(root,{withFileTypes:true}).filter(entry=>entry.isDirectory()).map(entry=>entry.name)}catch{}

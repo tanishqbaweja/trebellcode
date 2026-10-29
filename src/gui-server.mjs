@@ -2225,9 +2225,12 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
             const onKey=agentRuntimes.instances().filter(item=>harnessAuthMethod(item)==="api-key"&&Object.hasOwn(HARNESS_KEY_VARIABLES[item.kind]||{},provider));
             agentRuntimes.forgetProbes(onKey.map(item=>item.id));
             stoppedChats+=await agentRelay?.closeRuntimeSessions?.(null,{instanceIds:onKey.filter(item=>item.kind!=="codex").map(item=>item.id)})||0;
-            await restartCodexProfileServers(onKey.filter(item=>item.kind==="codex").map(item=>item.id));
-            // The OpenAI key removed: no Codex home of Trebell's own keeps a copy of it, a removed profile's included.
-            if(provider==="openai"&&!String(body.apiKey||"").trim()&&!mock)await agentRuntimes.codexApiKeyLogoutAll();
+            const codexOnKey=onKey.filter(item=>item.kind==="codex").map(item=>item.id);
+            // The OpenAI key saved or removed: once the app-servers on it have stopped, no Codex home of Trebell's own keeps a copy of
+            // the key before, a profile's that does not run and a removed profile's included (one replaced because it leaked stays
+            // nowhere). The active profile's catalog then signs in again with the key saved now, and any other at its next start.
+            if(provider==="openai"&&!mock){await stopCodexProfileServers(codexOnKey);await agentRuntimes.codexApiKeyLogoutAll()}
+            await restartCodexProfileServers(codexOnKey);
           }
           // select:false (a key saved for a harness on its API key, from its row) keeps the provider Native calls.
           const changed=provider!==selectedProvider&&body.select!==false;
