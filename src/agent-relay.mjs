@@ -24,7 +24,7 @@ import { NativeMcpBroker } from "./native-mcp-broker.mjs";
 import { createNativeToolExecutor } from "./native-tool-executor.mjs";
 import { nativeSystemPrompt } from "./native-system-prompt.mjs";
 import { attachNativePromptProvenance } from "./native-request-metrics.mjs";
-import { continuityCheckpoints, nativeModelSettings, nativePolicyContext, nativePromptBudgets, nativeSessionSettings, nativeToolNamespaceOptions } from "./native-configuration.mjs";
+import { NATIVE_COMPACTION, continuityCheckpoints, nativeModelSettings, nativePolicyContext, nativePromptBudgets, nativeSessionSettings, nativeToolNamespaceOptions } from "./native-configuration.mjs";
 import { configuredReasoningEffort } from "./model-reasoning-effort.mjs";
 import { configuredModelServiceTier } from "./model-service-tier.mjs";
 import { discoverRepositoryCapabilities, exposedToolNamed, platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
@@ -1541,11 +1541,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // usage: only a cost of its own that comes with them is.
       const runtimeSession=sessions.get(threadId),own=update.carried?(update.cost?Object.fromEntries(Object.keys(snapshot).map(key=>[key,0])):null):snapshot;
       if(runtimeSession&&own)runtimeSession.__usage={usage:own,cost:update.cost||null,at:Date.now()};
-      // A harness that reports what its context holds apart from the turn's tokens sends it: Claude Code its latest request's prompt
-      // (context, by kind of token), Muse Code what its context holds (contextTokens, from session/contextUsage). The context meter
-      // reads it as the last request's input, as it reads Codex's, and the turn keeps its own totals.
+      // A harness that reports what its context holds apart from the turn's tokens sends it: Claude Code and Trebell Native their latest
+      // request's prompt (context, by kind of token), Muse Code what its context holds (contextTokens, from session/contextUsage). The
+      // context meter, automatic compaction and the next message's context budget read it as the last request's input, as they read
+      // Codex's, and the turn keeps its own totals.
       const context=update.context&&typeof update.context==="object"?update.context:null,contextTokens=Number(update.contextTokens)>0?Number(update.contextTokens):0;
-      const last=context?{totalTokens:Number(context.totalTokens)||0,inputTokens:Number(context.inputTokens)||0,cachedInputTokens:Number(context.cachedInputTokens)||0,cacheWriteInputTokens:Number(context.cacheWriteInputTokens)||0,outputTokens:Number(context.outputTokens)||0,reasoningOutputTokens:0}
+      const last=context?{totalTokens:Number(context.totalTokens)||0,inputTokens:Number(context.inputTokens)||0,cachedInputTokens:Number(context.cachedInputTokens)||0,cacheWriteInputTokens:Number(context.cacheWriteInputTokens)||0,outputTokens:Number(context.outputTokens)||0,reasoningOutputTokens:Number(context.reasoningOutputTokens)||0}
         :contextTokens?{totalTokens:contextTokens,inputTokens:contextTokens,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0}:snapshot;
       emit("thread/tokenUsage/updated",{threadId,turnId,tokenUsage:{total:snapshot,last,modelContextWindow:size||null,cost:update.cost||null}});
     }else if(type==="diff"){
@@ -2200,7 +2201,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const retainTurnCount=Math.min(2,Math.max(0,turns.length-1)),throughIndex=turns.length-retainTurnCount-1,throughTurn=turns[throughIndex];
         const retainedTurns=retainTurnCount?turns.slice(throughIndex+1):[],recentMessages=retainTurnCount?nativeMessagesFromThread(thread,{afterTurnId:throughTurn.id}):[];
         const deterministicContext=continuityContextValue(durableContinuity(thread.id));
-        const result=await session.compact({maxOutputTokens:params.maxOutputTokens||4096,recentMessages,deterministicContext});
+        const result=await session.compact({maxOutputTokens:params.maxOutputTokens||NATIVE_COMPACTION.maxOutputTokens,recentMessages,deterministicContext});
         const compaction={id:`native-compact-${randomUUID()}`,summary:result.summary,throughTurnId:throughTurn.id,retainedTurnIds:retainedTurns.map(item=>item.id),createdAt:Date.now(),model:result.model||thread.model||null,provider:result.provider||thread.providerMeta?.modelProvider||null,sourceMessageCount:result.sourceMessageCount||0,retainedRecentMessageCount:result.retainedRecentMessageCount||0,continuityChars:result.continuityChars||0};
         const current=threadMetadata(thread.id)||thread;threadStore.update(thread.id,{providerMeta:{...(current.providerMeta||{}),nativeCompaction:compaction}});
         if(result.usage)state?.recordUsage?.({id:`native:${thread.id}:compaction:${compaction.id}`,runtime:"native",provider:compaction.provider,model:compaction.model,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:`compaction:${compaction.id}`,usage:result.usage,at:compaction.createdAt});

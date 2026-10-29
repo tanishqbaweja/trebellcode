@@ -163,7 +163,8 @@ test("Trebell Native exposes real thread-owned background processes in Runtime",
     const composer=page.getByTestId("composer");await composer.fill("Start a background server");await page.getByTestId("send").click();await expect(page.getByText("Background server started.",{exact:true})).toBeVisible({timeout:10_000});
     await composer.fill("/p");await expect(page.locator(".slash-menu")).toContainText("Show agent background processes");await composer.fill("/s");await expect(page.locator(".slash-menu")).toContainText("Stop agent background processes");await composer.fill("");
     await page.getByTestId("right-panel-toggle").click();const panel=page.getByTestId("right-panel");await panel.getByRole("button",{name:"Runtime",exact:true}).click();
-    await expect(panel.locator(".runtime-grid")).toContainText("Context 70%",{timeout:10_000});
+    // The context is what the turn's last request held (40,000 of 100,000), not its two requests' summed input (70,000).
+    await expect(panel.locator(".runtime-grid")).toContainText("Context 40%",{timeout:10_000});
     const background=panel.getByTestId("agent-background-terminals");await expect(background).toBeVisible();await expect(background).toContainText("Agent background processes");await expect(background).toContainText(process.execPath.split(/[\\/]/).pop(),{timeout:10_000});
     const capability=panel.getByTestId("runtime-capabilities").locator(".runtime-capability-grid>div").filter({hasText:"Background processes"});await expect(capability).toContainText("available");
     const language=panel.getByTestId("runtime-capabilities").locator(".runtime-capability-grid>div").filter({hasText:"Language intelligence"});await expect(language).toContainText("available");

@@ -8,7 +8,9 @@ import { BENCHMARK_PATH_FIXTURE_URL, BENCHMARK_PATH_SCENARIOS, runBenchmarkPathS
 // rewritten once on purpose (2026-10-29) when the runner took the app's configuration (src/native-configuration.mjs): every
 // request lost service_tier "fast" (no tier by default), its instructions gained the developer text after the system prompt
 // (so prompt_cache_key changed), and what is derived from them followed (message counts, request bytes and hashes,
-// requestedServiceTier null); nothing else changed.
+// requestedServiceTier null); nothing else changed. Later that day each turn's usage update gained its context reading (the last
+// request's usage, which the app's context meter and automatic compaction read): an update the runner only records, with no request,
+// payload or fetch changed.
 const fixture=JSON.parse(await readFile(BENCHMARK_PATH_FIXTURE_URL,"utf8"));
 
 test("Harbor Native runner never opts into reply streaming",async()=>{

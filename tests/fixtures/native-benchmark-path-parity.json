@@ -80,7 +80,15 @@
       "cache_write_input_tokens": 0
      },
      "used": 4644,
-     "size": 272000
+     "size": 272000,
+     "context": {
+      "totalTokens": 2480,
+      "inputTokens": 2300,
+      "cachedInputTokens": 2048,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 180,
+      "reasoningOutputTokens": 48
+     }
     }
    }
   ],
@@ -871,7 +879,15 @@
       "cache_write_input_tokens": 0
      },
      "used": 4644,
-     "size": 272000
+     "size": 272000,
+     "context": {
+      "totalTokens": 2480,
+      "inputTokens": 2300,
+      "cachedInputTokens": 2048,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 180,
+      "reasoningOutputTokens": 48
+     }
     }
    }
   ],
@@ -1626,7 +1642,15 @@
       "cache_write_input_tokens": 0
      },
      "used": 2280,
-     "size": 272000
+     "size": 272000,
+     "context": {
+      "totalTokens": 2280,
+      "inputTokens": 2100,
+      "cachedInputTokens": 0,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 180,
+      "reasoningOutputTokens": 48
+     }
     }
    }
   ],
@@ -2145,7 +2169,15 @@
       "cache_write_input_tokens": 0
      },
      "used": 9290,
-     "size": 272000
+     "size": 272000,
+     "context": {
+      "totalTokens": 2350,
+      "inputTokens": 2300,
+      "cachedInputTokens": 2048,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 50,
+      "reasoningOutputTokens": 16
+     }
     }
    }
   ],
@@ -3539,7 +3571,15 @@
       "cache_write_input_tokens": 0
      },
      "used": 2280,
-     "size": 272000
+     "size": 272000,
+     "context": {
+      "totalTokens": 2280,
+      "inputTokens": 2100,
+      "cachedInputTokens": 0,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 180,
+      "reasoningOutputTokens": 48
+     }
     }
    }
   ],

@@ -15,6 +15,7 @@ import { RepositoryKnowledgeService } from "../src/repository-knowledge-service.
 import { configuredReasoningEffort } from "../src/model-reasoning-effort.mjs";
 import { configuredModelServiceTier } from "../src/model-service-tier.mjs";
 import { NATIVE_REPLY_STREAM, NativeAgentSession } from "../src/native-agent-session.mjs";
+import * as nativeConfiguration from "../src/native-configuration.mjs";
 import { NATIVE_CONTAINER_ONLY, NATIVE_RUN_SWITCHES, nativeHarborRunConfiguration, nativeTurnContextOptions, trebellDeveloperInstructions } from "../src/native-configuration.mjs";
 import { nativeProviderTurn } from "../src/native-provider-turn.mjs";
 import { NATIVE_PROMPT_PROVENANCE } from "../src/native-request-metrics.mjs";
@@ -260,6 +261,8 @@ test("the runner reads no setting of its own: no literal defaults, and every env
   const config=nativeHarborRunConfiguration({});
   assert.deepEqual(config.experimentSwitches,{});assert.equal(config.picksDifferFromShared,false);
   assert.deepEqual({effort:config.reasoningEffort,tier:config.serviceTier,gate:config.semanticCompletionGate,window:config.contextWindow,threshold:config.compactionThreshold,budgets:config.budgets},{effort:"max",tier:"default",gate:false,window:272_000,threshold:245_000,budgets:{maxModelTurns:500,maxToolCalls:5000,maxWallTimeMs:null}});
+  // With no pick, the window's model (its OpenAI catalog listing a newer flagship) is the runner's.
+  assert.equal(nativeConfiguration.nativeDefaultModel?.("openai",["gpt-6.1-sol","gpt-6-luna"],"gpt-6.1-sol"),config.model);
   // Each container-only difference says why.
   for(const item of NATIVE_CONTAINER_ONLY)assert.ok(item.what&&item.app&&item.runner&&item.reason.length>20,item.what);
 });
