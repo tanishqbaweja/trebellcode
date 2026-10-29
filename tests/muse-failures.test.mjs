@@ -135,7 +135,7 @@ test("a delivery gap (view/gap) fails the running turn and leaves the session de
   fixture.muse.write(itemFrame("item/started",sid,{itemId:"sh",kind:"toolCall",tool:"bash",turnId,revision:1,status:"inProgress",args:"{\"command\":\"npm test\"}"}));
   fixture.muse.notify("view/gap",{sessionId:sid,after:"v4:x:3",next:"v4:x:9"});
   const error=await settlesWithin(failure(running),5000,"the turn");
-  assert.equal(error.message,"Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. The next message starts it again.");
+  assert.equal(error.message,"Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. The next message starts Muse Code again.");
   assert.equal(fixture.session.dead,true);
   await until(()=>fixture.muse.stdinEnded,"the host to be stopped");
   assert.deepEqual(fixture.updates.filter(update=>update.toolCallId==="sh").map(update=>[update.sessionUpdate,update.status]),[["tool_call","in_progress"],["tool_call_update","failed"]],"its running tool ends failed");
@@ -199,7 +199,7 @@ test("a Muse Code host that died between turns is relaunched on the next message
     await eventually(()=>relay.notifications.some(item=>item.method==="error"&&item.params.threadId===thread.id&&/exited unexpectedly \(code 1\): panic: the model stream went away/.test(item.params.message)),"the idle host's exit");
     // No turn failed: the exit names none, and says what the next message does.
     const exit=relay.notifications.find(item=>item.method==="error"&&item.params.threadId===thread.id);
-    assert.deepEqual([exit.params.turnId,exit.params.message],[null,"Muse Code exited unexpectedly (code 1): panic: the model stream went away. The next message starts it again."]);
+    assert.deepEqual([exit.params.turnId,exit.params.message],[null,"Muse Code exited unexpectedly (code 1): panic: the model stream went away. The next message starts Muse Code again."]);
     assert.equal(relay.threadStore.get(thread.id).turns.at(-1).status,"completed","the turn it came after stays completed");
     const sessionId=relay.threadStore.get(thread.id).providerSessionId;
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Are you back?"}]});

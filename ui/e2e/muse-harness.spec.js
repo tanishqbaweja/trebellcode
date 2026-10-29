@@ -300,7 +300,7 @@ test("a Muse Code host that exits between turns says so below the last reply wit
       expect.soft(top,"the exit's card reads below the finished turn's reply").toBeGreaterThanOrEqual(bottom);
     };
     await placed();
-    await expect.soft(exited.locator("summary strong"),"what happened, and what the next message does").toHaveText("Muse Code exited unexpectedly (code 1): panic: the model stream went away. The next message starts it again.");
+    await expect.soft(exited.locator("summary strong"),"what happened, and what the next message does").toHaveText("Muse Code exited unexpectedly (code 1): panic: the model stream went away. The next message starts Muse Code again.");
     for(const mode of ["dark","light"]){await switchMode(page,mode);await exited.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-host-exited-between-turns-${mode}-1280x800.png`})}
     await switchMode(page,"dark");
     // In a narrow window too.

@@ -603,7 +603,7 @@ test("a failed turn rejects with Muse's own error, and a host that exits during 
   const idle=await startSession();
   idle.child.exit(4);
   await until(()=>idle.session.dead,"the idle host to be seen gone");
-  assert.deepEqual(idle.updates.filter(update=>update.sessionUpdate==="runtime_error").map(update=>[update.message,update.turnless]),[["Another Muse Code process holds this session; close it and try again (exit code 4). The next message starts it again.",true]]);
+  assert.deepEqual(idle.updates.filter(update=>update.sessionUpdate==="runtime_error").map(update=>[update.message,update.turnless]),[["Another Muse Code process holds this session; close it and try again (exit code 4). The next message starts Muse Code again.",true]]);
   await idle.session.close();
 });
 
@@ -631,7 +631,7 @@ test("the frames Muse wrote just before it exited still reach the turn, and an i
   realSetTimeout(()=>muse.notify("turn/completed",{sessionId:session.sessionId,viewCursor:"v",terminal:"completed",turnId}),100);
   assert.equal((await settlesWithin(running,5000,"the turn")).stopReason,"end_turn");
   await until(()=>session.dead,"the idle host to be seen gone",5000);
-  assert.deepEqual(updates.filter(update=>update.sessionUpdate==="runtime_error").map(update=>update.message),["Muse Code exited unexpectedly (code 0). The next message starts it again."]);
+  assert.deepEqual(updates.filter(update=>update.sessionUpdate==="runtime_error").map(update=>update.message),["Muse Code exited unexpectedly (code 0). The next message starts Muse Code again."]);
   await session.close();
 });
 
@@ -679,7 +679,7 @@ test("on Linux and macOS a host that exits while a process it started still hold
   await until(()=>session.dead,"the host to be seen gone");
   await until(()=>!group.members.length,"the process left in the host's group to be stopped");
   assert.deepEqual(group.sent,["SIGTERM"]);
-  assert.deepEqual(updates.filter(update=>update.sessionUpdate==="runtime_error").map(update=>update.message),["Muse Code exited unexpectedly (code 1). The next message starts it again."]);
+  assert.deepEqual(updates.filter(update=>update.sessionUpdate==="runtime_error").map(update=>update.message),["Muse Code exited unexpectedly (code 1). The next message starts Muse Code again."]);
   await settlesWithin(session.close(),1000,"close()");
 });
 

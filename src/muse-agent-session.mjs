@@ -25,8 +25,9 @@ const MUSE_ASK_ATTEMPTS=3;
 // How many settled approvals and questions a session remembers, so a late copy of one is not asked again.
 const MUSE_SETTLED_LIMIT=500;
 export const MUSE_SIGNED_OUT_MESSAGE="Muse Code is signed out. Sign in with muse login, then send the message again.";
-// What the next message does once Muse Code's host is gone, which a host lost between turns says after why it went (#lose).
-const MUSE_NEXT_MESSAGE="The next message starts it again.";
+// What the next message does once Muse Code's host is gone, which a host lost between turns says after why it went (#lose). It names
+// Muse Code: after the host's own reason, an "it" would read as the last thing that reason names (another Muse process, a file).
+const MUSE_NEXT_MESSAGE="The next message starts Muse Code again.";
 export const MUSE_VIEW_GAP_MESSAGE="Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. "+MUSE_NEXT_MESSAGE;
 // A host that did not grant session MCP servers is refused when Trebell has servers for the session (T3 d6f47ff97).
 export const MUSE_SESSION_MCP_MESSAGE="This Muse Code build cannot take Trebell's MCP servers into its sessions. Update Muse Code to a version that supports session MCP servers.";
