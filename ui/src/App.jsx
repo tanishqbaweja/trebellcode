@@ -3354,8 +3354,9 @@ export default function App(){
         // under its id gets back the steps its card holds. A turn the window did not send (a report Muse Code starts itself) finds the
         // last turn's notices on the card, its context among them: they go to that turn's own card once the list is drawn (the layout
         // effect after sealLiveTurn), and the rows that came after that turn ended (after) read before this turn's card (before), in a
-        // card of their own, not as its steps, but for Compact's row of a compaction that runs as this turn (Codex's, Grok's). The rows
-        // of no turn a send has put on the card (startTurn) are this turn's.
+        // card of their own, not as its steps, but for Compact's row of a compaction that runs as this turn (Codex's, Grok's). Those
+        // that read before an earlier such turn came before this one too, and read before it from here, so a row of a compaction still
+        // running keeps its place for its end. The rows of no turn a send has put on the card (startTurn) are this turn's.
         const owner=threadId||activeThreadRef.current?.id;
         if(owner&&id){
           liveTurnKeyRef.current=turnInfoKey(owner,id);if(liveSendRef.current?.threadId===String(owner))liveSendRef.current=null;
@@ -3369,7 +3370,7 @@ export default function App(){
               else{
                 changed=true;
                 if(compacts&&event.id==="context-compact-"+owner&&event.status==="running"){const {after,before,...row}=event;next.push(row)}
-                else if(event.before==null)next.push({...event,before:turn});
+                else next.push({...event,before:turn});
               }
             }
             return changed?next:prev;

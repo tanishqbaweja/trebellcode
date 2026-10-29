@@ -1121,6 +1121,39 @@ test("a message shown while Codex's automatic compaction runs is no part of the 
   }finally{await codex.close()}
 });
 
+// A row that came between turns (a Compact Codex refused) reads in a card of its own above the next turn the window did not send, and
+// above the turn after that one too, when Codex starts two such turns in a row (a goal going on): it is a step of neither, and it
+// never leaves the page.
+test("a row from between turns stays in a card of its own above each of two turns in a row the window did not send, a step of neither",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex goal"});
+  const failed=page.locator(".tool-event").filter({hasText:"Context compaction failed: Deliberate compaction failure"});
+  try{
+    codex.compactError="Deliberate compaction failure";
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    await page.getByRole("button",{name:"Compact",exact:true}).click();
+    await expect(failed).toHaveCount(1);
+    const threadId=codex.thread.id;
+    for(const id of ["codex-goal-turn-1","codex-goal-turn-2"]){
+      const text="Goal step "+id+" done.",answer=page.locator(".history-assistant").filter({hasText:text});
+      const steps=page.locator(`[data-testid=activity-card][data-turn-id="${id}"] .tool-event`).filter({hasText:"Deliberate compaction failure"});
+      codex.notify("turn/started",{threadId,turn:{id,status:"inProgress",items:[]}});await expect(stop(page)).toBeVisible();
+      codex.notify("item/completed",{threadId,turnId:id,item:{type:"agentMessage",id:"reply-"+id,text}});
+      await expect(answer).toHaveCount(1);
+      await expect(failed,"the row is on the page while "+id+" runs").toHaveCount(1);
+      const [row,reply]=await Promise.all([edges(failed),edges(answer)]);
+      expect(row.bottom,"it reads above "+id+"'s reply").toBeLessThanOrEqual(reply.top);
+      await expect(steps,"no step of "+id).toHaveCount(0);
+      codex.notify("turn/completed",{threadId,turn:{id,status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
+      await expect(failed,"and once "+id+" has ended").toHaveCount(1);await expect(steps).toHaveCount(0);
+    }
+    await failed.scrollIntoViewIfNeeded();await shoot(page,"row-between-turns-above-two-goal-turns");
+  }finally{await codex.close()}
+});
+
 // Codex ends a turn and starts one of its own (a goal going on) in one moment, and the window handles both before it draws again: the
 // ended turn keeps on its own card the context step its message was sent with, which the new turn's card does not list. The page's
 // socket listener is kept so that the test hands it both frames in one task, as two frames that come at once are handled.
