@@ -4,6 +4,7 @@
 // harness on Sign in, and one on API key gets only its own vendor's key. Cursor has no API key. Fixture values and fakes only.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -275,8 +276,20 @@ test("npm installs and updates run without any key of Trebell's environment",()=
 });
 
 test("a host's Codex app-server exports none of a profile's variables that hold a key or sign-in",async()=>{
-  const {remoteCodexProfileSetup}=await import("../src/environment-app-server.mjs");
-  const {prelude}=remoteCodexProfileSetup({runtimeInstance:{kind:"codex",environment:{CUSTOM_MODE:"safe",GROK_AUTH:"{}",OPENCODE_AUTH_CONTENT:"{}",AWS_ACCESS_KEY_ID:"AKIAFIXTURE",GOOGLE_APPLICATION_CREDENTIALS:"/adc.json"}}});
+  const {remoteCodexProfileSetup,startRemoteAppServer}=await import("../src/environment-app-server.mjs");
+  const environment={CUSTOM_MODE:"safe",GROK_AUTH:"{\"key\":\"grok-fixture\"}",OPENCODE_AUTH_CONTENT:"{}",AWS_ACCESS_KEY_ID:"AKIAFIXTURE",GOOGLE_APPLICATION_CREDENTIALS:"/adc.json",MUSE_CUSTOM_HEADERS:"x-key: fixture"};
+  const names=["GROK_AUTH","OPENCODE_AUTH_CONTENT","AWS_ACCESS_KEY_ID","GOOGLE_APPLICATION_CREDENTIALS","MUSE_CUSTOM_HEADERS"];
+  const {prelude}=remoteCodexProfileSetup({runtimeInstance:{kind:"codex",environment}});
   assert.match(prelude,/export CUSTOM_MODE='safe'/);
-  for(const name of ["GROK_AUTH","OPENCODE_AUTH_CONTENT","AWS_ACCESS_KEY_ID","GOOGLE_APPLICATION_CREDENTIALS"])assert.equal(prelude.includes(name),false,name);
+  for(const name of names)assert.equal(prelude.includes(name),false,name);
+  // The command the host runs Codex's app-server with (ssh's last argument, which its process list shows): the profile's own
+  // variables, set there with env -i, leave the credential names out too.
+  const spawned=[];
+  const spawnProcess=(command,args,options)=>{spawned.push({command,args,options});const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.kill=()=>{};return child};
+  const environments={get:id=>id==="ssh-fixture"?{id,name:"Host",type:"ssh",host:"host.example",user:"me",cwd:"/home/me/repo"}:null};
+  await startRemoteAppServer({environments,environmentId:"ssh-fixture",appPort:4321,runtimeInstance:{id:"codex-default",kind:"codex",environment},runtimeEnvironmentNames:["PATH","HOME","CODEX_HOME"],hostEnvironment:{PATH:"/usr/bin"},spawnProcess});
+  const command=spawned[0].args.at(-1);
+  assert.match(command,/CUSTOM_MODE='safe'/,"the profile's own variable still reaches Codex there");
+  assert.deepEqual(names.filter(name=>command.includes(name+"=")),[],"no credential name in the host's command");
+  for(const value of ["grok-fixture","AKIAFIXTURE","/adc.json","x-key: fixture"])assert.equal(command.includes(value),false,value);
 });

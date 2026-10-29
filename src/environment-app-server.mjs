@@ -127,10 +127,13 @@ export async function startRemoteAppServer({
   // of an SSH host. Only Trebell's own clients can, sending the token of which the host's command line has only the SHA-256
   // (wsToken, codex-app-server-auth.mjs), as a local app-server's.
   const auth=hashedCodexAppServerToken();
+  // The profile's own variables, as remoteCodexProfileSetup exports them: never one that carries a credential (runtime-environment.mjs),
+  // which would reach this Codex and the host's process list. Codex there signs in with its own codex login.
+  const profileEnvironment=Object.fromEntries(Object.entries(runtimeInstance?.environment||{}).filter(([name])=>!isHarnessCredentialName(name)));
   const isolatedRuntimeCommand=listen=>"exec "+remoteEnvironmentCommand(
     shellJoin([runtime.command,...remoteCodexArgs({listen,auth:auth.args})]),
     commandEnvironmentNames,
-    runtimeInstance?.environment||{},
+    profileEnvironment,
   );
 
   if(profile.type==="wsl"){
