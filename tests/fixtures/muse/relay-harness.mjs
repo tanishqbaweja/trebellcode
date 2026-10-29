@@ -65,7 +65,7 @@ export async function museRelay(prefix,{environment={},answer=()=>undefined,env:
   });
   let id=0;
   const rpc=(method,params={})=>new Promise((resolve,reject)=>{
-    const requestId=++id,onMessage=raw=>{const message=JSON.parse(String(raw));if(message.id!==requestId)return;ws.off("message",onMessage);message.error?reject(new Error(message.error.message)):resolve(message.result)};
+    const requestId=++id,onMessage=raw=>{const message=JSON.parse(String(raw));if(message.id!==requestId)return;ws.off("message",onMessage);message.error?reject(Object.assign(new Error(message.error.message),{code:message.error.code,...(message.error.data!==undefined?{data:message.error.data}:{})})):resolve(message.result)};
     ws.on("message",onMessage);ws.send(JSON.stringify({id:requestId,method,params}));
   });
   const completed=async(threadId,count)=>eventually(()=>notifications.filter(item=>item.method==="turn/completed"&&item.params.threadId===threadId).length>=count,`turn ${count} to complete`);

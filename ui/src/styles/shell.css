@@ -367,7 +367,12 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 /* Agent activity cards (TurnActivityCard): the live turn's (.agent-block) and each earlier turn's (.turn-card) read alike, one
    card whose head names the activity and counts its steps, and opens or closes the steps below it. Closed, a card is its head.
    An earlier turn's card off screen is not painted, and keeps the height it last had. */
-.conversation-column .agent-block{margin:0 0 22px 39px}
+.conversation-column .agent-block,.conversation-column .agent-block-after,.conversation-column .agent-block-before{margin:0 0 22px 39px}
+/* Once its turn has ended, the live card's rows of no turn read below that turn's reply in a card of their own (.agent-block-after,
+   which the order below puts after the reply), and above the card of a turn the window did not send that started after them
+   (.agent-block-before, before the card's block and so before its order): a turn with no rows of its own leaves its block empty,
+   which takes no room. */
+.conversation-column .agent-block:empty{display:none}
 .conversation-column .turn-card{margin:0 0 22px 39px;content-visibility:auto;contain-intrinsic-size:auto 36px;min-width:0}
 .conversation-column .activity-card{border:1px solid var(--line);border-radius:var(--r-m);background:var(--bg2);overflow:hidden}
 .conversation-column .activity-card-head{display:flex;align-items:center;gap:8px;width:100%;min-height:34px;margin:0;padding:8px 12px;border:0;border-radius:calc(var(--r-m) - 1px) calc(var(--r-m) - 1px) 0 0;background:none;color:var(--tx2);font:600 11.5px/1.3 var(--font);letter-spacing:.04em;text-transform:uppercase;text-align:left;cursor:pointer}
@@ -402,6 +407,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .timeline .tool-event.status-running summary em{border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:var(--acsoft);color:var(--ac)}
 .conversation-column .timeline .tool-event:is(.status-error,.kind-error) summary em{border-color:var(--errb);background:var(--errt);color:var(--err)}
 .conversation-column .timeline .tool-event.status-warning summary em{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
+/* A step whose end the window does not know (a compaction it stopped waiting for) says what the person can do next, so its whole
+   text shows, wrapped, where other steps' long titles are cut. */
+.conversation-column .timeline .tool-event.status-unknown summary strong{padding:6px 0;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.45}
 /* A retry row while its harness retries: amber, as a degraded state that goes on (the turn has not failed). */
 .conversation-column .timeline .tool-event.kind-retry.status-running summary .timeline-marker{color:var(--warn)}
 .conversation-column .timeline .tool-event.kind-retry.status-running summary em{border-color:var(--warnb);background:var(--warnt);color:var(--warn)}
@@ -910,7 +918,9 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
    a sibling of the history in the DOM (live reasoning rows stay out of .conversation-history); only the visual order changes,
    and only the card's own turn's rows move: those after the .latest-turn-start marker the conversation places (a turn that
    started without a user message, as a goal continuing, keeps the previous turn's reply above its card). The outcome row of
-   the card's turn moves with them, also when it follows the turn's message directly and no marker is placed.
+   the card's turn moves with them, also when it follows the turn's message directly and no marker is placed. What comes after
+   the card's block reads after them, the card of the rows that came once its turn had ended (.agent-block-after) first. A user's
+   message after the marker is one still waiting to be sent while a turn that comes before it runs (conversation-order.js).
    App names the card's block in the column's class (with-agent-block), never a :has() on the column: Chrome restyles everything
    inside an element a :has() rule tests whenever something under it may change the rule's match, and a streaming reply adds
    elements to the block as it grows, so each delta restyled the whole conversation (110 elements a delta, up to 459 at once, on a
@@ -918,7 +928,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .chat-workspace .conversation-column.with-agent-block{display:flex;flex-direction:column}
 .chat-workspace .conversation-column.with-agent-block>.conversation-history{display:contents}
 .chat-workspace .conversation-column.with-agent-block>.agent-block{order:2}
-.chat-workspace .conversation-column.with-agent-block>.conversation-history>.latest-turn-start~:is(.history-assistant,.reasoning-row,.turn-card){order:3}
+.chat-workspace .conversation-column.with-agent-block>.conversation-history>.latest-turn-start~:is(.history-assistant,.reasoning-row,.turn-card,.user-row){order:3}
 .chat-workspace .conversation-column.with-agent-block>.conversation-history>.turn-outcome-row.latest-turn-end{order:3}
 .chat-workspace .conversation-column.with-agent-block>.agent-block~*{order:4}
 /* A part loaded later that could not be shown (LazySlot in App.jsx) says so in its place; a dialog's, at the foot of the window. */

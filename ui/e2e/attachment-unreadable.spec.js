@@ -7,7 +7,9 @@ import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harne
 // An attachment whose saved file is gone by the time its message goes is named, with what to do, instead of Node's bare ENOENT (T3
 // says "an attachment could not be read"). The composer's check before a send says so and keeps the draft; so does the relay for an
 // image that went after that check, before the message's turn exists, so no turn is left running and the thread takes the next
-// message. A Trebell Native thread on the real agent relay, with its provider scripted (relay-history-harness.js).
+// message. Either says so after the conversation's last reply, as the message's own, never as a step of the turn before it: also
+// the queue's refusal of a follow-up whose image went while it waited. A Trebell Native thread on the real agent relay, with its
+// provider scripted (relay-history-harness.js).
 const auditDir=fileURLToPath(new URL("../../visual-audit/attachment-unreadable/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 const PNG=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==","base64");
@@ -37,6 +39,11 @@ async function attach(page,file){
   return files[0].path;
 }
 async function type(page,text){await page.getByTestId("composer").click();await page.keyboard.type(text,{delay:5})}
+// Where a row reads on screen, top to bottom.
+const edges=locator=>locator.evaluate(node=>{const box=node.getBoundingClientRect();return {top:Math.round(box.top),bottom:Math.round(box.bottom)}});
+// The activity card a step is listed in.
+const cardOf=step=>step.locator("xpath=ancestor::*[@data-testid='activity-card'][1]");
+async function readsBelow(row,reply){const [{top},{bottom}]=await Promise.all([edges(cardOf(row)),edges(reply)]);expect(top,"the refusal's card reads below the reply").toBeGreaterThanOrEqual(bottom)}
 // Dark and light at 1280x800 and 900x800, switched with the header's toggle as a person switches them.
 async function shots(page,name,check=async()=>{}){
   for(const mode of ["dark","light"]){
@@ -90,4 +97,62 @@ test("a send whose attached image went after the composer's check is not sent, s
     await expect(page.getByText("No image this time, then.",{exact:true})).toBeVisible({timeout:20_000});
     expect(harness.turns(harness.threads[0]).map(turn=>turn.status)).toEqual(["completed","completed"]);
   }finally{await harness.close()}
+});
+
+test("a send its own file check refuses says so below the conversation's last reply, and the turn before it stays as it was",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await openThread(page);
+  try{
+    const saved=await attach(page,{name:"notes.txt",mimeType:"text/plain",buffer:Buffer.from("release notes\n")});
+    await rm(saved,{force:true});
+    const answer=page.locator(".history-assistant").filter({hasText:"The login page renders."});
+    await expect(answer).toBeVisible();const before=await edges(answer);
+    // Sent with the Send button, then again with Enter: each refusal reads after the earlier turn's reply, which stays where it was.
+    await type(page,"Summarize the notes");await page.getByTestId("send").click();
+    const said=page.locator(".tool-event").filter({hasText:'The attached file "notes.txt" could not be read (ENOENT). Attach it again.'});
+    await expect(said).toHaveCount(1);
+    expect(await edges(answer),"the earlier reply has not moved").toEqual(before);
+    await readsBelow(said.first(),answer);
+    await page.getByTestId("composer").press("Enter");
+    await expect(said).toHaveCount(2);
+    expect(await edges(answer),"the earlier reply has not moved").toEqual(before);
+    await readsBelow(said.last(),answer);
+    await expect(page.getByTestId("composer")).toHaveValue("Summarize the notes");
+    expect(harness.providerCalls(),"nothing went to the provider").toBe(0);
+    await shots(page,"send-attachment-gone-below-reply",()=>readsBelow(said.first(),answer));
+    // The refusal was this window's alone: once the window is reloaded, the earlier turn reads as it did, with nothing failed.
+    await page.reload();
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Attachments thread"]')});
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(answer).toBeVisible();await expect(said).toHaveCount(0);await expect(page.locator(".activity-card-failed")).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+test("a follow-up the queue cannot start because its image is gone says so below the reply it followed, not as a step of that turn",async({page})=>{
+  test.setTimeout(90_000);
+  let release=()=>{};const held=new Promise(resolve=>{release=resolve});
+  const harness=await openThread(page,[async()=>{await held;return {text:"The login form has two fields."}}]);
+  try{
+    await type(page,"Describe the login form");await page.keyboard.press("Enter");
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible({timeout:20_000});
+    // While the reply is on its way, the person queues a follow-up with a screenshot, whose saved copy goes before the queue starts it.
+    const saved=await attach(page,{name:"shot.png",mimeType:"image/png",buffer:PNG});
+    await type(page,"And this screenshot?");await page.keyboard.press("Enter");
+    const queued=page.locator(".queued-message").filter({hasText:"And this screenshot?"});
+    await expect(queued).toBeVisible();
+    await rm(saved,{force:true});release();
+    const answer=page.locator(".history-assistant").filter({hasText:"The login form has two fields."});
+    await expect(answer).toBeVisible({timeout:20_000});
+    const said=page.locator(".tool-event").filter({hasText:'Could not start queued Native follow-up: The attached image "shot.png" could not be read (ENOENT). Attach it again.'});
+    await expect(said).toHaveCount(1,{timeout:20_000});
+    // The turn's card lists its own step only, nothing failed, and the refusal reads below that turn's reply.
+    const card=page.locator("[data-testid=activity-card]").filter({hasText:"Trebell context skipped"});
+    await expect(card).toHaveCount(1);
+    await expect(card,"the turn's card does not list the refusal").not.toContainText("Could not start queued");
+    await expect(card.locator(".activity-card-failed")).toHaveCount(0);
+    await readsBelow(said,answer);
+    await expect(queued).toBeVisible();
+    expect(harness.providerCalls(),"the follow-up did not reach the provider").toBe(1);
+    await shots(page,"queued-image-gone-below-reply",()=>readsBelow(said,answer));
+  }finally{release();await harness.close()}
 });

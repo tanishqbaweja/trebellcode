@@ -1,9 +1,9 @@
 // What the app does around an agent's turn beyond showing it: the repository context a send carries, the new worktree a send can
-// ask for, a send that is a command rather than a message (a project's recipe or one of the composer's slash commands), the
-// agent's own tool calls (Trebell's browser, computer, source-control, repository and delegation tools), the verification planned
-// once a turn completes, and the turns a restart interrupted. Nothing on the first screen or in opening and reading a thread needs
-// it, so App loads this module at idle after the first paint (B11). Each function takes what it reads of App's render as deps, as
-// App's own functions read it.
+// ask for, the compaction a send runs first, a send that is a command rather than a message (a project's recipe or one of the
+// composer's slash commands), the agent's own tool calls (Trebell's browser, computer, source-control, repository and delegation
+// tools), the verification planned once a turn completes, and the turns a restart interrupted. Nothing on the first screen or in
+// opening and reading a thread needs it, so App loads this module at idle after the first paint (B11). Each function takes what it
+// reads of App's render as deps, as App's own functions read it.
 import { api } from "./api.js";
 import { codexGoalsMissing, describeCodexGoal } from "./codex-turn-options.js";
 import { parseCodexGoalCommand } from "./codex-goal-command.js";
@@ -15,6 +15,7 @@ import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verif
 import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
 import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
 import { askTerminalKeyboard } from "./terminal-keyboard.js";
+import { autoCompactionDecision } from "./auto-compaction.js";
 import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
 import { CODEX_GOAL_START } from "../../src/codex-goal-start.mjs";
 
@@ -135,7 +136,8 @@ function adoptAutomaticTurn({activeThreadRef,setRunning,setActiveTurnId},threadI
   const turn=started?.started?started.turn:null;
   if(turn?.id&&turn.status!=="completed"&&activeThreadRef.current?.id===threadId){setRunning(true);setActiveTurnId(turn.id)}
 }
-// verificationPlanFailed: App's own note of a plan that could not be made, also when this module could not load.
+// verificationPlanFailed: App's own note of a plan that could not be made, also when this module could not load. The plan's row, and
+// the row of a repair or check that could not start, are notices of the turn after its steps, on its card with them.
 export async function planCompletedTurnEvidence(deps,threadId,turnId){
   const {activeThreadRef,rpcRef,setEvents,setContinuity,automaticVerificationRepairSeenRef,automaticVerificationContinuationSeenRef,verificationPlanFailed}=deps;
   if(!threadId||!turnId)return;
@@ -153,7 +155,7 @@ export async function planCompletedTurnEvidence(deps,threadId,turnId){
         adoptAutomaticTurn(deps,threadId,repair);
         if(repair.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-repair-"+repair.recordId),{id:"verification-auto-repair-"+repair.recordId,kind:"verification",title:"Automatic same-thread repair turn",status:"running",raw:{recordId:repair.recordId,turnId:repair.turn?.id||null}}]);
       }catch(error){
-        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-repair-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification repair stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null}}]);
+        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-repair-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification repair stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null},turnId:String(turnId),notice:2}]);
       }
     }else if(result?.nextAction?.action==="verify"&&rpcRef.current){
       try{
@@ -161,7 +163,7 @@ export async function planCompletedTurnEvidence(deps,threadId,turnId){
         adoptAutomaticTurn(deps,threadId,continuation);
         if(continuation.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId),{id:"verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId,kind:"verification",title:"Automatic same-thread check turn · "+continuation.nextStepId,status:"running",raw:{recordId:continuation.recordId,nextStepId:continuation.nextStepId,turnId:continuation.turn?.id||null}}]);
       }catch(error){
-        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-continue-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification continuation stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null,nextStepId:result.nextAction?.nextStep?.id||null}}]);
+        if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-continue-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification continuation stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null,nextStepId:result.nextAction?.nextStep?.id||null},turnId:String(turnId),notice:2}]);
       }
     }
   }catch(error){
@@ -281,11 +283,13 @@ export async function runSlashCommand(deps,text){
       const resolved=await api("/api/project-recipe/resolve",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,recipe:recipe.id||recipe.name,input:rest.join(" "),currentPermission:permissionMode,runtime:agentRuntime}});
       const execution=resolved.execution;if(!execution)throw new Error("Recipe could not be resolved");
       if(execution.model&&!models.includes(execution.model))throw new Error(`Recipe ${recipe.name} requires model ${execution.model}, which is not available in the active runtime.`);
+      // Its message shows in the conversation while an automatic compaction runs before it (pending): the composer let it go already.
       await startTurn(execution.turnInput,attachments,execution.model||model,null,null,repositoryFocusPaths(attachments,contextChips),{
         permissionModeOverride:execution.permissionMode,
         additionalContext:{"trebell.recipe":{kind:"application",value:execution.context}},
         goalPatch:execution.goalPatch,
         toolAllowlist:execution.toolAllowlist,
+        pending:true,
       });
       if(execution.permissionMode&&execution.permissionMode!==permissionMode)setPermissionMode(execution.permissionMode);
       setEvents(prev=>[...prev,{id:"recipe-"+Date.now(),kind:"tool",title:`Started project recipe ${recipe.name}`,status:"done",raw:{recipe:recipe.name,permissionMode:execution.permissionMode,model:execution.model||model,maxChildren:execution.goalPatch?.childAgentBudget??null}}]);
@@ -490,4 +494,40 @@ export async function prepareTurnContext(deps,thread,cwd,text,paths,{background=
   }catch(error){
     return contextUnavailable(thread,error,{background});
   }
+}
+
+// The compaction a send runs first, once the thread's context is as full as the automatic compaction setting waits for (App checks
+// first that the harness compacts and is connected). The send waits for it to end, as long as its harness takes, with the row App
+// shows while it runs (requestThreadCompaction). One that failed, or that the person stopped with the header's Stop, leaves the
+// context as it was, and the message goes on with a row saying why, as Grok's stopped one does: stopping it ends the compaction, not
+// the message waiting for it. One the window stopped waiting for says so, as a compaction whose end is not known (status unknown),
+// and the compaction's own end, should it come, takes that row (thread/compacted). held: the composer's message, which no queue
+// holds: it waits meanwhile in its thread's queue as being sent, held by this window (heldBy: windowKey; heldUntil: holdMs from now),
+// whose card says what it waits for. The window renews its hold a quarter of holdMs apart while it waits, so a window closed or lost
+// meanwhile holds the message no longer once holdMs has passed since it last did. That shows it; another window that opens the
+// thread meanwhile shows it as on its way there, and a window that opens the thread again, or is reloaded or closed meanwhile, keeps
+// it for the person to send (persistent-queue.js hydratePersistedQueue, heldElsewhere). It leaves the queue before the send goes on,
+// never after its turn may have started, and after a renewal still on its way, which would put it back. A message with no draft of
+// the composer's (a project's recipe) shows as on its way meanwhile (onWait: its message in the conversation). compacted: the context
+// is compacted; row: the turn's row saying how the compaction went.
+export async function compactBeforeTurn(deps,thread,held,onWait=null){
+  const {activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,windowKey,holdMs,persistLocalQueue,queueNow}=deps;
+  const usage=threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
+  const decision=autoCompactionDecision(usage,{enabled:settings.autoCompactContext===true,thresholdPercent:settings.autoCompactThresholdPercent??85});
+  if(!decision.shouldCompact)return {};
+  const row=patch=>({id:"auto-compact-"+thread.id,kind:"contextCompaction",title:"Context compacted automatically before this turn",status:"done",raw:decision,...patch});
+  const now=Date.now(),kept=held&&{...held,id:crypto.randomUUID(),createdAt:now,dispatchingAt:now,heldBy:windowKey,heldUntil:now+holdMs},onItsWay=localQueueStartRef.current;
+  if(kept){onItsWay.add(kept.id);await persistLocalQueue(thread.id,[...queueNow(thread.id),kept]).catch(()=>{})}
+  else onWait?.();
+  let renewed=Promise.resolve();
+  const renew=kept&&setInterval(()=>{renewed=renewed.then(()=>{const items=queueNow(thread.id);if(items.some(item=>item.id===kept.id))return persistLocalQueue(thread.id,items.map(item=>item.id===kept.id?{...item,heldUntil:Date.now()+holdMs}:item))}).catch(()=>{})},holdMs/4);
+  try{
+    await requestThreadCompaction(thread.id);
+    updateThreadTelemetry(thread.id,{tokenUsage:null,lastActivityAt:Date.now()});
+    if(activeThreadRef.current?.id===thread.id)setTokenUsage(null);
+    return {compacted:true,row:row()};
+  }catch(error){
+    const message=error?.message||String(error);
+    return {compacted:false,row:row(error?.waited?{status:"unknown",title:message,waited:true}:{kind:"error",title:"Automatic context compaction failed; continuing: "+message})};
+  }finally{if(kept){clearInterval(renew);await renewed;await persistLocalQueue(thread.id,queueNow(thread.id).filter(item=>item.id!==kept.id)).catch(()=>{});onItsWay.delete(kept.id)}}
 }

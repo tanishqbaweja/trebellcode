@@ -58,6 +58,10 @@ const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
 const TOOL_WRITE_MS=500;
 // How many harness turns the relay remembers the Trebell turn of (harnessTurnId).
 const HARNESS_TURN_LIMIT=1000;
+// The code of a message the relay refuses before it reaches the harness, which the window says was not sent, keeping its draft, as
+// for a send that failed: a steer in a mode Muse Code's host cannot take while Muse writes its report there. It is Trebell's own,
+// outside the JSON-RPC range of the harnesses' codes, which the relay passes on (Muse Code's own run from -32001 to -32057).
+const MESSAGE_NOT_SENT=-31000;
 const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_process","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
 const RETIRED_NATIVE_TOOL_NAMESPACES=new Set(["trebell_device"]);
 // ACP harnesses, OpenCode and Muse Code run processes per thread; reopening one of their threads does not start them (see
@@ -1100,7 +1104,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const instance=instances.find(item=>item.id===thread.runtimeInstanceId)||instances.find(item=>item.kind===thread.runtime)||runtimeManager.activeInstance();
     if(instance.kind==="codex")throw new Error("Codex uses the native Codex relay");
     const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
-    const status=await runtimeManager.probe(instance,{environmentId});if(!status.available)throw new Error(status.message||`${status.name} is unavailable`);
+    // The start checks again a Muse Code whose model list failed (starting), and a harness that cannot run refuses it in the words
+    // of its check's reason, when it has one, not those for Settings (its Refresh).
+    const status=await runtimeManager.probe(instance,{environmentId,starting:true});if(!status.available)throw new Error(status.reason||status.message||`${status.name} is unavailable`);
     // A profile on an API key starts only with its key, whatever status was kept from before the key went (keyRefusal): without it the
     // harness would run on a login of its own.
     const keyRefused=runtimeManager.keyRefusal?.(instance,environmentId);if(keyRefused)throw new Error(keyRefused.message);
@@ -1632,8 +1638,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // an errored session), and its open approval or question cards are withdrawn.
       const runtimeSession=sessions.get(threadId);
       if(runtimeSession instanceof AcpAgentSession&&runtimeSession.dead){sessions.delete(threadId);releaseSession(runtimeSession);cancelThreadRequests(threadId)}
-      // A harness retrying its turn's request itself (OpenCode's provider retries) goes on: the window shows the turn's retry row.
-      emit("error",{threadId,turnId,message:update.message||"Agent runtime stopped",...(update.willRetry===true?{willRetry:true}:{})});
+      // A harness retrying its turn's request itself (OpenCode's provider retries) goes on: the window shows the turn's retry row. One
+      // lost between turns (turnless, a Muse Code host's) failed no turn: it names none, so the window shows it after the last reply.
+      emit("error",{threadId,turnId:update.turnless===true?null:turnId,message:update.message||"Agent runtime stopped",...(update.willRetry===true?{willRetry:true}:{})});
     }
   }
 
@@ -2223,6 +2230,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const activeTurn=[...(thread.turns||[])].reverse().find(turn=>turn?.status==="inProgress");if(!activeTurn)throw new Error(`${label} has no active turn to steer.`);
         if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error(`The active ${label} turn changed before steering could be applied.`);
         const session=sessions.get(thread.id);if(!(session instanceof steerable))throw new Error(`The active ${label} session is unavailable for steering.`);
+        // A Muse Code message in a mode its host cannot take while Muse writes its report there is refused before it goes, as turn/start
+        // refuses it (MuseAgentSession.modeRefusal), so the person keeps the draft and the report goes on; one in the host's mode goes in.
+        // The refusal carries the words for a follow-up of Trebell's queue sent now, which stays queued (data.queued).
+        const profile=agentPermissionProfilePatch(params).permissionProfile,museRefusal=session instanceof MuseAgentSession?session.modeRefusal(profile):null;
+        if(museRefusal)throw Object.assign(new Error(museRefusal),{code:MESSAGE_NOT_SENT,rpcData:{queued:session.modeRefusal(profile,{queued:true})}});
         const text=textOfInput(params.input||[]),result=await session.steer(await contextualAgentPrompt(params.input||[],{},{remote:threadRunsRemote(thread),home:documentHome}));
         const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env})},...fileInputs(params.input)]};
         threadStore.addItem(thread.id,activeTurn.id,item);emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});
@@ -2350,8 +2362,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           });
         },
         // outsideReadsAsk: the harness asks the person before it reads outside the workspace (Muse Code), so such a read is the person's
-        // to answer, as T3 shows it: the workspace boundary refuses what a harness would do unasked.
-        async permission(thread,{params,options,askUser=false,approvalOptions=null,signal=null,outsideReadsAsk=false,runless=false}){
+        // to answer, as T3 shows it: the workspace boundary refuses what a harness would do unasked. card: the harness's own words for
+        // its card (Muse Code's museApprovalCard): a title for what it asks (trebellTitle), the line under it and the command it shows,
+        // and what is asked, for the desktop notification, when that line says who asks (trebellNotice).
+        async permission(thread,{params,options,askUser=false,approvalOptions=null,signal=null,outsideReadsAsk=false,runless=false,card=null}){
           const current=threadStore.get(thread.id)||thread,turnId=current?.turns?.at(-1)?.id||null,traceData=agentPermissionTraceData({toolCall:params.toolCall,options});
           const traceBase={runtime:current?.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),environmentId:current?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,threadId:thread.id,turnId,category:"policy"};
           journal?.record?.({...traceBase,name:"permission.requested",status:"pending",data:traceData});
@@ -2375,7 +2389,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           }
           try{
             // An ACP harness's own choices (approvalOptions) are shown as the card's buttons; each answers with its decision.
-            const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:agentApprovalReason(params),toolCall:params.toolCall,options,...(Array.isArray(approvalOptions)&&approvalOptions.length?{approvalOptions}:{})},thread.id,signal,{runless}),decision=result?.decision||"decline";
+            const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:card?.reason||agentApprovalReason(params),toolCall:params.toolCall,options,...(Array.isArray(approvalOptions)&&approvalOptions.length?{approvalOptions}:{}),
+              ...(card?.title?{trebellTitle:card.title}:{}),...(card?.command?{command:card.command}:{}),...(card?.notice?{trebellNotice:card.notice}:{})},thread.id,signal,{runless}),decision=result?.decision||"decline";
             journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision,policyDecision:POLICY_CONFIRM}});return decision;
           }catch(error){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"error",data:{...traceData,message:error?.message||String(error)}});throw error;
@@ -2424,7 +2439,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           // Only the person's own turns are checked: Trebell's continuations of a thread (queues, goals, recovery) run on its owner.
           if(message.method==="turn/start"){const ownerError=agentTurnOwnerError(threadStore.get(message.params?.threadId),runtimeManager.activeRuntime());if(ownerError)throw ownerError}
           const result=await request(context,message.method,message.params||{});ws.send(JSON.stringify({id:message.id,result}))}
-        catch(error){log(error?.stack||String(error));ws.send(JSON.stringify({id:message.id,error:{code:Number(error?.code)||-32000,message:error instanceof Error?error.message:String(error)}}))}
+        catch(error){log(error?.stack||String(error));ws.send(JSON.stringify({id:message.id,error:{code:Number(error?.code)||-32000,message:error instanceof Error?error.message:String(error),...(error?.rpcData?{data:error.rpcData}:{})}}))}
       });
       // An app tool call this window was given may have run already (a click, typed text, a delegated task), so it is refused rather
       // than asked of another window, which would run it a second time: the model is told the window closed before it answered.

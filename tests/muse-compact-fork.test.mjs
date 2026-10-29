@@ -129,6 +129,9 @@ test("/compact waits for no running Muse Code turn: it is refused while one runs
 // and only the window that waits for it shows its Stop, so its refusal names no Stop.
 const COMPACTION_BLOCKS_MODE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish, or keep the current mode, then send the message again.";
 const REPORT_BLOCKS_MODE="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
+// The same refusals for a follow-up of Trebell's queue sent now, which stays queued: in the queue's own words, what becomes of it.
+const COMPACTION_KEEPS_QUEUED="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. It stays queued, and goes once this turn ends if Muse Code has finished compacting by then.";
+const REPORT_KEEPS_QUEUED="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. It stays queued and goes once the report ends.";
 test("while Muse's compaction or its own report holds the host, a message in a mode another host serves is refused with nothing sent, and one in the host's own mode still goes",async()=>{
   const {session,muse}=await startSession({permissionMode:"full",muse:child=>new FakeMuse(child,{handlers:{"session/compact":compactHandler({end:null})}})});
   const compacting=session.compact();compacting.catch(()=>{});
@@ -137,6 +140,7 @@ test("while Muse's compaction or its own report holds the host, a message in a m
   // access's unsandboxed host and allowAll.
   session.setPermissionMode("supervised");
   await assert.rejects(settlesWithin(session.prompt([{type:"text",text:"Go on in Supervised"}]),2000,"the message in Supervised"),error=>error?.name==="SessionRefusalError"&&error.message===COMPACTION_BLOCKS_MODE);
+  assert.equal(session.modeRefusal("supervised",{queued:true}),COMPACTION_KEEPS_QUEUED,"a queued follow-up's words");
   assert.equal(muse.sent("turn/start").length,0,"no turn on the Full access host");
   // In the host's own mode Muse queues the message behind its compaction.
   session.setPermissionMode("full");
@@ -152,6 +156,7 @@ test("while Muse's compaction or its own report holds the host, a message in a m
   await until(()=>report,"the report turn");
   waking.session.setPermissionMode("auto");
   await assert.rejects(settlesWithin(waking.session.prompt([{type:"text",text:"In Auto now"}]),2000,"the message in Auto"),error=>error?.name==="SessionRefusalError"&&error.message===REPORT_BLOCKS_MODE);
+  assert.equal(waking.session.modeRefusal("auto",{queued:true}),REPORT_KEEPS_QUEUED,"a queued follow-up's words");
   assert.equal(waking.muse.sent("turn/start").length,0);
   // Back in the host's own mode the message takes the report over; while that message's turn runs, another mode is just a running turn.
   waking.session.setPermissionMode("supervised");
@@ -209,6 +214,30 @@ test("through the relay, a message sent in another mode while Muse writes its ow
     await relay.completed(thread.id,3);
     assert.deepEqual(relay.threadStore.get(thread.id).turns.map(turn=>turn.status),["completed","completed","completed"]);
     assert.equal((await relay.hosts()).length,1);
+  }finally{await relay.close()}
+});
+
+// The window steers a message into the report's turn (steer follow-ups, or Send now on a queued one), naming the mode it was sent in.
+test("through the relay, a message steered in another mode while Muse writes its own report is refused as not sent, nothing of it reaching the report's host, and one in the thread's mode steers into the report",{timeout:90_000},async()=>{
+  const relay=await museRelay("trebell-muse-report-steer-",{environment:{MUSE_FAKE_WORKFLOW_MS:"40",MUSE_FAKE_REPORT_HOLD:"1"}});
+  try{
+    const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0",permissionProfile:"full"});
+    await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please run workflow ping-pong"}],permissionProfile:"full"});
+    await relay.completed(thread.id,1);
+    await eventually(()=>relay.threadStore.get(thread.id).turns.length===2,"Muse's report turn");
+    const report=relay.threadStore.get(thread.id).turns[1];
+    // Refused with the code that tells the window the message was not sent (it keeps the draft), and nothing of it is stored. The
+    // refusal carries the words for a follow-up of Trebell's queue sent now, which stays queued (data.queued).
+    await assert.rejects(relay.rpc("turn/steer",{threadId:thread.id,expectedTurnId:report.id,input:[{type:"text",text:"Now in Supervised"}],permissionProfile:"supervised"}),{message:REPORT_BLOCKS_MODE,code:-31000,data:{queued:REPORT_KEEPS_QUEUED}});
+    assert.deepEqual(relay.threadStore.get(thread.id).turns.map(turn=>turn.status),["completed","inProgress"],"the report goes on");
+    assert.equal(relay.threadStore.get(thread.id).turns[1].items.some(item=>item.type==="userMessage"),false,"no message stored in the report");
+    assert.equal((await relay.frames("turn/steer")).length,0,"nothing reached the Full access host");
+    // In the thread's mode the message goes into the report, which ends with it, on the one host.
+    await relay.rpc("turn/steer",{threadId:thread.id,expectedTurnId:report.id,input:[{type:"text",text:"Go on in Full access"}],permissionProfile:"full"});
+    await relay.completed(thread.id,2);
+    assert.match(relay.reply(thread.id),/Steered: Go on in Full access\./);
+    assert.equal((await relay.frames("turn/steer")).length,1);
+    assert.deepEqual((await relay.hosts()).map(entry=>entry.start),[["serve","--trust-workspace","--disable-sandbox"]]);
   }finally{await relay.close()}
 });
 

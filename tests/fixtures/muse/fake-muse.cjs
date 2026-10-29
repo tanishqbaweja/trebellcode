@@ -21,7 +21,8 @@
 //   MUSE_FAKE_CONTEXT_USED how many tokens of the model's 1,007,997 the context holds after each plain turn (session/tokenUsage and
 //                          session/contextUsage), as a long conversation's does
 //   MUSE_FAKE_CHILD_ASK_HOLD  a file: once it is there, a workflow child still running from the session's last turn asks to run
-//                          `touch muse-approved.txt`, as "child approval" asks it, whether a turn runs or not
+//                          `touch muse-approved.txt`, as "child approval" asks it, whether a turn runs or not. A child's approval
+//                          names, as its subagent id, the child id of the agent of "run workflow" running then, if one runs
 // A turn whose message says one of these runs as T3's recorded sessions (muse_permission) and Muse 1.4.13's schema shape them:
 //   "ask approval"      asks to run `touch muse-approved.txt` (approval/request and approval/requested, with Muse's own choices),
 //                       settles it with the choice decided, and replies APPROVED, ALWAYS ALLOWED or REJECTED
@@ -32,6 +33,7 @@
 //   "child approval"    a workflow child (subagentOrigin, its own run) asks to run the same command while the turn waits until it
 //                       is stopped or the child's approval is settled; the child's approval outlives the turn
 //   "protected child"   a workflow child asks to write .muse/settings.json, a protected write that offers Allow once and Reject only
+//   "subagent approval" a subagent (role "sleeper") the turn waits on asks to run the same command, its origin naming the subagent
 //   "staged approval"   asks to run `touch a.txt && rm b.txt` stage by stage: `touch a.txt` first, and once the file MUSE_FAKE_STAGE_HOLD
 //                       names is there (else MUSE_FAKE_STAGE_MS, 300 ms, later) Muse's reviewer moves the approval on to `rm b.txt`
 //                       (approval/updated, reviewCompleted) with that stage's own choices, a saved rule keeping it out among them; a
@@ -53,7 +55,8 @@
 //                       whose result is ready MUSE_FAKE_SUBAGENT_MS (200) ms later; two model steps report their tokens
 //   "run workflow"      launches the ping-pong workflow and completes the turn while it runs; its agents ping and pong run
 //                       MUSE_FAKE_WORKFLOW_MS (300) ms apart, pong failing on its budget, and going on past ping's scheduling only
-//                       once the file MUSE_FAKE_WORKFLOW_HOLD names is there, when it names one; MUSE_FAKE_REPORT_DELAY_MS (0) ms after
+//                       once the file MUSE_FAKE_WORKFLOW_HOLD names is there, when it names one, and past ping's start only once the
+//                       file MUSE_FAKE_WORKFLOW_AGENT_HOLD names is there, when it names one; MUSE_FAKE_REPORT_DELAY_MS (0) ms after
 //                       the workflow has completed, or once the file MUSE_FAKE_REPORT_START_HOLD names is there, Muse starts a report
 //                       turn of its own. With MUSE_FAKE_REPORT_HOLD "1" the report
 //                       holds after its first sentence until a message comes, which Muse queues behind it (ifBusy queue): the report
@@ -62,7 +65,8 @@
 //                       ends once the message comes, before the rest of the report (and, when MUSE_FAKE_REPORT_COMMAND_HOLD names a
 //                       file, only once that file is there, the rest of the report and the message's turn after it, as they follow a
 //                       long command in Muse); once the file MUSE_FAKE_REPORT_ASK_HOLD names is
-//                       there, the held report asks to run `touch muse-approved.txt` ("ask approval"), and its answer ends the report
+//                       there, the held report asks to run `touch muse-approved.txt` ("ask approval"), and its answer ends the report;
+//                       once the file MUSE_FAKE_REPORT_END_HOLD names is there, a held report no message came for ends by itself
 const fs=require("node:fs"),readline=require("node:readline");
 const log=entry=>{if(process.env.MUSE_FAKE_LOG)fs.appendFileSync(process.env.MUSE_FAKE_LOG,JSON.stringify(entry)+"\n")};
 const argv=process.argv.slice(2);
@@ -106,6 +110,7 @@ function startTurn(sessionId,params,{usage=null}={}){
   if(/read outside/i.test(words))return askApproval(sessionId,turnId,false,{read:true});
   if(/child approval/i.test(words))return askApproval(sessionId,turnId,false,{child:true});
   if(/protected child/i.test(words))return askApproval(sessionId,turnId,false,{child:true,protectedWrite:true});
+  if(/subagent approval/i.test(words))return subagentApproval(sessionId,turnId);
   if(/staged approval/i.test(words))return askApproval(sessionId,turnId,false,{staged:true});
   if(/ask question/i.test(words))return askQuestion(sessionId,turnId);
   if(/dev server in the background/i.test(words))return runInBackground(sessionId,turnId,turn);
@@ -144,6 +149,12 @@ function spawnSubagent(sessionId,turnId,turn){
     reply(sessionId,turn,"Hello");complete(sessionId,turnId);
   },Number(process.env.MUSE_FAKE_SUBAGENT_MS||200));
 }
+// "subagent approval": a subagent (role "sleeper") runs while its turn waits on it, and asks to run `touch muse-approved.txt`, its
+// subagentOrigin naming the subagent; the turn ends once that is settled, or with a Stop.
+function subagentApproval(sessionId,turnId){
+  notify("item/started",sessionId,{item:{itemId:turnId+"-agent",kind:"subagent",turnId,revision:1,status:"inProgress",fallbackText:"Subagent: Sleep a while",subagentId:"subagent-1",agentPath:"main/sleeper/1",depth:1,role:"sleeper",objective:"Sleep a while",controlStatus:"running",childSessionId:turnId+"-child"}});
+  askApproval(sessionId,turnId,false,{child:true,subagent:"subagent-1"});
+}
 function runWorkflow(sessionId,turnId,turn){
   const step=Number(process.env.MUSE_FAKE_WORKFLOW_MS||300),itemId=turnId+"-workflow";let revision=0;
   const workflow=(children,fields={})=>({itemId,kind:"workflow",turnId,revision:++revision,status:"inProgress",fallbackText:"Workflow: model-chosen generated workflow",workflowRunId:"workflow-run-"+turnId,entryId:"ping-pong",scriptId:"generated.workflow.ping-pong",triggerSource:"guidanceAuto",children,stopAvailable:true,...fields});
@@ -156,15 +167,19 @@ function runWorkflow(sessionId,turnId,turn){
   const ping={childId:itemId+"-ping",attempt:1},pong={childId:itemId+"-pong",attempt:1},pingDone={...ping,status:"terminal",terminal:"completed",durationMs:2360};
   const revisions=[[{...ping,status:"scheduled",label:"ping"}],[{...ping,status:"started"}],[{...ping,status:"started"},{...pong,status:"scheduled",label:"pong"}],[pingDone,{...pong,status:"started"}],
     [pingDone,{...pong,status:"terminal",terminal:"completed",failureKind:"budget_exhausted",durationMs:2639}]];
-  // Each revision step ms after the one before, the one after ping's scheduling once the hold's file is there.
+  // Each revision step ms after the one before, the one after ping's scheduling, or after its start, once its hold's file is there.
+  // The agent running (ping while it alone runs, then pong) is the one a child's approval comes from.
+  const state=sessions.get(sessionId);
   const revise=index=>{
+    if(state)state.workflowAgent=index===1||index===2?ping.childId:index===3?pong.childId:null;
     if(index===revisions.length){
       notify("item/completed",sessionId,{item:workflow(revisions.at(-1),{status:"completed",finalSummary:"{\"status\":\"ok\"}",durationMs:3616,stopAvailable:false})});
       return later(process.env.MUSE_FAKE_REPORT_START_HOLD,Number(process.env.MUSE_FAKE_REPORT_DELAY_MS||0),()=>reportTurn(sessionId,turnId+"-report"));
     }
     notify("item/updated",sessionId,{item:workflow(revisions[index])});
     const next=()=>setTimeout(()=>revise(index+1),step);
-    if(index===0&&process.env.MUSE_FAKE_WORKFLOW_HOLD)later(process.env.MUSE_FAKE_WORKFLOW_HOLD,0,next);else next();
+    if(index===0&&process.env.MUSE_FAKE_WORKFLOW_HOLD)later(process.env.MUSE_FAKE_WORKFLOW_HOLD,0,next);
+    else if(index===1&&process.env.MUSE_FAKE_WORKFLOW_AGENT_HOLD)later(process.env.MUSE_FAKE_WORKFLOW_AGENT_HOLD,0,next);else next();
   };
   setTimeout(()=>revise(0),step);
 }
@@ -193,7 +208,12 @@ function reportTurn(sessionId,turnId){
   usageStep(sessionId,turnId,{prompt:36716,output:262,cacheRead:33393,reasoning:238});
   if(process.env.MUSE_FAKE_REPORT_HOLD==="1"&&process.env.MUSE_FAKE_REPORT_COMMAND==="1")notify("item/started",sessionId,{item:reportCheck(turnId,1,"inProgress")});
   if(process.env.MUSE_FAKE_REPORT_HOLD==="1"&&process.env.MUSE_FAKE_REPORT_ASK_HOLD)later(process.env.MUSE_FAKE_REPORT_ASK_HOLD,0,()=>{if(running.has(turnId))askApproval(sessionId,turnId,false)});
-  if(process.env.MUSE_FAKE_REPORT_HOLD==="1")return void heldReports.set(sessionId,{turnId,turn});
+  if(process.env.MUSE_FAKE_REPORT_HOLD==="1"){
+    heldReports.set(sessionId,{turnId,turn});
+    // Once the file MUSE_FAKE_REPORT_END_HOLD names is there, a report no message came for says the rest and ends by itself.
+    if(process.env.MUSE_FAKE_REPORT_END_HOLD)later(process.env.MUSE_FAKE_REPORT_END_HOLD,0,()=>{if(heldReports.get(sessionId)?.turnId!==turnId)return;heldReports.delete(sessionId);reply(sessionId,turn," The rest of the report.");complete(sessionId,turnId)});
+    return;
+  }
   setTimeout(()=>complete(sessionId,turnId),20);
 }
 // A message queued behind the held report: the report says the rest of its reply in the same message and ends, with the tokens of
@@ -218,9 +238,10 @@ const READ_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved
 // A staged shell command's second stage, `rm b.txt`, with its own rules: one saved to allow it, one saved to keep it out.
 const RM_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"allow_local_prefix_rm",label:"Always allow in this workspace: rm ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: rm ..."},{choiceId:"deny_once",label:"Reject",decision:"denied",scope:"once"},{choiceId:"deny_local_prefix_rm",label:"Always reject in this workspace: rm ...",decision:"deniedPolicyAmendment",scope:"localPersistent",rulePreview:"Always reject in this workspace: rm ..."}];
 let nextRequest=900;
-function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false,protectedWrite=false,staged=false}={}){
-  // A workflow child's approval names the child's own run as its turn, and its origin.
-  const turnId=child?parentTurnId+"-child-run":parentTurnId,origin=child?{subagentOrigin:{subagentId:"agent-7",childRunId:turnId,childSessionId:parentTurnId+"-child-session"}}:{};
+function askApproval(sessionId,parentTurnId,reviewer,{read=false,child=false,protectedWrite=false,staged=false,subagent=null}={}){
+  // A workflow child's approval names the child's own run as its turn, and its origin: the subagent asking (subagent), else the
+  // workflow agent running, if one runs.
+  const turnId=child?parentTurnId+"-child-run":parentTurnId,origin=child?{subagentOrigin:{subagentId:subagent||sessions.get(sessionId)?.workflowAgent||"agent-7",childRunId:turnId,childSessionId:parentTurnId+"-child-session"}}:{};
   const approvalId=turnId+"-approval",requirement={approvalId,sourceIndex:0},workspaceRoot=sessions.get(sessionId)?.workspaceRoot||"";
   const outside=read?require("node:path").resolve(workspaceRoot||process.cwd(),"..","outside-notes.txt"):"",choices=read||protectedWrite?READ_CHOICES:SHELL_CHOICES;
   const command=staged?"touch a.txt && rm b.txt":"touch muse-approved.txt",stage=(index,argv)=>({requirementId:{approvalId,sourceIndex:index},position:index+1,totalStages:staged?2:1,argv,argvComplete:true,resolution:{kind:"unresolved"},suggestedPrefix:{argvPrefix:[argv[0]],label:`Always allow in this workspace: ${argv[0]} ...`}});

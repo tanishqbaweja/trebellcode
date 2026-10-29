@@ -163,8 +163,9 @@ test("the card's own turn's outcome row reads below the card, an earlier turn's 
   const turnInfo={[turnInfoKey("th","t1")]:{status:"failed",error:"Boom."},[turnInfoKey("th","t2")]:{status:"interrupted"}};
   const messages=[user("u1","t1"),user("u2","t2")];
   const latest=options=>Object.fromEntries([...turnEndRows(messages,{turnInfo,threadId:"th",...options})].map(([id,rows])=>[id,rows[0].latest]));
-  // After a reload no card holds a turn: the latest turn's row moves with the rows after its message.
-  assert.deepEqual(latest({}),{u1:false,u2:true});
+  // A card of no turn (a notice of none after a reload, as a send its own file check refused) moves no turn's row below it: the
+  // latest turn's row stays above it with the rows after its message (conversation-order.js).
+  assert.deepEqual(latest({}),{u1:false,u2:false});
   assert.deepEqual(latest({cardTurnId:"t2"}),{u1:false,u2:true});
   // A goal continuing has the card: the turn before it keeps its row above the card. A virtualized list keeps its order.
   assert.deepEqual(latest({cardTurnId:"t3"}),{u1:false,u2:false});
@@ -215,9 +216,10 @@ test("a turn with no rows of its own ends after the turn before it, once the car
   // Stopped while its card is on screen (no failure on the card), it reads below the card with the rest of its turn.
   const stopped={...turnInfo,[turnInfoKey("th","t4")]:{status:"interrupted",durationMs:300}};
   assert.deepEqual(ends(answered,{turnInfo:stopped,cardTurnId:"t4",cardFailedTurnIds:new Set(["t4"])}),{a3:["t4::true"]});
-  // Two such turns in a row both end there, in order; one after a turn that failed without a reply follows that turn's row.
+  // Two such turns in a row both end there, in order; one after a turn that failed without a reply follows that turn's row. With no
+  // turn on the card, none of them moves below it.
   const more={...turnInfo,[turnInfoKey("th","t5")]:{status:"failed",error:"Second."},[turnInfoKey("th","t2")]:{status:"failed",error:"First."}};
-  assert.deepEqual(ends([user("u2","t2"),...answered],{turnInfo:more,turnOrder:["t2","t3","t4","t5"]}),{u2:["t2:First.:false"],a3:["t4:"+usage+":true","t5:Second.:true"]});
+  assert.deepEqual(ends([user("u2","t2"),...answered],{turnInfo:more,turnOrder:["t2","t3","t4","t5"]}),{u2:["t2:First.:false"],a3:["t4:"+usage+":false","t5:Second.:false"]});
   assert.deepEqual(ends([user("u2","t2"),user("u6","t6")],{turnInfo:more,turnOrder:["t2","t5","t6"]}),{u2:["t2:First.:false","t5:Second.:false"]});
   // A virtualized list keeps its order: no row is latest.
   assert.deepEqual(ends(answered,{turnInfo:stopped,cardTurnId:"t4",reorder:false}),{a3:["t4::false"]});
@@ -270,9 +272,10 @@ test("a turn whose steps are not all loaded never reads as finished without a re
 });
 
 test("a completed compaction, a turn whose steps are all compactions, has no row, while a stop or failure of it and an ordinary turn without a reply still do",()=>{
-  // c2: the turn Compact ran, with no rows of its own, between t1's reply and t3, the person's next turn, which ended with no reply.
+  // c2: the turn Compact ran, with no rows of its own, between t1's reply and t3, the person's next turn, which ended with no reply
+  // and is still the live card's.
   const turnInfo={[turnInfoKey("th","t1")]:{status:"completed",durationMs:900},[turnInfoKey("th","c2")]:{status:"completed",durationMs:1500},[turnInfoKey("th","t3")]:{status:"completed",durationMs:700}};
-  const messages=[user("u1","t1"),reply("a1","t1"),user("u3","t3")],options={harnessLabel:"Codex",turnInfo,threadId:"th",turnOrder:["t1","c2","t3"]};
+  const messages=[user("u1","t1"),reply("a1","t1"),user("u3","t3")],options={harnessLabel:"Codex",turnInfo,threadId:"th",turnOrder:["t1","c2","t3"],cardTurnId:"t3"};
   assert.deepEqual([...turnEndRows(messages,options).keys()],["u3","a1"]);
   const rows=turnEndRows(messages,{...options,compactionTurnIds:["c2"]});
   assert.deepEqual([...rows.keys()],["u3"]);

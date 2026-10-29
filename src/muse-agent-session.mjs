@@ -25,7 +25,10 @@ const MUSE_ASK_ATTEMPTS=3;
 // How many settled approvals and questions a session remembers, so a late copy of one is not asked again.
 const MUSE_SETTLED_LIMIT=500;
 export const MUSE_SIGNED_OUT_MESSAGE="Muse Code is signed out. Sign in with muse login, then send the message again.";
-export const MUSE_VIEW_GAP_MESSAGE="Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. The next message starts it again.";
+// What the next message does once Muse Code's host is gone, which a host lost between turns says after why it went (#lose). It names
+// Muse Code: after the host's own reason, an "it" would read as the last thing that reason names (another Muse process, a file).
+const MUSE_NEXT_MESSAGE="The next message starts Muse Code again.";
+export const MUSE_VIEW_GAP_MESSAGE="Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. "+MUSE_NEXT_MESSAGE;
 // A host that did not grant session MCP servers is refused when Trebell has servers for the session (T3 d6f47ff97).
 export const MUSE_SESSION_MCP_MESSAGE="This Muse Code build cannot take Trebell's MCP servers into its sessions. Update Muse Code to a version that supports session MCP servers.";
 const ITEM_EVENTS=new Set(["item/started","item/updated","item/completed"]);
@@ -61,6 +64,11 @@ export const MUSE_COMPACTION_STOPPED="Muse Code's context compaction was stopped
 // window or another of the person's, so its refusal names none.
 export const MUSE_COMPACTION_BLOCKS_MODE_CHANGE="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. Wait for it to finish, or keep the current mode, then send the message again.";
 export const MUSE_REPORT_BLOCKS_MODE_CHANGE="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. Wait for it to finish (or stop it), or keep the current mode, then send the message again.";
+// The same refusals for a follow-up of Trebell's queue sent now while a turn runs (turn/steer), which stays queued, in the queue's own
+// words: the queue sends it once the turn ends (the report's, unless a Stop holds the queue), and a compaction still running then
+// refuses it again, as it refuses a message.
+export const MUSE_COMPACTION_KEEPS_QUEUED="Muse Code is still compacting this conversation, and this mode needs a new Muse Code host, which would stop the compaction. It stays queued, and goes once this turn ends if Muse Code has finished compacting by then.";
+export const MUSE_REPORT_KEEPS_QUEUED="Muse Code is still writing its report on the work it finished, and this mode needs a new Muse Code host, which would stop the report. It stays queued and goes once the report ends.";
 // Why Muse did not compact, from its own durable words (compaction_unavailable, summarizer_failed), as a sentence.
 function compactionFailure(reason){const words=text(reason).trim().replaceAll("_"," ");return `Muse Code could not compact the conversation${words?`: ${words}`:""}.`}
 
@@ -288,6 +296,24 @@ export function museApprovalToolCall(params={}){
   const policyKind=kind==="shell"?"execute":kind==="fileAccess"?(subject.access==="read"?"read":"edit"):kind==="network"?"network":"other";
   return {toolCallId:text(params.toolCallId||params.itemId||params.approvalId),title,kind:policyKind,rawInput};
 }
+// The approval card's words for what a Muse approval asks (the relay's card): a title for a file access or network approval, a
+// protected write and a read outside the workspace by name (Muse names a path inside its workspace relative to it), else the card's
+// own; the stage a staged command's choices answer, with the whole command under it; and the agent a child's approval comes from
+// (agent: its name, as its row shows it), which Stop leaves its card waiting for. It runs on past the turn that started it only once
+// that turn has ended with its work running (runsPast): a subagent asking while its turn runs stops with that turn. notice: what is
+// asked, which a desktop notification says, when the card's line is who asks.
+export function museApprovalCard(params={},{agent="",runsPast=false}={}){
+  const subject=params.subject&&typeof params.subject==="object"?params.subject:{},kind=text(subject.kind),asked=museApprovalToolCall(params).title;
+  const outside=/^(?:[a-z]:)?[\\/]|^\.\.(?:[\\/]|$)/i.test(text(subject.path).trim());
+  const title=kind==="network"?"Network access needs approval":kind!=="fileAccess"?"":subject.access==="read"?outside?"Read outside the workspace needs approval":"File read needs approval"
+    :params.protectedWrite===true?"Write to a protected file needs approval":"File write needs approval";
+  const index=params.currentRequirementId?.sourceIndex,stage=kind==="shell"&&Array.isArray(subject.stages)?subject.stages.find(item=>item?.requirementId?.sourceIndex===index):null;
+  const words=(Array.isArray(stage?.argv)?stage.argv:[]).map(word=>text(word)).map(word=>word&&!/\s/.test(word)?word:`"${word}"`).join(" ");
+  const staged=Number(stage?.totalStages)>1&&words?`Stage ${Number(stage.position)||index+1} of ${stage.totalStages}: ${words}`:"";
+  const asker=params.subagentOrigin?`Asked by ${agent?"the "+agent:"a Muse Code workflow agent"}${runsPast?", which runs on past the turn that started it":""}.`:"";
+  const reason=[asker,staged].filter(Boolean).join(" ");
+  return {...(title?{title}:{}),reason:reason||asked,...(reason?{command:asked}:{}),...(asker?{notice:staged||asked}:{})};
+}
 // Muse's questions as the relay's question dialog asks them (T3 publishRequest): the header, question and options, several choices
 // for a multiple-selection question, and the person's own words for every one, as Muse takes a free-text answer to any question.
 // notes: what an answer to a question lacked, said beside it when Trebell asks again.
@@ -378,8 +404,9 @@ export class MuseAgentSession{
     this.args=museServeArgs(this.permissionMode);this.launched=null;this.host=null;this.connection=null;this.initializeResult=null;this.sessionSetup=null;
     this.sessionId=null;this.model=null;this.wantedModel=null;this.reasoningEffort=null;this.turnRoot=null;
     this.dead=false;this.deadError=null;this.closed=false;this.activePrompt=null;
-    // The approvals and questions Muse asked and has not settled ("approval:<id>", "question:<id>"), and the ones it settled.
-    this.requests=new Map();this.settledRequests=new Set();
+    // The approvals and questions Muse asked and has not settled ("approval:<id>", "question:<id>"), and the ones it settled; the names
+    // of the agents Muse runs, by the ids a child's approval names them by (#nameAgents).
+    this.requests=new Map();this.settledRequests=new Set();this.agentNames=new Map();
     // Muse's last readable usage report (usage/changed), which a turn the quota stopped reads its reset from.
     this.subscriptionUsage=null;
     // The work still running that a turn started (runningWork), by item, with its turn, whose rows it settles after the turn ended,
@@ -412,12 +439,14 @@ export class MuseAgentSession{
   // Why a message cannot go now in the session's mode, or in the mode it asks for (mode), or null: the mode needs another host
   // (needsRelaunch), and Muse's own work holds this one, a compaction or the report Muse writes (also one a message's turn took in
   // before the message went), which a relaunch would stop. The relay refuses such a message before it keeps the message's mode and
-  // before its turn starts, so the person keeps their draft and the thread the mode its host runs; prompt refuses it too.
-  modeRefusal(mode=this.permissionMode){
+  // before its turn starts, or before it steers it into the report (turn/steer names the message's mode), so the person keeps their
+  // draft and the thread the mode its host runs; prompt refuses it too. queued: the words for a follow-up of Trebell's queue sent
+  // now, which stays queued.
+  modeRefusal(mode=this.permissionMode,{queued=false}={}){
     if(!this.launched||this.dead||!this.needsRelaunch(mode))return null;
     const running=this.activePrompt&&!this.activePrompt.settled?this.activePrompt:null;
     const report=running?.wake||running?.successor&&!running.prompted&&[...running.joined].some(id=>!running.endedJoined.has(id));
-    return this.compaction?MUSE_COMPACTION_BLOCKS_MODE_CHANGE:report?MUSE_REPORT_BLOCKS_MODE_CHANGE:null;
+    return this.compaction?(queued?MUSE_COMPACTION_KEEPS_QUEUED:MUSE_COMPACTION_BLOCKS_MODE_CHANGE):report?(queued?MUSE_REPORT_KEEPS_QUEUED:MUSE_REPORT_BLOCKS_MODE_CHANGE):null;
   }
   // A mode's launch flags, permission profile and approval mode are fixed when its host launches (museLaunchPlan), so a mode with
   // another plan needs a new host, which resumes the conversation (T3: runtime policy changes require a fresh Muse host).
@@ -748,7 +777,8 @@ export class MuseAgentSession{
     // A compaction under way ends with the host's reason, which its own request reports.
     const turn=this.activePrompt,compaction=this.compaction;compaction?.fail(this.deadError);
     if(turn&&!turn.settled){if(turn.stopRequested)turn.settle({stopReason:"cancelled",interrupted:true,providerMessageId:null});else turn.fail(this.deadError)}
-    else if(!quiet&&!compaction)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message}});
+    // A host lost between turns failed no turn: its notice names none (turnless), and says what the next message does.
+    else if(!quiet&&!compaction)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",turnless:true,message:message.endsWith(MUSE_NEXT_MESSAGE)?message:`${/[.!?…]$/.test(message)?message:message+"."} ${MUSE_NEXT_MESSAGE}`}});
     this.#settleObserved(message);
     this.#withdrawRequests();
     if(stop)void this.host?.close().catch(()=>{});
@@ -806,22 +836,25 @@ export class MuseAgentSession{
     return this.#askApproval(entry,{askUser:entry.automatic===stage});
   }
   // Asks the stage through the relay, as an ACP harness's request is asked: Trebell's policy answers what it allows or denies, and
-  // the person the rest, on the approval card with Muse's own choices. askUser: only the person answers. So it is in Auto, whose
-  // reviewer (':auto-review') has cleared what it could, as in Grok's Auto; for a protected write, a subject Trebell does not know,
-  // a stage with no Allow once to answer for the person with, and a file read: Muse reads its workspace unasked, so one it asks about
-  // is outside it, and goes to the person (T3 shows it) rather than to the workspace boundary that refuses what a harness does
-  // unasked (outsideReadsAsk). A card Muse settles meanwhile is withdrawn (signal); a window that never answers declines, rather than
-  // leave Muse waiting.
+  // the person the rest, on the approval card with Muse's own choices, which says what is asked and, for a child's, which agent asks
+  // (museApprovalCard). askUser: only the person answers. So it is in Auto, whose reviewer (':auto-review') has cleared what it
+  // could, as in Grok's Auto; for a protected write, a subject Trebell does not know, a stage with no Allow once to answer for the
+  // person with, and a file read: Muse reads its workspace unasked, so one it asks about is outside it, and goes to the person (T3
+  // shows it) rather than to the workspace boundary that refuses what a harness does unasked (outsideReadsAsk). A card Muse settles
+  // meanwhile is withdrawn (signal); a window that never answers declines, rather than leave Muse waiting.
   async #askApproval(entry,{askUser=false}={}){
     const params=entry.params,choices=museApprovalChoices(params.availableChoices),read=params.subject?.kind==="fileAccess"&&params.subject?.access==="read";
     // The stage and choices asked about, which the answer decides.
     const shown={requirementId:params.currentRequirementId,availableChoices:params.availableChoices};
     if(typeof this.onPermission!=="function")return this.#answerApproval(entry,"decline",shown);
     const ask=new AbortController();entry.ask=ask;entry.shown=shownKey(params);
+    // The agent that asks, by name, and whether its work runs on past a turn that has ended (observed, its turn settled).
+    const origin=params.subagentOrigin||{},agent=[origin.subagentId,origin.childRunId,origin.childSessionId].map(id=>this.agentNames.get(text(id))).find(Boolean);
+    const runsPast=Boolean(agent&&this.observed.get(agent.itemId)?.settled);
     let decision="decline";
     try{
       decision=await this.onPermission({
-        method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},
+        method:"approval/requested",params:{toolCall:museApprovalToolCall(params)},card:museApprovalCard(params,{agent:agent?.name||"",runsPast}),
         options:(Array.isArray(params.availableChoices)?params.availableChoices:[]).filter(choice=>choice?.choiceId).map(choice=>({optionId:text(choice.choiceId),name:text(choice.label),kind:text(choice.decision)})),
         askUser:askUser||this.launched?.plan.permissionProfile===":auto-review"||personOnly(params)||!choices.has("accept")||read,
         approvalOptions:museApprovalOptions(params.availableChoices),signal:ask.signal,...(read?{outsideReadsAsk:true}:{}),
@@ -909,6 +942,14 @@ export class MuseAgentSession{
   #withdrawRequests(which=()=>true){
     for(const entry of [...this.requests.values()])if(which(entry)){this.requests.delete(entry.key);entry.ask?.abort()}
   }
+  // The names a child's approval card says who asks with (its subagentOrigin names the agent): a subagent's, by its subagent id and its
+  // child session, and a workflow agent's, by its child id, as their rows name them; a workflow's later revisions leave labels out.
+  // Each with the item of the work it is (itemId: the subagent's, or its workflow's), which says whether it runs on past its turn.
+  #nameAgents(item){
+    if(item?.kind==="subagent"){const name=clip(item.role)||clip(item.objective);if(name)for(const id of [item.subagentId,item.childSessionId])if(text(id))this.agentNames.set(text(id),{name:"subagent "+name,itemId:text(item.itemId)})}
+    if(item?.kind==="workflow")for(const child of Array.isArray(item.children)?item.children:[])if(clip(child?.label)&&text(child.childId))this.agentNames.set(text(child.childId),{name:"workflow agent "+clip(child.label),itemId:text(item.itemId)});
+    while(this.agentNames.size>MUSE_SETTLED_LIMIT)this.agentNames.delete(this.agentNames.keys().next().value);
+  }
 
   #notification(frame){
     const method=text(frame?.method),params=frame?.params;
@@ -926,6 +967,7 @@ export class MuseAgentSession{
     if(this.compaction&&ITEM_EVENTS.has(method)&&params.item?.kind==="compaction")return void this.#compactionItem(params.item);
     // The end of a command Muse sent to the background, whichever turn runs (#backgroundEnded).
     if(ITEM_EVENTS.has(method)&&params.item?.kind==="backgroundTerminalCompletion")return void this.#backgroundEnded(params.item);
+    if(ITEM_EVENTS.has(method))this.#nameAgents(params.item);
     // An item of work a turn that ended left running settles its row in that turn (T3 observedChildren).
     const itemId=ITEM_EVENTS.has(method)?text(params.item?.itemId):method==="item/delta"?text(params.itemId):"",owner=itemId?this.observed.get(itemId):null;
     if(owner?.settled)return ITEM_EVENTS.has(method)?this.#item(owner,params.item):this.#delta(owner,params);

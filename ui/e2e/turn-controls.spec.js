@@ -149,7 +149,8 @@ for(const action of ["Delete","Archive"]){
 // (turn/started) and lets the answer go, in either order, as Codex sends them; an answer before the turn started names it queued
 // (startedAt null). A started turn streams its reply and completes unless turn/interrupt ends it first, and as codex-cli 0.162
 // does, an interrupt for a turn not started yet is refused ("no active turn to interrupt"). interruptDelayMs holds the interrupt's
-// answer (Codex answers once the turn has stopped), interruptError refuses every interrupt with that message, the turn going on,
+// answer (Codex answers once the turn has stopped), interruptAnswerFirst answers it at once and leaves the turn to end when the test
+// ends it (codex.endTurn), interruptError refuses every interrupt with that message, the turn going on,
 // compactError fails thread/compact/start with that message, holdTurns keeps a turn running after its reply until it is set
 // false, steerHold, a gate, holds turn/steer's answer until it opens, resumeHold, a gate, holds thread/resume's answer until it
 // opens (Codex answers with the thread as it is then), and drainQueue has Codex start the first follow-up of its
@@ -198,6 +199,8 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
   };
   // Codex closes a thread's session once no window follows it, and says so.
   codex.closeThread=threadId=>notify("thread/closed",{threadId});
+  // A turn's end, as Codex tells it, whenever a test says so.
+  codex.endTurn=(turn,status)=>end(turn,status);
   // Any other notification, as Codex sends it.
   codex.notify=notify;
   wss.on("connection",ws=>{
@@ -221,6 +224,8 @@ async function startCodex(page,{name,names=[name],project=false,settings={},mode
         codex.interrupts.push({...params});const turn=codex.turns.find(item=>item.id===params.turnId);
         if(codex.interruptError){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:codex.interruptError}}));return}
         if(turn&&!turn.started){ws.send(JSON.stringify({id:message.id,error:{code:-32600,message:"no active turn to interrupt"}}));return}
+        // interruptAnswerFirst: Codex answers the interrupt at once and ends the turn only later (codex.endTurn), as its stop winds down.
+        if(codex.interruptAnswerFirst){respond({});return}
         setTimeout(()=>{if(turn?.status==="inProgress")end(turn,"interrupted");respond({})},codex.interruptDelayMs);return;
       }
       // Codex's own queue, a General chat's follow-ups: each change is told with thread/queue/changed.
@@ -1001,6 +1006,254 @@ for(const order of ["Codex","the agent relay"]){
     }finally{await codex.close()}
   });
 }
+
+// A Compact whose end the window stopped waiting for (after 45 seconds, Grok's and Muse Code's after 10 minutes) says so on its row,
+// and that the harness may still compact, not that it failed; its end, when it comes as the agent relay sends it (the item completed
+// only, as for Grok), makes that same row compacted rather than adding one.
+test("a Compact the window stopped waiting for says so on its row, and its later end makes that same row compacted",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  // The window's timers run on a clock the test moves on, past the 45 seconds it waits.
+  await page.clock.install();
+  const codex=await startCodex(page,{name:"Codex compact"});
+  const rows=page.locator(".tool-event").filter({hasText:/compact/i});
+  try{
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    await page.getByRole("button",{name:"Compact",exact:true}).click();
+    await expect.poll(()=>codex.calls.includes("thread/compact/start")).toBe(true);
+    const threadId=codex.thread.id,turnId="codex-compact-turn",item={type:"contextCompaction",id:"compaction-item-1"};
+    codex.notify("turn/started",{threadId,turn:{id:turnId,status:"inProgress",items:[]}});await expect(stop(page)).toBeVisible();
+    await expect(rows.locator("summary strong")).toHaveText(["Compacting context"]);
+    // Soft, so that the old code also shows what the compaction's end does.
+    await page.clock.fastForward("00:46");
+    await expect.soft(rows.locator("summary strong")).toHaveText(["Trebell stopped waiting for the context compaction after 45 seconds; Codex may still be compacting."]);
+    // A step whose end is not known, not a failed one: no error mark, pill or failed count.
+    await expect.soft(rows).toHaveClass([/status-unknown/]);await expect.soft(rows).not.toHaveClass([/kind-error|status-error/]);
+    await expect.soft(rows.locator("summary em")).toHaveText(["unknown"]);
+    await expect.soft(page.locator(".activity-card-failed"),"nothing failed").toHaveCount(0);
+    await rows.scrollIntoViewIfNeeded();await shoot(page,"compact-window-stopped-waiting");
+    codex.notify("item/completed",{threadId,turnId,item,completedAtMs:Date.now()});codex.notify("thread/compacted",{threadId,turnId});
+    codex.notify("turn/completed",{threadId,turn:{id:turnId,status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
+    await expect(rows.locator("summary strong")).toHaveText(["Context compacted"]);await expect(rows).toHaveClass([/status-done/]);
+  }finally{await codex.close()}
+});
+
+// A message whose automatic compaction Codex has not ended in the window's 45 seconds goes on, its row saying the window stopped
+// waiting; the compaction's end, as Codex sends it (its item started before the limit, completed after it, then its turn's end and the
+// message's turn), takes that row: one row of the compaction, compacted, on its own turn's card, and none left saying Codex may still
+// be compacting.
+test("a message's automatic compaction that Codex ends after the window's 45 seconds leaves one row of it, compacted, and none saying Codex may still compact",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  await page.clock.install();
+  const codex=await startCodex(page,{name:"Codex auto compact",project:true,settings:{autoCompactContext:true,autoCompactThresholdPercent:85}});
+  const rows=page.locator(".tool-event").filter({hasText:/compact/i}),usage=percent=>({threadId:codex.thread.id,tokenUsage:{modelContextWindow:100_000,last:{inputTokens:percent*1000},total:{totalTokens:130_000}}});
+  try{
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [first]=codex.turns;first.answer();first.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    codex.notify("thread/tokenUsage/updated",usage(93));await expect(page.locator(".context-meter")).toHaveAttribute("aria-valuenow","93");
+    await sendTyped(page,"Count again.");
+    await expect.poll(()=>codex.calls.includes("thread/compact/start")).toBe(true);
+    const threadId=codex.thread.id,compactTurn="codex-auto-compact-turn",item={type:"contextCompaction",id:"auto-compaction-item-1"};
+    codex.notify("turn/started",{threadId,turn:{id:compactTurn,status:"inProgress",items:[]}});codex.notify("item/started",{threadId,turnId:compactTurn,item});
+    await expect(rows.locator("summary strong")).toHaveText(["Compacting context"]);
+    // At 45 seconds the message goes on, and Codex holds its turn behind the compaction's.
+    await page.clock.fastForward("00:46");
+    await expect.poll(()=>codex.turns.length).toBe(2);
+    await expect(rows.locator("summary strong")).toHaveText(["Trebell stopped waiting for the context compaction after 45 seconds; Codex may still be compacting."]);
+    codex.notify("item/completed",{threadId,turnId:compactTurn,item,completedAtMs:Date.now()});codex.notify("thread/compacted",{threadId,turnId:compactTurn});
+    codex.notify("turn/completed",{threadId,turn:{id:compactTurn,status:"completed",items:[]}});
+    // Before the message's turn starts, one row says the compaction is done, and none that Codex may still be compacting.
+    await expect(rows.locator("summary strong")).toHaveText(["Context compacted"]);
+    await expect(page.locator(".tool-event").filter({hasText:"may still be compacting"})).toHaveCount(0);
+    const next=codex.turns[1];next.answer();next.start();
+    await expect.poll(()=>next.status,{timeout:10_000}).toBe("completed");await expect(stop(page)).toHaveCount(0);
+    await expect(page.locator(".tool-event").filter({hasText:"may still be compacting"}),"no row says Codex may still compact").toHaveCount(0);
+    const card=page.locator(`.turn-card[data-turn-id="${compactTurn}"] [data-testid=activity-card]`);
+    if(await card.getAttribute("data-state")!=="open")await card.locator(".activity-card-head").click();
+    await expect(rows.locator("summary strong")).toHaveText(["Context compacted"]);
+    await rows.scrollIntoViewIfNeeded();await shoot(page,"auto-compact-ended-after-window-stopped-waiting");
+  }finally{await codex.close()}
+});
+
+// Where a row reads on screen, top to bottom.
+const edges=locator=>locator.evaluate(node=>{const box=node.getBoundingClientRect();return {top:Math.round(box.top),bottom:Math.round(box.bottom)}});
+
+// On a General chat, whose queue is Codex's own, a message sent with the context nearly full shows while Codex compacts first. Codex's
+// compaction runs as a turn of its own, which starts and ends before the message's turn/start is answered: that turn does not take
+// the message, so nothing under the message says a turn finished without a reply, and the compaction's card reads above the message,
+// where it stays once the message's own turn has started, as after a reload.
+test("a message shown while Codex's automatic compaction runs is no part of the compaction's own turn: nothing under it says that turn finished without a reply, and the compaction's card reads above it throughout",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex auto compact chat",settings:{autoCompactContext:true,autoCompactThresholdPercent:85}});
+  const usage=percent=>({threadId:codex.thread.id,tokenUsage:{modelContextWindow:100_000,last:{inputTokens:percent*1000},total:{totalTokens:130_000}}});
+  const message=page.locator(".user-row").filter({hasText:"Count again."}),noReply=page.getByText("Finished without a reply.",{exact:true});
+  const threadId=codex.thread.id,compactTurn="codex-auto-compact-turn",item={type:"contextCompaction",id:"auto-compaction-item-1"};
+  const card=page.locator(`[data-testid=activity-card][data-turn-id="${compactTurn}"]`);
+  // Soft, so that the old code also shows what reads under the message.
+  const above=async when=>{const [compaction,sent]=await Promise.all([edges(card),edges(message)]);expect.soft(compaction.bottom,"the compaction's card reads above the message "+when).toBeLessThanOrEqual(sent.top)};
+  try{
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [first]=codex.turns;first.answer();first.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    codex.notify("thread/tokenUsage/updated",usage(93));await expect(page.locator(".context-meter")).toHaveAttribute("aria-valuenow","93");
+    await sendTyped(page,"Count again.");
+    await expect.poll(()=>codex.calls.includes("thread/compact/start")).toBe(true);
+    await expect(message,"the message shows while Codex compacts").toHaveCount(1);
+    codex.notify("turn/started",{threadId,turn:{id:compactTurn,status:"inProgress",items:[]}});codex.notify("item/started",{threadId,turnId:compactTurn,item});
+    await expect(card).toHaveCount(1);await above("while Codex compacts");
+    codex.notify("item/completed",{threadId,turnId:compactTurn,item,completedAtMs:Date.now()});codex.notify("thread/compacted",{threadId,turnId:compactTurn});
+    codex.notify("turn/completed",{threadId,turn:{id:compactTurn,status:"completed",items:[]}});
+    // The message goes on; its turn/start is not answered yet.
+    await expect.poll(()=>codex.turns.length).toBe(2);
+    await expect.soft(noReply,"no turn reads as finished without a reply").toHaveCount(0);
+    await expect.soft(page.locator(`[data-testid=turn-outcome-row][data-turn-id="${compactTurn}"]`)).toHaveCount(0);
+    await expect(card).toHaveCount(1);await above("once the compaction has ended");
+    await shoot(page,"auto-compaction-turn-before-message");
+    const next=codex.turns[1];next.answer();next.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toHaveCount(2,{timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    await expect(noReply).toHaveCount(0);await expect(message).toHaveCount(1);
+    await expect(card).toHaveCount(1);await above("once the message's turn has started");
+  }finally{await codex.close()}
+});
+
+// A row that came between turns (a Compact Codex refused) reads in a card of its own above the next turn the window did not send, and
+// above the turn after that one too, when Codex starts two such turns in a row (a goal going on): it is a step of neither, and it
+// never leaves the page.
+test("a row from between turns stays in a card of its own above each of two turns in a row the window did not send, a step of neither",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex goal"});
+  const failed=page.locator(".tool-event").filter({hasText:"Context compaction failed: Deliberate compaction failure"});
+  try{
+    codex.compactError="Deliberate compaction failure";
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});await expect(stop(page)).toHaveCount(0);
+    await page.getByRole("button",{name:"Compact",exact:true}).click();
+    await expect(failed).toHaveCount(1);
+    const threadId=codex.thread.id;
+    for(const id of ["codex-goal-turn-1","codex-goal-turn-2"]){
+      const text="Goal step "+id+" done.",answer=page.locator(".history-assistant").filter({hasText:text});
+      const steps=page.locator(`[data-testid=activity-card][data-turn-id="${id}"] .tool-event`).filter({hasText:"Deliberate compaction failure"});
+      codex.notify("turn/started",{threadId,turn:{id,status:"inProgress",items:[]}});await expect(stop(page)).toBeVisible();
+      codex.notify("item/completed",{threadId,turnId:id,item:{type:"agentMessage",id:"reply-"+id,text}});
+      await expect(answer).toHaveCount(1);
+      await expect(failed,"the row is on the page while "+id+" runs").toHaveCount(1);
+      const [row,reply]=await Promise.all([edges(failed),edges(answer)]);
+      expect(row.bottom,"it reads above "+id+"'s reply").toBeLessThanOrEqual(reply.top);
+      await expect(steps,"no step of "+id).toHaveCount(0);
+      codex.notify("turn/completed",{threadId,turn:{id,status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
+      await expect(failed,"and once "+id+" has ended").toHaveCount(1);await expect(steps).toHaveCount(0);
+    }
+    await failed.scrollIntoViewIfNeeded();await shoot(page,"row-between-turns-above-two-goal-turns");
+  }finally{await codex.close()}
+});
+
+// Codex ends a turn and starts one of its own (a goal going on) in one moment, and the window handles both before it draws again: the
+// ended turn keeps on its own card the context step its message was sent with, which the new turn's card does not list. The page's
+// socket listener is kept so that the test hands it both frames in one task, as two frames that come at once are handled.
+test("a turn Codex starts itself as the last one ends, both handled before the window draws again, leaves the last turn's context step on that turn's card",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  await page.addInitScript(()=>{const add=WebSocket.prototype.addEventListener;WebSocket.prototype.addEventListener=function(type,listener,options){if(type==="message")(window.__socketListeners||=[]).push({socket:this,listener});return add.call(this,type,listener,options)}});
+  const codex=await startCodex(page,{name:"Codex goal",project:true});
+  const step=scope=>scope.locator(".tool-event").filter({hasText:"Trebell context skipped"});
+  const together=frames=>page.evaluate(frames=>{const {socket,listener}=window.__socketListeners.filter(entry=>entry.socket.url.includes("/api/codex/ws")&&entry.socket.readyState===1).at(-1);for(const frame of frames)listener.call(socket,new MessageEvent("message",{data:JSON.stringify(frame)}))},frames);
+  try{
+    codex.holdTurns=true;
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});
+    await expect(step(page)).toHaveCount(1);
+    const threadId=codex.thread.id,next="codex-goal-turn";
+    codex.notify("item/completed",{threadId,turnId:turn.id,item:{type:"agentMessage",id:"reply-"+turn.id,text:"One two three four five six seven eight nine ten. Counting is done."}});
+    await expect(page.locator(".history-assistant").filter({hasText:"Counting is done."})).toHaveCount(1);
+    // Codex ends the turn and starts the next one itself, both handled at once.
+    turn.status="completed";clearTimeout(turn.timer);
+    await together([{method:"turn/completed",params:{threadId,turn:{id:turn.id,status:"completed",items:[]}}},{method:"turn/started",params:{threadId,turn:{id:next,status:"inProgress",items:[]}}}]);
+    await expect(stop(page)).toBeVisible();
+    const ended=page.locator(`.turn-card[data-turn-id="${turn.id}"] [data-testid=activity-card]`);
+    await expect(ended,"the ended turn has its card").toHaveCount(1);
+    if(await ended.getAttribute("data-state")!=="open")await ended.locator(".activity-card-head").click();
+    await expect(step(ended)).toHaveCount(1);
+    await expect(step(page),"the context step is listed once, on the ended turn's card").toHaveCount(1);
+    codex.notify("turn/completed",{threadId,turn:{id:next,status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
+    await expect(step(page)).toHaveCount(1);
+  }finally{await codex.close()}
+});
+
+// A Stop Codex answers before the stopped turn has ended frees the composer, and a message sent then clears the live card for its own
+// turn: the stopped turn's end, coming after that, takes none of the message's steps, and the message's turn keeps its context step.
+test("a stopped turn whose end comes after the next message was sent takes none of that message's steps, whose turn keeps its context step",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  const codex=await startCodex(page,{name:"Codex late stop",project:true});
+  const step=scope=>scope.locator(".tool-event").filter({hasText:"Trebell context skipped"});
+  try{
+    codex.holdTurns=true;codex.interruptAnswerFirst=true;
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [first]=codex.turns;first.answer();first.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});
+    const threadId=codex.thread.id;
+    codex.notify("item/completed",{threadId,turnId:first.id,item:{type:"agentMessage",id:"reply-"+first.id,text:"One two three four five six seven eight nine ten. Counting is done."}});
+    await expect(page.locator(".history-assistant").filter({hasText:"Counting is done."})).toHaveCount(1);
+    // Stop: Codex answers at once, and the stopped turn ends only when the test ends it, whatever the next turn does meanwhile.
+    clearTimeout(first.timer);
+    await stop(page).click();
+    await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+    expect(first.status,"Codex has not ended the stopped turn yet").toBe("inProgress");
+    codex.holdTurns=false;
+    await sendTyped(page,"Count again.");
+    await expect.poll(()=>codex.turns.length).toBe(2);const second=codex.turns[1];
+    // The stopped turn ends now: after the message went, before its turn starts. Its reply then says it stopped.
+    codex.endTurn(first,"interrupted");
+    await expect(page.getByTestId("turn-outcome").filter({hasText:/^stopped/})).toHaveCount(1,{timeout:10_000});
+    second.answer();second.start();
+    await expect.poll(()=>second.status,{timeout:10_000}).toBe("completed");await expect(stop(page)).toHaveCount(0);
+    const live=page.locator(`.agent-block [data-testid=activity-card][data-turn-id="${second.id}"]`);
+    await expect(step(live),"the message's turn keeps its context step").toHaveCount(1);
+    await expect(page.locator(`.turn-card[data-turn-id="${first.id}"]`),"the stopped turn took none of it").toHaveCount(0);
+  }finally{await codex.close()}
+});
+
+// A turn's verification comes once the turn has ended, after the steps it judged, and a repair it asks for that could not start says
+// so beside it: both are that turn's, on its card after its steps, also once a turn the window did not send takes the live card.
+test("a turn's verification and the repair it could not start read on that turn's card after the steps they judged, also once another turn takes the live card",async({page})=>{
+  test.setTimeout(60_000);
+  await page.setViewportSize({width:1280,height:800});
+  await page.route(/\/api\/verification\/plan-turn$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:true,record:{id:"verification-record-1",risk:"high",assessment:{status:"failed",summary:{required:3,failed:1}}},nextAction:{action:"repair"}})}));
+  const codex=await startCodex(page,{name:"Codex verified",project:true});
+  const titles=scope=>scope.locator(".tool-event summary strong");
+  const expected=[/^Trebell context skipped/,"npm test","Verification failed · high risk · 1 of 3 required checks failed","Automatic verification repair stopped: Codex could not start the repair"];
+  try{
+    codex.failing["thread/verification/repair"]="Codex could not start the repair";
+    codex.holdTurns=true;
+    await sendTyped(page,"Count from one to ten.");
+    await expect.poll(()=>codex.turns.length).toBe(1);const [turn]=codex.turns;turn.answer();turn.start();
+    await expect(page.getByText("Counting is done.",{exact:false})).toBeVisible({timeout:10_000});
+    const threadId=codex.thread.id,command={type:"commandExecution",id:"command-1",command:"npm test",cwd:process.cwd(),status:"completed",exitCode:0,aggregatedOutput:"ok"};
+    codex.notify("item/started",{threadId,turnId:turn.id,item:{...command,status:"inProgress"}});codex.notify("item/completed",{threadId,turnId:turn.id,item:command});
+    codex.holdTurns=false;
+    await expect(stop(page)).toHaveCount(0,{timeout:10_000});
+    const live=page.locator(`.agent-block [data-testid=activity-card][data-turn-id="${turn.id}"]`);
+    await expect(titles(live)).toContainText(expected.slice(0,3),{timeout:10_000});
+    // Soft, so that the old code also shows where the verification goes once another turn takes the live card.
+    await expect.soft(titles(live),"the repair's row is the turn's").toHaveText(expected,{timeout:10_000});
+    await expect.soft(page.locator(".agent-block-after"),"in no card of its own").toHaveCount(0);
+    await shoot(page,"verification-after-its-steps");
+    codex.notify("turn/started",{threadId,turn:{id:"codex-goal-turn",status:"inProgress",items:[]}});await expect(stop(page)).toBeVisible();
+    const ended=page.locator(`.turn-card[data-turn-id="${turn.id}"] [data-testid=activity-card]`);
+    if(await ended.getAttribute("data-state")!=="open")await ended.locator(".activity-card-head").click();
+    await expect.soft(titles(ended),"the ended turn's card keeps them after its steps").toHaveText(expected);
+    await expect.soft(titles(page.locator(".agent-block [data-testid=activity-card]")),"the new turn lists none of them").toHaveCount(0);
+    codex.notify("turn/completed",{threadId,turn:{id:"codex-goal-turn",status:"completed",items:[]}});await expect(stop(page)).toHaveCount(0);
+  }finally{await codex.close()}
+});
 
 // A turn the person asked something in, which Codex compacts first and then ends with no reply, says it finished without one under
 // its message, live and once the next turn starts, its card saying it compacted: only a compaction turn of its own (Compact's) has

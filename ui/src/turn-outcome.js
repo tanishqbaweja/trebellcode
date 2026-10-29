@@ -204,7 +204,7 @@ function turnEndPlacement(messages=[],{harnessLabel="",turnInfo=null,threadId=nu
       heading:turnHeading(harnessLabel,info),
       outcomeLabel:pill.label,outcomeTone:pill.tone,
       message:String(info.error||note||""),
-      latest:Boolean(reorder)&&index>=lastUser&&(!card||card===turnId),
+      latest:Boolean(reorder)&&index>=lastUser&&card===turnId,
     };
     const rows=ends.get(key);if(rows)rows.push(row);else ends.set(key,[row]);
   };

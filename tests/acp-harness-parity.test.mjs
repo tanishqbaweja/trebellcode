@@ -697,6 +697,7 @@ test("Stop withdraws an ACP harness's waiting approval card and answers the harn
   await rpc("turn/start",{threadId,input:[{type:"text",text:"run the tests"}]});
   const request=await approval;
   assert.deepEqual(request.params.approvalOptions.map(option=>option.label),["Cancel","Decline","Approve"]);
+  assert.deepEqual([request.params.reason,request.params.trebellTitle,request.params.command],["Run tests",undefined,undefined],"an ACP harness's card keeps the card's own title and its harness's words");
   const resolved=next(message=>message.method==="serverRequest/resolved"),completed=next(message=>message.method==="turn/completed");
   await rpc("turn/interrupt",{threadId});
   assert.deepEqual((await resolved).params,{requestId:request.id,threadId});

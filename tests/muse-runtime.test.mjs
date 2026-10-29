@@ -196,7 +196,7 @@ test("Muse Code's models are its own list, read once per binary and version: pol
   }finally{await fixture.close()}
 });
 
-test("a model list Muse Code could not read is kept for a minute and then read again: the checks of that minute start no host and say to press Refresh",{timeout:60_000},async()=>{
+test("a model list Muse Code could not read is kept for a minute and then read again: the polls of that minute start no host and say to press Refresh, and a session start's check reads it again at once",{timeout:60_000},async()=>{
   const fixture=await museFixture("trebell-muse-failed-list-");
   try{
     // While this file is there, the stand-in's host exits as Muse does with a malformed settings file.
@@ -207,9 +207,12 @@ test("a model list Muse Code could not read is kept for a minute and then read a
     const failed=await manager.probe("muse");
     assert.deepEqual([failed.available,failed.installed,failed.version],[false,true,"1.4.13-R6996.1"]);
     assert.match(failed.message,/^Muse Code could not list its models: Muse Code could not load its settings; check ~\/\.config\/muse\/settings\.json \(exit code 3\): load settings for serve composition: malformed settings file at .*settings\.json\. Press Refresh to check it again\.$/);
+    // What a refused session start and a failure's advice say: Muse's own words, with no Refresh, which the conversation does not have.
+    assert.match(failed.reason,/^Muse Code could not load its settings; check ~\/\.config\/muse\/settings\.json \(exit code 3\): load settings for serve composition: malformed settings file at .*settings\.json$/);
+    assert.equal(runtimes.withProbeAdvice(failed.reason,failed),failed.reason,"a host that failed the same way is said once");
     assert.equal((await hosts(fixture.log)).length,1);
-    // Muse Code works again (its settings mended in the person's own editor). The polls, thread starts and model lists of the next
-    // minute keep the failure, and start no host.
+    // Muse Code works again (its settings mended in the person's own editor). The polls and model lists of the next minute keep the
+    // failure, and start no host.
     await rm(failing);
     clock+=30_000;
     for(let poll=0;poll<3;poll++)assert.equal((await manager.probe("muse")).message,failed.message);
@@ -219,6 +222,16 @@ test("a model list Muse Code could not read is kept for a minute and then read a
     const ready=await manager.probe("muse");
     assert.equal(ready.available,true,"the first check after the minute reads the list again");
     assert.equal((await hosts(fixture.log)).length,2);
+    // A session start does not wait out the minute: the person may have mended Muse Code, and the message they send then goes.
+    await writeFile(failing,"3");
+    assert.equal((await manager.recheck("muse")).available,false,"a failed turn's recheck reads the failure");
+    assert.equal((await hosts(fixture.log)).length,3);
+    await rm(failing);clock+=1000;
+    assert.equal((await manager.probe("muse")).available,false,"a poll keeps it");
+    assert.equal((await manager.probe("muse",{starting:true})).available,true,"a session start's check reads the list again");
+    assert.equal((await hosts(fixture.log)).length,4);
+    assert.equal((await manager.probe("muse")).available,true,"and the polls after it read what it read");
+    assert.equal((await hosts(fixture.log)).length,4);
   }finally{await fixture.close()}
 });
 
