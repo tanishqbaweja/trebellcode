@@ -327,8 +327,9 @@ test("/goal sent while a Codex turn runs stops that turn and starts the goal, wh
 });
 
 // Codex works toward an active goal with turns of its own, the next one as soon as one ends. A goal it starts no next turn for within
-// 5 s of a completed one reads paused, not active with nothing running, and the Goal panel says why.
-const PAUSED_WHY="Codex started no next turn for this goal after its last turn ended. Send /goal resume to continue.";
+// 5 s of a completed one reads paused, not active with nothing running, and the Goal panel says why, and how to go on: its Resume, or
+// /goal resume, each of which starts the goal's next turn.
+const PAUSED_WHY="Codex started no next turn for this goal after its last turn ended. Resume or send /goal resume to continue.";
 // The thread's goal is active, and Codex runs a turn of it and ends it, starting no next one: when it ended.
 async function goalTurnEnds(page,codex,thread){
   const now=Math.floor(Date.now()/1000),goal={threadId:thread.id,objective:"Ship the release notes",status:"active",tokenBudget:null,tokensUsed:0,timeUsedSeconds:0,createdAt:now,updatedAt:now};
@@ -340,24 +341,34 @@ async function goalTurnEnds(page,codex,thread){
 }
 const pausedAfterWait=(codex,ended)=>codex.sentAt("thread/goal/set").map(({at,params})=>[params.status,at-ended>=5000]);
 
-test("a Codex goal Codex starts no next turn for reads paused after 5 s, and the Goal panel says why, also after a reload, until it is resumed",async({page})=>{
+// Repair of round 13's fix: the Goal panel's Resume, under the note, started no turn (it only set the goal active), so a person who
+// pressed it had the goal read Active with nothing running for good. It resumes the goal as /goal resume does now: the goal's next
+// turn starts, with no input, and the goal is active once it has. Nor does the test read the goal active between the turn's end and
+// the pause, which a run slower than 5 s would have read paused; when the pause came is read from what Codex was sent.
+test("a Codex goal Codex starts no next turn for reads paused after 5 s, and the Goal panel says why, also after a reload, until its Resume starts its next turn",async({page})=>{
   test.setTimeout(90_000);
   const harness=await startHarness(page,"Release goal pause");const {codex,thread}=harness;
   try{
     const panel=page.getByTestId("goal-panel"),status=panel.locator(".goal-status"),note=panel.getByTestId("goal-pause-note");
     await page.getByRole("button",{name:"Thread goal",exact:true}).click();
-    const ended=await goalTurnEnds(page,codex,thread);await expect(status).toHaveText("active");
+    const ended=await goalTurnEnds(page,codex,thread);
     await expect(status).toHaveText("paused",{timeout:15_000});
     expect(pausedAfterWait(codex,ended)).toEqual([["paused",true]]);
-    await expect(note).toContainText("Goal paused");await expect(note).toContainText(PAUSED_WHY);
-    await shoot(page,"goal-paused-no-next-turn",()=>expect(note).toContainText(PAUSED_WHY));
+    await expect(note).toContainText("Goal paused");await expect.soft(note).toContainText(PAUSED_WHY);
+    await shoot(page,"goal-paused-no-next-turn",()=>expect(note).toContainText("Goal paused"));
     // A window reloaded since reads the goal paused and says why too.
     await page.reload();await openThread(page,"Release goal pause");await page.getByRole("button",{name:"Thread goal",exact:true}).click();
-    await expect(status).toHaveText("paused");await expect(note).toContainText(PAUSED_WHY);
-    // /goal resume, as the note says: the goal is active again, its next turn runs, and the note goes.
-    await page.getByTestId("composer").click();await page.keyboard.type("/goal resume",{delay:8});await page.keyboard.press("Enter");
-    await expect(status).toHaveText("active");await expect(note).toHaveCount(0);await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
-    expect(codex.goals.get(thread.id).status).toBe("active");expect(codex.turns.map(turn=>turn.status)).toEqual(["completed","inProgress"]);
+    await expect(status).toHaveText("paused");await expect.soft(note).toContainText(PAUSED_WHY);
+    // The panel's Resume, as the note says: the goal's next turn runs, with no input (the goal goes on from the history), the goal is
+    // active again once it has started, and the note goes.
+    await panel.getByRole("button",{name:"Resume",exact:true}).click();
+    await expect(page.getByRole("button",{name:"Stop",exact:true}),"the goal's next turn runs after Resume").toBeVisible();
+    await expect(status).toHaveText("active");await expect(note).toHaveCount(0);
+    expect(codex.turns.map(turn=>turn.status)).toEqual(["completed","inProgress"]);expect(codex.turns[1].input).toEqual([]);
+    await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("active");
+    const started=codex.requests.findIndex(item=>item.method==="turn/start"),activated=codex.requests.findLastIndex(item=>item.method==="thread/goal/set"&&item.params?.status==="active");
+    expect(started>=0&&started<activated,"the goal active once its turn has started (T3 runGoalCommand)").toBe(true);
+    await expect(page.getByTestId("composer-alert")).toHaveCount(0);
   }finally{await harness.close()}
 });
 
@@ -369,7 +380,9 @@ test("a Codex goal reads paused once the 5 s wait for its next turn is over in a
   try{
     const panel=page.getByTestId("goal-panel"),status=panel.locator(".goal-status");
     const ended=await goalTurnEnds(page,codex,thread);
-    await page.reload();await openThread(page,"Release goal reload");await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    // The window is reloaded during the wait (a slower run would test nothing: the window that saw the turn end would pause it).
+    await page.reload();expect(Date.now()-ended,"ms from the turn's end to the reload, within the 5 s wait").toBeLessThan(4000);
+    await openThread(page,"Release goal reload");await page.getByRole("button",{name:"Thread goal",exact:true}).click();
     await expect(status).toHaveText("paused",{timeout:15_000});
     expect(pausedAfterWait(codex,ended)).toEqual([["paused",true]]);
     await expect(panel.getByTestId("goal-pause-note")).toContainText(PAUSED_WHY);
@@ -387,7 +400,8 @@ test("a Codex goal reads paused in a window opened again after the one that saw 
     const panel=page.getByTestId("goal-panel"),status=panel.locator(".goal-status");
     const ended=await goalTurnEnds(page,codex,thread);
     // The person is away until the wait is over: a time, not something to wait for on a page.
-    await page.goto("about:blank");await page.waitForTimeout(Math.max(0,7000-(Date.now()-ended)));
+    await page.goto("about:blank");expect(Date.now()-ended,"ms from the turn's end to the window's close, within the 5 s wait").toBeLessThan(4000);
+    await page.waitForTimeout(Math.max(0,7000-(Date.now()-ended)));
     await page.goto("/");await openThread(page,"Release goal closed");await page.getByRole("button",{name:"Thread goal",exact:true}).click();
     await expect(status).toHaveText("paused",{timeout:10_000});
     expect(pausedAfterWait(codex,ended)).toEqual([["paused",true]]);

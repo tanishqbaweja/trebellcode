@@ -100,7 +100,9 @@ const CONTINUITY_WRITES=["continuity","continuity-clear","verification-repair"];
 // covered: another thread's opening state is up. The panel belongs to the thread being left, so it hides without unmounting: a
 // failed open brings it back with the drafts in it. leaving: another thread's open is on its way, from the click, so also in the
 // moment before its opening state comes up, and in an open that lands before it would.
-export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,onContinuity,covered=false,leaving=false}){
+// onResume: what Resume runs instead of setting the goal active, when the harness has it (a Codex goal with no turn running: App runs
+// what /goal resume runs).
+export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,onContinuity,covered=false,leaving=false,onResume=null}){
   const [objective,setObjective]=useState("");
   const [tokenBudget,setTokenBudget]=useState("");
   const [timeBudget,setTimeBudget]=useState("");
@@ -202,6 +204,13 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     // A Codex without goals refuses the goal as a method it does not have: said as such, not as Codex's error.
     catch(e){failAt("goal",codexGoalsMissing(e)?"Could not set the goal: this Codex does not support goals.":e)}finally{if(sent)saved.sending--;setBusy("")}
   }
+  // Resume of a Codex goal starts the goal's next turn (onResume), the goal active once that turn has started: set active alone, it
+  // started no turn, and Codex did not go on with a goal Trebell had paused because Codex started none, which read Active with nothing
+  // running. A Stop pressed before that turn started says nothing, as with /goal resume.
+  async function resume(){
+    setBusy("active");setError(null);
+    try{await onResume()}catch(e){if(!e?.trebellSendStopped)failAt("goal",codexGoalsMissing(e)?"Could not resume the goal: this Codex does not support goals.":e)}finally{setBusy("")}
+  }
   async function discard(group,what){if(await askConfirm("Discard your changes to "+what+"?",{confirm:"Discard changes",cancel:"Keep editing"}))group.fill()}
   async function save(){
     const text=objective.trim();if(!text){failAt("goal","Enter an objective first.");return}
@@ -266,7 +275,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     <div className="goal-panel-head"><Target size={19}/><div><strong>Thread goal</strong><span>Durable objective stored with this thread, independent of the chat transcript.</span></div><em className={"goal-status status-"+String(status).replace(/[^a-z]/gi,"").toLowerCase()}>{status}</em></div>
     {blocked&&<div className="goal-budget-alert" role="alert" data-testid="goal-budget-alert"><AlertTriangle size={16}/><div><strong>Goal budget exhausted</strong><span>New turns are blocked. Increase the exhausted budget, or pause, complete, or clear this goal.</span></div></div>}
     {/* A goal Trebell paused once Codex started no next turn for it (the server's pauseReason) says why while it stays paused. */}
-    {goal?.status==="paused"&&goal.pauseReason==="continuationExpired"&&<div className="goal-budget-alert goal-pause-note" role="status" data-testid="goal-pause-note"><Pause size={16}/><div><strong>Goal paused</strong><span>Codex started no next turn for this goal after its last turn ended. Send /goal resume to continue.</span></div></div>}
+    {goal?.status==="paused"&&goal.pauseReason==="continuationExpired"&&<div className="goal-budget-alert goal-pause-note" role="status" data-testid="goal-pause-note"><Pause size={16}/><div><strong>Goal paused</strong><span>Codex started no next turn for this goal after its last turn ended. Resume or send /goal resume to continue.</span></div></div>}
     <label>Objective<textarea aria-label="Objective" value={objective} onChange={e=>setObjective(e.target.value)} maxLength={4000} placeholder="What should this thread keep working toward?"/></label>
     <div className="goal-budget-grid">
       <label>Token budget <span>(optional)</span><input aria-label="Token budget" type="number" min="1" step="1" value={tokenBudget} onChange={e=>setTokenBudget(e.target.value)} placeholder="No token cap"/></label>
@@ -340,7 +349,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
       {goalSaved.unsaved&&<button onClick={()=>discard(goalSaved,"this goal")} {...writing()}>Discard changes</button>}
       {/* Pause and Resume are one button, so the keyboard stays on it as one takes the other's place. */}
       {goal&&goal.status!=="complete"&&(goal.status==="active"?<button onClick={()=>setGoal({status:"paused"})} {...writing("paused")}><Pause size={12}/> {busy==="paused"?"Pausing…":"Pause"}</button>
-        :<button onClick={()=>setGoal({status:"active"})} {...writing("active")}><Play size={12}/> {busy==="active"?"Resuming…":"Resume"}</button>)}
+        :<button onClick={()=>onResume?resume():setGoal({status:"active"})} {...writing("active")}><Play size={12}/> {busy==="active"?"Resuming…":"Resume"}</button>)}
       {goal&&goal.status!=="complete"&&<button onClick={()=>setGoal({status:"complete"})} {...writing("complete")}><CheckCircle2 size={12}/> {busy==="complete"?"Completing…":"Complete"}</button>}
       {goal&&<button className="danger" onClick={clear} {...writing("clear")}><Trash2 size={12}/> {busy==="clear"?"Clearing…":"Clear"}</button>}
     </div>

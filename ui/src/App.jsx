@@ -4634,6 +4634,10 @@ export default function App(){
     if(result==="kept"&&!filled)keepDraft();
     return result;
   }
+  // The Goal panel's Resume of a Codex goal with no turn running resumes it as /goal resume does (turn-support.js): the goal's next
+  // turn starts with no input, and the goal is active once it has. Set active alone, no turn started: Codex does not go on with a goal
+  // Trebell paused because Codex started no next turn for it, and the goal read Active with nothing running.
+  function resumeCodexGoal(){return startTurn("",[],model,null,null,null,{goalPatch:{status:"active"},goalResume:true})}
   async function compactContext(){
     if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
     if(!activeThread?.id||!rpc||leavingThread())return;
@@ -5668,7 +5672,7 @@ export default function App(){
     // that state is up, a refusal said on it is kept for the thread's next panel as well, as the panel goes once the open lands.
     if(rightPanelTab==="goal"){
       const goalThreadId=activeThread?.id||null,forGoalThread=apply=>next=>{if(goalThreadId&&activeThreadRef.current?.id===goalThreadId)apply(next)};
-      return <>{openingShown&&<div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>}<GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} covered={openingShown} leaving={openingPending} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/></>;
+      return <>{openingShown&&<div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>}<GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} covered={openingShown} leaving={openingPending} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)} onResume={agentRuntime==="codex"&&!running&&!submitting?resumeCodexGoal:null}/></>;
     }
     // The Runtime tab (RuntimeSurface, idle-parts.js) draws the approval card, the background processes and the trace App keeps, the
     // trace's code asked for with the tab's. The background processes and the trace are the open thread's: another thread starts each
