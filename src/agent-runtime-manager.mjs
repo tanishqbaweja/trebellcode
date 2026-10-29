@@ -365,8 +365,9 @@ async function run(command,args=[],{env=process.env,cwd=process.cwd(),timeoutMs=
 export function codexApiKeyHome(env,instance){return join(trebellHome(env),"codex-api-key-homes",String(instance?.id||"codex-default").replace(/[^A-Za-z0-9._-]/g,"_"))}
 // The database of Trebell's own an OpenCode 2.x profile on its API keys runs on (OPENCODE_DB), one per profile. OpenCode 2.x keeps
 // the sign-ins `opencode auth login` makes in its database, ahead of a key in its environment, and reads no OPENCODE_AUTH_CONTENT;
-// a new database holds none of them (the logins an older install kept are imported only into a database it converts). Its sessions
-// live there too, so a thread whose session is in the other database continues in a new one, its earlier messages handed over.
+// a new database holds none of them (2.2.1 reads its sign-ins from its database only, takes OPENCODE_DB as that database's path, runs
+// its import of 1.x's data only on a database that holds 1.x's sessions, and `opencode auth import` only when the person runs it). Its
+// sessions live there too, so a thread whose session is in the other database continues in a new one, its earlier messages handed over.
 export function openCodeApiKeyDatabase(env,instance){return join(trebellHome(env),"opencode-api-key-homes",String(instance?.id||"opencode-default").replace(/[^A-Za-z0-9._-]/g,"_"),"opencode.db")}
 // What npm runs with for an install or update (and the harness package's own install script with it): Trebell's environment
 // without any variable that holds a provider's key or a sign-in (runtime-environment.mjs isHarnessCredentialName), so no API key in
