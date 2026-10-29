@@ -14,8 +14,9 @@ import { keepThreadMeta } from "./test-home.js";
 
 // Muse Code as a person meets it in Trebell: Settings' Agents & models lists it with its version and signs in with Muse's own
 // `muse login` in a terminal, and the composer lists Muse's models with the Thinking levels each offers, runs a turn on the model and
-// level picked, and names Muse Code in the sidebar. Behind the page run the real agent relay and runtime manager, on a stand-in Muse
-// Code (tests/fixtures/muse/fake-muse.cjs) laid out as Meta's installer lays Muse out; the app's own endpoints answer from them.
+// level picked, and names Muse Code in the sidebar. A host that exits between turns says so after the last reply. Behind the page
+// run the real agent relay and runtime manager, on a stand-in Muse Code (tests/fixtures/muse/fake-muse.cjs) laid out as Meta's
+// installer lays Muse out; the app's own endpoints answer from them.
 const auditDir=fileURLToPath(new URL("../../visual-audit/muse-harness/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const FAKE_MUSE=fileURLToPath(new URL("../../tests/fixtures/muse/fake-muse.cjs",import.meta.url));
 const MODEL_LIST=fileURLToPath(new URL("../../tests/fixtures/muse/model-list-1.4.13.json",import.meta.url));
@@ -117,6 +118,11 @@ async function switchMode(page,mode){
   const html=page.locator("html");if(await html.getAttribute("data-mode")===mode)return;
   await page.getByTestId("appearance-toggle").first().click();await expect(html).toHaveAttribute("data-mode",mode);
 }
+async function type(page,text){await page.getByTestId("composer").click();await page.keyboard.type(text)}
+const reply=(page,text)=>page.locator(".history-assistant").filter({hasText:text});
+// Where a row reads on screen, top to bottom, and the activity card a step is listed in.
+const edges=locator=>locator.evaluate(node=>{const box=node.getBoundingClientRect();return {top:Math.round(box.top),bottom:Math.round(box.bottom)}});
+const cardOf=step=>step.locator("xpath=ancestor::*[@data-testid='activity-card'][1]");
 
 test("Settings lists Muse Code with its version, and Sign in opens a Trebell terminal running Muse Code's own `muse login`",async({page})=>{
   test.setTimeout(60_000);
@@ -222,5 +228,44 @@ test("the composer lists Muse Code's models and the Thinking levels each offers,
     await expect(page.locator(".sidebar-provider strong")).toHaveText("Muse Code");
     await expect(page.locator(".thread-row.active")).toContainText("muse-spark-1.3-contributor");
     for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`muse-thread-reply-${mode}-1280x800.png`})}
+  }finally{await harness.close()}
+});
+
+// A host that exits between turns fails no turn: the window says so below the last reply, in no turn's card, with what the next
+// message does, and the turn it had finished keeps its card as it was; the next message starts Muse Code again on the conversation.
+test("a Muse Code host that exits between turns says so below the last reply with what the next message does, and the turn it had finished keeps its card as it was",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startMuseHarness();
+  try{
+    await routeMuseApp(page,harness);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    // The stand-in replies, completes the turn and exits 300 ms later, as a Muse that crashed between turns (fake-muse.cjs).
+    await type(page,"Reply, then exit when idle");await page.keyboard.press("Enter");
+    const answer=reply(page,"Muse fixture reply");
+    await expect(answer).toBeVisible({timeout:20_000});
+    const exited=page.locator(".tool-event").filter({hasText:"Muse Code exited unexpectedly (code 1): panic: the model stream went away"});
+    await expect(exited).toHaveCount(1,{timeout:20_000});
+    // The finished turn's card lists its own step, the repository context its message was sent with, and nothing failed.
+    const card=page.locator("[data-testid=activity-card]").filter({hasText:"Trebell context skipped"});
+    await expect(card).toHaveCount(1);
+    const placed=async()=>{
+      await expect.soft(card,"the finished turn's card does not list the exit").not.toContainText("exited unexpectedly");
+      await expect.soft(card.locator(".activity-card-failed"),"the finished turn's card says nothing failed").toHaveCount(0);
+      const [{top},{bottom}]=await Promise.all([edges(cardOf(exited)),edges(answer)]);
+      expect.soft(top,"the exit's card reads below the finished turn's reply").toBeGreaterThanOrEqual(bottom);
+    };
+    await placed();
+    await expect.soft(exited.locator("summary strong"),"what happened, and what the next message does").toHaveText("Muse Code exited unexpectedly (code 1): panic: the model stream went away. The next message starts it again.");
+    for(const mode of ["dark","light"]){await switchMode(page,mode);await exited.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:auditDir+`muse-host-exited-between-turns-${mode}-1280x800.png`})}
+    await switchMode(page,"dark");
+    // In a narrow window too.
+    await page.setViewportSize({width:700,height:800});await placed();await page.setViewportSize({width:1280,height:800});
+    // The next message starts Muse Code again, which resumes the conversation, and the notice goes with the gap it was about.
+    await type(page,"One more message after the crash");await page.keyboard.press("Enter");
+    await expect(answer).toHaveCount(2,{timeout:20_000});
+    expect((await harness.frames("session/resume")).length,"the new host resumed the conversation").toBe(1);
+    await expect(exited).toHaveCount(0);
+    await expect(page.locator(".activity-card-failed"),"no turn failed").toHaveCount(0);
   }finally{await harness.close()}
 });

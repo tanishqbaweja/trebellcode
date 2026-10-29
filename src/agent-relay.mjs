@@ -1630,8 +1630,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // an errored session), and its open approval or question cards are withdrawn.
       const runtimeSession=sessions.get(threadId);
       if(runtimeSession instanceof AcpAgentSession&&runtimeSession.dead){sessions.delete(threadId);releaseSession(runtimeSession);cancelThreadRequests(threadId)}
-      // A harness retrying its turn's request itself (OpenCode's provider retries) goes on: the window shows the turn's retry row.
-      emit("error",{threadId,turnId,message:update.message||"Agent runtime stopped",...(update.willRetry===true?{willRetry:true}:{})});
+      // A harness retrying its turn's request itself (OpenCode's provider retries) goes on: the window shows the turn's retry row. One
+      // lost between turns (turnless, a Muse Code host's) failed no turn: it names none, so the window shows it after the last reply.
+      emit("error",{threadId,turnId:update.turnless===true?null:turnId,message:update.message||"Agent runtime stopped",...(update.willRetry===true?{willRetry:true}:{})});
     }
   }
 

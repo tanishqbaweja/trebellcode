@@ -25,7 +25,9 @@ const MUSE_ASK_ATTEMPTS=3;
 // How many settled approvals and questions a session remembers, so a late copy of one is not asked again.
 const MUSE_SETTLED_LIMIT=500;
 export const MUSE_SIGNED_OUT_MESSAGE="Muse Code is signed out. Sign in with muse login, then send the message again.";
-export const MUSE_VIEW_GAP_MESSAGE="Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. The next message starts it again.";
+// What the next message does once Muse Code's host is gone, which a host lost between turns says after why it went (#lose).
+const MUSE_NEXT_MESSAGE="The next message starts it again.";
+export const MUSE_VIEW_GAP_MESSAGE="Muse Code dropped some of this conversation's updates before they reached Trebell, so Trebell stopped it. "+MUSE_NEXT_MESSAGE;
 // A host that did not grant session MCP servers is refused when Trebell has servers for the session (T3 d6f47ff97).
 export const MUSE_SESSION_MCP_MESSAGE="This Muse Code build cannot take Trebell's MCP servers into its sessions. Update Muse Code to a version that supports session MCP servers.";
 const ITEM_EVENTS=new Set(["item/started","item/updated","item/completed"]);
@@ -766,7 +768,8 @@ export class MuseAgentSession{
     // A compaction under way ends with the host's reason, which its own request reports.
     const turn=this.activePrompt,compaction=this.compaction;compaction?.fail(this.deadError);
     if(turn&&!turn.settled){if(turn.stopRequested)turn.settle({stopReason:"cancelled",interrupted:true,providerMessageId:null});else turn.fail(this.deadError)}
-    else if(!quiet&&!compaction)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message}});
+    // A host lost between turns failed no turn: its notice names none (turnless), and says what the next message does.
+    else if(!quiet&&!compaction)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",turnless:true,message:message.endsWith(MUSE_NEXT_MESSAGE)?message:`${/[.!?…]$/.test(message)?message:message+"."} ${MUSE_NEXT_MESSAGE}`}});
     this.#settleObserved(message);
     this.#withdrawRequests();
     if(stop)void this.host?.close().catch(()=>{});

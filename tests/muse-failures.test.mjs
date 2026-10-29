@@ -10,8 +10,8 @@ import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 
 // Muse Code's turn failures, usage limits and host recovery (T3 93ea95cf4, 4bf8b476f, 300a35670, d6f47ff97): a turn the subscription
 // quota stopped says the usage limit was reached and when it resets, a retry Muse schedules is the turn's retry row, a delivery gap or
-// a host that exits ends the turn once and takes its cards with it, a host that died between turns comes back on the next message,
-// and a notice Trebell cannot read is skipped with a log line.
+// a host that exits ends the turn once and takes its cards with it, a host that died between turns says so as no turn's and comes
+// back on the next message, and a notice Trebell cannot read is skipped with a log line.
 
 // T3's usageLimits.test.ts: Muse's usage report, observed at nowMs, and the refusal Meta relayed through Muse.
 const USAGE={observedAtMs:1791447762610,tier:"tier-1",window:{usedPercent:0,windowDurationMins:300,resetsAtMs:1791465557000},weekly:{usedPercent:5,resetsAtMs:1791763200000}};
@@ -146,7 +146,7 @@ test("a delivery gap (view/gap) fails the running turn and leaves the session de
   idle.muse.notify("view/gap",{sessionId:idle.session.sessionId,after:"b",next:"c"});
   await until(()=>idle.session.dead,"the idle session to be dead");
   await settle();
-  assert.deepEqual(idle.updates.filter(update=>update.sessionUpdate==="runtime_error").map(update=>update.message),[error.message]);
+  assert.deepEqual(idle.updates.filter(update=>update.sessionUpdate==="runtime_error").map(update=>[update.message,update.turnless]),[[error.message,true]],"as no turn's, once");
   await idle.session.close();
 });
 
@@ -196,6 +196,10 @@ test("a Muse Code host that died between turns is relaunched on the next message
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Reply, then exit when idle"}]});
     await relay.completed(thread.id,1);
     await eventually(()=>relay.notifications.some(item=>item.method==="error"&&item.params.threadId===thread.id&&/exited unexpectedly \(code 1\): panic: the model stream went away/.test(item.params.message)),"the idle host's exit");
+    // No turn failed: the exit names none, and says what the next message does.
+    const exit=relay.notifications.find(item=>item.method==="error"&&item.params.threadId===thread.id);
+    assert.deepEqual([exit.params.turnId,exit.params.message],[null,"Muse Code exited unexpectedly (code 1): panic: the model stream went away. The next message starts it again."]);
+    assert.equal(relay.threadStore.get(thread.id).turns.at(-1).status,"completed","the turn it came after stays completed");
     const sessionId=relay.threadStore.get(thread.id).providerSessionId;
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Are you back?"}]});
     await relay.completed(thread.id,2);
