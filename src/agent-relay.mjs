@@ -51,6 +51,7 @@ import { NativeToolOutputStore } from "./native-tool-output-store.mjs";
 import { threadTitleFromText } from "./agent-thread-store.mjs";
 import { compareSectionOrder, sectionMovePlacement, sectionRanks, threadSectionId, withSectionPlace } from "./thread-section-order.mjs";
 import { trebellHome } from "./paths.mjs";
+import { userResponseTimeout } from "./user-response-timeout.mjs";
 import { dirname, join } from "node:path";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
@@ -2361,8 +2362,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         serverRequest(method,params,owner=params?.threadId,signal=null,{runless=false}={}){
           const id=`agent-${nextServerId++}`,holder=openContext(context);
           return new Promise((resolve,reject)=>{
-            // One left unanswered this long is refused to the harness and taken off the screen, where it could no longer be answered.
-            const timer=setTimeout(()=>{const pending=pendingServer.get(id);pendingServer.delete(id);reject(new Error(`${method} user response timed out`));if(isOpen(pending?.holder))pending.holder.ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:pending.threadId}}))},5*60_000);
+            // One left unanswered this long is refused to the harness and taken off the screen, where it could no longer be answered. The
+            // rejection says it is this time-out (USER_RESPONSE_TIMED_OUT), which a close's rejection of the waits it holds is not.
+            const timer=setTimeout(()=>{const pending=pendingServer.get(id);pendingServer.delete(id);reject(userResponseTimeout(method));if(isOpen(pending?.holder))pending.holder.ws.send(JSON.stringify({method:"serverRequest/resolved",params:{requestId:id,threadId:pending.threadId}}))},5*60_000);
             pendingServer.set(id,{resolve,reject,timer,method,params,threadId:owner?String(owner):null,holder,runless:Boolean(runless)});
             holder?.ws.send(JSON.stringify({id,method,params}));
             if(signal?.aborted)withdrawServerRequest(id);else signal?.addEventListener?.("abort",()=>withdrawServerRequest(id),{once:true});

@@ -49,7 +49,8 @@ test("an OpenCode 2 approval answered after a minute lets the turn go on, with n
 // question left unanswered does, it ends the turn saying so, rejected without a message, which stops OpenCode's run; a subagent's is
 // refused saying it was not answered, and the turn goes on.
 const UNANSWERED="OpenCode's shell request (npm run deploy) was not answered in time, so Trebell declined it and stopped the turn.";
-const timedOut=async()=>{throw new Error("item/tool/requestApproval user response timed out")};
+// The relay's wait running out, as its time-out says so (USER_RESPONSE_TIMED_OUT, user-response-timeout.mjs).
+const timedOut=async()=>{throw Object.assign(new Error("item/tool/requestApproval user response timed out"),{code:"USER_RESPONSE_TIMED_OUT"})};
 const deploy=(id,sessionID)=>({type:"permission.asked",data:{id,sessionID,action:"shell",resources:["npm run deploy"],save:[],metadata:{command:"npm run deploy"}}});
 
 test("an OpenCode 2 approval left unanswered until the window stops waiting for it is rejected without a message, which stops OpenCode's run, and the turn ends saying it was not answered in time",{timeout:30_000},async t=>{
@@ -89,4 +90,31 @@ test("a subagent's OpenCode 2 approval left unanswered is refused saying it was 
     await eventually(()=>state!=="running");
     assert.equal(state,"end_turn");
   }finally{await session.close()}
+});
+
+// Only the relay's own time-out leaves an approval unanswered. Quitting Trebell rejects the waits it still holds ("The relay closed")
+// before it closes the sessions one by one, so a session still open when that lands is closing, not left waiting: its turn ends stopped
+// as the session closes, as it did before, not failed saying the approval was not answered in time.
+test("an OpenCode 2 approval whose wait ends because Trebell closes is stopped with the turn, not refused as unanswered",{timeout:30_000},async t=>{
+  t.mock.timers.enable({apis:["setTimeout"]});
+  let close=null;const fake=fakeOpenCode2Client();
+  const session=new OpenCode2AgentSession({cwd:"/repo",serverUrl:"http://127.0.0.1:9",loadClient:fake.loadClient,onUpdate:()=>{},permissionMode:"supervised",
+    onPermission:()=>new Promise((_resolve,reject)=>{close=()=>reject(new Error("The relay closed"))})});
+  await along(t,session.start({}));
+  let closed=false;
+  try{
+    let state="running";const turn=session.prompt([{type:"text",text:"Deploy the docs site"}]);turn.then(result=>{state=result.stopReason},error=>{state=error.message});
+    await eventually(()=>fake.called("session.prompt").length===1);
+    fake.emit(deploy("per_3","ses_main"));
+    await eventually(()=>close);
+    close();
+    await eventually(()=>fake.called("permission.reply").length===1);
+    assert.deepEqual(fake.called("permission.reply"),[{sessionID:"ses_main",requestID:"per_3",decision:"reject"}],"OpenCode's stop, as the closing session's");
+    assert.equal(fake.called("session.synthetic").length,0,"the model is not told the person declined it");
+    for(let index=0;index<20;index++)await flush();
+    assert.equal(state,"running","nothing ends the turn as unanswered");
+    closed=true;await session.close();
+    await eventually(()=>state!=="running");
+    assert.equal(state,"cancelled","the turn ends stopped as its session closes");
+  }finally{if(!closed)await session.close()}
 });

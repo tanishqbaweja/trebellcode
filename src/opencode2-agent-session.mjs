@@ -7,6 +7,7 @@ import { HarnessSessionLostError } from "./harness-session-lost.mjs";
 import { normalizePermissionKind, normalizePermissionMode } from "./permission-policy.mjs";
 import { PROMPT_IMAGE_PATH, textExtractedTo } from "./prompt-attachments.mjs";
 import { runtimeInstructions } from "./runtime-instructions.mjs";
+import { isUserResponseTimeout } from "./user-response-timeout.mjs";
 
 const STOPPED=Symbol("opencode2-stopped");
 // OpenCode 2.x's client loads with the first OpenCode 2.x session, before it starts its server, not with the server (budget B25).
@@ -426,8 +427,9 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(disposition==="ask"&&this.onPermission){
       const options=[{optionId:"once",name:"Allow once",kind:"allow_once"},...(Array.isArray(data?.save)&&data.save.length?[{optionId:"always",name:"Allow session",kind:"allow_always"}]:[]),{optionId:"reject",name:"Reject",kind:"reject_once"}];
       const toolCall={title:permissionTitle(data),toolCallId:String(data?.id||""),rawInput:{...(data?.metadata||{}),resources:Array.isArray(data?.resources)?data.resources:[]},kind:normalizePermissionKind(kind)};
-      // One the window stopped waiting for (left unanswered until the relay's wait ran out) got no answer of the person's.
-      decision=await Promise.resolve().then(()=>this.onPermission({method:"permission",params:{toolCall,permissionType:kind,options}})).then(value=>value||"decline",()=>"unanswered");
+      // One the window stopped waiting for (left unanswered until the relay's wait ran out) got no answer of the person's. A wait that
+      // ended otherwise (Trebell closing) is stopped, as the session's close stops the run.
+      decision=await Promise.resolve().then(()=>this.onPermission({method:"permission",params:{toolCall,permissionType:kind,options}})).then(value=>value||"decline",error=>isUserResponseTimeout(error)?"unanswered":"cancel");
     }
     if(decision==="acceptForSession"&&String(data.sessionID)===this.sessionId){
       const resources=(Array.isArray(data?.save)&&data.save.length?data.save:data?.resources)||[];
@@ -635,8 +637,10 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
       if(!(await this.#cancelForm(form)))await Promise.resolve(this.client?.session?.interrupt?.({sessionID})).catch(()=>{});
       turn.settle?.();return;
     }
-    let answers=null;
-    if(typeof this.onQuestion==="function")answers=await untilAborted(Promise.resolve().then(()=>this.onQuestion({toolName:"question",input:{questions:mapped.questions},signal:pending.controller.signal})),pending.controller.signal).catch(()=>null);
+    // unanswered: no answer came in time (the relay's wait ran out), or there is no one to ask. A wait that ended otherwise (Trebell
+    // closing) is no answer either, nor one left unanswered: the question is cancelled as the session's close stops the run.
+    let answers=null,unanswered=typeof this.onQuestion!=="function";
+    if(!unanswered)answers=await untilAborted(Promise.resolve().then(()=>this.onQuestion({toolName:"question",input:{questions:mapped.questions},signal:pending.controller.signal})),pending.controller.signal).catch(error=>{unanswered=isUserResponseTimeout(error);return null});
     // Settled elsewhere, or the session closed: there is nothing to send.
     if(pending.controller.signal.aborted||this.closed)return;
     pending.answering=true;
@@ -646,7 +650,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(!Object.keys(answer).length){
       // The cancel stops the asking session's run: this session's turn ends with the reason, set before OpenCode says the run stopped.
       // A subagent's question ends the subagent's run only, and the turn goes on as OpenCode goes on.
-      const ends=own&&turn&&!turn.done&&!turn.cancelled&&!turn.stopError;
+      const ends=own&&turn&&!turn.done&&!turn.cancelled&&!turn.stopError&&Boolean(answers||unanswered);
       if(ends)turn.stopError=new Error(answers?FORM_UNANSWERED.dismissed:FORM_UNANSWERED.unanswered);
       if(!(await this.#cancelForm(form))&&own)await Promise.resolve(this.client?.session?.interrupt?.({sessionID})).catch(()=>{});
       if(ends)turn.settle?.();
