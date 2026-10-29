@@ -629,11 +629,10 @@ export class AgentRuntimeManager{
     return {ran};
   }
   // Signs a Codex profile's home of Trebell's own for an API key out (`codex logout`), so no copy of a key stays there once the
-  // profile is set back to Sign in or the OpenAI key is removed from Trebell; the next start on an API key signs in again. Only a
-  // home that is there; a Codex that cannot run leaves it as it is (best effort, never thrown).
-  // A Codex that could not run (its binary gone) leaves its sign-in file there: that copy of the key goes all the same, unread (the
-  // home is Trebell's own, and only Trebell's `codex login --with-api-key` writes it). home: another home of Trebell's own for a key,
-  // a removed profile's (codexApiKeyLogoutAll).
+  // profile is set back to Sign in or removed, or the OpenAI key is removed from Trebell; the next start on an API key signs in again.
+  // Only a home that is there, best effort, never thrown: a Codex that could not run (its binary gone) would leave its sign-in file
+  // there, so that copy of the key goes all the same, unread (the home is Trebell's own, and only Trebell's `codex login
+  // --with-api-key` writes it). home: another home of Trebell's own for a key, a removed profile's (codexApiKeyLogoutAll).
   async codexApiKeyLogout(instance,{command=this.executable(instance),home=codexApiKeyHome(this.env,instance)}={}){
     if(instance?.kind!=="codex")return {ran:false};
     if(!existsSync(home))return {ran:false};
@@ -655,7 +654,7 @@ export class AgentRuntimeManager{
   }
   // Why a profile set to an API key cannot run in a WSL or SSH environment (environmentId), or null: Trebell sends no saved key to a
   // host (it would show in the host's process list), and a key the host's shell holds never stands in for it, so there the harness
-  // signs in with its own login.
+  // is refused until the person sets it to Sign in, which runs it on its own login there.
   remoteKeyRefusal(instance,environmentId=undefined){
     if(harnessAuthMethod(instance)!==HARNESS_API_KEY||!this.processSpawner(instance,environmentId))return null;
     return harnessRemoteKeyMessage(RUNTIMES[instance.kind]?.name||instance.kind,instance.kind);
@@ -678,8 +677,8 @@ export class AgentRuntimeManager{
     if(kind==="muse"&&env.MUSE_NO_AUTO_UPDATE==null)env.MUSE_NO_AUTO_UPDATE="1";
     // Antigravity runs in Trebell's home for it, with no Google credential of anyone else's, and the Gemini key only on an API key.
     if(kind==="antigravity")return antigravityEnvironment(env,{home:antigravityHome(this.env),apiKey:keys.GEMINI_API_KEY||null});
-    // OpenCode on its API keys reads an empty set of stored sign-ins in place of the logins `opencode auth login` keeps in its data
-    // home (OPENCODE_AUTH_CONTENT, read in place of that auth.json), so only the keys the person chose serve it.
+    // OpenCode on its API keys starts with an empty set of stored sign-ins (OPENCODE_AUTH_CONTENT, which it reads in place of the
+    // logins `opencode auth login` keeps in its data home), so only the keys the person chose serve it. Trebell never reads that file.
     if(kind==="opencode"&&key&&harnessAuthMethod(instance)===HARNESS_API_KEY)return {...env,...keys,OPENCODE_AUTH_CONTENT:"{}"};
     return {...env,...keys};
   }
