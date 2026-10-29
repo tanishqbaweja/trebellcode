@@ -144,12 +144,25 @@ test("a key saved in Trebell Code is removed on a harness's row, from the store 
       await page.screenshot({animations:"disabled",path:shots+`claude-api-key-remove-${mode}-1280.png`});
     }
     await switchMode(page,"dark");
-    // At a phone's width the field and both buttons wrap inside the row, nothing cut off.
-    await page.setViewportSize({width:390,height:844});await remove.scrollIntoViewIfNeeded();
-    await expect(remove).toBeVisible();
-    expect(await panel.evaluate(node=>node.scrollWidth<=node.clientWidth+1),"the row's key panel fits its width").toBe(true);
-    await page.screenshot({animations:"disabled",path:shots+"claude-api-key-remove-dark-390.png"});
-    await page.setViewportSize({width:1280,height:900});
+    // At a phone's width the field and both buttons wrap inside the row, nothing cut off; and every row with the choice keeps its
+    // name whole and its status readable beside an Install, Update or Switch: its first button takes the line, its buttons the next
+    // (the rule that shrinks that button first on a wide row left its name and status about 30 px wide, a word to a line).
+    for(const mode of ["dark","light"]){
+      await page.setViewportSize({width:1280,height:900});await switchMode(page,mode);
+      await page.setViewportSize({width:390,height:844});await remove.scrollIntoViewIfNeeded();
+      await expect(remove).toBeVisible();
+      expect(await panel.evaluate(node=>node.scrollWidth<=node.clientWidth+1),"the row's key panel fits its width").toBe(true);
+      for(const name of WITH_CHOICE){
+        const head=await harnessRow(page,name).locator("button").first().evaluate(node=>{const title=node.querySelector("strong"),said=node.querySelector("small");
+          return {clipped:title.scrollWidth>title.clientWidth+1,said:said?Math.round(said.getBoundingClientRect().width):null,row:Math.round(node.parentElement.getBoundingClientRect().width),head:Math.round(node.getBoundingClientRect().width)}});
+        expect(head.clipped,name+"'s name is whole at 390 px: "+JSON.stringify(head)).toBe(false);
+        expect(head.said,name+"'s status is readable at 390 px: "+JSON.stringify(head)).toBeGreaterThan(100);
+      }
+      await page.screenshot({animations:"disabled",path:shots+`claude-api-key-remove-${mode}-390.png`});
+      await harnessRow(page,"OpenCode").scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`opencode-api-keys-${mode}-390.png`});
+    }
+    await page.setViewportSize({width:1280,height:900});await switchMode(page,"dark");
     await remove.click();
     await expect(page.getByTestId("agent-runtime-message")).toContainText("API key removed.");
     await expect(panel).toContainText("Uses the Anthropic API key: none saved yet.");

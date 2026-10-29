@@ -385,7 +385,9 @@
 @container tbsettings (max-width:620px){
   :root:root .settings-page.redesigned-settings .settings-card{padding:16px!important}
   :root:root .settings-page.redesigned-settings .agent-runtime-option{flex-wrap:wrap;row-gap:0}
-  :root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child{flex-basis:100%}
+  /* A row with the sign-in choice too: its first button takes the line, its buttons the next, as on every other row (the wide
+     rule that shrinks that button first left its name and status about 30 px at a phone's width). */
+  :root:root .settings-page.redesigned-settings .agent-runtime-option>button:first-child,:root:root .settings-page.redesigned-settings .agent-runtime-option:has(>.harness-auth)>button:first-child{flex-basis:100%}
   :root:root .settings-page.redesigned-settings .agent-runtime-option>button:nth-child(2){margin-left:41px}
   :root:root .settings-page.redesigned-settings .agent-runtime-option>button:not(:first-child){margin-bottom:10px}
   :root:root .settings-page.redesigned-settings .runtime-profile-row{flex-wrap:wrap}
