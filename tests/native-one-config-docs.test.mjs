@@ -47,3 +47,10 @@ test("the overview and the benchmark page say the long context on gpt-6-luna res
   assert.match(overview,/what every readout ran without a fresh comparison/);
   assert.match(benchmarks,/the long context on `gpt-6-luna`[^.]*rest on the readouts/);
 });
+
+test("the overview and the benchmark page say Native's developer text has no web-research sentence",async()=>{
+  const [overview,benchmarks,readme]=await Promise.all(["docs/technical/TECHNICAL_OVERVIEW.md","BENCHMARKS.md","README.md"].map(read));
+  assert.match(overviewRow(overview,"Developer text"),/no web-research sentence/);
+  assert.match(benchmarks,/the app's developer text without its web-research sentence/);
+  for(const doc of [overview,benchmarks,readme])assert.doesNotMatch(doc,/Web research is available/);
+});

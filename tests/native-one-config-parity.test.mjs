@@ -100,10 +100,10 @@ async function appSide({repo,home,task,settings={}}){
   const rpc=rpcClient(ws),before=prompted.length;
   try{
     // createThreadFor: the tools the first message selects where the window has them (a project, Native's capabilities, no desktop
-    // bridge in this process), and the developer text.
+    // bridge in this process), and the developer text (Native's: webResearch is agentRuntime!=="native").
     const availability={browser:false,computer:false,sourceControl:true,delegation:true};
     const specialized=specializedToolSelection(task,availability);
-    const started=await rpc.request("thread/start",{model:MODEL,modelProvider:"openai",cwd:repo,projectless:false,agent:null,approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code",dynamicTools:sharedDynamicToolNamespaces(specialized),developerInstructions:trebellDeveloperInstructions({projectless:false,dynamicTools:true,browser:specialized.browser,delegation:specialized.delegation})});
+    const started=await rpc.request("thread/start",{model:MODEL,modelProvider:"openai",cwd:repo,projectless:false,agent:null,approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code",dynamicTools:sharedDynamicToolNamespaces(specialized),developerInstructions:trebellDeveloperInstructions({projectless:false,dynamicTools:true,browser:specialized.browser,delegation:specialized.delegation,webResearch:false})});
     const threadId=started.thread.id;
     // The send: the window's file checkpoint before turn/start (linked to the turn only after it answers), the context packet as
     // /api/context/packet projects it and the window projects it again, the effort and tier the composer sends.
@@ -207,7 +207,9 @@ for(const [name,task] of [["a plain coding task",PLAIN_TASK],["a task naming a c
     assert.equal(namespaces.includes("trebell_source_control"),task===SOURCE_CONTROL_TASK,"source control as the message selects it");
     for(const containerOnly of ["trebell_browser","trebell_computer","trebell_delegate"])assert.equal(namespaces.includes(containerOnly),false);
     assert.deepEqual(appCapture.initialMessages.map(message=>message.role),["system","developer"]);
-    assert.equal(appCapture.initialMessages[1].content,trebellDeveloperInstructions({}));
+    // Native's developer text: the repository-lookup sentence, with no web-research sentence (dropped for the app and the runner on
+    // 2026-10-29; other harnesses' threads keep it).
+    assert.equal(appCapture.initialMessages[1].content,"Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.");
     assert.doesNotMatch(JSON.stringify(appCapture.userMessage),/trebell\.continuity|Artifacts created/,"no continuity block restating the pre-turn checkpoint");
     assert.match(JSON.stringify(appCapture.userMessage),/trebell\.repo_evidence/);
     // Container-only: the app shows drafts and the runner does not, and the wire is the same (above).
