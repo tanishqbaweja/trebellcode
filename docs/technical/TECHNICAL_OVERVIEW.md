@@ -107,7 +107,10 @@ harness starts for it, no chat, Git text, sign-in check (`claude auth status`), 
 OpenCode's catalog server) or usage read (Claude Code's capability probe), each of which would run on the person's own login. A key saved or removed, or a
 profile's method changed, closes the chats of the profiles concerned only, and stops their Codex app-servers whether a profile is the
 active one or not (only theirs: the active one's catalog starts again, and another Codex profile's threads go on), since each process
-keeps the sign-in or key it started with. What Trebell keeps of a harness's own answers is kept per sign-in (the method, and on a
+keeps the sign-in or key it started with; a profile removed closes its own open chats and stops its Codex app-servers the same way,
+so none goes on with a key removed after it. A key saved or removed on a harness's row is Native's key for that provider too: with
+Trebell Native active on it, Native's readiness and model list follow at once, as after the Model provider card. What Trebell keeps
+of a harness's own answers is kept per sign-in (the method, and on a
 key a fingerprint of it): OpenCode's catalog, an ACP harness's model list, Antigravity's list its sessions report and Claude Code's
 capability probe (its models, account and plan usage) are read again after a switch or a new key, never served from the other.
 Cursor signs in only. No key reaches a harness any
