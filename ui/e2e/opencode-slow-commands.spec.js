@@ -21,12 +21,12 @@ const json=(route,value)=>route.fulfill({status:200,contentType:"application/jso
 const MODEL="opencode/big-pickle",ANSWER="Hello. The commands can come later.";
 
 // The app on the real agent relay with an OpenCode profile and its thread "Lint pass", whose session runs against the stand-in
-// (fakeOptions go to it). models answers the page's model list.
-async function openCodeWindow(page,{fakeOptions={},models}){
+// (fakeOptions go to it). models answers the page's model list. threadAgent: the OpenCode agent the thread was last sent with.
+async function openCodeWindow(page,{fakeOptions={},models,threadAgent=null}){
   const root=await mkdtemp(join(tmpdir(),"trebell-opencode-slow-commands-"));await writeFakeOpenCode2Serve(root);
   const fake=await startFakeOpenCode2(fakeOptions);
   const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:join(root,"home")});
-  const seed=threadStore.create({runtime:"opencode",cwd:root,providerSessionId:"",model:MODEL,name:"Lint pass"});
+  const seed=threadStore.create({runtime:"opencode",cwd:root,providerSessionId:"",model:MODEL,agent:threadAgent,name:"Lint pass"});
   const instance={id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true};
   const runtimeManager={
     activeRuntime:()=>"opencode",activeInstance:()=>instance,instances:()=>[instance],compatibleInstanceIds:()=>[instance.id],
@@ -109,8 +109,10 @@ test("an OpenCode thread answers while OpenCode's command list is still coming, 
 // A new chat offers what OpenCode's own catalog lists before any thread exists: the window's model list carries OpenCode's commands
 // and primary agents. The list is answered as gui-server.mjs answers it, from the server's own runtime manager reading the OpenCode 2
 // profile's server (tests/fixtures/fake-opencode-catalog-servers.mjs), with only OpenCode's --version stood in for. A freshly opened
-// window offers them on New task, and so does a new chat started after a thread.
-test("a new chat in a freshly opened window offers OpenCode's own commands and agents from its catalog, and so does one started after a thread",async({page})=>{
+// window offers them on New task, and so does a new chat started after a thread. Repair of round 13's fix: so does a thread opened
+// while the window's first model list is still on its way (reading the catalog starts `opencode serve`, which can take seconds), once
+// the list lands: its open had merged no catalog, and the list's landing filled only the menus of a new chat.
+test("a new chat in a freshly opened window offers OpenCode's own commands and agents from its catalog, and so does one started after a thread, and a thread opened before the catalog came",async({page})=>{
   test.setTimeout(90_000);
   const home=await mkdtemp(join(tmpdir(),"trebell-opencode-catalog-menus-")),empty=join(home,"empty-path");mkdirSync(empty,{recursive:true});
   const catalog=await fakeOpenCode2Catalog({models:()=>openCodeModels(4),routes:{
@@ -121,22 +123,25 @@ test("a new chat in a freshly opened window offers OpenCode's own commands and a
   const runFn=async(command,args)=>command===instance.binaryPath&&args[0]==="--version"?{ok:true,code:0,error:null,stdout:"2.0.24\n",stderr:""}:{ok:false,code:null,error:`spawn ${command} ENOENT`,stdout:"",stderr:""};
   const fetchImpl=async()=>new Response(JSON.stringify({message:"offline"}),{status:404,headers:{"content-type":"application/json"}});
   const manager=new AgentRuntimeManager({state:{settings:()=>({agentRuntime:"opencode",agentRuntimeInstanceId:instance.id,agentRuntimeInstances:[instance],activeEnvironmentId:null})},platform:"linux",env:{PATH:empty,HOME:home,USERPROFILE:home,TREBELL_HOME:join(home,"trebell"),TEMP:home,TMP:home},runFn,fetchImpl});
-  let app=null;
+  // held: the page's model list waits for it while it is set (the catalog still on its way), until release().
+  let app=null,held=null,release=()=>{};
   try{
-    // The model list as gui-server's selectedModelsPayload answers it for an OpenCode window.
-    app=await openCodeWindow(page,{models:async route=>{
+    // The model list as gui-server's selectedModelsPayload answers it for an OpenCode window. The thread was last sent with OpenCode's
+    // build agent.
+    app=await openCodeWindow(page,{threadAgent:"build",models:async route=>{
+      if(held)await held;
       const result=await manager.models(manager.activeInstance());
       await json(route,{agentRuntime:"opencode",ready:true,models:result.models||[],defaultModel:result.preferred||null,metadata:{provider:"opencode",agentRuntime:"opencode",source:result.source,models:result.metadata||[]},error:result.error||null,...(result.inventory?{inventory:result.inventory}:{})});
     }});
     const composer=page.getByTestId("composer"),menu=page.locator(".composer-wrap .slash-menu"),agents=page.locator(".agent-picker");
     const command=menu.locator("button").filter({has:page.locator("strong",{hasText:/^\/lint-fix$/})});
-    const offered=async()=>{
+    const offered=async(where="New task")=>{
       await composer.click();await page.keyboard.type("/");
-      await expect(command,"New task's / menu offers OpenCode's /lint-fix from its catalog").toBeVisible();
+      await expect(command,`${where}'s / menu offers OpenCode's /lint-fix from its catalog`).toBeVisible();
       await page.keyboard.type("lint");
       await expect(menu.locator("strong")).toHaveText(["/lint-fix"]);
       await expect(command.locator("span")).toHaveText("Fix the lint errors in the changed files");
-      await expect(agents,"New task offers OpenCode's agents beside the model picker").toBeVisible();
+      await expect(agents,`${where} offers OpenCode's agents beside the model picker`).toBeVisible();
       await expect(agents.locator("option")).toHaveText(["Default agent","build · primary","plan · primary"]);
     };
     await page.goto("/");
@@ -155,14 +160,37 @@ test("a new chat in a freshly opened window offers OpenCode's own commands and a
     // The keyboard picks the command, and the picker an agent, for the new chat's first message.
     await page.keyboard.press("Enter");await expect(composer).toHaveValue("/lint-fix ");
     await agents.selectOption("plan");await expect(agents).toHaveValue("plan");
-    // The person opens the thread, then starts a new chat again: OpenCode's catalog fills its menus again.
+    // The person opens the thread, its own agent picked, then starts a new chat again: OpenCode's catalog fills its menus again.
     await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
     const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Lint pass"]')});
     await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);await expect(composer).toBeEnabled();
+    await expect(agents,"the thread's own agent").toHaveValue("build");
     await page.getByRole("button",{name:"New task",exact:true}).click();await expect(row).not.toHaveClass(/active/);
     await expect(composer).toHaveValue("");await expect(agents).toHaveValue("");
     await offered();
+    // The window opened again, and the thread opened from the sidebar while its model list is still on its way: once the list lands,
+    // the thread's / menu and agent picker offer OpenCode's own (its session has listed none of its own yet), its own agent picked, as
+    // when it is opened after the list. The thread's saved file checkpoints come a moment late, so its open says it is opening, and the
+    // list is let through once the thread has opened.
+    await composer.click();await page.keyboard.press("Control+A");await page.keyboard.press("Backspace");await expect(composer).toHaveValue("");
+    held=new Promise(resolve=>{release=resolve});
+    let slowOpen=true;await page.route(/\/api\/checkpoints\?threadId=/,async route=>{if(slowOpen)await new Promise(resolve=>setTimeout(resolve,1500));return route.continue()});
+    await page.reload();
+    const picker=page.getByTestId("model-picker"),opening=page.getByTestId("thread-opening");
+    await expect(picker).toContainText("Loading models",{timeout:20_000});
+    await row.locator(".thread-main").click();
+    await expect(opening,"the thread opening").toBeVisible();await expect(opening,"the thread opened").toHaveCount(0,{timeout:20_000});slowOpen=false;
+    await expect(row).toHaveClass(/active/);await expect(page.locator(".workspace-header")).toContainText("Lint pass");
+    await expect(picker,"the window's model list still on its way once the thread has opened").toContainText("Loading models");
+    release();held=null;
+    await expect(picker).not.toContainText("Loading models",{timeout:20_000});await expect(composer).toBeEnabled();
+    await offered("The thread opened before the catalog came");
+    await expect(agents,"the thread's own agent, as when it is opened after the catalog").toHaveValue("build");
+    await expect(command).toBeInViewport();await expect(agents).toBeInViewport();
+    await page.screenshot({animations:"disabled",path:`${auditDir}opencode-thread-opened-before-catalog-menus-${await page.evaluate(()=>document.documentElement.dataset.mode)}-1280x800.png`});
+    await page.keyboard.press("Enter");await expect(composer).toHaveValue("/lint-fix ");
   }finally{
+    held=null;release();
     await app?.close();await catalog.close();
     await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100});
   }

@@ -1432,6 +1432,8 @@ export default function App(){
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
+  // Whether the agent picker lists any agent (applyProviderInventory): with none listed it is not shown, so no agent was picked.
+  const providerAgentsListedRef=useRef(false);
   // Counts the new tasks and general chats shown (showNewTask): each comes up on its welcome at its top.
   const [newTaskView,setNewTaskView]=useState(0);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyHoldRef=useRef(0);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const conversationEndTopRef=useRef(0);const shownWelcomeRef=useRef(null);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
@@ -2089,10 +2091,17 @@ export default function App(){
     setModelError(d?.error||"");
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
     // A new chat shows the harness's own menus, whole: what the new harness does not list (another harness's commands, agents
-    // or skills) is cleared. Codex lists its skills itself (skills/list).
-    const inventory=d?.inventory&&typeof d.inventory==="object"?d.inventory:null,previousInventory=runtimeInventoryRef.current;
+    // or skills) is cleared. Codex lists its skills itself (skills/list). A thread open as a catalog with the harness's lists lands
+    // gets them too, under what its session listed, as its open merges them, and its own agent back if no agent was listed to keep it
+    // (its open cleared it): one opened while the window's first catalog was still on its way had merged none, and its / menu and
+    // agent picker lacked the harness's own until the next open. A catalog without lists leaves an open thread's menus as they are.
+    const inventory=d?.inventory&&typeof d.inventory==="object"?d.inventory:null,previousInventory=runtimeInventoryRef.current,thread=activeThreadRef.current;
     runtimeInventoryRef.current=inventory;
-    if(!activeThreadRef.current&&(inventory||previousInventory))applyProviderInventory(harnessInventory(inventory,null,{withSkills:d?.agentRuntime!=="codex"}));
+    if(!thread){if(inventory||previousInventory)applyProviderInventory(harnessInventory(inventory,null,{withSkills:d?.agentRuntime!=="codex"}))}
+    else if(inventory&&(d?.agentRuntime||agentRuntimeRef.current)!=="codex"){
+      if(!providerAgentsListedRef.current&&thread.agent)setProviderAgent(thread.agent);
+      applyProviderInventory(harnessInventory(inventory,thread.providerMeta));
+    }
     const next=ids.includes(preferred)?preferred:(ids.includes(d?.defaultModel)?d.defaultModel:(ids[0]||""));
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
     return next;
@@ -2760,7 +2769,7 @@ export default function App(){
     if(Array.isArray(update.skills)){skillsPathRef.current=undefined;setSkills(update.skills.filter(skill=>skill?.enabled!==false));setSkillsLoad({status:"loaded",error:null})}
     if(Array.isArray(update.agents)){
       const visible=update.agents.filter(agent=>typeof agent==="string"||agent?.hidden!==true).filter(agent=>typeof agent==="string"?agent:Boolean(agent?.name));
-      setProviderAgents(visible);
+      setProviderAgents(visible);providerAgentsListedRef.current=visible.length>0;
       setProviderAgent(current=>current&&visible.some(agent=>(typeof agent==="string"?agent:agent.name)===current)?current:"");
     }
   }
@@ -3770,7 +3779,7 @@ export default function App(){
   // A new task asked for from the new task (on it, or back from a page opened from it) keeps its unsent draft with the agent and the
   // collaboration mode chosen for it, and a send still on its way in the thread left goes on there without holding the new task's
   // composer (send).
-  function showNewTask(){const leftNewTask=!activeThreadRef.current;rememberConversationPosition();setComposerAlert(null);releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;shownWelcomeRef.current=null;setNewTaskView(view=>view+1);setSection("chat");setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setQueueEditDraft(null);if(!leftNewTask){submittingRef.current=null;setSubmitting(false);setPrompt("");setAttachments([]);setContextChips([]);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default")}setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
+  function showNewTask(){const leftNewTask=!activeThreadRef.current;rememberConversationPosition();setComposerAlert(null);releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;shownWelcomeRef.current=null;setNewTaskView(view=>view+1);setSection("chat");setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setQueueEditDraft(null);if(!leftNewTask){submittingRef.current=null;setSubmitting(false);setPrompt("");setAttachments([]);setContextChips([]);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default")}setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);providerAgentsListedRef.current=false;if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
