@@ -37,7 +37,7 @@ test("before a Muse Code turn reports its windows the Usage card says none came 
 });
 
 test("the sessions' last usage/changed becomes a 5-hour row with the length Muse reports and a Weekly row, with their resets, the percentages held to 0-100 and the time it was observed",async()=>{
-  const fx=museManager();fx.store.report=report({window:{usedPercent:103}});
+  const fx=museManager();fx.store.report=report({window:{usedPercent:104}});
   assert.deepEqual(await fx.limits(),{checkedAt:new Date(fx.clock.now).toISOString(),observedAt:OBSERVED,windows:[
     {id:"window",kind:"session",label:"5-hour",windowDurationMins:300,usedPercent:100,resetsAt:WINDOW_RESET},
     {id:"weekly",kind:"weekly",label:"Weekly",windowDurationMins:10_080,usedPercent:8,resetsAt:WEEKLY_RESET},
@@ -51,7 +51,7 @@ test("the sessions' last usage/changed becomes a 5-hour row with the length Muse
 });
 
 test("a window whose reset has passed since the report is left out, and with both past the card says they have reset",async()=>{
-  const fx=museManager();fx.store.report=report({window:{usedPercent:103}});
+  const fx=museManager();fx.store.report=report({window:{usedPercent:104}});
   fx.clock.now=REPORT.window.resetsAtMs;
   assert.deepEqual((await fx.limits()).windows.map(row=>row.label),["Weekly"]);
   fx.clock.now=REPORT.weekly.resetsAtMs+1;

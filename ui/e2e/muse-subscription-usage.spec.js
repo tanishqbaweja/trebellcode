@@ -7,7 +7,7 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 // read is answered as gui-server.mjs answers /api/agent-runtime-usage, by a runtime manager of the test's own: what it shows is the
 // last usage/changed Muse Code's sessions keep for the account (read through museUsageReport, which a stand-in for that store answers
 // here), in the shape of Muse 1.4's usage/changed report. Before any
-// report the card says none came yet; then a 5-hour row (the length Muse reports) and a Weekly row, a window Meta reports at 103%
+// report the card says none came yet; then a 5-hour row (the length Muse reports) and a Weekly row, a window Meta reports at 106%
 // held at 100% used, with their resets and the time the report was observed; a later report shows at the next Refresh.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/muse-usage/",import.meta.url));mkdirSync(shots,{recursive:true});
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
@@ -57,9 +57,9 @@ test("a Muse Code window's Usage card says no windows came before a turn reports
   // Muse's windows are never read live, so with no report its head names only the environment.
   await expect(rows).toHaveCount(0);await expect(head).toHaveText(/^[^·]+$/);await expect(head).not.toContainText("live");
   await shoot(page,card,"not-observed");
-  // A Muse Code turn reports them (usage/changed, which its session keeps): Meta's 103% for the 5-hour window, 41% for the week.
+  // A Muse Code turn reports them (usage/changed, which its session keeps): Meta's 106% for the 5-hour window, 41% for the week.
   const now=Date.now(),observedAtMs=now-2*60_000,windowReset=now+3*3_600_000,weeklyReset=now+4*86_400_000;
-  manager.museUsageReport=()=>({observedAtMs,tier:"tier-1",window:{usedPercent:103,windowDurationMins:300,resetsAtMs:windowReset},weekly:{usedPercent:41,resetsAtMs:weeklyReset}});
+  manager.museUsageReport=()=>({observedAtMs,tier:"tier-1",window:{usedPercent:106,windowDurationMins:300,resetsAtMs:windowReset},weekly:{usedPercent:41,resetsAtMs:weeklyReset}});
   await refresh.click();await expect(refresh).toHaveText("Refresh");
   const local=ms=>page.evaluate(value=>new Date(value).toLocaleString(),ms);
   await expect(rows).toHaveCount(2);

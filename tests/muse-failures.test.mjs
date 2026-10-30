@@ -44,10 +44,10 @@ test("Meta's quota refusal is a usage limit, and no other failure is",()=>{
 });
 
 test("a usage limit lifts once every used-up window has reset, at the reset a refusal names or types when no report has one, and has no reset otherwise",()=>{
-  const sessionOut={...USAGE,window:{...USAGE.window,usedPercent:103}};
-  assert.equal(resetAt(sessionOut,NOW),"2026-11-02T13:40:00.000Z");
-  const bothOut={...sessionOut,weekly:{...USAGE.weekly,usedPercent:100}};
-  assert.equal(resetAt(bothOut,NOW),"2026-11-09T00:00:00.000Z","with both windows out, the later reset wins");
+  const windowUsedUp={...USAGE,window:{...USAGE.window,usedPercent:104}};
+  assert.equal(resetAt(windowUsedUp,NOW),"2026-11-02T13:40:00.000Z");
+  const bothUsedUp={...windowUsedUp,weekly:{...USAGE.weekly,usedPercent:100}};
+  assert.equal(resetAt(bothUsedUp,NOW),"2026-11-09T00:00:00.000Z","with both windows out, the later reset wins");
   assert.equal(resetAt(undefined,NOW,{message:REAL_REFUSAL}),"2026-11-03T06:30:00.000Z","the refusal is limited until the time it names");
   const quota={resetsAtMs:USAGE.window.resetsAtMs};
   assert.equal(resetAt(USAGE,NOW,{quota}),"2026-11-02T13:40:00.000Z");
@@ -61,7 +61,7 @@ test("a usage limit lifts once every used-up window has reset, at the reset a re
 test("a turn the quota stopped says the Muse Code usage limit was reached and when it resets, the later of two used-up windows, with Muse's own words kept; a plain 429 stays Muse's own failure",async()=>{
   const fixture=await startSession();
   const hours=hours=>Date.now()+hours*3_600_000,windowReset=hours(2),weekReset=hours(50);
-  fixture.muse.notify("usage/changed",{observedAtMs:Date.now(),tier:"tier-1",window:{usedPercent:103,windowDurationMins:300,resetsAtMs:windowReset},weekly:{usedPercent:100,resetsAtMs:weekReset}});
+  fixture.muse.notify("usage/changed",{observedAtMs:Date.now(),tier:"tier-1",window:{usedPercent:104,windowDurationMins:300,resetsAtMs:windowReset},weekly:{usedPercent:100,resetsAtMs:weekReset}});
   let turn=await runningTurn(fixture);
   complete(fixture,turn.turnId,"failed",{reason:QUOTA_MESSAGE,error:{kind:"modelError",message:QUOTA_MESSAGE,retryable:false}});
   let error=await failure(turn.running);
@@ -94,7 +94,7 @@ test("a turn the quota stopped says the Muse Code usage limit was reached and wh
 test("a usage report Trebell cannot read is skipped with a log line and the session goes on, and the limit then knows no reset",async()=>{
   const fixture=await startSession();
   fixture.muse.notify("usage/changed",{window:"not usage"});
-  fixture.muse.notify("usage/changed",{observedAtMs:Date.now(),tier:"tier-1",window:{usedPercent:103,windowDurationMins:300,resetsAtMs:1e16},weekly:{usedPercent:5,resetsAtMs:Date.now()+3_600_000}});
+  fixture.muse.notify("usage/changed",{observedAtMs:Date.now(),tier:"tier-1",window:{usedPercent:104,windowDurationMins:300,resetsAtMs:1e16},weekly:{usedPercent:5,resetsAtMs:Date.now()+3_600_000}});
   const turn=await runningTurn(fixture);
   complete(fixture,turn.turnId,"failed",{error:{kind:"modelError",message:QUOTA_MESSAGE,retryable:false}});
   const error=await failure(turn.running);
