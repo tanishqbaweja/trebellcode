@@ -40,7 +40,7 @@ export function grokUsageResponseToLimits(response,at=checkedAt()){
 
 export function openCodeUsageResponseToLimits(response,at=checkedAt()){
   const source=response?.usage;
-  if(!source||typeof source!=="object")return unavailable("probeFailed","OpenCode Go could not read usage.",at);
+  if(!source||typeof source!=="object")return unavailable("probeFailed","Trebell could not read OpenCode Go's usage.",at);
   const definitions=[
     ["rolling","go_rolling","session","Go · Session",5*60],
     ["weekly","go_weekly","weekly","Go · Weekly",7*24*60],
@@ -49,7 +49,7 @@ export function openCodeUsageResponseToLimits(response,at=checkedAt()){
   const windows=[];
   for(const [key,id,kind,label,windowDurationMins] of definitions){
     const usedPercent=clampPercent(source[key]?.percent);const resetsAt=resetIso(source[key]?.resetsAt);
-    if(usedPercent==null||!resetsAt)return unavailable("probeFailed","OpenCode Go could not read usage.",at);
+    if(usedPercent==null||!resetsAt)return unavailable("probeFailed","Trebell could not read OpenCode Go's usage.",at);
     windows.push({id,kind,label,usedPercent,resetsAt,...(windowDurationMins?{windowDurationMins}:{})});
   }
   return available(windows,at);

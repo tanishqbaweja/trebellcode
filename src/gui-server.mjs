@@ -1943,8 +1943,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       :"Use Conventional Commits for the commit subject. Prefer the narrowest accurate type and include a scope only when it is obvious from the diff.";
     if(style==="custom")return customInstructions?"Follow these source-control writing instructions exactly:\n"+customInstructions:"Use a clear, specific engineering style and avoid filler.";
     return kind==="review"
-      ?"Follow the repository's established pull request title and body style when examples are available."
-      :"Follow the repository's established commit message style when examples are available.";
+      ?"Match the title and body style of the repository's own pull requests, when it has any to go by."
+      :"Match the style of the repository's own recent commit messages, when it has any to go by.";
   }
   async function sourceControlWritingContext(cwd,environmentId,{includeRepositoryInstructions=false,includeReviewTemplate=false}={}){
     const subjects=includeRepositoryInstructions?await inSourceControlEnvironment(environmentId,()=>sourceControlRecentCommitSubjects(cwd,{limit:10})).catch(()=>[]):[];
