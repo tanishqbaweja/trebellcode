@@ -48,6 +48,16 @@ test("the overview and the benchmark page say the long context on gpt-6-luna res
   assert.match(benchmarks,/the long context on `gpt-6-luna`[^.]*rest on the readouts/);
 });
 
+test("the benchmark page and the rule's comment say the source-control rule selects 3 of 200 Terminal-Bench Pro tasks, all Git tasks",async()=>{
+  // Third review of native-one-config (2026-10-30): build-grpc-user-profile-service selected on a data store's "version control".
+  const [benchmarks,configuration,overview]=await Promise.all(["BENCHMARKS.md","src/native-configuration.mjs","docs/technical/TECHNICAL_OVERVIEW.md"].map(read));
+  assert.match(benchmarks,/1 of 89 Terminal-Bench 2\.0 tasks and 3 of 200 Terminal-Bench Pro tasks \(all Git tasks; "version control" counts only in Git's sense/);
+  assert.match(configuration,/23 of 300 SWE-bench Multilingual, 1 of 89 Terminal-Bench 2\.0 and 3 of 200 Terminal-Bench Pro tasks \(Git\s+\/\/ tasks\)/);
+  for(const doc of [benchmarks,configuration])assert.doesNotMatch(doc,/4 of 200/);
+  assert.doesNotMatch(configuration,/the words' other senses select nothing: a commit an issue cites, a database transaction's commit, branch prediction, an nginx upstream, push notifications\. /);
+  assert.match(overviewRow(overview,"Tools"),/nor a data store's version control/);
+});
+
 test("the overview and the benchmark page say the reasoning context rests on the readouts, not on fresh tasks",async()=>{
   // Third review of native-one-config (2026-10-30).
   const [overview,benchmarks]=await Promise.all(["docs/technical/TECHNICAL_OVERVIEW.md","BENCHMARKS.md"].map(read));

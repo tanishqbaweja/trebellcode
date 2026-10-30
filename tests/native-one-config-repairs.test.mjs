@@ -199,6 +199,38 @@ test("source-control tools follow Git work the message asks for, not a link or t
     "show me the last commit",
     "fix bug and push.",
     "New branch for this, please",
+    // The third review's (2026-10-30): an ask that ends a line but not the message, a comma or you, now, ok or just before the ask, and
+    // close variants.
+    "Fix the failing test and commit\nThanks!",
+    "Fix the bug and commit\nAlso update the docs",
+    "fix it then commit\n\nthanks",
+    "Fix the bug and push\nthen tell me the hash",
+    "Fix the failing test and commit\r\nThanks!",
+    "Looks good, commit it",
+    "LGTM, commit",
+    "ok, push",
+    "Fix the bug, commit",
+    "Can you commit this?",
+    "can you commit?",
+    "ok commit",
+    "Great, now commit",
+    "Now commit",
+    "Thanks! Now commit.",
+    "Looks good, push it.",
+    "just commit",
+    "commit, please",
+    "commit these",
+    "commit now",
+    "push now",
+    "push to my fork",
+    "push it to the fork",
+    "push to remote",
+    "link this to the PR",
+    "link it to the PR",
+    // Version control in Git's sense.
+    "Put the project under version control",
+    "which version control system is this?",
+    "Is this folder under source control?",
   ];
   // The review's examples, each of which the word rule selected, and the other senses of commit and merge.
   const not=[
@@ -220,6 +252,25 @@ test("source-control tools follow Git work the message asks for, not a link or t
     "The last commit of the transaction log must be durable.",
     "BEGIN;\nINSERT INTO t VALUES (1);\nCOMMIT;\nSELECT * FROM t;",
     "Sync with the upstream DNS server.",
+    // Version control in its other sense, a data store's (the third review, 2026-10-30: Terminal-Bench Pro's
+    // build-grpc-user-profile-service selected on its storage sentence, the first here).
+    "5. Data Storage: In-memory storage with version control and optimistic locking support",
+    "Add version control to the document model.",
+    "Implement a key-value store with version control and rollback.",
+    "Each record carries version control metadata (a version number and an updated-at time).",
+    // Close to the new asks, in other senses.
+    "You commit the offset after processing.",
+    "Each client must, on success, commit and release the lock.",
+    "Supports push now via websockets.",
+    "Link this to the parent record.",
+    "The values you push onto the stack must be popped in order.",
+    // Left out on purpose: "commit that" and "force push" would add Terminal-Bench Pro's two Git-history tasks
+    // (recover-git-history-secrets, recover-prod-db-password-from-git-history).
+    "commit that",
+    "force push",
+    "force-push it",
+    "Every commit that contains a secret must be listed.",
+    "The history was rewritten by a force-push operation.",
   ];
   for(const text of asks){assert.equal(nativeConfiguration.nativeSpecializedSelection(text,all).sourceControl,true,text);assert.equal(specializedToolSelection(text,all).sourceControl,true,text)}
   for(const text of not){assert.equal(nativeConfiguration.nativeSpecializedSelection(text,all).sourceControl,false,text);assert.equal(specializedToolSelection(text,all).sourceControl,false,text)}
@@ -237,7 +288,7 @@ test("a Codex thread whose first message asks for Git work starts with trebell_s
   assert.equal(sharedRuntimeCapabilities("codex").dynamicTools,true);assert.equal(sharedRuntimeCapabilities("codex").dynamicToolExpansion,false);
   const availability={browser:false,computer:false,sourceControl:true,delegation:true};
   const names=text=>sharedDynamicToolNamespaces(specializedToolSelection(text,availability)).map(namespace=>namespace.name);
-  for(const text of ["Fix the failing test and commit","fix it then commit","Fix the bug. Commit.","push it","revert the last commit","new branch","can you PR this?","what changed in the last commit?"])assert.ok(names(text).includes("trebell_source_control"),text);
+  for(const text of ["Fix the failing test and commit","fix it then commit","Fix the bug. Commit.","push it","revert the last commit","new branch","can you PR this?","what changed in the last commit?","Fix the failing test and commit\nThanks!","Looks good, commit it","Can you commit this?","push to my fork"])assert.ok(names(text).includes("trebell_source_control"),text);
   assert.equal(names("Explain what src/a.mjs exports").includes("trebell_source_control"),false);
 });
 
@@ -249,6 +300,16 @@ test("the source-control rule reads a message as long as the composer holds in l
   for(const [name,text] of [["no spaces","a".repeat(120_000)],["base64",Buffer.from("x".repeat(90_000)).toString("base64")],["line breaks","\n".repeat(120_000)+"x"],["CRLF line breaks","\r\n".repeat(60_000)+"x"],["dots, then spaces",".".repeat(60_000)+" ".repeat(60_000)+"x"]]){
     const started=performance.now(),selected=nativeConfiguration.nativeSpecializedSelection(text,all).sourceControl,ms=performance.now()-started;
     assert.equal(selected,false,name);assert.ok(ms<1_000,name+": "+ms.toFixed(0)+" ms");
+  }
+  // Every shape the earlier probes used (the second and third reviews' and repair 3's, then this repair's new words: a comma, you, ok,
+  // now, a line-ending ask, push to, link this to, version control), at the composer's 120,000 characters and at 400,000, each in well
+  // under a second: a rule that goes back over a run from each of its characters takes about a minute at 400,000.
+  const fill=(size,unit,lead)=>{const start=typeof lead==="function"?lead(size):lead||"",n=size-start.length-1;return start+unit.repeat(Math.ceil(n/unit.length)).slice(0,n)+"x"};
+  const shapes=[["a"],["eHh4"],["QUJDRA=="],["\n"],["\r\n"],[" ",size=>".".repeat(size/2)],[" ","commit"],["\t","."],[". "],[".\n"],["& "],[" ","and"],["and "],["then "],["please "],["and then "],["commit "],["push "],["commit it "],[" it","push"],["it ","push "],["the ","open "],["the ","commit "],["the ","revert "],["the ","undo "],["the ","in "],["the ","show me "],["1 ","undo "],[" ","for"],["x/y.z-w ","create "],["https://a.b/c "],["https://a.b/c"],[":"],["; "],[" ","fix it and commit"],["2026-10-29 12:00:01 INFO commit offset 123 for partition 4 on branch predictor push notification\n"],[" ","."],["é中 "],
+    [", "],[",\n"],["you "],["ok "],["now "],["just also so "],["commit\n"],["and commit\n"],[" ","and commit"],[" ",", commit"],["\t","and commit"],["\t\r","commit"],["commit now "],["commit these "],[", please"],["push to "],["push it to my "],["link this to "],["under version "],["version control "],["in version control x "]];
+  for(const size of [120_000,400_000])for(const [unit,lead] of shapes){
+    const text=fill(size,unit,lead),started=performance.now();nativeConfiguration.nativeSpecializedSelection(text,all);const ms=performance.now()-started;
+    assert.equal(text.length,size);assert.ok(ms<1_000,JSON.stringify(unit)+" at "+size+": "+ms.toFixed(0)+" ms");
   }
   // A link is still read without its address (the whole word that holds it), and an ask beside it still selects.
   assert.equal(nativeConfiguration.nativeSpecializedSelection("Details: (https://github.com/o/r/pull/1/commits/new-branch-push)",all).sourceControl,false);
@@ -275,6 +336,9 @@ test("the settings evidence says what each value rests on: only the gate and gpt
   assert.equal(sourceControl.measured,false);assert.equal(sourceControl.basis,"new");
   assert.match(sourceControl.evidence,/new rule, narrowed from the product's word rule on 2026-10-29/);assert.match(sourceControl.evidence,/unmeasured/);
   assert.match(sourceControl.evidence,/Codex thread gets trebell_source_control[^.]*first message only/);
+  // The pools' share after the third review (2026-10-30): version control only in Git's sense drops the one data-store task.
+  assert.match(sourceControl.evidence,/23 of 300 SWE-bench Multilingual tasks[^;]*1 of 89 Terminal-Bench 2\.0 \(configure-git-webserver\) and 3 of 200 Terminal-Bench Pro tasks, all Git tasks/);
+  assert.match(sourceControl.evidence,/build-grpc-user-profile-service[^.]*no longer selects/);assert.doesNotMatch(sourceControl.evidence,/4 of 200/);
   const ceilings=row("Per-message ceilings");assert.equal(ceilings.measured,false);assert.equal(ceilings.basis,"readouts");assert.match(ceilings.evidence,/owner/);assert.match(ceilings.evidence,/not a fresh A\/B/);
   const processes=row("Background processes (trebell_process)");assert.equal(processes.basis,"readouts");assert.match(processes.evidence,/without prompt caching[^.]*unmeasured/);
   for(const name of ["Automatic between-turn compaction","Between-turn compaction brief"])assert.equal(row(name)?.basis,"app default",name);
