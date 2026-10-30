@@ -8,7 +8,7 @@ export function normalizeCollaborationModes(items=[]){
 }
 
 // Codex gives collaborationMode precedence over turn/start's effort, so the composer's reasoning effort goes into the
-// mode settings (T3 Code sends reasoning_effort: effort). Without one, the mode preset's own effort applies.
+// mode settings. Without one, the mode preset's own effort applies.
 export function collaborationModePayload(items=[],selectedMode="default",model="",{effort=null}={}){
   const selected=(items||[]).find(item=>item?.mode===selectedMode);
   const resolvedModel=String(selected?.model||model||"").trim();

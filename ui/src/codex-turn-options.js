@@ -1,8 +1,7 @@
 import { configuredReasoningEffort, normalizeRuntimeReasoningEffort } from "../../src/model-reasoning-effort.mjs";
 import { codexServiceTierForTurn, codexServiceTierPickerValue, configuredModelServiceTier } from "../../src/model-service-tier.mjs";
 
-// Codex turn options, input and errors, aligned with T3 Code's Codex adapter (apps/server/src/orchestration-v2/Adapters/
-// CodexAdapterV2.ts) and provider (apps/server/src/provider/CodexProvider.ts).
+// Codex turn options, input and errors, as Codex's app-server takes and sends them.
 
 // The settings Codex reports for a thread: thread/resume ({model, reasoningEffort, serviceTier}) and
 // thread/settings/updated ({threadSettings:{model, effort, serviceTier}}).
@@ -15,7 +14,7 @@ export function codexThreadSettings(threadId,source={}){
 }
 
 // The effort and tier a Codex turn sends and the composer shows. While the open thread is on the model it runs, they are
-// the thread's own settings (T3 shows and sends activeThread.modelSelection); otherwise the user's pick for the model, else
+// the thread's own settings; otherwise the user's pick for the model, else
 // the custom model's. effort null sends none (Codex uses the model's default); serviceTier null sends none (the thread
 // keeps its tier).
 export function codexModelChoices({settings={},provider="",model="",metadata={},custom=null,thread=null}={}){
@@ -30,21 +29,21 @@ export function codexModelChoices({settings={},provider="",model="",metadata={},
   };
 }
 
-// T3 PROVIDER_SEND_TURN_MAX_INPUT_CHARS, the composer's limit on the typed text (App.jsx MAX_COMPOSER_CHARS).
+// The longest text a Codex turn sends, the composer's limit on the typed text (App.jsx MAX_COMPOSER_CHARS).
 export const CODEX_MAX_INPUT_CHARS=120_000;
 const IMAGE=/\.(png|jpe?g|gif|webp|bmp)$/i,AUDIO=/\.(mp3|wav|m4a|ogg|flac)$/i;
 function fileName(path){return String(path||"").split(/[\\/]/).pop()||"attachment"}
 
 // The file each attached Word, Excel or other document's text was extracted to, as the GUI server's check of a message's files before
-// it goes answers it (textPath, src/document-text.mjs), so the message names it as T3 names it: "(text extracted to: <file>)".
+// it goes answers it (textPath, src/document-text.mjs), so the message names it: "(text extracted to: <file>)".
 const documentTexts=new Map();
 export function noteDocumentTexts(files){for(const file of Array.isArray(files)?files:[])if(file?.path)file.textPath?documentTexts.set(String(file.path),String(file.textPath)):documentTexts.delete(String(file.path))}
 export const documentTextPath=path=>documentTexts.get(String(path))||null;
 export const documentTextNote=path=>{const text=documentTextPath(path);return text?` (text extracted to: ${text})`:""};
 
-// T3 providerMessageTextWithAttachmentPaths: every attachment is named in the prompt with the path it is saved at, so
+// Every attachment is named in the prompt with the path it is saved at, so
 // Codex reads it with its own tools; images and audio also go as native items. The lines follow the text whatever its length:
-// a file has no item of its own, so a line left out would be a file Codex never sees (T3 550f119c3). A document's line names the
+// a file has no item of its own, so a line left out would be a file Codex never sees. A document's line names the
 // file its text was extracted to too (textPath).
 export function codexTurnInput(text,paths=[],{displayName=fileName,textPath=documentTextPath}={}){
   let body=String(text??"");const media=[];
@@ -82,14 +81,14 @@ export function codexGoalsMissing(error){
   return /method not found|unknown variant `?thread\/goal/i.test(error?.message);
 }
 
-// T3 codexErrorInfoCode: the camel-case code of a CodexErrorInfo (a string, or an object keyed by its variant).
+// The camel-case code of a CodexErrorInfo (a string, or an object keyed by its variant).
 export function codexErrorInfoCode(value){
   if(typeof value==="string")return value||null;
   if(!value||typeof value!=="object")return null;
   return Object.keys(value)[0]??null;
 }
 
-// T3 parseCodexRetryProgress: "attempt/max" in a retry message.
+// The "attempt/max" in a retry message.
 export function parseCodexRetryProgress(message){
   const match=/\b(\d+)\s*\/\s*(\d+)\b/u.exec(String(message??""));
   if(!match)return null;
@@ -101,11 +100,11 @@ function errorText(error){
   return String(error?.additionalDetails??"").trim()||String(error?.message??"").trim();
 }
 
-// A Codex `error` notification ({error:{message, codexErrorInfo, additionalDetails}, willRetry, threadId, turnId}), as T3
-// reads it: the text is additionalDetails or message, usage and rate limits are usage-limit failures, http* and
+// A Codex `error` notification ({error:{message, codexErrorInfo, additionalDetails}, willRetry, threadId, turnId}), read so:
+// the text is additionalDetails or message, usage and rate limits are usage-limit failures, http* and
 // responseStream* are transport failures, and willRetry means Codex is still working on the turn. Retries that ran out
-// (responseTooManyFailedAttempts) say why only by the last attempt's HTTP status: a 429 is a usage limit (T3
-// codexExhaustionHttpStatus), any other status a provider error.
+// (responseTooManyFailedAttempts) say why only by the last attempt's HTTP status: a 429 is a usage limit, any other status a
+// provider error.
 export function codexErrorNotice(params={}){
   const error=params?.error&&typeof params.error==="object"?params.error:null;
   const message=errorText(error)||String(params?.message??"").trim()||"Agent error";

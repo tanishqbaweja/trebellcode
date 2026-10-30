@@ -7,8 +7,8 @@ import "./ReasoningRow.css";
 // A row the person opened stays open when its finished thought moves from the live activity into the conversation.
 const openRows=new Set();
 
-// A harness's thinking as T3 Code shows it: a quiet "Thinking" line with the thought's latest line while it streams ("Thought"
-// and its first line once done), which opens to the whole text. messageId marks a conversation row (scroll anchors, find).
+// A harness's thinking: a quiet "Thinking" line with the thought's latest line while it streams ("Thought" and its first line
+// once done), which opens to the whole text. messageId marks a conversation row (scroll anchors, find).
 const ReasoningRow=memo(function ReasoningRow({id,messageId,text="",active=false}){
   const key=String(id||""),body=String(text||"").trim(),[open,setOpen]=useState(()=>openRows.has(key));
   const line=reasoningPreview(body,{latest:active});

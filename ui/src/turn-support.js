@@ -222,8 +222,8 @@ export async function continueInterruptedTurns({client,recovery,showActionError}
 // The first turn of a Codex goal asks for the work (codex-goal-start.mjs): Codex gets CODEX_GOAL_START before the objective, while the
 // person's message, its checkpoint and the Goal panel keep the objective as written.
 export { CODEX_GOAL_START };
-// The running turn is a compaction of the thread's own, which a goal command never stops (T3 isNativeMaintenanceCommand: a run whose
-// message is /compact): the one this window asked for (compactionWaiters), or a turn that shows nothing but a compaction (its rows in
+// The running turn is a compaction of the thread's own (a run whose message is /compact), which a goal command never stops: the
+// one this window asked for (compactionWaiters), or a turn that shows nothing but a compaction (its rows in
 // events are compactions alone, as turn-activity.js storeCompactionTurnIds reads a stored one, and messages hold no message, reply or
 // thought of it) and that no active goal drives. A turn that compacts as it works, an ordinary turn or a goal's own (also one that
 // opens with a compaction), is stopped as any other.
@@ -233,16 +233,16 @@ function compactionTurn({activeThread,activeTurnId,compactionWaiters,events=[],m
   const rows=events.filter(ofTurn);
   return rows.length>0&&rows.every(row=>row.kind==="contextCompaction")&&!messages.some(ofTurn)&&goalStatus!=="active";
 }
-// A goal command that stops the turn running (T3 goalCommandStopsActiveRun) stops it as Stop does: an active goal is paused first,
+// A goal command that stops the turn running stops it as Stop does: an active goal is paused first,
 // so Codex starts no further turn of it. waitForEnd: the command starts a turn, which waits for the stopped one's turn/completed,
 // or 10 s, after which Codex says why should it refuse the start. A compaction of the thread's own (compacting) is not stopped: the
-// command waits for its turn to end, up to a minute, as T3 queues it after the compaction.
+// command waits for its turn to end, up to a minute, so it runs after the compaction.
 async function stopForGoal({rpc,stop},threadId,{waitForEnd=false,compacting=false}={}){
   let off=()=>{},timer=null;
   const ended=waitForEnd?new Promise(resolve=>{timer=setTimeout(resolve,compacting?60_000:10_000);off=rpc.subscribeNotifications(message=>{if(message.method==="turn/completed"&&String(message.params?.threadId||"")===threadId)resolve()})}):null;
   try{if(!compacting)await stop();await ended}finally{off();clearTimeout(timer)}
 }
-// Codex /goal, run like T3 Code's runGoalCommand and the Codex TUI: /goal shows the goal, clear, pause and resume
+// Codex /goal, run as the Codex TUI runs it: /goal shows the goal, clear, pause and resume
 // control it, and any other text sets a new goal and starts its first turn. A new goal or a resume sent while a turn runs stops that
 // turn and starts once it has ended; clear and pause stop only a turn the goal drives (it is active); none stops a compaction of the
 // thread's own (compactionTurn), whose end a goal's turn waits for. One that cannot run keeps the draft ("kept") and says why beside

@@ -1,4 +1,4 @@
-/* A harness's thinking: one quiet line that opens to the whole text (T3 Code's work-log reasoning row). Only tokens both the
+/* A harness's thinking: one quiet line that opens to the whole text. Only tokens both the
    current and the restyled theme.css define, each with the dark default as its fallback. */
 .reasoning-row{min-width:0;color:var(--tx2,#7e7e8a);font-size:12.5px;line-height:1.5}
 .conversation-history .reasoning-row{margin:0 0 10px 32px}

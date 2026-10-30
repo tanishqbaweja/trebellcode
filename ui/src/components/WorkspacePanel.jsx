@@ -13,7 +13,7 @@ const IMAGE_EXT=new Set(["png","jpg","jpeg","gif","webp","bmp","svg","ico"]);
 const VIDEO_EXT=new Set(["mp4","webm","mov"]);
 const AUDIO_EXT=new Set(["mp3","wav","m4a","ogg","flac"]);
 const TABLE_EXT=new Set(["csv","tsv"]);
-// Diff lines wrap by default, as in T3 Code; the choice is remembered in this browser.
+// Diff lines wrap by default; the choice is remembered in this browser.
 const DIFF_WRAP_KEY="trebell.diffWordWrap";
 function readDiffWrap(){try{return localStorage.getItem(DIFF_WRAP_KEY)!=="false"}catch{return true}}
 

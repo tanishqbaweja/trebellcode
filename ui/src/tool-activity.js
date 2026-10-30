@@ -1,7 +1,7 @@
-// Activity-row names for tool calls that arrive without a title of their own, as T3 Code's work log gives them
-// (packages/shared/src/toolActivity.ts): a read names its path, a search its query and folder, and a command its command
+// Activity-row names for tool calls that arrive without a title of their own: a read names its path, a search its query and
+// folder, and a command its command
 // line. Trebell Native's first-party tools (trebell_workspace, trebell_repo, trebell_terminal) are named the same way.
-// A harness that titles its own tool calls keeps that title, as in T3; any other tool keeps its own name.
+// A harness that titles its own tool calls keeps that title; any other tool keeps its own name.
 
 function asRecord(value){
   if(value&&typeof value==="object"&&!Array.isArray(value))return value;
@@ -17,7 +17,7 @@ const SEARCH_QUERY_KEYS=["pattern","query","searchTerm","regex","grep","needle"]
 const SEARCH_GLOB_KEYS=["glob","globPattern","glob_pattern","include","filePattern","file_pattern"];
 const SEARCH_TARGET_KEYS=["path","target_directory","targetDirectory","directory","cwd","root"];
 
-// T3's tool-name token: server-prefixed MCP names (github.read_file, mcp__db__find) are not local reads or searches.
+// The tool-name token: server-prefixed MCP names (github.read_file, mcp__db__find) are not local reads or searches.
 function toolToken(value){
   const name=trimmed(value);
   if(!name||/__|[./]/.test(name))return undefined;
@@ -47,7 +47,7 @@ function commandLine(input){
 }
 function targetName(value){return value?.split(/[\\/]/).findLast(part=>part.length>0&&part!==".")}
 
-// "Searched slugify in src", "Searched files *.js", "Searched in src", as T3's formatSearchToolLabel words them.
+// "Searched slugify in src", "Searched files *.js", "Searched in src".
 export function searchToolLabel(input){
   const query=firstString(input,SEARCH_QUERY_KEYS),glob=firstString(input,SEARCH_GLOB_KEYS),target=targetName(firstString(input,SEARCH_TARGET_KEYS));
   if(query&&target)return `Searched ${query} in ${target}`;
@@ -60,7 +60,7 @@ export function searchToolLabel(input){
 
 // The row name for a dynamic (harness or Native) tool call, or undefined when the tool's own name is the best there is.
 // An edit or write that failed or was declined is named by what it attempted ("Write notes.txt"): the row never claims a
-// change that did not happen. A search whose arguments name no query, files or folder is T3's "Searched files".
+// change that did not happen. A search whose arguments name no query, files or folder is "Searched files".
 export function dynamicToolLabel(item={}){
   const input=asRecord(item.arguments)??asRecord(item.input)??{};
   const action=classifyToolCall({namespace:item.namespace,tool:item.tool,kind:item.kind});

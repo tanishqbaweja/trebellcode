@@ -735,7 +735,7 @@ function ApprovalCard({request,onResolve,threadLabel=""}){
   const showCommand=!permissions&&Boolean(commandText.trim())&&detail!==commandText;
   const approvalOptions=Array.isArray(p.approvalOptions)?p.approvalOptions.filter(option=>option&&typeof option.decision==="string"&&option.label):[];
   return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div>{threadLabel&&<p className="approval-thread" data-testid="approval-thread">Waiting in {threadLabel}</p>}{(detail||!files.length)&&<p>{detail||p.reason||request.method}</p>}{showCommand&&<pre className="approval-command" data-testid="approval-command"><code>{commandText}</code></pre>}{files.length>0&&<pre className="approval-command" data-testid="approval-files"><code>{files.map(file=>file.movePath?"Move "+file.path+" to "+file.movePath:({add:"Add",delete:"Delete"}[file.kind]||"Edit")+" "+file.path).join("\n")+(p.trebellFileChangesMore>0?"\n…and "+p.trebellFileChangesMore+" more file"+(p.trebellFileChangesMore>1?"s":""):"")}</code></pre>}{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}{approvalOptions.filter(option=>option.warning).map(option=><small key={"warning-"+option.decision}>{option.label}: {option.warning}</small>)}<div className="approval-actions" onClick={event=>{if(event.target.closest("button"))ignorePressRest(!event.detail)}}>{approvalOptions.length
-    // An ACP harness's own choices, in its order and wording (T3 grokApprovalOptions / antigravityApprovalOptions).
+    // An ACP harness's own choices, in its order and wording.
     ?approvalOptions.map(option=><button key={option.decision} className={option.decision==="accept"?"approve":undefined} onClick={event=>answer(event,option.decision)}>{option.label}</button>)
     // A Codex card's Allow session covers every later command, or file change, of its thread's session (trebellSessionScope).
     :<><button onClick={event=>answer(event,"decline")}>Deny</button><button onClick={event=>answer(event,"acceptForSession")}>{{command:"Allow commands this session",fileChange:"Allow edits this session"}[p.trebellSessionScope]||"Allow session"}</button><button className="approve" onClick={event=>answer(event,"accept")}>Allow once</button></>}</div></div>;
@@ -1128,8 +1128,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // A model's own levels and tiers: none until a model is chosen.
   const reasoningEffortOptions=model?supportedReasoningEfforts(agentRuntime,provider,model,modelMeta?.[model]||{}):[];
   const serviceTierOptions=model?supportedModelServiceTiers(agentRuntime,provider,model,modelMeta?.[model]||{}):[];
-  // Codex shows the open thread's own effort and tier while it runs this model, and its Standard tier is "default", as
-  // T3 Code's Codex selects do.
+  // Codex shows the open thread's own effort and tier while it runs this model, and its Standard tier is "default".
   const codexChoices=agentRuntime==="codex"?codexModelChoices({settings,provider,model,metadata:modelMeta?.[model]||{},custom:(settings.customModels||[]).find(item=>item.id===model&&item.runtime==="codex")||null,thread:codexThread}):null;
   // The picker shows the level a message runs at; a model with a measured level (Max on gpt-6-luna) lists it among the levels and
   // offers no Default option, which could never stay chosen there (reasoningEffortPicker).
@@ -1481,7 +1480,7 @@ export default function App(){
   // heldNotificationsRef: the notifications of the thread an open has resumed, kept until it shows (see holdThreadNotifications).
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const openSeqRef=useRef(0); const openRunRef=useRef(null); const resumedOnRef=useRef(null); const heldNotificationsRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef(null); if(!navigationHistoryRef.current)navigationHistoryRef.current=createNavigationHistory(); const paletteSeedRef=useRef(null); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set()); const editFromHereAskingRef=useRef(false);
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
-  // menus before its thread exists, as T3 Code lists provider slash commands.
+  // menus before its thread exists.
   const runtimeInventoryRef=useRef(null);
   // Whether the agent picker lists any agent (applyProviderInventory): with none listed it is not shown, so no agent was picked.
   const providerAgentsListedRef=useRef(false);
@@ -1920,7 +1919,7 @@ export default function App(){
     const node=conversationScrollRef.current;if(!node||typeof ResizeObserver==="undefined")return;
     const content=node.firstElementChild;if(!content)return;
     // A view that follows the end stays on the newest message when the messages grow and when the view itself is resized, as
-    // when the terminal opens beneath it (T3 keeps the end on layout changes too). A view scrolled up stays where it is.
+    // when the terminal opens beneath it. A view scrolled up stays where it is.
     const observer=new ResizeObserver(()=>keepConversationEnd(node));
     observer.observe(content);observer.observe(node);return()=>observer.disconnect();
   },[section,activeThread?.id]);
@@ -2586,7 +2585,7 @@ export default function App(){
     const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime==="codex")||null;
     return codexModelChoices({settings,provider,model:modelId,metadata:modelMeta?.[modelId]||{},custom,thread:threadId&&codexThreadState?.threadId===threadId?codexThreadState:null});
   }
-  // A Codex thread is resumed without a model, so it keeps the model, effort and tier it runs with (T3 Code), and the
+  // A Codex thread is resumed without a model, so it keeps the model, effort and tier it runs with, and the
   // composer moves to that model.
   function applyCodexThreadSettings(threadId,resumed){
     const next=codexThreadSettings(threadId,resumed||{});setCodexThreadState(next);
@@ -3210,7 +3209,7 @@ export default function App(){
     }
     else if(message.method==="agentRuntime/models/updated"){
       // The harness's model list changed after the composer loaded it (Antigravity lists the account's models once a session
-      // starts; T3 pushes provider snapshots the same way). The composer keeps its model while it is still offered.
+      // starts). The composer keeps its model while it is still offered.
       const runtime=String(p.runtime||"");
       if(runtime&&runtime===agentRuntimeRef.current&&!runtimeSwitchRef.current&&(!client||client===rpcRef.current))api("/api/models").then(catalog=>{
         if(agentRuntimeRef.current===runtime&&!runtimeSwitchRef.current)return refreshProviderModels({agentRuntime:runtime,catalog,refreshBootstrap:false});
@@ -3329,7 +3328,7 @@ export default function App(){
       // A queued turn that ends without having started takes its send with it.
       if(completedTurnId&&pendingSendsRef.current.get(String(threadId||""))?.turnId===String(completedTurnId))pendingSendsRef.current.delete(String(threadId||""));
       if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
-      // A failed Codex turn ends with its error (T3 Code); an active Codex goal goes on with a turn Codex starts itself.
+      // A failed Codex turn ends with its error; an active Codex goal goes on with a turn Codex starts itself.
       const codexFailure=agentRuntime==="codex"?codexTurnFailure(p.turn):null,codexGoalContinues=agentRuntime==="codex"&&isCurrent&&goal?.status==="active";
       // A retry the turn was still on when it ended: a turn that completed got its request through, any other one stopped retrying.
       settleRetry(threadId,completedTurnId,outcomeStatus==="completed"||!outcomeStatus?"recovered":"stopped",isCurrent);
@@ -3568,7 +3567,7 @@ export default function App(){
       }
     }
     else if(message.method==="error"){
-      // Codex sends {error:{message, codexErrorInfo, additionalDetails}, willRetry, turnId} (T3 Code reads it the same way);
+      // Codex sends {error:{message, codexErrorInfo, additionalDetails}, willRetry, turnId};
       // other harnesses send {message}.
       const notice=codexErrorNotice(p),codexTurnError=Boolean(p.error&&typeof p.error==="object"&&p.turnId);
       if(notice.willRetry){
@@ -3874,7 +3873,7 @@ export default function App(){
     // An open or a new task asked for since this one began owns the view: this one does not resume a thread nobody waits for.
     if(openSeqRef.current!==token)return thread;
     if(connectedClient){
-      // A harness thread resumes on its own model (T3 keeps each thread's model selection); the composer then shows that model. A
+      // A harness thread resumes on its own model; the composer then shows that model. A
       // Native thread asks for its own too: a session it starts runs on the model asked for, which became the thread's.
       const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,...(agentRuntime==="native"?{model:thread.model||model||null,modelProvider:provider}:{}),cwd:thread.cwd||null},()=>{if(openSeqRef.current===token)holdThreadNotifications(token,thread.id)});
       const checkpointPromise=api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).then(value=>({value,error:null}),error=>({value:null,error}));
@@ -4169,7 +4168,7 @@ export default function App(){
     if(result.thread?.id)await persistThreadWorkspaceContext(result.thread,cwd,{sectionName:"Active",archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     return result.thread;
   }
-  // Codex reads attachments from the paths named in the prompt (T3 Code), with images and audio also sent as items.
+  // Codex reads attachments from the paths named in the prompt, with images and audio also sent as items.
   function inputsFor(text,paths){if(agentRuntime==="codex")return codexTurnInput(text,paths,{displayName:attachmentDisplayName});return [{type:"text",text,textElements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function loadNativeQueue(client=rpcRef.current,threadId=activeThreadRef.current?.id){
     if(!runtimeCapabilities.nativeQueue||!client||!threadId)return false;
@@ -4250,7 +4249,7 @@ export default function App(){
     if(runtimeSwitchRef.current)throw new Error(`Trebell is switching to ${agentRuntimeName(runtimeSwitchRef.current.to)}; send again once it is ready.`);
     if(!modelsRef.current.includes(modelId))throw new Error(`${agentRuntimeLabel} does not list the model ${modelId||"(none selected)"}. Choose one of its models and send again.`);
   }
-  // T3 runGoalCommand: a Codex goal turns active once its first turn has started, unless Stop came first.
+  // A Codex goal turns active once its first turn has started, unless Stop came first.
   async function activateCodexGoal(activation){
     try{
       if(activation.stopped)return;
@@ -4325,8 +4324,8 @@ export default function App(){
         try{checkpoint=await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}})}
         catch(error){reportCheckpointIssue("Could not create file checkpoint; file restore for this turn is unavailable",error,{threadId:thread.id,cwd})}
       }
-      // Codex runs an active goal's turns itself, so a Codex goal stays paused until this, its first turn, has started
-      // (T3 Code's runGoalCommand); the turn still carries Trebell's guidance for the goal, and Stop cancels the activation.
+      // Codex runs an active goal's turns itself, so a Codex goal stays paused until this, its first turn, has started; the turn
+      // still carries Trebell's guidance for the goal, and Stop cancels the activation.
       const goalActivation=goalPatch&&agentRuntime==="codex"&&(goalPatch.status??"active")==="active"?{threadId:thread.id,stopped:false}:null;
       let goalContext=null;
       if(goalPatch){
@@ -4349,8 +4348,8 @@ export default function App(){
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(inputText??text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;if(shown())setActiveTurnId(turnId);if(turnId&&liveSendRef.current?.threadId===String(thread.id))liveSendRef.current={threadId:String(thread.id),turnId:String(turnId)};if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
       // The thread runs a turn again, so a queue a Stop held goes on once it ends.
       if(!pendingSend.stopped)holdQueue(thread.id,false);
-      // An answer with no start time names a turn Codex has queued, which it can interrupt only once it has started it (turn/started;
-      // T3 Code waits for that too): the send stays until then, through as far as the composer goes. Any other answer ends it.
+      // An answer with no start time names a turn Codex has queued, which it can interrupt only once it has started it
+      // (turn/started): the send stays until then, through as far as the composer goes. Any other answer ends it.
       const queued=Boolean(turnId)&&result.turn.startedAt===null&&!pendingSend.startedTurnId&&turnStillRuns(result.turn)&&pendingSends.get(pendingSend.threadId)===pendingSend;
       if(queued){pendingSend.turnId=String(turnId);pendingSend.view=null;pendingSend.message=null}
       else{if(pendingSends.get(pendingSend.threadId)===pendingSend)pendingSends.delete(pendingSend.threadId);if(turnStillRuns(result.turn))interruptStoppedSend(pendingSend,thread.id,turnId)}
@@ -4461,7 +4460,7 @@ export default function App(){
     if(runtimeSwitchRef.current){keepDraft();const label=agentRuntimeName(runtimeSwitchRef.current.to);setEvents(prev=>[...prev.filter(item=>item.id!=="runtime-switching"),{id:"runtime-switching",kind:"error",title:`Trebell is switching to ${label}. Your draft was kept; send it again once ${label} is ready.`,status:"done",raw:{}}]);return}
     // Never route a prompt elsewhere while the harness transport is down: keep the draft until it reconnects.
     if(!bootstrap.mock&&(!rpc||rpcStatus!=="connected")){keepDraft();setEvents(prev=>[...prev.filter(item=>item.id!=="transport-reconnecting"),{id:"transport-reconnecting",kind:"error",title:`${agentRuntimeLabel} is ${transportConnectedRef.current?"reconnecting":"not connected yet"}. Your draft was kept; send it again once ${agentRuntimeLabel} is connected.`,status:"done",raw:{}}]);return}
-    // A started thread continues only on the harness that owns it (T3 Code locks a started thread to its provider).
+    // A started thread continues only on the harness that owns it.
     const threadOwner=threadOwnerElsewhere(activeThreadRef.current,threadMeta[activeThreadRef.current?.id],agentRuntime);
     if(threadOwner){keepDraft();const label=agentRuntimeName(threadOwner);setEvents(prev=>[...prev.filter(item=>item.id!=="thread-owned-elsewhere"),{id:"thread-owned-elsewhere",kind:"error",title:`This chat belongs to ${label}. Your draft was kept; open the chat from the sidebar to continue it in ${label}.`,status:"done",raw:{}}]);return}
     if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){keepDraft();setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
@@ -4642,8 +4641,8 @@ export default function App(){
     // also when the stopped turn ends before the interrupt is answered, until the thread runs a turn again (startTurn). A note that a
     // queued follow-up goes once the turn ends (sendQueuedNow) goes with it.
     stopKeyRef.current=stopKey;setStoppingThreadId(threadId);holdQueue(threadId,true);setComposerAlert(current=>current?.queuedId?null:current);
-    // Stop pauses an active Codex goal first, so Codex starts no further goal turn, then stops the newest turn (T3 Code,
-    // the Codex TUI).
+    // Stop pauses an active Codex goal first, so Codex starts no further goal turn, then stops the newest turn (as the Codex TUI
+    // does).
     let turnId=activeTurnId;
     if(agentRuntime==="codex"&&rpc&&threadId){
       if(codexGoalActivationRef.current?.threadId===threadId)codexGoalActivationRef.current.stopped=true;

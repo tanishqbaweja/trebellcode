@@ -27,8 +27,8 @@ export function threadCatalogRuntime(thread,meta={},fallback=null){
   return runtime(meta?.runtime||thread?.trebellRuntime||thread?.runtime||meta?.trebellContext?.runtime,runtimeFromInstance(meta?.runtimeInstanceId)||fallback);
 }
 
-// The harness that owns a thread when it is not the given one, else null. A started thread stays with the harness that created it, as
-// T3 Code locks a started thread to its provider ("a started thread must not silently fall back to a different driver"): after a harness
+// The harness that owns a thread when it is not the given one, else null. A started thread stays with the harness that created it
+// and never silently falls back to another: after a harness
 // switch it is neither shown under the new harness nor continued with the new harness's model.
 export function threadOwnerElsewhere(thread,meta={},activeRuntime=null){
   const active=runtime(activeRuntime);

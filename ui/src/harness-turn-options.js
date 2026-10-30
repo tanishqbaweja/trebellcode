@@ -1,6 +1,6 @@
 // What a thread and each of its turns carry to the agent relay for the external harnesses it runs (Claude Code, OpenCode,
-// Cursor, Grok Build, Antigravity, Muse Code), so the composer's choices reach every harness the way its adapter applies them (T3
-// Code's per-turn runtime policy and model options). Codex and Trebell Native take theirs in their own shapes.
+// Cursor, Grok Build, Antigravity, Muse Code), so the composer's choices reach every harness the way its adapter applies them
+// (its per-turn runtime policy and model options). Codex and Trebell Native take theirs in their own shapes.
 const RELAY_HARNESSES=new Set(["claude","opencode","cursor","grok","antigravity","muse"]);
 // The composer choices each harness takes: effort (Claude Code's effort, OpenCode's model variant, Grok's, Cursor's and Muse Code's
 // effort), speed (Claude Code's and Cursor's Fast mode) and the model's other settings (Cursor's context size and thinking switch).

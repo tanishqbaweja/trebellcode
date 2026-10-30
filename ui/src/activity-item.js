@@ -29,7 +29,7 @@ export function activityRow(item={},{turnId=null}={}){
   if(type==="fileChange")title="Editing files";
   if(type==="mcpToolCall")title=(item.server?item.server+" / ":"")+(item.tool||item.name||"MCP tool");
   // The relay files every harness (ACP) tool under the placeholder namespace "agent" with the harness's own title, which is
-  // shown as is (as T3 does). Native's and Codex's dynamic tools have no title: they are named by what they do, the T3 way.
+  // shown as is. Native's and Codex's dynamic tools have no title: they are named by what they do.
   if(type==="dynamicToolCall")title=item.namespace&&item.namespace!=="agent"?dynamicToolLabel(item)||item.namespace+" / "+(item.tool||"Dynamic tool"):item.tool||"Dynamic tool";
   if(type==="collabAgentToolCall")title="Collaboration · "+String(item.tool||"agent task").replace(/([a-z])([A-Z])/g,"$1 $2").toLowerCase();
   if(type==="subAgentActivity")title="Subagent · "+(item.kind||"activity");
