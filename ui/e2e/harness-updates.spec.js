@@ -16,7 +16,8 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 // - OpenCode, not there: Install;
 // - and Claude Code from WinGet: the same note with `winget upgrade Anthropic.ClaudeCode`.
 // A row with such a note, a refused switch or the sign-in choice's key fields under it keeps its buttons beside its badge. The
-// commands in those notes (pnpm's and bun's too) and in the Update question each read as one, in code whose words stay whole.
+// commands in those notes (pnpm's and bun's too), in a row's status line and a refused switch, and in the Update question each read
+// as one, in code whose words stay whole.
 // Nothing real is installed, updated or started but a script of the test's own standing in for Codex's app-server.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/harness-updates/",import.meta.url));mkdirSync(shots,{recursive:true});
 const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
@@ -265,11 +266,12 @@ const commandShown=(container,command,{last=false,within})=>container.evaluate((
   return {found:true,broken,code:Boolean(code&&root.contains(code)&&code.textContent.trim()===command),past:Math.round((right-root.closest(within).getBoundingClientRect().right)*10)/10,scrolls:Boolean(code&&code.scrollWidth>code.clientWidth)};
 },[command,last,within]);
 
-// The commands Trebell tells a person to run, in a harness's note (pnpm's and bun's installs, which Trebell does not update) and in
-// the Update question (npm into the profile's prefix), each read as one: in code whose words stay whole, its lines breaking only
-// between them (a word wider than its line scrolls the code instead). They broke at their hyphens, "pnpm add -" / "g", "--" /
-// "allow-scripts=@anthropic-" / "ai/claude-code", so a person retyping one could split -g or a package's name.
-test("each command Trebell tells a person to run, in a harness's note and in the Update question, reads as one, in code broken only between its words, at 1280, 900 and 700 wide, dark and light",async({page,request})=>{
+// The commands Trebell tells a person to run, in a harness's note (pnpm's and bun's installs, which Trebell does not update), in its
+// status line and a refused switch (Claude Code signed out) and in the Update question (npm into the profile's prefix), each read as
+// one: in code whose words stay whole, its lines breaking only between them (a word wider than its line scrolls the code instead).
+// They broke at their hyphens, "pnpm add -" / "g", "--" / "allow-scripts=@anthropic-" / "ai/claude-code", so a person retyping one
+// could split -g or a package's name; the status line and a refused switch showed their backticks as typed.
+test("each command Trebell tells a person to run, in a harness's note, its status line, a refused switch and the Update question, reads as one, in code broken only between its words, at 1280, 900 and 700 wide, dark and light",async({page,request})=>{
   test.setTimeout(180_000);
   const root=mkdtempSync(join(tmpdir(),"trebell-e2e-harness-commands-")),restore=await settled(page,request);
   try{
@@ -277,9 +279,10 @@ test("each command Trebell tells a person to run, in a harness's note and in the
     // command that updates it.
     const notesRoot=join(root,"notes"),pnpm=join(notesRoot,"AppData","Local","pnpm"),bun=join(notesRoot,"home",".bun","bin");
     write(join(pnpm,"claude.cmd"),"@echo off\r\n");write(join(bun,"grok.exe"),"fixture");
+    let claudeSignedIn=true;
     const managed=machine(notesRoot,{path:[pnpm,bun].join(";"),latest:{"@anthropic-ai/claude-code":"2.1.320","@xai-official/grok":"1.0.70"},answer:(command,args)=>{
       const name=basename(command).toLowerCase();
-      if(name.startsWith("claude"))return answered(args[0]==="--version"?"2.1.300 (Claude Code)\n":JSON.stringify({loggedIn:true,authMethod:"claude.ai",apiProvider:"firstParty"}));
+      if(name.startsWith("claude"))return args[0]==="--version"?answered("2.1.300 (Claude Code)\n"):claudeSignedIn?answered(JSON.stringify({loggedIn:true,authMethod:"claude.ai",apiProvider:"firstParty"})):{ok:false,code:1,error:null,stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"}),stderr:""};
       if(name.startsWith("grok"))return answered(args[0]==="models"?"You are logged in with grok.com.\n":"grok 1.0.41 (4220f3b224a6)\n");
       return missing(command);
     }});
@@ -295,6 +298,28 @@ test("each command Trebell tells a person to run, in a harness's note and in the
       for(const [name,command,last] of notes)seen.push({where:`${name}'s note at ${width} in ${mode}`,command,...await commandShown(note(name),command,{last,within:".agent-runtime-option"})});
       await harnessRow(page,"Grok Build").scrollIntoViewIfNeeded();
       await page.screenshot({animations:"disabled",path:shots+`commands-notes-${mode}-${width}.png`});
+    }
+    // Signed out of Claude Code since the list was read: its own check refuses the switch, said under its row with the command its
+    // status names; and Refresh reads it signed out, its status line naming that command too (round 13's repair of GR13-25).
+    claudeSignedIn=false;
+    const claudeRow=harnessRow(page,"Claude Code"),refused=claudeRow.getByRole("alert"),status=claudeRow.locator("button").first().locator("small");
+    await page.setViewportSize({width:1280,height:900});await switchMode(page,"dark");
+    await claudeRow.locator("button").first().click();
+    await expect(refused).toHaveText("Could not switch to Claude Code: Claude Code is not authenticated. Run claude auth login and try again.");
+    for(const width of [1280,900,700])for(const mode of ["dark","light"]){
+      await page.setViewportSize({width,height:900});await switchMode(page,mode);
+      seen.push({where:`Claude Code's refused switch at ${width} in ${mode}`,command:"claude auth login",...await commandShown(refused,"claude auth login",{within:".agent-runtime-option"})});
+      await claudeRow.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`commands-refused-switch-${mode}-${width}.png`});
+    }
+    await page.setViewportSize({width:1280,height:900});await switchMode(page,"dark");
+    await page.getByRole("button",{name:"Refresh",exact:true}).click();
+    await expect(status).toHaveText("Claude Code is not authenticated. Run claude auth login and try again.");
+    for(const width of [1280,900,700])for(const mode of ["dark","light"]){
+      await page.setViewportSize({width,height:900});await switchMode(page,mode);
+      seen.push({where:`Claude Code's status line at ${width} in ${mode}`,command:"claude auth login",...await commandShown(status,"claude auth login",{within:".agent-runtime-option"})});
+      await claudeRow.scrollIntoViewIfNeeded();
+      await page.screenshot({animations:"disabled",path:shots+`commands-status-line-${mode}-${width}.png`});
     }
     // Claude Code from npm, 2.1.300 with 2.1.320 out: Update asks first, naming what it runs. Its prefix is a path wider than the
     // question's lines, which the command's code scrolls to show whole.

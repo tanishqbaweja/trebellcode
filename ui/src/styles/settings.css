@@ -151,8 +151,8 @@
    window's edge. */
 :root:root .settings-page.redesigned-settings .settings-card .agent-runtime-option>:is(.agent-runtime-option-error,.agent-runtime-option-note){flex:1 0 100%;min-width:0;margin:-6px 0 0;padding:0 0 11px 41px;scroll-margin:12px 0;font-size:11.5px!important;line-height:1.5!important;color:var(--err)!important;overflow-wrap:anywhere}
 :root:root .settings-page.redesigned-settings .settings-card .agent-runtime-option>.agent-runtime-option-note{color:var(--tx2)!important}
-/* A command it names (code.run-command) keeps to the height of its lines. */
-:root:root .settings-page.redesigned-settings .settings-card .agent-runtime-option>p>code.run-command{padding-block:0;line-height:1.4}
+/* A command a row names (code.run-command), under it or in its status line, keeps to the height of its lines. */
+:root:root .settings-page.redesigned-settings .settings-card :is(.agent-runtime-option>p,.agent-runtime-option>button:first-child small,.runtime-profile-row>button small,.runtime-profile-row>p)>code.run-command{padding-block:0;line-height:1.4}
 /* How a harness signs in (its own sign-in, or its provider's API key and that key's field), under its row, on a line of its own. */
 :root:root .settings-page.redesigned-settings .agent-runtime-option:has(>.harness-auth){flex-wrap:wrap}
 :root:root .settings-page.redesigned-settings .settings-card .harness-auth{flex:1 0 100%;display:grid;gap:8px;margin:-6px 0 0;padding:0 0 11px 41px;font-size:11.5px;line-height:1.5;color:var(--tx2)}

@@ -69,12 +69,14 @@ test("Settings shows a slow, hung or failing harness CLI as installed with what 
     await expect(signIn("Claude Code")).toHaveCount(0);
     // Cursor's check exited with an error: what it said, and a switch, with neither Needs setup nor Sign in, as nothing is known of
     // its sign-in.
-    await expect(said("Cursor")).toHaveText("Cursor is installed but `cursor-agent --version` exited with code 1: Error: Cannot find module 'index.js'");
+    await expect(said("Cursor")).toHaveText("Cursor is installed but cursor-agent --version exited with code 1: Error: Cannot find module 'index.js'");
+    await expect(said("Cursor").locator("code.run-command"),"the command it ran reads as code").toHaveText("cursor-agent --version");
     await expect(action("Cursor")).toHaveText("Switch");
     await expect(signIn("Cursor")).toHaveCount(0);
     // OpenCode's never answered: installed, never "not installed", but not ready until its version picks its client; no Sign in, and
     // no Update, as Trebell installs nothing over an OpenCode whose version it cannot read.
-    await expect(said("OpenCode")).toHaveText("OpenCode is installed but did not answer `opencode --version` within 10 seconds. Trebell Code needs its version (1.x or 2.x) to start it.");
+    await expect(said("OpenCode")).toHaveText("OpenCode is installed but did not answer opencode --version within 10 seconds. Trebell Code needs its version (1.x or 2.x) to start it.");
+    await expect(said("OpenCode").locator("code.run-command"),"the command it ran reads as code").toHaveText("opencode --version");
     await expect(action("OpenCode")).toHaveText("Not ready");
     await expect(row("OpenCode").getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
     await expect(signIn("OpenCode")).toHaveCount(0);

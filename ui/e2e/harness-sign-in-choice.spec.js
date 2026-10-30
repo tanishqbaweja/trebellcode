@@ -580,7 +580,9 @@ test("Claude Code made ready in Settings, by its sign-in finished in its termina
     // Sign in on its row opens its sign-in in a terminal, where the person finishes it; Settings, opened again, reads it signed in.
     await toAgentsHere(page);
     const claude=harnessRow(page,"Claude Code"),panel=claude.getByTestId("harness-auth-claude"),message=page.getByTestId("agent-runtime-message");
-    await expect(rowSaid(claude)).toHaveText("Claude Code is not authenticated. Run `claude auth login` and try again.");
+    // The command it names reads as code, as in its notes, with no backtick shown as typed.
+    await expect(rowSaid(claude)).toHaveText("Claude Code is not authenticated. Run claude auth login and try again.");
+    await expect(rowSaid(claude).locator("code.run-command")).toHaveText("claude auth login");
     await claude.getByRole("button",{name:"Sign in",exact:true}).click();
     await expect(page.getByTestId("drawer")).toBeVisible();
     machine.signedIn.claude=true;
