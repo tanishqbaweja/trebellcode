@@ -15,7 +15,8 @@ const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkd
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
 // The fake Codex: it lists the test's thread, keeps goals as Codex does (a notification after each change), starts a turn for
-// turn/start and ends it on turn/interrupt, and sends server requests as Codex does (ask), keeping every answer it gets back.
+// turn/start and ends it on turn/interrupt, and sends server requests as Codex does (ask), keeping every answer it gets back and
+// when each request came (sentAt).
 async function fakeCodex(thread){
   const http=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set(),requests=[],answers=new Map(),goals=new Map(),turns=[];let nextId=7000;
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
@@ -33,11 +34,11 @@ async function fakeCodex(thread){
     ws.on("message",raw=>{
       const message=JSON.parse(String(raw));
       if(message.id!=null&&!message.method){const id=String(message.id);answers.set(id,[...(answers.get(id)||[]),message.result]);return}
-      if(message.id==null||!message.method)return;requests.push(message);
+      if(message.id==null||!message.method)return;requests.push({...message,at:Date.now()});
       const params=message.params||{},reply=result=>{if(ws.readyState===1)ws.send(JSON.stringify({id:message.id,result}))},now=Math.floor(Date.now()/1000);
       if(message.method==="initialize")return reply({userAgent:"codex-approvals-goals"});
       if(message.method==="thread/list")return reply({data:[{...thread,status:{type:running()?"active":"idle"}}],nextCursor:null});
-      if(message.method==="thread/resume")return reply({thread:{...thread,status:{type:running()?"active":"idle"}},itemsBackwardsCursor:null,turnsBackwardsCursor:null});
+      if(message.method==="thread/resume"||message.method==="thread/read")return reply({thread:{...thread,status:{type:running()?"active":"idle"}},itemsBackwardsCursor:null,turnsBackwardsCursor:null});
       if(message.method==="thread/goal/get")return reply({goal:goals.get(params.threadId)||null});
       if(message.method==="thread/goal/set"){
         const previous=goals.get(params.threadId)||null;
@@ -65,6 +66,7 @@ async function fakeCodex(thread){
   return {
     port,requests,turns,goals,notify,startCompaction,
     sent:method=>requests.filter(item=>item.method===method).map(item=>item.params||{}),
+    sentAt:method=>requests.filter(item=>item.method===method).map(item=>({at:item.at,params:item.params||{}})),
     ask(method,params){const id=nextId++;send({id,method,params});return {id,answers:()=>answers.get(String(id))||[]}},
     // A turn Codex runs that this window did not start (a goal's next turn), as the steps given ([method, item]) show it, until
     // turn/interrupt ends it.
@@ -73,6 +75,14 @@ async function fakeCodex(thread){
       notify("turn/started",{threadId,turn:{id:turn.id,status:"inProgress",items:[]}});
       for(const [method,item] of steps)notify(method,{threadId,turnId:turn.id,item});
       return turn;
+    },
+    // The turn ends as Codex ends one: its reply, then turn/completed.
+    completeTurn(turn,reply){
+      const itemId="reply-"+turn.id;turn.status="completed";
+      notify("item/started",{threadId:turn.threadId,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:""}});
+      notify("item/agentMessage/delta",{threadId:turn.threadId,turnId:turn.id,itemId,delta:reply});
+      notify("item/completed",{threadId:turn.threadId,turnId:turn.id,item:{type:"agentMessage",id:itemId,text:reply}});
+      notify("turn/completed",{threadId:turn.threadId,turn:{id:turn.id,status:"completed",items:[]}});
     },
     finishCompaction(){
       const turn=turns.find(item=>item.compaction&&item.status==="inProgress");if(!turn)return false;turn.status="completed";
@@ -104,12 +114,15 @@ async function startHarness(page,name){
   await page.route(/\/api\/environments$/,route=>json(route,{profiles:[],activeEnvironmentId:null,activeEnvironment:null}));
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
   await page.setViewportSize({width:1280,height:800});
-  await page.goto("/");
+  await page.goto("/");await openThread(page,name);
+  return {codex,gui,thread,cwd,
+    async close(){await page.close().catch(()=>{});await gui.close();await codex.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250}).catch(()=>{})}};
+}
+// The person opens the thread from the sidebar, and it is ready for a message.
+async function openThread(page,name){
   await page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)}).locator(".thread-main").click();
   await expect(page.locator(".workspace-header")).toContainText(name);
   await expect(page.getByTestId("composer")).toHaveAttribute("placeholder","Ask Trebell Code anything…",{timeout:15_000});
-  return {codex,gui,thread,cwd,
-    async close(){await page.close().catch(()=>{});await gui.close();await codex.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250}).catch(()=>{})}};
 }
 async function toggleMode(page){
   const before=await page.locator("html").getAttribute("data-mode"),direct=page.locator("[data-testid=appearance-toggle]:visible").first();
@@ -310,5 +323,89 @@ test("/goal sent while a Codex turn runs stops that turn and starts the goal, wh
     const panel=page.getByTestId("goal-panel");
     await expect(panel.getByLabel("Objective",{exact:true})).toHaveValue("Ship the release notes");await expect(panel.locator(".goal-status")).toHaveText("active");
     await shoot(page,"goal-during-turn",()=>expect(panel.locator(".goal-status")).toHaveText("active"));
+  }finally{await harness.close()}
+});
+
+// Codex works toward an active goal with turns of its own, the next one as soon as one ends. A goal it starts no next turn for within
+// 5 s of a completed one reads paused, not active with nothing running, and the Goal panel says why, and how to go on: its Resume, or
+// /goal resume, each of which starts the goal's next turn.
+const PAUSED_WHY="Codex started no next turn for this goal after its last turn ended. Resume or send /goal resume to continue.";
+// The thread's goal is active, and Codex runs a turn of it and ends it, starting no next one: when it ended.
+async function goalTurnEnds(page,codex,thread){
+  const now=Math.floor(Date.now()/1000),goal={threadId:thread.id,objective:"Ship the release notes",status:"active",tokenBudget:null,tokensUsed:0,timeUsedSeconds:0,createdAt:now,updatedAt:now};
+  codex.goals.set(thread.id,goal);codex.notify("thread/goal/updated",{threadId:thread.id,goal});
+  const stop=page.getByRole("button",{name:"Stop",exact:true}),turn=codex.runTurn(thread.id,[]);await expect(stop).toBeVisible();
+  const ended=Date.now();codex.completeTurn(turn,"Wrote the first section of the release notes.");
+  await expect(page.getByText("Wrote the first section of the release notes.").first()).toBeVisible();await expect(stop).toHaveCount(0);
+  return ended;
+}
+const pausedAfterWait=(codex,ended)=>codex.sentAt("thread/goal/set").map(({at,params})=>[params.status,at-ended>=5000]);
+
+// Repair of round 13's fix: the Goal panel's Resume, under the note, started no turn (it only set the goal active), so a person who
+// pressed it had the goal read Active with nothing running for good. It resumes the goal as /goal resume does now: the goal's next
+// turn starts, with no input, and the goal is active once it has. Nor does the test read the goal active between the turn's end and
+// the pause, which a run slower than 5 s would have read paused; when the pause came is read from what Codex was sent.
+test("a Codex goal Codex starts no next turn for reads paused after 5 s, and the Goal panel says why, also after a reload, until its Resume starts its next turn",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,"Release goal pause");const {codex,thread}=harness;
+  try{
+    const panel=page.getByTestId("goal-panel"),status=panel.locator(".goal-status"),note=panel.getByTestId("goal-pause-note");
+    await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    const ended=await goalTurnEnds(page,codex,thread);
+    await expect(status).toHaveText("paused",{timeout:15_000});
+    expect(pausedAfterWait(codex,ended)).toEqual([["paused",true]]);
+    await expect(note).toContainText("Goal paused");await expect.soft(note).toContainText(PAUSED_WHY);
+    await shoot(page,"goal-paused-no-next-turn",()=>expect(note).toContainText("Goal paused"));
+    // A window reloaded since reads the goal paused and says why too.
+    await page.reload();await openThread(page,"Release goal pause");await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    await expect(status).toHaveText("paused");await expect.soft(note).toContainText(PAUSED_WHY);
+    // The panel's Resume, as the note says: the goal's next turn runs, with no input (the goal goes on from the history), the goal is
+    // active again once it has started, and the note goes.
+    await panel.getByRole("button",{name:"Resume",exact:true}).click();
+    await expect(page.getByRole("button",{name:"Stop",exact:true}),"the goal's next turn runs after Resume").toBeVisible();
+    await expect(status).toHaveText("active");await expect(note).toHaveCount(0);
+    expect(codex.turns.map(turn=>turn.status)).toEqual(["completed","inProgress"]);expect(codex.turns[1].input).toEqual([]);
+    await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("active");
+    const started=codex.requests.findIndex(item=>item.method==="turn/start"),activated=codex.requests.findLastIndex(item=>item.method==="thread/goal/set"&&item.params?.status==="active");
+    expect(started>=0&&started<activated,"the goal active once its turn has started (T3 runGoalCommand)").toBe(true);
+    await expect(page.getByTestId("composer-alert")).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+// The pause goes on a window still there: the window that saw the turn end has gone, reloaded during the wait, and the reloaded one,
+// which opened the thread, reads the goal paused once the wait is over.
+test("a Codex goal reads paused once the 5 s wait for its next turn is over in a window reloaded during the wait",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,"Release goal reload");const {codex,thread}=harness;
+  try{
+    const panel=page.getByTestId("goal-panel"),status=panel.locator(".goal-status");
+    const ended=await goalTurnEnds(page,codex,thread);
+    // The window is reloaded during the wait (a slower run would test nothing: the window that saw the turn end would pause it).
+    await page.reload();expect(Date.now()-ended,"ms from the turn's end to the reload, within the 5 s wait").toBeLessThan(4000);
+    await openThread(page,"Release goal reload");await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    await expect(status).toHaveText("paused",{timeout:15_000});
+    expect(pausedAfterWait(codex,ended)).toEqual([["paused",true]]);
+    await expect(panel.getByTestId("goal-pause-note")).toContainText(PAUSED_WHY);
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);expect(codex.turns.filter(turn=>turn.status==="inProgress")).toEqual([]);
+    await shoot(page,"goal-paused-after-reload",()=>expect(status).toHaveText("paused"));
+  }finally{await harness.close()}
+});
+
+// No window is there as the wait ends: the window was closed as the reply came, and Trebell is opened again 7 s after the turn ended.
+// The goal reads paused there.
+test("a Codex goal reads paused in a window opened again after the one that saw its turn end was closed during the 5 s wait",async({page})=>{
+  test.setTimeout(90_000);
+  const harness=await startHarness(page,"Release goal closed");const {codex,thread}=harness;
+  try{
+    const panel=page.getByTestId("goal-panel"),status=panel.locator(".goal-status");
+    const ended=await goalTurnEnds(page,codex,thread);
+    // The person is away until the wait is over: a time, not something to wait for on a page.
+    await page.goto("about:blank");expect(Date.now()-ended,"ms from the turn's end to the window's close, within the 5 s wait").toBeLessThan(4000);
+    await page.waitForTimeout(Math.max(0,7000-(Date.now()-ended)));
+    await page.goto("/");await openThread(page,"Release goal closed");await page.getByRole("button",{name:"Thread goal",exact:true}).click();
+    await expect(status).toHaveText("paused",{timeout:10_000});
+    expect(pausedAfterWait(codex,ended)).toEqual([["paused",true]]);
+    await expect(panel.getByTestId("goal-pause-note")).toContainText(PAUSED_WHY);
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);expect(codex.turns.filter(turn=>turn.status==="inProgress")).toEqual([]);
   }finally{await harness.close()}
 });

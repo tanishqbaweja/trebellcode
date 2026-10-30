@@ -67,6 +67,26 @@ const appStays=async page=>{
   await expect(page.locator(".sidebar"),"the sidebar").toBeVisible();
   await expect(page.getByTestId("composer"),"the composer").toBeVisible();
 };
+// What a part whose code cannot load says in its place, with Reload: the words History's list says it in (loadFailed's, in App.jsx),
+// never the browser's own error with the address of the script.
+const CANNOT_LOAD=/^This part of Trebell could not be shown: Part of Trebell could not load\. Reload Trebell to get it back\.\s*Reload$/;
+// Settings for the app on the mock server's own harness (Trebell Native), with its first-run setup done.
+const NATIVE_SETTINGS={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"};
+// Where a box sits in the right panel's body: how far in from the body's sides (its scrollbar left out) and from its top.
+const insetInPanel=locator=>locator.evaluate(node=>{
+  const body=node.closest(".context-panel-body"),edge=body.getBoundingClientRect(),box=node.getBoundingClientRect(),left=edge.left+body.clientLeft;
+  return {left:Math.round(box.left-left),right:Math.round(left+body.clientWidth-box.right),top:Math.round(box.top-edge.top-body.clientTop)};
+});
+// The page as a person sees it, in dark and in light, at the window's width; check(mode) runs in each before its shot.
+async function shootModes(page,name,check=async()=>{}){
+  const {width,height}=page.viewportSize();
+  for(const mode of ["dark","light"]){
+    await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+    await check(mode);
+    await page.screenshot({animations:"disabled",path:auditDir+`${name}-${mode}-${width}x${height}.png`});
+  }
+  await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+}
 // Opens the fixture's thread from the sidebar and waits until it shows: its General chat welcome. The new-task screen before the
 // click has a welcome of its own, so waiting for any welcome let the harness's messages come while the thread was still opening.
 // Those are handled as the thread shows, and steps of a turn that is not running then stay on that turn's own card only, so the
@@ -109,7 +129,7 @@ test("a denial whose card cannot load says so in its place, and the rest of the 
     fixture.send({method:"item/autoApprovalReview/started",params:{threadId:fixture.thread.id,turnId:"turn-1",startedAtMs:startedAt,reviewId:"review-1",targetItemId:"cmd-1",review:{status:"inProgress",riskLevel:null,userAuthorization:null,rationale:null},action}});
     fixture.send({method:"item/autoApprovalReview/completed",params:{threadId:fixture.thread.id,turnId:"turn-1",startedAtMs:startedAt,completedAtMs:startedAt+125,reviewId:"review-1",targetItemId:"cmd-1",decisionSource:"agent",review:{status:"denied",riskLevel:"high",userAuthorization:"low",rationale:"Deleting this file needs explicit user approval."},action}});
     const failed=page.locator(".conversation-column .lazy-slot-error");
-    await expect(failed).toContainText("This part of Trebell could not be shown:");
+    await expect(failed).toHaveText(CANNOT_LOAD);
     await expect(failed).toHaveAttribute("role","alert");
     await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
     await appStays(page);
@@ -130,7 +150,7 @@ test("the Runtime tab whose background-processes list cannot load says so there,
     const panel=page.getByTestId("right-panel");
     await panel.getByRole("button",{name:"Runtime",exact:true}).click();
     const failed=panel.locator(".lazy-slot-error");
-    await expect(failed).toContainText("This part of Trebell could not be shown:");
+    await expect(failed).toHaveText(CANNOT_LOAD);
     await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
     await expect(panel.getByText("Agent harness",{exact:true})).toBeVisible();
     await expect(panel.getByText("Latest activity",{exact:true})).toBeVisible();
@@ -139,21 +159,214 @@ test("the Runtime tab whose background-processes list cannot load says so there,
   }finally{await fixture.close()}
 });
 
-// A page loads with its first visit. When its code cannot load, the page says so and the rest of the app (the sidebar and the way
-// back to the chat) stays.
-test("a page whose code cannot load says so, and the way back to the chat stays",async({page,request})=>{
-  test.setTimeout(45_000);
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
+// A page loads with its first visit. When its code cannot load, the page says so under its heading in the words History's list says
+// it in, with Reload (it said the browser's own "Failed to fetch dynamically imported module:" and the script's address, broken
+// across two lines), whether it is opened by a click on its destination, by Enter on it or by its key, wide and narrow; the rest of
+// the app (the sidebar and the way back to the chat) stays, and Reload brings the page back once its code can load. Repair of round 13's
+// fix: Usage and Environments (and Tools, below) draw their heading in their own code, so theirs said the reason with no heading over
+// it; App keeps one over the reason, as History's frame has.
+test("a page whose code cannot load says so under its heading in History's words, with Reload, by mouse and by keyboard, wide and narrow, and the way back to the chat stays",async({page,request})=>{
+  test.setTimeout(60_000);
+  await request.post("/api/settings",{data:NATIVE_SETTINGS});
+  await page.setViewportSize({width:1280,height:800});
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
-  await page.route(/\/assets\/ProjectsPage-[^/]*\.js$/,route=>route.abort("failed"));
+  let refuse=true;
+  await page.route(/\/assets\/(ProjectsPage|SettingsPage|UsagePage|EnvironmentsPage)-[^/]*\.js$/,route=>refuse?route.abort("failed"):route.continue());
   const nav=label=>page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:label,exact:true});
+  const failed=page.locator(".secondary-page .lazy-slot-error"),header=page.locator(".secondary-page > .page-header");
+  const underHeading=async()=>expect(Math.round((await failed.boundingBox()).x),"the reason under the heading's left edge").toBe(Math.round((await header.boundingBox()).x));
+  // A click on Projects.
   await nav("Projects").click();
-  const failed=page.locator(".secondary-page .lazy-slot-error");
-  await expect(failed).toContainText("This part of Trebell could not be shown:");
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  await expect(failed).toHaveText(CANNOT_LOAD);await expect(failed).toHaveAttribute("role","alert");
+  await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
+  await underHeading();
+  await shootModes(page,"lazy-chunk-projects-page-cannot-load");
+  // Enter on Usage.
+  await nav("Usage").focus();await page.keyboard.press("Enter");
+  await expect(nav("Usage")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);
+  await expect.soft(page.getByRole("heading",{name:"Usage",level:1}),"Usage's heading over its reason").toBeVisible();
+  if(await header.count())await underHeading();
+  await shootModes(page,"lazy-chunk-usage-page-cannot-load");
+  // A click on Environments.
+  await nav("Environments").click();
+  await expect(nav("Environments")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);
+  await expect.soft(page.getByRole("heading",{name:"Environments",level:1}),"Environments' heading over its reason").toBeVisible();
+  if(await header.count())await underHeading();
+  // Settings by its key, in a narrow window.
+  await page.setViewportSize({width:700,height:800});
+  await page.keyboard.press("Control+Comma");
+  await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
+  await expect(failed).toHaveText(CANNOT_LOAD);
+  await underHeading();
+  await shootModes(page,"lazy-chunk-settings-page-cannot-load");
+  await page.setViewportSize({width:1280,height:800});
   await nav("New task").click();
+  await appStays(page);
+  // Reload loads Trebell again, which brings the page back once its code can load.
+  await nav("Projects").click();await expect(failed).toHaveText(CANNOT_LOAD);
+  refuse=false;
+  await Promise.all([page.waitForEvent("load"),failed.getByRole("button",{name:"Reload",exact:true}).click()]);
+  await expect(nav("Projects")).toBeVisible({timeout:10_000});
+  await nav("Projects").click();
+  await expect(page.locator(".projects-page")).toBeVisible();await expect(failed).toHaveCount(0);
+});
+
+// The Tools page, a Codex window's (Harness capabilities), draws its heading in its own code too: one whose code cannot load says so
+// under the heading App keeps for it, in History's words, with Reload, and the way back to the chat stays.
+test("a Codex window's Tools page whose code cannot load says so under its heading in History's words, with Reload",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await codexFixture(page);
+  try{
+    await page.route(/\/assets\/HarnessToolsPage-[^/]*\.js$/,route=>route.abort("failed"));
+    await page.setViewportSize({width:1280,height:800});await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const nav=label=>page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:label,exact:true});
+    const failed=page.locator(".secondary-page .lazy-slot-error"),header=page.locator(".secondary-page > .page-header");
+    await nav("Tools").click();
+    await expect(nav("Tools")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);await expect(failed).toHaveAttribute("role","alert");
+    await expect.soft(page.getByRole("heading",{name:"Harness capabilities",level:1}),"the Tools page's heading over its reason").toBeVisible();
+    if(await header.count())expect(Math.round((await failed.boundingBox()).x),"the reason under the heading's left edge").toBe(Math.round((await header.boundingBox()).x));
+    await shootModes(page,"lazy-chunk-tools-page-cannot-load");
+    await nav("New task").click();
+    await appStays(page);
+  }finally{await fixture.close()}
+});
+
+// A right-panel tab loads with its first showing. When its code cannot load, its place says so in History's words, with Reload (the
+// Goal and Browser tabs said the browser's own error with the script's address, in three lines), whether the tab is clicked, chosen
+// with Enter or opened from the sidebar's destination; the panel's other tabs still draw, and Reload brings the tab back once its code
+// can load.
+test("a right-panel tab whose code cannot load says so in its place in History's words, with Reload, by mouse, by keyboard and from the sidebar",async({page,request})=>{
+  test.setTimeout(60_000);
+  await request.post("/api/settings",{data:NATIVE_SETTINGS});
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
+  let refuse=true;
+  await page.route(/\/assets\/(GoalPanel|PreviewPage)-[^/]*\.js$/,route=>refuse?route.abort("failed"):route.continue());
+  const panel=page.getByTestId("right-panel"),tab=label=>panel.getByRole("button",{name:label,exact:true}),failed=panel.locator(".lazy-slot-error");
+  const files=panel.locator(".workspace-panel"),browser=()=>page.getByRole("navigation",{name:"Destinations"}).getByRole("button",{name:"Browser",exact:true}).click();
+  // What the Goal tab's own code shows on the new task, which has no thread yet.
+  const goal=panel.getByText("Start or open a thread before setting a durable goal.",{exact:true});
+  await page.getByTestId("right-panel-toggle").click();
+  await expect(tab("Files")).toHaveClass(/\bactive\b/);await expect(files).toBeVisible();
+  // A click on Goal.
+  await tab("Goal").click();
+  await expect(failed).toHaveText(CANNOT_LOAD);await expect(failed).toHaveAttribute("role","alert");
+  await expect(failed.getByRole("button",{name:"Reload",exact:true})).toBeVisible();
+  await expect(goal).toHaveCount(0);
+  // Enter on Browser.
+  await tab("Browser").focus();await page.keyboard.press("Enter");
+  await expect(tab("Browser")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);
+  // Files draws again: a tab that could not be shown takes only its own place with it.
+  await tab("Files").click();await expect(files).toBeVisible();await expect(failed).toHaveCount(0);
+  // The sidebar's Browser opens the panel on its tab, which says the same.
+  await panel.getByRole("button",{name:"Close right panel",exact:true}).click();await expect(panel).toHaveCount(0);
+  await browser();
+  await expect(tab("Browser")).toHaveClass(/\bactive\b/);await expect(failed).toHaveText(CANNOT_LOAD);
+  await appStays(page);
+  // Reload loads Trebell again, which brings the tabs back once their code can load.
+  refuse=false;
+  await Promise.all([page.waitForEvent("load"),failed.getByRole("button",{name:"Reload",exact:true}).click()]);
+  await expect(page.getByTestId("composer")).toBeVisible({timeout:10_000});
+  await browser();
+  await expect(panel.locator(".preview-page")).toBeVisible();await expect(failed).toHaveCount(0);
+  await tab("Goal").click();
+  await expect(goal).toBeVisible();await expect(failed).toHaveCount(0);
+});
+
+// The reason a right-panel tab could not be shown sits in the panel as the tab's own content does once it loads (the Runtime surface's
+// cards, 14 px in from the panel's sides and top), clear of the panel's divider and the window's edge (it lay flush on both, its
+// rounded corners against them), wide and narrow, dark and light: for the Goal, Context, Git, Browser, Agents, Files and Diff tabs,
+// whose code loads with them, and for the Runtime tab, whose code (idle-parts.js) loads at idle. Repair of round 13's fix: in the panel
+// maximized in a wide window the Goal, Context, Git and Runtime tabs' own content keeps to a centred column no wider than 1040 px, and
+// their reason sits in it too (it spanned the whole panel, 14 px in). The Browser, Agents, Files and Diff tabs' own content stays full
+// width there, and so does their reason (the repair had moved it into that column too, 148 px in at 1600 px, away from their content).
+test("a right-panel tab that cannot load shows its reason inset like the tab's own content, clear of the panel's divider and the window's edge, wide and narrow, dark and light, and maximized",async({page,request})=>{
+  test.setTimeout(150_000);
+  await request.post("/api/settings",{data:NATIVE_SETTINGS});
+  // Where the Browser, Agents, Files and Diff tabs' own content sits once it loads, docked at 1280 px and maximized at 1600 px. It is
+  // measured in a window of its own: this one refuses their code below, and a part a page has loaded once stays loaded in it.
+  const fullWidth={Browser:".preview-page > .preview-bar",Agents:".panel-page > .agents-page",Files:".workspace-panel",Diff:".workspace-panel"},content={};
+  const other=await page.context().newPage();
+  try{
+    await other.setViewportSize({width:1280,height:800});
+    await other.goto("/");
+    await expect(other.getByTestId("composer")).toBeVisible();
+    // The panel's own buttons: the Files tab draws a Files and a Diff button of its own.
+    const otherPanel=other.getByTestId("right-panel"),otherTab=label=>otherPanel.locator(".context-panel-tabs").getByRole("button",{name:label,exact:true});
+    const measure=async at=>{
+      for(const [label,selector] of Object.entries(fullWidth)){
+        await otherTab(label).click();await expect(otherTab(label)).toHaveClass(/\bactive\b/);
+        const node=otherPanel.locator(selector);await expect(node).toBeVisible();
+        (content[label]||={})[at]=await insetInPanel(node);
+      }
+    };
+    await other.getByTestId("right-panel-toggle").click();
+    await measure("docked");
+    await other.setViewportSize({width:1600,height:900});
+    await otherTab("Maximize right panel").click();await expect(otherPanel).toHaveClass(/\bmaximized\b/);
+    await measure("wide");
+  }finally{await other.close()}
+  console.log("the Browser, Agents, Files and Diff tabs' own content in the panel, docked at 1280 px and maximized at 1600 px:",JSON.stringify(content));
+  await page.setViewportSize({width:1280,height:800});
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  const panel=page.getByTestId("right-panel"),tab=label=>panel.getByRole("button",{name:label,exact:true}),failed=panel.locator(".context-panel-body > .lazy-slot-error");
+  await page.getByTestId("right-panel-toggle").click();
+  // Where the tab's own content sits: the Runtime surface's first card.
+  await tab("Runtime").click();
+  const card=panel.locator(".runtime-surface > .runtime-summary");await expect(card).toBeVisible();
+  const own=await insetInPanel(card);console.log("the Runtime surface's first card in the panel:",JSON.stringify(own));
+  // And in the panel maximized in a wide window, where that content keeps to its centred column.
+  const maximize=async()=>{await page.setViewportSize({width:1600,height:900});await panel.getByRole("button",{name:"Maximize right panel",exact:true}).click();await expect(panel).toHaveClass(/\bmaximized\b/)};
+  const restore=async()=>{await panel.getByRole("button",{name:"Restore right panel",exact:true}).click();await expect(panel).not.toHaveClass(/\bmaximized\b/);await page.setViewportSize({width:1280,height:800})};
+  await maximize();
+  const wide=await insetInPanel(card);console.log("the Runtime surface's first card in the maximized panel at 1600 px:",JSON.stringify(wide));
+  expect(wide.left,"the maximized panel's content column inset past 14 px at 1600 px").toBeGreaterThan(14);
+  await restore();
+  await page.route(/\/assets\/(GoalPanel|ContextInspector|SourceControlPanel|PreviewPage|AgentsPage)-[^/]*\.js$/,route=>route.abort("failed"));
+  // Browser by Enter, the others by a click.
+  const open=label=>label==="Browser"?tab(label).focus().then(()=>page.keyboard.press("Enter")):tab(label).click();
+  const placed=async(labels,widths=[1280,900,700])=>{
+    for(const width of widths){
+      await page.setViewportSize({width,height:800});
+      for(const label of labels){
+        await open(label);
+        await expect(tab(label)).toHaveClass(/\bactive\b/);await expect(failed).toBeVisible();await expect(failed).toHaveAttribute("role","alert");
+        await shootModes(page,`lazy-chunk-${label.toLowerCase()}-tab-cannot-load`,async mode=>expect(await insetInPanel(failed),`${label}'s reason at ${width} px, ${mode}`).toEqual(own));
+      }
+    }
+  };
+  await placed(["Goal","Context","Git","Browser","Agents"]);
+  // Maximized at 1600 px, the reason moves in from where it sits docked as far as the tab's own content does there: the Goal, Context,
+  // Git and Runtime tabs' as the Runtime card does, into the centred column, and the Browser, Agents, Files and Diff tabs' as their
+  // own content measured above, which stays full width.
+  const maximizedAt=label=>{
+    const moved=content[label]||{docked:own,wide};
+    return {left:own.left+moved.wide.left-moved.docked.left,right:own.right+moved.wide.right-moved.docked.right,top:own.top+moved.wide.top-moved.docked.top};
+  };
+  const placedWide=async labels=>{
+    await maximize();
+    for(const label of labels){
+      await open(label);
+      await expect(tab(label)).toHaveClass(/\bactive\b/);await expect(failed).toBeVisible();
+      await shootModes(page,`lazy-chunk-${label.toLowerCase()}-tab-cannot-load-maximized`,async mode=>expect.soft(await insetInPanel(failed),`${label}'s reason in the panel maximized at 1600 px, ${mode}`).toEqual(maximizedAt(label)));
+    }
+    await restore();
+  };
+  await placedWide(["Goal","Context","Git","Browser","Agents"]);
+  // A Trebell opened with its idle script and the Files and Diff tabs' code refused: the Runtime, Files and Diff tabs cannot load.
+  await page.route(/\/assets\/(idle-parts|WorkspacePanel)-[^/]*\.js$/,route=>route.abort("failed"));
+  await page.setViewportSize({width:1280,height:800});
+  await page.reload();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByTestId("right-panel-toggle").click();
+  await placed(["Files","Diff","Runtime"]);
+  await placedWide(["Files","Diff","Runtime"]);
+  await appStays(page);
 });
 
 // Trebell's own tool catalog loads at idle after the first paint (B11). A new task sent before it has come waits for it and starts
@@ -961,6 +1174,67 @@ test("a palette whose message search cannot load says it could not search thread
     await page.keyboard.type(needle,{delay:15});
     await expect(palette.locator(".command-palette-item.message-match").filter({hasText:"Beta notes"})).toBeVisible({timeout:10_000});
     await expect(said).toHaveCount(0);
+    await appStays(page);
+  }finally{await harness.close()}
+});
+
+// Nor can that search run again before a reload, the browser keeping the script that failed, so the notice and its Reload stay while
+// names are typed, the results in their place under them, and the search box does not say 'Searching messages…'. Both went at every
+// key, 'Searching messages…' showing meanwhile, and came back as the search tried again failed, about 0.1 s after the last key, the
+// results moving 61 px down with them; Tab pressed straight after typing went past Reload. Repair of that fix: a palette opened again
+// in the same page started from nothing, so its first typing did all that again; it knows from the start now (the palette's own chunk
+// keeps it), and the second pass, a palette opened again, is watched from its first frame, before anything is typed.
+test("a palette whose message search cannot load keeps its notice and Reload in place while names are typed, without 'Searching messages…', by keyboard and by mouse, also in a palette opened again",async({page})=>{
+  test.setTimeout(90_000);
+  const needle="violet-harbor-207";
+  let refused=0;
+  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>{refused++;return route.abort("failed")});
+  const {harness}=await openRelayThreads(page,[{name:"Quill release",user:"Plan the release",reply:"The release plan is ready."},{name:"Beta notes",user:"Write the notes",reply:`The notes mention ${needle} once.`}]);
+  try{
+    await expect.poll(()=>refused,{message:"the parts asked for at idle"}).toBeGreaterThan(0);
+    const palette=page.getByTestId("command-palette"),said=palette.getByRole("alert"),reload=said.getByRole("button",{name:"Reload",exact:true});
+    const notice=/^Could not search thread messages: Part of Trebell could not load\. Reload Trebell to get it back\.\s*Reload$/;
+    const search=palette.getByPlaceholder("Search commands, threads, and messages…"),item=text=>palette.locator(".command-palette-item").filter({hasText:text});
+    // Each frame from then on: the search, whether the notice shows with its Reload, whether the box says 'Searching messages…', and
+    // where the results start.
+    const watch=()=>page.evaluate(()=>{
+      const frames=window.__paletteFrames=[];
+      const note=()=>{const node=document.querySelector("[data-testid=command-palette]");if(!node)return;frames.push({query:node.querySelector("input").value,reload:Boolean(node.querySelector("[role=alert] button")),searching:Boolean(node.querySelector(".command-palette-searching")),top:Math.round(node.querySelector(".command-palette-results").getBoundingClientRect().top)});requestAnimationFrame(note)};
+      requestAnimationFrame(note);
+    });
+    for(const [how,mode,width] of [["keyboard","dark",1280],["mouse","light",700]]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      // By keyboard: Ctrl+K from the composer, the word until the notice shows (the page's first palette learns it from a search), Ctrl+A
+      // over it. By mouse, in the palette opened again: Search or jump to, the window narrowed, and a triple click on the search box,
+      // watched from before anything is typed, where the notice and its Reload already show.
+      if(how==="keyboard"){await page.getByTestId("composer").click();await page.keyboard.press("Control+k")}
+      else await page.getByRole("button",{name:"Search or jump to"}).click();
+      await expect(palette).toBeVisible();await page.setViewportSize({width,height:800});
+      if(how==="keyboard"){await page.keyboard.type(needle,{delay:15});await expect(said).toHaveText(notice)}
+      // Its opening pop (180 ms) over, which moves the whole palette by a pixel, before its frames are watched.
+      await palette.locator(".command-palette").evaluate(node=>Promise.all(node.getAnimations().map(animation=>animation.finished)));
+      await watch();
+      if(how==="mouse")await expect.soft(said,"the notice in the palette opened again, before anything is typed").toHaveText(notice);
+      if(how==="keyboard")await page.keyboard.press("Control+a");else await search.click({clickCount:3});
+      // A thread's name typed at a person's pace, a letter taken back and typed again, then a command's and a project's: each is found.
+      await page.keyboard.type("Quill",{delay:120});await expect(item("Quill release")).toBeVisible();
+      await page.screenshot({animations:"disabled",path:auditDir+`palette-message-search-cannot-load-typing-${mode}-${width}x800.png`});
+      await page.keyboard.press("Backspace");await page.keyboard.type("l release",{delay:120});await expect(item("Quill release")).toBeVisible();
+      await page.keyboard.press("Control+a");await page.keyboard.type("Settings",{delay:120});await expect(item(/^Settings/)).toBeVisible();
+      await page.keyboard.press("Control+a");await page.keyboard.type("Relay History",{delay:120});await expect(palette.locator(".command-palette-item.kind-project")).toHaveCount(1);
+      // Tab straight after typing reaches Reload.
+      await page.keyboard.press("Control+a");await page.keyboard.type("Beta",{delay:120});await page.keyboard.press("Tab");
+      await expect.soft(reload,"where Tab straight after typing puts the keyboard").toBeFocused();await expect(item("Beta notes")).toBeVisible();
+      // Nor does anything change once the typing stops, as the search is tried again.
+      await page.waitForTimeout(500);
+      const frames=await page.evaluate(()=>window.__paletteFrames),searches=list=>[...new Set(list.map(frame=>frame.query))];
+      expect.soft(searches(frames.filter(frame=>!frame.reload)),"the searches shown without the notice and its Reload").toEqual([]);
+      expect.soft(searches(frames.filter(frame=>frame.searching)),"the searches shown with 'Searching messages…'").toEqual([]);
+      expect([...new Set(frames.map(frame=>frame.top))],"where the results started").toHaveLength(1);
+      await expect(said).toHaveText(notice);
+      await page.keyboard.press("Escape");await expect(palette).toHaveCount(0);
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1280,height:800});
     await appStays(page);
   }finally{await harness.close()}
 });

@@ -134,7 +134,7 @@ test("a Cursor tool call whose only location is no object shows in the turn's ca
   }finally{await thread.close()}
 });
 
-test("the thread's Execution trace lists a Cursor update Trebell dropped, by its method and reason",async({page})=>{
+test("the thread's Execution trace lists a Cursor update Trebell dropped, by its method and reason, in the app's warning tone",async({page})=>{
   test.setTimeout(60_000);
   const thread=await cursorThread(page,{name:"Trace notes",traces:true});
   try{
@@ -146,6 +146,19 @@ test("the thread's Execution trace lists a Cursor update Trebell dropped, by its
     const row=trace.locator(".runtime-trace-row").filter({has:page.locator("summary strong",{hasText:/^acp\.message\.dropped$/})});
     await expect(row,"the drop is in the trace once").toHaveCount(1,{timeout:15_000});
     await expect(row.locator("summary span")).toHaveText("warning");
+    // It reads as a warning at a glance: its chip has the app's warning tone (--warn on --warnt), as Completed has the ok one and a
+    // failure the error one, in light and dark, not the neutral grey of the routine rows (Idle, Runtime) it had (UI lane E, round 13).
+    const tone=()=>row.locator("summary span").evaluate(node=>{
+      const probe=node.parentElement.appendChild(document.createElement("i"));
+      probe.style.setProperty("color","var(--warn)","important");probe.style.setProperty("background-color","var(--warnt)","important");
+      const [chip,warning]=[node,probe].map(element=>{const style=getComputedStyle(element);return style.color+" on "+style.backgroundColor});
+      probe.remove();return {chip,warning};
+    });
+    for(const mode of ["light","dark"]){
+      if(await page.evaluate(()=>document.documentElement.dataset.mode)!==mode)await page.getByTestId("appearance-toggle").first().click();
+      await expect(page.locator("html")).toHaveAttribute("data-mode",mode);
+      const {chip,warning}=await tone();expect.soft(chip,"the dropped update's chip in "+mode).toBe(warning);
+    }
     await row.locator("summary").click();
     const turnId=thread.threadStore.get(thread.seed.id).turns.at(-1).id;
     await expect(row.locator("p"),"the drop names the thread and the turn it came in").toHaveText(new RegExp(`^cursor · .*thread ${thread.seed.id.slice(0,12)} · turn ${String(turnId).slice(0,12)}$`));

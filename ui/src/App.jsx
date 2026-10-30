@@ -80,43 +80,47 @@ import ReasoningRow from "./components/ReasoningRow.jsx";
 import TurnActivityCard from "./components/TurnActivityCard.jsx";
 import { reasoningHistoryMessage } from "./reasoning-text.js";
 
-const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
-const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
-const SourceControlPanel=lazy(()=>import("./components/SourceControlPanel.jsx"));
-const ProjectsPage=lazy(()=>import("./components/ProjectsPage.jsx"));
-const AgentsPage=lazy(()=>import("./components/AgentsPage.jsx"));
-const PreviewPage=lazy(()=>import("./components/PreviewPage.jsx"));
-const SettingsPage=lazy(()=>import("./components/SettingsPage.jsx"));
-const HarnessToolsPage=lazy(()=>import("./components/HarnessToolsPage.jsx"));
-const EnvironmentsPage=lazy(()=>import("./components/EnvironmentsPage.jsx"));
-const GoalPanel=lazy(()=>import("./components/GoalPanel.jsx"));
+// A part whose code cannot load (the UI was rebuilt or updated under an open page, or the link to a remote Trebell server dropped)
+// fails with these words, whatever loads it, so its place (LazySlot) says so in them rather than in the browser's own error with the
+// script's address. lazyPart: a part App draws (lazy()) that loads with its first showing.
+const loadFailed=error=>Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+const lazyPart=load=>lazy(()=>load().catch(error=>{throw loadFailed(error)}));
+const TerminalPanel=lazyPart(()=>import("./components/TerminalPanel.jsx"));
+const WorkspacePanel=lazyPart(()=>import("./components/WorkspacePanel.jsx"));
+const SourceControlPanel=lazyPart(()=>import("./components/SourceControlPanel.jsx"));
+const ProjectsPage=lazyPart(()=>import("./components/ProjectsPage.jsx"));
+const AgentsPage=lazyPart(()=>import("./components/AgentsPage.jsx"));
+const PreviewPage=lazyPart(()=>import("./components/PreviewPage.jsx"));
+const SettingsPage=lazyPart(()=>import("./components/SettingsPage.jsx"));
+const HarnessToolsPage=lazyPart(()=>import("./components/HarnessToolsPage.jsx"));
+const EnvironmentsPage=lazyPart(()=>import("./components/EnvironmentsPage.jsx"));
+const GoalPanel=lazyPart(()=>import("./components/GoalPanel.jsx"));
 // Shown only while a new worktree is set up, so it loads with its first setup instead of with the app (B11).
-const WorktreeSetupCard=lazy(()=>import("./components/WorktreeSetupCard.jsx"));
-const UsagePage=lazy(()=>import("./components/UsagePage.jsx"));
-const LicensesPage=lazy(()=>import("./components/LicensesPage.jsx"));
-const ContextInspector=lazy(()=>import("./components/ContextInspector.jsx"));
+const WorktreeSetupCard=lazyPart(()=>import("./components/WorktreeSetupCard.jsx"));
+const UsagePage=lazyPart(()=>import("./components/UsagePage.jsx"));
+const LicensesPage=lazyPart(()=>import("./components/LicensesPage.jsx"));
+const ContextInspector=lazyPart(()=>import("./components/ContextInspector.jsx"));
 // The Runtime tab's trace, which the tab (RuntimeSurface, idle-parts.js) draws: its code is asked for as the tab is first asked for,
 // beside the tab's own (preloadRuntimeTrace), so it does not wait for the tab's code to come before it starts to load.
 let runtimeTraceLoad=null;
 const loadRuntimeTrace=()=>runtimeTraceLoad||=import("./components/RuntimeTrace.jsx");
 const preloadRuntimeTrace=()=>{if(!runtimeTraceLoad)loadRuntimeTrace().catch(()=>{})};
-const RuntimeTrace=lazy(loadRuntimeTrace);
+const RuntimeTrace=lazyPart(loadRuntimeTrace);
 // Shown only on the right panel's Runtime tab, so it loads when that tab first shows instead of with the app (B11).
-const AgentBackgroundTerminals=lazy(()=>import("./components/AgentBackgroundTerminals.jsx"));
+const AgentBackgroundTerminals=lazyPart(()=>import("./components/AgentBackgroundTerminals.jsx"));
 // Shown only once auto review has denied an action, so it loads with the first denial instead of with the app (B11). The approval
 // card stays in App (ApprovalCard below): a harness waits on it, so it shows the moment the request comes, and no chunk that is
 // slow or fails to load stands between the person and their answer.
-const GuardianDenialCard=lazy(()=>import("./components/GuardianDenialCard.jsx"));
-const QuestionModal=lazy(()=>import("./components/QuestionModal.jsx"));
-const McpElicitationModal=lazy(()=>import("./components/McpElicitationModal.jsx"));
-const SnoozeDialog=lazy(()=>import("./components/SnoozeDialog.jsx"));
-const CommandPalette=lazy(()=>import("./components/CommandPalette.jsx"));
-const OnboardingModal=lazy(()=>import("./components/OnboardingModal.jsx"));
+const GuardianDenialCard=lazyPart(()=>import("./components/GuardianDenialCard.jsx"));
+const QuestionModal=lazyPart(()=>import("./components/QuestionModal.jsx"));
+const McpElicitationModal=lazyPart(()=>import("./components/McpElicitationModal.jsx"));
+const SnoozeDialog=lazyPart(()=>import("./components/SnoozeDialog.jsx"));
+const CommandPalette=lazyPart(()=>import("./components/CommandPalette.jsx"));
+const OnboardingModal=lazyPart(()=>import("./components/OnboardingModal.jsx"));
 // Trebell's own tool catalog (the dynamic tools a new thread gets, and how a tool's results are put) is not needed for the first
 // paint, so it loads at idle after it instead of with the app (B11). An action that needs it before then waits for that load. A load
-// that fails rejects, so the action fails and says so rather than waiting; the browser keeps a module that failed, so a reload brings
-// it back.
-const loadFailed=error=>Object.assign(new Error("Part of Trebell could not load. Reload Trebell to get it back."),{cause:error});
+// that fails rejects (loadFailed), so the action fails and says so rather than waiting; the browser keeps a module that failed, so a
+// reload brings it back.
 let sharedToolCatalogLoad=null;
 const loadSharedToolCatalog=()=>sharedToolCatalogLoad||=import("../../src/shared-tool-catalog.mjs").catch(error=>{
   sharedToolCatalogLoad=null;throw loadFailed(error);
@@ -266,15 +270,17 @@ const WINDOW_KEY=(()=>{
 // A part loaded with lazy() whose code could not load (the UI was rebuilt or updated under an open page, or the link to a remote
 // Trebell server dropped), or that failed as it drew, says so in its place: without a boundary React takes the whole app off the
 // screen with it. The browser keeps a module that failed to load as failed, so a reload is what loads it again. failed: what shows
-// instead, for a part that has no place until the person uses it (the Cite button). resetKey: what the slot holds (the right panel's
-// tab); another one draws again in its place, so a part that could not be shown takes only its own place with it.
+// instead of that reason (slotFailed), for a part that has no place until the person uses it (the Cite button), or the reason under
+// a page's heading (DeferredSurface). resetKey: what the slot holds (the right panel's tab); another one draws again in its place, so
+// a part that could not be shown takes only its own place with it.
+const slotFailed=error=><div className="lazy-slot-error" role="alert"><span>This part of Trebell could not be shown: {error.message||String(error)}</span><button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>;
 class LazySlot extends React.Component{
   state={error:null,resetKey:this.props.resetKey};
   static getDerivedStateFromError(error){return {error}}
   static getDerivedStateFromProps(props,state){return props.resetKey===state.resetKey?null:{error:null,resetKey:props.resetKey}}
   render(){
     const {error}=this.state;
-    return error?this.props.failed?this.props.failed(error):<div className="lazy-slot-error" role="alert"><span>This part of Trebell could not be shown: {error.message||String(error)}</span><button type="button" className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>:<Suspense fallback={this.props.fallback??null}>{this.props.children}</Suspense>;
+    return error?(this.props.failed||slotFailed)(error):<Suspense fallback={this.props.fallback??null}>{this.props.children}</Suspense>;
   }
 }
 // The Cite button's code (idle-parts.js) that could not load says so only where the button would come, above text selected in a
@@ -309,8 +315,10 @@ function CiteUnavailable({containerRef}){
   },[containerRef]);
   return at&&<div className="lazy-slot-error cite-unavailable" role="alert" style={{left:at.x,top:at.y}} onPointerDown={event=>event.preventDefault()}><span>Cite could not load.</span><button ref={reload} type="button" tabIndex={-1} className="tb-btn tb-btn--sm" onClick={()=>window.location.reload()}>Reload</button></div>;
 }
-function DeferredSurface({children,label="Loading…",compact=false,resetKey}){
-  return <LazySlot resetKey={resetKey} fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</LazySlot>;
+// heading: a page's own, for a page whose code draws it (Usage, Tools, Environments): should that code not load, the reason says so
+// under it, as on the pages whose heading App draws (History's frame), not alone on the page.
+function DeferredSurface({children,label="Loading…",compact=false,resetKey,heading=null}){
+  return <LazySlot resetKey={resetKey} failed={heading?error=><><div className="page-header"><div><h1>{heading}</h1></div></div>{slotFailed(error)}</>:null} fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</LazySlot>;
 }
 
 function sameSnapshot(left,right){
@@ -843,12 +851,15 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // sized again then, and App hears the room the header and the composer with a line of draft and its shelf need above the drawer,
   // 12px under the header and 12px above the drawer (onRoom), which the drawer's tallest leaves them. The draft is watched too: a row
   // that grows in a composer held under the header (a chip's row, a note, the controls in another row) leaves the box as it is and
-  // squeezes the draft, and the rows are read with what of them hangs below the box once the draft has nothing left to give, to the
-  // foot of the last of them (the status line): a / or @ menu that opens under the composer, over the drawer (overlays.css), hangs
-  // below the box too, and read with it the drawer's tallest went down by the menu's height as an @ word typed on took the draft to a
-  // second line. A draft whose view shrinks from below while it shows its last line, where the person types, keeps its foot where it
-  // was, so that line stays in view (as typed, Chrome leaves the line's padding under it out of view): it is moved before the frame is
-  // drawn.
+  // squeezes the draft. That room is read from what the drawer's height moves none of: the box's edges and the heights of its rows in
+  // its flow but the draft, each whole, also where it hangs below the box once the draft has nothing left to give. The box and the
+  // draft, which the drawer moves and resizes, are not read: at a fractional scale (125% display scaling, a window zoomed to 110%)
+  // their whole pixels round one way or the other as the box lands on the device's pixels, and the room read from them went between
+  // two values a pixel apart every frame with no input, each moving the composer to where it read the other. Nor is what stands out of
+  // its flow: a / or @ menu that opens under the composer, over the drawer (overlays.css), hangs below the box too, and read with it
+  // the drawer's tallest went down by the menu's height as an @ word typed on took the draft to a second line. A draft whose view
+  // shrinks from below while it shows its last line, where the person types, keeps its foot where it was, so that line stays in view
+  // (as typed, Chrome leaves the line's padding under it out of view): it is moved before the frame is drawn.
   useEffect(()=>{
     const wrap=wrapRef.current,host=wrap?.parentElement,shelf=shelfRef.current,draft=composerRef.current;if(!host||!draft||typeof ResizeObserver==="undefined")return;
     const set=(name,px)=>host.style.setProperty(name,px+"px");
@@ -859,7 +870,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
       cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{
         const shelved=shelf?.offsetHeight||0;resizeTextarea(draft,{min:40,max:160});
         set("--composer-height",wrap.offsetHeight);set("--composer-chips",wrap.querySelector(":scope>.context-chip-row")?.offsetHeight||0);set("--composer-shelf",shelved);pickerFoot(wrap);
-        const foot=wrap.lastElementChild;onRoom?.((host.querySelector(".workspace-header")?.getBoundingClientRect().bottom||0)+64+wrap.offsetHeight+Math.max(0,foot.offsetTop+foot.offsetHeight-wrap.clientHeight)-draft.offsetHeight+shelved);
+        const style=getComputedStyle(wrap);let need=(host.querySelector(".workspace-header")?.getBoundingClientRect().bottom||0)+64+shelved;
+        for(const edge of ["borderTopWidth","paddingTop","paddingBottom","borderBottomWidth"])need+=parseFloat(style[edge]);
+        for(const row of wrap.children)if(row!==draft&&getComputedStyle(row).position!=="absolute")need+=row.getBoundingClientRect().height;onRoom?.(need);
       });
     });
     observer.observe(wrap);observer.observe(draft);if(shelf)observer.observe(shelf);
@@ -899,7 +912,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   useEffect(()=>{
     const onPicker=event=>{
       const action=event.detail?.action;
-      if(action==="toggle"){setModelOpen(value=>!value);return}
+      // A shut picker opened while the keyboard is out of the composer takes it on its button, as a hidden one shown again does: one
+      // of 24 models or fewer has no search box to take it, so opened under its button over the terminal drawer it stayed hidden.
+      if(action==="toggle"){if(!modelMenuRef.current&&!wrapRef.current?.matches(":focus-within,[data-kept]"))modelButtonRef.current?.focus();if(pickerHidden())showModelMenu();else setModelOpen(value=>!value);return}
       if(action==="open"){setModelOpen(true);return}
       if(action==="jump"){
         const index=Math.max(0,Number(event.detail?.index)||0);const id=models[index];
@@ -1145,6 +1160,13 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     setModelOpen(false);const active=document.activeElement;
     if(!active||active===document.body||active.closest(".model-picker-wrap"))(composerRef.current?.disabled?modelButtonRef.current:composerRef.current)?.focus();
   }
+  // The menu opened under its button, over the terminal drawer, is hidden while the keyboard is out of the composer, but stays open
+  // (overlays.css): a press on the button, or Choose model's shortcut, toggled it shut unseen, and only the next one showed it. Either
+  // shows it again as it opens, the keyboard in its search box (on the button with none) and the checked model in view. A press reads
+  // it at its mousedown, before the button takes the keyboard and shows the menu, so its click leaves the menu (pressShowsRef).
+  function pickerHidden(){const menu=modelMenuRef.current;return Boolean(menu)&&!wrapRef.current.matches(":focus-within,[data-kept]")&&menu.getBoundingClientRect().top>modelButtonRef.current.getBoundingClientRect().bottom}
+  function showModelMenu(){modelButtonRef.current?.focus();flushSync(()=>setModelOpen(false));setModelOpen(true)}
+  const pressShowsRef=useRef(false);
   function pickModel(event,id){
     const next=nextModelSelection(chosenModels,id,{shiftKey:event.shiftKey,allowMulti:allowMultiModel});
     onSelectedModels?.(next);if(!next.includes(model))setModel(next[0]||id);
@@ -1192,12 +1214,15 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     {/* A command takes only a press of its own too, as a file of the @ menu does (below): the menu goes with the pick, and the second
         click of a double click landed on what was under it, over the terminal drawer (overlays.css) a tab, which took the keyboard
         out of the composer, or its close button, which ended its terminal. A press on either menu's edge leaves the keyboard in the
-        composer too: a menu moved over the drawer shows only while the composer has it, and went from under the pointer. */}
-    {slashMenuOpen&&<div className="slash-menu" ref={slashMenuRef} onMouseDown={e=>e.preventDefault()}>{slashItems.map(([cmd,desc],index)=><button key={cmd} type="button" className={index===slashActive?"active":undefined} onMouseDown={e=>{e.preventDefault();ignorePressRest(!e.detail);chooseSlash(cmd)}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
+        composer too: a menu moved over the drawer shows only while the composer has it, and went from under the pointer. Nor is
+        either menu or an entry of it a stop of Tab's (Chrome makes a menu that scrolls one once its entries are not): the draft drives
+        the menus (the arrow keys, Enter, Tab), and Shift+Tab from it went through the entries, where Enter and Space did nothing,
+        before it left the composer. */}
+    {slashMenuOpen&&<div className="slash-menu" ref={slashMenuRef} tabIndex={-1} onMouseDown={e=>e.preventDefault()}>{slashItems.map(([cmd,desc],index)=><button key={cmd} type="button" tabIndex={-1} className={index===slashActive?"active":undefined} onMouseDown={e=>{e.preventDefault();ignorePressRest(!e.detail);chooseSlash(cmd)}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
     {/* A file in the @ menu takes only a press of its own, and its buttons only say they are off while the file picked imports
         (aria-disabled), so the keyboard stays in the composer: the second click of a double click, on a button turned off or on what
         is under the menu once the file is in, took the keyboard out of it, and what was typed on went nowhere. */}
-    {mentionMenuOpen&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef} onMouseDown={e=>e.preventDefault()}>{mentionOffered.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionActive?"active":""} aria-disabled={Boolean(mentionBusy)||undefined} onMouseDown={event=>{event.preventDefault();ignorePressRest(!event.detail);chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
+    {mentionMenuOpen&&<div className="file-mention-menu" data-testid="file-mention-menu" ref={mentionMenuRef} tabIndex={-1} onMouseDown={e=>e.preventDefault()}>{mentionOffered.map((item,index)=><button key={item.path||item.relativePath||index} tabIndex={-1} className={index===mentionActive?"active":""} aria-disabled={Boolean(mentionBusy)||undefined} onMouseDown={event=>{event.preventDefault();ignorePressRest(!event.detail);chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {/* A file picked from the @ menu shows where its chip comes while it imports, attaching, as a file that uploads shows on the shelf,
         so a send that waits for it says why there too: once the caret left the file's word the menu that showed it was shut. */}
     {((contextChips||[]).length>0||mentionWaits)&&<div className="context-chip-row" data-testid="context-chips" onClick={chipPressOnce}>{(contextChips||[]).map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={[[chip.label,chip.detail].filter(Boolean).join(" · "),chip.path].filter(Boolean).join("\n")}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onMouseDown={event=>event.preventDefault()} onClick={event=>removeChip(event.currentTarget,()=>onRemoveContext(chip.path))} title="Remove context"><X size={10}/></button></span>)}{mentionWaits&&<span className="context-chip kind-file attaching" data-testid="mention-attaching" aria-busy="true" title={"Attaching "+mentionBusy.label+"…"}><LoaderCircle size={11} aria-hidden="true"/><strong>{mentionBusy.name}</strong><small>Attaching…</small></span>}</div>}
@@ -1215,7 +1240,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     </div><div className="composer-right">
       {setupRequired?<button className="login-btn" onClick={onConfigureProvider}>{configureLabel}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} disabled={threadSettingsWait} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
-        <div className="model-picker-wrap"><button ref={modelButtonRef} data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} onKeyDown={modelPickerKeyDown} aria-haspopup="true" aria-expanded={modelOpen&&models.length>0?"true":"false"} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError?"Models unavailable":"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu" ref={modelMenuRef} onKeyDown={modelMenuKeyDown} onMouseDown={modelMenuMouseDown}>{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)closeModelMenu()}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>{event.stopPropagation();if(event.key==="ArrowDown"){event.preventDefault();focusModelOption("first")}}} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
+        <div className="model-picker-wrap"><button ref={modelButtonRef} data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onMouseDown={event=>{if((pressShowsRef.current=pickerHidden())){event.preventDefault();showModelMenu()}}} onClick={event=>{if(!event.detail||!pressShowsRef.current)setModelOpen(value=>!value);pressShowsRef.current=false}} onKeyDown={modelPickerKeyDown} aria-haspopup="true" aria-expanded={modelOpen&&models.length>0?"true":"false"} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError?"Models unavailable":"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu" ref={modelMenuRef} onKeyDown={modelMenuKeyDown} onMouseDown={modelMenuMouseDown}>{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)closeModelMenu()}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>{event.stopPropagation();if(event.key==="ArrowDown"){event.preventDefault();focusModelOption("first")}}} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} aria-label="Voice dictation" aria-pressed={listening} title={speechSupported?(listening?"Listening… click to stop":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button data-testid="send" className="send-btn" aria-label={sendLabel} onClick={()=>sendDraft(onSend)} disabled={sendOff} title={tooLongNote||runtimeSwitchLabel||(!transportReady?transportMessage:modelBlocker||(submitting?sendingText:uploadingFiles.length?"Waiting for attachments to upload":mentionWaits?`Waiting for ${mentionBusy.label} to attach`:sendLabel))}><Send size={16}/></button>
@@ -1441,6 +1466,8 @@ export default function App(){
   // The active harness's own slash commands and agents from its model catalog (Claude Code's capability probe): a new chat's
   // menus before its thread exists, as T3 Code lists provider slash commands.
   const runtimeInventoryRef=useRef(null);
+  // Whether the agent picker lists any agent (applyProviderInventory): with none listed it is not shown, so no agent was picked.
+  const providerAgentsListedRef=useRef(false);
   // Counts the new tasks and general chats shown (showNewTask): each comes up on its welcome at its top.
   const [newTaskView,setNewTaskView]=useState(0);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const historyAnchorSettleRef=useRef(null);const historyHoldRef=useRef(0);const historyLoadRef=useRef(null);const threadFindBarRef=useRef(null);const followConversationEndRef=useRef(true);const conversationEndTopRef=useRef(0);const shownWelcomeRef=useRef(null);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
@@ -2125,10 +2152,17 @@ export default function App(){
     setModelError(d?.error||"");
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
     // A new chat shows the harness's own menus, whole: what the new harness does not list (another harness's commands, agents
-    // or skills) is cleared. Codex lists its skills itself (skills/list).
-    const inventory=d?.inventory&&typeof d.inventory==="object"?d.inventory:null,previousInventory=runtimeInventoryRef.current;
+    // or skills) is cleared. Codex lists its skills itself (skills/list). A thread open as a catalog with the harness's lists lands
+    // gets them too, under what its session listed, as its open merges them, and its own agent back if no agent was listed to keep it
+    // (its open cleared it): one opened while the window's first catalog was still on its way had merged none, and its / menu and
+    // agent picker lacked the harness's own until the next open. A catalog without lists leaves an open thread's menus as they are.
+    const inventory=d?.inventory&&typeof d.inventory==="object"?d.inventory:null,previousInventory=runtimeInventoryRef.current,thread=activeThreadRef.current;
     runtimeInventoryRef.current=inventory;
-    if(!activeThreadRef.current&&(inventory||previousInventory))applyProviderInventory(harnessInventory(inventory,null,{withSkills:d?.agentRuntime!=="codex"}));
+    if(!thread){if(inventory||previousInventory)applyProviderInventory(harnessInventory(inventory,null,{withSkills:d?.agentRuntime!=="codex"}))}
+    else if(inventory&&(d?.agentRuntime||agentRuntimeRef.current)!=="codex"){
+      if(!providerAgentsListedRef.current&&thread.agent)setProviderAgent(thread.agent);
+      applyProviderInventory(harnessInventory(inventory,thread.providerMeta));
+    }
     const next=ids.includes(preferred)?preferred:(ids.includes(d?.defaultModel)?d.defaultModel:(ids[0]||""));
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
     return next;
@@ -2433,9 +2467,9 @@ export default function App(){
         if((!modelData.agentRuntime||modelData.agentRuntime===agentRuntimeRef.current)&&(!modelData.provider||modelData.provider===providerRef.current)){
           const availableModels=modelData.models||[];
           const fallback=availableModels.length?availableModels:(boot.mock?["test/coding-fast","test/coding-large"]:[]);
-          const initialModel=startupModelChoice(fallback,modelData.defaultModel);
-          setModelError(modelData.error||"");setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item])));
-          setModels(fallback);setModel(initialModel);setSelectedModels(initialModel?[initialModel]:[]);
+          // Applied as a refresh applies it, with its inventory: the harness's own commands, agents and skills fill a new chat's menus
+          // and those of a thread opened later.
+          applyModelCatalog({...modelData,models:fallback},{preferredModel:startupModelChoice(fallback,modelData.defaultModel)});
         }
         settleModels();
       }
@@ -2796,7 +2830,7 @@ export default function App(){
     if(Array.isArray(update.skills)){skillsPathRef.current=undefined;setSkills(update.skills.filter(skill=>skill?.enabled!==false));setSkillsLoad({status:"loaded",error:null})}
     if(Array.isArray(update.agents)){
       const visible=update.agents.filter(agent=>typeof agent==="string"||agent?.hidden!==true).filter(agent=>typeof agent==="string"?agent:Boolean(agent?.name));
-      setProviderAgents(visible);
+      setProviderAgents(visible);providerAgentsListedRef.current=visible.length>0;
       setProviderAgent(current=>current&&visible.some(agent=>(typeof agent==="string"?agent:agent.name)===current)?current:"");
     }
   }
@@ -3861,7 +3895,7 @@ export default function App(){
   // A new task asked for from the new task (on it, or back from a page opened from it) keeps its unsent draft with the agent and the
   // collaboration mode chosen for it, and a send still on its way in the thread left goes on there without holding the new task's
   // composer (send).
-  function showNewTask(){const leftNewTask=!activeThreadRef.current;rememberConversationPosition();setComposerAlert(null);releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;shownWelcomeRef.current=null;setNewTaskView(view=>view+1);setSection("chat");setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;liveSendRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setQueueEditDraft(null);if(!leftNewTask){submittingRef.current=null;setSubmitting(false);setPrompt("");setAttachments([]);setContextChips([]);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default")}setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
+  function showNewTask(){const leftNewTask=!activeThreadRef.current;rememberConversationPosition();setComposerAlert(null);releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;stopHistoryAnchorSettle();setHistoryHold(conversationScrollRef.current,0);followConversationEndRef.current=true;shownWelcomeRef.current=null;setNewTaskView(view=>view+1);setSection("chat");setActiveThread(null);setActiveTurnId(null);setRunning(false);setMessages([]);setTurnActivity(emptyTurnActivity(null));liveItemRowsRef.current.clear();liveTurnKeyRef.current=null;liveSendRef.current=null;setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless:projectlessMode})?"unknown":"local");setQueuedEditId(null);setQueueEditDraft(null);if(!leftNewTask){submittingRef.current=null;setSubmitting(false);setPrompt("");setAttachments([]);setContextChips([]);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default")}setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setCodexThreadState(null);if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([]);providerAgentsListedRef.current=false;if(runtimeInventoryRef.current)applyProviderInventory(runtimeInventoryRef.current)}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -4719,6 +4753,10 @@ export default function App(){
     if(result==="kept"&&!filled)keepDraft();
     return result;
   }
+  // The Goal panel's Resume of a Codex goal with no turn running resumes it as /goal resume does (turn-support.js): the goal's next
+  // turn starts with no input, and the goal is active once it has. Set active alone, no turn started: Codex does not go on with a goal
+  // Trebell paused because Codex started no next turn for it, and the goal read Active with nothing running.
+  function resumeCodexGoal(){return startTurn("",[],model,null,null,null,{goalPatch:{status:"active"},goalResume:true})}
   async function compactContext(){
     if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
     if(!activeThread?.id||!rpc||leavingThread())return;
@@ -5746,12 +5784,16 @@ export default function App(){
     onError={error=>showActionError(error,"")}
   />;
 
+  // The tab whose content the right panel's body shows: a harness without delegation hides the Agents tab, and while that tab is still
+  // the one picked the body shows the Runtime tab's content. The panel is marked with it (RightPanel), so the reason a tab could not be
+  // shown sits as that content does.
+  const rightPanelShown=rightPanelTab==="agents"&&!runtimeCapabilities.delegation?"runtime":rightPanelTab;
   function rightPanelContent(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={workspaceEnvironmentId||"local"} tab={rightPanelTab} onTabChange={setRightPanelTab} allowDiff={!projectlessMode} projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="context")return <ContextInspector packet={activeThread?.id?threadMeta[activeThread.id]?.trebellContext||null:null} error={activeThread?.id?threadMeta[activeThread.id]?.trebellContextError||null:null} pressure={activeThread?.id?threadMeta[activeThread.id]?.trebellContextPressure||null:null} remote={workspaceRemote} root={projectPath||null} environmentId={workspaceEnvironmentId||null}/>;
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} agentRuntime={sourceControlRuntime} agentRuntimeInstanceId={sourceControlRuntimeInstanceId} agentRuntimeLabel={agentRuntimeName(sourceControlRuntime)} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} onGitInfo={next=>setGitInfo(current=>sameSnapshot(current,next)?current:next)} gitInfo={gitInfo} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
-    if(rightPanelTab==="agents"&&runtimeCapabilities.delegation)return <div className="panel-page"><AgentsPage threads={threads} threadMeta={threadMeta} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onDelegate={delegateTask} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry} canModelDelegate={Boolean(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation)}/></div>;
+    if(rightPanelShown==="agents")return <div className="panel-page"><AgentsPage threads={threads} threadMeta={threadMeta} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onDelegate={delegateTask} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry} canModelDelegate={Boolean(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation)}/></div>;
     // Everything the goal panel holds (drafts, busy state and its last error) belongs to one thread: another thread, or a harness
     // switch, starts it from that thread's own saved goal, or from the draft left unsaved on it (GoalPanel keeps each thread's
     // until it is saved or discarded), never with the previous thread's draft or error. A save that answers after another thread
@@ -5761,7 +5803,7 @@ export default function App(){
     // that state is up, a refusal said on it is kept for the thread's next panel as well, as the panel goes once the open lands.
     if(rightPanelTab==="goal"){
       const goalThreadId=activeThread?.id||null,forGoalThread=apply=>next=>{if(goalThreadId&&activeThreadRef.current?.id===goalThreadId)apply(next)};
-      return <>{openingShown&&<div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>}<GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} covered={openingShown} leaving={openingPending} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)}/></>;
+      return <>{openingShown&&<div className="empty-state"><Target size={28}/><strong>{activeTitle}</strong><span>Opening thread…</span></div>}<GoalPanel key={goalThreadId?"goal:"+goalThreadId:"goal:none"} covered={openingShown} leaving={openingPending} rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={forGoalThread(setGoal)} continuity={continuity} onContinuity={forGoalThread(setContinuity)} onResume={agentRuntime==="codex"&&!running&&!submitting?resumeCodexGoal:null}/></>;
     }
     // The Runtime tab (RuntimeSurface, idle-parts.js) draws the approval card, the background processes and the trace App keeps, the
     // trace's code asked for with the tab's. The background processes and the trace are the open thread's: another thread starts each
@@ -5908,9 +5950,9 @@ export default function App(){
           </div>
         </header>})()}
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onOfferUndo={offerPageUndo} isProjectOpen={projectIsOpen} onProjectUpdated={projectsPageUpdated} onProjectRemoved={projectsPageRemoved} onRunScript={(result,run,pressed)=>showActionRun((run.environmentId||"")+"\0"+run.path+"\0"+run.scriptId,result,pressed)} onOpenPreview={previewUrl=>{openRightPanel("preview");requestPreview(previewUrl)}}/></DeferredSurface></div>}
-        {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} skillsLoad={skillsLoad} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} onSkillsReload={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
-        {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage onOfferUndo={offerPageUndo}/></DeferredSurface></div>}
-      {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
+        {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…" heading="Harness capabilities"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} skillsLoad={skillsLoad} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} onSkillsReload={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
+        {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…" heading="Environments"><EnvironmentsPage onOfferUndo={offerPageUndo}/></DeferredSurface></div>}
+      {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…" heading="Usage"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
       {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runningTasks={runningTasks} onActionError={showActionError} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={(session,pressed)=>{setSection("chat");setPanel("terminal");askTerminalKeyboard(pressed);setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>navigateSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
         {/* History's list (ThreadHistoryPage, idle-parts.js) comes at idle right after the first paint; History opened before then asks
@@ -5922,7 +5964,7 @@ export default function App(){
       {rightPanelOpen&&narrowDrawer&&!rightPanelMaximized&&<div className="inspector-scrim" data-testid="inspector-scrim" aria-hidden="true" onClick={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}/>}
       {/* A tab that could not be shown takes only its own place with it: the next tab draws (resetKey; Files and Diff are one
           WorkspacePanel). */}
-      {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","context","source"]:[]} hiddenTabs={runtimeCapabilities.delegation?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact resetKey={rightPanelTab==="diff"?"files":rightPanelTab}>{rightPanelContent()}</DeferredSurface></RightPanel>}
+      {rightPanelOpen&&<RightPanel active={rightPanelTab} shown={rightPanelShown} disabledTabs={projectlessMode?["diff","context","source"]:[]} hiddenTabs={runtimeCapabilities.delegation?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact resetKey={rightPanelTab==="diff"?"files":rightPanelTab}>{rightPanelContent()}</DeferredSurface></RightPanel>}
       {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")+(viewSection!=="chat"?" secondary-surface-error":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     </div>
 

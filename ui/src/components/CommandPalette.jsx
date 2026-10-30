@@ -49,6 +49,12 @@ export default function CommandPalette(props){
   return <CommandPaletteOpen {...props}/>;
 }
 
+// The warning of a message search that could not run (its code could not load), kept while the page stays: the browser keeps the
+// script that failed, so no search can run before a reload, and a palette opened again says so from the start. Each palette started
+// from nothing, so its first typing showed no notice, 'Searching messages…' and then the results jumping down as the notice came back.
+// This chunk loads once and stays, so the warning outlives the palette that met it; a search that runs clears it.
+let unsearchedWarning="";
+
 // seed: App's handoff from the stand-in search box it shows while this code loads ({opener,query}, see CommandPaletteLoading).
 // focusFallback: where focus goes when the control the palette was opened from has gone with the view a command left.
 // app: what App's render hands the palette's commands (palette-actions.js), which are built again with each one.
@@ -62,10 +68,12 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   const [actionError,setActionError]=useState("");
   // Degraded message search ("Full thread search unavailable…") is a warning, kept apart from command failures so a
   // search that finishes late can no longer replace or wipe a command's error message.
-  const [searchWarning,setSearchWarning]=useState("");
+  const [searchWarning,setSearchWarning]=useState(unsearchedWarning);
   // A message search that could not run at all (its code could not load) offers Reload, and with no message searched an empty list
-  // says that no command or thread name matches, not that no thread does. It counts only while its warning shows.
-  const [searchFailed,setSearchFailed]=useState(false);
+  // says that no command or thread name matches, not that no thread does. It counts only while its warning shows. Nor can it run
+  // before a reload (the browser keeps the script that failed), so its warning stays as the person types or runs a command, and a new
+  // search tries it again without saying 'Searching messages…'.
+  const [searchFailed,setSearchFailed]=useState(Boolean(unsearchedWarning));
   const inputRef=useRef(null);
   const resultsRef=useRef(null);
   const refocusRef=useRef(false);
@@ -112,14 +120,16 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   useEffect(()=>{
     if(!open)return;
     const raw=query.trim();const q=raw.startsWith(">")?raw.slice(1).trim():raw;
-    if(raw.startsWith(">")||q.length<2||!messageSearchRef.current){setMessageMatches(current=>current.length?[]:current);setMessageSearching(false);setActionError("");setSearchWarning("");return}
-    let cancelled=false;setMessageSearching(true);setActionError("");setSearchWarning("");
+    setActionError("");if(!searchFailed)setSearchWarning("");
+    if(raw.startsWith(">")||q.length<2||!messageSearchRef.current){setMessageMatches(current=>current.length?[]:current);setMessageSearching(false);return}
+    let cancelled=false;setMessageSearching(!searchFailed);
     const timer=setTimeout(async()=>{
       let result,failed=false;
       try{result=await messageSearchRef.current(q)}
       catch(error){failed=true;result={matches:[],warning:"Could not search thread messages: "+(error?.message||String(error))}}
       const matches=Array.isArray(result)?result:(result?.matches||[]);
       const warning=Array.isArray(result)?"":(result?.warning||"");
+      unsearchedWarning=failed?warning:"";
       if(!cancelled){setMessageMatches(matches);setMessageSearching(false);setSearchWarning(warning);setSearchFailed(failed)}
     },180);
     return()=>{cancelled=true;clearTimeout(timer)}
@@ -145,7 +155,9 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
     });
     const all=actionOnly?commands:[...commands,...projectItems,...threadItems];
     // A command is found by its name, its detail and the other name it goes by (keywords: "New task", as the sidebar calls New thread).
-    return (q?all.filter(item=>item.messageMatch||[item.label,item.detail,item.keywords].filter(Boolean).join(" ").toLowerCase().includes(q)):all).slice(0,24);
+    // The list holds 24 entries, or every command when they are more (26 before anything is typed in a Codex thread of a Git project in
+    // the desktop app), so the cut leaves out only projects and threads, which typing finds.
+    return (q?all.filter(item=>item.messageMatch||[item.label,item.detail,item.keywords].filter(Boolean).join(" ").toLowerCase().includes(q)):all).slice(0,Math.max(24,commands.length));
   },[actions,projects,threads,environmentNames,onOpenProject,onOpenThread,query,messageMatches]);
   useEffect(()=>{if(selected>=items.length)setSelected(Math.max(0,items.length-1))},[items.length,selected]);
   useEffect(()=>{
@@ -166,7 +178,7 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   useEffect(()=>{if(!runningId&&refocusRef.current){refocusRef.current=false;inputRef.current?.focus()}},[runningId]);
   async function run(item){
     if(!item||runningId)return;
-    setRunningId(item.id);setActionError("");setSearchWarning("");
+    setRunningId(item.id);setActionError("");if(!searchFailed)setSearchWarning("");
     try{await item.onRun?.();onClose?.()}
     catch(error){setActionError(error?.message||String(error)||"The command failed.");refocusRef.current=true;setRunningId(null)}
   }
@@ -206,7 +218,7 @@ function CommandPaletteOpen({open,onClose,seed,focusFallback,app=null,projects=[
   const warningOnly=Boolean(searchWarning)&&!dataError&&!actionError,unsearched=searchFailed&&Boolean(searchWarning);
   return <div className="command-palette-backdrop" data-testid="command-palette" onMouseDown={event=>event.target===event.currentTarget&&onClose?.()}>
     <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" ref={dialogRef} tabIndex={-1}>
-      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} value={query} onChange={event=>{handedKeysRef.current=null;setQuery(event.target.value);setSelected(0);setActionError("");setSearchWarning("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)} spellCheck={false} autoComplete="off"/>{messageSearching&&<span className="command-palette-searching">Searching messages…</span>}<kbd className="tb-kbd">Esc</kbd></div>
+      <div className="command-palette-search"><Search size={16}/><input ref={inputRef} value={query} onChange={event=>{handedKeysRef.current=null;setQuery(event.target.value);setSelected(0);setActionError("");if(!searchFailed)setSearchWarning("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)} spellCheck={false} autoComplete="off"/>{messageSearching&&<span className="command-palette-searching">Searching messages…</span>}<kbd className="tb-kbd">Esc</kbd></div>
       {visibleError&&<div className={"command-palette-error"+(warningOnly?" is-warning":"")} role="alert"><span>{visibleError}</span>{unsearched&&<button type="button" className="tb-btn tb-btn--sm" onKeyDown={reloadKeyDown} onClick={()=>window.location.reload()}>Reload</button>}</div>}
       <div className="command-palette-results" ref={resultsRef} onKeyDown={resultsKeyDown}>
         {items.map((item,index)=><React.Fragment key={item.id}>

@@ -3308,6 +3308,89 @@ for(const [shell,mode] of [["browser","dark"],["browser","light"],["desktop","da
   }finally{await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
 });
 
+// The composer's room keeps at rest at a fractional scale (UI lane D, round 13). At 125% display scaling in the desktop app, and
+// zoomed in a step (110%) in a browser and in the desktop app, with two files on the composer's shelf and the terminal drawer at its
+// tallest beside the inspector, the room App keeps above the drawer for the composer (--terminal-room) went between two values a
+// pixel apart every frame with no input (290 and 291 at 125%, 280 and 281 zoomed to 110%, 312 and 313 in the desktop app): the
+// composer read the room it needs from whole pixels of its own box, which the drawer's height moves and which round one way or the
+// other as the box lands on the device's pixels, so each room moved the composer to where it read the other one. The composer and
+// the drawer's top shimmered by under a pixel, and the page's main thread never rested (a second of work in a second). So at those
+// scales, beside the inspector at its first width (460px) and at its widest, in windows 1280 to 1536 by 680 to 864 CSS pixels (1210
+// to 1440 by 680 to 840 window pixels zoomed): once the room has kept ten frames running it keeps over the second after, the main
+// thread all but idle, and the drawer is as tall as its handle says, with the composer 12px above it and under the header.
+// roomAtRest: whether the room keeps ten frames running within 3s, then how often it changes over the second after and the main
+// thread's work in that second (Chrome's TaskDuration, in seconds).
+async function roomAtRest(page,cdp){
+  const kept=await page.evaluate(()=>new Promise(resolve=>{
+    const shell=document.querySelector(".app-shell"),start=performance.now();let room=shell.style.getPropertyValue("--terminal-room"),frames=0;
+    const frame=()=>{const now=shell.style.getPropertyValue("--terminal-room");frames=now===room?frames+1:0;room=now;if(frames>=10||performance.now()-start>3000)resolve(frames>=10);else requestAnimationFrame(frame)};
+    requestAnimationFrame(frame);
+  }));
+  const busy=async()=>(await cdp.send("Performance.getMetrics")).metrics.find(metric=>metric.name==="TaskDuration").value,before=await busy();
+  const rooms=await page.evaluate(()=>new Promise(resolve=>{
+    const shell=document.querySelector(".app-shell"),rooms=[shell.style.getPropertyValue("--terminal-room")];
+    const observer=new MutationObserver(()=>{const room=shell.style.getPropertyValue("--terminal-room");if(room!==rooms.at(-1))rooms.push(room)});
+    observer.observe(shell,{attributes:true,attributeFilter:["style"]});setTimeout(()=>{observer.disconnect();resolve(rooms)},1000);
+  }));
+  return {kept,changes:rooms.length-1,rooms:[...new Set(rooms)].join(" "),work:+(await busy()-before).toFixed(3)};
+}
+for(const [shell,mode,scale,zoomed] of [["desktop","dark",1.25,false],["browser","light",1.1,true],["desktop","dark",1.1,true]])test(`${zoomed?`zoomed to ${Math.round(scale*100)}%`:`at ${Math.round(scale*100)}% display scaling`}, with two files on the composer's shelf and the terminal drawer at its tallest beside the inspector at its first width and at its widest, the composer's room keeps at rest in windows ${zoomed?"1210 to 1440 by 680 to 840":"1280 to 1536 by 680 to 864"}px, with the drawer as tall as its handle says and the composer 12px above it, in the ${shell} shell in ${mode} mode`,async({playwright,baseURL,proxy,headless,channel})=>{
+  test.setTimeout(300_000);
+  const threads=roomThreads(),harness=await startHarness(threads),percent=Math.round(scale*100),tag=`${shell}-${mode}-${zoomed?"zoom":"scale"}-${percent}`;
+  const dir=await mkdtemp(join(tmpdir(),"trebell-rest-")),files=["ledger-export.csv","refunds.log"].map(name=>join(dir,name)),extension=join(dir,"extension");
+  let browser=null,context=null;
+  try{
+    for(const file of files)writeFileSync(file,"refund 1\n");
+    // Zoomed as Ctrl+= zooms the window (an extension's chrome.tabs.setZoom), or in a browser of the test's own whose device scale
+    // factor is set as a display's scaling sets it.
+    if(zoomed){
+      mkdirSync(extension);for(const [name,text] of Object.entries(ZOOM_EXTENSION))writeFileSync(join(extension,name),text);
+      context=await playwright.chromium.launchPersistentContext(join(dir,"profile"),{channel:"chromium",headless,baseURL,proxy,viewport:{width:1280,height:900},args:["--disable-extensions-except="+extension,"--load-extension="+extension]});
+    }else{
+      browser=await playwright.chromium.launch({headless,channel,args:["--force-device-scale-factor="+scale]});
+      context=await browser.newContext({baseURL,proxy,viewport:{width:1280,height:900},deviceScaleFactor:scale});
+    }
+    const zoom=zoomed?context.serviceWorkers()[0]||await context.waitForEvent("serviceworker"):null,page=context.pages()[0]||await context.newPage(),cdp=await context.newCDPSession(page);
+    await cdp.send("Performance.enable");
+    if(shell==="desktop")await asDesktop(page);
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),panelHandle=page.getByTestId("right-panel-resizer");
+    if(!(await right.isVisible())){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeVisible()}
+    // At 1280 by 900 the drawer opened and set to its tallest with End on its handle, and two files attached from Attach files.
+    await openTerminalDrawer(page);await focusTerminalHandle(page);await page.keyboard.press("End");
+    await expect.poll(async()=>(await readRoom(page)).now,{message:"End takes the drawer to its tallest at 1280 by 900"}).toBe(620);
+    const [chooser]=await Promise.all([page.waitForEvent("filechooser"),page.getByRole("button",{name:"Attach files",exact:true}).click()]);await chooser.setFiles(files);
+    await expect(page.locator(".attachment-shelf > span:not(.uploading)")).toHaveCount(2);
+    let level=1;
+    if(zoomed){await zoom.evaluate(factor=>self.zoomTo(factor),scale);level=scale}
+    await expect.poll(()=>page.evaluate(()=>devicePixelRatio),{message:`the page's device pixels to a CSS pixel ${zoomed?`zoomed to ${percent}%`:`at ${percent}% display scaling`}`}).toBeCloseTo(scale,3);
+    // The window set to width by height (window pixels zoomed, CSS pixels at a display's scaling), once the page has its size.
+    const size=async(width,height)=>{await page.setViewportSize({width,height});await expect.poll(()=>page.evaluate(([width,height])=>Math.abs(innerWidth-width)<1&&Math.abs(innerHeight-height)<1,[width/level,height/level]),{message:`the page at ${width} by ${height}`}).toBe(true)};
+    const widths=zoomed?[1210,1280,1366,1440]:[1280,1366,1440,1536],heights=zoomed?[680,720,800,840]:[680,720,800,864],seen=[];
+    for(const panel of ["at its first width","at its widest"]){
+      // The inspector set to its widest at 1280 by 900 CSS pixels (622px) with End on its handle, Shift+Tab from its first tab.
+      if(panel==="at its widest"){
+        await size(Math.round(1280*level),Math.round(900*level));
+        await right.locator(".context-panel-tab").first().focus();await page.keyboard.press("Shift+Tab");await expect(panelHandle).toBeFocused();await page.keyboard.press("End");
+        await expect.poll(async()=>Math.round((await right.boundingBox()).width),{message:"End takes the inspector to its widest at 1280 by 900 CSS pixels"}).toBe(1280-258-400);
+      }
+      for(const width of widths)for(const height of heights){
+        await size(width,height);
+        const rest=await roomAtRest(page,cdp),state=await readRoom(page),where=`at ${width} by ${height}${zoomed?` zoomed to ${percent}%`:""} beside the inspector ${panel} (room ${rest.rooms})`;
+        seen.push(`${width}x${height}${panel==="at its widest"?"/widest":""}:${rest.rooms.replace(/px/g,"")}${rest.changes?`(${rest.changes}x)`:""}/${rest.work}s`);
+        expect.soft([rest.kept,rest.changes],`the composer's room ${where}: kept ten frames running, and how often it changes over the second after`).toEqual([true,0]);
+        expect.soft(rest.work,`the main thread's work over that second at rest, in seconds, ${where}`).toBeLessThan(0.25);
+        expect.soft([Math.round(state.drawer.height),state.max],`the drawer's height and its handle's maximum ${where}`).toEqual([state.now,state.now]);
+        expect.soft(Math.round(state.drawer.top-state.composer.bottom),`the composer's gap above the drawer ${where}`).toBe(12);
+        expect.soft(Math.min(state.composer.top,state.shelf?.top??Infinity),`the top of the composer and its shelf against the header's foot, at ${state.header.bottom}px, ${where}`).toBeGreaterThanOrEqual(state.header.bottom);
+        if(width===widths[1]&&height===heights[0])await page.screenshot({path:join(shotsDir,`composer-room-at-rest-${tag}-${panel==="at its widest"?"inspector-widest":"inspector"}-${width}x${height}.png`),animations:"disabled"});
+      }
+    }
+    console.log(`the composer's room at rest ${tag} (window:room(changes)/main thread's work): ${seen.join(" ")}`);
+  }finally{await context?.close();await browser?.close();await harness.close();await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:200})}
+});
+
 // The composer's / and @ menus open from its top, up over the conversation, as tall as their lists (280px of commands, eight files of
 // 43px rows) wherever the composer stands, and above the terminal drawer it stands higher the taller the drawer is (UI lane C, round
 // 12). At the drawer's tallest, the window less 260px, a composer with a line of draft has its top 133px down at 1280 by 800, so the
@@ -3581,6 +3664,70 @@ for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`a / or 
   }finally{await harness.close()}
 });
 
+// Repair of UI lane C, round 13: the / and @ menus' entries take a press of the mouse only, but they stayed stops in Tab's order, and
+// a menu comes before the draft in the page: one Shift+Tab from the draft put the keyboard on the menu's last entry, with its focus
+// ring, the highlight Enter and Tab pick from the draft scrolled out of view, and Enter or Space there did nothing; the keyboard left
+// the composer after 15 presses with the / menu and 9 with the @ menu, and Tab from the control before the composer landed on the
+// menu's first entry. The menus are driven from the draft (the arrow keys, Enter, Tab), so nothing in them is a stop of Tab's, nor a
+// menu that scrolls, which Chrome makes one once nothing in it is. So in the desktop app and in a browser, at 1280 by 800, with the
+// terminal drawer closed (the menus over the composer), as it opens, 330px (over the composer, capped, scrolling) and at its tallest
+// (under the composer, over the drawer): with each menu typed open, one Shift+Tab from the draft takes the keyboard where it goes with
+// no menu open, to the control before the composer, and Tab from there takes it back to the draft as typed, where ArrowDown moves the
+// menu's highlight; at the drawer's tallest the moved menu goes with the keyboard and comes back with it.
+for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`Shift+Tab from the draft with the / or @ menu open goes to the control before the composer as with no menu open, and Tab from there back to the draft, where the arrow keys drive the menu, with the terminal drawer closed, as it opens and at its tallest, at 1280 by 800 in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:800});
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads),tag=`${shell}-${mode}`;
+  try{
+    await page.route(/\/api\/workspace\/search\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:ledgerFiles})}));
+    await routeMenuTerminals(page,menuTerminals());
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode}});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),handle=page.getByTestId("terminal-resizer"),composer=page.getByTestId("composer");
+    const slash=page.locator(".chat-workspace .composer-wrap .slash-menu"),mention=page.getByTestId("file-mention-menu");
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    // What has the keyboard, as a person reads it: the draft, a control in the composer or out of it by its name, or the page.
+    const keyboardOn=()=>page.evaluate(()=>{
+      const node=document.activeElement;if(!node||node===document.body)return "the page";if(node.matches("[data-testid=composer]"))return "the draft";
+      return (node.closest(".composer-wrap")?"the composer's ":"")+(node.getAttribute("aria-label")||node.getAttribute("title")||node.textContent.trim().slice(0,60)||node.tagName);
+    });
+    const inComposer=()=>page.evaluate(()=>Boolean(document.activeElement?.closest(".composer-wrap")));
+    const clear=async()=>{await composer.click();await page.keyboard.press("Control+a");await page.keyboard.press("Delete");await expect(composer).toHaveValue("")};
+    for(const [where,state] of [["with the drawer closed","closed"],["as the drawer opens, 330px","330"],["at the drawer's tallest","tallest"]]){
+      if(state==="330"){await openTerminalDrawer(page);await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:"the drawer as it opens"}).toBe(330)}
+      if(state==="tallest"){
+        await focusTerminalHandle(page);await page.keyboard.press("End");
+        await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:"the drawer at its tallest"}).toBe(Number(await handle.getAttribute("aria-valuemax")));
+      }
+      // With no menu open, Shift+Tab from the draft goes to the control before the composer, and Tab from there back to the draft.
+      await clear();await page.keyboard.press("Shift+Tab");
+      const before=await keyboardOn();
+      expect(await inComposer(),`the keyboard out of the composer, on ${before}, after Shift+Tab from the empty draft ${where}`).toBe(false);
+      await page.keyboard.press("Tab");await expect(composer,`the draft after Tab from ${before} ${where}`).toBeFocused();
+      for(const [kind,menu,typed,name] of [["/",slash,"/","slash"],["@",mention,"Check @ledger","mention"]]){
+        await clear();await page.keyboard.type(typed,{delay:5});await expect(menu).toBeVisible();if(menu===mention)await expect(mention.locator("button")).toHaveCount(8);await settle(page);
+        const open=await readComposerMenu(menu),chosen=await menu.locator("button.active strong").textContent();
+        if(state==="330")expect.soft(await menu.evaluate(node=>node.scrollHeight>node.clientHeight),`the ${kind} menu ${where}: capped over the composer, its entries scrolling`).toBe(true);
+        // Shift+Tab from the draft: the keyboard leaves the composer at the first press, for the control it reaches with no menu open.
+        let presses=0;do{await page.keyboard.press("Shift+Tab");presses++}while(presses<30&&await inComposer());
+        expect.soft([presses,await keyboardOn()],`the Shift+Tab presses that take the keyboard out of the composer from the draft with the ${kind} menu open ${where}, and what has it then`).toEqual([1,before]);
+        await settle(page);
+        if(open.under)expect.soft((await readComposerMenu(menu)).first.pressed,`the ${kind} menu moved over the drawer ${where} with the keyboard out of the composer, a press at its first entry's middle landing on it`).toBe(false);
+        await page.screenshot({path:join(shotsDir,`composer-menu-shift-tab-${tag}-${name}-${state}.png`),animations:"disabled"});
+        // Tab from there: back to the draft as typed, the menu shown with its first entry in view, and ArrowDown moving its highlight.
+        await page.keyboard.press("Tab");
+        expect.soft(await keyboardOn(),`what has the keyboard after Tab from ${before} with the ${kind} menu open ${where}`).toBe("the draft");
+        await expect.soft(composer).toHaveValue(typed);await settle(page);
+        expect.soft((await readComposerMenu(menu)).first.pressed,`the ${kind} menu ${where} with the keyboard back in the draft, a press at its first entry's middle landing on it`).toBe(true);
+        await composer.focus();await page.keyboard.press("ArrowDown");
+        await expect.soft(menu.locator("button.active strong"),`the ${kind} menu's highlight after ArrowDown in the draft ${where}, from ${chosen}`).not.toHaveText(chosen);
+        await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);await clear();
+      }
+    }
+  }finally{await harness.close()}
+});
+
 // Repair of UI lane C, round 12: the room the / and @ menus open in over the composer ended at the toasts' line under the header, and
 // a menu that room capped began there, so a toast up while a menu is open, which shows under the header then, lay over its first
 // rows, the one Enter or Tab picks: with the terminal drawer as it opens, 330px, where both menus are capped at 1280 by 800, a failed
@@ -3766,6 +3913,120 @@ for(const [shell,mode] of [["desktop","dark"],["browser","light"]])test(`the mod
     });
     expect(pick,"a model in view in the model picker at the drawer's tallest").not.toBeNull();
     await page.mouse.click(pick.x,pick.y);await expect(menu).toHaveCount(0);await expect.soft(picker,`the model picked with a press on ${pick.name}`).toContainText(pick.name);
+  }finally{await harness.close()}
+});
+
+// Repair of UI lane C, round 13: the model picker opened under its button, over the terminal drawer, is hidden while the keyboard is
+// out of the composer and comes back with it, but it stays open meanwhile, so the press on its button that brought the keyboard back
+// toggled the unseen picker shut, and only a second press showed it; Choose model's shortcut, Ctrl+Shift+M, did the same. A hidden
+// picker shows again as it opens at one press of either. So in the desktop app at 1280 by 800 and in its smallest window, 1180 by
+// 720, and in a browser at 1280 by 800, with 30 models: with the drawer closed the picker, over its button, stays in view with the
+// keyboard out of the composer, and a press on its button shuts it, as before; at the drawer's tallest, the picker opened under its
+// button and the keyboard taken out of the composer by Shift+Tab (hidden: no press lands on its search box or checked model), one
+// press on its button, and then Ctrl+Shift+M, shows it with its search box, which has the keyboard, and the checked model in view,
+// where a press at their middle lands on them; in view, a press on its button shuts it.
+for(const [shell,mode,width,height] of [["desktop","dark",1280,800],["desktop","light",1180,720],["browser","light",1280,800]])test(`one press on the model picker's button, or Ctrl+Shift+M, shows the picker hidden over the terminal drawer at its tallest with the keyboard out of the composer, its search box and the checked model in view, and with the drawer closed a press shuts the picker in view, at ${width} by ${height} in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width,height});
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads,{respond:message=>message.method==="thread/runtimeInstances/list"?pickerProfiles:undefined}),tag=`${shell}-${mode}-${width}x${height}`;
+  try{
+    await routeMenuTerminals(page,menuTerminals());
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode},models:pickerModels});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),handle=page.getByTestId("terminal-resizer"),picker=page.getByTestId("model-picker"),menu=page.locator(".chat-workspace .composer-wrap .model-picker-menu"),search=page.getByTestId("model-picker-search");
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    await expect(picker).toContainText("Fixture Model");
+    // The picker as drawn: whether it is under its button, and whether its search box and the checked model are in view in it, a press
+    // at their middle landing on them.
+    const read=()=>menu.evaluate(node=>{
+      const box=node.getBoundingClientRect(),at=item=>{const rect=item.getBoundingClientRect(),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);return rect.top>=box.top-0.5&&rect.bottom<=box.bottom+0.5&&Boolean(hit&&item.contains(hit))};
+      return {under:box.top>=document.querySelector("[data-testid=model-picker]").getBoundingClientRect().bottom,search:at(node.querySelector(".model-picker-search")),checked:at(node.querySelector(":scope>button.selected"))};
+    });
+    const inComposer=()=>page.evaluate(()=>Boolean(document.activeElement?.closest(".composer-wrap")));
+    // Shift+Tab until the keyboard leaves the composer, as a person takes it out with no press.
+    const keysOut=async where=>{for(let presses=0;presses<40&&await inComposer();presses++)await page.keyboard.press("Shift+Tab");expect(await inComposer(),`the keyboard out of the composer by Shift+Tab ${where}`).toBe(false);await settle(page)};
+    await picker.click();await expect(menu).toBeVisible();await expect(search).toBeFocused();
+    await keysOut("with the drawer closed");
+    const kept=await read();
+    expect.soft([kept.under,kept.search],"the model picker with the drawer closed and the keyboard out of the composer: over its button, in view, its search box taking a press").toEqual([false,true]);
+    await picker.click();await expect.soft(menu,"the model picker in view with the drawer closed after a press on its button").toHaveCount(0);
+    await openTerminalDrawer(page);await focusTerminalHandle(page);await page.keyboard.press("End");
+    const tallest=Number(await handle.getAttribute("aria-valuemax"));await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:"the drawer at its tallest"}).toBe(tallest);
+    const where=`at the drawer's tallest, ${tallest}px`,shown={under:true,search:true,checked:true};
+    await picker.click();await expect(menu).toBeVisible();await expect(search).toBeFocused();await settle(page);
+    expect.soft(await read(),`the model picker opened ${where}: under its button, its search box and the checked model in view and taking a press`).toEqual(shown);
+    for(const [how,press,name] of [["one press on its button",()=>picker.click(),"button"],["Ctrl+Shift+M",()=>page.keyboard.press("Control+Shift+M"),"shortcut"]]){
+      await keysOut(where);
+      expect.soft(await read(),`the model picker ${where} with the keyboard out of the composer: hidden, no press landing on its search box or checked model`).toEqual({under:true,search:false,checked:false});
+      // Read once what the press did has been drawn (an update the shortcut makes comes in a task of its own).
+      await press();await settle(page);
+      const open=await menu.count()>0;
+      expect.soft(open,`the model picker ${where}, hidden with the keyboard out of the composer, open after ${how}`).toBe(true);
+      // The second press a person needed, so the checks go on.
+      if(!open){await press();await expect(menu).toBeVisible()}
+      await expect.soft(search,`the picker's search box after ${how} ${where}`).toBeFocused();await settle(page);
+      expect.soft(await read(),`the model picker ${where} after ${how}: under its button, its search box and the checked model in view and taking a press`).toEqual(shown);
+      await page.screenshot({path:join(shotsDir,`model-picker-hidden-shown-${tag}-${name}.png`),animations:"disabled"});
+    }
+    await picker.click();await expect.soft(menu,`the model picker in view ${where} after a press on its button`).toHaveCount(0);
+    await picker.click();await expect(menu).toBeVisible();await expect(search).toBeFocused();
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
+// Repair of that fix: a picker of 24 models or fewer has no search box, so nothing took the keyboard into the composer as Ctrl+Shift+M
+// opened the picker shut from outside the composer, and the picker opened under its button over the drawer at its tallest stayed
+// hidden, as it is while the keyboard is out of the composer: only a second press showed it, as before that fix. The picker takes the
+// keyboard on its button as the shortcut opens it now, as a hidden one shown again does. So with 10 models, in the desktop app at 1280
+// by 800 and in a browser at 1180 by 720, at the drawer's tallest with the keyboard out of the composer by Shift+Tab: Ctrl+Shift+M
+// opens the shut picker under its button in view, its button with the keyboard and the checked model taking a press at its middle;
+// and the picker hidden once the keyboard leaves the composer shows again at one press on its button, and at one Ctrl+Shift+M.
+const shortPickerModels=Array.from({length:10},(_,index)=>index===4?"fixture-model":`fixture-model-${String(index+1).padStart(2,"0")}`);
+for(const [shell,mode,width,height] of [["desktop","dark",1280,800],["browser","light",1180,720]])test(`with 10 models, Ctrl+Shift+M opens the shut model picker in view over the terminal drawer at its tallest with the keyboard out of the composer, and one press on its button or Ctrl+Shift+M shows it hidden there, at ${width} by ${height} in the ${shell} shell in ${mode} mode`,async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width,height});
+  if(shell==="desktop")await asDesktop(page);
+  const threads=roomThreads(),harness=await startHarness(threads,{respond:message=>message.method==="thread/runtimeInstances/list"?pickerProfiles:undefined}),tag=`${shell}-${mode}-${width}x${height}`;
+  try{
+    await routeMenuTerminals(page,menuTerminals());
+    await openApp(page,{harness,threads,meta:roomMeta(threads),project:roomProject,settings:{appearanceMode:mode},models:shortPickerModels});
+    await openThread(page,threads[0].name);
+    const right=page.getByTestId("right-panel"),handle=page.getByTestId("terminal-resizer"),picker=page.getByTestId("model-picker"),menu=page.locator(".chat-workspace .composer-wrap .model-picker-menu");
+    if(await right.isVisible()){await page.getByTestId("right-panel-toggle").click();await expect(right).toBeHidden()}
+    await expect(picker).toContainText("Fixture Model");
+    // The picker as drawn: whether it is under its button, and whether the checked model is in view in it, a press at its middle
+    // landing on it.
+    const read=()=>menu.evaluate(node=>{
+      const box=node.getBoundingClientRect(),checked=node.querySelector(":scope>button.selected"),rect=checked.getBoundingClientRect(),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);
+      return {under:box.top>=document.querySelector("[data-testid=model-picker]").getBoundingClientRect().bottom,checked:rect.top>=box.top-0.5&&rect.bottom<=box.bottom+0.5&&Boolean(hit&&checked.contains(hit))};
+    });
+    const inComposer=()=>page.evaluate(()=>Boolean(document.activeElement?.closest(".composer-wrap")));
+    const keysOut=async where=>{for(let presses=0;presses<40&&await inComposer();presses++)await page.keyboard.press("Shift+Tab");expect(await inComposer(),`the keyboard out of the composer by Shift+Tab ${where}`).toBe(false);await settle(page)};
+    await openTerminalDrawer(page);await focusTerminalHandle(page);await page.keyboard.press("End");
+    const tallest=Number(await handle.getAttribute("aria-valuemax"));await expect.poll(async()=>Number(await handle.getAttribute("aria-valuenow")),{message:"the drawer at its tallest"}).toBe(tallest);
+    const where=`at the drawer's tallest, ${tallest}px`,shown={under:true,checked:true};
+    // Shut, with the keyboard taken out of the composer from its draft: one Ctrl+Shift+M opens it in view.
+    await page.getByTestId("composer").click();await keysOut(where);await expect(menu).toHaveCount(0);
+    await page.keyboard.press("Control+Shift+M");await settle(page);
+    await expect(menu,`the model picker ${where} after Ctrl+Shift+M`).toBeVisible();await expect(menu.locator(".model-picker-search"),"no search box over 10 models").toHaveCount(0);
+    expect.soft(await read(),`the shut model picker opened by Ctrl+Shift+M ${where} with the keyboard out of the composer: under its button, the checked model in view and taking a press`).toEqual(shown);
+    await expect.soft(picker,`the model picker's button after Ctrl+Shift+M opened the picker ${where}`).toBeFocused();
+    await page.screenshot({path:join(shotsDir,`model-picker-short-shortcut-opened-${tag}.png`),animations:"disabled"});
+    // Hidden once the keyboard leaves the composer, the picker shows again at one press on its button, and at one Ctrl+Shift+M.
+    for(const [how,press,name] of [["one press on its button",()=>picker.click(),"button"],["Ctrl+Shift+M",()=>page.keyboard.press("Control+Shift+M"),"shortcut"]]){
+      await keysOut(where);
+      expect.soft(await read(),`the model picker ${where} with the keyboard out of the composer: hidden, no press landing on its checked model`).toEqual({under:true,checked:false});
+      await press();await settle(page);
+      const open=await menu.count()>0;
+      expect.soft(open,`the model picker ${where}, hidden with the keyboard out of the composer, open after ${how}`).toBe(true);
+      if(!open){await press();await expect(menu).toBeVisible()}
+      await expect.soft(picker,`the model picker's button after ${how} ${where}`).toBeFocused();await settle(page);
+      expect.soft(await read(),`the model picker ${where} after ${how}: under its button, the checked model in view and taking a press`).toEqual(shown);
+      await page.screenshot({path:join(shotsDir,`model-picker-short-hidden-shown-${tag}-${name}.png`),animations:"disabled"});
+    }
+    // In view, a press on its button shuts it.
+    await picker.click();await expect.soft(menu,`the model picker in view ${where} after a press on its button`).toHaveCount(0);
   }finally{await harness.close()}
 });
 
