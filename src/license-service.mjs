@@ -3,6 +3,9 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { packageRoot } from "./paths.mjs";
 
 const NOTICE_FILES=["LICENSE","LICENSE.md","LICENSE.txt","LICENCE","LICENCE.md","COPYING","NOTICE","NOTICE.md"];
+// A package whose npm release has no notice file of its own shows its source repository's, which Trebell ships unchanged in
+// third-party-licenses/<package name>/ (THIRD_PARTY_NOTICES.md says from which release).
+const SHIPPED_NOTICES=join(packageRoot,"third-party-licenses");
 let cache=null;
 
 function safeInside(root,path){const rel=relative(resolve(root),resolve(path));return rel===""||(!rel.startsWith(".."+sep)&&rel!==".."&&!rel.startsWith("../")&&!rel.startsWith("..\\"))}
@@ -54,9 +57,9 @@ export async function listLicenses({query=""}={}){
 export async function licenseDetail(id){
   const {records}=await inventory();const item=records.find(record=>record.id===id);if(!item)throw new Error("License entry was not found");
   if(!safeInside(packageRoot,item.directory))throw new Error("License path is outside the Trebell package");
-  const text=await noticeText(item.directory);
+  const text=await noticeText(item.directory),shipped=join(SHIPPED_NOTICES,item.name),fromRepository=!text&&safeInside(SHIPPED_NOTICES,shipped)?await noticeText(shipped):"";
   const {directory,...publicItem}=item;
-  return {...publicItem,text:text||`Declared license: ${item.license}\n\nThis package did not ship a separate LICENSE or NOTICE file in the installed application.`};
+  return {...publicItem,text:text||(fromRepository?`This package's npm release has no LICENSE or NOTICE file; this notice is from its source repository and ships with Trebell Code.\n\n${fromRepository}`:`Declared license: ${item.license}\n\nThis package did not ship a separate LICENSE or NOTICE file in the installed application.`)};
 }
 
 export function resetLicenseCache(){cache=null}
