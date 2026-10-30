@@ -5,6 +5,7 @@ import { agentName, failureText } from "../display-labels.js";
 import { codexRateLimitEntries,formatRateReset,microsToCurrency,rateLimitReachedLabel,rateLimitRemainingPercent } from "../usage-account.js";
 import { estimateUsageCost } from "../usage-pricing.js";
 import { askConfirm } from "../ask-dialog.js";
+import { ignorePressRest } from "./ThreadSidebar.jsx";
 
 function formatTokens(value){const n=Number(value||0);if(n>=1_000_000)return (n/1_000_000).toFixed(n>=10_000_000?1:2)+"M";if(n>=1_000)return (n/1_000).toFixed(n>=100_000?0:1)+"K";return n.toLocaleString()}
 function runtimeLabel(value){return value?agentName(value):"Unknown"}
@@ -103,6 +104,11 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     }
   }
   async function refresh(){await Promise.all([refreshLocal(),refreshCodex(),refreshRuntimeUsage(),refreshEnvironments()])}
+  // Refresh only says it is off while the page reads or clears local history (aria-disabled), so the keyboard stays on it to press it
+  // again: disabled, it dropped the keyboard on the page. A press meanwhile reads nothing, nor does the rest of the press (the second
+  // click of a double click, Enter held), as History's Retry reads once.
+  const reading=loading||codex.loading||runtimeUsage.loading;
+  function pressRefresh(event){ignorePressRest(!event.detail);if(!reading&&!clearing)refresh()}
   useEffect(()=>{refreshLocal()},[days,selectedEnvironments.join("|")]);
   useEffect(()=>{refreshCodex({keep:true})},[rpc,rpcStatus,activeThread?.id,agentRuntime]);
   useEffect(()=>{
@@ -199,7 +205,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   const held=records.length||data.storedTurns;
   const usageCurrent=!loading&&shownQuery===usageQuery,usageKnown=records.length>0||usageCurrent,usagePending=loading?"Loading…":"Unavailable";
   return <div className="usage-page">
-    <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Per-turn token and cost history across Trebell harnesses and environments, plus live account limits when the active harness exposes them.</p></div><div className="usage-toolbar"><details className="usage-environment-filter" ref={filterRef}><summary>{environmentFilterLabel}</summary><div><button onClick={()=>setSelectedEnvironments([])} className={selectedEnvironments.length===0?"active":""}>All environments</button>{environmentOptions.map(item=><label key={item.id}><input type="checkbox" checked={selectedEnvironments.includes(item.id)} onChange={()=>toggleEnvironment(item.id)}/><span>{item.name}</span><em>{item.type}</em></label>)}</div></details><select aria-label="Period" value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button className="usage-refresh" onClick={refresh} disabled={loading||codex.loading||runtimeUsage.loading||clearing}><RefreshCw size={13}/>{loading||codex.loading||runtimeUsage.loading?"Refreshing…":"Refresh"}</button><button className="usage-clear" onClick={clear} disabled={!held||clearing}><Trash2 size={13}/> {clearing?"Clearing…":"Clear local history"}</button></div></div>
+    <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Per-turn token and cost history across Trebell harnesses and environments, plus live account limits when the active harness exposes them.</p></div><div className="usage-toolbar"><details className="usage-environment-filter" ref={filterRef}><summary>{environmentFilterLabel}</summary><div><button onClick={()=>setSelectedEnvironments([])} className={selectedEnvironments.length===0?"active":""}>All environments</button>{environmentOptions.map(item=><label key={item.id}><input type="checkbox" checked={selectedEnvironments.includes(item.id)} onChange={()=>toggleEnvironment(item.id)}/><span>{item.name}</span><em>{item.type}</em></label>)}</div></details><select aria-label="Period" value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button className="usage-refresh" onClick={pressRefresh} aria-disabled={reading||clearing||undefined}><RefreshCw size={13}/>{reading?"Refreshing…":"Refresh"}</button><button className="usage-clear" onClick={clear} disabled={!held||clearing}><Trash2 size={13}/> {clearing?"Clearing…":"Clear local history"}</button></div></div>
     {error&&<div className="inline-error" role="alert">{error}</div>}
     {environmentError&&<div className="inline-error" role="alert">{environmentError}</div>}
     {showLiveCodex&&<section className="capability-card codex-account-usage" data-testid="codex-account-usage">

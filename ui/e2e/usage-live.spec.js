@@ -565,3 +565,63 @@ test("Subscription limits say they are loading, name a failed read, and claim no
     await expectNoClaims();
   }finally{for(const route of held.splice(0))await reply(route,answers.empty).catch(()=>{});await fixture.close()}
 });
+
+// Refresh said it was refreshing by being disabled, which dropped the keyboard on the page: its focus ring went, a second Enter read
+// nothing and Tab started over from the top of the page (lane F, FR13-1). It only says it is off now (aria-disabled), so the keyboard
+// stays on it; a press meanwhile reads nothing, nor do the second click of a double click and the repeats of Enter held.
+test("Enter on Refresh keeps the keyboard on it while the page reads and after, and a press meanwhile, a double click or Enter held reads once",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await startUsageFixture({rateLimits:"none"});
+  // One turn is recorded, so Clear local history is offered after Refresh. Once the page has loaded, each usage read waits in held
+  // until the test answers it.
+  const turn={id:"usage-refresh-turn",at:new Date().toISOString(),environmentId:null,runtime:"claude",provider:"anthropic",model:"claude-sonnet",usage:{inputTokens:700,outputTokens:300,totalTokens:1000},cost:null};
+  const reply=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
+  const usage=route=>reply(route,{records:[turn],total:{totalTokens:1000},models:{},runtimes:{},daily:{},storedTurns:1});
+  const windows={runtime:"claude",account:{email:"claude@example.com"},windows:[{id:"five-hour",label:"5-hour window",kind:"session",usedPercent:42,resetsAt:new Date(Date.now()+3_600_000).toISOString()}]};
+  const held=[];let reads=0,hold=false;
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openUsage(page,fixture.wsUrl,route=>{reads++;return hold?held.push(route):usage(route)},{runtime:"claude",runtimeUsage:route=>reply(route,windows)});
+    const refresh=page.locator(".usage-toolbar .usage-refresh"),period=page.getByRole("combobox",{name:"Period"}),clear=page.getByRole("button",{name:"Clear local history",exact:true});
+    const answer=async()=>{await expect.poll(()=>held.length,{message:"one usage read waits"}).toBe(1);await usage(held.shift())};
+    const ring=()=>refresh.evaluate(button=>button.matches(":focus-visible"));
+    // Two frames drawn and the task after them: the browser takes the keyboard off a button that can no longer have it (disabled) only
+    // once it draws the page again.
+    const drawn=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve)))));
+    await expect(page.locator(".usage-summary")).toContainText("1 recorded turn");await expect(refresh).toHaveText("Refresh");await expect(clear).toBeEnabled();
+    hold=true;
+    // Tab from the period to Refresh, as a person moves along the toolbar, and Enter.
+    await period.focus();await page.keyboard.press("Tab");await expect(refresh).toBeFocused();
+    let before=reads;
+    await page.keyboard.press("Enter");
+    await expect(refresh).toHaveText("Refreshing…");await drawn();
+    await expect(refresh,"the keyboard stays on Refresh while the page reads").toBeFocused();
+    expect(await ring(),"with its focus ring").toBe(true);
+    await expect(refresh).toHaveAttribute("aria-disabled","true");
+    for(const mode of ["dark","light"]){
+      await page.evaluate(value=>{document.documentElement.dataset.mode=value},mode);
+      for(const width of [1280,900]){await page.setViewportSize({width,height:800});await page.screenshot({animations:"disabled",path:auditDir+`usage-refresh-reading-from-keyboard-${mode}-${width}x800.png`,fullPage:false})}
+    }
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1280,height:800});
+    // Enter meanwhile reads nothing.
+    await page.keyboard.press("Enter");
+    await answer();
+    await expect(refresh).toHaveText("Refresh");
+    await expect(refresh,"the keyboard is still on Refresh once the page has read").toBeFocused();
+    expect(await ring(),"with its focus ring").toBe(true);
+    await page.waitForTimeout(300);expect(reads-before,"one read for the press, none for Enter while it read").toBe(1);
+    // A second Enter reads again, and Tab goes on from Refresh to Clear local history.
+    await page.keyboard.press("Enter");await expect(refresh).toHaveText("Refreshing…");await answer();await expect(refresh).toHaveText("Refresh");
+    expect(reads-before).toBe(2);
+    await page.keyboard.press("Tab");await expect(clear).toBeFocused();
+    // A double click reads once, and a click while it reads reads nothing; Enter held on it reads once (a press, and five repeats 33 ms
+    // apart).
+    before=reads;await refresh.dblclick();await expect(refresh).toHaveText("Refreshing…");
+    const box=await refresh.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);
+    await answer();await expect(refresh).toHaveText("Refresh");
+    await page.waitForTimeout(300);expect(reads-before,"a double click and a click while it reads read once").toBe(1);
+    before=reads;await page.keyboard.down("Enter");for(let repeat=0;repeat<5;repeat++){await page.waitForTimeout(33);await page.keyboard.down("Enter")}await page.keyboard.up("Enter");
+    await answer();await expect(refresh).toHaveText("Refresh");
+    await page.waitForTimeout(300);expect(reads-before,"Enter held reads once").toBe(1);
+  }finally{for(const route of held.splice(0))await usage(route);await fixture.close()}
+});
