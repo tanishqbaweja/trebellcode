@@ -571,12 +571,12 @@ async function bitbucketAuthHeaders(){
   const values=executor?.secretValues
     ?await executor.secretValues("source-control.bitbucket")
     :executor?.env
-    ?await executor.env(["TREBELL_BITBUCKET_ACCESS_TOKEN","T3CODE_BITBUCKET_ACCESS_TOKEN","TREBELL_BITBUCKET_EMAIL","T3CODE_BITBUCKET_EMAIL","TREBELL_BITBUCKET_API_TOKEN","T3CODE_BITBUCKET_API_TOKEN"])
+    ?await executor.env(["TREBELL_BITBUCKET_ACCESS_TOKEN","TREBELL_BITBUCKET_EMAIL","TREBELL_BITBUCKET_API_TOKEN"])
     :process.env;
-  const access=values.TREBELL_BITBUCKET_ACCESS_TOKEN||values.T3CODE_BITBUCKET_ACCESS_TOKEN;
+  const access=values.TREBELL_BITBUCKET_ACCESS_TOKEN;
   if(access)return {Authorization:`Bearer ${access}`};
-  const email=values.TREBELL_BITBUCKET_EMAIL||values.T3CODE_BITBUCKET_EMAIL;
-  const token=values.TREBELL_BITBUCKET_API_TOKEN||values.T3CODE_BITBUCKET_API_TOKEN;
+  const email=values.TREBELL_BITBUCKET_EMAIL;
+  const token=values.TREBELL_BITBUCKET_API_TOKEN;
   if(email&&token)return {Authorization:`Basic ${Buffer.from(email+":"+token).toString("base64")}`};
   return {};
 }
