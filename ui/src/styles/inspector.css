@@ -78,8 +78,10 @@
 /* A tab whose code could not load says so in its place (LazySlot's .lazy-slot-error) as far in as the tab's own content sits (the
    Runtime surface's 14px), clear of the panel's divider and the window's edge. */
 :root:root .context-panel-body>.lazy-slot-error{margin:14px}
-/* In the maximized panel that content keeps to its centred column (below), and so does the reason. */
-:root:root .context-panel.maximized .context-panel-body>.lazy-slot-error{margin-inline:max(14px,calc((100% - 1040px) / 2))}
+/* In the maximized panel the Goal, Runtime, Context and Git tabs' content keeps to its centred column (below), and so does their
+   reason. The Files, Diff, Browser and Agents tabs' content stays full width there, and their reason at the margin above. data-tab:
+   the tab whose content the panel's body shows (RightPanel). */
+:root:root .context-panel.maximized:is([data-tab="goal"],[data-tab="runtime"],[data-tab="context"],[data-tab="source"]) .context-panel-body>.lazy-slot-error{margin-inline:max(14px,calc((100% - 1040px) / 2))}
 :root:root .context-panel .empty-state{
   box-sizing:border-box;height:auto;min-height:220px;margin:16px;padding:32px 22px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
   border:1.5px dashed var(--line2)!important;border-radius:var(--r-l);background:transparent!important;color:var(--tx3)!important;text-align:center;font-size:12.5px;line-height:1.55;

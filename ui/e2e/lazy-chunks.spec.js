@@ -279,12 +279,38 @@ test("a right-panel tab whose code cannot load says so in its place in History's
 
 // The reason a right-panel tab could not be shown sits in the panel as the tab's own content does once it loads (the Runtime surface's
 // cards, 14 px in from the panel's sides and top), clear of the panel's divider and the window's edge (it lay flush on both, its
-// rounded corners against them), wide and narrow, dark and light: for the Goal and Browser tabs, whose code loads with them, and for
-// the Runtime tab, whose code (idle-parts.js) loads at idle. Repair of round 13's fix: in the panel maximized in a wide window the tab's
-// own content keeps to a centred column no wider than 1040 px, and the reason sits in it too (it spanned the whole panel, 14 px in).
+// rounded corners against them), wide and narrow, dark and light: for the Goal, Context, Git, Browser, Agents, Files and Diff tabs,
+// whose code loads with them, and for the Runtime tab, whose code (idle-parts.js) loads at idle. Repair of round 13's fix: in the panel
+// maximized in a wide window the Goal, Context, Git and Runtime tabs' own content keeps to a centred column no wider than 1040 px, and
+// their reason sits in it too (it spanned the whole panel, 14 px in). The Browser, Agents, Files and Diff tabs' own content stays full
+// width there, and so does their reason (the repair had moved it into that column too, 148 px in at 1600 px, away from their content).
 test("a right-panel tab that cannot load shows its reason inset like the tab's own content, clear of the panel's divider and the window's edge, wide and narrow, dark and light, and maximized",async({page,request})=>{
-  test.setTimeout(90_000);
+  test.setTimeout(150_000);
   await request.post("/api/settings",{data:NATIVE_SETTINGS});
+  // Where the Browser, Agents, Files and Diff tabs' own content sits once it loads, docked at 1280 px and maximized at 1600 px. It is
+  // measured in a window of its own: this one refuses their code below, and a part a page has loaded once stays loaded in it.
+  const fullWidth={Browser:".preview-page > .preview-bar",Agents:".panel-page > .agents-page",Files:".workspace-panel",Diff:".workspace-panel"},content={};
+  const other=await page.context().newPage();
+  try{
+    await other.setViewportSize({width:1280,height:800});
+    await other.goto("/");
+    await expect(other.getByTestId("composer")).toBeVisible();
+    // The panel's own buttons: the Files tab draws a Files and a Diff button of its own.
+    const otherPanel=other.getByTestId("right-panel"),otherTab=label=>otherPanel.locator(".context-panel-tabs").getByRole("button",{name:label,exact:true});
+    const measure=async at=>{
+      for(const [label,selector] of Object.entries(fullWidth)){
+        await otherTab(label).click();await expect(otherTab(label)).toHaveClass(/\bactive\b/);
+        const node=otherPanel.locator(selector);await expect(node).toBeVisible();
+        (content[label]||={})[at]=await insetInPanel(node);
+      }
+    };
+    await other.getByTestId("right-panel-toggle").click();
+    await measure("docked");
+    await other.setViewportSize({width:1600,height:900});
+    await otherTab("Maximize right panel").click();await expect(otherPanel).toHaveClass(/\bmaximized\b/);
+    await measure("wide");
+  }finally{await other.close()}
+  console.log("the Browser, Agents, Files and Diff tabs' own content in the panel, docked at 1280 px and maximized at 1600 px:",JSON.stringify(content));
   await page.setViewportSize({width:1280,height:800});
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
@@ -301,8 +327,8 @@ test("a right-panel tab that cannot load shows its reason inset like the tab's o
   const wide=await insetInPanel(card);console.log("the Runtime surface's first card in the maximized panel at 1600 px:",JSON.stringify(wide));
   expect(wide.left,"the maximized panel's content column inset past 14 px at 1600 px").toBeGreaterThan(14);
   await restore();
-  await page.route(/\/assets\/(GoalPanel|PreviewPage)-[^/]*\.js$/,route=>route.abort("failed"));
-  // Goal by a click, Browser by Enter, and Runtime (below) by a click.
+  await page.route(/\/assets\/(GoalPanel|ContextInspector|SourceControlPanel|PreviewPage|AgentsPage)-[^/]*\.js$/,route=>route.abort("failed"));
+  // Browser by Enter, the others by a click.
   const open=label=>label==="Browser"?tab(label).focus().then(()=>page.keyboard.press("Enter")):tab(label).click();
   const placed=async(labels,widths=[1280,900,700])=>{
     for(const width of widths){
@@ -314,26 +340,32 @@ test("a right-panel tab that cannot load shows its reason inset like the tab's o
       }
     }
   };
-  await placed(["Goal","Browser"]);
-  // Maximized at 1600 px, the reason sits in the tab's column, as the Runtime card does there.
+  await placed(["Goal","Context","Git","Browser","Agents"]);
+  // Maximized at 1600 px, the reason moves in from where it sits docked as far as the tab's own content does there: the Goal, Context,
+  // Git and Runtime tabs' as the Runtime card does, into the centred column, and the Browser, Agents, Files and Diff tabs' as their
+  // own content measured above, which stays full width.
+  const maximizedAt=label=>{
+    const moved=content[label]||{docked:own,wide};
+    return {left:own.left+moved.wide.left-moved.docked.left,right:own.right+moved.wide.right-moved.docked.right,top:own.top+moved.wide.top-moved.docked.top};
+  };
   const placedWide=async labels=>{
     await maximize();
     for(const label of labels){
       await open(label);
       await expect(tab(label)).toHaveClass(/\bactive\b/);await expect(failed).toBeVisible();
-      await shootModes(page,`lazy-chunk-${label.toLowerCase()}-tab-cannot-load-maximized`,async mode=>expect.soft(await insetInPanel(failed),`${label}'s reason in the panel maximized at 1600 px, ${mode}`).toEqual(wide));
+      await shootModes(page,`lazy-chunk-${label.toLowerCase()}-tab-cannot-load-maximized`,async mode=>expect.soft(await insetInPanel(failed),`${label}'s reason in the panel maximized at 1600 px, ${mode}`).toEqual(maximizedAt(label)));
     }
     await restore();
   };
-  await placedWide(["Goal","Browser"]);
-  // A Trebell opened with its idle script refused: the Runtime tab cannot load.
-  await page.route(/\/assets\/idle-parts-[^/]*\.js$/,route=>route.abort("failed"));
+  await placedWide(["Goal","Context","Git","Browser","Agents"]);
+  // A Trebell opened with its idle script and the Files and Diff tabs' code refused: the Runtime, Files and Diff tabs cannot load.
+  await page.route(/\/assets\/(idle-parts|WorkspacePanel)-[^/]*\.js$/,route=>route.abort("failed"));
   await page.setViewportSize({width:1280,height:800});
   await page.reload();
   await expect(page.getByTestId("composer")).toBeVisible();
   await page.getByTestId("right-panel-toggle").click();
-  await placed(["Runtime"]);
-  await placedWide(["Runtime"]);
+  await placed(["Files","Diff","Runtime"]);
+  await placedWide(["Files","Diff","Runtime"]);
   await appStays(page);
 });
 

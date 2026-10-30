@@ -13,11 +13,13 @@ const TABS=[
   ["runtime",Cpu,"Runtime"],
 ];
 
-export default function RightPanel({active,onActive,onClose,children,disabledTabs=[],hiddenTabs=[],maximized=false,onToggleMaximized}){
+// shown: the tab whose content the body shows, when App draws another tab's there (a hidden Agents tab shows Runtime's). The panel is
+// marked with it (data-tab), so the reason a tab could not be shown keeps to that content's column or width (inspector.css).
+export default function RightPanel({active,shown=active,onActive,onClose,children,disabledTabs=[],hiddenTabs=[],maximized=false,onToggleMaximized}){
   const tabScrollRef=useRef(null),recording=useBrowserRecording();
   // The active tab stays in view when the strip is narrower than its tabs (keyboard and palette switches included).
   useEffect(()=>{tabScrollRef.current?.querySelector("button.active")?.scrollIntoView?.({block:"nearest",inline:"nearest"})},[active]);
-  return <aside className={"context-panel"+(maximized?" maximized":"")} data-testid="right-panel">
+  return <aside className={"context-panel"+(maximized?" maximized":"")} data-testid="right-panel" data-tab={shown}>
     <div className="context-panel-tabs">
       <div className="context-panel-tab-scroll" ref={tabScrollRef}>
         {/* A recording goes on while another tab is shown: the Browser tab says so, with a red mark, until it stops. */}
