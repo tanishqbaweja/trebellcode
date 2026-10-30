@@ -242,3 +242,16 @@ test("Meta's stream is read with the lane's idle bound, not the provider's reque
     assert.ok(elapsed<1_200,`ended at the lane's 300 ms bound, not the silence's end or the request timeout (${elapsed} ms)`);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
+
+test("a Meta stream whose connection drops after its final event gives that answer, without sending it again",async()=>{
+  const root=home();
+  try{
+    // Every recorded event, response.completed included, then the socket drops before "data: [DONE]" and the close (undici's "terminated").
+    const dropped=async()=>{let sent=0;const list=fixture.text.events;return new Response(new ReadableStream({pull(controller){if(sent<list.length){controller.enqueue(encoder.encode(frame(list[sent++])));return}controller.error(Object.assign(new TypeError("terminated"),{cause:Object.assign(new Error("other side closed"),{code:"UND_ERR_SOCKET"})}))}}),{status:200,headers:{"content-type":"text/event-stream","x-request-id":"req-meta-test"}})};
+    const meta=metaApi([dropped,answer(fixture.text)]),events=[];
+    const result=await runNativeAgentTurn(loopOptions(managerFor(root,meta.fetchFn),events));
+    assert.equal(result.text,"208");assert.equal(meta.requests.length,1,"the finished answer is not sent again");
+    assert.equal(events.filter(event=>event.name==="native.model.retrying").length,0);
+    assert.deepEqual(result.usage,{inputTokens:655,outputTokens:305,totalTokens:960,cachedInputTokens:497,cacheWriteInputTokens:0,reasoningOutputTokens:295});
+  }finally{rmSync(root,{recursive:true,force:true})}
+});

@@ -473,10 +473,11 @@ async function readOpenAiResponsesStream(source,{requestStartedAt=performance.no
   try{
     let ended=true;
     for(;;){
-      // Once the final event is in, finalGraceMs (when given) bounds the wait for the stream's end: nothing after it is needed.
+      // Once the final event is in, finalGraceMs (when given) bounds the wait for the stream's end: nothing after it is needed, so a
+      // stream that then stays open, breaks or drops its connection before its end still gives the complete response (not a stop).
       const wait=response&&finalGraceMs>0?Math.min(idleTimeoutMs,finalGraceMs):idleTimeoutMs;let chunk;
       try{chunk=await readProviderStreamChunk(reader,{signal,idleTimeoutMs:wait,label})}
-      catch(error){if(response&&finalGraceMs>0&&error?.name==="TimeoutError"&&!signal?.aborted){ended=false;break}throw error}
+      catch(error){if(response&&finalGraceMs>0&&!signal?.aborted){ended=false;break}throw error}
       const {done,value}=chunk;if(done)break;
       responseBytes+=Number(value?.byteLength||0);buffer+=decoder.decode(value,{stream:true});
       const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";for(const block of blocks)consume(block);
@@ -501,8 +502,8 @@ function metaStreamErrorRetry(providerError={}){
 }
 // The stateless providers whose Responses stream a turn reads when it asks to stream (streamResponses, Native's Meta lane in
 // src/native-configuration.mjs), each once a live check showed its events, usage and errors: Meta, 2026-10-30. Meta ends a stream with
-// "data: [DONE]" and closes it right after response.completed; one held open after its final event is let go after 5 s, so a response
-// already complete is never waited out to the idle bound and sent again.
+// "data: [DONE]" and closes it right after response.completed; one held open after its final event is let go after 5 s, and one that
+// breaks after it is taken as it is, so a response already complete is never waited out to the idle bound or sent again.
 const STREAMED_STATELESS_RESPONSES=Object.freeze({meta:Object.freeze({codePrefix:"meta_stream",classifyError:metaStreamErrorRetry,finalGraceMs:5_000})});
 
 // An error that arrives inside a stream comes after a 200, so it names its class instead of carrying a status. It retries as the same
