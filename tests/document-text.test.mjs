@@ -184,7 +184,7 @@ test("an archive past its limits has its text cut with a note, or none, instead 
   const notebook=await extract("cells.ipynb",JSON.stringify({cells:Array.from({length:10_001},(_,cell)=>({cell_type:"markdown",source:[`c${cell}`]}))}));
   assert.ok(notebook.endsWith(TRUNCATED)&&notebook.includes("## Cell 10000 (markdown)")&&!notebook.includes("Cell 10001"),"more than 10,000 notebook cells");
   assert.equal(await extract("nested.rtf",String.raw`{\rtf1 `+"{".repeat(129)+"Lost"+"}".repeat(130)),CUT,"RTF groups nested more than 128 deep");
-  await assert.rejects(extract("locked.docx",zipArchive({"word/document.xml":"<document><p>Secret</p></document>"},{encrypted:true})),/Encrypted archive/);
+  await assert.rejects(extract("locked.docx",zipArchive({"word/document.xml":"<document><p>Secret</p></document>"},{encrypted:true})),/Password-protected document/);
   // A part that is missing or is not XML is left out, said, and the rest still read.
   const partial=await extract("partial.pptx",zipArchive({
     "ppt/presentation.xml":'<presentation><sldIdLst><sldId id="256" r:id="rIdTorn"/><sldId id="257" r:id="rIdWhole"/></sldIdLst></presentation>',

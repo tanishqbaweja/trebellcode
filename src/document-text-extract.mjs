@@ -100,7 +100,7 @@ const firstText=node=>node?.kids.find(kid=>typeof kid==="string");
 // An OpenDocument repeat count (rows, columns, spaces): 1 when absent, else a whole number of at least 1.
 function repeatCount(value){
   const count=value===undefined?1:/^[0-9]+$/.test(value)?Number(value):0;
-  if(count<1)throw new Error("Invalid repeat count");
+  if(count<1)throw new Error("Repeat count is not a positive whole number");
   return count;
 }
 
@@ -226,7 +226,7 @@ async function unzipParts(path){
     let unpacked=0;
     for(let seen=1,entry=await next();entry;seen++,entry=await next()){
       if(seen>LIMITS.archiveEntries||zip.entryCount>LIMITS.archiveEntries)throw new LimitReached();
-      if(entry.generalPurposeBitFlag&1)throw new Error("Encrypted archive");
+      if(entry.generalPurposeBitFlag&1)throw new Error("Password-protected document");
       if(!XML_PART.test(entry.fileName))continue;
       const size=entry.uncompressedSize;
       if(size>LIMITS.unpackedBytes||size>Math.max(1024,entry.compressedSize*LIMITS.packRatio))throw new LimitReached();
@@ -246,7 +246,7 @@ class DocumentPackage{
   tree(name){
     try{
       const source=this.parts.get(name);
-      if(!source)throw new Error("Missing document part");
+      if(!source)throw new Error("Document part not in the archive");
       return parseXml(source,this.options);
     }catch(error){
       if(error instanceof LimitReached)throw error;
@@ -373,7 +373,7 @@ const PACKAGE_WRITERS={
 // traceback without its terminal colours).
 function writeNotebook(source,sink){
   const book=JSON.parse(source);
-  if(!book||typeof book!=="object"||!Array.isArray(book.cells))throw new Error("Invalid notebook");
+  if(!book||typeof book!=="object"||!Array.isArray(book.cells))throw new Error("Notebook has no cell list");
   const linesOf=value=>typeof value==="string"?[value]:Array.isArray(value)?value.filter(line=>typeof line==="string"):[];
   const writeLines=value=>{for(const line of linesOf(value))sink.write(line)};
   for(let index=0;index<book.cells.length;index++){
@@ -413,7 +413,7 @@ const RTF_SYMBOLS=new Map([
 const RTF_HIDDEN=new Set(["fonttbl","colortbl","stylesheet","info","pict","object","fldinst","header","footer"]);
 const RTF_HEX=/'([0-9a-fA-F]{2})/y,RTF_WORD=/([a-zA-Z]+)(-?\d+)? ?/y;
 function writeRtf(source,sink){
-  if(!source.startsWith("{\\rtf"))throw new Error("Invalid RTF document");
+  if(!source.startsWith("{\\rtf"))throw new Error("Not an RTF file");
   let state={hidden:false,fallbackLength:1,codePage:new TextDecoder("windows-1252")},toSkip=0,pending="";
   // Text is handed to the sink in pieces, at the latest when it would use up the budget, so a limit stops the read where it falls.
   const flush=()=>{if(pending){const piece=pending;pending="";sink.write(piece)}};
@@ -452,16 +452,16 @@ function writeRtf(source,sink){
     at+=word[0].length;
     const [,name,digits]=word,value=Number(digits);
     if(name==="bin"){
-      if(!Number.isSafeInteger(value)||value<0)throw new Error("Invalid RTF binary length");
+      if(!Number.isSafeInteger(value)||value<0)throw new Error("RTF binary run has no usable length");
       at+=value;
     }
     if(toSkip>0){toSkip--;continue}
     if(RTF_HIDDEN.has(name))state.hidden=true;
     if(name==="ansicpg"){
-      if(value!==874&&!(value>=1250&&value<=1258))throw new Error("Unsupported RTF code page");
+      if(value!==874&&!(value>=1250&&value<=1258))throw new Error("RTF code page is not one Trebell reads");
       state.codePage=new TextDecoder(`windows-${value}`,{fatal:true});
     }else if(name==="uc"){
-      if(!Number.isSafeInteger(value)||value<0)throw new Error("Invalid RTF fallback count");
+      if(!Number.isSafeInteger(value)||value<0)throw new Error("RTF Unicode fallback length is not a whole number");
       state.fallbackLength=value;
     }else if(state.hidden)continue;
     else if(name==="u"){out(String.fromCharCode(value<0?value+65536:value));toSkip=state.fallbackLength}
@@ -478,7 +478,7 @@ async function writeDocument(path,extension,sink){
   if(extension===".rtf")return writeRtf((await readFile(path)).toString("latin1"),sink);
   const pkg=new DocumentPackage(await unzipParts(path),{odf:OPEN_DOCUMENT.has(extension),html:extension===".epub"});
   const write=PACKAGE_WRITERS[extension];
-  if(!Object.hasOwn(PACKAGE_WRITERS,extension))throw new Error("Unsupported document");
+  if(!Object.hasOwn(PACKAGE_WRITERS,extension))throw new Error("No reader for this kind of file");
   write(pkg,sink);
   for(const note of pkg.notes)sink.write(note);
 }
@@ -493,6 +493,6 @@ export async function extractDocumentText(path,extension){
     limited=true;
   }
   const text=sink.text.replace(/\n(?:[ \t]*\n){2,}/g,"\n\n").trim();
-  if(!text&&!limited)throw new Error("No text extracted");
+  if(!text&&!limited)throw new Error("The document has no text");
   return text+(limited?LIMIT_NOTE:"");
 }
