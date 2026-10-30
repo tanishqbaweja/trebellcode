@@ -6,7 +6,7 @@
    - Rules start with `:root:root .settings-page.redesigned-settings` (0,4,0). The strongest legacy settings rules are
      light-mode ones such as `html[data-mode="light"]:not([data-custom-theme="true"]) .scoped-settings-card>.provider-key-actions button`
      (0,4,2); the prefix plus the target class keeps these rules ahead in dark, light and custom themes.
-   - `!important` marks properties a legacy rule also forces with !important (t3-workspace.css font sizes, heights and
+   - `!important` marks properties a legacy rule also forces with !important (workspace-overlay.css font sizes, heights and
      card colors; styles.css light/custom-theme backgrounds, borders and text colors). Delete those legacy rules and the
      flags here together in the CSS cleanup step.
    - Never set `display` with !important on a node that can carry the `hidden` attribute (Shortcuts, Updates and

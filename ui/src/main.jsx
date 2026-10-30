@@ -4,7 +4,7 @@ import App from "./App.jsx";
 import "@fontsource-variable/inter/index.css";
 import "@fontsource-variable/jetbrains-mono/index.css";
 import "./styles.css";
-import "./t3-workspace.css";
+import "./workspace-overlay.css";
 import "./guardian-review.css";
 // The design system loads after the legacy sheets so its tokens and area styles win the cascade.
 import "./theme.css";

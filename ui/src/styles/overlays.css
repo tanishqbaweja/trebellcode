@@ -403,7 +403,7 @@ html .workspace-shell.workspace-shell.with-composer-menu.with-composer-menu>.app
 }
 
 /* ============ Legacy !important neutralizer ============
-   styles.css, t3-workspace.css and guardian-review.css force hard-coded colors with !important (and a few
+   styles.css, workspace-overlay.css and guardian-review.css force hard-coded colors with !important (and a few
    higher-specificity plain rules) for built-in Light mode and custom themes. The rules below re-assert the token
    values above for exactly those modes. Remove this section together with those legacy rules in the cleanup step. */
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) :is(.modal-backdrop,.command-palette-backdrop,.onboarding-backdrop){background:var(--ovl)!important}

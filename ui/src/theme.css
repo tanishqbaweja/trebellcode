@@ -2,7 +2,7 @@
    Visual source: the "Trebell code frontend" example design (Inter + JetBrains Mono, layered dark surfaces,
    violet accent, soft borders).
 
-   Cascade plan (this file loads after styles.css / t3-workspace.css / guardian-review.css):
+   Cascade plan (this file loads after styles.css / workspace-overlay.css / guardian-review.css):
    - Tokens use doubled :root selectors so they beat the legacy :root, html[data-theme] and html[data-mode]
      variable blocks without !important.
    - html[data-mode] switches light/dark; html[data-theme] picks the built-in Midnight / Black variants.
@@ -11,7 +11,7 @@
      custom block below derives the new tokens from them. themeCssVariables() deliberately does not emit the new
      token names: App.jsx only clears its fixed legacy list when a custom theme is removed, so extra inline
      tokens would leak into the built-in themes.
-   - Legacy variables (--bg, --panel2, --muted, --purple, --t3-*, ...) are defined from the tokens so untouched
+   - Legacy variables (--bg, --panel2, --muted, --purple, --ws-*, ...) are defined from the tokens so untouched
      legacy CSS follows the same palette. */
 
 :root:root{
@@ -149,14 +149,14 @@
   --shside:-20px 0 60px rgba(25,25,50,.12);
 }
 
-/* Legacy variables follow the tokens. (0,3,0) beats the legacy t3 light block (0,2,1); custom themes still win
+/* Legacy variables follow the tokens. (0,3,0) beats the legacy overlay's light block (0,2,1); custom themes still win
    because they are inline styles on <html>. */
 :root:root:root{
   --bg:var(--bg0); --panel2:var(--bg3); --muted:var(--tx2); --muted2:var(--tx3);
   --purple:var(--ac); --purple2:var(--ac2); --green:var(--ok);
-  --t3-bg:var(--bg0); --t3-sidebar:var(--bg1); --t3-raised:var(--bg2); --t3-hover:var(--bg3);
-  --t3-active:var(--bg4); --t3-border:var(--line); --t3-soft:var(--line); --t3-text:var(--tx0);
-  --t3-muted:var(--tx2); --t3-faint:var(--tx3); --t3-accent:var(--ac);
+  --ws-bg:var(--bg0); --ws-sidebar:var(--bg1); --ws-raised:var(--bg2); --ws-hover:var(--bg3);
+  --ws-active:var(--bg4); --ws-border:var(--line); --ws-soft:var(--line); --ws-text:var(--tx0);
+  --ws-muted:var(--tx2); --ws-faint:var(--tx3); --ws-accent:var(--ac);
 }
 
 /* Base */

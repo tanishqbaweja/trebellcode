@@ -1744,7 +1744,7 @@ export default function App(){
   useEffect(()=>{try{localStorage.setItem("trebell-layout-v1",JSON.stringify(layoutPrefs))}catch{}},[layoutPrefs]);
   const [viewportWidth,setViewportWidth]=useState(()=>typeof window!=="undefined"?window.innerWidth:1600);
   // The terminal drawer's tallest in this window, the window less the room above it (190px to 620px), which its stylesheet caps it at
-  // too (--terminal-room, t3-workspace.css): 260px, or the room the header and the composer with a line of draft need where that is
+  // too (--terminal-room, workspace-overlay.css): 260px, or the room the header and the composer with a line of draft need where that is
   // more, as the composer measures it (the desktop's window bar, its controls in two rows beside the panel). It is kept rather than
   // the window's height, so App draws again only when it changes, or the room does: the stylesheet has the room App last drew with,
   // and a room that changed with the tallest the same (620px in a tall window) left it the old one, which capped the drawer under the
@@ -1766,7 +1766,7 @@ export default function App(){
   },[narrowWindow]);
   // The docked inspector (wider than 900px) never pushes the main column under 400px or past the window edge: it takes the stored
   // width when the window has room and shrinks toward its 340px minimum when it does not. The stored preference stays for wider
-  // windows. The sidebar column follows the shell's own breakpoints (t3-workspace.css: 196px up to 900px wide, where the inspector
+  // windows. The sidebar column follows the shell's own breakpoints (workspace-overlay.css: 196px up to 900px wide, where the inspector
   // is the overlay drawer, and 224px up to 1120px), tested as the stylesheets test them. Its handle's keys and a pull stop at the
   // same widest width, so they never narrow it (they stopped at the window less the sidebar's stored width and 480px, short of it).
   const narrowDrawer=useMediaQuery("(max-width:900px)"),mediumWindow=useMediaQuery("(max-width:1120px)");

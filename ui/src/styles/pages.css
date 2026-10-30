@@ -1,12 +1,12 @@
 /* Pages area: Projects, History, Usage, Tools, Environments, Licenses, plus the Agents and Browser panels.
    Built on the tokens in ../theme.css (layered surfaces, soft borders, violet accent, Inter + JetBrains Mono) and
-   loaded after the legacy sheets (styles.css, t3-workspace.css), theme.css and shell.css.
+   loaded after the legacy sheets (styles.css, workspace-overlay.css), theme.css and shell.css.
 
    Cascade notes
    - Every selector starts with `:root:root` plus a page root class. Legacy light-mode rules are written as
      `html[data-mode="light"]:not([data-custom-theme="true"]) .x` (0,2,1)+, and the doubled :root (0,2,0) plus the page
      root (0,1,0) keeps these rules ahead of them for the same target in dark, light and custom themes alike.
-   - `!important` marks properties that a legacy rule also forces with !important (t3-workspace.css font-size/height
+   - `!important` marks properties that a legacy rule also forces with !important (workspace-overlay.css font-size/height
      overrides, light-mode and custom-theme background/border/color rules). Delete those legacy rules and the
      !important flags here together in the CSS cleanup; the plain declarations then carry the look on their own.
    - --pg-card / --pg-row are local surface aliases: cards are a faint gradient over the page in dark and white in

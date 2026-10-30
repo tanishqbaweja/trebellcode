@@ -1,5 +1,5 @@
 /* App shell: frame, sidebar, topbar, empty-state hero, conversation and composer.
-   Built on the tokens in ../theme.css and loaded after the legacy sheets (styles.css, t3-workspace.css), so
+   Built on the tokens in ../theme.css and loaded after the legacy sheets (styles.css, workspace-overlay.css), so
    plain rules here win by source order and parent-scoped specificity. Light and dark come from the tokens.
    The last section re-asserts the same token values with !important where legacy light-mode and custom-theme
    rules force hard-coded colors; delete that section together with those legacy rules in the cleanup step. */
@@ -348,7 +348,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .conversation-column .chat-markdown-code-head .chat-markdown-copy-error{min-width:0;margin:0 8px 0 auto;overflow:hidden;color:var(--err);font:500 11.5px/1.3 var(--font);white-space:nowrap;text-overflow:ellipsis}
 .conversation-column .chat-markdown-code pre{margin:0;padding:10px 12px;overflow-x:auto;white-space:pre;overflow-wrap:normal;color:var(--tx1);font:400 12px/1.6 var(--mono);tab-size:2}
 .conversation-column .chat-markdown-code pre code{padding:0;border:0;background:none;color:inherit;font:inherit}
-/* Rows skip painting outside their box (content-visibility:auto, t3-workspace.css); the row holding the active match is on
+/* Rows skip painting outside their box (content-visibility:auto, workspace-overlay.css); the row holding the active match is on
    screen, so it paints normally and its ring is not clipped to a sliver. */
 .conversation-history>:is(.user-row,.history-assistant).find-active{content-visibility:visible}
 .conversation-column .user-row.find-active .user-bubble,.conversation-column .history-assistant.find-active>div:last-child{outline:1px solid color-mix(in srgb,var(--ac) 70%,transparent);box-shadow:0 0 0 3px var(--acsoft);border-radius:12px}
@@ -655,7 +655,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 }
 
 /* ============ Legacy !important neutralizer ============
-   styles.css and t3-workspace.css force hard-coded colors with !important for built-in Light mode
+   styles.css and workspace-overlay.css force hard-coded colors with !important for built-in Light mode
    (html[data-mode="light"]:not([data-custom-theme="true"]) …) and custom themes (html[data-custom-theme="true"] …).
    The rules below re-assert the token values above for exactly those modes. Remove this section together with
    those legacy rules during the cleanup step. */
