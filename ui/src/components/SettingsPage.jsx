@@ -516,6 +516,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     let result=null;
     try{result=await request()}
     catch(error){
+      // A request that ends with the page can fail before this module hears pagehide: the browser runs promise callbacks after each
+      // pagehide listener, and App's comes first (its window key). Its failure is read a task later, which a page that has gone never
+      // runs, so the page loaded next still says how that install went (tabInstalls).
+      await new Promise(resolve=>setTimeout(resolve));
       if(pageLeaving)return;
       const running=error?.data?.code==="install-running"?error.data.installId:null;
       if(running&&!handledInstalls.has(running)){
