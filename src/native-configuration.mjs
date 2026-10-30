@@ -102,13 +102,15 @@ export function nativeDefaultModel(provider,models=[],catalogDefault=null){
 export const NATIVE_COMPACTION=/*#__PURE__*/Object.freeze({reasoningEffort:null,maxOutputTokens:4096});
 
 // How long Native waits for the next byte of Meta's Responses stream before it gives the request up as stalled and the loop sends it
-// again (a timed-out request's retry). Meta sends nothing while the model writes an output item and has no keepalive: the live check
-// of 2026-10-30 (muse-spark-1.3-contributor at high, tests/fixtures/meta-responses-stream.json) saw no byte for 10.4 s of reasoning
-// and 7.1 s of a 3,063-character write_file argument, which came whole in one delta. So the bound must outlast the longest single item,
-// not a gap between tokens. The Meta lane's 698 JSON turns on Terminal-Bench 2.0 took at most 200 s whole (circuit-fibsqrt: 14,950
-// reasoning tokens in one item), at 44 to 108 output tokens a second (median 85); only the two that hit the old 300 s whole-request
-// timeout (regex-chess, adaptive-rejection-sampler) ran longer. 600 s is three times the longest turn that completed and holds one
-// item of about 40,000 tokens at the slowest tenth's rate (67 a second), 51,000 at the median; a stream that breaks fails at once.
+// again (a timed-out request's retry). Meta's stream has no keepalive and sends nothing while the model reasons or writes a tool call's
+// arguments, which come whole in one delta; only a reply's text comes in small deltas. The live checks of 2026-10-30 (muse-spark-1.3-
+// contributor at high, tests/fixtures/meta-responses-stream.json) saw no byte for 10.4 s of reasoning and 7.1 s of a 3,063-character
+// write_file argument, and 17.9 s of reasoning before a 14,449-token answer whose text came in 1,536 deltas. So the bound must outlast
+// the longest reasoning or tool call, not a gap between tokens. The Meta lane's 698 JSON turns on Terminal-Bench 2.0 took at most
+// 200 s whole (circuit-fibsqrt: 14,950 reasoning tokens in one item), at 44 to 108 output tokens a second (median 85); only the two
+// that hit the old 300 s whole-request timeout (regex-chess, adaptive-rejection-sampler) ran longer. 600 s is three times the longest
+// turn that completed and holds one silent item of about 40,000 tokens at the slowest tenth's rate (67 a second), 51,000 at the
+// median; a stream that breaks fails at once.
 // Meta's docs: a stream has no server-side limit once its first event is sent (dev.meta.ai/docs/error-handling).
 export const NATIVE_META_STREAM_IDLE_TIMEOUT_MS=600_000;
 
