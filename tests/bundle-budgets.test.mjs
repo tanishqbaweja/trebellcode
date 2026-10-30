@@ -145,7 +145,18 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // the view before and was left undone with it. The first bundle went from 607.7 / 196.8 to 607.8 / 196.8 KB, still 3.2 KB gzip of
 // room for R13S and the next round, and the lazy chunks from 814.5 / 269.4 to 814.5 / 269.3 KB (the first bundle's new name in
 // their import lines), and their limit with them, its headroom still 0.9 / 0.1 KB.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:815.4,gzipKB:269.4}};
+// Then (2026-10-30) by what land/r17 took meanwhile adds to the lazy chunks, measured at the move's merge into it: R13S, Native's
+// model choice, an update's install read after a reload and a send with nothing to compact that starts at once took the first
+// bundle from 607.8 / 196.8 to 609.6 / 197.4 KB (model-choice.js, the composer asking for a model, Settings' readiness and model
+// props, and the automatic compaction's rule checked in the window without its module) and the lazy chunks from 814.5 / 269.3 to
+// 817.7 / 270.7 KB (by chunk, in bytes: the Settings page 2,679 / 980 for R13S's harness rows, notes and keyboard, an update's
+// install read after a reload and the model choice's Default model and Current model, a question's commands shown as code 270 /
+// 117, Source control's Generate waiting for a model 165 / 68, the Usage page 56 / 42, a recipe asking for a model 72 / 25), and
+// the merge's fix, a send in the background pressed before turn-support.js has come held as a send is, took them to 609.8 / 197.5
+// and 817.8 / 270.9 KB (turn-support.js 46 / 34 bytes, and the rounded sizes of the chunks whose import lines name the first
+// bundle anew): the lazy limit goes up by those 3.3 / 1.6 KB, its headroom still 0.9 / 0.1 KB, with 2.5 KB gzip of room left in the
+// first bundle.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:818.7,gzipKB:271.0}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{
