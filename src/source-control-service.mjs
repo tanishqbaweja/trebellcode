@@ -171,11 +171,12 @@ export async function sourceControlReviewRangeContext(cwd,{base=null}={}){
     run("git",["diff","--stat","--no-ext-diff","--no-color",diffRange],{cwd:info.root,allowFailure:true,maxBuffer:512*1024}),
     run("git",["diff","--no-ext-diff","--no-color","--patch","--minimal",diffRange],{cwd:info.root,allowFailure:true,maxBuffer:4*1024*1024}),
   ]);
-  if(!commits.ok||!summary.ok||!patch.ok){
-    const error=[commits,summary,patch].find(result=>!result.ok);
-    throw new Error((error?.stderr||error?.stdout||"Could not compute pull request branch changes").trim());
-  }
-  return {isGit:true,baseBranch,baseRef,commitSummary:commits.stdout||"",diffSummary:summary.stdout||"",diff:patch.stdout||""};
+  // A branch whose changes outgrow a read's buffer (generated or vendored files) still gets its title and description: the prompt
+  // keeps only the start of each part, so a read cut at its buffer counts as read. It used to fail the whole request.
+  const cut=result=>!result.ok&&result.code==="ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+  const error=[commits,summary,patch].find(result=>!result.ok&&!cut(result));
+  if(error)throw new Error((error.stderr||error.stdout||"Could not compute pull request branch changes").trim());
+  return {isGit:true,baseBranch,baseRef,commitSummary:commits.stdout||"",diffSummary:summary.stdout||"",diff:patch.stdout||"",cut:[commits,summary,patch].some(cut)};
 }
 
 const PR_TEMPLATE_PATHS=[

@@ -486,6 +486,23 @@ test("pull request branch context excludes unrelated commits added later to the 
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
+test("a branch whose diff outgrows the patch's 4 MB read still gets its pull request context, cut at the read",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-pr-large-"));
+  try{
+    await git(root,["init"]);await git(root,["config","user.email","trebell@example.test"]);await git(root,["config","user.name","Trebell Test"]);
+    await git(root,["checkout","-b","main"]);await writeFile(join(root,"base.txt"),"base\n");await git(root,["add","."]);await git(root,["commit","-m","Base commit"]);
+    await git(root,["checkout","-b","feature"]);
+    await writeFile(join(root,"generated.txt"),"generated line of a vendored or built file\n".repeat(120_000));
+    await git(root,["add","."]);await git(root,["commit","-m","Add the generated file"]);
+    const context=await sourceControlReviewRangeContext(root,{base:"main"});
+    assert.match(context.commitSummary,/Add the generated file/);
+    assert.match(context.diffSummary,/generated\.txt/);
+    assert.match(context.diff,/^diff --git a\/generated\.txt/);
+    assert.ok(context.diff.length>1024*1024&&context.diff.length<=4*1024*1024,String(context.diff.length));
+    assert.equal(context.cut,true);
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
+});
+
 test("source-control branch switching rejects a stale branch name without restoring a same-named dirty file",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-stale-branch-"));
   try{
