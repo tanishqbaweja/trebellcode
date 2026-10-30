@@ -37,6 +37,9 @@ async function shootModes(page,name,{height=800,show=null}={}){
 }
 // Replaces what a field holds the way a person does: click into it, select all, type.
 async function typeInto(page,field,text){await field.click();await page.keyboard.press("Control+A");await page.keyboard.type(text,{delay:5})}
+// Two frames drawn and the task after them: the browser takes the keyboard off a button that can no longer have it (disabled) only once
+// it draws the page again.
+const drawn=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve)))));
 // The person turns the mouse wheel over the settings list, a notch at a time: back up until target is under the bottom of the window
 // (or the page is at its top), then down only until all of it shows.
 async function wheelUntilShown(page,target){
@@ -1385,6 +1388,115 @@ test("a failed release check in General can be retried on its own",async({page,r
   expect(releaseChecks).toBe(2);
   expect(otherChecks).toEqual([]);
   await updates.screenshot({animations:"disabled",path:auditDir+"settings-release-check-retried.png"});
+});
+
+// Check again and the desktop app's Check now said they were checking by being disabled, which dropped the keyboard on the page while
+// they checked and left it there: a second Enter checked nothing and Tab started over from the top of the page (lane G, GR13-41). They
+// only say they are off now (aria-disabled), so the keyboard stays on them; a press meanwhile checks nothing, nor do the second click
+// of a double click and the repeats of Enter held.
+test("Enter on the Updates card's Check again keeps the keyboard on it while it checks and after, and goes on to Open latest release once a check finds it",async({page,request})=>{
+  test.setTimeout(60_000);
+  // Each release check waits in held until the test answers it: failed, as offline, or with the latest release.
+  const held=[];let checks=0;
+  await page.route(/\/api\/update\/check$/,route=>{checks++;held.push(route)});
+  const answer=async found=>{await expect.poll(()=>held.length,{message:"one release check waits"}).toBe(1);await held.shift().fulfill(found
+    ?{status:200,contentType:"application/json",body:JSON.stringify({current:"2.0.0",latest:"v2.0.1",url:"https://example.invalid/releases/v2.0.1"})}
+    :{status:502,contentType:"application/json",body:JSON.stringify({current:"2.0.0",error:"Could not reach GitHub releases: the network is offline"})})};
+  await page.setViewportSize({width:1280,height:800});
+  await openSettings(page,request,"Release Keyboard Workspace");
+  const updates=page.locator(".update-settings"),check=updates.getByRole("button",{name:/^(Check again|Checking…)$/}),restart=page.getByLabel("Continue supported active threads after restarts");
+  await answer(false);await expect(check).toHaveText("Check again");
+  for(const mode of ["dark","light"]){
+    await switchMode(page,mode);
+    // Tab from the card's heading, as a person moves on along the card, and Enter.
+    await updates.locator("h3").click();await page.keyboard.press("Tab");await expect(check).toBeFocused();
+    const before=checks;
+    await page.keyboard.press("Enter");
+    await expect(check).toHaveText("Checking…");await drawn(page);
+    await expect(check,"the keyboard stays on Check again while it checks").toBeFocused();
+    await expect(check).toHaveAttribute("aria-disabled","true");
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await updates.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:shots+`updates-check-again-checking-${mode}-${width}.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    // Enter and a click meanwhile check nothing.
+    await page.keyboard.press("Enter");
+    const box=await check.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);
+    await answer(false);
+    await expect(check).toHaveText("Check again");
+    await expect(check,"the keyboard is still on Check again once the check ends").toBeFocused();
+    await page.waitForTimeout(300);expect(checks-before,"one check for the press, none for the presses while it checked").toBe(1);
+    // A second Enter checks again, and Tab goes on from Check again: back to the switch before the card, and on to it again.
+    await page.keyboard.press("Enter");await expect(check).toHaveText("Checking…");await answer(false);await expect(check).toHaveText("Check again");
+    expect(checks-before).toBe(2);
+    await page.keyboard.press("Shift+Tab");await expect(restart).toBeFocused();await page.keyboard.press("Tab");await expect(check).toBeFocused();
+  }
+  // A double click checks once, and so does Enter held on it (a press, and five repeats 33 ms apart).
+  let before=checks;await check.dblclick();await answer(false);await expect(check).toHaveText("Check again");
+  await page.waitForTimeout(300);expect(checks-before,"a double click checks once").toBe(1);
+  before=checks;await page.keyboard.down("Enter");for(let repeat=0;repeat<5;repeat++){await page.waitForTimeout(33);await page.keyboard.down("Enter")}await page.keyboard.up("Enter");
+  await answer(false);await expect(check).toHaveText("Check again");
+  await page.waitForTimeout(300);expect(checks-before,"Enter held checks once").toBe(1);
+  // A check that finds the latest release takes Check again away: the keyboard goes on to Open latest release, not to the page.
+  await expect(check).toBeFocused();await page.keyboard.press("Enter");await answer(true);
+  await expect(updates).toContainText("Latest: 2.0.1");await expect(check).toHaveCount(0);
+  await expect(updates.getByRole("button",{name:"Open latest release",exact:true}),"the keyboard goes on to Open latest release").toBeFocused();
+  await shootModes(page,"updates-check-again-found",{show:updates});
+});
+
+test("Enter on the desktop app's Check now keeps the keyboard on it while it checks and after, and a press meanwhile checks nothing",async({page,request})=>{
+  test.setTimeout(60_000);
+  await page.addInitScript(()=>{
+    // As desktop/updater-controller.mjs checks: the state goes to checking, then to current once the release server answers (here when
+    // the test calls window.__checkFree), and each change reaches the window as desktop:update:state does. window.__checks counts the
+    // checks asked for.
+    let state={supported:true,status:"idle",currentVersion:"2.0.0",availableVersion:null,percent:null,transferred:null,total:null,error:null,releaseName:null};
+    const listeners=new Set(),publish=patch=>{state={...state,...patch};for(const listener of listeners)listener({...state});return {...state}};
+    window.__checks=0;
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{platform:"win32",updates:{
+      get:async()=>({...state}),
+      check:async()=>{window.__checks++;publish({status:"checking",error:null});await new Promise(resolve=>{window.__checkFree=resolve});return publish({status:"current",availableVersion:"2.0.0"})},
+      download:async()=>{throw new Error("No downloadable update is currently available.")},
+      install:async()=>{throw new Error("Download the update before installing it.")},
+      onState:handler=>{listeners.add(handler);return()=>listeners.delete(handler)},
+    }}});
+  });
+  await page.route(/\/api\/update\/check$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({current:"2.0.0",latest:"v2.0.0",url:"https://example.invalid/releases/v2.0.0"})}));
+  await page.setViewportSize({width:1280,height:800});
+  await openSettings(page,request,"Desktop Update Keyboard Workspace");
+  const updates=page.locator(".update-settings"),check=updates.getByRole("button",{name:"Check now",exact:true}),restart=page.getByLabel("Continue supported active threads after restarts");
+  const checks=()=>page.evaluate(()=>window.__checks),free=()=>page.evaluate(()=>window.__checkFree());
+  await expect(updates).toContainText("Status: Ready to check");
+  for(const mode of ["dark","light"]){
+    await switchMode(page,mode);
+    // Tab from the card's heading, as a person moves on along the card, and Enter.
+    await updates.locator("h3").click();await page.keyboard.press("Tab");await expect(check).toBeFocused();
+    const before=await checks();
+    await page.keyboard.press("Enter");
+    await expect(updates).toContainText("Status: Checking…");await drawn(page);
+    await expect(check,"the keyboard stays on Check now while it checks").toBeFocused();
+    await expect(check).toHaveAttribute("aria-disabled","true");
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await updates.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:shots+`updates-check-now-checking-${mode}-${width}.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    // Enter and a click meanwhile check nothing.
+    await page.keyboard.press("Enter");
+    const box=await check.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);
+    await free();
+    await expect(updates).toContainText("Status: Up to date");
+    await expect(check,"the keyboard is still on Check now once the check ends").toBeFocused();
+    await expect(check).not.toHaveAttribute("aria-disabled","true");
+    expect(await checks()-before,"one check for the press, none for the presses while it checked").toBe(1);
+    // A second Enter checks again, and Tab goes on from Check now: back to the switch before the card, and on to it again.
+    await page.keyboard.press("Enter");await expect(updates).toContainText("Status: Checking…");await free();await expect(updates).toContainText("Status: Up to date");
+    expect(await checks()-before).toBe(2);
+    await page.keyboard.press("Shift+Tab");await expect(restart).toBeFocused();await page.keyboard.press("Tab");await expect(check).toBeFocused();
+  }
+  // A double click checks once, and so does Enter held on it (a press, and five repeats 33 ms apart).
+  let before=await checks();await check.dblclick();await expect(updates).toContainText("Status: Checking…");
+  await page.waitForTimeout(300);await free();await expect(updates).toContainText("Status: Up to date");
+  expect(await checks()-before,"a double click checks once").toBe(1);
+  before=await checks();await page.keyboard.down("Enter");for(let repeat=0;repeat<5;repeat++){await page.waitForTimeout(33);await page.keyboard.down("Enter")}await page.keyboard.up("Enter");
+  await expect(updates).toContainText("Status: Checking…");
+  await page.waitForTimeout(300);await free();await expect(updates).toContainText("Status: Up to date");
+  expect(await checks()-before,"Enter held checks once").toBe(1);
 });
 
 test("the Runtime card refresh does not report a failing release check as a diagnostics failure",async({page,request})=>{
