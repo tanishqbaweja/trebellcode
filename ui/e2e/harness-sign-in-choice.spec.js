@@ -670,3 +670,109 @@ test("Trebell Native takes a message once a key is saved on its Model provider c
     await expectReady(page,"native",false);
   }finally{await machine.close()}
 });
+
+// Where target is against the window's bottom edge, in the box that scrolls it (the page's own, else the window's), which act first
+// scrolls: "foot" puts target's foot 12 px above that edge, where a row the keyboard reaches stops (its scroll margin); "across" lays
+// the edge across target at by (a fraction) of its height; "after" lays it by px under target's foot. It answers the scroll and the room
+// left between target's foot and the edge (negative: under it).
+const atFoot=(target,act=null,by=0)=>target.evaluate((node,[act,by])=>{
+  let box=node.parentElement;while(box&&!(/auto|scroll/.test(getComputedStyle(box).overflowY)&&box.scrollHeight>box.clientHeight))box=box.parentElement;
+  const scroller=box||document.scrollingElement,edge=box?Math.min(innerHeight,box.getBoundingClientRect().bottom):innerHeight,place=node.getBoundingClientRect();
+  scroller.scrollTop+=act==="foot"?place.bottom-edge+12:act==="across"?place.top+place.height*by-edge:act==="after"?place.bottom+by-edge:0;
+  const rect=node.getBoundingClientRect();
+  return {scroll:Math.round(scroller.scrollTop),room:Math.round((edge-rect.bottom)*10)/10};
+},[act,by]);
+// The last harness row, the one lowest on the page, so the window's foot can be laid across it at any size.
+const LOWEST={name:"Muse Code",id:"muse",provider:"meta"};
+
+// A press of the mouse into a harness row's key field leaves the page where it is, also with the window's bottom edge across the row:
+// only the keyboard brings a row whole into view. The press moved the row up under the pointer before its release (a text field matches
+// :focus-visible on a press too), so the second press of a double click landed on what came up there: at a phone's width Remove key,
+// which removes the key at once, Trebell Native's too (round 13's repair of GR13-42).
+test("a double click or a click into a harness row's key field, the window's bottom edge across the row, moves nothing and presses nothing else, at 390 and 1280",async({page,request})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:720});
+  expect((await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0}})).status()).toBe(200);
+  expect((await request.post("/api/agent-runtime-auth",{data:{action:"method",runtime:LOWEST.id,instanceId:LOWEST.id+"-default",method:"api-key"}})).status()).toBe(200);
+  expect((await request.post("/api/providers",{data:{provider:LOWEST.provider,apiKey:KEY,select:false}})).status()).toBe(200);
+  const posted=[];
+  page.on("request",item=>{if(/\/api\/providers$/.test(item.url())&&item.method()==="POST")posted.push(item.postDataJSON())});
+  try{
+    await openAgents(page);
+    const row=harnessRow(page,LOWEST.name),panel=row.getByTestId("harness-auth-"+LOWEST.id),field=panel.locator("input[type=password]"),remove=panel.getByRole("button",{name:"Remove key"});
+    await expect(remove).toBeEnabled();
+    for(const [width,height] of [[390,844],[1280,720]])for(const mode of ["dark","light"]){
+      await page.setViewportSize({width,height});await switchMode(page,mode);
+      // At 390 the buttons take the line under the field and the edge crosses them; at 1280 they share the field's line, and the edge
+      // runs just under it, the row's foot beyond.
+      const across=()=>width<600?atFoot(remove,"across",0.5):atFoot(field,"across",1.25);
+      await field.evaluate(node=>node.blur());await across();
+      await expect(field).toBeInViewport({ratio:1});
+      expect((await atFoot(row)).room,`the row's foot is under the window's edge at ${width} in ${mode}`).toBeLessThan(-1);
+      let before=(await atFoot(row)).scroll;
+      await field.dblclick();await drawn(page);
+      expect.soft((await atFoot(row)).scroll,`a double click into the field at ${width} in ${mode} leaves the page where it is`).toBe(before);
+      expect(posted,`the double click's second press pressed nothing under it at ${width} in ${mode}`).toEqual([]);
+      await expect(field,`the double click's second press stayed in the field at ${width} in ${mode}`).toBeFocused();
+      await page.screenshot({animations:"disabled",path:shots+`key-field-double-click-${mode}-${width}.png`});
+      // A click, the field left first.
+      await field.evaluate(node=>node.blur());await across();before=(await atFoot(row)).scroll;
+      await field.click();await drawn(page);
+      await expect(field).toBeFocused();
+      expect((await atFoot(row)).scroll,`a click into the field at ${width} in ${mode} leaves the page where it is`).toBe(before);
+    }
+    await expect(remove).toBeVisible();
+    expect((await (await request.get("/api/providers")).json()).providers.find(item=>item.id===LOWEST.provider).hasKey,"the key is still saved").toBe(true);
+  }finally{
+    await page.setViewportSize({width:1280,height:900}).catch(()=>{});
+    await request.post("/api/agent-runtime-auth",{data:{action:"method",runtime:LOWEST.id,instanceId:LOWEST.id+"-default",method:"sign-in"}});
+    await request.post("/api/providers",{data:{provider:LOWEST.provider,apiKey:"",select:false}});
+  }
+});
+
+// API key chosen from the keyboard on a row at the window's foot, where a walk down the rows with Tab leaves each, opens the key fields
+// under its radios, and the row is brought whole into view with them, the room its scroll margin keeps under it: its radio's own focus
+// came before they showed, and left them under the edge, where the field the person goes on to fill showed only at the next Tab (round
+// 13's repair of GR13-42). API key chosen with the mouse moves nothing, as no press of the mouse moves a row.
+test("API key chosen with an arrow key on a row at the window's foot shows the row whole with its key fields, and chosen with the mouse moves nothing, at 1280 and 390",async({page,request})=>{
+  test.setTimeout(150_000);
+  await page.setViewportSize({width:1280,height:720});
+  expect((await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0}})).status()).toBe(200);
+  const method=value=>request.post("/api/agent-runtime-auth",{data:{action:"method",runtime:LOWEST.id,instanceId:LOWEST.id+"-default",method:value}});
+  expect((await method("sign-in")).status()).toBe(200);
+  try{
+    await openAgents(page);
+    const row=harnessRow(page,LOWEST.name),choice=row.getByRole("radiogroup",{name:LOWEST.name+" signs in with"}),message=page.getByTestId("agent-runtime-message");
+    const own=choice.getByRole("radio",{name:"Sign in"}),onKey=choice.getByRole("radio",{name:"API key"}),field=row.getByTestId("harness-auth-"+LOWEST.id).locator("input[type=password]");
+    for(const [width,height] of [[1280,720],[390,844]])for(const mode of ["dark","light"]){
+      await page.setViewportSize({width,height});await switchMode(page,mode);
+      // The window's foot just under the row's radios, its own foot beyond, the keyboard on the control before them, and Tab: the row
+      // comes up whole to the window's foot, as a walk down the rows leaves each.
+      await atFoot(choice,"after",4);
+      expect((await atFoot(row)).room,`the row's foot under the window's at ${width} in ${mode}`).toBeLessThan(-1);
+      await own.evaluate(radio=>{const all=[...document.querySelectorAll("button,input,select,textarea,a[href]")].filter(item=>!item.disabled&&item.tabIndex>=0&&item.getClientRects().length&&(item.type!=="radio"||item.checked));all[all.indexOf(radio)-1].focus({preventScroll:true})});
+      await page.keyboard.press("Tab");await expect(own).toBeFocused();
+      const reached=(await atFoot(row)).room;
+      expect(reached,`Tab brings the row whole to the window's foot at ${width} in ${mode}`).toBeGreaterThanOrEqual(11);expect(reached).toBeLessThan(20);
+      // API key, by its arrow key: the row shows whole with its key fields.
+      await page.keyboard.press("ArrowRight");
+      await expect(onKey).toBeChecked();await expect(message).toContainText(LOWEST.name+" runs on its API key.");
+      await expect(field).toBeVisible();await drawn(page);
+      expect((await atFoot(row)).room,`the row and its key fields whole above the window's foot at ${width} in ${mode}`).toBeGreaterThanOrEqual(11);
+      await expect(field).toBeInViewport({ratio:1});
+      await page.screenshot({animations:"disabled",path:shots+`api-key-by-arrow-${mode}-${width}.png`});
+      // Back to Sign in, the row's foot at the window's foot again, then API key with the mouse: the key fields open under the foot,
+      // and the page stays where it is.
+      await own.click();await expect(message).toContainText(LOWEST.name+" signs in with its own sign-in.");await expect(field).toHaveCount(0);
+      const before=(await atFoot(row,"foot")).scroll;
+      await onKey.click();await expect(message).toContainText(LOWEST.name+" runs on its API key.");await expect(field).toBeVisible();await drawn(page);
+      const after=await atFoot(row);
+      expect(after.scroll,`API key chosen with the mouse leaves the page where it is at ${width} in ${mode}`).toBe(before);
+      expect(after.room,`its key fields open under the window's foot at ${width} in ${mode}`).toBeLessThan(0);
+      await own.click();await expect(message).toContainText(LOWEST.name+" signs in with its own sign-in.");await expect(field).toHaveCount(0);
+    }
+  }finally{
+    await page.setViewportSize({width:1280,height:900}).catch(()=>{});
+    await method("sign-in");
+  }
+});

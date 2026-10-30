@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState} from "react";
+import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { Activity, Bell, Bot, Boxes, Camera, Cloud, Download, FileText, GitPullRequest, Globe2, HardDrive, Keyboard, Layers, MessageSquareText, MonitorCog, Paintbrush, Palette, PlugZap, Power, RefreshCw, RotateCcw, Search, Server, Settings2, ShieldCheck, SlidersHorizontal, Stethoscope, X } from "lucide-react";
 import { api } from "../api.js";
 import { openWebLink } from "../web-link.js";
@@ -140,20 +140,43 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
 }
 // A key Settings saves for a harness, named as the Model provider card names it: "Anthropic API" -> "Anthropic API key".
 const keyLabel=name=>/API$/.test(name)?name+" key":name+" API key";
+// Whether the last press was a key's (Tab, an arrow key in a radio group) rather than a mouse's, a pen's or a touch's. A harness row
+// is brought whole into view for the keyboard only (the stage's onFocus, HarnessSignIn), never moved under the pointer: a press into
+// a row's key field matches :focus-visible too, as a text field always does, and moved the row between the press and its release, so
+// the second press of a double click landed on what came up there (Remove key, at a phone's width).
+let keyboardLast=false;
+if(typeof window!=="undefined"){window.addEventListener("keydown",()=>{keyboardLast=true},true);window.addEventListener("pointerdown",()=>{keyboardLast=false},true)}
+// Until the person moves on (a scroll, a press or a key), as followInstall never scrolls against them: on, and stop() to end it.
+function untilMovedOn(){
+  const inputs=["wheel","touchstart","pointerdown","keydown"],state={on:true,stop(){state.on=false;for(const name of inputs)window.removeEventListener(name,state.stop,true)}};
+  for(const name of inputs)window.addEventListener(name,state.stop,true);
+  return state;
+}
 // How the harness a row shows signs in (Settings' choice for that profile, harness-auth.mjs): its own sign-in, or its vendor's API
 // key from Trebell's one key per provider, added, replaced or removed here in the Model provider card's store (for Trebell Native
 // too, which reads the same store), whichever harness is active. Cursor has no API key.
 function HarnessSignIn({def,profile,busy,onMethod,onKey}){
   const info=profile?.signIn,[key,setKey]=useState(""),[provider,setProvider]=useState(""),[pending,setPending]=useState(null);
+  // API key chosen from the keyboard (an arrow key or Space in the radio group, which Tab reaches on its checked radio) opens the key
+  // fields under the radios, and the row is then brought whole into view with them, as Tab brings it (the stage's onFocus), and again
+  // as the server's answer redraws it (its status line can take another line), until the person moves on: the radio's own focus came
+  // before they showed, and left them under the window's edge. A choice made with the mouse moves nothing.
+  const box=useRef(null),keyed=useRef(null),onKeyMethod=(pending||info?.method)==="api-key";
+  useLayoutEffect(()=>{
+    const follow=keyed.current;if(!follow)return;
+    if(follow.on&&onKeyMethod)box.current?.closest(".agent-runtime-option")?.scrollIntoView({block:"nearest"});
+    if(!pending){follow.stop();keyed.current=null}
+  },[onKeyMethod,pending]);
+  useEffect(()=>()=>keyed.current?.stop(),[]);
   if(!info)return null;
   // The choice shows at once, as the server saves it.
-  const choose=value=>{setPending(value);Promise.resolve(onMethod(profile,value)).finally(()=>setPending(null))};
-  const onKeyMethod=(pending||info.method)==="api-key",chosen=info.keys.find(item=>item.provider===provider)||info.keys[0],group="harness-auth-"+profile.id;
+  const choose=value=>{keyed.current?.stop();keyed.current=keyboardLast?untilMovedOn():null;setPending(value);Promise.resolve(onMethod(profile,value)).finally(()=>setPending(null))};
+  const chosen=info.keys.find(item=>item.provider===provider)||info.keys[0],group="harness-auth-"+profile.id;
   // A key from the environment is none saved in Trebell Code: one saved here takes its place, for Trebell Native too. A saved one is
   // said to be shared with Trebell Native, as its Remove key removes it there too.
   const env=item=>item.source==="environment",kept=chosen.saved&&!env(chosen);
   const uses=info.keys.length>1?"Uses each saved key, shared with Trebell Native: "+info.keys.map(item=>keyLabel(item.name)+(item.saved?env(item)?` (from ${item.from})`:" (saved)":" (none)")).join(", ")+".":`Uses the ${keyLabel(chosen.name)}${chosen.saved?(env(chosen)?` from ${chosen.from}; a key saved here replaces it, for Trebell Native too.`:", saved in Trebell Code, shared with Trebell Native."):": none saved yet."}`;
-  return <div className="harness-auth" data-testid={"harness-auth-"+def.id}>
+  return <div ref={box} className="harness-auth" data-testid={"harness-auth-"+def.id}>
     <div role="radiogroup" aria-label={def.name+" signs in with"}>
       <label><input type="radio" name={group} checked={!onKeyMethod} disabled={busy} onChange={()=>choose("sign-in")}/>Sign in</label>
       <label><input type="radio" name={group} checked={onKeyMethod} disabled={busy} onChange={()=>choose("api-key")}/>API key</label>
@@ -1122,8 +1145,8 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
     </aside>
     {/* A harness row the keyboard reaches shows whole, with the room its scroll margin keeps: the browser's own scroll to the focused
         control moves only that control, which sits inside the row's border or is shorter than the row, and none at all when that
-        control already shows. */}
-    <section className="settings-stage" onFocus={({target})=>{if(!target.closest(".settings-action-error"))lastFocusedRef.current=target;if(target.matches(":focus-visible"))target.closest(".agent-runtime-option")?.scrollIntoView({block:"nearest"})}}>
+        control already shows. Only for the keyboard (keyboardLast): a press of the mouse, also into a key field, moves no row. */}
+    <section className="settings-stage" onFocus={({target})=>{if(!target.closest(".settings-action-error"))lastFocusedRef.current=target;if(keyboardLast)target.closest(".agent-runtime-option")?.scrollIntoView({block:"nearest"})}}>
       <div className="settings-section-head"><div><h2>{activeSettingsSection[2]}</h2><p>{activeSettingsSection[3]}</p></div><span>{settingsSections.findIndex(item=>item[0]===settingsSection)+1} / {settingsSections.length}</span></div>
       {/* The alert stays in view while the page scrolls, so it can be dismissed instead of covering rows until the next action succeeds. */}
       {settingsError&&<p className="settings-action-error" role="alert"><span>{settingsError}</span><button type="button" className="settings-action-error-dismiss" aria-label="Dismiss settings error" onClick={dismissSettingsError}><X size={13}/></button></p>}
