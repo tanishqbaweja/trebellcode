@@ -1086,7 +1086,10 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
         </button>)}
       </nav>}
     </aside>
-    <section className="settings-stage" onFocus={event=>{if(!event.target.closest(".settings-action-error"))lastFocusedRef.current=event.target}}>
+    {/* A harness row the keyboard reaches shows whole, with the room its scroll margin keeps: the browser's own scroll to the focused
+        control moves only that control, which sits inside the row's border or is shorter than the row, and none at all when that
+        control already shows. */}
+    <section className="settings-stage" onFocus={({target})=>{if(!target.closest(".settings-action-error"))lastFocusedRef.current=target;if(target.matches(":focus-visible"))target.closest(".agent-runtime-option")?.scrollIntoView({block:"nearest"})}}>
       <div className="settings-section-head"><div><h2>{activeSettingsSection[2]}</h2><p>{activeSettingsSection[3]}</p></div><span>{settingsSections.findIndex(item=>item[0]===settingsSection)+1} / {settingsSections.length}</span></div>
       {/* The alert stays in view while the page scrolls, so it can be dismissed instead of covering rows until the next action succeeds. */}
       {settingsError&&<p className="settings-action-error" role="alert"><span>{settingsError}</span><button type="button" className="settings-action-error-dismiss" aria-label="Dismiss settings error" onClick={dismissSettingsError}><X size={13}/></button></p>}
