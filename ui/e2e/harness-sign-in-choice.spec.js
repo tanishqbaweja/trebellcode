@@ -534,6 +534,67 @@ test("Antigravity's sign-in that fails once the person has gone on to New task s
   }finally{await machine.close()}
 });
 
+// Settings left while Antigravity's sign-in waits on Google's page, and opened again before it answers: it opens on Agents & models,
+// where it was left, a page other than the one whose Sign in was pressed. That page holds the row's Sign in meanwhile (Opening…), as
+// the page that pressed it did, and the answer reaches it: a sign-in that fails is said under the list, once, and one that goes
+// through shows on the row, with no Refresh, and in the composer. Either way the row's Sign in is let go: once signed in it stays, to
+// sign in again, as on the page that pressed it (round 13's second repair of GR13-23).
+async function signInAwayAndBack(page,machine){
+  await page.goto("/");
+  await toAgentsHere(page);
+  const release=machine.hold("signIn");
+  await harnessRow(page,"Antigravity").getByRole("button",{name:"Sign in",exact:true}).click();
+  await expect(page.getByTestId("agent-runtime-message")).toContainText("Opening Antigravity sign in…");
+  await toNewTask(page);
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Agent harness"}),"Settings opens again on Agents & models").toBeVisible();
+  const row=harnessRow(page,"Antigravity");
+  await expect(rowSaid(row)).toContainText("Antigravity is not signed in.");
+  await expect.soft(row.getByRole("button",{name:"Opening…",exact:true}),"the page opened again holds the row's Sign in while the sign-in runs").toBeDisabled();
+  await expect.soft(row.getByRole("button",{name:"Sign in",exact:true}),"and offers no second sign-in").toHaveCount(0);
+  return {row,release};
+}
+async function shootSettings(page,target,name){
+  for(const mode of ["dark","light"]){await switchMode(page,mode);await target.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:shots+`${name}-${mode}-1280.png`})}
+  await switchMode(page,"dark");
+}
+
+test("Antigravity's sign-in that fails once Settings was left and opened again says why on the page on screen, which held its Sign in meanwhile",async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:900});
+  const machine=await readyMachine(page,{runtime:"antigravity"});
+  try{
+    const {row,release}=await signInAwayAndBack(page,machine);
+    await shootSettings(page,row,"antigravity-sign-in-held-reopened");
+    machine.signIn.error="Antigravity's sign-in ended before Google's page was finished.";release();
+    const message=page.getByTestId("agent-runtime-message");
+    await expect(message,"the page on screen says why").toContainText("Antigravity's sign-in ended before Google's page was finished.");
+    await expect(message).toHaveAttribute("role","alert");
+    await expect(row.getByRole("button",{name:"Sign in",exact:true}),"Sign in is offered again").toBeEnabled();
+    await expect(page.getByTestId("app-action-error"),"said once, not in the app's alert as well").toHaveCount(0);
+    await shootSettings(page,message,"antigravity-sign-in-failed-reopened");
+    await toNewTask(page);
+    await expectReady(page,"antigravity",false);
+  }finally{await machine.close()}
+});
+
+test("Antigravity's sign-in that goes through once Settings was left and opened again shows on the page on screen, with no Refresh, and the composer takes a message",async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:900});
+  const machine=await readyMachine(page,{runtime:"antigravity"});
+  try{
+    const {row,release}=await signInAwayAndBack(page,machine);
+    release();
+    await expect.soft(page.getByTestId("agent-runtime-message"),"the page on screen says it").toContainText("Antigravity signed in (Log in with Google).");
+    await expect(rowSaid(row),"its row says so, with no Refresh").toHaveText("1.4.3 · Signed in with Antigravity's own sign-in.");
+    await expect(row.getByRole("button",{name:"Sign in",exact:true}),"its Sign in let go, to sign in again").toBeEnabled();
+    await expect(row.getByRole("button",{name:"Opening…",exact:true})).toHaveCount(0);
+    await shootSettings(page,row,"antigravity-signed-in-reopened");
+    await toNewTask(page);
+    await expectReady(page,"antigravity",true);
+  }finally{await machine.close()}
+});
+
 // A Settings action that answers while the app still reads the harness's status and models for the action before it: Claude Code's
 // key removed on its row while the read the saved key started still waits for Claude Code's model list (its capability probe can take
 // seconds). The app reads them again for the removed key, so the older read, which lands after that, does not leave the composer taking

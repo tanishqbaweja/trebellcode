@@ -49,6 +49,12 @@ if(typeof window!=="undefined")window.addEventListener("trebell:runtime-switched
 // kept until they are left.
 let agentInstalls={running:[],note:null};const agentInstallViews=new Set();
 function keepAgentInstalls(change,info=null){agentInstalls={...agentInstalls,...change};for(const show of agentInstallViews)show(agentInstalls,info)}
+// The sign-in on its way from a harness row or a profile row (the id of the profile, or of the harness, whose Sign in was pressed), and
+// the Settings pages that show it. Antigravity's waits on Google's page for up to 5 minutes, and Settings can be left and opened again
+// meanwhile: a page opened while it runs holds Sign in (Opening…), as the page that pressed it does, and the answer ({kind,text,error,
+// info}) is said on the page on screen, which takes the harness list it brings.
+let agentSignIn=null;const agentSignInViews=new Set();
+function keepAgentSignIn(id,answer=null){agentSignIn=id;for(const show of agentSignInViews)show(id,answer)}
 // The installs this window has started or waits on, by their id. The server names each install on its way and how the last one of
 // each harness ended (the harness list's installs), so this window also says Installing… for one it did not start (another tab's,
 // or its own from before a reload, which forgets the module state) and waits for its answer. tabInstalls keeps, for the tab's life,
@@ -302,7 +308,12 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
       if(!handledInstalls.has(id)&&(known.ended||[]).some(item=>item.runtime===runtime&&item.id===id)){handledInstalls.add(id);answerInstall(runtime,id,async()=>({waited:false,...agentInfo}))}
     }
   },[agentInfo]);
-  const [authenticatingAgent,setAuthenticatingAgent]=useState(null);
+  // The sign-in every Settings page knows of (agentSignIn): its answer is said here, with the harness list it brings, while this page shows.
+  const [authenticatingAgent,setAuthenticatingAgent]=useState(()=>agentSignIn);
+  useEffect(()=>{
+    const show=(id,answer)=>{setAuthenticatingAgent(id);if(!answer)return;if(answer.info)setAgentInfo(answer.info);setAgentMessageTarget(answer.kind);showAgentMessage(answer.text,answer.error)};
+    agentSignInViews.add(show);setAuthenticatingAgent(agentSignIn);return()=>{agentSignInViews.delete(show)};
+  },[]);
   // A harness's sign-in method or key on its way from its row (HarnessSignIn).
   const [harnessAuthBusy,setHarnessAuthBusy]=useState(false);
   const [instanceDraft,setInstanceDraft]=useState(null);
@@ -597,21 +608,23 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
   // while the harness's sign in starts keeps it.
   async function authenticateAgentRuntime(kind,instanceId){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind),pressed=terminalPresses();if(!definition?.canAuthenticate)return;
+    const name=definition.name||kind;let answer=null;
     setAgentMessageTarget(kind);
-    setAuthenticatingAgent(instanceId||kind);showAgentMessage("Opening "+(definition.name||kind)+" sign in…");
+    keepAgentSignIn(instanceId||kind);showAgentMessage("Opening "+name+" sign in…");
     try{
       // Each harness signs in in a terminal the answer opens, Antigravity in the browser page it opens itself.
       const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action:"login",runtime:kind,instanceId:instanceId||null,environmentId:runtimeEnvironmentId||null,cwd:projectPath||null}});
-      if(result?.agentSnapshot){setAgentInfo(result.agentSnapshot);showAgentMessage(`${definition.name||kind} signed in (${result.auth?.methodName||"its own sign-in"}).`)}
-      else showAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
+      answer=result?.agentSnapshot?{kind,info:result.agentSnapshot,text:`${name} signed in (${result.auth?.methodName||"its own sign-in"}).`}:{kind,text:"Complete sign in in the terminal, then refresh runtime status."};
       if(result?.session)onOpenRuntimeAuthTerminal?.(result.session,pressed);
     }catch(error){
       // With no harness rows on screen as it comes (Antigravity's can take minutes, and the person may have gone on), the app's alert
-      // says it, as a refused switch.
-      showAgentMessage(error.message,true);
-      if(!agentRowsShown)onActionError?.(error,"Could not sign in to "+(definition.name||kind));
+      // says it, as a refused switch; a page that shows them says it under the list.
+      answer={kind,text:error.message,error:true};
+      if(!agentRowsShown)onActionError?.(error,"Could not sign in to "+name);
     }
-    finally{setAuthenticatingAgent(null)}
+    // The answer is said on the Settings page on screen, this one or one opened since this one was left. With none, the window keeps
+    // the harness list it brings, and the app follows it (rememberAgentInfo).
+    finally{const shown=agentSignInViews.size>0;keepAgentSignIn(null,answer);if(!shown&&answer?.info)setAgentInfo(answer.info)}
   }
   // A harness profile's sign-in method, and a key for the provider it runs on, from its row.
   async function setHarnessMethod(profile,method){
