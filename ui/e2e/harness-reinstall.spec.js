@@ -90,7 +90,8 @@ test("a Claude Code in npm's prefix whose binary does not start offers Update, w
     await openHarnesses(page);
     const row=harnessRow(page,"Claude Code"),update=row.getByRole("button",{name:"Update",exact:true});
     // The row says what its check did, and offers Update.
-    await expect(row.locator("button").first().locator("small")).toHaveText("Claude Code is installed but `claude --version` exited with code 1: Error: claude native binary not installed.");
+    await expect(row.locator("button").first().locator("small")).toHaveText("Claude Code is installed but claude --version exited with code 1: Error: claude native binary not installed.");
+    await expect(row.locator("button").first().locator("small code.run-command"),"the command it ran reads as code").toHaveText("claude --version");
     await expect(update).toBeVisible();
     await shootRow(page,"reinstall-offered");
     // Update asks first, naming the release npm recorded there and the install it runs in that prefix.
@@ -134,7 +135,8 @@ test("a Grok Build in npm's prefix whose check fails on its own config file offe
     await openHarnesses(page);
     const row=harnessRow(page,"Grok Build");
     // The row says what its check printed, with neither an Update nor a note: installing Grok Build again mends no config file.
-    await expect(row.locator("button").first().locator("small")).toHaveText("Grok Build is installed but `grok --version` exited with code 2: error: config file is not valid TOML");
+    await expect(row.locator("button").first().locator("small")).toHaveText("Grok Build is installed but grok --version exited with code 2: error: config file is not valid TOML");
+    await expect(row.locator("button").first().locator("small code.run-command"),"the command it ran reads as code").toHaveText("grok --version");
     await expect(row.getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
     await expect(row.locator(".agent-runtime-option-note")).toHaveCount(0);
     await shootRow(page,"reinstall-not-offered","Grok Build");

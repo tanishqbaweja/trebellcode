@@ -1609,7 +1609,12 @@ export class AgentRuntimeManager{
     // A profile on an API key that cannot start now reads no usage: Claude Code's probe would read the person's own plan instead.
     const refusal=this.keyRefusal(instance,environmentId);
     if(refusal)return {checkedAt:new Date(this.now()).toISOString(),windows:[],unavailable:{reason:"unsupported",message:refusal.message}};
-    if(instance.kind==="claude")return readAgentRuntimeUsage("claude",{readCapabilities:()=>this.claudeCapabilities(instance,{environmentId})});
+    // A profile with a Claude config directory of its own (its homePath, the CLAUDE_CONFIG_DIR its probe runs with) is signed in there:
+    // a signed-out card names it, as a failed turn does. The default profile's is the one Trebell Code itself has, named by none.
+    if(instance.kind==="claude"){
+      const home=String(instance.homePath||"").trim(),configDir=home&&home!==String(this.env.CLAUDE_CONFIG_DIR||"").trim()?home:"";
+      return readAgentRuntimeUsage("claude",{configDir,readCapabilities:()=>this.claudeCapabilities(instance,{environmentId})});
+    }
     // Muse Code's are the windows of the last report its sessions keep for the profile's Muse home (the one its status check's host
     // named), as no read asks Muse: MSP's usage/read answers only the host's last report too. A Muse Code runs only on this machine.
     if(instance.kind==="muse")return this.processSpawner(instance,environmentId)?{checkedAt:new Date(this.now()).toISOString(),windows:[],unavailable:{reason:"unsupported",message:MUSE_LOCAL_ONLY}}:museUsageLimits(this.museUsageReport({museHome:this.#museCatalogs.get(instance.id)?.value?.museHome??null}),{now:this.now()});

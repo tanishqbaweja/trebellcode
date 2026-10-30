@@ -633,6 +633,7 @@ npm run desktop:dist:linux
 ├── ui/                     React/Vite desktop UI + Playwright E2E tests
 ├── docs/                   architecture, testing, benchmark history, and releases
 ├── THIRD_PARTY_NOTICES.md  attribution/provenance
+├── third-party-licenses/   license files of runtime packages whose npm release has none
 ├── make-exe.cmd            Windows release entrypoint
 └── package.json
 ~~~

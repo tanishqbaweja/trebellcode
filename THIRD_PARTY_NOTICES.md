@@ -26,7 +26,8 @@ Trebell Code uses the exact npm release `saxes@6.0.0`, an XML parser, with its o
 Copyright Louis-Dominique Dubeau and contributors to xmlchars, https://github.com/lddubeau/xmlchars).
 
 Upstream: https://github.com/lddubeau/saxes  
-License: ISC License, Copyright (c) Contributors; Copyright (c) Isaac Z. Schlueter and Contributors
+License: ISC License, Copyright (c) Contributors; Copyright (c) Isaac Z. Schlueter and Contributors. Its full text, with the
+permission notice, is in `third-party-licenses/saxes/LICENSE` (see below).
 Revision used by Trebell: npm package version `6.0.0`
 Destination/integration: dependency in `package.json`; `src/document-text-extract.mjs` parses the XML of an attached Word, Excel,
 PowerPoint, OpenDocument or EPUB file with it, in the process of its own that `src/document-text.mjs` starts to extract the file's text.
@@ -54,6 +55,20 @@ Revision used by Trebell: npm package version `2.0.2`
 Destination/integration: dependency in `package.json`; `src/document-text-extract.mjs` reads an EPUB's named entities and an RTF file's
 dash with it.
 Local modifications: none.
+
+## License files of packages whose npm release has none
+
+The npm releases of these runtime dependencies include no LICENSE or NOTICE file. Trebell Code ships the license files of each
+one's source repository at that release, unchanged, in `third-party-licenses/<package name>/`, and the Open source licenses page
+shows them for that package:
+
+- `saxes@6.0.0`: `LICENSE` of https://github.com/lddubeau/saxes at tag `v6.0.0` (commit `211fa0eb`, the release's `gitHead`).
+- `@openai/codex@0.155.1` and its platform build (`0.155.1-win32-x64` on Windows x64): `LICENSE` and `NOTICE` of
+  https://github.com/openai/codex at tag `rust-v0.155.1`.
+- `@opencode-ai/sdk@1.3.15`: `LICENSE` of https://github.com/anomalyco/opencode at tag `v1.3.15`, whose `packages/sdk/js` is
+  that release.
+- `@opencode/client@2.0.24`: `LICENSE` of https://github.com/anomalyco/opencode at tag `v2.0.24`, whose `packages/client` is
+  that release.
 
 ## T3 Code recorded Muse sessions
 

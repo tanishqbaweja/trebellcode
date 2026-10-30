@@ -94,12 +94,18 @@ export function claudeUsageResponseToLimits(response,at=checkedAt()){
   return available(windows,at);
 }
 
-// readCapabilities runs (or reuses) the no-prompt Claude Code capability probe, which asks the CLI for its plan usage.
-export async function readClaudeUsageLimits({readCapabilities}={}){
+// readCapabilities runs (or reuses) the no-prompt Claude Code capability probe, which asks the CLI for its plan usage. One that
+// answered signed out (its signedOut, claude-capabilities.mjs) says so and how to sign in, whatever its usage read brought. configDir:
+// the Claude config directory of the profile's own that its probe ran with (CLAUDE_CONFIG_DIR), named in the command as a failed turn
+// names it (claudeSignedOutMessage): `claude auth login` run as written signs in the person's default ~/.claude, and the card went on
+// saying signed out. Settings' Sign in runs it with that directory set.
+export async function readClaudeUsageLimits({readCapabilities,configDir=""}={}){
   const at=checkedAt();
   if(typeof readCapabilities!=="function")return unavailable("unsupported",null,at);
   let probe;
   try{probe=await readCapabilities()}catch{return unavailable("probeFailed","Claude Code could not read usage limits.",at)}
+  const home=String(configDir||"").trim();
+  if(probe?.signedOut)return unavailable("signedOut",`Claude Code is signed out. Use Sign in under Claude Code in Settings → Agents & models, or run claude auth login${home?` with CLAUDE_CONFIG_DIR set to "${home}"`:""}, then press Refresh.`,probe.checkedAt||at);
   if(!probe?.usage)return probe?.usageError?unavailable("probeFailed","Claude Code could not read usage limits.",at):unavailable("unsupported",null,at);
   return claudeUsageResponseToLimits(probe.usage,probe.checkedAt||at);
 }

@@ -81,6 +81,23 @@ test("a recheck that finds Claude Code signed out drops its kept probe, so the n
   assert.equal(probes.length,2,"the Usage card asks Claude Code again at once");
 });
 
+// The Usage card of a Claude Code profile with a Claude config directory of its own (its homePath, the CLAUDE_CONFIG_DIR its probe ran
+// with) found signed out says to run `claude auth login` with that directory set: run as written, it signs in the person's default
+// ~/.claude, and the card went on saying signed out. The default profile's names none.
+test("the Usage card of a signed-out Claude Code profile with its own Claude config directory says to sign in with it set, and the default profile's names none",async t=>{
+  const home=mkdtempSync(join(tmpdir(),"trebell-claude-signed-out-home-"));t.after(()=>rmSync(home,{recursive:true,force:true}));
+  const binary=join(home,"claude"),work=join(home,"claude-work");writeFileSync(binary,"claude build 1");
+  const settings={agentRuntime:"claude",agentRuntimeInstances:[{id:"claude-default",kind:"claude",binaryPath:binary,environment:{}},{id:"claude-work",kind:"claude",displayName:"Work",binaryPath:binary,homePath:work,environment:{}}]};
+  const homes=[];
+  const cache=createClaudeCapabilitiesCache({probe:async input=>{homes.push(input.env?.CLAUDE_CONFIG_DIR||null);return {models:[],commands:[],agents:[],account:{tokenSource:"none",apiProvider:"firstParty"},signedOut:true,usage:null,usageError:null,checkedAt:new Date().toISOString()}}});
+  const manager=new AgentRuntimeManager({state:{settings:()=>settings},platform:"linux",env:{PATH:"/usr/bin",HOME:home,TREBELL_HOME:join(home,"trebell")},runFn:async()=>({ok:false,code:1,error:null,stdout:"",stderr:""}),claudeCapabilitiesCache:cache});
+  const profile=id=>manager.instances().find(item=>item.id===id);
+  assert.deepEqual((await manager.usageLimits(profile("claude-work"))).unavailable,{reason:"signedOut",message:`Claude Code is signed out. Use Sign in under Claude Code in Settings → Agents & models, or run claude auth login with CLAUDE_CONFIG_DIR set to "${work}", then press Refresh.`});
+  assert.equal(homes.at(-1),work,"the probe that found it signed out ran with that directory");
+  assert.equal((await manager.usageLimits(profile("claude-default"))).unavailable.message,"Claude Code is signed out. Use Sign in under Claude Code in Settings → Agents & models, or run claude auth login, then press Refresh.");
+  assert.equal(homes.at(-1),null);
+});
+
 test("a Claude turn that failed to authenticate drops the session's kept probes, the machine's and its folder's",async()=>{
   const {cache,probes}=countedCache();
   const env={CLAUDE_CONFIG_DIR:"/home/a/.claude"},machine={command:"claude",cwd:null,env,spawnProcess:null,scope:""};

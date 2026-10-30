@@ -37,6 +37,9 @@ async function shootModes(page,name,{height=800,show=null}={}){
 }
 // Replaces what a field holds the way a person does: click into it, select all, type.
 async function typeInto(page,field,text){await field.click();await page.keyboard.press("Control+A");await page.keyboard.type(text,{delay:5})}
+// Two frames drawn and the task after them: the browser takes the keyboard off a button that can no longer have it (disabled) only once
+// it draws the page again.
+const drawn=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve)))));
 // The person turns the mouse wheel over the settings list, a notch at a time: back up until target is under the bottom of the window
 // (or the page is at its top), then down only until all of it shows.
 async function wheelUntilShown(page,target){
@@ -1061,8 +1064,9 @@ test("the custom model form says what is wrong with a draft by the form",async({
   }
 });
 
-// OpenCode's provider/model check on the same form is said there too. OpenCode is a fixture here: nothing runs it on this host.
-test("the custom model form says by the form that an OpenCode model needs provider/model",async({page})=>{
+// Settings' Agents & models with OpenCode the harness in use, a fixture: nothing runs it on this host. Its settings keep what is
+// saved (fixture.settings).
+async function openCodeSettings(page){
   let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",agentRuntimeInstanceId:"opencode-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",customModels:[]};
   const json=body=>({status:200,contentType:"application/json",body:JSON.stringify(body)});
   await page.route(/\/api\/bootstrap$/,route=>route.fulfill(json({mock:true,provider:"openai",providerReady:true,agentRuntime:"opencode",agentRuntimeInstanceId:"opencode-default",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"custom-model-opencode-fixture",activeEnvironmentId:null,activeEnvironment:null})));
@@ -1078,8 +1082,14 @@ test("the custom model form says by the form that an OpenCode model needs provid
   await page.goto("/");
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
+  await expect(page.locator('[data-setting-target="agents-harness"]')).toContainText("OpenCode");
+  return {get settings(){return settings}};
+}
+
+// OpenCode's provider/model check on the same form is said there too.
+test("the custom model form says by the form that an OpenCode model needs provider/model",async({page})=>{
+  const fixture=await openCodeSettings(page);
   const card=page.locator('[data-setting-target="agents-models"]'),harness=page.locator('[data-setting-target="agents-harness"]');
-  await expect(harness).toContainText("OpenCode");
   await card.getByRole("button",{name:"Add custom model",exact:true}).click();
   await typeInto(page,card.getByLabel("Model ID"),"lane-model");
   const save=card.getByRole("button",{name:"Save custom model",exact:true});
@@ -1089,8 +1099,32 @@ test("the custom model form says by the form that an OpenCode model needs provid
   await expect(problem).toBeInViewport({ratio:1});
   await expect(harness).not.toContainText("provider/model format");
   await expect(card.getByLabel("Model ID")).toHaveValue("lane-model");
-  expect(settings.customModels).toEqual([]);
+  expect(fixture.settings.customModels).toEqual([]);
   await shootModes(page,"custom-model-opencode-format",{show:problem});
+});
+
+// That refusal is said under the custom model editor, not in it, so the strip of room b8cfa291 keeps under a refusal the editors
+// scroll into view missed it: Save custom model near the window's foot, it was scrolled flush to the window's bottom edge, its
+// border on that edge. Pressed with the mouse and from the keyboard (Tab from the last price to Save custom model, Enter).
+test("an OpenCode custom model's refusal is scrolled into view with a strip of room above the window's bottom edge, at 1280 and 900, dark and light",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await openCodeSettings(page);
+  const card=page.locator('[data-setting-target="agents-models"]'),save=card.getByRole("button",{name:"Save custom model",exact:true});
+  const problem=card.getByRole("alert").filter({hasText:"OpenCode custom models must use provider/model format."});
+  for(const [mode,width,keys] of [["dark",1280,false],["light",1280,true],["dark",900,true],["light",900,false]]){
+    await page.setViewportSize({width,height:800});await switchMode(page,mode);
+    await card.getByRole("button",{name:"Add custom model",exact:true}).click();
+    await typeInto(page,card.getByLabel("Model ID"),"lane-model");
+    await wheelUntilShown(page,save);
+    if(keys){await card.getByLabel("Cache write / 1M").click();await page.keyboard.press("Tab");await expect(save).toBeFocused();await page.keyboard.press("Enter")}
+    else await save.click();
+    await expect(problem).toBeInViewport({ratio:1});
+    // The room the runtime profile editor's refusal keeps under it: 12 px, less the half pixel its bottom can sit on.
+    await expect.poll(()=>problem.evaluate(node=>Math.round((innerHeight-node.getBoundingClientRect().bottom)*100)/100),`room under the refusal at ${width} in ${mode}${keys?", by the keyboard":""}`).toBeGreaterThanOrEqual(11);
+    await page.screenshot({animations:"disabled",path:shots+`custom-model-refusal-room-${mode}-${width}.png`});
+    await card.getByRole("button",{name:"Cancel",exact:true}).click();await expect(problem).toHaveCount(0);
+  }
+  expect(fixture.settings.customModels).toEqual([]);
 });
 
 // A theme import says how it went right under Import JSON, in view, not under the theme editor the import opens further down the
@@ -1366,6 +1400,75 @@ test("a theme note clears once another theme is chosen",async({page,request})=>{
   await page.locator(".settings-grid").screenshot({animations:"disabled",path:auditDir+"settings-theme-note-cleared.png"});
 });
 
+// A refused theme save is said once, under the theme buttons, where the theme note says how a save went: it was also said in the
+// Settings alert, which stood over the Appearance card's heading. Save & apply with the mouse and from the keyboard, and an import,
+// each refused. A refused theme choice, which has no note of its own, is still said in the alert, once.
+test("a refused theme Save & apply or import is said once, under the theme buttons, and a refused theme choice once, in the alert",async({page,request})=>{
+  const refusal="Settings could not be saved: the theme store is read-only on this machine.";
+  await openSettings(page,request,"Theme Refusal Workspace",{customThemes:[],appearance:"dark",environmentThemeSelections:{}});
+  await page.setViewportSize({width:1280,height:800});
+  await page.getByRole("button",{name:/Appearance/}).click();
+  // The themes and the theme chosen cannot be saved; the header's mode button still saves. A refusal waits while held is set.
+  let refused=0,held=null;
+  await page.route(/\/api\/settings$/,async route=>{
+    const body=route.request().method()==="POST"?route.request().postDataJSON()||{}:{};
+    if(!("customThemes" in body||"appearance" in body))return route.continue();
+    refused++;await held;return route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:refusal})});
+  });
+  const card=page.locator('[data-setting-target="appearance-theme"]'),note=card.getByRole("alert"),alert=page.locator(".settings-action-error");
+  const save=card.getByRole("button",{name:"Save & apply",exact:true}),create=card.getByRole("button",{name:"Create theme",exact:true});
+  const times=()=>page.evaluate(text=>document.body.innerText.split(text).length-1,refusal);
+  async function saidOnce(said,saves,where){
+    await expect(where==="alert"?alert:note).toHaveText(said);
+    await expect.poll(()=>refused).toBe(saves);
+    await expect(where==="alert"?note:alert,`said ${where==="alert"?"in the alert only":"by the theme buttons only"}`).toHaveCount(0);
+    expect(await times(),"the refusal said once").toBe(1);
+  }
+  await create.click();
+  await save.click();
+  await saidOnce(refusal,1,"note");
+  await shootModes(page,"theme-save-refused",{show:note});
+  // Save & apply pressed again, the note scrolled out of view above it (a window 560 px high, so the page scrolls that far), and refused
+  // in the same words: a new alert, said again and brought back into view, not the note left as it was (round 13's repair of GR13-26).
+  // Save & apply stays under the pointer while the save is on its way.
+  const first=await note.elementHandle();
+  await page.setViewportSize({width:1280,height:560});
+  await note.evaluate(node=>{
+    let box=node.parentElement;while(box&&!(/auto|scroll/.test(getComputedStyle(box).overflowY)&&box.scrollHeight>box.clientHeight))box=box.parentElement;
+    (box||document.scrollingElement).scrollTop+=node.getBoundingClientRect().bottom-(box?Math.max(0,box.getBoundingClientRect().top):0)+4;
+  });
+  await expect(note).not.toBeInViewport();await expect(save).toBeInViewport({ratio:1});
+  let release;held=new Promise(resolve=>{release=resolve});
+  const pressedAt=await save.boundingBox();await save.click();
+  await expect.poll(()=>refused).toBe(2);await drawn(page);
+  expect(await save.boundingBox(),"Save & apply where it was pressed while the save is on its way").toEqual(pressedAt);
+  held=null;release();
+  await expect.poll(()=>first.evaluate(node=>node.isConnected),{message:"the refusal said again is a new alert"}).toBe(false);
+  await saidOnce(refusal,2,"note");
+  await expect(note,"the refusal said again is brought back into view").toBeInViewport({ratio:1});
+  await page.screenshot({animations:"disabled",path:shots+"theme-save-refused-again-dark-1280x560.png"});
+  await page.setViewportSize({width:1280,height:800});
+  // From the keyboard: Tab from the theme's name to Save & apply, Enter, and Enter again, each refusal a new alert.
+  await create.click();await expect(note).toHaveCount(0);
+  await card.getByLabel("Name",{exact:true}).click();
+  for(let step=0;step<8&&!await save.evaluate(button=>button===document.activeElement);step++)await page.keyboard.press("Tab");
+  await expect(save).toBeFocused();
+  await page.keyboard.press("Enter");
+  await saidOnce(refusal,3,"note");
+  const second=await note.elementHandle();
+  await expect(save).toBeFocused();await page.keyboard.press("Enter");
+  await expect.poll(()=>second.evaluate(node=>node.isConnected),{message:"the refusal said again from the keyboard is a new alert"}).toBe(false);
+  await saidOnce(refusal,4,"note");
+  // An import the theme store refuses.
+  const chooser=page.waitForEvent("filechooser");await card.getByRole("button",{name:"Import JSON",exact:true}).click();
+  await (await chooser).setFiles({name:"refused.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify({name:"Refused import",appearance:"dark",canvas:"#101814",accent:"#3ddc97"}))});
+  await saidOnce("Import failed: "+refusal,5,"note");
+  // A theme chosen and refused: the alert says it, and the theme note left from the import is gone.
+  await card.getByRole("group",{name:"Theme"}).getByRole("button",{name:"Midnight",exact:true}).click();
+  await saidOnce(refusal,6,"alert");
+  expect((await savedSettings(request)).customThemes).toEqual([]);
+});
+
 test("a failed release check in General can be retried on its own",async({page,request})=>{
   let releaseChecks=0;
   await page.route(/\/api\/update\/check$/,route=>{releaseChecks++;return releaseChecks===1
@@ -1385,6 +1488,131 @@ test("a failed release check in General can be retried on its own",async({page,r
   expect(releaseChecks).toBe(2);
   expect(otherChecks).toEqual([]);
   await updates.screenshot({animations:"disabled",path:auditDir+"settings-release-check-retried.png"});
+});
+
+// Check again and the desktop app's Check now said they were checking by being disabled, which dropped the keyboard on the page while
+// they checked and left it there: a second Enter checked nothing and Tab started over from the top of the page (lane G, GR13-41). They
+// only say they are off now (aria-disabled), so the keyboard stays on them; a press meanwhile checks nothing, nor do the second click
+// of a double click and the repeats of Enter held.
+test("Enter on the Updates card's Check again keeps the keyboard on it while it checks and after, and goes on to Open latest release once a check finds it",async({page,request})=>{
+  test.setTimeout(60_000);
+  // Each release check waits in held until the test answers it: failed, as offline, or with the latest release.
+  const held=[];let checks=0;
+  await page.route(/\/api\/update\/check$/,route=>{checks++;held.push(route)});
+  const answer=async found=>{await expect.poll(()=>held.length,{message:"one release check waits"}).toBe(1);await held.shift().fulfill(found
+    ?{status:200,contentType:"application/json",body:JSON.stringify({current:"2.0.0",latest:"v2.0.1",url:"https://example.invalid/releases/v2.0.1"})}
+    :{status:502,contentType:"application/json",body:JSON.stringify({current:"2.0.0",error:"Could not reach GitHub releases: the network is offline"})})};
+  await page.setViewportSize({width:1280,height:800});
+  await openSettings(page,request,"Release Keyboard Workspace");
+  const updates=page.locator(".update-settings"),check=updates.getByRole("button",{name:/^(Check again|Checking…)$/}),restart=page.getByLabel("Continue supported active threads after restarts");
+  await answer(false);await expect(check).toHaveText("Check again");
+  for(const mode of ["dark","light"]){
+    await switchMode(page,mode);
+    // Tab from the card's heading, as a person moves on along the card, and Enter.
+    await updates.locator("h3").click();await page.keyboard.press("Tab");await expect(check).toBeFocused();
+    const before=checks;
+    await page.keyboard.press("Enter");
+    await expect(check).toHaveText("Checking…");await drawn(page);
+    await expect(check,"the keyboard stays on Check again while it checks").toBeFocused();
+    await expect(check).toHaveAttribute("aria-disabled","true");
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await updates.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:shots+`updates-check-again-checking-${mode}-${width}.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    // Enter and a click meanwhile check nothing.
+    await page.keyboard.press("Enter");
+    const box=await check.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);
+    await answer(false);
+    await expect(check).toHaveText("Check again");
+    await expect(check,"the keyboard is still on Check again once the check ends").toBeFocused();
+    await page.waitForTimeout(300);expect(checks-before,"one check for the press, none for the presses while it checked").toBe(1);
+    // A second Enter checks again, and Tab goes on from Check again: back to the switch before the card, and on to it again.
+    await page.keyboard.press("Enter");await expect(check).toHaveText("Checking…");await answer(false);await expect(check).toHaveText("Check again");
+    expect(checks-before).toBe(2);
+    await page.keyboard.press("Shift+Tab");await expect(restart).toBeFocused();await page.keyboard.press("Tab");await expect(check).toBeFocused();
+  }
+  // A double click checks once, and so does Enter held on it (a press, and five repeats 33 ms apart).
+  let before=checks;await check.dblclick();await answer(false);await expect(check).toHaveText("Check again");
+  await page.waitForTimeout(300);expect(checks-before,"a double click checks once").toBe(1);
+  before=checks;await page.keyboard.down("Enter");for(let repeat=0;repeat<5;repeat++){await page.waitForTimeout(33);await page.keyboard.down("Enter")}await page.keyboard.up("Enter");
+  await answer(false);await expect(check).toHaveText("Check again");
+  await page.waitForTimeout(300);expect(checks-before,"Enter held checks once").toBe(1);
+  // A check that finds the latest release takes Check again away: the keyboard goes on to Open latest release, not to the page, with
+  // its focus ring, which the screenshots show. Each mode is chosen before the Enter (the header's mode button takes the keyboard when
+  // it is pressed), the page in light from the walk above, then in dark, opened again with its check failed so Check again shows.
+  const openLatest=updates.getByRole("button",{name:"Open latest release",exact:true});
+  for(const mode of ["light","dark"]){
+    if(mode==="dark"){
+      await page.reload();await page.getByRole("button",{name:"Settings",exact:true}).click();
+      await answer(false);await expect(check).toHaveText("Check again");
+      await switchMode(page,mode);await updates.locator("h3").click();await page.keyboard.press("Tab");
+    }
+    await expect(check).toBeFocused();await page.keyboard.press("Enter");await answer(true);
+    await expect(updates).toContainText("Latest: 2.0.1");await expect(check).toHaveCount(0);
+    await expect(openLatest,"the keyboard goes on to Open latest release").toBeFocused();
+    await expect.poll(()=>openLatest.evaluate(button=>button.matches(":focus-visible")&&getComputedStyle(button).outlineStyle!=="none"),{message:`Open latest release shows its focus ring in ${mode}`}).toBe(true);
+    for(const width of [1280,900]){
+      await page.setViewportSize({width,height:800});await updates.scrollIntoViewIfNeeded();
+      await expect(openLatest,`the keyboard is on Open latest release as it is shot at ${width} in ${mode}`).toBeFocused();
+      await page.screenshot({animations:"disabled",path:shots+`updates-check-again-found-${mode}-${width}.png`});
+    }
+    await page.setViewportSize({width:1280,height:800});
+  }
+});
+
+test("Enter on the desktop app's Check now keeps the keyboard on it while it checks and after, and a press meanwhile checks nothing",async({page,request})=>{
+  test.setTimeout(60_000);
+  await page.addInitScript(()=>{
+    // As desktop/updater-controller.mjs checks: the state goes to checking, then to current once the release server answers (here when
+    // the test calls window.__checkFree), and each change reaches the window as desktop:update:state does. window.__checks counts the
+    // checks asked for.
+    let state={supported:true,status:"idle",currentVersion:"2.0.0",availableVersion:null,percent:null,transferred:null,total:null,error:null,releaseName:null};
+    const listeners=new Set(),publish=patch=>{state={...state,...patch};for(const listener of listeners)listener({...state});return {...state}};
+    window.__checks=0;
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{platform:"win32",updates:{
+      get:async()=>({...state}),
+      check:async()=>{window.__checks++;publish({status:"checking",error:null});await new Promise(resolve=>{window.__checkFree=resolve});return publish({status:"current",availableVersion:"2.0.0"})},
+      download:async()=>{throw new Error("No downloadable update is currently available.")},
+      install:async()=>{throw new Error("Download the update before installing it.")},
+      onState:handler=>{listeners.add(handler);return()=>listeners.delete(handler)},
+    }}});
+  });
+  await page.route(/\/api\/update\/check$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({current:"2.0.0",latest:"v2.0.0",url:"https://example.invalid/releases/v2.0.0"})}));
+  await page.setViewportSize({width:1280,height:800});
+  await openSettings(page,request,"Desktop Update Keyboard Workspace");
+  const updates=page.locator(".update-settings"),check=updates.getByRole("button",{name:"Check now",exact:true}),restart=page.getByLabel("Continue supported active threads after restarts");
+  const checks=()=>page.evaluate(()=>window.__checks),free=()=>page.evaluate(()=>window.__checkFree());
+  await expect(updates).toContainText("Status: Ready to check");
+  for(const mode of ["dark","light"]){
+    await switchMode(page,mode);
+    // Tab from the card's heading, as a person moves on along the card, and Enter.
+    await updates.locator("h3").click();await page.keyboard.press("Tab");await expect(check).toBeFocused();
+    const before=await checks();
+    await page.keyboard.press("Enter");
+    await expect(updates).toContainText("Status: Checking…");await drawn(page);
+    await expect(check,"the keyboard stays on Check now while it checks").toBeFocused();
+    await expect(check).toHaveAttribute("aria-disabled","true");
+    for(const width of [1280,900]){await page.setViewportSize({width,height:800});await updates.scrollIntoViewIfNeeded();await page.screenshot({animations:"disabled",path:shots+`updates-check-now-checking-${mode}-${width}.png`})}
+    await page.setViewportSize({width:1280,height:800});
+    // Enter and a click meanwhile check nothing.
+    await page.keyboard.press("Enter");
+    const box=await check.boundingBox();await page.mouse.click(box.x+box.width/2,box.y+box.height/2);
+    await free();
+    await expect(updates).toContainText("Status: Up to date");
+    await expect(check,"the keyboard is still on Check now once the check ends").toBeFocused();
+    await expect(check).not.toHaveAttribute("aria-disabled","true");
+    expect(await checks()-before,"one check for the press, none for the presses while it checked").toBe(1);
+    // A second Enter checks again, and Tab goes on from Check now: back to the switch before the card, and on to it again.
+    await page.keyboard.press("Enter");await expect(updates).toContainText("Status: Checking…");await free();await expect(updates).toContainText("Status: Up to date");
+    expect(await checks()-before).toBe(2);
+    await page.keyboard.press("Shift+Tab");await expect(restart).toBeFocused();await page.keyboard.press("Tab");await expect(check).toBeFocused();
+  }
+  // A double click checks once, and so does Enter held on it (a press, and five repeats 33 ms apart).
+  let before=await checks();await check.dblclick();await expect(updates).toContainText("Status: Checking…");
+  await page.waitForTimeout(300);await free();await expect(updates).toContainText("Status: Up to date");
+  expect(await checks()-before,"a double click checks once").toBe(1);
+  before=await checks();await page.keyboard.down("Enter");for(let repeat=0;repeat<5;repeat++){await page.waitForTimeout(33);await page.keyboard.down("Enter")}await page.keyboard.up("Enter");
+  await expect(updates).toContainText("Status: Checking…");
+  await page.waitForTimeout(300);await free();await expect(updates).toContainText("Status: Up to date");
+  expect(await checks()-before,"Enter held checks once").toBe(1);
 });
 
 test("the Runtime card refresh does not report a failing release check as a diagnostics failure",async({page,request})=>{

@@ -104,7 +104,8 @@ test("Update shows for a newer Muse Code release when Meta's launcher runs it, r
     await question.getByRole("button",{name:"Update Muse Code",exact:true}).click();
     // The launcher's channel read had nothing newer for it this time (it lags the manifest): the version stayed, and the row says so.
     const said=row.getByRole("alert");
-    await expect(said).toHaveText(`Could not update Muse Code: \`muse.cmd --version\` finished, but the Muse Code this profile runs (${fx.launcher}) still reports 1.4.13-R6996.1.`,{timeout:60_000});
+    await expect(said).toHaveText(`Could not update Muse Code: muse.cmd --version finished, but the Muse Code this profile runs (${fx.launcher}) still reports 1.4.13-R6996.1.`,{timeout:60_000});
+    await expect(said.locator("code")).toHaveText("muse.cmd --version");
     await expect(update).toBeEnabled();
     await shootRow(page,"unchanged");
     // Now the launcher finds the release. From the keyboard this time: Enter on Update, Tab from Cancel to Update Muse Code, Enter.

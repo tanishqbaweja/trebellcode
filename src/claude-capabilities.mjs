@@ -62,11 +62,13 @@ export async function probeClaudeCapabilities({command,cwd=null,env={},spawnProc
       try{usage=await withTimeout(runtime.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({skipBehaviors:true}),CLAUDE_USAGE_TIMEOUT_MS,"Claude Code did not report usage in time.")}
       catch(error){usageError=String(error?.message||error)}
     }
+    const account=init?.account&&typeof init.account==="object"?init.account:null;
     return {
       models:Array.isArray(init?.models)?init.models:[],
       commands:Array.isArray(init?.commands)?init.commands:[],
       agents:Array.isArray(init?.agents)?init.agents:[],
-      account:init?.account&&typeof init.account==="object"?init.account:null,
+      // signedOut: Claude Code answered signed out, which the Usage card says (readClaudeUsageLimits) instead of a plan without limits.
+      account,signedOut:claudeProbeSignedOut(account,env),
       usage,usageError,
       checkedAt:new Date().toISOString(),
     };

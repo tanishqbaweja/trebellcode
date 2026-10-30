@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState} from "react";
+import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import { Activity, Bell, Bot, Boxes, Camera, Cloud, Download, FileText, GitPullRequest, Globe2, HardDrive, Keyboard, Layers, MessageSquareText, MonitorCog, Paintbrush, Palette, PlugZap, Power, RefreshCw, RotateCcw, Search, Server, Settings2, ShieldCheck, SlidersHorizontal, Stethoscope, X } from "lucide-react";
 import { api } from "../api.js";
 import { openWebLink } from "../web-link.js";
@@ -49,6 +49,12 @@ if(typeof window!=="undefined")window.addEventListener("trebell:runtime-switched
 // kept until they are left.
 let agentInstalls={running:[],note:null};const agentInstallViews=new Set();
 function keepAgentInstalls(change,info=null){agentInstalls={...agentInstalls,...change};for(const show of agentInstallViews)show(agentInstalls,info)}
+// The sign-in on its way from a harness row or a profile row (the id of the profile, or of the harness, whose Sign in was pressed), and
+// the Settings pages that show it. Antigravity's waits on Google's page for up to 5 minutes, and Settings can be left and opened again
+// meanwhile: a page opened while it runs holds Sign in (Opening…), as the page that pressed it does, and the answer ({kind,text,error,
+// info}) is said on the page on screen, which takes the harness list it brings.
+let agentSignIn=null;const agentSignInViews=new Set();
+function keepAgentSignIn(id,answer=null){agentSignIn=id;for(const show of agentSignInViews)show(id,answer)}
 // The installs this window has started or waits on, by their id. The server names each install on its way and how the last one of
 // each harness ended (the harness list's installs), so this window also says Installing… for one it did not start (another tab's,
 // or its own from before a reload, which forgets the module state) and waits for its answer. tabInstalls keeps, for the tab's life,
@@ -75,6 +81,10 @@ let pageLeaving=false;
 if(typeof window!=="undefined"){window.addEventListener("pagehide",()=>{pageLeaving=true});window.addEventListener("pageshow",()=>{pageLeaving=false})}
 // Muse Code's status says nothing of its sign-in (a turn checks it): one that lists its models is ready.
 const installedText=(label,status)=>status?.installed&&!(status?.authenticated||status?.kind==="muse"&&status.available)?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.";
+// What a harness row or a profile row says, in its status line and under it (a note, a refused switch), with each command it names
+// (between backticks) as code that reads as one (code.run-command): its words stay whole, so `pnpm add -g …` no longer breaks into
+// "pnpm add -" and "g …", and no backtick shows as typed.
+const withCommands=text=>{const parts=String(text).split("`");return parts.length%2?parts.map((part,index)=>index%2?<code className="run-command" key={index}>{part.split(" ").map((word,at)=><React.Fragment key={at}>{at?" ":""}<span>{word}</span></React.Fragment>)}</code>:part):text};
 // A shortcut or condition being typed is a draft. It is saved when the field is left or Enter is pressed, and only once it can work,
 // so a half-typed "Ctrl+" or "threadOpen &&" never replaces the one in use. A draft that cannot work stays in the field, marked
 // invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited. A saved
@@ -137,20 +147,43 @@ function KeybindingRow({id,label,rule,defaultWhen="",onUpdate,note=null}){
 }
 // A key Settings saves for a harness, named as the Model provider card names it: "Anthropic API" -> "Anthropic API key".
 const keyLabel=name=>/API$/.test(name)?name+" key":name+" API key";
+// Whether the last press was a key's (Tab, an arrow key in a radio group) rather than a mouse's, a pen's or a touch's. A harness row
+// is brought whole into view for the keyboard only (the stage's onFocus, HarnessSignIn), never moved under the pointer: a press into
+// a row's key field matches :focus-visible too, as a text field always does, and moved the row between the press and its release, so
+// the second press of a double click landed on what came up there (Remove key, at a phone's width).
+let keyboardLast=false;
+if(typeof window!=="undefined"){window.addEventListener("keydown",()=>{keyboardLast=true},true);window.addEventListener("pointerdown",()=>{keyboardLast=false},true)}
+// Until the person moves on (a scroll, a press or a key), as followInstall never scrolls against them: on, and stop() to end it.
+function untilMovedOn(){
+  const inputs=["wheel","touchstart","pointerdown","keydown"],state={on:true,stop(){state.on=false;for(const name of inputs)window.removeEventListener(name,state.stop,true)}};
+  for(const name of inputs)window.addEventListener(name,state.stop,true);
+  return state;
+}
 // How the harness a row shows signs in (Settings' choice for that profile, harness-auth.mjs): its own sign-in, or its vendor's API
 // key from Trebell's one key per provider, added, replaced or removed here in the Model provider card's store (for Trebell Native
 // too, which reads the same store), whichever harness is active. Cursor has no API key.
 function HarnessSignIn({def,profile,busy,onMethod,onKey}){
   const info=profile?.signIn,[key,setKey]=useState(""),[provider,setProvider]=useState(""),[pending,setPending]=useState(null);
+  // API key chosen from the keyboard (an arrow key or Space in the radio group, which Tab reaches on its checked radio) opens the key
+  // fields under the radios, and the row is then brought whole into view with them, as Tab brings it (the stage's onFocus), and again
+  // as the server's answer redraws it (its status line can take another line), until the person moves on: the radio's own focus came
+  // before they showed, and left them under the window's edge. A choice made with the mouse moves nothing.
+  const box=useRef(null),keyed=useRef(null),onKeyMethod=(pending||info?.method)==="api-key";
+  useLayoutEffect(()=>{
+    const follow=keyed.current;if(!follow)return;
+    if(follow.on&&onKeyMethod)box.current?.closest(".agent-runtime-option")?.scrollIntoView({block:"nearest"});
+    if(!pending){follow.stop();keyed.current=null}
+  },[onKeyMethod,pending]);
+  useEffect(()=>()=>keyed.current?.stop(),[]);
   if(!info)return null;
   // The choice shows at once, as the server saves it.
-  const choose=value=>{setPending(value);Promise.resolve(onMethod(profile,value)).finally(()=>setPending(null))};
-  const onKeyMethod=(pending||info.method)==="api-key",chosen=info.keys.find(item=>item.provider===provider)||info.keys[0],group="harness-auth-"+profile.id;
+  const choose=value=>{keyed.current?.stop();keyed.current=keyboardLast?untilMovedOn():null;setPending(value);Promise.resolve(onMethod(profile,value)).finally(()=>setPending(null))};
+  const chosen=info.keys.find(item=>item.provider===provider)||info.keys[0],group="harness-auth-"+profile.id;
   // A key from the environment is none saved in Trebell Code: one saved here takes its place, for Trebell Native too. A saved one is
   // said to be shared with Trebell Native, as its Remove key removes it there too.
   const env=item=>item.source==="environment",kept=chosen.saved&&!env(chosen);
   const uses=info.keys.length>1?"Uses each saved key, shared with Trebell Native: "+info.keys.map(item=>keyLabel(item.name)+(item.saved?env(item)?` (from ${item.from})`:" (saved)":" (none)")).join(", ")+".":`Uses the ${keyLabel(chosen.name)}${chosen.saved?(env(chosen)?` from ${chosen.from}; a key saved here replaces it, for Trebell Native too.`:", saved in Trebell Code, shared with Trebell Native."):": none saved yet."}`;
-  return <div className="harness-auth" data-testid={"harness-auth-"+def.id}>
+  return <div ref={box} className="harness-auth" data-testid={"harness-auth-"+def.id}>
     <div role="radiogroup" aria-label={def.name+" signs in with"}>
       <label><input type="radio" name={group} checked={!onKeyMethod} disabled={busy} onChange={()=>choose("sign-in")}/>Sign in</label>
       <label><input type="radio" name={group} checked={onKeyMethod} disabled={busy} onChange={()=>choose("api-key")}/>API key</label>
@@ -208,7 +241,7 @@ function swallowSecondClick(){
 
 // runningTasks: the tasks whose turns run, as their sidebar rows say ({title,runtime,open}, open for the open thread's). onActionError(error,
 // label) says a failure in the app's alert.
-export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTasks=[],onActionError,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
+export default function SettingsPage({settings,runtimeKnown=true,harnessReady=null,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTasks=[],onActionError,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
   const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||lastSettingsSection);
   useEffect(()=>{lastSettingsSection=settingsSection},[settingsSection]);
   // The harness rows are on screen while this page shows Agents & models (agentRowsShown), and so is what an install said there. It
@@ -275,7 +308,12 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       if(!handledInstalls.has(id)&&(known.ended||[]).some(item=>item.runtime===runtime&&item.id===id)){handledInstalls.add(id);answerInstall(runtime,id,async()=>({waited:false,...agentInfo}))}
     }
   },[agentInfo]);
-  const [authenticatingAgent,setAuthenticatingAgent]=useState(null);
+  // The sign-in every Settings page knows of (agentSignIn): its answer is said here, with the harness list it brings, while this page shows.
+  const [authenticatingAgent,setAuthenticatingAgent]=useState(()=>agentSignIn);
+  useEffect(()=>{
+    const show=(id,answer)=>{setAuthenticatingAgent(id);if(!answer)return;if(answer.info)setAgentInfo(answer.info);setAgentMessageTarget(answer.kind);showAgentMessage(answer.text,answer.error)};
+    agentSignInViews.add(show);setAuthenticatingAgent(agentSignIn);return()=>{agentSignInViews.delete(show)};
+  },[]);
   // A harness's sign-in method or key on its way from its row (HarnessSignIn).
   const [harnessAuthBusy,setHarnessAuthBusy]=useState(false);
   const [instanceDraft,setInstanceDraft]=useState(null);
@@ -328,13 +366,15 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   const [storageBusy,setStorageBusy]=useState(false);
   const [themeDraft,setThemeDraft]=useState(null);
   // A theme note is a status, or the error of a failed save or import, said as an alert: its text, which can hold a theme's name,
-  // does not decide which.
-  const [themeNote,setThemeNote]=useState({text:"",error:false});
-  const themeMessage=themeNote.text,themeMessageError=themeNote.error,setThemeMessage=(text,error=false)=>setThemeNote({text:String(text||""),error});
-  // The theme note shows under the theme actions, by Import JSON, and is scrolled into view when it changes: under the theme editor,
+  // does not decide which. Each note is a new one (said keys it), also one in the same words as the last: a Save & apply refused again
+  // left the note as it was, so nothing was said again or scrolled back into view, and the press seemed to do nothing. A save does not
+  // clear the note as it starts (an import does): the editor under the note would move up under the pointer while the save runs.
+  const [themeNote,setThemeNote]=useState({text:"",error:false,said:0});
+  const themeMessage=themeNote.text,themeMessageError=themeNote.error,setThemeMessage=(text,error=false)=>setThemeNote(note=>({text:String(text||""),error,said:note.said+1}));
+  // The theme note shows under the theme actions, by Import JSON, and is scrolled into view when one comes: under the theme editor,
   // which an import opens, it was out of view of the button.
   const themeMessageRef=useRef(null);
-  useEffect(()=>{if(themeMessage)themeMessageRef.current?.scrollIntoView({block:"nearest"})},[themeMessage]);
+  useEffect(()=>{if(themeMessage)themeMessageRef.current?.scrollIntoView({block:"nearest"})},[themeNote]);
   const themeImportRef=useRef(null);
   const [panelAnimationDraft,setPanelAnimationDraft]=useState(null);
   const panelAnimationSaveRef=useRef(null);
@@ -355,6 +395,26 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   // The profile the server runs comes from settings, which the app keeps current through every switch. agentInfo can be the snapshot cached on an
   // earlier visit (opening another harness's thread switches profiles meanwhile), so it decides neither the Active markers nor the gated reload path.
   const activeInstanceId=(runtimeKnown?settings.agentRuntimeInstanceId:null)||(appRuntime?`${appRuntime}-default`:agentInfo?.selectedInstanceId)||null;
+  // The app's composer, model picker and harness status go by its own read of whether the harness that runs is ready (harnessReady,
+  // null in mock mode). A harness list that says otherwise, or otherwise than the list compared before it, has the app read its status
+  // and models again, so a sign-in, a sign-in method or key change, an install, a profile change or a Refresh after a sign-in in its
+  // terminal shows there with no reload. The second is for a read the app started for an earlier list that is still on its way (Claude
+  // Code's model list runs its capability probe): it would land that list's readiness after this one, and the newer read replaces it.
+  // A list that comes while this page shows is compared in an effect; one that comes once Settings was left (Antigravity's sign-in
+  // answers once the person has finished Google's page, maybe at New task by then) is compared as it comes (rememberAgentInfo), with
+  // what this page last knew. The list a page opens with, this window's last one, was compared when it came.
+  const following=useRef(null),compared=useRef(null),pageShown=useRef(false),openedAgentInfo=useRef(agentInfo);
+  following.current={harnessReady,switchingAgent,activeInstanceId,appRuntime,onProviderUpdated};
+  useEffect(()=>{pageShown.current=true;return()=>{pageShown.current=false}},[]);
+  function followHarnessList(info){
+    const {harnessReady,switchingAgent,activeInstanceId,appRuntime,onProviderUpdated}=following.current;
+    if(typeof harnessReady!=="boolean"||switchingAgent||!info||info.selectedInstanceId!==activeInstanceId)return;
+    const status=runtimeStatusForKind(info,appRuntime,{preferSelected:true});if(!status)return;
+    const available=Boolean(status.available),before=compared.current?.instanceId===activeInstanceId?compared.current.available:available;
+    compared.current={instanceId:activeInstanceId,available};
+    if(available!==harnessReady||available!==before)Promise.resolve(onProviderUpdated?.({agentRuntime:appRuntime})).catch(()=>{});
+  }
+  useEffect(()=>{if(agentInfo!==openedAgentInfo.current)followHarnessList(agentInfo)},[agentInfo]);
   const selectedManagedInference=Boolean(sharedRuntimeCapabilities(selectedAgent).managedInference);
   const keybindingRules=useMemo(()=>normalizeKeybindingRules(settings),[settings.keybindingRules,settings.keyboardShortcuts]);
   // A shortcut another command takes over is said on both rows: the one that never runs names the commands that run instead, and
@@ -393,6 +453,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   function rememberAgentInfo(info){
     if(info&&!info.error&&Array.isArray(info.definitions)&&info.definitions.length)lastAgentRuntimeInfo=info;
     setAgentInfoState(info);
+    // No page effect runs for a list that comes once Settings was left: it is compared here.
+    if(!pageShown.current)followHarnessList(info);
   }
   // A mutation answer is newer than any probe still in flight, so that probe's answer is discarded.
   function setAgentInfo(info){agentInfoSeqRef.current++;setAgentInfoRefreshing(false);setAgentInfoError("");rememberAgentInfo(info)}
@@ -488,10 +550,12 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   async function installAgentRuntime(kind,verb="Install",status=null){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind),update=status?.update;if(!definition?.installable&&!update)return;
     const label=definition.name||kind;const packageName=definition.packageName||"the official package";
+    // The command as code that reads as one (askChoice's {command}), and after it what the server says of it in brackets ("(with
+    // CODEX_HOME set to …)", "(OpenCode 1.x)").
+    const [,command,beside=""]=/^(.*?)( \([^()]*\))?$/.exec(String(update?update.command:definition.installCommand||"npm install -g "+packageName));
     const confirmation=kind==="antigravity"
       ?"Install or update "+label+" ACP runtime on this machine?\n\nTrebell will download Google's published Antigravity ACP runtime through the official Agent Client Protocol registry."
-      :update?"Update "+label+" to "+update.latest+" in the selected environment?\n\nTrebell will run: "+update.command
-      :"Install or update "+label+" in the selected environment?\n\nTrebell will run: "+(definition.installCommand||"npm install -g "+packageName);
+      :[(update?"Update "+label+" to "+update.latest:"Install or update "+label)+" in the selected environment?\n\nTrebell will run: ",{command},beside];
     // One install of a harness at a time, also from a Settings page opened while one runs.
     if(!await askConfirm(confirmation,{confirm:verb+" "+label,tone:"primary"})||agentInstalls.running.includes(kind))return;
     const id=newInstallId();handledInstalls.add(id);keepTabInstall(kind,id);followInstall(kind);
@@ -548,16 +612,23 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
   // while the harness's sign in starts keeps it.
   async function authenticateAgentRuntime(kind,instanceId){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind),pressed=terminalPresses();if(!definition?.canAuthenticate)return;
+    const name=definition.name||kind;let answer=null;
     setAgentMessageTarget(kind);
-    setAuthenticatingAgent(instanceId||kind);showAgentMessage("Opening "+(definition.name||kind)+" sign in…");
+    keepAgentSignIn(instanceId||kind);showAgentMessage("Opening "+name+" sign in…");
     try{
       // Each harness signs in in a terminal the answer opens, Antigravity in the browser page it opens itself.
       const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action:"login",runtime:kind,instanceId:instanceId||null,environmentId:runtimeEnvironmentId||null,cwd:projectPath||null}});
-      if(result?.agentSnapshot){setAgentInfo(result.agentSnapshot);showAgentMessage(`${definition.name||kind} signed in (${result.auth?.methodName||"its own sign-in"}).`)}
-      else showAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
+      answer=result?.agentSnapshot?{kind,info:result.agentSnapshot,text:`${name} signed in (${result.auth?.methodName||"its own sign-in"}).`}:{kind,text:"Complete sign in in the terminal, then refresh runtime status."};
       if(result?.session)onOpenRuntimeAuthTerminal?.(result.session,pressed);
-    }catch(error){showAgentMessage(error.message,true)}
-    finally{setAuthenticatingAgent(null)}
+    }catch(error){
+      // With no harness rows on screen as it comes (Antigravity's can take minutes, and the person may have gone on), the app's alert
+      // says it, as a refused switch; a page that shows them says it under the list.
+      answer={kind,text:error.message,error:true};
+      if(!agentRowsShown)onActionError?.(error,"Could not sign in to "+name);
+    }
+    // The answer is said on the Settings page on screen, this one or one opened since this one was left. With none, the window keeps
+    // the harness list it brings, and the app follows it (rememberAgentInfo).
+    finally{const shown=agentSignInViews.size>0;keepAgentSignIn(null,answer);if(!shown&&answer?.info)setAgentInfo(answer.info)}
   }
   // A harness profile's sign-in method, and a key for the provider it runs on, from its row.
   async function setHarnessMethod(profile,method){
@@ -582,7 +653,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     }catch(error){showAgentMessage(error.message,true);return false}
     finally{setHarnessAuthBusy(false)}
   }
-  async function save(patch){
+  // alert:false leaves a failure to the caller, which says it by its own control (the theme note), so it is not said twice.
+  async function save(patch,{alert=true}={}){
     setSettingsError("");
     if("appearance" in patch&&environmentThemeCatalog?.environmentKey){
       const selections={...(settings.environmentThemeSelections||{})};
@@ -603,7 +675,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     catch(error){
       if(optimistic){onProviderChanging?.(settings.modelProvider||DEFAULT_MODEL_PROVIDER);onSettings(settings)}
       if(providerChange)setProviderSwitching(false);
-      setSettingsError(error?.message||String(error)||"Could not save settings.");
+      if(alert)setSettingsError(error?.message||String(error)||"Could not save settings.");
       throw error;
     }
     // With the keys this save named, so a read of the settings sent before it answered (Trebell's start-up among them) leaves them.
@@ -715,7 +787,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     if(!themeDraft)return;
     try{
       const theme=normalizeCustomTheme(themeDraft,{id:themeDraft.id});const current=Array.isArray(settings.customThemes)?settings.customThemes:[];
-      await save({customThemes:[...current.filter(item=>item.id!==theme.id),theme],appearance:theme.id});setThemeDraft(theme);setThemeMessage("Theme saved and applied.");
+      await save({customThemes:[...current.filter(item=>item.id!==theme.id),theme],appearance:theme.id},{alert:false});setThemeDraft(theme);setThemeMessage("Theme saved and applied.");
     }catch(error){setThemeMessage(error.message||String(error),true)}
   }
   async function removeTheme(theme){
@@ -735,7 +807,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     setThemeMessage("");
     try{
       const parsed=parseThemeJson(await file.text());const source=Array.isArray(parsed)?parsed[0]:parsed;const theme=normalizeCustomTheme(source,{id:`custom-${crypto.randomUUID()}`});const current=Array.isArray(settings.customThemes)?settings.customThemes:[];
-      await save({customThemes:[...current,theme],appearance:theme.id});setThemeDraft(theme);setThemeMessage(`Imported ${theme.name}.`);
+      await save({customThemes:[...current,theme],appearance:theme.id},{alert:false});setThemeDraft(theme);setThemeMessage(`Imported ${theme.name}.`);
     }catch(error){setThemeMessage("Import failed: "+(error.message||String(error)),true)}
   }
   function exportTheme(theme){
@@ -844,7 +916,16 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     return failures.length===0;
   }
   // Retries only the GitHub release check, which fails on its own (a rate limit, no network) without anything else in General failing.
-  function checkRelease(){return refresh({includeRuntime:false,includeDiagnostics:false,includeStorage:false,includeDesktopUpdates:false,includeSnapshots:false,includeBrowser:false})}
+  // Check again, and the desktop app's Check now, only say they are checking while their check runs (aria-disabled), so the keyboard
+  // stays on them to press them again: disabled, they dropped it on the page. A press meanwhile checks nothing, nor does the rest of the
+  // press (the second click of a double click, Enter held), as Capture now takes one SnapShot. A check that finds the release takes
+  // Check again away: the keyboard then goes on to Open latest release, unless it was put somewhere else meanwhile.
+  const releaseChecked=useRef(false),releaseLinkRef=useRef(null);
+  function checkRelease(event){
+    ignorePressRest(!event.detail);if(loading)return;
+    releaseChecked.current=true;refresh({includeRuntime:false,includeDiagnostics:false,includeStorage:false,includeDesktopUpdates:false,includeSnapshots:false,includeBrowser:false});
+  }
+  useEffect(()=>{if(!releaseChecked.current)return;releaseChecked.current=false;if(document.activeElement===document.body)releaseLinkRef.current?.focus()},[update]);
   async function loadStorageInfo({strict=false}={}){
     try{
       const info=await api("/api/storage-cleanup");
@@ -956,8 +1037,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
     return typeof unsubscribe==="function"?unsubscribe:undefined;
   },[]);
 
-  async function checkDesktopUpdate(){
-    if(!window.trebellDesktop?.updates)return;
+  // Check now is off while the updater checks, downloads or installs (see checkRelease).
+  const desktopUpdateBusy=["checking","downloading","installing"].includes(desktopUpdate?.status);
+  async function checkDesktopUpdate(event){
+    ignorePressRest(!event.detail);if(!window.trebellDesktop?.updates||desktopUpdateBusy)return;
     try{setDesktopUpdate(await window.trebellDesktop.updates.check())}catch(error){setDesktopUpdate(prev=>({...prev,status:"error",error:error.message||String(error)}))}
   }
   async function downloadDesktopUpdate(){
@@ -1080,7 +1163,10 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         </button>)}
       </nav>}
     </aside>
-    <section className="settings-stage" onFocus={event=>{if(!event.target.closest(".settings-action-error"))lastFocusedRef.current=event.target}}>
+    {/* A harness row the keyboard reaches shows whole, with the room its scroll margin keeps: the browser's own scroll to the focused
+        control moves only that control, which sits inside the row's border or is shorter than the row, and none at all when that
+        control already shows. Only for the keyboard (keyboardLast): a press of the mouse, also into a key field, moves no row. */}
+    <section className="settings-stage" onFocus={({target})=>{if(!target.closest(".settings-action-error"))lastFocusedRef.current=target;if(keyboardLast)target.closest(".agent-runtime-option")?.scrollIntoView({block:"nearest"})}}>
       <div className="settings-section-head"><div><h2>{activeSettingsSection[2]}</h2><p>{activeSettingsSection[3]}</p></div><span>{settingsSections.findIndex(item=>item[0]===settingsSection)+1} / {settingsSections.length}</span></div>
       {/* The alert stays in view while the page scrolls, so it can be dismissed instead of covering rows until the next action succeeds. */}
       {settingsError&&<p className="settings-action-error" role="alert"><span>{settingsError}</span><button type="button" className="settings-action-error-dismiss" aria-label="Dismiss settings error" onClick={dismissSettingsError}><X size={13}/></button></p>}
@@ -1123,8 +1209,8 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           // reading), else the update's note says how; a harness with no update reading (Antigravity's runtime) offers it as before.
           const update=status?.update,verb=status?.installed?(update?update.canUpdate&&update.newer:def.installable)&&"Update":def.installable&&"Install";
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(def.id,status.id)}>
-            <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em className={"is-"+String(actionText).toLowerCase().replace(/\s+/g,"-")}>{actionText}</em>
-          </button>{def.canAuthenticate&&!onKey&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{(verb||installing)&&<button className="agent-runtime-install" disabled={installing} onClick={()=>installAgentRuntime(def.id,verb,status)}>{installing?"Installing…":verb}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}{update?.message&&<p className="agent-runtime-option-note">{update.message}</p>}{installNote&&<p ref={installNoteRef} className={installNote.error?"agent-runtime-option-error":"agent-runtime-option-note"} role={installNote.error?"alert":"status"}>{installNote.text}</p>}{def.apiKey&&status&&<HarnessSignIn def={def} profile={profile} busy={harnessAuthBusy} onMethod={setHarnessMethod} onKey={saveHarnessKey}/>}</div>;
+            <Bot size={14}/><span><strong>{def.name}</strong><small>{withCommands(statusText)}</small></span><em className={"is-"+String(actionText).toLowerCase().replace(/\s+/g,"-")}>{actionText}</em>
+          </button>{def.canAuthenticate&&!onKey&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{(verb||installing)&&<button className="agent-runtime-install" disabled={installing} onClick={()=>installAgentRuntime(def.id,verb,status)}>{installing?"Installing…":verb}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{withCommands(switchRefusal.text)}</p>}{update?.message&&<p className="agent-runtime-option-note">{withCommands(update.message)}</p>}{installNote&&<p ref={installNoteRef} className={installNote.error?"agent-runtime-option-error":"agent-runtime-option-note"} role={installNote.error?"alert":"status"}>{withCommands(installNote.text)}</p>}{def.apiKey&&status&&<HarnessSignIn def={def} profile={profile} busy={harnessAuthBusy} onMethod={setHarnessMethod} onKey={saveHarnessKey}/>}</div>;
         })}</div>
         {settingDrawn["agents-profiles"]&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>
@@ -1133,11 +1219,11 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
             // Its answer reads as the harness rows' do: one that says nothing of a sign-in shows what was found, with no Sign in.
             const noSignIn=saysNothingOfSignIn(status,instance.kind);
             return <div className="runtime-profile-row" key={instance.id}>
-              <button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(instance.kind,instance.id)}><span><strong>{instance.displayName||instance.id}</strong><small>{noSignIn?status.message:status?.available?status.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?"Active":"Use"}</em></button>
+              <button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(instance.kind,instance.id)}><span><strong>{instance.displayName||instance.id}</strong><small>{withCommands(noSignIn?status.message:status?.available?status.version||"Ready":status?.message||"Unavailable")}</small></span><em>{active?"Active":"Use"}</em></button>
               {(agentInfo?.definitions||[]).find(item=>item.id===instance.kind)?.canAuthenticate&&instance.signIn?.method!=="api-key"&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button onClick={()=>authenticateAgentRuntime(instance.kind,instance.id)} disabled={!!authenticatingAgent}>{authenticatingAgent===instance.id?"Opening…":"Sign in"}</button>}
               {selectedAgentDefinition?.multipleInstances!==false&&<button onClick={()=>editInstance(instance)}>Edit</button>}
               {instance.id!==`${instance.kind}-default`&&<button onClick={()=>removeInstance(instance)}>Remove</button>}
-              {switchRefusal?.profile&&switchRefusal.instanceId===instance.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}
+              {switchRefusal?.profile&&switchRefusal.instanceId===instance.id&&!active&&<p className="agent-runtime-option-error" role="alert">{withCommands(switchRefusal.text)}</p>}
             </div>;
           })}
         </div>}
@@ -1239,7 +1325,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
         {storageMessage.text&&<p className={storageMessage.error?"provider-status-error":"provider-note"} role={storageMessage.error?"alert":"status"}>{storageMessage.text}</p>}
       </div>}
       {settingsSection==="desktop"&&settingDrawn["desktop-computer"]&&<div className="settings-card"><h3><MonitorCog size={14} aria-hidden="true"/> Computer use</h3><p>The active runtime can use Trebell's Windows desktop tools. Screenshots are read-only; mouse and keyboard control are exposed only when the current thread is in <strong>Full access</strong> mode. This keeps desktop automation explicit instead of silently escalating permissions.</p></div>}
-      {settingsSection==="appearance"&&<div className="settings-card theme-settings" {...targetProps("appearance-theme")}><h3><Palette size={14} aria-hidden="true"/> Appearance</h3><p>Appearance controls light/dark behavior. Theme controls the palette independently. Trebell themes and VS Code color-theme JSON can be imported.</p><div className="settings-field" role="group" aria-label="Mode"><span aria-hidden="true">Mode</span><div className="appearance-options">{["system","light","dark"].map(v=><button key={v} {...choiceProps((settings.appearanceMode||"dark")===v,()=>saveSetting({appearanceMode:v}))}>{v}</button>)}</div></div><label>Panel animations <span>{panelAnimationMs} ms</span><input aria-label="Panel animations" type="range" min="0" max="400" step="25" style={{"--fill":panelAnimationMs/4+"%"}} value={panelAnimationMs} onChange={e=>dragPanelAnimation(Number(e.target.value))}/></label><p>Sidebar, right panel and terminal movement uses this duration. Operating-system reduced motion always disables it.</p><div className="settings-field" role="group" aria-label="Theme"><span aria-hidden="true">Theme</span><div className="appearance-options">{[["dark","Trebell"],["midnight","Midnight"],["black","Black"]].map(([value,label])=><button key={value} {...themeChoiceProps(value)}>{label}</button>)}{(settings.customThemes||[]).map(theme=><button key={theme.id} {...themeChoiceProps(theme.id)}>{theme.name}</button>)}</div></div><div className="theme-actions"><button onClick={createTheme}>Create theme</button><button onClick={()=>themeImportRef.current?.click()}>Import JSON</button>{(settings.customThemes||[]).find(theme=>theme.id===settings.appearance)&&<><button onClick={()=>setThemeDraft((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Edit selected</button><button onClick={()=>exportTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Export selected</button><button onClick={()=>removeTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Delete selected</button></>}<input ref={themeImportRef} type="file" accept=".json,.jsonc,application/json" hidden onChange={importThemeFile}/></div>{themeMessage&&<p ref={themeMessageRef} className={themeMessageError?"provider-status-error":"provider-note"} role={themeMessageError?"alert":"status"}>{themeMessage}</p>}{themeDraft&&<div className="theme-editor"><label>Name<input value={themeDraft.name||""} onChange={e=>setThemeDraft({...themeDraft,name:e.target.value})}/></label><div className="theme-editor-grid"><label>Base appearance<select value={themeDraft.appearance||"dark"} onChange={e=>setThemeDraft({...themeDraft,appearance:e.target.value})}><option value="dark">Dark</option><option value="light">Light</option></select></label><label>Canvas<input type="color" value={themeDraft.canvas||"#0c0f16"} onChange={e=>setThemeDraft({...themeDraft,canvas:e.target.value})}/></label><label>Accent<input type="color" value={themeDraft.accent||"#9c6cff"} onChange={e=>setThemeDraft({...themeDraft,accent:e.target.value})}/></label></div><div className="theme-editor-actions"><button className="setting-action" onClick={saveTheme}>Save & apply</button><button onClick={()=>setThemeDraft(null)}>Close editor</button></div></div>}</div>}
+      {settingsSection==="appearance"&&<div className="settings-card theme-settings" {...targetProps("appearance-theme")}><h3><Palette size={14} aria-hidden="true"/> Appearance</h3><p>Appearance controls light/dark behavior. Theme controls the palette independently. Trebell themes and VS Code color-theme JSON can be imported.</p><div className="settings-field" role="group" aria-label="Mode"><span aria-hidden="true">Mode</span><div className="appearance-options">{["system","light","dark"].map(v=><button key={v} {...choiceProps((settings.appearanceMode||"dark")===v,()=>saveSetting({appearanceMode:v}))}>{v}</button>)}</div></div><label>Panel animations <span>{panelAnimationMs} ms</span><input aria-label="Panel animations" type="range" min="0" max="400" step="25" style={{"--fill":panelAnimationMs/4+"%"}} value={panelAnimationMs} onChange={e=>dragPanelAnimation(Number(e.target.value))}/></label><p>Sidebar, right panel and terminal movement uses this duration. Operating-system reduced motion always disables it.</p><div className="settings-field" role="group" aria-label="Theme"><span aria-hidden="true">Theme</span><div className="appearance-options">{[["dark","Trebell"],["midnight","Midnight"],["black","Black"]].map(([value,label])=><button key={value} {...themeChoiceProps(value)}>{label}</button>)}{(settings.customThemes||[]).map(theme=><button key={theme.id} {...themeChoiceProps(theme.id)}>{theme.name}</button>)}</div></div><div className="theme-actions"><button onClick={createTheme}>Create theme</button><button onClick={()=>themeImportRef.current?.click()}>Import JSON</button>{(settings.customThemes||[]).find(theme=>theme.id===settings.appearance)&&<><button onClick={()=>setThemeDraft((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Edit selected</button><button onClick={()=>exportTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Export selected</button><button onClick={()=>removeTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Delete selected</button></>}<input ref={themeImportRef} type="file" accept=".json,.jsonc,application/json" hidden onChange={importThemeFile}/></div>{themeMessage&&<p key={themeNote.said} ref={themeMessageRef} className={themeMessageError?"provider-status-error":"provider-note"} role={themeMessageError?"alert":"status"}>{themeMessage}</p>}{themeDraft&&<div className="theme-editor"><label>Name<input value={themeDraft.name||""} onChange={e=>setThemeDraft({...themeDraft,name:e.target.value})}/></label><div className="theme-editor-grid"><label>Base appearance<select value={themeDraft.appearance||"dark"} onChange={e=>setThemeDraft({...themeDraft,appearance:e.target.value})}><option value="dark">Dark</option><option value="light">Light</option></select></label><label>Canvas<input type="color" value={themeDraft.canvas||"#0c0f16"} onChange={e=>setThemeDraft({...themeDraft,canvas:e.target.value})}/></label><label>Accent<input type="color" value={themeDraft.accent||"#9c6cff"} onChange={e=>setThemeDraft({...themeDraft,accent:e.target.value})}/></label></div><div className="theme-editor-actions"><button className="setting-action" onClick={saveTheme}>Save & apply</button><button onClick={()=>setThemeDraft(null)}>Close editor</button></div></div>}</div>}
       {settingsSection==="appearance"&&<div className="settings-card environment-theme-settings" {...targetProps("appearance-environment")}>
         <h3><Paintbrush size={14} aria-hidden="true"/> Environment themes</h3>
         <p><strong>{environmentThemeCatalog.environmentName||"Local machine"}</strong> can publish theme JSON files from <code>{environmentThemeCatalog.directory||"the environment theme directory"}</code>. Published themes stay owned by that environment, so edits on the machine can flow into Trebell after refresh.</p>
@@ -1260,7 +1346,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
       {settingsSection==="desktop"&&settingDrawn["desktop-snapshot"]&&<div className="settings-card snapshot-settings"><h3><Camera size={14} aria-hidden="true"/> SnapShots</h3><p>Capture the foreground window from anywhere and attach it to the current draft. Captures are stored locally until Trebell successfully attaches them.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(snapshotInfo.enabled)} onChange={e=>configureSnapshots({enabled:e.target.checked})}/> Enable global SnapShot shortcut</label><label>Shortcut<input value={snapshotInfo.shortcut||""} onChange={e=>setSnapshotInfo(info=>({...info,shortcut:e.target.value}))} onBlur={()=>snapshotInfo.enabled&&configureSnapshots({shortcut:snapshotInfo.shortcut})} placeholder="CommandOrControl+Shift+S"/></label><label className="toggle-line"><input type="checkbox" checked={Boolean(snapshotInfo.includeText)} onChange={e=>configureSnapshots({includeText:e.target.checked})}/> Include accessibility text and control positions</label><label className="toggle-line"><input type="checkbox" checked={snapshotInfo.playSound!==false} onChange={e=>configureSnapshots({playSound:e.target.checked})}/> Play capture sound</label>{snapshotInfo.playSound!==false&&<label>Capture sound<select value={snapshotInfo.sound||"soft-pop"} onChange={e=>configureSnapshots({sound:e.target.value})}><option value="soft-pop">Soft pop</option><option value="camera-shutter">Camera shutter</option></select></label>}<label className="toggle-line"><input type="checkbox" checked={snapshotInfo.flash!==false} onChange={e=>configureSnapshots({flash:e.target.checked})}/> Flash captured window</label><label className="toggle-line"><input type="checkbox" checked={snapshotInfo.animations!==false} onChange={e=>configureSnapshots({animations:e.target.checked})}/> Animate capture feedback</label><p className="provider-note">App text is off by default because visible UI can contain sensitive information. Sound, flash and animation are local capture feedback only. {snapshotInfo.pending?`${snapshotInfo.pending} capture${snapshotInfo.pending===1?"":"s"} waiting to attach. `:""}</p>{snapshotMessage&&<p className={["Saving…","SnapShots ready.","SnapShots disabled."].includes(snapshotMessage)?"provider-note":"provider-status-error"}>{snapshotMessage}</p>}<div className="provider-key-actions"><button onClick={captureSnapshot} aria-disabled={snapshotCapturing||undefined}>{snapshotCapturing?"Capturing…":"Capture now"}</button><button onClick={()=>configureSnapshots({shortcut:snapshotInfo.shortcut})} disabled={!snapshotInfo.enabled}>Save shortcut</button></div></div>}
       {settingsSection==="desktop"&&settingDrawn["desktop-background"]&&<div className="settings-card"><h3><Power size={14} aria-hidden="true"/> Background mode</h3><p>Keep Trebell's local harness running in the system tray after the window closes, and start it automatically when you sign in.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.backgroundMode)} onChange={e=>setBackgroundMode(e.target.checked)}/> Keep Trebell running in background</label></div>}
       <div className="settings-card keybindings-settings" hidden={settingsSection!=="shortcuts"}><h3><Keyboard size={14} aria-hidden="true"/> Keyboard shortcuts</h3><p>Shortcuts can be conditional. For example, <code>threadOpen && !modalOpen</code> means “only when a thread is open and no dialog is covering the app.”</p>{settingsSection==="shortcuts"&&KEYBINDING_COMMANDS.map(command=><KeybindingRow key={command.id} id={command.id} label={command.label} rule={keybindingRules.find(item=>item.command===command.id)} note={keybindingNotes.get(command.id)} onUpdate={patch=>updateKeybinding(command.id,patch)}/>)}{settingsSection==="shortcuts"&&projectScripts.length>0&&<><h4>Project actions</h4>{projectScripts.map(script=>{const command="script."+script.id+".run";return <KeybindingRow key={command} id={command} label={"Run "+script.name} rule={keybindingRules.find(item=>item.command===command)} defaultWhen="projectOpen && !modalOpen" note={keybindingNotes.get(command)} onUpdate={patch=>updateKeybinding(command,patch)}/>})}</>}<p className="provider-note">Available contexts: {KEYBINDING_CONTEXTS.join(", ")}. Combine them with <code>!</code>, <code>&&</code>, <code>||</code> and parentheses. Blank shortcuts stay unbound until you assign one.</p></div>
-      <div className="settings-card update-settings" hidden={settingsSection!=="general"}><h3><Download size={14} aria-hidden="true"/> Updates</h3>{desktopUpdate?.supported?<><p>Current: <strong>{desktopUpdate.currentVersion||update?.current||"unknown"}</strong>{desktopUpdate.availableVersion&&<><br/>Available: <strong>{desktopUpdate.availableVersion}</strong></>}<br/>Status: <strong>{updateStatusLabel}</strong></p>{desktopUpdate.status==="downloading"&&<div className="update-progress"><span style={{width:`${Math.max(0,Math.min(100,desktopUpdate.percent||0))}%`}}/></div>}{desktopUpdate.status==="downloading"&&<p className="provider-note">{Math.round(desktopUpdate.percent||0)}% downloaded</p>}{desktopUpdate.error&&<p className="provider-status-error">{desktopUpdate.error}</p>}<div className="provider-key-actions"><button onClick={checkDesktopUpdate} disabled={["checking","downloading","installing"].includes(desktopUpdate.status)}><RefreshCw size={12}/> Check now</button>{desktopUpdate.status==="available"&&<button className="setting-action" onClick={downloadDesktopUpdate}><Download size={12}/> Download update</button>}{desktopUpdate.status==="downloaded"&&<button className="setting-action" onClick={installDesktopUpdate}>Restart & install</button>}</div>{desktopUpdate.status==="downloaded"&&!settings.continueThreadsAfterRestart&&<p className="provider-note">Restart recovery is off. Finish active work first, or enable Restart recovery before installing.</p>}</>:<>{update?.latest?<p>Current: <strong>{update.current}</strong><br/>Latest: <strong>{String(update.latest).replace(/^v(?=\d)/,"")}</strong></p>:<p className={update?.error?"provider-status-error":undefined}>{update?.error||"Checking releases…"}</p>}{update?.error&&<button onClick={checkRelease} disabled={loading}><RefreshCw size={12}/> {loading?"Checking…":"Check again"}</button>}{update?.url&&<button onClick={()=>openWebLink(update.url)}><Download size={13}/> Open latest release</button>}{desktopUpdate?.status==="development"&&<p className="provider-note">In-app installation is available in packaged Trebell builds.</p>}</>}</div>
+      <div className="settings-card update-settings" hidden={settingsSection!=="general"}><h3><Download size={14} aria-hidden="true"/> Updates</h3>{desktopUpdate?.supported?<><p>Current: <strong>{desktopUpdate.currentVersion||update?.current||"unknown"}</strong>{desktopUpdate.availableVersion&&<><br/>Available: <strong>{desktopUpdate.availableVersion}</strong></>}<br/>Status: <strong>{updateStatusLabel}</strong></p>{desktopUpdate.status==="downloading"&&<div className="update-progress"><span style={{width:`${Math.max(0,Math.min(100,desktopUpdate.percent||0))}%`}}/></div>}{desktopUpdate.status==="downloading"&&<p className="provider-note">{Math.round(desktopUpdate.percent||0)}% downloaded</p>}{desktopUpdate.error&&<p className="provider-status-error">{desktopUpdate.error}</p>}<div className="provider-key-actions"><button onClick={checkDesktopUpdate} aria-disabled={desktopUpdateBusy||undefined}><RefreshCw size={12}/> Check now</button>{desktopUpdate.status==="available"&&<button className="setting-action" onClick={downloadDesktopUpdate}><Download size={12}/> Download update</button>}{desktopUpdate.status==="downloaded"&&<button className="setting-action" onClick={installDesktopUpdate}>Restart & install</button>}</div>{desktopUpdate.status==="downloaded"&&!settings.continueThreadsAfterRestart&&<p className="provider-note">Restart recovery is off. Finish active work first, or enable Restart recovery before installing.</p>}</>:<>{update?.latest?<p>Current: <strong>{update.current}</strong><br/>Latest: <strong>{String(update.latest).replace(/^v(?=\d)/,"")}</strong></p>:<p className={update?.error?"provider-status-error":undefined}>{update?.error||"Checking releases…"}</p>}{update?.error&&<button onClick={checkRelease} aria-disabled={loading||undefined}><RefreshCw size={12}/> {loading?"Checking…":"Check again"}</button>}{update?.url&&<button ref={releaseLinkRef} onClick={()=>openWebLink(update.url)}><Download size={13}/> Open latest release</button>}{desktopUpdate?.status==="development"&&<p className="provider-note">In-app installation is available in packaged Trebell builds.</p>}</>}</div>
       <div className="settings-card" hidden={settingsSection!=="diagnostics"}><h3><Stethoscope size={14} aria-hidden="true"/> Diagnostics</h3><p>Runtime and project diagnostics are local to this machine.</p><div className="diag-badges" aria-busy={runtimeChip==="pending"||(selectedManagedInference&&providerChip==="pending")}><span className={runtimeChip} title={harnessStateTitle(harness)}><Activity size={12}/> {selectedAgentName}</span>{selectedManagedInference&&<span className={providerChip} title={providerChipTitle}><ShieldCheck size={12}/> {MODEL_PROVIDER_LABELS[diagnostics?.runtime?.provider||selected]||"Provider"}</span>}</div></div>
     </div>
     {/* The log refresh leaves out the GitHub release check: its failures (such as a rate limit) are shown in General and are not diagnostics failures. */}

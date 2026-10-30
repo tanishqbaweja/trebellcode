@@ -69,12 +69,14 @@ test("Settings shows a slow, hung or failing harness CLI as installed with what 
     await expect(signIn("Claude Code")).toHaveCount(0);
     // Cursor's check exited with an error: what it said, and a switch, with neither Needs setup nor Sign in, as nothing is known of
     // its sign-in.
-    await expect(said("Cursor")).toHaveText("Cursor is installed but `cursor-agent --version` exited with code 1: Error: Cannot find module 'index.js'");
+    await expect(said("Cursor")).toHaveText("Cursor is installed but cursor-agent --version exited with code 1: Error: Cannot find module 'index.js'");
+    await expect(said("Cursor").locator("code.run-command"),"the command it ran reads as code").toHaveText("cursor-agent --version");
     await expect(action("Cursor")).toHaveText("Switch");
     await expect(signIn("Cursor")).toHaveCount(0);
     // OpenCode's never answered: installed, never "not installed", but not ready until its version picks its client; no Sign in, and
     // no Update, as Trebell installs nothing over an OpenCode whose version it cannot read.
-    await expect(said("OpenCode")).toHaveText("OpenCode is installed but did not answer `opencode --version` within 10 seconds. Trebell Code needs its version (1.x or 2.x) to start it.");
+    await expect(said("OpenCode")).toHaveText("OpenCode is installed but did not answer opencode --version within 10 seconds. Trebell Code needs its version (1.x or 2.x) to start it.");
+    await expect(said("OpenCode").locator("code.run-command"),"the command it ran reads as code").toHaveText("opencode --version");
     await expect(action("OpenCode")).toHaveText("Not ready");
     await expect(row("OpenCode").getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
     await expect(signIn("OpenCode")).toHaveCount(0);
@@ -91,6 +93,66 @@ test("Settings shows a slow, hung or failing harness CLI as installed with what 
       await row("OpenCode").scrollIntoViewIfNeeded();
       for(const name of ["Codex","Claude Code","Cursor","Grok Build","OpenCode"])await expect(row(name)).toBeInViewport({ratio:1});
       await page.screenshot({animations:"disabled",path:shots+`harness-rows-${mode}-1280.png`});
+    }
+    await switchMode(page,"dark");
+  }finally{
+    await request.post("/api/settings",{data:{agentRuntimeInstances:before.agentRuntimeInstances||[],appearanceMode:before.appearanceMode||"dark"}});
+    rmSync(home,{recursive:true,force:true});
+  }
+});
+
+// A row the keyboard reaches shows whole, its border, its status line and the sign-in choice under it, with the room a scroll of the
+// row itself keeps: Tab down from the card's heading through every control of every row, then on past the list, the page wheeled
+// down so the rows leave the window, and Shift+Tab back up through them all.
+test("a harness row reached with Tab or Shift+Tab shows whole, with room between it and the window's edge, at each size",async({page,request})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:800});
+  const home=mkdtempSync(join(tmpdir(),"trebell-e2e-status-keys-"));
+  const before=await (await request.get("/api/settings")).json();
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:"openai"}});
+  const list=await harnessList(home);
+  await page.route(/\/api\/agent-runtimes$/,route=>route.request().method()==="GET"?json(route,list):route.continue());
+  try{
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    const heading=page.getByRole("heading",{name:"Agent harness"}),rows=page.locator(".agent-runtime-option:not(.agent-runtime-skeleton)");
+    await expect(heading).toBeVisible();await expect(rows).toHaveCount(8);
+    // The row that holds the focus, and its room above and below inside what shows it (the window and each box that scrolls or clips).
+    const reached=()=>page.evaluate(()=>{
+      const control=document.activeElement,row=control?.closest(".agent-runtime-option");if(!row)return null;
+      let top=0,bottom=innerHeight;
+      for(let box=row.parentElement;box;box=box.parentElement)if(/auto|scroll|hidden|clip/.test(getComputedStyle(box).overflowY)){const edge=box.getBoundingClientRect();top=Math.max(top,edge.top+box.clientTop);bottom=Math.min(bottom,edge.top+box.clientTop+box.clientHeight)}
+      const edge=row.getBoundingClientRect();
+      return {row:row.querySelector("strong").textContent,control:control.type==="radio"?control.closest("[role=radiogroup]").getAttribute("aria-label"):control.textContent.trim().slice(0,24),above:Math.floor(edge.top-top),below:Math.floor(bottom-edge.bottom)};
+    });
+    // Each key press, until the focus has gone through the rows and out of them: every stop in a row, and a shot of the first that
+    // took the window's edge it goes towards (a row the press scrolled to).
+    const walk=async(key,shot)=>{
+      const stops=[];
+      for(let press=0;press<60;press++){
+        await page.keyboard.press(key);const at=await reached();
+        if(!at){if(stops.length)break;continue}
+        if(!stops.some(stop=>(key==="Tab"?stop.below:stop.above)<40)&&(key==="Tab"?at.below:at.above)<40)await page.screenshot({animations:"disabled",path:shots+shot});
+        stops.push(at);
+      }
+      return stops;
+    };
+    for(const [width,height] of [[1280,800],[1280,900],[900,800],[700,800]]){
+      await page.setViewportSize({width,height});
+      for(const mode of ["dark","light"]){
+        await switchMode(page,mode);
+        await heading.click();
+        const down=await walk("Tab",`harness-rows-tab-${mode}-${width}x${height}.png`);
+        await page.keyboard.press("Tab");await page.keyboard.press("Tab");
+        await page.mouse.move(width/2,height/2);await page.mouse.wheel(0,4000);
+        await expect(rows.last()).not.toBeInViewport();
+        const up=await walk("Shift+Tab",`harness-rows-shift-tab-${mode}-${width}x${height}.png`);
+        expect(down.map(stop=>stop.row)).toContain("Muse Code");expect(up.map(stop=>stop.row)).toContain("Trebell Native");
+        // About 12 px of room, as the rows' scroll margin keeps when a row itself is scrolled into view.
+        expect.soft([...down,...up].filter(stop=>stop.above<11||stop.below<11),`rows left at or under the window's edge at ${width}x${height} in ${mode}`).toEqual([]);
+      }
     }
     await switchMode(page,"dark");
   }finally{

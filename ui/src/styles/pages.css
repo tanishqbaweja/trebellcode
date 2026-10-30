@@ -59,7 +59,7 @@
 :root:root .projects-page :is(.project-page-actions>button,.clone-card>button,.project-window-footer button),
 :root:root .secondary-page .history-page .history-load-more button{height:34px!important;min-height:34px!important;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:0 13px!important;border:1px solid var(--line2)!important;border-radius:9px!important;background:var(--bg3)!important;color:var(--tx1)!important;font-size:12.5px!important;font-weight:550;line-height:1;white-space:nowrap;cursor:pointer;box-shadow:none!important;transition:background-color .15s,color .15s,border-color .15s,filter .15s}
 :root:root :is(.usage-page,.capabilities-page,.environments-page)>.capabilities-toolbar>button:hover:not(:disabled),
-:root:root .usage-page .usage-toolbar>button:hover:not(:disabled),
+:root:root .usage-page .usage-toolbar>button:hover:not(:disabled,[aria-disabled="true"]),
 :root:root .projects-page :is(.project-page-actions>button,.clone-card>button,.project-window-footer button):hover:not(:disabled),
 :root:root .secondary-page .history-page .history-load-more button:hover:not(:disabled,[aria-disabled="true"]){background:var(--bg4)!important;color:var(--tx0)!important}
 
@@ -87,12 +87,12 @@
 :root:root .agents-page .delegate-submit:hover:not(:disabled),
 :root:root .preview-page .annotation-actions button.primary:hover:not(:disabled){filter:brightness(1.1);background:var(--acfill)!important;color:#fff!important}
 
-/* Disabled buttons, every page. Load older threads and History's Retry while they read, Save action or Save hook while they save, a
-   Tools action while Codex answers it, and the Browser panel's buttons while the agent browser takes its time, only say they are busy
-   (aria-disabled), so the keyboard stays on them. The arrow is !important: the pages' own button rules weigh more than this one, and
-   kept the pointing hand on buttons that do nothing. */
+/* Disabled buttons, every page. Load older threads and History's Retry while they read, the Usage page's Refresh while it reads, Save
+   action or Save hook while they save, a Tools action while Codex answers it, and the Browser panel's buttons while the agent browser
+   takes its time, only say they are busy (aria-disabled), so the keyboard stays on them. The arrow is !important: the pages' own button
+   rules weigh more than this one, and kept the pointing hand on buttons that do nothing. */
 :root:root :is(.projects-page,.history-page,.usage-page,.capabilities-page,.environments-page,.licenses-page,.agents-page,.preview-page) button:disabled,
-:root:root .history-page button[aria-disabled="true"],
+:root:root :is(.history-page,.usage-page) button[aria-disabled="true"],
 :root:root .capabilities-page button[aria-disabled="true"],
 :root:root .preview-page button[aria-disabled="true"],
 :root:root .projects-page :is(.project-action-editor,.project-hook-editor) button.primary[aria-disabled="true"]{opacity:.5;cursor:default!important;box-shadow:none!important;filter:none}

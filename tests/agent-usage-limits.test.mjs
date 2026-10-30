@@ -70,3 +70,23 @@ test("Claude usage reads the capability probe and tells a failed read from an ac
   assert.deepEqual((await readClaudeUsageLimits({readCapabilities:async()=>({usage:null})})).unavailable,{reason:"unsupported"});
   assert.deepEqual((await readClaudeUsageLimits()).unavailable,{reason:"unsupported"});
 });
+
+// A Claude Code that answered signed out (the probe's signedOut, claude-capabilities.mjs) says so and how to sign in, whatever its
+// usage read brought, instead of reading as an account that exposes no limits.
+test("Claude usage of a Claude Code that answered signed out says it is signed out and how to sign in",async()=>{
+  const signedOut={reason:"signedOut",message:"Claude Code is signed out. Use Sign in under Claude Code in Settings → Agents & models, or run claude auth login, then press Refresh."};
+  const account={tokenSource:"none",apiProvider:"firstParty"},checkedAt="2026-10-09T20:00:00.000Z";
+  assert.deepEqual(await readAgentRuntimeUsage("claude",{readCapabilities:async()=>({account,signedOut:true,usage:{rate_limits_available:false,rate_limits:null},usageError:null,checkedAt})}),{checkedAt,windows:[],unavailable:signedOut});
+  assert.deepEqual((await readClaudeUsageLimits({readCapabilities:async()=>({account,signedOut:true,usage:null,usageError:"Claude Code did not report usage in time."})})).unavailable,signedOut);
+  // An account without plan limits that is signed in (an API key) still says it exposes none.
+  assert.deepEqual((await readClaudeUsageLimits({readCapabilities:async()=>({account:{tokenSource:"none",apiKeySource:"ANTHROPIC_API_KEY"},signedOut:false,usage:{rate_limits_available:false,rate_limits:null}})})).unavailable,{reason:"unsupported"});
+});
+
+// A profile with a Claude config directory of its own (configDir, its homePath) signs in there: the command is said with it, as a
+// turn's sign-out says it (claudeSignedOutMessage). `claude auth login` run as written in the person's own terminal signs in their
+// default ~/.claude, and the card went on saying signed out.
+test("Claude usage of a signed-out profile with a Claude config directory of its own says to sign in with it set",async()=>{
+  const account={tokenSource:"none",apiProvider:"firstParty"};
+  assert.deepEqual((await readClaudeUsageLimits({configDir:"/home/me/.claude-work",readCapabilities:async()=>({account,signedOut:true,usage:null})})).unavailable,{reason:"signedOut",message:"Claude Code is signed out. Use Sign in under Claude Code in Settings → Agents & models, or run claude auth login with CLAUDE_CONFIG_DIR set to \"/home/me/.claude-work\", then press Refresh."});
+  assert.deepEqual((await readAgentRuntimeUsage("claude",{configDir:" ",readCapabilities:async()=>({account,signedOut:true,usage:null})})).unavailable.message,"Claude Code is signed out. Use Sign in under Claude Code in Settings → Agents & models, or run claude auth login, then press Refresh.","a blank one names none");
+});

@@ -62,17 +62,25 @@ export function askConfirm(message,{confirm,cancel,tone="danger"}){
   return askChoice(message,{choices:[{value:true,label:confirm,tone}],cancel}).then(value=>value===true);
 }
 
+// A command a question names, as code that reads as one (code.run-command): each word whole, so its lines break only between them.
+function runCommand(command){
+  const code=document.createElement("code");code.className="run-command";
+  String(command).split(" ").forEach((word,index)=>code.append(...(index?[" "]:[]),Object.assign(document.createElement("span"),{textContent:word})));
+  return code;
+}
+
 // Asks for one of a few answers in the same dialog: one button per choice after `cancel`, each resolving to its `value` (`tone` is its
 // button class), and null on `cancel`, Escape or the dialog closing any other way. It opens with focus on `cancel`, so Enter keeps
-// things as they are. A message's line breaks show. What carries on from the press that opened it answers nothing: the second click
-// of a double click, and Enter or Space held down and repeating, so the question waits for a press of its own.
+// things as they are. A message's line breaks show, and a message given as parts shows a part {command} as a command (runCommand).
+// What carries on from the press that opened it answers nothing: the second click of a double click, and Enter or Space held down
+// and repeating, so the question waits for a press of its own.
 export function askChoice(message,{choices,cancel="Cancel"}){
   return new Promise(resolve=>{
     const opener=document.activeElement;
     const dialog=document.createElement("dialog");
     dialog.className="inspector-text-prompt";
     const form=document.createElement("form");
-    const text=document.createElement("p");text.textContent=message;
+    const text=document.createElement("p");text.append(...[message].flat().map(part=>part?.command!=null?runCommand(part.command):String(part??"")));
     text.id="inspector-text-prompt-"+Math.random().toString(36).slice(2);dialog.setAttribute("aria-labelledby",text.id);
     const actions=document.createElement("div");actions.className="inspector-text-prompt-actions";
     const finish=value=>{

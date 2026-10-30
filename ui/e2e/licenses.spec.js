@@ -294,6 +294,45 @@ for(const mode of MODES){
     if(await close.count())await close.click();
     for(const [size,issues] of Object.entries(found))expect.soft(issues,`${mode} ${size}`).toEqual([]);
   });
+
+  // saxes 6.0.0's npm release has no LICENSE or NOTICE file: its notice is its repository's license file, which Trebell Code ships,
+  // with the ISC license's copyright and permission notice. Reached from the palette, opened with the mouse (dark) and the keys (light).
+  test(`a package that ships no license file of its own shows its repository's, which Trebell Code ships (${mode})`,async({page,request})=>{
+    test.setTimeout(60_000);
+    await open(page,request,{mode});
+    await page.evaluate(()=>document.activeElement?.blur?.());
+    await page.keyboard.press("Control+K");
+    const palette=page.getByTestId("command-palette");
+    await expect(palette).toBeVisible();
+    await page.keyboard.type("open source lic",{delay:20});
+    await expect(palette.locator(".command-palette-item[aria-current=true]")).toContainText("Open source licenses");
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("heading",{name:"Open source licenses",level:1})).toBeVisible();
+    // The real list: its first read walks every installed package.
+    await expect(rows(page).nth(20)).toBeVisible({timeout:20_000});
+    const search=page.getByPlaceholder("Search package, version or license");
+    await search.click();
+    await page.keyboard.type("saxes",{delay:20});
+    const row=rows(page).filter({has:page.locator("strong",{hasText:/^saxes$/})});
+    await expect(rows(page)).toHaveCount(1);
+    await expect(row).toContainText("6.0.0 · ISC");
+    if(mode==="dark")await row.click();
+    else{await page.keyboard.press("Tab");await expect(row).toBeFocused();await page.keyboard.press("Enter")}
+    const pane=page.locator(".license-detail"),text=pane.locator("pre");
+    await expect(pane.locator(".license-detail-head strong")).toHaveText("saxes");
+    await expect(text).toBeVisible();
+    await expect(text,"the pane says saxes shipped no license file instead of showing its ISC notice").not.toContainText("did not ship a separate LICENSE or NOTICE file");
+    await expect(text).toContainText("This package's npm release has no LICENSE or NOTICE file; this notice is from its source repository and ships with Trebell Code.");
+    await expect(text).toContainText("The ISC License Copyright (c) Contributors Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.");
+    await expect(text).toContainText("Copyright (c) Isaac Z. Schlueter and Contributors");
+    await page.screenshot({animations:"disabled",path:shots+`own-license-missing-${mode}-1280.png`});
+    // A narrow window shows it whole, without a sideways scroll.
+    await page.setViewportSize({width:700,height:800});
+    await text.scrollIntoViewIfNeeded();
+    expect(await sideways(page)).toBe(false);
+    expect(await text.evaluate(node=>node.scrollWidth>node.clientWidth+1),"the notice is cut at 700").toBe(false);
+    await page.screenshot({animations:"disabled",path:shots+`own-license-missing-${mode}-700.png`});
+  });
 }
 
 test.describe("search field",()=>{

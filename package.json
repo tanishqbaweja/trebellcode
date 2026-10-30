@@ -115,7 +115,8 @@
       "branding/**/*",
       "package.json",
       "README.md",
-      "THIRD_PARTY_NOTICES.md"
+      "THIRD_PARTY_NOTICES.md",
+      "third-party-licenses/**/*"
     ],
     "asarUnpack": [
       "node_modules/@openai/codex-win32-x64/**/*",
