@@ -90,7 +90,7 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-windowing-dark-1280x800.png",fullPage:true});
 
   // Without wrapping each line keeps one row and the diff scrolls sideways instead.
-  await right.getByRole("button",{name:"Disable diff line wrapping"}).click();
+  await right.getByRole("button",{name:"Stop wrapping diff lines"}).click();
   await expect(diffPreview).not.toHaveClass(/\bwrap\b/);
   // The changed lines, long ones included, are one line tall each; the count guards against measuring no lines at all.
   const unwrapped=await diffPreview.evaluate(node=>{const heights=[...node.querySelectorAll(".diff-line:is(.add,.del)")].map(line=>line.getBoundingClientRect().height);return {client:node.clientWidth,scroll:node.scrollWidth,lines:heights.length,tallest:Math.max(0,...heights),lineHeight:parseFloat(getComputedStyle(node).lineHeight)}});
@@ -99,7 +99,7 @@ test("large workspace trees and diffs render bounded progressive windows",async(
   expect(unwrapped.tallest).toBeLessThanOrEqual(unwrapped.lineHeight+1);
   expect(await overprintedDiffLines(diffPreview)).toBe(0);
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-windowing-nowrap-dark-1280x800.png",fullPage:true});
-  await right.getByRole("button",{name:"Enable diff line wrapping"}).click();
+  await right.getByRole("button",{name:"Wrap diff lines"}).click();
   await expect(diffPreview).toHaveClass(/\bwrap\b/);
 
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});

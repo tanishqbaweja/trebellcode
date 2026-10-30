@@ -82,7 +82,7 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
     data-testid="assistant-selection-cite"
     style={{left:selection.x,top:selection.y}}
     disabled={tooLong||busy}
-    aria-label={tooLong?"Selection is too long to cite":busy?"Citing selected assistant text":"Cite selected assistant text"}
+    aria-label={tooLong?"Too much selected to cite":busy?"Citing selected assistant text":"Cite selected assistant text"}
     title={tooLong?`Select ${MAX_ASSISTANT_CITATION_CHARS.toLocaleString()} characters or fewer`:"Cite selected assistant text"}
     onPointerDown={event=>event.preventDefault()}
     onClick={async()=>{

@@ -4458,12 +4458,12 @@ test("workspace diff lines wrap by default, can scroll instead, and the choice i
   const diff=panel.locator(".git-diff"),size=()=>diff.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   // Wrapped by default: the whole change reads without scrolling sideways, in the code's own characters.
   await expect(diff).toHaveClass(/\bwrap\b/);
-  await expect(panel.getByRole("button",{name:"Disable diff line wrapping"})).toHaveAttribute("aria-pressed","true");
+  await expect(panel.getByRole("button",{name:"Stop wrapping diff lines"})).toHaveAttribute("aria-pressed","true");
   let metrics=await size();expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   expect(await diff.evaluate(node=>getComputedStyle(node).fontVariantLigatures)).toBe("none");
   await page.screenshot({animations:"disabled",path:auditDir+"workspace-diff-wrapped-dark-1280x800.png"});
-  await panel.getByRole("button",{name:"Disable diff line wrapping"}).click();
-  await expect(panel.getByRole("button",{name:"Enable diff line wrapping"})).toHaveAttribute("aria-pressed","false");
+  await panel.getByRole("button",{name:"Stop wrapping diff lines"}).click();
+  await expect(panel.getByRole("button",{name:"Wrap diff lines"})).toHaveAttribute("aria-pressed","false");
   await expect(diff).not.toHaveClass(/\bwrap\b/);
   metrics=await size();expect(metrics.scroll).toBeGreaterThan(metrics.client);
   // The panel itself still never scrolls sideways; only the diff does.
@@ -4473,7 +4473,7 @@ test("workspace diff lines wrap by default, can scroll instead, and the choice i
   await expect(page.getByTestId("composer")).toBeVisible();
   panel=await openDiff();
   await expect(panel.locator(".git-diff")).not.toHaveClass(/\bwrap\b/);
-  await panel.getByRole("button",{name:"Enable diff line wrapping"}).click();
+  await panel.getByRole("button",{name:"Wrap diff lines"}).click();
   await expect(panel.locator(".git-diff")).toHaveClass(/\bwrap\b/);
 });
 

@@ -408,7 +408,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
         :stack.every(layer=>rebased.includes("#"+layer.number))?"Stack "+label+" was rebased"
         :rebased.join(" → ")+(rebased.length===1?" was":" were")+" rebased; the rest of stack "+label+" is merged or closed";
       partialSuccess(done,issues,started,true);
-    }catch(e){reportError(started,actionError(kind==="merge"?"Could not merge the stack":"Could not rebase the stack",e))}
+    }catch(e){reportError(started,actionError(kind==="merge"?"Merging the stack failed":"Rebasing the stack failed",e))}
     finally{setBusy("")}
   }
   async function publishRepository(){
