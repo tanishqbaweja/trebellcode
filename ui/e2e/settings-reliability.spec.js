@@ -1408,12 +1408,12 @@ test("a refused theme Save & apply or import is said once, under the theme butto
   await openSettings(page,request,"Theme Refusal Workspace",{customThemes:[],appearance:"dark",environmentThemeSelections:{}});
   await page.setViewportSize({width:1280,height:800});
   await page.getByRole("button",{name:/Appearance/}).click();
-  // The themes and the theme chosen cannot be saved; the header's mode button still saves.
-  let refused=0;
-  await page.route(/\/api\/settings$/,route=>{
+  // The themes and the theme chosen cannot be saved; the header's mode button still saves. A refusal waits while held is set.
+  let refused=0,held=null;
+  await page.route(/\/api\/settings$/,async route=>{
     const body=route.request().method()==="POST"?route.request().postDataJSON()||{}:{};
     if(!("customThemes" in body||"appearance" in body))return route.continue();
-    refused++;return route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:refusal})});
+    refused++;await held;return route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:refusal})});
   });
   const card=page.locator('[data-setting-target="appearance-theme"]'),note=card.getByRole("alert"),alert=page.locator(".settings-action-error");
   const save=card.getByRole("button",{name:"Save & apply",exact:true}),create=card.getByRole("button",{name:"Create theme",exact:true});
@@ -1428,20 +1428,44 @@ test("a refused theme Save & apply or import is said once, under the theme butto
   await save.click();
   await saidOnce(refusal,1,"note");
   await shootModes(page,"theme-save-refused",{show:note});
-  // From the keyboard: Tab from the theme's name to Save & apply, Enter.
+  // Save & apply pressed again, the note scrolled out of view above it (a window 560 px high, so the page scrolls that far), and refused
+  // in the same words: a new alert, said again and brought back into view, not the note left as it was (round 13's repair of GR13-26).
+  // Save & apply stays under the pointer while the save is on its way.
+  const first=await note.elementHandle();
+  await page.setViewportSize({width:1280,height:560});
+  await note.evaluate(node=>{
+    let box=node.parentElement;while(box&&!(/auto|scroll/.test(getComputedStyle(box).overflowY)&&box.scrollHeight>box.clientHeight))box=box.parentElement;
+    (box||document.scrollingElement).scrollTop+=node.getBoundingClientRect().bottom-(box?Math.max(0,box.getBoundingClientRect().top):0)+4;
+  });
+  await expect(note).not.toBeInViewport();await expect(save).toBeInViewport({ratio:1});
+  let release;held=new Promise(resolve=>{release=resolve});
+  const pressedAt=await save.boundingBox();await save.click();
+  await expect.poll(()=>refused).toBe(2);await drawn(page);
+  expect(await save.boundingBox(),"Save & apply where it was pressed while the save is on its way").toEqual(pressedAt);
+  held=null;release();
+  await expect.poll(()=>first.evaluate(node=>node.isConnected),{message:"the refusal said again is a new alert"}).toBe(false);
+  await saidOnce(refusal,2,"note");
+  await expect(note,"the refusal said again is brought back into view").toBeInViewport({ratio:1});
+  await page.screenshot({animations:"disabled",path:shots+"theme-save-refused-again-dark-1280x560.png"});
+  await page.setViewportSize({width:1280,height:800});
+  // From the keyboard: Tab from the theme's name to Save & apply, Enter, and Enter again, each refusal a new alert.
   await create.click();await expect(note).toHaveCount(0);
   await card.getByLabel("Name",{exact:true}).click();
   for(let step=0;step<8&&!await save.evaluate(button=>button===document.activeElement);step++)await page.keyboard.press("Tab");
   await expect(save).toBeFocused();
   await page.keyboard.press("Enter");
-  await saidOnce(refusal,2,"note");
+  await saidOnce(refusal,3,"note");
+  const second=await note.elementHandle();
+  await expect(save).toBeFocused();await page.keyboard.press("Enter");
+  await expect.poll(()=>second.evaluate(node=>node.isConnected),{message:"the refusal said again from the keyboard is a new alert"}).toBe(false);
+  await saidOnce(refusal,4,"note");
   // An import the theme store refuses.
   const chooser=page.waitForEvent("filechooser");await card.getByRole("button",{name:"Import JSON",exact:true}).click();
   await (await chooser).setFiles({name:"refused.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify({name:"Refused import",appearance:"dark",canvas:"#101814",accent:"#3ddc97"}))});
-  await saidOnce("Import failed: "+refusal,3,"note");
+  await saidOnce("Import failed: "+refusal,5,"note");
   // A theme chosen and refused: the alert says it, and the theme note left from the import is gone.
   await card.getByRole("group",{name:"Theme"}).getByRole("button",{name:"Midnight",exact:true}).click();
-  await saidOnce(refusal,4,"alert");
+  await saidOnce(refusal,6,"alert");
   expect((await savedSettings(request)).customThemes).toEqual([]);
 });
 
