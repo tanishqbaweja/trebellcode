@@ -106,6 +106,9 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // Its third repair then added 0.3 / 0.1 KB to the first bundle (621.2 / 199.7 KB, 0.3 KB gzip of room left: 347 bytes raw and 89
 // gzip, all of them the source-control rule's close variants of everyday Git asks and its narrower version control) and nothing to the
 // lazy chunks: 780.1 / 257.8 KB, 0.9 / 0.2 KB under the limit.
+// Its fourth repair then added 0.3 / 0.1 KB to the first bundle (621.5 / 199.8 KB, 0.2 KB gzip of room left: the source-control
+// rule's asks followed by a comma and thanks or an if, when or once clause, and setting up version control) and nothing to the lazy
+// chunks: 780.1 / 257.8 KB.
 const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:781,gzipKB:258}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
