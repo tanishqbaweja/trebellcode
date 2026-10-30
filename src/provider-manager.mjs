@@ -11,7 +11,7 @@ import { providerCapabilities } from "./provider-capabilities.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY, OpenAiResponseContinuationTracker } from "./openai-response-continuation.mjs";
 import { OpenAiResponsesWebSocket, openAiResponsesWebSocketStreamId, openAiRetryAfterMs } from "./openai-responses-websocket.mjs";
 import { NATIVE_TOOL_SCHEMA_FINGERPRINT } from "./native-request-metrics.mjs";
-import { providerLongRequestFetch } from "./provider-long-request-fetch.mjs";
+import { isNodeFetch, providerLongRequestFetch } from "./provider-long-request-fetch.mjs";
 
 export const DEFAULT_MODEL_PROVIDER = "openai";
 
@@ -627,9 +627,10 @@ export class ProviderManager {
     this.env = env;
     this.fetchFn = fetchFn;
     // A streamed stateless provider's Responses stream (Meta's) goes through a fetch with no body or header deadline of its own
-    // (src/provider-long-request-fetch.mjs): Node's fetch cuts a body after 300 s without a byte, before the lane's idle bound. A caller
-    // that brings its own fetch (a test's stand-in, the offline E2E guard) has those streams sent through it unless it names this one too.
-    this.longRequestFetchFn = typeof longRequestFetchFn === "function" ? longRequestFetchFn : fetchFn === globalThis.fetch ? providerLongRequestFetch : fetchFn;
+    // (src/provider-long-request-fetch.mjs) in place of Node's own fetch, which cuts a body after 300 s without a byte, before the lane's
+    // idle bound. Any other fetch (a test's stand-in, the offline E2E guard, a guard that replaced the global fetch) stays the transport
+    // for those streams too, unless the caller names this one.
+    this.longRequestFetchFn = typeof longRequestFetchFn === "function" ? longRequestFetchFn : isNodeFetch(fetchFn) ? providerLongRequestFetch : fetchFn;
     const timeoutMs = Math.trunc(Number(requestTimeoutMs));
     this.requestTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS;
     this.path = providerSecretsPath(env);

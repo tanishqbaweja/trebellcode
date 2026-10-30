@@ -119,6 +119,13 @@ test("the Meta stream's transport is not Node's fetch, and a fetch the caller br
     // A test's stand-in or the offline E2E guard (gui-server.mjs offlineE2eFetch) is the transport for every request, this one too.
     const injected=async()=>{throw new Error("stand-in")};
     assert.equal(new ProviderManager({env:{TREBELL_HOME:root},fetchFn:injected}).longRequestFetchFn,injected);
+    // So is a guard that replaced the global fetch before the manager was made (the perf tap, a spec's offline guard), named fetch or
+    // not: the manager's default fetch is then the guard, and the Meta stream goes through it as every other request does.
+    const nodeFetch=globalThis.fetch,guard=async(input,init)=>nodeFetch(input,init),namedGuard={async fetch(input,init){return nodeFetch(input,init)}}.fetch;
+    for(const stand of [guard,namedGuard]){
+      globalThis.fetch=stand;
+      try{assert.equal(new ProviderManager({env:{TREBELL_HOME:root}}).longRequestFetchFn,stand,stand.name)}finally{globalThis.fetch=nodeFetch}
+    }
     // A connection that cannot be made fails as Node's fetch fails it, so the loop reads it as a network failure.
     const closed=createServer();await new Promise(resolve=>closed.listen(0,"127.0.0.1",resolve));const port=closed.address().port;await new Promise(resolve=>closed.close(resolve));
     await assert.rejects(providerLongRequestFetch(`http://127.0.0.1:${port}/v1/responses`,{method:"POST",body:"{}"}),error=>{

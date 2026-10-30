@@ -44,3 +44,12 @@ export async function providerLongRequestFetch(input,init={}){
     req.end(body||undefined);
   });
 }
+
+// Whether fetchFn is Node's own fetch: the global Node defines, which loads undici on its first call (Node 18 to 24 name it fetch and
+// name undici in its source). A stand-in that replaced the global (a test's fake, the offline E2E guard, the perf tap) is not, so a
+// ProviderManager sends through this transport only the streams that would have gone straight to Node's fetch, and whatever a
+// stand-in guards it still guards for the Meta stream.
+export function isNodeFetch(fetchFn){
+  if(typeof fetchFn!=="function"||fetchFn.name!=="fetch")return false;
+  try{return /undici/i.test(Function.prototype.toString.call(fetchFn))}catch{return false}
+}
