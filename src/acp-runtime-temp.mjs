@@ -1,8 +1,8 @@
 // Antigravity's agy_acp_server is a PyInstaller one-file bundle: every launch unpacks about
 // 330 MB into the temp directory and a killed process leaves that copy behind. Trebell gives
 // each launch its own folder inside a Trebell-owned directory on the user's temp drive, removes
-// it after the process stops, and sweeps folders left by Trebell processes that died (T3 does the
-// same with its runtimeTemp directory). Only run-<pid>-* folders whose owning Trebell process is
+// it after the process stops, and sweeps folders left by Trebell processes that died. Only
+// run-<pid>-* folders whose owning Trebell process is
 // gone are swept, so a second running Trebell keeps its live unpack.
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

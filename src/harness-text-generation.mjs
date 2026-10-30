@@ -297,7 +297,7 @@ function acpTextModel(kind,id){const value=String(id||"").trim();if(!value||valu
 // permissions and rules stay out, nothing can be written into the repository and the session is not listed under it; a remote session
 // keeps the repository. Teardown cancels a prompt still running, deletes the session where the harness can (remote OpenCode), closes it
 // and stops the process tree. ACP itself has no delete: Cursor, Grok Build and Antigravity keep the temp-folder session in their own store.
-// Modes and models are read and changed through the agent's config options when it has them (T3 AcpSessionRuntime setMode/setModel).
+// Modes and models are read and changed through the agent's config options when it has them.
 async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=false}={}){
   const {runtimeManager,instance,environmentId}=ctx;
   const command=runtimeManager.executable(instance,{environmentId}),spawner=runtimeManager.processSpawner?.(instance,environmentId)||null;
@@ -354,7 +354,7 @@ async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=f
     ctx.check();
   }
   // The thread's model when the harness offers it. Cursor saves its model globally, so it always gets an explicit one (Auto when
-  // the thread's is not offered), as T3's Cursor Git text does; the others otherwise keep their current model.
+  // the thread's is not offered); the others otherwise keep their current model.
   const models=acpConfigSelect(setup,"model"),offeredModel=id=>Boolean(id)&&models.choices.some(choice=>choice.value===id);
   const chosen=ctx.models.map(id=>acpTextModel(instance.kind,id)).find(offeredModel)||(instance.kind==="cursor"&&offeredModel("default")?"default":null);
   if(chosen&&(chosen!==models.current||instance.kind==="cursor")){
@@ -369,7 +369,7 @@ async function acpText(ctx,{args=null,environment=null,mode=null,deleteSession=f
   return {text,model:chosen||models.current||null};
 }
 
-// Muse Code (T3 MuseTextGeneration): one turn in a fresh session on a host of Trebell's own in an empty folder, read-only (`muse serve
+// Muse Code: one turn in a fresh session on a host of Trebell's own in an empty folder, read-only (`muse serve
 // --disable-shell --disable-write`: no shell, no file writes and no trust in a workspace's skills and rules), its session log kept, since
 // Muse derives a turn's events, its end too, from that log. The session denies whatever its policy does not allow (denyUnmatched); an
 // approval Muse asks all the same is denied with its own denied choice and a question cancelled, and either fails the request, as a gap
@@ -412,7 +412,7 @@ async function museText(ctx){
     if(method!=="turn/completed"||params.turnId!==turnId)return;
     const terminal=said(params.terminal),error=params.error&&typeof params.error==="object"?params.error:{};
     if(terminal==="completed"){
-      // A turn may write commentary before its answer (T3): the answer is the last reply Muse did not take back.
+      // A turn may write commentary before its answer: the answer is the last reply Muse did not take back.
       const answer=[...replies.values()].findLast(reply=>!reply.retracted);
       return answer?.truncated?fail("Muse Code cut its reply short, so Trebell did not use it. Try again."):settle.resolve(String(answer?.text??""));
     }
@@ -432,7 +432,7 @@ async function museText(ctx){
   });
   void host.exited.then(exit=>fail(host.exitMessage(exit)));
   const started=await connection.command("session/start",{sessionId,workspaceRoot:await museWorkspaceRoot(cwd,{verbatim:false}),providerId:"meta",...(model?{modelId:model}:{}),approvalMode:"denyUnmatched"},{maxAttempts:1});ctx.check();
-  // The turn's end can come before its start is acknowledged (T3), which settles the request just as well.
+  // The turn's end can come before its start is acknowledged, which settles the request just as well.
   connection.command("turn/start",{sessionId,input:[{type:"text",text:HARNESS_TEXT_INSTRUCTIONS+"\n\n"+ctx.prompt}],...(reasoningEffort?{reasoningEffort}:{})},{commandId:turnId}).then(
     ack=>{if(ack?.turnId&&ack.turnId!==turnId)fail("Muse Code took the Git text request into another turn than the one Trebell started.")},
     error=>settle.reject(error),

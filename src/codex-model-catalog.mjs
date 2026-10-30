@@ -1,7 +1,7 @@
 import { codexConfiguredServiceTier } from "./model-service-tier.mjs";
 
-// Codex model catalog helpers, aligned with T3 Code's Codex provider (applyPreferredCodexDefaultModel,
-// mapCodexModelCapabilities). The catalog itself always comes from the user's installed Codex `model/list`.
+// Codex model catalog helpers (applyPreferredCodexDefaultModel, mapCodexModelCapabilities). The catalog itself always comes
+// from the user's installed Codex `model/list`.
 
 export const PREFERRED_DEFAULT_CODEX_MODELS = Object.freeze(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"]);
 
@@ -14,7 +14,7 @@ function rowId(row) {
   return String(row?.id || row?.model || "").trim();
 }
 
-// Prefer T3's default-model ranking when one of its preferred families is in the live catalog; otherwise keep the model
+// Prefer a preferred family's model as the default when one is in the live catalog; otherwise keep the model
 // Codex itself flags as default.
 export function preferredCodexDefaultModel(rows = []) {
   const list = (Array.isArray(rows) ? rows : []).filter(row => rowId(row));
@@ -26,7 +26,7 @@ export function preferredCodexDefaultModel(rows = []) {
   return flagged ? rowId(flagged) : null;
 }
 
-// T3 applyConfiguredCodexServiceTier: the tier the person's Codex config runs new threads at (config/read's service_tier) is the
+// The tier the person's Codex config runs new threads at (config/read's service_tier) is the
 // default tier of each model that lists it, so the Speed picker shows it while nothing is picked; a model without it keeps its own.
 export function withConfiguredCodexServiceTier(rows = [], serviceTier = null) {
   return (Array.isArray(rows) ? rows : []).map(row => {

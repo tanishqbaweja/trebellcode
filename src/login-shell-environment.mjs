@@ -5,8 +5,8 @@ import { homedir, userInfo } from "node:os";
 // (/usr/bin:/bin:/usr/sbin:/sbin on macOS), not the one the person's login shell builds, so claude, codex, cursor-agent, grok and
 // opencode installed under ~/.local/bin, Homebrew or a version manager read as not installed, and a keg-only JDK has no JAVA_HOME.
 // desktop/main.mjs reads PATH, JAVA_HOME and mise's record of the PATH entries it added (__MISE_DIFF) from `$SHELL -ilc` once, before
-// the GUI server starts, between markers that tell them from whatever the profile prints, as T3 Code's readEnvironmentFromLoginShell
-// does. The read has two seconds: a profile that hangs, fails or prints nothing leaves the environment as it was. Windows is unchanged.
+// the GUI server starts, between markers that tell them from whatever the profile prints. The read has two seconds: a profile
+// that hangs, fails or prints nothing leaves the environment as it was. Windows is unchanged.
 export const LOGIN_SHELL_NAMES=Object.freeze(["PATH","JAVA_HOME","__MISE_DIFF"]);
 export const LOGIN_SHELL_TIMEOUT_MS=2000;
 const MAX_OUTPUT=1024*1024;
@@ -32,7 +32,7 @@ export function parseLoginShellOutput(output,names=LOGIN_SHELL_NAMES){
   return values;
 }
 
-// The login shell's entries first, in its order, then the ones only the app inherited, each once (T3 Code's mergePathEntries).
+// The login shell's entries first, in its order, then the ones only the app inherited, each once.
 export function mergePathEntries(preferred,inherited){
   const seen=new Set(),merged=[];
   for(const value of [preferred,inherited])for(const entry of String(value||"").split(":")){

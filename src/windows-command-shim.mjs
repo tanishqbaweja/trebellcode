@@ -7,7 +7,7 @@ import { win32 } from "node:path";
 // the runtime is launched directly. Script targets (cli.js) are returned only when the caller can run
 // them itself (allowScripts), because spawning a script file directly fails the same way.
 const SHIM_TARGET=/"%~?dp0%?\\([^"%]+)"/gi;
-// npm's cmd-shim for a package's native binary, line for line (T3 npmShimExecutable), and the line that runs it: exact asks for this
+// npm's cmd-shim for a package's native binary, line for line, and the line that runs it: exact asks for this
 // shape, so a launcher that sets anything up first (a SET, an IF, a node fallback) is left to run as it is.
 const NPM_NATIVE_SHIM=["@ECHO off","GOTO start",":find_dp0","SET dp0=%~dp0","EXIT /b",":start","SETLOCAL","CALL :find_dp0"];
 const NPM_NATIVE_SHIM_RUN=/^"%dp0%\\([^"%]+\.exe)" +%\*$/;

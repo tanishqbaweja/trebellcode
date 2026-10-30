@@ -17,7 +17,7 @@ const loadExtractZip=()=>extractZipModule??=import("extract-zip");
 export const ACP_REGISTRY_URL="https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 // Antigravity's sign-in and the home it runs in are antigravity-auth.mjs's.
 
-// What an install leaves free on its drive besides the download and the files it unpacks there (T3 FREE_SPACE_MARGIN).
+// What an install leaves free on its drive besides the download and the files it unpacks there.
 export const ANTIGRAVITY_FREE_SPACE_MARGIN=256*1024*1024;
 // How long the new runtime has to start and answer ACP's initialize, as long as a session's start has.
 const START_CHECK_TIMEOUT_MS=90_000;
@@ -113,7 +113,7 @@ function startFailure(error,version){
   return new Error(`The downloaded Google Antigravity ${version} could not start on this machine (${reason}). Nothing was installed.`,{cause:error});
 }
 
-// The new runtime is started once, before it replaces the one in use (T3 AntigravityInstallation validate): it must answer ACP's
+// The new runtime is started once, before it replaces the one in use: it must answer ACP's
 // initialize as antigravity-acp at the version the registry lists. It starts as Antigravity's sessions start it, from its own folder
 // with launchEnv (the profile's launch environment), unpacking itself into a Trebell-owned temp folder that is removed once its
 // process tree is stopped (acp-client.mjs), but in a throwaway home of its own with no key: the check touches neither Antigravity's
@@ -132,8 +132,8 @@ async function checkRuntimeStarts({binary,args,launchEnv,version,spawnProcess}){
   }
 }
 
-// A folder renamed just after a process that ran from it stopped: Windows can hold it a moment longer (T3 retries 10 times at
-// 100 ms). One a running process holds stays held, and the last refusal is thrown.
+// A folder renamed just after a process that ran from it stopped: Windows can hold it a moment longer, so the rename is tried
+// again 10 times, 100 ms apart. One a running process holds stays held, and the last refusal is thrown.
 async function renameSettled(from,to,platform){
   for(let attempt=1;;attempt++){
     try{return await rename(from,to)}
@@ -161,7 +161,7 @@ export async function installAntigravityRuntime({env=process.env,fetchImpl=globa
   if(!entry)throw new Error("Google Antigravity is missing from the ACP registry");
   const distribution=validateDistribution(entry,target),version=distribution.version;
   const root=join(trebellHome(env),"agent-runtimes","antigravity"),installId=randomUUID(),temp=join(root,`.install-${installId}`),archivePath=join(temp,"runtime.zip"),extracted=join(temp,"extracted"),ready=join(temp,"ready"),current=join(root,"current"),previous=join(root,`.previous-${installId}`);
-  // A drive whose free space cannot be read is not checked (T3 skips its check too); a full one still fails as ENOSPC, said below.
+  // A drive whose free space cannot be read is not checked; a full one still fails as ENOSPC, said below.
   const freeOn=path=>{try{return freeBytes(path)}catch{return Infinity}};
   await mkdir(extracted,{recursive:true});
   try{

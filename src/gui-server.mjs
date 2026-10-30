@@ -1177,8 +1177,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   const catalogInstanceId=()=>agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null;
   function catalogAppServer(){
     if(closing)return Promise.reject(new Error("Trebell is shutting down"));
-    // One that has exited, or could not start, starts again with the next request that needs it, as T3 starts Codex again once its
-    // process has exited.
+    // One that has exited, or could not start, starts again with the next request that needs it.
     const child=appServer.child;
     if(appServerStart&&!appServer.error&&!(child&&(child.exitCode!==null||child.signalCode!==null)))return appServerStart;
     // A start that throws (no Codex profile, a Codex home it cannot prepare) leaves a server that says why, as one that never became
@@ -1257,7 +1256,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       childAgentsUsed,childAgentTelemetryComplete:Boolean(baselines?.childAgentTelemetryComplete),
     });
   }
-  // Codex threads use Codex's own goal (T3 runGoalCommand). Trebell mirrors it into the thread's record, next to its own
+  // Codex threads use Codex's own goal. Trebell mirrors it into the thread's record, next to its own
   // guidance and extra budgets, and the renderer gets Codex's goal with those added. Tool-call and child-agent use count
   // from when Trebell saw the goal start; a goal it did not see start reports incomplete telemetry.
   function mirrorCodexGoal(threadId,nativeGoal,{patch={},fresh=false}={}){
@@ -1278,8 +1277,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     return mirrorCodexGoal(threadId,nativeGoal);
   }
   // The goal writes on their way, by thread (setCodexGoal): Codex's own notifications of the steps between stay from the windows,
-  // which get the goal as it ends up. A replaced goal read cleared in the Goal panel, then paused, before its first turn started
-  // (T3 goalUpdatesHeld).
+  // which get the goal as it ends up. A replaced goal read cleared in the Goal panel, then paused, before its first turn started.
   const codexGoalWrites=new Map();
   function codexGoalWriting(threadId){
     codexGoalWrites.set(threadId,(codexGoalWrites.get(threadId)||0)+1);
@@ -1313,7 +1311,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
   }
   // Codex continues an active goal with turns of its own, which never pass Trebell's budget gate. Once a budget only
   // Trebell tracks (time, turns, tool calls, cost) runs out, the goal is paused so Codex stops after the turn that ended.
-  // Codex starts its next goal turn as soon as one ends, so a turn it already started is stopped as T3's Stop does
+  // Codex starts its next goal turn as soon as one ends, so a turn it already started is stopped
   // (pause, then interrupt).
   async function pauseCodexGoalOverBudget(threadId,finishedTurnId,requestUpstream){
     const goal=durableCodexGoal(threadId);if(goal?.status!=="active"||!state.threadMeta(threadId)?.goal?.native)return;
@@ -1842,8 +1840,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       await client.connect();
       const account=await client.request("account/read",{}).catch(()=>null);
       if(account?.requiresOpenaiAuth&&!account?.account)throw new Error("Codex is not authenticated. Run codex login or use Sign in from Agents & models.");
-      // The tier the person's own Codex config runs new threads at (config/read for no folder, so no project's layers, as T3 reads
-      // it), read beside the model list: each model that lists it takes it as its default tier, which the Speed picker shows while
+      // The tier the person's own Codex config runs new threads at (config/read for no folder, so no project's layers), read beside
+      // the model list: each model that lists it takes it as its default tier, which the Speed picker shows while
       // nothing is picked (withConfiguredCodexServiceTier). A Codex that cannot say within 3 s leaves the list as Codex gave it.
       let tierTimer=null;
       const configuredTier=Promise.race([client.request("config/read",{includeLayers:false}).then(answer=>answer?.config?.service_tier??null,()=>null),new Promise(resolve=>{tierTimer=setTimeout(resolve,3000,null)})]).finally(()=>clearTimeout(tierTimer));
@@ -1956,7 +1954,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       try{
         const filePath=remoteEnvironmentProfile(environmentId)?relativePath:join(cwd,relativePath);
         const file=await environmentWorkspaceFile(filePath,12_000,{root:cwd,environments,environmentId});
-        // CLAUDE.md is often a link to AGENTS.md or a copy of it (T3 GitManager): a file that says what one already added says is left out.
+        // CLAUDE.md is often a link to AGENTS.md or a copy of it: a file that says what one already added says is left out.
         const content=String(file.content||"").trim();if(content&&!instructions.some(item=>item.content===content))instructions.push({path:relativePath,content});
       }catch{}
     }
@@ -2193,7 +2191,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
         if(instance.kind==="antigravity"){
           // Antigravity's own sign-in (antigravity-auth.mjs): the agent runs it itself and opens Google's page; Trebell never reads
           // the token it keeps. A sign-in to another method stops the chats open on the one before (the relay's closeRuntimeSessions),
-          // and the answer says how many (stoppedChats). One sign-in at a time (T3: "already in progress").
+          // and the answer says how many (stoppedChats). One sign-in at a time ("already in progress").
           if(mock)return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:"oauth-personal",methodName:"Log in with Google"},agentSnapshot:await agentRuntimes.snapshot()});
           if(antigravitySignIn)throw new Error("Antigravity is already signing in, which can take up to 5 minutes. Finish it in the browser page Antigravity opened, or try again once that sign-in has ended.");
           if(environmentId)throw new Error("Antigravity ACP sign-in is currently supported on the local machine only.");
@@ -3400,8 +3398,8 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
       try{
         const body=await readJsonBody(req,512*1024);const paths=Array.isArray(body.paths)?body.paths:[];
         const result=await environments.validateAttachments(body.environmentId||null,paths),profile=body.environmentId?environments.get(body.environmentId):null;
-        // A message about to go names each document's extracted text, extracted now if its attaching did not (T3 claims a message's
-        // attachments the same way); a remote environment's files are on its host. A send checks its files twice, and the second
+        // A message about to go names each document's extracted text, extracted now if its attaching did not; a remote environment's
+        // files are on its host. A send checks its files twice, and the second
         // check, which comes right after the first, asks for no extraction (extract: false): a send extracts each document once.
         if(!profile||profile.type==="local")for(const [index,file] of result.files.entries())result.files[index]=await withDocumentText(file,{extract:body.extract!==false});
         return json(res,200,result);
@@ -3661,7 +3659,7 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           if(model)codexThreadModels.set(threadId,model);
         }
       }
-      // A thread the window lets go unloads (T3 unloadThread): what "Allow session" allowed in it goes.
+      // A thread the window lets go unloads: what "Allow session" allowed in it goes.
       if(message?.method==="thread/unsubscribe"&&message.params?.threadId)codexSessionApprovals.end(message.params.threadId);
     },
     onServerMessage:(message,route)=>{

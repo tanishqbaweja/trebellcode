@@ -63,7 +63,7 @@ function persistedItem(item,environment){
   return next;
 }
 
-// A thread's title from its first message: one line of at most 50 characters (T3 Code titles a new thread by its first message).
+// A thread's title from its first message: one line of at most 50 characters.
 export function threadTitleFromText(value){
   const message=String(value??"").trim().replace(/\s+/g," ");
   return message?(message.length<=50?message:message.slice(0,50)+"..."):null;

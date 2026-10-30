@@ -34,7 +34,7 @@ export function isCodexApprovalRequest(message){return Boolean(message?.method&&
 
 // The files a Codex file change touches, each {path, kind (add, delete or update), movePath}: a fileChange item's changes
 // ([{path, kind:{type, move_path}}], from its item/started) or a legacy applyPatchApproval's fileChanges ({path: {type, move_path}}).
-// Codex's v2 approval request names no file (T3 21cbec39d: "Modern approval requests omit paths").
+// Codex's v2 approval request names no file.
 export function codexFileChanges(changes){
   const entries=Array.isArray(changes)?changes.map(change=>[change?.path,change?.kind]):changes&&typeof changes==="object"?Object.entries(changes):[];
   return entries.filter(([path])=>typeof path==="string"&&path.trim()).map(([path,kind])=>({

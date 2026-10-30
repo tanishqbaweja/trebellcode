@@ -42,16 +42,16 @@ const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   }),
   claude:Object.freeze({fork:true,rewind:true,compaction:true,mcpInjection:true,languageIntelligence:true,usageReporting:true,runtimeProfileSwitching:true,detachedTasks:true,multiModelFanout:true,delegation:true,steering:true,collaborationModes:true}),
   opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,languageIntelligence:true,usageReporting:true,detachedTasks:true,multiModelFanout:true,delegation:true,steering:true}),
-  // Cursor's plan mode is the composer's Plan mode (T3's interaction mode: plan or agent); Read only runs in its ask mode.
-  // ACP harnesses run their own file and shell tools (T3); only Antigravity reads and writes files through Trebell.
+  // Cursor's plan mode is the composer's Plan mode; Read only runs in its ask mode.
+  // ACP harnesses run their own file and shell tools; only Antigravity reads and writes files through Trebell.
   cursor:Object.freeze({fork:"runtime",mcpInjection:true,detachedTasks:true,multiModelFanout:true,delegation:true,collaborationModes:true}),
-  // Grok compacts with its own /compact command (T3 supportsCompaction). Grok and Antigravity have no rewind of their own: a
-  // revert cuts the thread and starts a fresh session (T3's ACP rollbackThread, canRollbackThread for both).
+  // Grok compacts with its own /compact command. Grok and Antigravity have no rewind of their own: a
+  // revert cuts the thread and starts a fresh session.
   grok:Object.freeze({fork:"runtime",rewind:true,compaction:true,mcpInjection:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
   antigravity:Object.freeze({fork:"runtime",rewind:true,mcpInjection:true,clientFilesystem:true,detachedTasks:true,multiModelFanout:true,delegation:true,videoAttachments:false}),
   // Muse Code takes a message into its running turn (turn/steer), Trebell's MCP servers into its sessions, and reports its tokens,
-  // context and the work it runs past a turn (T3). It compacts with session/compact, and a fork is a thread whose next message starts
-  // a fresh Muse Code session with the earlier messages handed over; it has no rewind (T3: rollback unavailable), as Cursor has none.
+  // context and the work it runs past a turn. It compacts with session/compact, and a fork is a thread whose next message starts
+  // a fresh Muse Code session with the earlier messages handed over; it has no rewind (rollback unavailable), as Cursor has none.
   muse:Object.freeze({fork:true,compaction:true,steering:true,mcpInjection:true,usageReporting:true,contextReporting:true,detachedTasks:true}),
 });
 

@@ -123,7 +123,7 @@ export class AcpClient extends EventEmitter{
   }
 
   // timeoutMs Infinity arms no timer: a prompt runs until the agent answers, the user cancels
-  // or the process exits (T3 runs session/prompt with no timeout).
+  // or the process exits.
   request(method,params={},timeoutMs=this.timeoutMs){
     if(!this.child||this.closed)return Promise.reject(this.terminationError||new Error("ACP runtime is not connected"));
     const id=this.nextId++;
@@ -151,7 +151,7 @@ export class AcpClient extends EventEmitter{
     },timeoutMs);
   }
 
-  // additionalDirectories (ACP) grants the agent folders beyond cwd; T3 sends it on new, load and resume alike.
+  // additionalDirectories (ACP) grants the agent folders beyond cwd; it goes on new, load and resume alike.
   createSession({cwd=this.cwd,mcpServers=[],additionalDirectories=[]}={}){return this.request("session/new",{cwd,mcpServers,...directoriesParam(additionalDirectories)})}
   loadSession({sessionId,cwd=this.cwd,mcpServers=[],additionalDirectories=[],timeoutMs=90_000}={}){return this.request("session/load",{sessionId,cwd,...directoriesParam(additionalDirectories),mcpServers},timeoutMs)}
   resumeSession({sessionId,cwd=this.cwd,mcpServers=[],additionalDirectories=[],timeoutMs=90_000}={}){return this.request("session/resume",{sessionId,cwd,...directoriesParam(additionalDirectories),mcpServers},timeoutMs)}
@@ -242,7 +242,7 @@ export class AcpClient extends EventEmitter{
   }
 
   // A listener that throws on a notification (an update in a newer or unexpected shape) drops that one notification, and the client
-  // reads on, as T3 drops one it cannot decode. The throw was an unhandled rejection, which ends a Trebell server.
+  // reads on. The throw was an unhandled rejection, which ends a Trebell server.
   #dispatch(event,payload,method){
     try{this.emit(event,payload)}catch(error){this.#dropped(method,error)}
   }

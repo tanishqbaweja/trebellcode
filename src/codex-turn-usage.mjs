@@ -1,7 +1,7 @@
 // A Codex turn's token usage across all its model requests. Each thread/tokenUsage/updated carries the thread's running total
 // (total) and the newest request's usage (last), and a turn that calls tools makes a request after each, so recording last kept only
-// one request of the turn. A running turn counts the growth of the thread's total instead, as T3 Code does
-// (CodexTurnTokenUsage.ts): last when there is no earlier total, or when a counter went down (the thread loaded again, or compacted),
+// one request of the turn. A running turn counts the growth of the thread's total instead: last when there is no earlier total,
+// or when a counter went down (the thread loaded again, or compacted),
 // and an update for a turn that is not running only moves the thread's total along. The growth counts only from a total of the same
 // turn: a thread runs one turn at a time, so two totals of one turn hold nothing between them but its own requests, while the total
 // before a turn's first one can be from before a gap in what this server got (every window that showed the thread closed, and Codex

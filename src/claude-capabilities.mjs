@@ -8,7 +8,7 @@ let claudeAgentSdk=null;
 const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent-sdk");
 
 // Claude Code reports its models, slash commands, agents, account and plan usage through the SDK initialize handshake.
-// The probe (as T3 Code's ClaudeProvider does it) offers a prompt that never yields, so no message reaches the model API:
+// The probe offers a prompt that never yields, so no message reaches the model API:
 // the CLI finishes its local initialization, the answer is read, and the process is stopped.
 export const CLAUDE_CAPABILITIES_TTL_MS=5*60_000;
 export const CLAUDE_CAPABILITIES_TIMEOUT_MS=25_000;
@@ -78,7 +78,7 @@ export async function probeClaudeCapabilities({command,cwd=null,env={},spawnProc
   }
 }
 
-// Claude Code answers signed out with tokenSource "none" and no API key, email or plan (T3 Code's claudeAuthStatus). Another API
+// Claude Code answers signed out with tokenSource "none" and no API key, email or plan. Another API
 // backend (Bedrock, Vertex, a gateway) or a custom ANTHROPIC_BASE_URL signs in where these fields cannot show it.
 function claudeProbeSignedOut(account,env={}){
   if(!account||typeof account!=="object"||account.tokenSource!=="none")return false;
@@ -93,7 +93,7 @@ function signInOf(env){
   const key=String(env?.ANTHROPIC_API_KEY||"");
   return key?"api-key:"+createHash("sha256").update(key).digest("hex").slice(0,16):"sign-in";
 }
-// A probe is reused only when it read what it was asked for from a signed-in account (T3 Code's ClaudeDriver): one whose usage
+// A probe is reused only when it read what it was asked for from a signed-in account: one whose usage
 // read failed (what the Usage card says it could not read) and one Claude answered signed out are asked again next time.
 function keptClaudeProbe(value,env){
   if(value?.usageError||(value?.usage&&claudeUsageResponseToLimits(value.usage).unavailable?.reason==="probeFailed"))return false;

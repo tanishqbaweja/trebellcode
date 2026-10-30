@@ -39,7 +39,7 @@ function insideOwnPackages(entry, platform, root) {
   return candidate === own || candidate.startsWith(own + path.sep);
 }
 
-// Codex runs from the user's own installed CLI, like T3 Code's default `codex` binary path: the first `codex` on PATH
+// Codex runs from the user's own installed CLI, by default the first `codex` on PATH
 // (on Windows the native executable behind npm's launcher, which Node can spawn without a shell), then npm's global
 // prefix when a desktop launch has a stale PATH. TREBELL_CODEX_BIN overrides for tests and custom builds. When nothing is
 // installed the bare command name is returned, so spawning it reports that Codex is not installed.

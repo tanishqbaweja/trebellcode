@@ -1,8 +1,8 @@
 // The earlier conversation of a thread, handed to the fresh session that takes over when a harness no longer has the thread's
-// conversation, or that a fork starts (T3 Code's full_thread_summary handoff, in Trebell's words). Pure: the relay fences the text
+// conversation, or that a fork starts. Pure: the relay fences the text
 // into the prompt's working context, where fencedContextValue escapes it.
 
-// T3's default handoff cap of 16k tokens, counted as UTF-8 bytes: one byte per token errs on the safe side.
+// The default handoff cap of 16k tokens, counted as UTF-8 bytes: one byte per token errs on the safe side.
 export const THREAD_HISTORY_BUDGET=16_000;
 // A command's output keeps its end, where a failure shows.
 export const HISTORY_COMMAND_OUTPUT_LIMIT=2_000;
@@ -69,7 +69,7 @@ export function threadHistoryHeader({harness="The harness",included=0,total=0,fo
   ].join("\n");
 }
 
-// Picks what fits the budget whole, in T3's order: the latest user message, the latest reply, the first user message, then the
+// Picks what fits the budget whole, in this order: the latest user message, the latest reply, the first user message, then the
 // rest from newest to oldest. An entry too large for what is left is omitted whole and counted. The picked entries keep their order.
 export function selectThreadHistory(entries=[],{budget=THREAD_HISTORY_BUDGET}={}){
   const list=Array.isArray(entries)?entries:[],chosen=new Set();let remaining=budget;

@@ -20,14 +20,14 @@ import { runtimeHarnessLabel, runtimeInstructions } from "./runtime-instructions
 import { SessionRefusalError } from "./session-refusal.mjs";
 
 // Generic ACP session used for Cursor, Grok Build, Antigravity and remote-environment OpenCode,
-// aligned with T3 Code's AcpSessionRuntime and its Cursor/Grok/Antigravity flavors.
+// one runtime for all of them, with what differs for Cursor, Grok and Antigravity kept in it.
 
 const CANCELLED=Symbol("cancelled");
 // Updates that describe the session rather than a turn; they pass while a session starts or loads.
 const METADATA_UPDATES=new Set(["available_commands_update","config_option_update","current_mode_update","session_info_update"]);
 // Turn updates after which Cursor's next text is a new reply message.
 const CURSOR_MESSAGE_BREAKS=new Set(["tool_call","tool_call_update","agent_thought_chunk","plan"]);
-// Grok and Antigravity resume without replaying history; the rest load (T3 resumeMethod).
+// Grok and Antigravity resume without replaying history; the rest load.
 const RESUME_FIRST=new Set(["grok","antigravity"]);
 // The model ids Trebell used before real model lists; they mean "the harness's current model".
 const MODEL_ALIASES={grok:"grok-build",cursor:"cursor-default",antigravity:"antigravity-default"};
@@ -35,13 +35,13 @@ const TOOL_STATE_LIMIT=1000;
 const GROK_CANCEL_META=Object.freeze({cancelTrigger:"ctrl_c"});
 const GROK_TASK_PROMPT_PREFIX="task-completed-";
 const GROK_RATE_LIMIT_CODE=-32003;
-// ACP's auth_required error: the harness is signed out (T3 isAcpAuthenticationRequired).
+// ACP's auth_required error: the harness is signed out.
 const ACP_AUTH_REQUIRED=-32000;
 // After Grok's prompt_complete, how long to wait for the session/prompt answer that carries the detail.
 const GROK_COMPLETION_GRACE_MS=3000;
 const GROK_STOP_WAIT_MS=15_000;
 const GROK_ALLOW_EDITS_SESSION="allow-edits-session";
-// T3 hides these: permission changes go through Trebell, and context prints nothing over ACP.
+// Hidden from the command list: permission changes go through Trebell, and context prints nothing over ACP.
 const GROK_HIDDEN_COMMANDS=new Set(["always-approve","context"]);
 const GROK_SESSION_NOTIFICATIONS=new Set(["x.ai/session_notification","_x.ai/session_notification","_x.ai/session/update"]);
 const GROK_PROMPT_COMPLETE=new Set(["x.ai/session/prompt_complete","_x.ai/session/prompt_complete"]);
@@ -54,7 +54,7 @@ function inside(root,candidate){
   return rel===""||(!rel.startsWith("..")&&!isAbsolute(rel));
 }
 
-// T3 AntigravityClientFiles: a path the harness asks for resolves through links, its last part included, before it is
+// A path the harness asks for resolves through links, its last part included, before it is
 // checked against the session's roots (the workspace and Trebell's attachments folder), so a link inside the workspace
 // cannot read or write through to a file outside them. A missing file (a new write) is checked by its nearest existing
 // folder; an entry that exists but does not resolve, like a dangling link, is refused rather than written through.
@@ -77,22 +77,22 @@ async function clientFilePath(roots,path){
 
 function text(value){return String(value??"").trim()}
 
-// T3 buildAntigravityPrompt (532023a24): what goes to Antigravity as content follows the promptCapabilities its initialize advertises,
+// What goes to Antigravity as content follows the promptCapabilities its initialize advertises,
 // up to 50 MiB a message: BMP, JPEG, PNG and WebP images up to 10 MiB as images (image), the audio Trebell names by its saved path up
 // to 20 MiB as audio after the line that names it (audio), and a UTF-8 text file up to 1 MiB as embedded content and a PDF as a
 // document link (embeddedContext). Antigravity 1.2.1 refuses to open any path outside its workspace folders, even one granted with
 // additionalDirectories, so a pasted text or an uploaded file in Trebell's attachments folder is unreadable as a link. An image it
-// takes that does not fit refuses the message, as T3 refuses it; any other image is named by its saved path, and other files stay links.
+// takes that does not fit refuses the message; any other image is named by its saved path, and other files stay links.
 const ANTIGRAVITY_TEXT_EXTENSIONS=new Set([".txt",".md",".mdx",".json",".jsonl",".yaml",".yml",".toml",".xml",".csv",".tsv",".js",".jsx",".mjs",".cjs",".ts",".tsx",".html",".css",".scss",".less",".py",".rs",".go",".java",".kt",".swift",".c",".h",".cc",".cpp",".hpp",".cs",".rb",".php",".sh",".bash",".zsh",".sql",".graphql",".svelte",".vue",".log",".diff",".patch",".ini",".conf"]);
 const ANTIGRAVITY_TEXT_MIME={".json":"application/json",".jsonl":"application/jsonl",".md":"text/markdown",".mdx":"text/markdown",".html":"text/html",".css":"text/css",".csv":"text/csv",".xml":"application/xml",".yaml":"application/yaml",".yml":"application/yaml"};
 const ANTIGRAVITY_IMAGE_TYPES=new Set(["image/bmp","image/jpeg","image/png","image/webp"]);
-// The composer's audio (App.jsx inputsFor), all of T3's audio types, and T3's audio/aac, which the composer sends as a file link.
+// Every audio type Trebell names: the composer's (App.jsx inputsFor) and audio/aac, which the composer sends as a file link.
 const ANTIGRAVITY_AUDIO_MIME={".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"audio/mp4",".ogg":"audio/ogg",".flac":"audio/flac",".aac":"audio/aac"};
 const ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES=1024*1024,ANTIGRAVITY_MAX_IMAGE_BYTES=10*1024*1024,ANTIGRAVITY_MAX_AUDIO_BYTES=20*1024*1024,ANTIGRAVITY_MAX_CONTENT_BYTES=50*1024*1024;
 // An image Antigravity takes that does not fit in the message, said by its name with what to do; Antigravity is asked nothing.
 const antigravityImageTooLarge=path=>new SessionRefusalError(`The attached image "${attachmentName(path)}" is too large for one Antigravity message, which takes images up to 10 MiB and 50 MiB of attachments in all. Send it in a message of its own.`);
-// A document's link is followed by the line that names it with the file its text was extracted to (agent-relay acpPrompt), as T3
-// names every attachment in the prompt's text, so Cursor and Grok read the text with their own tools.
+// A document's link is followed by the line that names it with the file its text was extracted to (agent-relay acpPrompt), and
+// every attachment is named in the prompt's text, so Cursor and Grok read the text with their own tools.
 function acpDocumentLine(part){
   const path=fileUriPath(part.uri)||String(part.uri||"");
   return {type:"text",text:`[Attached file "${part.name||basename(path)}" is saved at: ${path}${textExtractedTo(part)}]`};
@@ -107,15 +107,14 @@ export async function antigravityPromptParts(parts,promptCapabilities={}){
     if(part?.type==="image"){
       const path=part[PROMPT_IMAGE_PATH]||"",size=Buffer.byteLength(String(part.data||""),"base64");
       if(can.image===true&&ANTIGRAVITY_IMAGE_TYPES.has(String(part.mimeType||"").toLowerCase())){
-        // Named by a path Antigravity cannot open, an image that does not fit would never reach the model (T3: "still rejects images
-        // when the native budget is full").
+        // Named by a path Antigravity cannot open, an image that does not fit would never reach the model, so the message is refused.
         if(!fits(size,ANTIGRAVITY_MAX_IMAGE_BYTES))throw antigravityImageTooLarge(path);
         total+=size;out.push(part);
       }else out.push({type:"text",text:path?`[Attached image "${basename(path)}" is saved at: ${path}]`:"[Attached image could not be sent: Trebell Code has no saved file for it]"});
       continue;
     }
-    // An audio file keeps the line that names it (agent-relay acpPrompt), and the audio itself follows when Antigravity takes audio, as
-    // T3 names every attachment in the text and adds the content after it. Base64 audio travels on one JSON-RPC line: 20 MiB of audio
+    // An audio file keeps the line that names it (agent-relay acpPrompt), and the audio itself follows when Antigravity takes audio:
+    // every attachment is named in the text, with its content after it. Base64 audio travels on one JSON-RPC line: 20 MiB of audio
     // is a line of about 27 MB.
     // An .aac comes as a file link, which stays and names it; its audio follows the same way.
     const linked=part?.type==="resource_link"?fileUriPath(part.uri):null;
@@ -150,7 +149,7 @@ export async function antigravityPromptParts(parts,promptCapabilities={}){
         if(decoded!==null&&!decoded.includes("\0")){total+=bytes.length;embedded={type:"resource",resource:{uri:pathToFileURL(path).href,mimeType:ANTIGRAVITY_TEXT_MIME[extension]||"text/plain",text:decoded}}}
       }
     }else if(path&&extension===".pdf"){
-      // A PDF goes as a document link with its type, as T3 sends it, and counts toward the message's content.
+      // A PDF goes as a document link with its type, and counts toward the message's content.
       const info=await stat(path).catch(()=>null);
       if(info?.isFile()&&fits(info.size,ANTIGRAVITY_MAX_CONTENT_BYTES)){total+=info.size;embedded={...part,mimeType:"application/pdf"}}
     }
@@ -159,8 +158,8 @@ export async function antigravityPromptParts(parts,promptCapabilities={}){
   return out;
 }
 
-// The client services each harness is offered, as T3 offers them: ACP agents run their own file and shell tools behind
-// their own permission requests. Only Antigravity reads and writes files through the client (T3 AntigravityAcpSupport);
+// The client services each harness is offered: ACP agents run their own file and shell tools behind
+// their own permission requests. Only Antigravity reads and writes files through the client;
 // no harness gets the client's terminal (Grok would run its whole command line through it as the program). Cursor lists
 // base model ids with per-model options only for clients that can show them.
 export function acpClientCapabilities(runtime){
@@ -181,13 +180,13 @@ function optionOfKind(options,kind,optionId=undefined){
   return (Array.isArray(options)?options:[]).find(option=>option?.kind===kind&&text(option.optionId)&&(optionId===undefined||text(option.optionId)===optionId))?.optionId||null;
 }
 
-// Reads follow the sandbox alone and never ask (T3 acpReadDisposition): every Trebell mode lets the agent read,
+// Reads follow the sandbox alone and never ask: every Trebell mode lets the agent read,
 // Read Only included, so ACP read, search and think requests are allowed unasked. Other kinds follow the mode.
 const ACP_READ_KINDS=new Set(["read","search","think"]);
 
 // The agent's allow-once answer when Trebell's policy allows the request; allow-always only when the
 // agent offers no allow-once, because an always answer can outlive the session (Grok saves it for
-// the whole project). A denial uses reject-once for the same reason (T3 selectAutoApprovedPermissionOption).
+// the whole project). A denial uses reject-once for the same reason.
 export function acpPermissionChoice(options=[],mode="supervised",kind=null,policyInput={}){
   const disposition=ACP_READ_KINDS.has(kind)?"allow":permissionDisposition(mode,normalizePermissionKind(kind),{readOnlyAllowsRead:false,...policyInput});
   if(disposition==="allow")return optionOfKind(options,"allow_once")||optionOfKind(options,"allow_always");
@@ -212,7 +211,7 @@ function securityWarning(option){
   return value.length>512?value.slice(0,509)+"...":value;
 }
 
-// The approval choices a request can honor, in T3's wording for each harness (grokApprovalOptions,
+// The approval choices a request can honor, in the wording Trebell gives each harness's choices (grokApprovalOptions,
 // antigravityApprovalOptions); other agents keep their own option names.
 export function acpApprovalOptions(runtime,options=[]){
   const list=Array.isArray(options)?options:[];
@@ -242,7 +241,7 @@ export function acpApprovalOptions(runtime,options=[]){
 }
 
 // fs/read_text_file: the file as it is unless a range is asked for; ranges split on "\n" only so
-// Windows line endings survive (T3 AntigravityClientFiles).
+// Windows line endings survive.
 export function acpFileSlice(content,line=null,limit=null){
   const source=String(content??"");
   if(line==null&&limit==null)return source;
@@ -264,8 +263,8 @@ export function acpCommandsFromAvailable(list=[],runtime=null){
   return out;
 }
 
-// A harness runs a slash command only when the message starts with it (Grok: "other commands must start the message"), and
-// T3 sends the user's text as the whole prompt. The relay puts Trebell's working context before the user's text, so when that
+// A harness runs a slash command only when the message starts with it (Grok: "other commands must start the message"). The
+// relay puts Trebell's working context before the user's text, so when that
 // text starts with a command the harness lists, the user's parts go alone, without the context or the runtime notes. A lone
 // slash text (the relay's /compact) is always sent as a command. Returns the parts to send, or null for an ordinary prompt.
 export function acpSlashCommandPrompt(parts=[],commandNames=new Set()){
@@ -289,7 +288,7 @@ function grokAnswerValues(answer){
   return (Array.isArray(answer)?answer:[answer]).map(value=>typeof value==="string"?value.trim():"").filter(Boolean);
 }
 
-// T3 makeXAiAskUserQuestionResponse: answers keyed by question text with the chosen option labels;
+// The answer to Grok's questions: keyed by question text with the chosen option labels;
 // free text goes to annotations as notes under the "Other" label.
 export function grokQuestionResponse(questions=[],answers={}){
   const out={},annotations={};
@@ -316,7 +315,7 @@ function boundedDetail(value){
 }
 
 // Grok settles a failed prompt with prompt_complete (stopReason rate_limit or error) before or
-// with its session/prompt error (T3 xAiPromptFailure).
+// with its session/prompt error.
 export function grokCompletionFailure(notice){
   const reason=text(notice?.stopReason);
   if(reason==="rate_limit"){
@@ -352,7 +351,7 @@ export class AcpAgentSession{
     // How the profile signs in (harness-auth.mjs): "api-key" signs a harness that asks in with its key method, else its own login.
     this.authMethod=authMethod==="api-key"?"api-key":"sign-in";
     // Trebell saves pasted text and uploads outside the workspace. Antigravity checks every path against its own allowed
-    // folders, so T3 grants it the attachments folder (additionalDirectories) and serves its client files there too.
+    // folders, so the session grants it the attachments folder (additionalDirectories) and serves its client files there too.
     this.attachmentsDir=runtime==="antigravity"&&!remoteIo&&text(attachmentsDir)?resolve(attachmentsDir):null;
     this.permissionMode=normalizePermissionMode(permissionMode);this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.onElicitation=onElicitation;this.onWakeTurn=onWakeTurn;this.version=version;
     this.argsForPermission=typeof argsForPermission==="function"?argsForPermission:null;this.runTempRoot=runTempRoot||null;
@@ -360,7 +359,7 @@ export class AcpAgentSession{
     this.mcpServers=Array.isArray(mcpServers)?mcpServers.map(server=>({...server,args:[...(server.args||[])],env:(server.env||[]).map(item=>({...item}))})):[];
     this.client=null;this.sessionId=null;this.initializeResult=null;this.sessionSetup=null;this.model=null;
     // Whether the harness still has Trebell's runtime notes, and the model they named; compactions counts the compactions it finished,
-    // so a prompt that one overtook does not count its notes as kept (T3 compactionMarkers).
+    // so a prompt that one overtook does not count its notes as kept.
     this.runtimeContextSent=false;this.runtimeContextModel=null;this.compactions=0;
     this.label=runtimeHarnessLabel(runtime);
     this.dead=false;this.deadError=null;this.closing=false;this.starting=false;this.settingModel=false;this.loading=false;
@@ -426,7 +425,7 @@ export class AcpAgentSession{
   #startFailure(error){return acpStartFailure(this.runtime,this.label,error,this.env)}
 
   // ACP's auth_required (-32000) from session/new, load or resume: the harness signs in once with its own advertised method, and the
-  // same setup runs once more (T3 authenticateAfterRequired). Without such a method, or still signed out after it, the start fails as
+  // same setup runs once more. Without such a method, or still signed out after it, the start fails as
   // it is, and the relay adds its check's advice.
   async #setUp(client,providerSessionId){
     const setUp=()=>providerSessionId?this.#resume(client,providerSessionId):this.#create(client);
@@ -452,7 +451,7 @@ export class AcpAgentSession{
 
   // The method a signed-out harness signs in with, by how its profile signs in (Settings' choice), never by what its environment
   // holds: Grok its xAI key method on an API key (its launch then has XAI_API_KEY), else its cached `grok login`, only when its
-  // initialize lists it (T3 resolveGrokAuthMethodId). Antigravity its Gemini key method on an API key, listed or not, as T3 signs in
+  // initialize lists it. Antigravity its Gemini key method on an API key, listed or not: it signs in
   // with the method it is set to; on Sign in none here (its own sign-in runs from Settings, in the browser). Any other harness the
   // first method it runs itself (type agent, or none given), such as Cursor's cursor_login.
   #signInMethod(){
@@ -466,10 +465,10 @@ export class AcpAgentSession{
   // (prepareAntigravityHome) and asked for once it says it needs one (#signInMethod).
   #apiKeyMethod(){return acpApiKeyMethod({runtime:this.runtime,authMethod:this.authMethod,env:this.env,initializeResult:this.initializeResult})}
 
-  // T3 keeps the id it asked for: session/load and session/resume answers carry no sessionId.
+  // The session keeps the id it asked for: session/load and session/resume answers carry no sessionId.
   // A conversation the harness refuses to load or resume is a lost session (HarnessSessionLostError): the relay continues the
   // thread in one fresh session with its earlier messages handed over, and the turn says so. A harness that asks to sign in
-  // (ACP auth_required, as T3 reads it), which #setUp signs in once, or whose process ended cannot run at all, and fails as it is.
+  // (ACP auth_required), which #setUp signs in once, or whose process ended cannot run at all, and fails as it is.
   async #resume(client,sessionId){
     const caps=this.initializeResult?.agentCapabilities||{},canLoad=caps.loadSession===true,canResume=caps.sessionCapabilities?.resume!=null;
     const method=canResume&&(RESUME_FIRST.has(this.runtime)||!canLoad)?"resume":canLoad?"load":null;
@@ -509,11 +508,11 @@ export class AcpAgentSession{
     await this.#applyEffort();
     // A harness slash command goes alone: Trebell's context or runtime notes beside it would make it an ordinary prompt.
     const given=Array.isArray(content)?content:[],commandParts=acpSlashCommandPrompt(given,this.commandNames),command=Boolean(commandParts);
-    // A lone /compact, the relay's or the person's, compacts the harness's context and the runtime notes in it (T3: its text alone).
+    // A lone /compact, the relay's or the person's, compacts the harness's context and the runtime notes in it (its text alone).
     const compacting=command&&commandParts.length===1&&text(commandParts[0]?.text)==="/compact";
     const parts=this.runtime==="antigravity"&&!this.remoteIo?await antigravityPromptParts(commandParts||given,this.initializeResult?.agentCapabilities?.promptCapabilities):acpDocumentTextParts(commandParts||given);
     // The notes go again once the harness compacted them away, or once the session's model, a switch of Trebell's or one the harness
-    // reports, is not the one they named (T3 names the turn's model on every prompt).
+    // reports, is not the one they named.
     const model=this.#modelLabel();
     if(!command&&(!this.runtimeContextSent||this.runtimeContextModel!==model))parts.push({type:"text",text:runtimeInstructions({harness:this.label,model})});
     let markDone;const done=new Promise(resolve=>{markDone=resolve});
@@ -527,7 +526,7 @@ export class AcpAgentSession{
       // next ordinary prompt carries them again; a compaction that came during this prompt took the ones it carried.
       if(compacting&&result?.stopReason!=="cancelled"&&result?.stopReason!=="refusal")this.#compacted();
       else if(!command&&this.compactions===compactions){this.runtimeContextSent=true;this.runtimeContextModel=model}
-      // Cursor streams a lost backend connection as the reply and ends the turn normally (T3 CursorTransportFailure). The failure
+      // Cursor streams a lost backend connection as the reply and ends the turn normally. The failure
       // carries that last message, the dump with its stack lines, so the relay keeps as the turn's reply only what came before it.
       const failure=active.transport?.failure;
       if(failure&&result?.stopReason!=="cancelled")throw Object.assign(new Error(failure),{code:"CURSOR_TRANSPORT_FAILURE",dump:active.message||""});
@@ -569,7 +568,7 @@ export class AcpAgentSession{
   }
 
   // Stop: answer every waiting approval or question as cancelled, then session/cancel. Grok gets
-  // its Ctrl+C marker and a restart once the turn settles, so its background tasks end too (T3).
+  // its Ctrl+C marker and a restart once the turn settles, so its background tasks end too.
   cancel(){
     if(!this.client||!this.sessionId)return;
     const active=this.activePrompt;if(active)active.cancelled=true;
@@ -598,7 +597,7 @@ export class AcpAgentSession{
   // The model settings the user picked in the composer (Cursor's context size or thinking switch), by option id; a setting
   // with no pick stays as Cursor has it.
   setModelOptions(options){this.modelOptions=normalizeModelOptionValues(options)}
-  // The composer's Plan mode for Cursor (T3 interactionMode): a Plan turn runs in Cursor's plan mode, any other in its agent mode.
+  // The composer's Plan mode for Cursor: a Plan turn runs in Cursor's plan mode, any other in its agent mode.
   setCollaborationMode(mode){this.collaborationMode=text(mode).toLowerCase()==="plan"?"plan":"default"}
 
   async setModel(model){
@@ -614,8 +613,7 @@ export class AcpAgentSession{
     return result;
   }
 
-  // The model a thread runs on, per harness (T3 applyGrokAcpModelSelection, ACP-era
-  // applyCursorAcpModelSelection, applyAntigravityAcpModelSelection, generic setModel).
+  // The model a thread runs on, applied in the way each harness takes a model.
   async #applyModel(requested){
     const current=acpConfigSelect(this.sessionSetup,"model");
     if(this.runtime==="grok"){
@@ -676,7 +674,7 @@ export class AcpAgentSession{
     if(this.runtime==="cursor")return this.#applyCursorOptions();
   }
 
-  // Cursor's per-model options after its model (T3 resolveCursorAcpConfigUpdates): the effort option (effort, reasoning or
+  // Cursor's per-model options after its model: the effort option (effort, reasoning or
   // reasoning_effort) when an effort is chosen, the Fast switch once a turn has named a speed, and each other setting the
   // user picked (context, thinking) by its id, when the model offers it.
   async #applyCursorOptions(){
@@ -710,8 +708,8 @@ export class AcpAgentSession{
     if(updated&&String(updated.currentValue??"")!==String(value))this.sessionSetup={...this.sessionSetup,configOptions:(this.sessionSetup.configOptions||[]).map(entry=>entry===updated?{...entry,currentValue:value}:entry)};
   }
 
-  // The mode each turn runs in: Antigravity's from the access level (T3 antigravityPermissionMode), Cursor's from the
-  // composer's Plan mode (T3: plan or agent), OpenCode's from the chosen agent, with Read only forcing the harness's
+  // The mode each turn runs in: Antigravity's from the access level, Cursor's from the
+  // composer's Plan mode (plan or agent), OpenCode's from the chosen agent, with Read only forcing the harness's
   // read-only mode.
   #targetMode(agent){
     const {choices}=acpConfigSelect(this.sessionSetup,"mode");if(!choices.length||this.runtime==="grok")return null;
@@ -758,11 +756,11 @@ export class AcpAgentSession{
   #sessionUpdate(params){
     const update=params?.update&&typeof params.update==="object"?params.update:{},type=text(update.sessionUpdate);
     if(params?._meta?.isReplay===true)return;
-    // A load replays the conversation; only session metadata passes while starting or loading (T3).
+    // A load replays the conversation; only session metadata passes while starting or loading.
     if((this.starting||this.loading)&&!METADATA_UPDATES.has(type))return;
     if(type==="config_option_update"&&Array.isArray(update.configOptions))this.sessionSetup=acpSetupWithConfigOptions(this.sessionSetup,update.configOptions);
     if(type==="current_mode_update"&&text(update.currentModeId))this.sessionSetup=acpSetupWithValue(this.sessionSetup,"mode",text(update.currentModeId));
-    // A compaction the harness reports finished, its own or a /compact's (T3 marks it on the completed compaction item).
+    // A compaction the harness reports finished, its own or a /compact's.
     if(type==="compaction_update"&&text(update.status)==="completed")this.#compacted();
     // Grok answers a finished background task in a turn of its own, tagged task-completed-*.
     const promptId=params?._meta?.promptId;
@@ -772,13 +770,13 @@ export class AcpAgentSession{
     // told before the update goes on, so the delivery is recorded ahead of the turn's first step.
     if(this.activePrompt&&!METADATA_UPDATES.has(type))this.#promptTaken(this.activePrompt);
     // A tool frame joins its call's state only once the relay has taken it: one the relay throws on is dropped whole (acp-client.mjs),
-    // as T3 drops an update it cannot decode, so the call's next updates do not bring its fields back and are not dropped for them.
+    // so the call's next updates do not bring its fields back and are not dropped for them.
     const tool=this.#toolState(update,type);
     this.onUpdate?.(tool?{...params,update:{...acpToolFrame(tool.merged),sessionUpdate:type}}:this.#decorate(params,update,type));
     if(tool)this.#keepTool(tool.id,tool.merged);
   }
 
-  // A tool frame merged into its call's last state (T3 mergeToolCallState); null for any other update and for a frame with no call id.
+  // A tool frame merged into its call's last state; null for any other update and for a frame with no call id.
   #toolState(update,type){
     if(type!=="tool_call"&&type!=="tool_call_update")return null;
     const id=text(update.toolCallId);
@@ -789,7 +787,7 @@ export class AcpAgentSession{
     if(this.tools.size>TOOL_STATE_LIMIT)this.tools.delete(this.tools.keys().next().value);
   }
 
-  // Each Cursor reply message is read on its own for a lost-connection dump (T3 656f3f409): a tool call, a thought or a plan ends
+  // Each Cursor reply message is read on its own for a lost-connection dump: a tool call, a thought or a plan ends
   // the message before it, so the next text starts a new one, and the end of the prompt reads only the last. Session metadata ends none.
   // The message's text is kept beside its detector (active.message) for a failure to carry.
   #watchCursorMessage(active,type,update){
@@ -808,7 +806,7 @@ export class AcpAgentSession{
   #notification(message){
     const method=text(message?.method),params=message?.params||{};
     if(method==="elicitation/complete"){this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"elicitation_complete",elicitationId:params.elicitationId||null}});return}
-    // Cursor's todo list also arrives as a notification (T3's ACP-era adapter handles it as one).
+    // Cursor's todo list also arrives as a notification.
     if(this.runtime==="cursor"&&method==="cursor/update_todos"){this.#emitTodos(params?.todos,params?.merge===true);return}
     if(this.runtime!=="grok")return;
     if(GROK_PROMPT_COMPLETE.has(method)){
@@ -860,10 +858,10 @@ export class AcpAgentSession{
 
   async #permission(params){
     const options=Array.isArray(params?.options)?params.options:[],toolCall=params?.toolCall||{};
-    // Antigravity asks its multiple-choice questions through the permission method (T3 AntigravityProtocol).
+    // Antigravity asks its multiple-choice questions through the permission method.
     if(this.runtime==="antigravity"&&text(toolCall.toolCallId).startsWith("interaction_"))return this.#antigravityQuestion(params,options);
     const kind=toolCall.kind??params?.kind??null;
-    // In Grok's Auto mode Grok decides routine actions itself; whatever it asks about goes to the user (T3).
+    // In Grok's Auto mode Grok decides routine actions itself; whatever it asks about goes to the user.
     const askUser=this.runtime==="grok"&&this.permissionMode==="auto";
     const automatic=askUser?null:acpPermissionChoice(options,this.permissionMode,kind,{action:toolCall.title||"session/request_permission",rawInput:toolCall.rawInput||params,workspace:this.cwd});
     if(automatic)return selected(automatic);
@@ -872,7 +870,7 @@ export class AcpAgentSession{
     return optionId?selected(optionId):CANCELLED_OUTCOME;
   }
 
-  // Only one of the offered choices answers Antigravity (T3 extractAntigravityUserInputQuestion), so the question takes no words of
+  // Only one of the offered choices answers Antigravity, so the question takes no words of
   // the person's own, and each choice carries its option id as its value, so two choices of one name stay apart. An id offered twice
   // is one choice.
   async #antigravityQuestion(params,options){
@@ -934,7 +932,7 @@ export class AcpAgentSession{
 
   async #writeAllowed(params){
     if(this.permissionMode==="read-only")return false;
-    // Antigravity gates every write behind session/request_permission already (T3 AntigravityClientFiles).
+    // Antigravity gates every write behind session/request_permission already.
     if(this.runtime==="antigravity")return true;
     const options=[{kind:"allow_once",optionId:"allow",name:"Allow"},{kind:"reject_once",optionId:"reject",name:"Reject"}];
     const automatic=acpPermissionChoice(options,this.permissionMode,"edit",{action:"Write file",rawInput:params,workspace:this.cwd,requestedPath:params.path});
@@ -950,7 +948,7 @@ export class AcpAgentSession{
   }
 
   async #clientRequest(method,params){
-    // A file or terminal request the harness was not offered is refused, as T3 refuses it; the harness does that work itself
+    // A file or terminal request the harness was not offered is refused; the harness does that work itself
     // (OpenCode's ACP server, for one, also writes an approved edit through the client and writes it itself when refused).
     if(!offeredClientService(this.#clientCapabilities(),method))throw Object.assign(new Error(`${this.label} was not offered ${method} by Trebell; it runs its own file and shell tools`),{code:-32601});
     if(method==="fs/read_text_file"){

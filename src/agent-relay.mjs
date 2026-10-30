@@ -86,15 +86,15 @@ function textOfInput(input=[]){return input.filter(item=>item?.type==="text").ma
 // a stored message (native-agent-session itemText), so what the model reads of a thread is as before.
 const FILE_INPUTS=new Set(["localImage","localAudio","mention"]);
 function fileInputs(input=[]){return (Array.isArray(input)?input:[]).filter(item=>FILE_INPUTS.has(item?.type)&&item.path).map(item=>({type:item.type,...(item.name?{name:String(item.name)}:{}),path:String(item.path)}))}
-// A new thread is listed by its first message until it is renamed, as T3 Code seeds a thread's title (deriveThreadTitleSeed: the
-// message's text, else its first image) and as Codex lists its own threads.
+// A new thread is listed by its first message until it is renamed (the message's text, else its first image), as Codex lists
+// its own threads.
 export function agentThreadTitleSeed(input=[],text=textOfInput(Array.isArray(input)?input:[])){
   const message=threadTitleFromText(text);if(message)return message;
   const image=(Array.isArray(input)?input:[]).find(item=>item?.type==="localImage"||item?.type==="image");
   const name=String((image?.path?basename(String(image.path)):image?.name)||"").trim().replace(/\s+/g," ");
   return name?threadTitleFromText("Image: "+name):null;
 }
-// Text a harness writes after a tool call starts a new paragraph, as T3 Code starts a new assistant message there; without the
+// Text a harness writes after a tool call starts a new paragraph; without the
 // break a turn's text ran together (the live tour's Cursor reply "…report the output.```" met the command output's code fence).
 export function agentTextAfterToolCall(session,text){
   if(!text||!session)return text;
@@ -125,7 +125,7 @@ export function agentPermissionProfilePatch(params={}){
     ||Object.prototype.hasOwnProperty.call(params,"sandboxPolicy");
   return hasPolicy?{permissionProfile:agentPermissionModeFromStart(params)}:{};
 }
-// The approval card's text: the harness's own prompt for the request (Claude's, as T3 Code's ClaudeAdapter), else its tool title.
+// The approval card's text: the harness's own prompt for the request (Claude's), else its tool title.
 export function agentApprovalReason(params={}){
   return String(params?.prompt||"").trim()||String(params?.toolCall?.title||"").trim()||"Agent requests permission";
 }
@@ -160,7 +160,7 @@ export function nativeApprovalReason(call={},authorization={}){
 }
 // A turn the person sends continues a thread only on the harness that owns it. A client that still shows another harness's thread
 // after a switch sends this harness's model with it, which the owning harness cannot run and must not save as the thread's model
-// (T3 Code locks a started thread to its provider, and its server stays authoritative).
+// (a started thread stays locked to its harness, and the server's record of it stays authoritative).
 export function agentTurnOwnerError(thread,activeRuntime){
   const owner=String(thread?.runtime||""),active=String(activeRuntime||"");
   if(!owner||!active||owner===active)return null;
@@ -201,13 +201,13 @@ async function acpPrompt(input=[],{remote=false,home=null}={}){
       out.push(withPromptImagePath({type:"image",mimeType:mime,data:data.toString("base64")},item.path));
     }else if(item?.type==="mention"){
       // A Word, Excel or other document's link keeps the file its text was extracted to, for each harness to name with it. Attaching
-      // the file and the composer's check of the message before it goes extract it (T3 claims a message's attachments the same way),
-      // so the relay only looks for that text, as T3's prompt builders do, and the turn never waits on a second extraction (Trebell
+      // the file and the composer's check of the message before it goes extract it,
+      // so the relay only looks for that text, and the turn never waits on a second extraction (Trebell
       // Native's prompt names none). A remote environment's file is on its host.
       const link={type:"resource_link",uri:fileUri(item.path),name:String(item.name||item.path||"file")};
       out.push(remote?link:withPromptTextPath(link,await extractedDocumentText(item.path,{home})));
     }else if(item?.type==="localAudio"){
-      // Audio is named by its saved path, as T3 Code names every attachment it does not send as content, and the harness opens it
+      // Audio is named by its saved path, and the harness opens it
       // with its own tools. The line keeps the file for Antigravity's session, which adds the audio after it when Antigravity takes audio.
       const path=String(item.path||"");
       out.push(withPromptAudioPath({type:"text",text:`[Attached audio "${basename(path)}" is saved at: ${path}]`},path));
@@ -645,8 +645,8 @@ export function restoreClaudeRejectedRewind(threadStore,threadId,error){
 }
 
 // Edit from here keeps the turns before the target. Claude Code resumes at the newest kept turn that reached its transcript
-// (that turn's last assistant message, T3 Code's rollback cursor); with none, the thread starts a fresh Claude Code session
-// (T3 Code's rollback to the thread start). A turn from before the conversation Claude Code holds now (heldConversationStart)
+// (that turn's last assistant message, the rollback cursor); with none, the thread starts a fresh Claude Code session
+// (a rollback to the thread's start). A turn from before the conversation Claude Code holds now (heldConversationStart)
 // reached only a transcript it lost, so it is no cursor.
 export function claudeRewindCheckpoint(thread,beforeTurnId){
   const turns=Array.isArray(thread?.turns)?thread.turns:[],index=turns.findIndex(item=>item.id===beforeTurnId);
@@ -733,7 +733,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const socketContexts=new Set();
   // The approvals, questions, forms and app tool calls a harness asked of the person, until they are answered. They wait here, not with
   // the socket that showed them: a window that reloads or loses its socket leaves them waiting, and they are asked again, under the same
-  // id, of another window still open or of the next one to connect (T3 keeps a pending approval in its thread for the next client). An
+  // id, of another window still open or of the next one to connect (a pending approval stays with its thread for the next window). An
   // app tool call waits that way only until a window has been given it (see the socket's close).
   const pendingServer=new Map();let nextServerId=1;
   const isOpen=context=>Boolean(context)&&context.ws.readyState===context.ws.OPEN;
@@ -746,8 +746,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const waitsOn=threadId=>[...pendingServer.values()].some(pending=>pending.threadId===String(threadId||""));
   // Stop, an ACP process that died, or a session the relay closes (closeSession) answers the thread's open approvals, questions and form
   // requests as cancelled and takes them off the screen, and refuses the app tool calls it waits on (Native's browser, desktop and
-  // delegation tools, which the app runs), so none is asked again of a window that opens later (T3 settles a session's pending
-  // approvals and user input when its turn is interrupted or the process exits).
+  // delegation tools, which the app runs), so none is asked again of a window that opens later (a session's pending
+  // approvals and user input end with its turn when it is interrupted or the process exits).
   // stop: a Stop, which leaves a request no turn owns (runless: a Muse Code workflow child's approval) waiting for the person.
   function cancelThreadRequests(threadId,{stop=false}={}){
     const owner=String(threadId||""),cancelled={"item/tool/requestApproval":{decision:"cancel"},"item/tool/requestUserInput":{answers:{}},"mcpServer/elicitation/request":{action:"cancel"}};
@@ -780,7 +780,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   const sessionModelReports=new WeakMap();
   let closing=false;
   // A harness's model list that changed after the app read it (Antigravity's first session) reaches every open window, whose
-  // composer then takes it (T3 pushes provider snapshots as they change).
+  // composer then takes it.
   const stopModelUpdates=typeof runtimeManager?.onModelsChanged==="function"?runtimeManager.onModelsChanged(change=>{if(!closing)emit("agentRuntime/models/updated",change)}):()=>{};
   const threadMetadata=id=>typeof threadStore.getMetadata==="function"?threadStore.getMetadata(id):threadStore.get(id);
   // The store's shared copy of a thread (AgentThreadStore.peek), for a handler that only reads it: no sqlite read, no parse and no
@@ -861,7 +861,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     return threadStore.finishTurn(threadId,turnId,{status,error});
   }
   // A harness's thinking streams as one Codex-shaped reasoning item per run of thought chunks; the run ends at the reply's text,
-  // a tool call, a thought of another message or the turn's end (T3 Code's ACP adapter closes its reasoning segment there), and
+  // a tool call, a thought of another message or the turn's end, and
   // the thread keeps its text.
   const reasoningItem=live=>({type:"reasoning",id:live.id,summary:[],content:[live.text]});
   function appendReasoning(threadId,turnId,text,messageId){
@@ -935,9 +935,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     return {thread:threadStore.update(thread.id,{model:legacy.thread.model,providerMeta:legacy.thread.providerMeta},{touch:false})||legacy.thread,retiredProvider};
   }
 
-  // Whether a revert starts the thread's harness conversation over (T3's ACP rollbackThread): Grok and Antigravity, and
+  // Whether a revert starts the thread's harness conversation over: Grok and Antigravity, and
   // OpenCode where it runs on its ACP server (a remote environment; the local OpenCode server forks at the turn instead).
-  // Cursor offers no rollback (T3 canRollbackThread false).
+  // Cursor offers no rollback.
   function acpRestartsOnRevert(thread){
     if(thread?.runtime==="grok"||thread?.runtime==="antigravity")return true;
     if(thread?.runtime!=="opencode")return false;
@@ -986,7 +986,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // The work a thread's live Muse Code session still follows past its turn (MuseAgentSession.followsWork), or its Claude Code still
   // runs in the background (ClaudeAgentSession.followsWork): a read of the thread says so on copies of those stored items
   // (stillRunning), so a window that opens the thread again, reloads or reconnects keeps their rows running until the work's own rows
-  // settle them, as T3 shows such work from its server's state. Once the session is gone nothing says so, and their stored rows settle.
+  // settle them. Once the session is gone nothing says so, and their stored rows settle.
   function liveWorkSession(threadId){const session=sessions.get(String(threadId||""));return session instanceof MuseAgentSession&&session.observed.size||session instanceof ClaudeAgentSession&&session.live?.backgroundTasks.size?session:null}
   const liveWorkItem=(session,item)=>item?.runsPastTurn===true&&(item.status==="inProgress"||item.status==="pending")&&session.followsWork(item.id)?{...item,stillRunning:true}:item;
   function withLiveWork(threadId,turns){
@@ -1019,7 +1019,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   function sweepIdleSessions(){
     const now=Date.now();
     for(const [threadId,session] of sessions){
-      // A Muse Code session whose workflows, subagents or background commands still run is kept: they run in its host (T3). Its idle
+      // A Muse Code session whose workflows, subagents or background commands still run is kept: they run in its host. Its idle
       // time runs from its last use or the last word from that work, its end too, after which Muse reports on it in a turn of its own.
       if(!sweptSession(session)||session.busy||session.activePrompt||session.pendingBackgroundWork||threadRequests.has(threadId))continue;
       if(now-Math.max(sessionUsed.get(session)||0,Number(session.workHeardAt)||0)<SESSION_IDLE_MS||threadMetadata(threadId)?.status?.type==="active")continue;
@@ -1074,7 +1074,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   // ends that prompt with, the relay caused it. What that session still asked of the person goes with it (closeSession).
   function closeThreadSession(session,threadId){closedSessions.add(session);return closeSession(session,threadId)}
   // A session the relay closes takes its thread's waiting approvals, questions and forms with it: they are answered as cancelled and
-  // leave every window, so the next window to open is not asked them (T3 ends the pending requests of a session it releases). They go
+  // leave every window, so the next window to open is not asked them. They go
   // once the close has begun, so the harness already knows its turn is ending when their answers reach it.
   function closeSession(session,threadId){const closed=session.close();cancelThreadRequests(threadId);return closed}
   // The message a harness failure shows: the harness's own, and after it the advice of an answer that the harness cannot run or is
@@ -1114,7 +1114,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       }
     }
     // An ACP harness whose process exited or was stopped starts again and resumes its conversation; one launched with another
-    // permission mode (Cursor's and Grok's are launch arguments) is relaunched the same way, as T3 detaches such sessions. So is a
+    // permission mode (Cursor's and Grok's are launch arguments) is relaunched the same way. So is a
     // Muse Code session whose host died between turns, or whose mode is another host's launch flags or another session profile.
     if(session instanceof AcpAgentSession||session instanceof MuseAgentSession){
       const accessLevel=normalizePermissionMode(permissionMode||thread.providerMeta?.permissionProfile||"supervised");
@@ -1293,7 +1293,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // A Cursor thread runs in the Plan mode it last ran in until a turn names another (also after a restart).
     const prepare=()=>{if(runtime instanceof AcpAgentSession&&instance.kind==="cursor")runtime.setCollaborationMode((threadMetadata(thread.id)||thread)?.settings?.collaborationMode?.mode||"default")};
     prepare();
-    // Antigravity's model list is the one its sessions report (T3), also when the thread's model turns out not to be offered.
+    // Antigravity's model list is the one its sessions report, also when the thread's model turns out not to be offered.
     const reportModels=()=>{if(runtime instanceof AcpAgentSession&&instance.kind==="antigravity"&&runtime.sessionSetup)runtimeManager.rememberAcpSessionModels?.(instance,runtime.sessionSetup,{environmentId})};
     const savedSessionId=thread.providerSessionId||null,requestedModel=model||thread.model||null;
     // A start that failed asks the harness again once (harnessFailureMessage), also after the fresh session a lost conversation
@@ -1307,7 +1307,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       reportModels();await runtime.close().catch(()=>{});
       if(ended())throw restartedWhileStarting();
       // A harness that no longer has the thread's conversation continues it in one fresh session, whose first prompt hands the
-      // earlier messages over (T3's provider resume fallback). A harness that cannot run at all fails as it is, and so does the
+      // earlier messages over. A harness that cannot run at all fails as it is, and so does the
       // fresh session's start: a lost conversation never loops.
       if(!freshIfLost||!savedSessionId||!isHarnessSessionLost(error))throw await startFailure(error);
       lost={previousSessionId:String(savedSessionId),reason:error.message};
@@ -1484,8 +1484,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(requested&&requested.mode!==current?.settings?.collaborationMode?.mode)threadStore.update(thread.id,{settings:{...(current?.settings||{}),collaborationMode:requested}});
   }
 
-  // A harness answers on its own when background work it started finishes (T3 Code's wake turns: Claude Code's background
-  // tasks, Grok's task prompts): that answer is a turn of its own, with no user message.
+  // A harness answers on its own when background work it started finishes: that answer is a turn of its own, with no user message.
   // Its settlement is kept by session (wakeSettlements): a message that takes a Muse Code report turn over waits for it (turn/start).
   const wakeSettlements=new WeakMap();
   function startWakeTurn(threadId,promptPromise,context){
@@ -1563,7 +1562,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     return turnId;
   }
   // A message an ACP harness's connection dropped as one Trebell could not handle (acp-client.mjs, told once for each kind) goes to the
-  // thread's trace and the server's log by its method and reason only, as T3 logs one it cannot decode; the turn goes on without it.
+  // thread's trace and the server's log by its method and reason only; the turn goes on without it.
   function droppedAcpMessage(threadId,warning){
     if(warning?.dropped!==true)return;
     const thread=threadMetadata(threadId),turn=lastTurnOf(threadId);
@@ -1661,15 +1660,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const current=threadMetadata(threadId)?.providerMeta||{};
       threadStore.update(threadId,{providerMeta:{...current,[type]:update}});
       emit("thread/providerMetadata/updated",{threadId,type,update});
-      // A changed model option carries the account's current model list (T3 AntigravityProvider onConfigOptionsUpdated).
+      // A changed model option carries the account's current model list.
       if(type==="config_option_update"){const live=sessions.get(threadId);if(live)sessionModelReports.get(live)?.()}
     }else if(type==="runtime_error"&&update.willRetry===true){
       // A harness retrying the turn's request itself (Muse Code's turn/retryScheduled) has not stopped: the turn goes on, and its retry
       // row says so, as Native's wait for the network does.
       emit("error",{threadId,turnId,willRetry:true,message:update.message||"Retrying the turn's request."});
     }else if(type==="runtime_error"){
-      // A dead ACP process leaves the thread: the next turn starts the harness again and resumes the conversation (T3 releases
-      // an errored session), and its open approval or question cards are withdrawn.
+      // A dead ACP process leaves the thread: the next turn starts the harness again and resumes the conversation, and its open
+      // approval or question cards are withdrawn.
       const runtimeSession=sessions.get(threadId);
       if(runtimeSession instanceof AcpAgentSession&&runtimeSession.dead){sessions.delete(threadId);releaseSession(runtimeSession);cancelThreadRequests(threadId)}
       // A harness retrying its turn's request itself (OpenCode's provider retries) goes on: the window shows the turn's retry row. One
@@ -1834,8 +1833,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     // the next open, and only a page is copied (each request read and parsed the whole stored thread, 4 to 5 times per open).
     if(method==="thread/resume"){
       const thread=peekThread(params.threadId);if(!thread)throw new Error("Thread not found");
-      // An ACP harness's conversation opens with the thread's next turn, as T3 Code opens a provider session lazily ("a later
-      // user command ... opens a session"): the reopened thread shows its saved transcript at once, where Cursor's start and
+      // An ACP harness's conversation opens with the thread's next turn, not when the thread is opened: the reopened thread shows its
+      // saved transcript at once, where Cursor's start and
       // session/load kept it blank for half a minute in the live tour, and browsing threads starts no harness process. A harness
       // that no longer has the thread's conversation does not fail the open either: the saved transcript shows, and the next
       // turn continues the thread in a fresh session, as it does for the lazy harnesses.
@@ -2125,9 +2124,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const materialized=materializeAgentFork(threadStore,source,{runtime:"native",providerSessionId,providerMeta,excludeTurns:Boolean(params.excludeTurns)});
         emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
       }
-      // Muse Code refuses a fork of its completed turns (T3: InvalidCut; Muse 1.4.13 answers forkBoundaryInvalid), so a Muse Code fork
+      // Muse Code refuses a fork of its completed turns (InvalidCut; Muse 1.4.13 answers forkBoundaryInvalid), so a Muse Code fork
       // is a thread of Trebell's own whose next message starts a fresh Muse Code session on the source's profile, handed the earlier
-      // messages through the history handoff (T3: a new session with a copy of the conversation context). No Muse Code starts for the
+      // messages through the history handoff (a new session with a copy of the conversation context). No Muse Code starts for the
       // fork itself.
       if(source.runtime==="muse"){
         if(source.status?.type==="active")throw new Error("Stop the running Muse Code turn before forking this thread.");
@@ -2173,7 +2172,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(runtime==="native"&&typeof session.setServiceTier==="function"){const providerId=requestedProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setServiceTier(Object.prototype.hasOwnProperty.call(params,"serviceTier")?params.serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",providerId,nextModel))}
       if(runtime==="native"&&typeof session.setPermissionMode==="function")session.setPermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
       // Claude Code runs each turn with the thread's permission and collaboration modes and the composer's effort and speed
-      // (T3 Code's per-turn runtime policy); a changed launch policy reopens its query.
+      // (its per-turn runtime policy); a changed launch policy reopens its query.
       if(session instanceof ClaudeAgentSession){
         session.setPermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
         applyCollaborationMode(thread,session,params);
@@ -2181,23 +2180,23 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         if(Object.prototype.hasOwnProperty.call(params,"serviceTier"))session.setServiceTier(params.serviceTier);
       }
       // OpenCode runs each turn with the thread's permission mode (its session rules) and the composer's reasoning level (its model's
-      // variant), as T3 Code applies a turn's runtime policy and model options.
+      // variant).
       if(session instanceof OpenCodeAgentSession){
         await session.setPermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
         if(Object.prototype.hasOwnProperty.call(params,"reasoningEffort"))session.setReasoningEffort(params.reasoningEffort);
       }
       // ACP harnesses apply the composer's effort before the prompt (Grok's set_model _meta, Cursor's thought_level option), and
       // Cursor its Fast switch from the composer's speed and the model settings picked in the composer (context, thinking). A
-      // model switch the harness refuses fails the turn with its reason and leaves the thread's model unchanged (T3).
+      // model switch the harness refuses fails the turn with its reason and leaves the thread's model unchanged.
       if(session instanceof AcpAgentSession){
         if(Object.prototype.hasOwnProperty.call(params,"reasoningEffort"))session.setReasoningEffort(params.reasoningEffort);
         if(Object.prototype.hasOwnProperty.call(params,"serviceTier"))session.setServiceTier(params.serviceTier);
         if(Object.prototype.hasOwnProperty.call(params,"modelOptions"))session.setModelOptions(params.modelOptions);
-        // Cursor's Plan mode is the composer's collaboration mode (T3 interactionMode), as Claude Code's is.
+        // Cursor's Plan mode is the composer's collaboration mode, as Claude Code's is.
         if(thread.runtime==="cursor")applyCollaborationMode(thread,session,params);
         if(params.model&&params.model!==thread.model){await session.setModel(params.model);threadStore.update(thread.id,{model:session.model||params.model})}
       }
-      // Muse Code takes the composer's Thinking level as its turn's level and the thread's model before the turn (T3); a model it
+      // Muse Code takes the composer's Thinking level as its turn's level and the thread's model before the turn; a model it
       // refuses fails the turn with its reason and leaves the thread's model unchanged.
       else if(session instanceof MuseAgentSession){
         if(Object.prototype.hasOwnProperty.call(params,"reasoningEffort"))session.setReasoningEffort(params.reasoningEffort);
@@ -2257,14 +2256,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(running?.id&&running.status==="inProgress")stoppedTurns.set(target,running.id);
       target?.cancel();
       // Stop answers a harness's waiting approvals, questions and form requests as cancelled and withdraws their cards, for Claude Code,
-      // OpenCode and Trebell Native as for the ACP harnesses (T3 cancels every pending runtime request of an interrupted run). A Native
+      // OpenCode and Trebell Native as for the ACP harnesses. A Native
       // turn ends only once the tool it runs returns, and a tool waiting on its approval returns only once that is answered.
       cancelThreadRequests(params.threadId,{stop:true});
       return {ok:true};
     }
     if(method==="turn/steer"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
-      // Claude Code and OpenCode take the message into the running turn at once (T3 Code's steerTurn): Claude Code as a "now" priority
+      // Claude Code and OpenCode take the message into the running turn at once: Claude Code as a "now" priority
       // user message, OpenCode as a message sent into its busy session. OpenCode in a remote environment runs over ACP, which has none.
       // Muse Code takes it as turn/steer naming the running turn.
       const steerable=thread.runtime==="claude"?ClaudeAgentSession:thread.runtime==="opencode"&&!(sessions.get(thread.id) instanceof AcpAgentSession)?OpenCodeAgentSession:thread.runtime==="muse"?MuseAgentSession:null;
@@ -2311,12 +2310,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         emit("thread/compacted",{threadId:thread.id,compaction:{id:compaction.id,throughTurnId:compaction.throughTurnId,createdAt:compaction.createdAt}});return {ok:true,compaction};
       }
       if(session instanceof OpenCodeAgentSession||session instanceof ClaudeAgentSession){await session.compact();emit("thread/compacted",{threadId:thread.id});return {ok:true}}
-      // Muse Code compacts with session/compact, settled once its compaction item ends (T3 compactThread); a conversation with nothing
+      // Muse Code compacts with session/compact, settled once its compaction item ends; a conversation with nothing
       // to compact says so, and the thread goes on. A host that stopped since its last turn (a Stop during a compaction) starts again.
       if(session instanceof MuseAgentSession){await (session.dead?await museCompactionHost(thread,context):session).compact();emit("thread/compacted",{threadId:thread.id});return {ok:true}}
-      // Grok compacts with its own /compact command, run as a turn (T3 compactThread); a completed one adds the compaction item.
+      // Grok compacts with its own /compact command, run as a turn; a completed one adds the compaction item.
       // OpenCode in a remote environment runs on its ACP server, which answers /compact by summarizing the session, as the
-      // local OpenCode server's compaction does (T3's OpenCode compactThread also sends /compact).
+      // local OpenCode server's compaction does.
       if(session instanceof AcpAgentSession&&(thread.runtime==="grok"||thread.runtime==="opencode")){
         const label=session.label||runtimeHarnessLabel(thread.runtime);
         if(thread.status?.type==="active"||session.busy)throw new Error(`Stop the running ${label} turn before compacting its context.`);
@@ -2347,8 +2346,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const session=sessions.get(thread.id);if(session)await session.close().catch(()=>{});sessions.delete(thread.id);
         const updated=threadStore.update(thread.id,{turns:retained,status:{type:"idle"},providerMeta:currentMeta});emit("thread/reverted",{threadId:thread.id,thread:updated});return {thread:updated};
       }
-      // ACP defines no conversation truncation, so Grok, Antigravity and a remote OpenCode (its ACP server) revert the way T3's
-      // ACP rollbackThread does: the thread is cut before the turn and its next turn starts a fresh session. Files come back
+      // ACP defines no conversation truncation, so Grok, Antigravity and a remote OpenCode (its ACP server) revert by a restart:
+      // the thread is cut before the turn and its next turn starts a fresh session. Files come back
       // through the checkpoint restore the app offers before this call.
       if(acpRestartsOnRevert(thread)){
         const live=sessions.get(thread.id),label=runtimeHarnessLabel(thread.runtime);
@@ -2358,13 +2357,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const updated=threadStore.update(thread.id,{turns:thread.turns.slice(0,index),providerSessionId:"",status:{type:"idle"}});
         emit("thread/reverted",{threadId:thread.id,thread:updated});return {thread:updated};
       }
-      // Muse Code has no conversation rewind (T3: rollback unavailable, and a fork of an earlier turn is refused), as Cursor has none:
+      // Muse Code has no conversation rewind (rollback unavailable, and a fork of an earlier turn is refused), as Cursor has none:
       // the thread stays as it is, and no Muse Code starts to say so.
       if(thread.runtime==="muse")throw Object.assign(new Error("Muse Code cannot rewind its conversation, so this thread cannot go back to an earlier message."),{code:-32601});
       const session=sessions.get(thread.id)||await ensureSession(thread,context,{});
       if(session instanceof OpenCodeAgentSession){
         const turn=thread.turns?.find(item=>item.id===params.beforeTurnId);const providerMessageId=turn?.providerMessageId||turn?.items?.find(item=>item.providerMessageId)?.providerMessageId;if(!providerMessageId)throw new Error("This OpenCode turn does not have a provider message checkpoint yet");
-        // The thread continues in OpenCode's copy of the conversation before this turn; files stay as they are (T3 Code's rollbackThread).
+        // The thread continues in OpenCode's copy of the conversation before this turn; files stay as they are.
         const rewound=await session.rewind(providerMessageId);const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId),retained=index>=0?thread.turns.slice(0,index):thread.turns;
         const providerMeta=revertedHistoryHandoff(threadMetadata(thread.id)?.providerMeta||thread.providerMeta,retained,{sessionId:rewound.sessionId});
         threadStore.update(thread.id,{providerSessionId:rewound.sessionId,turns:remapOpenCodeTurns(retained,rewound),providerMeta});emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
@@ -2383,7 +2382,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(method==="review/start"){
       return request(context,"turn/start",{threadId:params.threadId,input:[{type:"text",text:"Review the current workspace changes. Focus on correctness, regressions, security and missing tests. Return actionable findings."}]});
     }
-    // Claude Code's and Cursor's Plan mode (T3's interaction mode; Cursor runs a Plan turn in its plan mode).
+    // Claude Code's and Cursor's Plan mode.
     if(method==="collaborationMode/list")return {data:runtime==="claude"||runtime==="cursor"?[{mode:"default",name:"Default"},{mode:"plan",name:"Plan"}]:[]};
     throw Object.assign(new Error(`Unsupported external-agent RPC method: ${method}`),{code:-32601});
   }
@@ -2407,7 +2406,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
           });
         },
         // outsideReadsAsk: the harness asks the person before it reads outside the workspace (Muse Code), so such a read is the person's
-        // to answer, as T3 shows it: the workspace boundary refuses what a harness would do unasked. card: the harness's own words for
+        // to answer: the workspace boundary refuses what a harness would do unasked. card: the harness's own words for
         // its card (Muse Code's museApprovalCard): a title for what it asks (trebellTitle), the line under it and the command it shows,
         // and what is asked, for the desktop notification, when that line says who asks (trebellNotice).
         async permission(thread,{params,options,askUser=false,approvalOptions=null,signal=null,outsideReadsAsk=false,runless=false,card=null}){
@@ -2422,7 +2421,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
             networkHost:policy.action.networkHost||null,provenance:policy.action.provenance,
           };
           journal?.record?.({...traceBase,name:"policy.decision",status:policy.decision.toLowerCase(),data:policyData});
-          // Grok's Auto mode has already decided what it could itself: what it still asks about goes to the user (T3), never auto-allowed.
+          // Grok's Auto mode has already decided what it could itself: what it still asks about goes to the user, never auto-allowed.
           if(policy.decision===POLICY_ALLOW&&!askUser){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"accept",data:{...traceData,decision:"accept",policyDecision:policy.decision}});
             return "accept";
@@ -2511,8 +2510,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
   }
   // The sessions of one harness close, as a reset closes them all, and a turn one runs stops as Stop stops it: Antigravity's once it
   // signed in with another method of its own, and any harness's once Settings changed how its profile signs in (everywhere: on a WSL
-  // or SSH host too), as each process keeps the sign-in or key it started with (T3 closes a provider instance whose settings
-  // changed). The next turn starts the harness again; a start this ends is refused (endedStarts). Without everywhere only the
+  // or SSH host too), as each process keeps the sign-in or key it started with, so a profile whose settings changed is closed.
+  // The next turn starts the harness again; a start this ends is refused (endedStarts). Without everywhere only the
   // sessions on this machine (here): Antigravity runs nowhere else. Answers how many sessions it closed. instanceIds: only the sessions
   // of these runtime profiles (one whose method changed, the ones on a key saved or removed), never another profile's of the kind.
   async function closeRuntimeSessions(kind,{everywhere=false,instanceIds=null}={}){

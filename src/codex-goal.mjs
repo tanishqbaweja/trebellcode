@@ -1,6 +1,6 @@
 import { normalizeGoal } from "./goal-state.mjs";
 
-// Codex threads use Codex's own goal (thread/goal/get, set, clear), as T3 Code's runGoalCommand does: Codex owns the
+// Codex threads use Codex's own goal (thread/goal/get, set, clear): Codex owns the
 // objective, status and token budget and keeps working toward an active goal across turns. Trebell keeps its own
 // guidance (completion conditions, constraints, validation expectations) and extra budgets next to Codex's goal.
 
@@ -41,7 +41,7 @@ export function codexGoalRecord(goal,{threadId,previous=null,patch={}}={}){
 }
 
 // What a Trebell goal patch sends to Codex. `current` is Codex's goal, `next` the validated Trebell goal (normalizeGoal).
-// A new objective replaces the goal and its accounting (T3 and the Codex TUI clear it first), keeping only what the patch
+// A new objective replaces the goal and its accounting, keeping only what the patch
 // sets; otherwise only the fields the patch changes go, and a status Codex set itself is left to Codex.
 export function codexGoalSetParams({threadId,patch={},current=null,next}){
   const replace=Boolean(current)&&next.objective!==String(current.objective??"").trim();

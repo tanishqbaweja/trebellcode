@@ -121,7 +121,7 @@ function installMainZoomControls(win){
   });
 }
 
-// Codex runs from the user's installed CLI (src/paths.mjs codexBin), as in T3 Code, so the packaged app no longer
+// Codex runs from the user's installed CLI (src/paths.mjs codexBin), so the packaged app no longer
 // pins TREBELL_CODEX_BIN to the Codex build bundled at packaging time.
 function configureBundledRuntime(){
   if(!app.isPackaged) return;

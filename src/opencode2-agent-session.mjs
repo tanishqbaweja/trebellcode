@@ -35,7 +35,7 @@ function v2Rules(mode,{repositoryMcp=null,grants=[]}={}){
   const rules=openCodePermissionRules(mode,{allowedTools:repositoryMcp?.name?[`${repositoryMcp.name}_*`]:[]});
   return [...rules.map(rule=>({action:v2Action(rule.permission),resource:String(rule.pattern||"*"),effect:rule.action==="allow"?"allow":rule.action==="deny"?"deny":"ask"})),...(Array.isArray(grants)?grants:[])];
 }
-// OpenCode 2 takes an attachment as a URI it reads itself ({uri, name}), and refuses the whole prompt when one is missing (T3 Code). A
+// OpenCode 2 takes an attachment as a URI it reads itself ({uri, name}), and refuses the whole prompt when one is missing. A
 // PNG, JPEG, GIF or WebP image whose saved file is there goes that way, and every attachment is named by its saved path, which the agent
 // opens with its own tools, a document with the file its text was extracted to. A server of the profile's own may not see this
 // machine's files: it gets the paths only.
@@ -55,7 +55,7 @@ export async function openCode2PromptInput(parts=[],{external=false}={}){
   }
   return {text:text.join("\n"),files};
 }
-// OpenCode 2 asks through forms: its question tool's questions, a plugin's or a server's (T3 Code's formQuestions and formAnswer). String
+// OpenCode 2 asks through forms: its question tool's questions, a plugin's or a server's. String
 // and multiselect fields are the question dialog's questions, their options its choices; a field the dialog cannot show is named.
 const FORM_FIELD_NAMES=Object.freeze({external:"a link to open",boolean:"a yes or no answer",number:"a number",integer:"a whole number"});
 const formText=value=>typeof value==="string"?value.trim():"";
@@ -85,7 +85,7 @@ export function openCode2FormAnswer(form,answers={}){
 }
 // A form cancelled with a message fails its tool with that message and the model goes on; one cancelled without a message stops the
 // asking session's run, as Stop does. A question the person dismissed (the dialog's Cancel and close answer with nothing) or left
-// unanswered until the window stopped waiting is cancelled without one, as T3 Code cancels it, and this session's turn ends saying so.
+// unanswered until the window stopped waiting is cancelled without one, and this session's turn ends saying so.
 const FORM_UNANSWERED=Object.freeze({dismissed:"OpenCode's question was dismissed, so Trebell declined it and stopped the turn.",unanswered:"OpenCode's question was not answered in time, so Trebell declined it and stopped the turn."});
 const FORM_GONE=new Set(["FormNotFoundError","FormAlreadySettledError","SessionNotFoundError"]);
 function untilAborted(promise,signal){
@@ -101,7 +101,7 @@ function errorText(error){
 }
 // OpenCode 2 types a usage window or budget the provider says is used up as provider.quota (HTTP 429) or provider.rate-limit: a usage
 // limit, whose failure says where to check it. An empty balance is provider.quota too, with HTTP 402, and never resets, so OpenCode's
-// own message (where to add credit) stands alone (T3 Code).
+// own message (where to add credit) stands alone.
 export const OPENCODE_USAGE_LIMIT_HINT="See Usage for your OpenCode limits.";
 function executionFailure(error){
   const type=String(error?.type||""),usageLimit=(type==="provider.quota"&&Number(error?.status)!==402)||type==="provider.rate-limit";
@@ -110,8 +110,8 @@ function executionFailure(error){
   return {text:`${said||"OpenCode reached a usage limit"}. ${OPENCODE_USAGE_LIMIT_HINT}`,usageLimit};
 }
 // OpenCode 2 sends a heartbeat on its event stream every 10 to 15 seconds, so a stream that has sent nothing for this long while the
-// session waits on it is lost (T3 Code's client and OpenCode's own app wait as long), as is one that ends or fails. As T3 Code follows
-// its stream, the session subscribes again, up to five times two seconds apart, and a new stream counts once OpenCode has said which
+// session waits on it is lost (OpenCode's own app waits as long), as is one that ends or fails. To follow its stream, the
+// session subscribes again, up to five times two seconds apart, and a new stream counts once OpenCode has said which
 // sessions it still runs: a turn whose run goes on goes on, with what it said meanwhile read back from the session's history, one whose
 // run ended meanwhile ends as that history says, and the questions and approvals asked meanwhile are asked again. A turn the session
 // cannot follow again ends saying so, and its run is stopped; the next turn subscribes first, and asks OpenCode before it sends.
@@ -121,8 +121,8 @@ const STREAM_LOST=Object.freeze({
   unknown:"Trebell lost OpenCode's event stream, and OpenCode did not say whether it still runs the turn, so Trebell stopped following it. Send the message again to retry.",
   unsent:"OpenCode never confirmed the message and is not running it, so Trebell stopped the turn. Send the message again to retry.",
 });
-// A message sent after a turn Trebell stopped following waits for OpenCode to say that turn's run has ended (T3 Code's
-// OPENCODE_2_STILL_STOPPING), so that run's text and end reach no turn of the new message's. One refused is not sent: the window keeps
+// A message sent after a turn Trebell stopped following waits for OpenCode to say that turn's run has ended, so that run's
+// text and end reach no turn of the new message's. One refused is not sent: the window keeps
 // its draft and puts the reason after "Not sent:".
 const AFTER_LOST_TURN=Object.freeze({
   running:"OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run. Send the message again in a moment.",
@@ -134,9 +134,9 @@ const RUN_LOST="OpenCode lost this turn's run while Trebell was reconnecting to 
 const HISTORY_PAGE=50,HISTORY_PAGES=20;
 const after=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // Trebell's repository tools are an MCP server of the session's folder, which OpenCode drops when it evicts an idle folder, so it is
-// added again before every turn; adding an unchanged config keeps its connection (T3 Code).
+// added again before every turn; adding an unchanged config keeps its connection.
 const MCP_ADD_TIMEOUT_MS=5_000;
-// How long a resumed session's open requests are listed, and then stopped, before the session goes on without (T3 Code: 5 and 10 s).
+// How long a resumed session's open requests are listed, and then stopped, before the session goes on without (5 and 10 s).
 const LEFTOVER_LIST_MS=5_000,LEFTOVER_STOP_MS=10_000;
 function permissionDecision(value){return value==="accept"||value==="acceptForSession"?"once":"reject"}
 function permissionTitle(data){
@@ -230,8 +230,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   }
 
   // A resumed session's run may still wait on a question or an approval asked while Trebell was not there (a profile's own server
-  // outlives Trebell): nothing would ever answer it, and the thread's next prompt would wait behind that run. As T3 Code does when it
-  // resumes a session (stopLeftoverRequests), each is stopped without a message, which ends the run; requests OpenCode cannot list in
+  // outlives Trebell): nothing would ever answer it, and the thread's next prompt would wait behind that run. When it resumes a
+  // session (stopLeftoverRequests), each is stopped without a message, which ends the run; requests OpenCode cannot list in
   // time are left as they are.
   async #stopLeftoverRequests(){
     const sessionID=this.sessionId;
@@ -322,7 +322,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     }finally{turn.done=true;turn.settle?.();if(this.activePrompt===turn)this.activePrompt=null}
   }
   // After a turn Trebell stopped following (#lose), OpenCode says whether it still runs that turn's message before the next one is sent,
-  // as T3 Code asks before it starts a turn on an unsettled session: a run that goes on is stopped, and this message is refused. The
+  // so no turn starts on an unsettled session: a run that goes on is stopped, and this message is refused. The
   // relay asks before it makes the message's turn, so a refused message stays the person's draft.
   async afterLostTurn(){
     if(!this.unsettled)return;
@@ -334,7 +334,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   #interrupt(){
     return openCode2Within(INTERRUPT_MS,"OpenCode did not stop the run.",signal=>this.client.session.interrupt({sessionID:this.sessionId},{signal})).catch(()=>null);
   }
-  // The session's history since the turn's own message, oldest first, as T3 Code reads it back; null when it does not reach that message.
+  // The session's history since the turn's own message, oldest first; null when it does not reach that message.
   async #turnHistory(turn){
     const start=String(turn?.accepted?.id||"");if(!start)return null;
     const read=[];let cursor=null;
@@ -445,18 +445,17 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(ends)turn.stopError=new Error(`OpenCode's ${openCodeRequestName(kind,data?.resources)} was not answered in time, so Trebell declined it and stopped the turn.`);
     const refusal=ends?null:openCodeRefusal(decision,{disposition,mode:this.permissionMode,action:kind,resources:data?.resources});
     // A refused shell call reaches the model only as "Unable to execute command", which it retries, so the reason is steered into the
-    // session before the refusal (as T3 Code does); the refusal stands without it.
+    // session before the refusal; the refusal stands without it.
     if(refusal)await this.client.session.synthetic({sessionID:String(data.sessionID),text:refusal.note,delivery:"steer",resume:false}).catch(()=>{});
     const replied=await this.client.permission.reply({sessionID:String(data.sessionID),requestID:String(data.id),decision:permissionDecision(decision),...(refusal?{message:refusal.reason}:{})}).then(()=>true,()=>false);
     if(ends){if(!replied)await this.#interrupt();turn.settle?.()}
   }
   // One subscription to the event stream: opened resolves true at its first chunk (OpenCode 2 sends server.connected at once) and false
   // if it ends before; ended once it has ended, however it ended; drop lets go of it. Every chunk the stream receives counts (onActivity),
-  // OpenCode's heartbeats among them. The silence counts only while the session waits for the stream, as T3 Code's timeout runs only
-  // while a read waits, so an approval the person takes minutes over is no silence of the stream's. (@opencode/client 2.0.24 reads the
+  // OpenCode's heartbeats among them. The silence counts only while the session waits for the stream, so an approval the
+  // person takes minutes over is no silence of the stream's. (@opencode/client 2.0.24 reads the
   // stream in the background and reports its heartbeats meanwhile; a subscription it is told to let go of ends quietly.) A stream opened
-  // again holds its events until gate settles, once the session has caught up with what it missed (#reconnected), as T3 Code's events
-  // wait for its reconcile.
+  // again holds its events until gate settles, once the session has caught up with what it missed (#reconnected).
   #subscribe(gate=null){
     const silence=new AbortController(),signal=AbortSignal.any([this.eventAbort.signal,silence.signal]);
     let timer=null,open=()=>{};const opened=new Promise(resolve=>{open=resolve});
@@ -476,8 +475,8 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     })();
     return {opened,ended,drop:()=>silence.abort()};
   }
-  // The event stream, followed while the session is open (T3 Code's follow): a lost stream is subscribed to again (RECONNECT_ATTEMPTS
-  // times, RECONNECT_DELAY_MS apart), and a new one counts once the session has caught up with what it missed (#reconnected); if none
+  // The event stream, followed while the session is open: a lost stream is subscribed to again (RECONNECT_ATTEMPTS times,
+  // RECONNECT_DELAY_MS apart), and a new one counts once the session has caught up with what it missed (#reconnected); if none
   // does, a running turn ends saying so (#lose). The promise tells whether the first subscription opened.
   #follow(){
     this.following=true;let first=this.#subscribe();
@@ -507,7 +506,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     if(interrupt)void this.#interrupt();
   }
   // Once the session listens again, OpenCode says which sessions it still runs (session.active), and a new stream counts only once it
-  // has (true): T3 Code's reconnect includes this check and tries again without it. A turn whose run goes on goes on, with the text it
+  // has (true). A turn whose run goes on goes on, with the text it
   // missed read back from the session's history (#backfill), and the questions and approvals of the session and its subagents that came
   // while Trebell was not listening are asked; a turn whose run ended meanwhile ends as that history says (#endedMeanwhile), and one
   // whose message OpenCode never took ends saying so.
@@ -525,7 +524,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
     for(const sessionID of [this.sessionId,...[...this.sessionParents].filter(([,mine])=>mine).map(([id])=>id)])if(Object.hasOwn(runs,sessionID))void this.#askOpenRequests(sessionID);
     return true;
   }
-  // What the run said while Trebell was not listening (T3 Code's backfill): each text block OpenCode has kept since the turn's message is
+  // What the run said while Trebell was not listening: each text block OpenCode has kept since the turn's message is
   // shown on from where the window's copy of it ends, and then held until OpenCode ends it (session.text.ended carries its whole text),
   // so what the new stream sends again of it is not shown twice.
   #backfill(turn,since){
@@ -539,7 +538,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
       }
     }
   }
-  // A run that ended while Trebell was not listening ends as the session's history says (T3 Code's reconcile): by the idle item OpenCode
+  // A run that ended while Trebell was not listening ends as the session's history says: by the idle item OpenCode
   // keeps for a run's end, since the turn's own message. Without one (a restarted server keeps none for the run it lost) OpenCode lost
   // the run, and the turn ends saying so: nobody stopped it.
   #endedMeanwhile(turn,since){
@@ -609,7 +608,7 @@ export class OpenCode2AgentSession extends OpenCodeAgentSession{
   // is hours away, or past OPENCODE_RETRY_LIMITS, ends the turn with the provider's reason (openCodeRetryStop), as OpenCode 1.x's does.
   #retry(event,sessionID){
     const turn=this.activePrompt;if(!turn||turn.done||turn.cancelled||turn.stopError)return;
-    // OpenCode 2 counts the first request as attempt 1, so its first retry is attempt 2; the wait runs from when it was scheduled (T3).
+    // OpenCode 2 counts the first request as attempt 1, so its first retry is attempt 2; the wait runs from when it was scheduled.
     const data=event?.data||{},own=sessionID===this.sessionId,retry=Math.max(1,Math.floor(Number(data.attempt)||0)-1),created=Number(event?.created)||Date.now();
     const reason=openCodeRetryStop({type:"retry",attempt:retry,next:Number(data.at),message:data.error},{now:created,model:own?this.model:null});
     if(!reason){this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",willRetry:true,message:openCodeRetryNotice({message:data.error,model:own?this.model:null,retry,waitMs:Number(data.at)-created,subagent:!own})}});return}

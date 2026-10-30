@@ -1,6 +1,6 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-// File references travel to harnesses as file: URLs, percent-encoded the way T3 Code builds them (pathToFileURL), so
+// File references travel to harnesses as file: URLs, percent-encoded as pathToFileURL builds them, so
 // spaces, '#', '%' and '?' in a path survive. A path keeps its own style: a POSIX path (a remote workspace's) stays
 // POSIX even when Trebell itself runs on Windows, and a drive or UNC path stays a Windows path on any host.
 const WINDOWS_PATH=/^(?:[a-z]:[\\/]|[\\/]{2}[^\\/])/i;

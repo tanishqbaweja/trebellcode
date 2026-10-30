@@ -1,5 +1,5 @@
 // ACP agents send a tool call once (tool_call) and then partial updates (tool_call_update) that
-// only carry the fields that changed. Like T3's mergeToolCallState, every update is merged into
+// only carry the fields that changed. Every update is merged into
 // the tool's last known state before Trebell maps it, so kind, title and rawInput survive later
 // frames that omit them. The merged frame also carries normalized output fields the relay reads:
 // aggregatedOutput / exitCode for commands and changes for file diffs.

@@ -30,7 +30,7 @@ export function grokUsageResponseToLimits(response,at=checkedAt()){
   const period=response?.config?.currentPeriod,rawType=String(period?.type||"").replace(/^USAGE_PERIOD_TYPE_/,"");
   const kind=rawType==="WEEKLY"?"weekly":rawType==="MONTHLY"?"monthly":"other";
   // xAI leaves the percentage out until something is metered: a weekly or monthly period whose start comes before its end is that
-  // period with nothing used yet, at 0% (T3 79f2bae6a); without one, a successful read is an account with no window to show.
+  // period with nothing used yet, at 0%; without one, a successful read is an account with no window to show.
   const unused=response?.config?.creditUsagePercent===undefined&&kind!=="other"&&periodBoundary(period?.start)<periodBoundary(period?.end);
   const usedPercent=unused?0:clampPercent(response?.config?.creditUsagePercent);
   if(usedPercent==null)return available([],at);
@@ -55,14 +55,14 @@ export function openCodeUsageResponseToLimits(response,at=checkedAt()){
   return available(windows,at);
 }
 
-// Claude Code reports its plan windows through the SDK's usage request (T3 Code's claudeUsageResponseToLimits): percentages
+// Claude Code reports its plan windows through the SDK's usage request: percentages
 // are already 0-100, the account-wide windows are keyed by rateLimitType, and model-scoped weeklies add a row each.
 const CLAUDE_USAGE_WINDOWS=Object.freeze([["five_hour","session","Session",5*60],["seven_day","weekly","Weekly",7*24*60]]);
 function amountPercent(used,limit){
   if(typeof used!=="number"||typeof limit!=="number"||!Number.isFinite(used)||!Number.isFinite(limit)||used<0||limit<=0)return null;
   const percent=used/limit*100;return Number.isFinite(percent)?clampPercent(percent):null;
 }
-// A Team or Enterprise monthly spend limit (T3 Code's readSpendPercent). The spend budget, which the SDK does not type yet, is used
+// A Team or Enterprise monthly spend limit. The spend budget, which the SDK does not type yet, is used
 // when its amounts share one currency and scale (its own percent is rounded); otherwise enabled extra usage's credits against its
 // monthly limit, or its utilization.
 function claudeSpendPercent(limits){
@@ -76,7 +76,7 @@ function claudeSpendPercent(limits){
 }
 export function claudeUsageResponseToLimits(response,at=checkedAt()){
   const limits=response?.rate_limits;
-  // Plan limits that apply but came without data are a read that failed, not an account without limits (T3 Code).
+  // Plan limits that apply but came without data are a read that failed, not an account without limits.
   if(!response?.rate_limits_available||!limits||typeof limits!=="object")return response?.rate_limits_available?unavailable("probeFailed","Claude Code could not read usage limits.",at):unavailable("unsupported",null,at);
   const windows=[];
   for(const [id,kind,label,windowDurationMins] of CLAUDE_USAGE_WINDOWS){

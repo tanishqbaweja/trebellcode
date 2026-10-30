@@ -1,6 +1,6 @@
 // A harness that no longer has the conversation a thread saved: Claude Code's transcript is gone, OpenCode answers its session
 // with 404, an ACP agent refuses session/load or session/resume. The session classes throw it only for that, so the relay can
-// tell a lost conversation (it continues the thread in one fresh session, T3's provider resume fallback) from a harness that
+// tell a lost conversation (it continues the thread in one fresh session) from a harness that
 // cannot run at all (not installed, signed out, a process that did not start), which fails as it is. The relay never reads a
 // harness's error text to decide.
 export class HarnessSessionLostError extends Error{

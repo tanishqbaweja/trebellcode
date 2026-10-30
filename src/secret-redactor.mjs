@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 
 const PAIRING_URL_PATTERN=/https?:\/\/[^\s]*\/pair#[^\s]*/gi;
-// A Google sign-in page's address, with its state and the local address it answers to, as an agent's log prints it (T3 stderr.ts).
+// A Google sign-in page's address, with its state and the local address it answers to, as an agent's log prints it.
 const SIGN_IN_URL_PATTERN=/https?:\/\/accounts\.google\.com[^\s]*/gi;
 const URL_USERINFO_PATTERN=/([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@]+@/gi;
 const BEARER_TOKEN_PATTERN=/\bBearer\s+[A-Za-z0-9._\-+=/]+/gi;

@@ -27,7 +27,7 @@ export function loadMuseSdk(){
   });
 }
 
-// The flags a host keeps for its lifetime (T3 museServeArgs): Read only runs without Muse's shell and file writes, and without
+// The flags a host keeps for its lifetime: Read only runs without Muse's shell and file writes, and without
 // trusting the workspace (its skills and rules); every other mode trusts the workspace, and Full access also runs Muse's shell
 // without its sandbox. The read-only probe host (model/list) also leaves the session log off.
 export function museServeArgs(mode="supervised",{sessionLog=true}={}){
@@ -35,7 +35,7 @@ export function museServeArgs(mode="supervised",{sessionLog=true}={}){
   return ["serve",...(value==="read-only"?["--disable-shell","--disable-write"]:["--trust-workspace",...(value==="full"?["--disable-sandbox"]:[])]),...(sessionLog?[]:["--no-session-log"])];
 }
 // The permission profile and approval mode a session starts or resumes in, by Trebell's mode, asked for explicitly: without one
-// Muse's own default may be Auto-review, where its AI reviewer decides (T3 f87dd14da musePermissionProfile, museApprovalMode). Full
+// Muse's own default may be Auto-review, where its AI reviewer decides. Full
 // access lets everything run; Auto is Muse's Auto-review, whose reviewer clears what it can and asks the person the rest, as
 // Cursor's --auto-review; Supervised, Auto-accept edits and Read only ask (Muse lets file reads and edits in the workspace through
 // in every mode, and a Read only host has no shell or writes to ask about).
@@ -51,7 +51,7 @@ export function museLaunchPlan(mode="supervised"){return {args:museServeArgs(mod
 // priority over the account login"), or to reach another provider: none reaches it, matched by name in any case and never read,
 // except META_API_KEY for a profile set to an API key (authMethod "api-key", Settings' choice), whose launch carries the Meta key.
 const MUSE_KEY_NAMES=new Set(["META_API_KEY","MODEL_API_KEY","OPENAI_API_KEY","ANTHROPIC_API_KEY","OPENROUTER_API_KEY","MUSE_CUSTOM_HEADERS"]);
-// The environment Muse Code runs with (T3 Code's makeMuseEnvironment): MUSE_NO_AUTO_UPDATE=1, since Meta's launcher may otherwise
+// The environment Muse Code runs with: MUSE_NO_AUTO_UPDATE=1, since Meta's launcher may otherwise
 // update itself in the foreground, or start a hidden PowerShell updater, each time Trebell starts Muse Code; and none of the keys
 // above on Sign in, so a key set for something else (Native on Meta's API) never bills the person per token in place of their
 // subscription.
@@ -191,7 +191,7 @@ export class MuseHost{
     // process both settle exited, the first one winning. An error from a process still running (a signal it refused) does not.
     const settle=exit=>{if(this.exit)return;this.exit=exit;this.#settleExit(exit)};
     child.on("error",error=>{if(child.pid===undefined||child.exitCode!=null)settle({code:null,signal:null,error})});
-    // The end of the process is its raw exit (T3 1aa717967): 'close' waits for every holder of its stdout and stderr, and a tool
+    // The end of the process is its raw exit: 'close' waits for every holder of its stdout and stderr, and a tool
     // Muse started (agent-browser and its Chrome, a background terminal) inherits them and can hold them long after Muse has gone.
     // The frames Muse wrote last get MUSE_EXIT_DRAIN_MS to arrive; then its exit stands, and Trebell lets go of its ends of the
     // pipes, which ends the connection.

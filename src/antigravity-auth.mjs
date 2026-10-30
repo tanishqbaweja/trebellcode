@@ -12,7 +12,7 @@ import { redactSecretText } from "./secret-redactor.mjs";
 // (authenticate with a login method its initialize lists: it opens Google's page, and keeps its token in its home), or on the
 // Google Gemini API key Trebell keeps for Native's Gemini provider, through its gemini-api-key method. Trebell never reads the token
 // the agent keeps: its status only checks that the token file is there. Antigravity runs in a home of its own under
-// Trebell's (its GEMINI_HOME, as T3 Code gives each Antigravity profile one): a login cached in the person's ~/.gemini never reaches
+// Trebell's (its GEMINI_HOME): a login cached in the person's ~/.gemini never reaches
 // it, nor one in the system keychain (AGY_ACP_FORCE_FILE_STORAGE keeps the agent to that home's files), and the settings.json there
 // is not the one Zed or JetBrains share when they run the same agent. The person's global skills are linked into that home.
 
@@ -21,7 +21,7 @@ export const ANTIGRAVITY_API_KEY_METHOD="gemini-api-key";
 // Antigravity's own logins as its initialize lists them, in the order Settings' Sign in picks one: Google's, then Gemini Enterprise's
 // and Agent Platform's, then any other the agent runs itself.
 const OWN_SIGN_IN_METHODS=["oauth-personal","oauth-business","agent-platform"];
-// How long a sign-in may take (T3 AntigravityAuth AUTH_TIMEOUT_MS): the person finishes it in the browser, and Antigravity's bundled
+// How long a sign-in may take: the person finishes it in the browser, and Antigravity's bundled
 // Python has no IPv4 fallback, so where IPv6 is broken each request to Google waits about two minutes before it fails.
 export const ANTIGRAVITY_SIGN_IN_TIMEOUT_MS=300_000;
 export const ANTIGRAVITY_SIGN_IN_NEEDED="Antigravity is not signed in. Press Sign in to sign in with Antigravity's own sign-in, or set it to run on a Google Gemini API key.";
@@ -42,7 +42,7 @@ export async function antigravitySignInState({env=process.env}={}){
   return {method,token,signedIn:Boolean(method&&method!==ANTIGRAVITY_API_KEY_METHOD&&token)};
 }
 
-// The Google credentials, projects and homes Antigravity reads from its environment (T3 antigravityEnvironment), and its own AGY_ACP_
+// The Google credentials, projects and homes Antigravity reads from its environment, and its own AGY_ACP_
 // switches: none comes from Trebell's environment, a name a profile approves or a profile's variable, whatever its case (Windows reads
 // names so). The launch gets Trebell's home for it, file storage for its logins, and, for a profile set to an API key, the Gemini
 // key as GEMINI_API_KEY, which only the key method reads (GOOGLE_API_KEY would take its place, as Google's client prefers it).
@@ -53,7 +53,7 @@ export function antigravityEnvironment(env={},{home,apiKey=null}={}){
   return {...kept,GEMINI_HOME:home,AGY_ACP_FORCE_FILE_STORAGE:"1",...(apiKey?{GEMINI_API_KEY:apiKey}:{})};
 }
 
-// The person's home as Antigravity's Python expands ~ (T3 resolveAntigravityUserHome): USERPROFILE, else HOMEDRIVE and HOMEPATH, on
+// The person's home as Antigravity's Python expands ~: USERPROFILE, else HOMEDRIVE and HOMEPATH, on
 // Windows, and HOME elsewhere.
 function personHome(env,platform){
   if(platform==="win32")return env.USERPROFILE||(env.HOMEDRIVE&&env.HOMEPATH?env.HOMEDRIVE+env.HOMEPATH:homedir());
@@ -77,7 +77,7 @@ async function linkPersonSkills(home,person,platform){
 }
 
 // Antigravity's home in Trebell, made ready for a launch: owner-only folders, settings.json naming the method it signs in with
-// (auth.type, as T3 antigravityProfileSettings writes it: never a key or token) beside what the agent keeps there itself, and the
+// (auth.type, never a key or token) beside what the agent keeps there itself, and the
 // person's skills linked in. method: the key method for a profile on an API key, or the login its own sign-in chose; null (a
 // profile on Sign in) leaves the method its sign-in recorded and drops the key method an API key left there.
 export async function prepareAntigravityHome({env=process.env,platform=process.platform,method=null}={}){
@@ -96,15 +96,15 @@ export async function prepareAntigravityHome({env=process.env,platform=process.p
   return {home,settingsPath};
 }
 
-// An Antigravity process that ended because this machine gives it no IPv6 sockets, as its log says (T3 AntigravityInstallation
-// AF_INET6 / enforce_kernel_ipv6_support): the failure that says so, or null.
+// An Antigravity process that ended because this machine gives it no IPv6 sockets, as its log says (AF_INET6 or
+// enforce_kernel_ipv6_support): the failure that says so, or null.
 const IPV6_EXIT=/\b(?:AF_INET6|enforce_kernel_ipv6_support)\b/;
 export function antigravityIpv6Failure(error){
   const said=[error?.message,error?.cause?.message].filter(Boolean).join("\n");
   return /ACP runtime exited\b/.test(said)&&IPV6_EXIT.test(said)?Object.assign(new Error(ANTIGRAVITY_IPV6_MESSAGE,{cause:error}),{code:"ANTIGRAVITY_IPV6"}):null;
 }
 
-// What a sign-in that failed at step (initialize, authenticate or session) says, in plain words (T3 safeAuthFailure), with the
+// What a sign-in that failed at step (initialize, authenticate or session) says, in plain words, with the
 // agent's own where they help.
 function signInFailure(error,step){
   const ipv6=antigravityIpv6Failure(error);if(ipv6)return ipv6;
@@ -125,7 +125,7 @@ export function antigravityOwnSignInMethod(authMethods=[],requested=null){
   return (requested&&byId(String(requested)))||OWN_SIGN_IN_METHODS.map(byId).find(Boolean)||methods.find(method=>method.type==null||method.type==="agent")||null;
 }
 
-// Antigravity's own sign-in (T3 AntigravityAuth with the browser): initialize, the method recorded in its home (onMethod), then
+// Antigravity's own sign-in, in the browser: initialize, the method recorded in its home (onMethod), then
 // authenticate, which the agent runs itself (it opens Google's page and keeps its token in its home), then one session in a
 // throwaway folder, never the project, whose Antigravity history it would join, to check that it starts one and to read its models.
 // It all has 5 minutes. No key is in its environment. Answers the session's setup and the method.
@@ -155,8 +155,8 @@ export async function signInAntigravity({command,args=[],processCwd=null,env={},
 }
 
 // Settings' Antigravity Sign in (gui-server's /api/agent-runtime-auth) for a profile on Sign in: Antigravity's home made ready, its
-// own sign-in, the method it chose recorded in its home, and the account's models kept in place of the stand-in list (T3 publishes
-// the catalog on sign-in). runtimes: the AgentRuntimeManager. Antigravity unpacks its bundle into a Trebell-owned temp folder,
+// own sign-in, the method it chose recorded in its home, and the account's models kept in place of the stand-in list. runtimes:
+// the AgentRuntimeManager. Antigravity unpacks its bundle into a Trebell-owned temp folder,
 // removed once the process stops. Answers the method and whether it is another than the one before (changed).
 export async function signInAntigravityProfile(runtimes,instance,{methodId=null,version="0.0.0"}={}){
   await prepareAntigravityHome({env:runtimes.env,platform:runtimes.platform});
@@ -169,8 +169,8 @@ export async function signInAntigravityProfile(runtimes,instance,{methodId=null,
 }
 
 // A short Antigravity session of Trebell's own (the model list's) that Antigravity answers with ACP's auth_required (-32000) signs in
-// once with the key method when its launch has the Gemini key (a profile on an API key), and is asked again (T3
-// authenticateAfterRequired). On Sign in it never signs in by itself: the person signs in from Settings.
+// once with the key method when its launch has the Gemini key (a profile on an API key), and is asked again. On Sign in it never
+// signs in by itself: the person signs in from Settings.
 export async function afterAntigravitySignIn(client,env,setUp){
   try{return await setUp()}
   catch(error){

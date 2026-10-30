@@ -13,7 +13,7 @@ const loadClaudeAgentSdk=()=>claudeAgentSdk??=import("@anthropic-ai/claude-agent
 const MAX_CODEX_SCAN_FILES=240;
 const MAX_CODEX_SCAN_BYTES=1024*1024;
 // Before a rollout counts toward the 240 read, its own session_meta (its first line) says whether Codex ran it for itself: read in
-// 8 KiB pieces, for at most 5,000 rollouts and 64 MiB in all per scan (T3 Code's metadata budget per source).
+// 8 KiB pieces, for at most 5,000 rollouts and 64 MiB in all per scan.
 const CODEX_META_READ_BYTES=8*1024;
 const MAX_CODEX_CLASSIFIED_FILES=5000;
 const MAX_CODEX_CLASSIFIED_BYTES=64*1024*1024;
@@ -98,7 +98,7 @@ function codexText(value){
 function codexSubagentSource(source){
   return Boolean(source)&&typeof source==="object"&&!Array.isArray(source)&&(Object.hasOwn(source,"subagent")||Object.hasOwn(source,"subAgent"));
 }
-// The setup text Codex records as user text ahead of a request (T3 Code's CODEX_TITLE_PREAMBLE): its context and instruction blocks,
+// The setup text Codex records as user text ahead of a request: its context and instruction blocks,
 // the AGENTS.md heading and the IDE's request heading. A title is taken after it; the session itself is imported as it is.
 const CODEX_TITLE_PREAMBLE=/^(?:\s*(?:<(recommended_plugins|environment_context|user_instructions|INSTRUCTIONS|in-app-browser-context)(?:\s[^>]*)?>[\s\S]*?<\/\1>|# AGENTS\.md instructions\b[^\n]*|## My request for Codex:))+/;
 export function parseCodexHistoryPrefix(text,{path="",updatedAt=0,createdAt=0}={}){

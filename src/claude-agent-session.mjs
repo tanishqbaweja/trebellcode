@@ -15,7 +15,7 @@ import { redactSecretText } from "./secret-redactor.mjs";
 import { SessionRefusalError } from "./session-refusal.mjs";
 import { resolveWindowsCommandShim } from "./windows-command-shim.mjs";
 
-// One long-lived streaming-input Claude Code query per thread, as T3 Code's ClaudeAdapterV2 runs it: every prompt is an SDK
+// One long-lived streaming-input Claude Code query per thread: every prompt is an SDK
 // user message offered to the live process (so steering, interrupts and background tasks work), and the process is replaced
 // only when its launch policy (permission mode, tools, model, effort, agent) changes, after Stop, rewind or idle release.
 export const CLAUDE_READ_ONLY_TOOLS=Object.freeze(["Read","Glob","Grep"]);
@@ -30,8 +30,7 @@ export const CLAUDE_PLAN_STUCK="Claude Code could not leave the Plan mode Claude
 export const CLAUDE_USAGE_LIMIT_HINT="Claude usage limit reached. Send the message again once the limit resets.";
 export const CLAUDE_CONTEXT_FULL="Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
 export const CLAUDE_MCP_REGISTRATION_TIMED_OUT="Claude Code did not finish connecting this thread's MCP servers within 90 seconds. Send the message again; if it keeps timing out, check the MCP servers in Settings.";
-// The SDK sets no deadline for setMcpServers, and Claude Code waits up to 30 s for each server (T3 Code's
-// CLAUDE_MCP_REGISTRATION_TIMEOUT).
+// The SDK sets no deadline for setMcpServers, and Claude Code waits up to 30 s for each server.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT_MS=90_000;
 // A steer waits at most this long, from its request, for the subagents the root turn runs in the foreground to move to the background.
 const CLAUDE_STEER_BACKGROUND_MS=5_000;
@@ -48,7 +47,7 @@ const CLAUDE_EFFORTS=new Set(["low","medium","high","xhigh","max"]);
 const CLAUDE_IMAGE_TYPES=new Set(["image/gif","image/jpeg","image/png","image/webp"]);
 const CLAUDE_INTERRUPT_TIMEOUT_MS=10_000;
 const CLAUDE_CLOSE_TIMEOUT_MS=5_000;
-// How long a killed Claude Code has to exit before a stalled resumed conversation is not opened again (T3 Code's 572cf7427).
+// How long a killed Claude Code has to exit before a stalled resumed conversation is not opened again.
 const CLAUDE_EXIT_CONFIRM_MS=10_000;
 // The end of a Claude Code's stderr Trebell keeps, as the SDK keeps 2,048 characters of its own processes'.
 const CLAUDE_STDERR_TAIL=4096;
@@ -72,7 +71,7 @@ function sdkPermissionMode(mode,collaborationMode="default"){
   return "default";
 }
 
-// The launch policy as T3 Code's claudeRuntimeQueryPolicyForRuntimePolicy builds it: read-only offers only the read tools
+// The launch policy: read-only offers only the read tools
 // (and pre-approves them, so dontAsk denies everything else without asking).
 export function claudeQueryPolicy(mode,collaborationMode="default"){
   const permissionMode=sdkPermissionMode(mode,collaborationMode),readOnly=mode==="read-only";
@@ -90,7 +89,7 @@ function editTool(name){return new Set(["Edit","Write","MultiEdit","NotebookEdit
 function toolKind(name){
   const value=String(name||"").toLowerCase();
   if(["read","glob","grep","ls"].some(x=>value.includes(x)))return "read";
-  // TodoWrite writes a to-do list, not a file (T3 Code's todowrite is no file change either).
+  // TodoWrite writes a to-do list, not a file.
   if(value==="todowrite")return "other";
   if(["edit","write","notebook"].some(x=>value.includes(x)))return "edit";
   if(["bash","shell","powershell"].some(x=>value.includes(x)))return "execute";
@@ -107,10 +106,9 @@ function usageTotal(usage={}){
   return Number(usage.input_tokens||0)+Number(usage.cache_creation_input_tokens||0)+Number(usage.cache_read_input_tokens||0)+Number(usage.output_tokens||0);
 }
 const tokens=value=>Math.max(0,Math.round(Number(value))||0);
-// The prompt a request sent: its input and cache tokens (T3 Code's claudeMessageInputTokens).
+// The prompt a request sent: its input and cache tokens.
 function promptTokens(usage){return tokens(usage?.input_tokens)+tokens(usage?.cache_creation_input_tokens)+tokens(usage?.cache_read_input_tokens)}
-// A message_delta's usage counts its message so far: a field it leaves null or out keeps message_start's (T3 Code's
-// mergeClaudeStreamUsage).
+// A message_delta's usage counts its message so far: a field it leaves null or out keeps message_start's.
 function mergedUsage(current,delta){
   return {...current,input_tokens:delta.input_tokens??current.input_tokens,cache_creation_input_tokens:delta.cache_creation_input_tokens??current.cache_creation_input_tokens??null,cache_read_input_tokens:delta.cache_read_input_tokens??current.cache_read_input_tokens??null,output_tokens:delta.output_tokens??current.output_tokens};
 }
@@ -129,14 +127,14 @@ function contextReading(usage){
 // A task tool's field, read defensively: the tools' result shapes are no typed SDK contract.
 const taskField=(value,key)=>value&&typeof value==="object"?value[key]:undefined;
 const taskText=(value,key)=>{const field=taskField(value,key);return typeof field==="string"&&field.trim()?field.trim():undefined};
-// A TodoWrite's list as plan entries (T3 Code's claudeTodoSteps).
+// A TodoWrite's list as plan entries.
 export function claudeTodoEntries(input){
   return (Array.isArray(input?.todos)?input.todos:[]).flatMap(todo=>{
     const content=taskText(todo,"content");
     return content?[{content,status:CLAUDE_TASK_STATUSES.has(todo.status)?todo.status:"pending"}]:[];
   });
 }
-// The task list after a task tool's call went through (T3 Code's applyClaudeTaskTool), or null when it changed nothing it shows.
+// The task list after a task tool's call went through, or null when it changed nothing it shows.
 // result: the tool's structured result, or its text, all a subagent's call returns. TaskList's list replaces it; TaskCreate adds the
 // task its result names ("Task #3 created successfully: <subject>"); TaskUpdate changes a task the list has from its input once
 // Claude Code says it did ("Updated task #3 status"), and its "deleted" status drops it.
@@ -158,7 +156,7 @@ export function claudeTaskList(tasks,name,input,result){
   const content=taskText(input,"subject")??task.content,status=CLAUDE_TASK_STATUSES.has(input?.status)?input.status:task.status;
   return content===task.content&&status===task.status?null:new Map(tasks).set(id,{content,status});
 }
-// The task list Claude Code keeps on disk for a session, one <n>.json a task in its folder (T3 Code's readClaudeTaskList), in its order,
+// The task list Claude Code keeps on disk for a session, one <n>.json a task in its folder, in its order,
 // or null where there is no folder to read. Claude Code writes a call's change before its result comes. Its own internal tasks
 // (metadata._internal) and files that are no task are left out.
 export function readClaudeTaskStore(folder){
@@ -227,7 +225,7 @@ class MessageQueue{
   }
 }
 
-// SDK user message content: images (png, jpeg, gif and webp only, as T3 Code allows) first, then the text blocks. Claude Code
+// SDK user message content: images (png, jpeg, gif and webp only) first, then the text blocks. Claude Code
 // expands a slash command or skill only from the last text block, so the user's own text stays last. A file is named by its path,
 // and a document by the file its text was extracted to as well.
 export function claudeUserContent(parts=[]){
@@ -259,7 +257,7 @@ export function claudeQuestionAnswers(questions=[],answers=null){
   return Object.keys(out).length?out:null;
 }
 
-// "Allow for session" as T3 Code's toSessionPermissionUpdates: the CLI's suggestions scoped to this session, or a rule
+// "Allow for session": the CLI's suggestions scoped to this session, or a rule
 // allowing the tool when it suggested none.
 export function claudeSessionPermissionUpdates(toolName,suggestions){
   const updates=(Array.isArray(suggestions)?suggestions:[]).map(suggestion=>({...suggestion,destination:"session"}));
@@ -267,16 +265,16 @@ export function claudeSessionPermissionUpdates(toolName,suggestions){
 }
 // Claude Code's own text for a request (its prompt sentence, subtitle, reason or ask rule) can carry its renderer's terminal escapes.
 function plainText(value){return typeof value==="string"?stripVTControlCharacters(value).trim():""}
-// A notice's text as the result that repeats it gives it (T3 Code's normalizeClaudeResultText).
+// A notice's text as the result that repeats it gives it.
 function noticeKey(value){return plainText(String(value??"")).replace(/\s+/g," ")}
-// The approval prompt as T3 Code's ClaudeAdapter builds it: the CLI's own prompt sentence, else the tool with its command, path
+// The approval prompt: the CLI's own prompt sentence, else the tool with its command, path
 // or input, so the person sees what they approve, then why Claude Code asks (its decisionReason) when the sentence does not say it.
 export function claudePermissionPrompt(toolName,input,options={}){
   const reason=plainText(options?.decisionReason).slice(0,400),own=plainText(options?.title)||plainText(options?.description)||reason||null;
   const name=String(toolName||"Tool"),field=keys=>{for(const key of keys){const value=input?.[key];if(typeof value==="string"&&value.trim())return value.trim()}return null};
   const target=field(["command","cmd","script"])??field(["file_path","path","filename","fileName"]);
   let prompt=own;
-  // The command or path itself is always shown (T3 summarizeClaudeToolRequest): Claude Code's sentence for a shell command can be
+  // The command or path itself is always shown: Claude Code's sentence for a shell command can be
   // the model's own description of it ("Run node one-liner printing trebell-tour"), which follows it when it adds something.
   if(target!=null){
     const action=`${name}: ${target.slice(0,400)}`;
@@ -291,8 +289,7 @@ export function claudePermissionPrompt(toolName,input,options={}){
 // a critical path, a read outside the folder). The card says so, and names the person's ask rule when one matched. In Plan mode (the
 // composer's, or one Claude switched itself to) Claude Code asks for what Plan mode holds back, whatever the profile, so that is what
 // the card says. A Full access thread whose Claude Code runs in another mode (liveMode: its settings turned bypass off, as an
-// administrator's can) asks for what that mode holds back, and the card names that mode (T3 Code notes Full access only when the
-// query runs in bypassPermissions).
+// administrator's can) asks for what that mode holds back, and the card names that mode.
 const CLAUDE_MODE_PROFILES=Object.freeze({default:"Supervised",acceptEdits:"Auto-accept edits",auto:"Auto"});
 function claudeAskLead({fullAccess,planMode,liveMode,rule}){
   const bypass=fullAccess&&!planMode&&(!liveMode||liveMode==="bypassPermissions");
@@ -323,8 +320,8 @@ export function describeClaudeUsageLimit(info={},nowMs=Date.now()){
   const wait=waitMs>0&&waitMs<=30*24*60*60_000?formatWait(waitMs):null;
   return `Claude usage limit reached. This turn is paused until the ${label?label+" ":""}limit resets${wait?` in ${wait}`:""}.`;
 }
-// A turn's usage-limit error, with the wait when Claude Code said when each rejected window resets (the latest of them, as T3 Code's
-// resetAt): limits are the rejected windows' rate_limit_info.
+// A turn's usage-limit error, with the wait when Claude Code said when each rejected window resets (the latest of them): limits
+// are the rejected windows' rate_limit_info.
 export function claudeUsageLimitHint(limits=[],nowMs=Date.now()){
   const resets=limits.map(info=>Number(info?.resetsAt)),waitMs=limits.length&&resets.every(value=>Number.isFinite(value)&&value>0)?Math.max(...resets)*1000-nowMs:NaN;
   if(!(waitMs>0&&waitMs<=30*24*60*60_000))return CLAUDE_USAGE_LIMIT_HINT;
@@ -332,7 +329,7 @@ export function claudeUsageLimitHint(limits=[],nowMs=Date.now()){
   return `Claude usage limit reached. Send the message again once the ${label?label+" ":""}limit resets in ${formatWait(waitMs)}.`;
 }
 // The usage window a message says Claude Code rejected, or null: a rate_limit_event, or the window a reply the limit blocked repeats
-// (api_error_params), which Claude Code sends each time while it throttles an unchanged event (T3 Code's 9957790c9). An allowed
+// (api_error_params), which Claude Code sends each time while it throttles an unchanged event. An allowed
 // overage takes over a rejected window, so it rejects nothing.
 export function claudeRejectedLimit(message){
   const info=message?.type==="rate_limit_event"?message.rate_limit_info:message?.type==="assistant"&&message.error==="rate_limit"?message.api_error_params?.rate_limit_info:null;
@@ -340,7 +337,7 @@ export function claudeRejectedLimit(message){
   return info.overageStatus==="allowed"||info.overageStatus==="allowed_warning"||info.isUsingOverage===true||info.overageInUse===true?null:info;
 }
 // A turn Claude Code refused for a usage limit (a rejected window, or the API's rate_limit error) reads as a usage limit only while its
-// result agrees: a 429 or no status, and an API error, a blocking limit or no reason (T3 Code's usageLimited).
+// result agrees: a 429 or no status, and an API error, a blocking limit or no reason.
 export function claudeUsageLimited(result,limited){
   return Boolean(limited)&&(result?.subtype!=="success"||result?.api_error_status==null||result?.api_error_status===429)&&(result?.terminal_reason==null||result.terminal_reason==="api_error"||result.terminal_reason==="blocking_limit");
 }
@@ -361,7 +358,7 @@ function terminalResultError(reason,failureHint,apiError=null){
     case "tool_deferred_unavailable":return "Claude could not resume a deferred tool call: the tool is no longer available.";
     case "turn_setup_failed":return "Claude could not start the turn.";
     // Claude Code also ends a turn on blocking_limit once the context window is full, after an invalid_request reply saying "Prompt is
-    // too long": only sign-in or usage-limit evidence (the hint) names it otherwise (T3 Code's fb9af9e57).
+    // too long": only sign-in or usage-limit evidence (the hint) names it otherwise.
     case "blocking_limit":return failureHint||CLAUDE_CONTEXT_FULL;
     case "rapid_refill_breaker":return "Claude stopped: the context refilled too quickly after compaction.";
     case "prompt_too_long":return CLAUDE_CONTEXT_FULL;
@@ -371,7 +368,7 @@ function terminalResultError(reason,failureHint,apiError=null){
   }
 }
 // The text of an assistant error frame that explains its own failure (see CLAUDE_EXPLAINED_API_ERRORS), or null, with the secrets the
-// API's words can repeat redacted as in the result's "API Error: …" (T3 Code redacts every provider failure's message).
+// API's words can repeat redacted as in the result's "API Error: …".
 export function claudeExplainedApiError(message){
   if(!CLAUDE_EXPLAINED_API_ERRORS.has(message?.error))return null;
   const blocks=Array.isArray(message.message?.content)?message.message.content:[];
@@ -382,18 +379,18 @@ export function claudeExplainedApiError(message){
 function userFacingErrors(result){return (Array.isArray(result?.errors)?result.errors:[]).filter(error=>typeof error==="string"&&error.trim()&&!error.startsWith("[ede_diagnostic]"))}
 
 // Quoted JSON keys of secrets ({"token":"…"}, {"client_secret":"…"}) an API's error text can repeat, whose values the shared redactor's
-// key=value form does not reach (T3 Code's provider failure text redacts them).
+// key=value form does not reach.
 const QUOTED_SECRET_VALUE=/(["'])([\w-]*(?:token|secret|password|passwd|api[_-]?key|credential|authorization|cookie))\1(\s*:\s*)(["'])(?:\\.|(?!\4)[^\\])*\4/gi;
 function redactApiErrorText(text){return redactSecretText(String(text).replace(QUOTED_SECRET_VALUE,"$1$2$1$3$4[redacted]$4"),{trim:true})}
 
-// The user-facing failure of a result, or null when the turn succeeded (T3 Code's providerFailureFromResult). failureHint: a sign-in or
+// The user-facing failure of a result, or null when the turn succeeded. failureHint: a sign-in or
 // usage-limit failure; explainedError: the text of a reply that explained its own API error (claudeExplainedApiError).
 export function claudeResultFailure(result,{failureHint=null,explainedError=null}={}){
   if(!result)return null;
   const success=result.subtype==="success";
   const listed=success&&!result.is_error?null:userFacingErrors(result)[0]||null;
   // The API's own words for the request it refused ("API Error: 400 …"), secrets redacted and cut to 500 characters, when nothing
-  // names the failure better (T3 Code's 55a8fe9a9).
+  // names the failure better.
   const apiError=success&&result.terminal_reason==="api_error"&&String(result.result||"").trim().startsWith("API Error:")?redactApiErrorText(result.result).slice(0,500):null;
   const structured=success&&result.api_error_status===529?"Claude API is overloaded (529). Try again shortly."
     :success&&result.api_error_status===429?"Claude API rate limit reached. Try again later."
@@ -403,8 +400,7 @@ export function claudeResultFailure(result,{failureHint=null,explainedError=null
   return listed||structured||failureHint||explainedError||String(result.result||"").trim()||"Claude Code turn failed.";
 }
 
-// A turn that ended without an error message of its own reads as interrupted or cancelled from its listed errors (T3 Code's
-// terminalStatusFromResult).
+// A turn that ended without an error message of its own reads as interrupted or cancelled from its listed errors.
 function isStoppedResult(result){
   if(!result||result.subtype==="success")return false;
   const text=(Array.isArray(result.errors)?result.errors:[]).join("\n").toLowerCase();
@@ -455,8 +451,8 @@ export class ClaudeAgentSession{
     if(this.pendingFork){this.pendingFork.targetSessionId=this.sessionId;this.startedOnce=false}
     else if(providerSessionId){
       // A thread whose first prompt never ran (for example, started before a restart) has no transcript yet: its first
-      // query creates the session under this id instead of resuming it. A thread with turns Claude recorded resumes (T3 Code
-      // resumes whenever the native thread has turns). Its transcript can be gone (Claude Code's cleanup removes old ones):
+      // query creates the session under this id instead of resuming it. A thread with turns Claude recorded resumes. Its transcript
+      // can be gone (Claude Code's cleanup removes old ones):
       // where this process reads Claude's transcripts, that is a lost session (HarnessSessionLostError), and the relay continues
       // the thread in one fresh session with its earlier messages handed over, which the turn shows. Elsewhere Claude Code says
       // so when the turn's query opens (#finishTurn).
@@ -466,7 +462,7 @@ export class ClaudeAgentSession{
         this.startedOnce=this.persistedTurns===true||Boolean(info?.value);
       }else this.startedOnce=this.persistedTurns!==false;
     }
-    // Slash commands and agents are known before the first message (T3 Code's capability probe): the machine-wide probe the
+    // Slash commands and agents are known before the first message: the machine-wide probe the
     // model list already ran is shown at once, and this folder's own probe (project commands and agents) replaces it.
     const workspace=this.capabilities?.peek?.(this.#probeInput())||null;
     const machine=workspace?null:this.capabilities?.peek?.(this.#probeInput(null),{maxAgeMs:Infinity})||null;
@@ -534,7 +530,7 @@ export class ClaudeAgentSession{
     if(!turn||!live||live.closed)throw new Error("Claude Code has no running turn to steer.");
     const content=claudeUserContent(parts);
     // A "now" message cancels the root turn's running tool calls, a subagent it runs in the foreground among them: each moves to the
-    // background first, for at most 5 s from the steer, and its result comes in later, in a turn of its own (T3 Code's 0b68a4a9c).
+    // background first, for at most 5 s from the steer, and its result comes in later, in a turn of its own.
     await this.#backgroundSubagents(live);
     // A turn that ended meanwhile takes no steer: the message would start a turn nobody sent.
     if(turn.settled||live.closed)throw new Error("Claude Code has no running turn to steer.");
@@ -560,7 +556,7 @@ export class ClaudeAgentSession{
   setServiceTier(tier){this.serviceTier=String(tier||"").trim().toLowerCase()==="fast"?"fast":null;return this.serviceTier}
   setCollaborationMode(mode){this.collaborationMode=mode==="plan"?"plan":"default";return this.collaborationMode}
 
-  // Stop, as T3 Code's interruptTurn: interrupt the running turn, then end the process (and with it any background work).
+  // Stop: interrupt the running turn, then end the process (and with it any background work).
   async cancel(){
     const turn=this.turn&&!this.turn.settled?this.turn:null,live=this.live;
     if(this.opening)this.opening.stopped=true;
@@ -585,7 +581,7 @@ export class ClaudeAgentSession{
   async rename(name){this.#requireHostSessionHelper("rename");return (await this.#loadSdk()).renameSession(this.sessionId,name,{dir:this.cwd})}
   async history(){this.#requireHostSessionHelper("history");return (await this.#loadSdk()).getSessionMessages(this.sessionId,{dir:this.cwd,includeSystemMessages:false})}
   // Edit from here: the next query resumes the conversation at the kept turn's last assistant message into a new session id
-  // (resumeSessionAt only); with no kept turn the thread starts a fresh session, as T3 Code's rollback to thread start does.
+  // (resumeSessionAt only); with no kept turn the thread starts a fresh session.
   async rewindConversation(upToMessageId){
     if(this.turn&&!this.turn.settled)throw new Error("Stop the running Claude Code turn before rewinding this thread.");
     await this.#closeLive();
@@ -642,8 +638,8 @@ export class ClaudeAgentSession{
     const key=this.#queryKey(),live=this.live;
     if(live&&!live.closed&&live.key===key){
       // Claude can switch itself to Plan (EnterPlanMode, a denied ExitPlanMode): a process left there goes back to the mode it opened
-      // in. Only Plan is undone (T3 Code's 0b84aa3fa): another mode is Claude Code's own answer to what was asked (Manual for Auto on a
-      // model without it, or where an administrator turned bypass off), which asking again would only refuse.
+      // in. Only Plan is undone: another mode is Claude Code's own answer to what was asked (Manual for Auto on a model without it,
+      // or where an administrator turned bypass off), which asking again would only refuse.
       if(live.permissionMode!=="plan"||live.openedPermissionMode==="plan")return live;
       try{await live.query.setPermissionMode(live.openedPermissionMode);live.permissionMode=live.openedPermissionMode;return live}catch{}
       // Full access that cannot come back (bypass turned off since the process opened) leaves Plan for Manual.
@@ -684,7 +680,7 @@ export class ClaudeAgentSession{
       systemPrompt:{type:"preset",preset:"claude_code",append:runtimeInstructions({harness:"Claude Code"})},
       // No mcpServers: the SDK would put every server but its own in-process ones on Claude Code's command line (--mcp-config), with
       // the env values the person set for them, where other local users can read them, and Claude Code exits at startup on that flag
-      // next to an administrator's managed-mcp.json. They go over stdin once it runs (#registerMcpServers), as T3 Code sends them.
+      // next to an administrator's managed-mcp.json. They go over stdin once it runs (#registerMcpServers).
       ...(this.agent?{agent:this.agent}:{}),
       ...(this.reasoningEffort?{effort:this.reasoningEffort}:{}),
       thinking:{type:"adaptive",display:"summarized"},
@@ -710,7 +706,7 @@ export class ClaudeAgentSession{
     if(await this.#registerMcpServers(live))return live;
     // A process that did not connect them in time is closed, and the SDK's close waits a little for it to exit. A resumed conversation
     // then opens once more, only once the stalled process has exited, so two Claude Codes never resume one transcript at once; a new one
-    // does not, since its id may already name a transcript the closed process started (T3 Code's 572cf7427). Stop or close meanwhile
+    // does not, since its id may already name a transcript the closed process started. Stop or close meanwhile
     // opens nothing: the closed process is the prompt's answer, which ends it as Stop asked.
     await this.#closeLive(live);
     await withTimeout(Promise.resolve().then(()=>runtime.return()),CLAUDE_CLOSE_TIMEOUT_MS).catch(()=>{});
@@ -754,7 +750,7 @@ export class ClaudeAgentSession{
     if(!live.closed){live.closed=true;live.input.end();try{live.query.close()}catch{}}
     await withTimeout(live.pump,CLAUDE_CLOSE_TIMEOUT_MS).catch(()=>{});
   }
-  // Iterates the Query itself (its return() closes the transport), as T3 Code's claudeQueryMessages does.
+  // Iterates the Query itself (its return() closes the transport).
   async #pump(live){
     let failure=null;
     try{for await(const message of {[Symbol.asyncIterator]:()=>live.query})this.#handle(live,message)}
@@ -839,7 +835,7 @@ export class ClaudeAgentSession{
     if(blocked&&!turn.rejectedLimits.has(blocked.rateLimitType||"unknown"))limits.push(blocked);
     const failureHint=turn.authFailure?claudeSignedOutMessage(this.helperSharesRuntime?"":this.env.CLAUDE_CONFIG_DIR):usageLimited?claudeUsageLimitHint(limits):null;
     // Claude Code ends a /compact whose compaction failed with a success result. compact()'s fails with Claude Code's reason, so the relay
-    // never reports it compacted; a /compact sent as a message fails once the usage limit stopped it (T3 Code's 499c9ee68), and otherwise
+    // never reports it compacted; a /compact sent as a message fails once the usage limit stopped it, and otherwise
     // the session's status says why.
     const compactFailed=turn.compactFailure&&(turn.compact||(usageLimited&&result.local_command==="compact"))?turn.compactFailure.message||failureHint||CLAUDE_COMPACT_FAILED:null;
     const failure=claudeResultFailure(result,{failureHint,explainedError:turn.apiErrorText})||compactFailed;
@@ -868,7 +864,7 @@ export class ClaudeAgentSession{
     this.tools.set(block.id,tool);
     if(live&&CLAUDE_SUBAGENT_TOOLS.has(String(block.name))&&block.input?.run_in_background!==true)live.foregroundSubagents.add(block.id);
     if(CLAUDE_TASK_TOOLS.has(String(block.name)))this.taskCalls.set(block.id,{name:String(block.name),input:block.input});
-    // The root's TodoWrite list is the thread's plan (T3 Code's emitClaudePlanProjection); a subagent's is its own. Either edits no
+    // The root's TodoWrite list is the thread's plan; a subagent's is its own. Either edits no
     // file and is no step of the turn unless it failed (#toolResult), as with Muse Code's to-do list.
     if(block.name==="TodoWrite"){this.todoCalls.add(block.id);if(live)this.#emit({sessionUpdate:"plan",entries:claudeTodoEntries(block.input)});return}
     this.#emit({sessionUpdate:"tool_call",toolCallId:block.id,...tool,status:"in_progress"});
@@ -889,7 +885,7 @@ export class ClaudeAgentSession{
   }
   // A task tool's call that went through changes its Claude session's task list, which goes to the thread whole, as its plan. A session
   // this process has not followed yet (Trebell restarted, or the thread's session was started again) reads Claude Code's own list once
-  // (T3 Code's 29aec6b88), which already holds the change, unless TaskList's own list replaces it: an update then keeps every task.
+  // from disk, which already holds the change, unless TaskList's own list replaces it: an update then keeps every task.
   #taskTool(call,result){
     const id=this.sessionId,known=this.taskLists.get(id);
     const stored=this.taskLists.has(id)||(call.name==="TaskList"&&Array.isArray(taskField(result,"tasks")))?null:this.#storedTasks(id);
@@ -912,7 +908,7 @@ export class ClaudeAgentSession{
     if(type==="system"&&(subtype==="init"||subtype==="status")&&message.permissionMode)live.permissionMode=message.permissionMode;
     if(type==="system"&&subtype==="init"){
       // Claude Code reports its mode at the start of every turn; the first report is the mode it opened in, which can be a fallback
-      // from the one asked for (T3 Code's 598298cc3).
+      // from the one asked for.
       if(!live.sawInit&&message.permissionMode)live.openedPermissionMode=message.permissionMode;
       live.sawInit=true;this.sessionId=message.session_id||this.sessionId;this.startedOnce=true;
       if(typeof message.model==="string"&&message.model.trim())live.model=message.model.trim();
@@ -973,7 +969,7 @@ export class ClaudeAgentSession{
         turn.rateLimited=message.error==="rate_limit";if(message.error==="authentication_failed")turn.authFailure=true;
         turn.apiErrorText=claudeExplainedApiError(message);
         // A reply the limit blocked repeats the rejected window, so a quick retry still says when it resets. It is the turn's evidence
-        // only until a later reply goes through (T3 Code's latestAssistantRateLimit), unlike a window Claude Code itself rejected.
+        // only until a later reply goes through, unlike a window Claude Code itself rejected.
         turn.blockedLimit=claudeRejectedLimit(message);if(turn.blockedLimit)this.#announceLimit(turn,turn.blockedLimit);
         return;
       }
@@ -1005,7 +1001,7 @@ export class ClaudeAgentSession{
   #streamEvent(live,turn,event){
     if(event.type==="message_start"){
       turn.stream={id:event.message?.id||null,blocks:new Map()};
-      // The request's usage, which its message_delta then completes (T3 Code's 66cae3d75); one that comes without it is not measured.
+      // The request's usage, which its message_delta then completes; one that comes without it is not measured.
       const usage=event.message?.usage;
       this.request=usage&&typeof usage==="object"?{id:event.message?.id||null,usage:{...usage}}:null;
       if(this.request)this.#requestUsage(live,turn);
@@ -1043,7 +1039,7 @@ export class ClaudeAgentSession{
     if(text.startsWith(record.text))this.#emitText(turn,text.slice(record.text.length),uuid);
   }
   // An assistant snapshot repeats its request's message_start usage, which some proxies send as zeros: it reports a request the stream
-  // did not, or fills in a prompt the stream left out (T3 Code's 66cae3d75). Claude Code's own <synthetic> frames measure no request.
+  // did not, or fills in a prompt the stream left out. Claude Code's own <synthetic> frames measure no request.
   #snapshotUsage(live,turn,body){
     const usage=body?.usage;if(!usage||typeof usage!=="object"||body.model==="<synthetic>")return;
     const id=body.id||null,request=this.request;
@@ -1105,7 +1101,7 @@ export class ClaudeAgentSession{
   }
   #liveTurn(live){return this.turn&&this.turn.live===live&&!this.turn.settled?this.turn:null}
   // Claude Code's own notice (a hook's reason for dropping the prompt, a switch to the fallback model after a refusal), shown as a
-  // finished row of its turn, as the usage-limit notice is; the result's text that repeats it is no answer (T3 Code's e51c0d677).
+  // finished row of its turn, as the usage-limit notice is; the result's text that repeats it is no answer.
   #notice(live,message){
     const turn=this.#liveTurn(live),text=plainText(message.content);if(!turn||!text)return;
     turn.notices.add(noticeKey(text));
@@ -1129,7 +1125,7 @@ export class ClaudeAgentSession{
   // Whether the row of that id is of a background task this session's Claude Code still runs, which a read of the thread says still
   // runs (agent-relay withLiveWork).
   followsWork(id){const live=this.live;return Boolean(live&&!live.closed&&live.backgroundTasks.has(String(id||"")))}
-  // A rejected usage window pauses the turn: say so once per window and reset time (T3 Code's usage-limit notice).
+  // A rejected usage window pauses the turn: say so once per window and reset time.
   #rateLimit(message){
     const info=message.rate_limit_info,turn=this.turn&&!this.turn.settled?this.turn:null;if(!info||!turn)return;
     const overage=info.overageStatus==="allowed"||info.overageStatus==="allowed_warning"||info.isUsingOverage===true||info.overageInUse===true;
@@ -1168,7 +1164,7 @@ export class ClaudeAgentSession{
     const policyKind=editTool(toolName)?"edit":readOnlyTool(toolName)?"read":toolKind(toolName),disposition=permissionDisposition(this.permissionMode,policyKind,{action:toolName,rawInput:input,workspace:this.cwd});
     if(disposition==="deny")return {behavior:"deny",message:"Trebell read-only mode denied this tool.",toolUseID};
     // What Claude Code forwards in Full access, in Plan mode (whatever plan mode does not allow) or for an ask rule in any mode (the
-    // SDK's matchedAskRule: the person's own wish to be asked) is the person's to decide, as T3 Code's requiresClaudeApproval: askUser
+    // SDK's matchedAskRule: the person's own wish to be asked) is the person's to decide: askUser
     // keeps the relay from accepting it for Trebell's policy.
     const fullAccess=this.permissionMode==="full",rule=options?.matchedAskRule&&typeof options.matchedAskRule==="object"?options.matchedAskRule:null;
     const askUser=fullAccess||this.collaborationMode==="plan"||Boolean(rule);

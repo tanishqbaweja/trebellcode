@@ -5,8 +5,8 @@ import { characterEntities } from "character-entities";
 import { SaxesParser } from "saxes";
 import yauzl from "yauzl";
 
-// The text of an attached Word, Excel, PowerPoint, OpenDocument, RTF, EPUB or Jupyter notebook file, as T3 Code extracts it
-// (documentTextWorker.ts, 888a3d47d). It runs only in a process of its own under a 192 MB heap (document-text-worker.mjs, which
+// The text of an attached Word, Excel, PowerPoint, OpenDocument, RTF, EPUB or Jupyter notebook file. It runs only in a process of
+// its own under a 192 MB heap (document-text-worker.mjs, which
 // document-text.mjs starts): the file is untrusted, so what it is read up to is bounded (its size, what its archive expands to, its
 // XML's depth and elements, a table's rows and columns, the text), and the text stops with a note where a bound is reached.
 const MAX_INPUT=16*1024*1024,MAX_EXPANDED=32*1024*1024,MAX_OUTPUT=1_000_000;

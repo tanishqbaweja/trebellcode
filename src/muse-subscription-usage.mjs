@@ -1,4 +1,4 @@
-// Muse Code's subscription windows, as its host reports them in usage/changed (T3 Code's MuseSubscriptionUsage), which Muse Code's
+// Muse Code's subscription windows, as its host reports them in usage/changed, which Muse Code's
 // sessions decode and keep (muse-agent-session.mjs museSubscriptionUsage): account-wide, with no session, the windows the latest model
 // response came with: {observedAtMs, tier, window {usedPercent, windowDurationMins, resetsAtMs}, weekly {usedPercent, resetsAtMs}}.
 // Meta's percentages are verbatim and may exceed 100.

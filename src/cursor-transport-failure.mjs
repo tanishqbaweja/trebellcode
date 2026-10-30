@@ -1,4 +1,4 @@
-// Port of T3's CursorTransportFailure. When Cursor loses its connection to its backend it
+// When Cursor loses its connection to its backend it
 // streams the diagnostic ("Error: ConnectError: [unavailable] ...") as the assistant reply and
 // ends the turn normally. A reply made only of such a diagnostic (plus its stack lines) is a
 // failed turn, not an answer; a reply that merely quotes one is left alone.

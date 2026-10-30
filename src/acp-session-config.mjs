@@ -1,7 +1,7 @@
 // ACP agents describe their models, modes and other settings in two shapes: the older
 // `models` / `modes` objects and `configOptions` entries (category "model" / "mode"). OpenCode
 // only sends configOptions, Grok only models (+ its own options), Cursor and Antigravity send
-// both. These helpers read and change either shape the way T3's AcpSessionRuntime does:
+// both. These helpers read and change either shape:
 // a mode or model is changed through its config option when the agent advertises one, and
 // through session/set_mode or session/set_model only when the agent has nothing else.
 
@@ -83,7 +83,7 @@ export function acpSetupWithConfigOptions(setup,configOptions){
 }
 
 // Changes a mode or model and returns the updated setup. Uses the category's config option
-// when the agent has one (T3 setMode/setModel), otherwise session/set_mode or session/set_model.
+// when the agent has one, otherwise session/set_mode or session/set_model.
 export async function acpApplyValue(client,sessionId,setup,category,value,{meta=null}={}){
   const kind=text(category).toLowerCase(),option=acpConfigOption(setup,kind);
   if(option&&option.type!=="boolean"){

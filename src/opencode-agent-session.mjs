@@ -23,7 +23,7 @@ const loadOpenCodeClients=()=>Promise.all([openCodeSdk??=import("@opencode-ai/sd
 const loadOpenCode2Client=()=>openCode2Client??=import("@opencode/client");
 
 // OpenCode reads a file part itself: it sends an image or a PDF to the model and reads any other file as text. Audio and video are
-// named by their saved path instead, as T3 Code names every attachment it does not send as an image, text or PDF. A Word, Excel or
+// named by their saved path instead, as is every attachment that does not go as an image, text or PDF. A Word, Excel or
 // other document (document-text.mjs), which OpenCode would read as the bytes of its archive, goes as the text extracted from it,
 // named with the document's path; one Trebell has no text of is named by its path alone.
 const MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".pdf":"application/pdf",".md":"text/markdown",".json":"application/json",".txt":"text/plain"};
@@ -87,7 +87,7 @@ function stopProcessTree(child){
   try{child.kill()}catch{}
 }
 // A managed 1.x server takes OPENCODE_SERVER_PASSWORD (and OPENCODE_SERVER_USERNAME, else "opencode") from the profile's environment and
-// then answers only Basic auth with them, so each of its clients sends them (T3 Code's resolveOpenCodeServerPassword). A server of the
+// then answers only Basic auth with them, so each of its clients sends them. A server of the
 // profile's own (serverUrl) is not sent this machine's password.
 export function openCodeServerHeaders(env={}){
   const password=String(env?.OPENCODE_SERVER_PASSWORD||"");if(!password)return {};
@@ -97,11 +97,11 @@ export function openCodeServerHeaders(env={}){
 export function openCodeClientOptions(server,directory){
   const headers=server?.headers||{};return {baseUrl:server.url,directory,...(Object.keys(headers).length?{headers}:{})};
 }
-// How long `opencode serve` may take to say it listens: OpenCode 2 converts the shared database on its first run (T3 Code waits as long).
+// How long `opencode serve` may take to say it listens: OpenCode 2 converts the shared database on its first run.
 const SERVER_START_TIMEOUT_MS=30_000;
 // Every `opencode serve` Trebell starts shares OpenCode's database (opencode.db): each thread's, the status check's and model list's,
 // and Git text's. One that finds the database locked by another exits saying so on stderr, and is started again on a new port, at most
-// three more times a quarter second apart (T3 Code); any other exit is final. So is one that lost the first run's schema setup to
+// three more times a quarter second apart; any other exit is final. So is one that lost the first run's schema setup to
 // another: OpenCode 1.x and 2.x then fail a CREATE statement of their own ("Failed query: CREATE TABLE ...", a table that already
 // exists), which a second start a moment later gets past.
 const SERVER_LOCK_RETRIES=3,SERVER_LOCK_RETRY_MS=250,DATABASE_CONTENDED=/SQLITE_BUSY|database is locked|Failed query:\s*CREATE\s/i;
@@ -167,7 +167,7 @@ export async function openCode2Within(ms,message,request){
   const late=new Promise((_,reject)=>{timer=setTimeout(()=>{reject(new Error(message));controller.abort()},ms)});
   try{return await Promise.race([Promise.resolve().then(()=>request(controller.signal)),late])}finally{clearTimeout(timer)}
 }
-// An OpenCode 2 server is ready once it answers server.info, which it does at once: one that has not in five seconds is not (T3 Code).
+// An OpenCode 2 server is ready once it answers server.info, which it does at once: one that has not in five seconds is not.
 export const OPENCODE2_INFO_TIMEOUT_MS=5_000;
 export function openCode2ServerInfo(client){
   return openCode2Within(OPENCODE2_INFO_TIMEOUT_MS,`OpenCode server did not answer within ${OPENCODE2_INFO_TIMEOUT_MS/1000} seconds.`,signal=>client.server.info({signal}));
@@ -222,13 +222,13 @@ export function checkedOpenCodeProviders(data){
 // that is still available, then a connected provider's default. Trebell's default OpenCode model follows the same order; a configured
 // or recent model whose provider is no longer connected is skipped, as OpenCode's own model picker does.
 const trimmedText=value=>typeof value==="string"?value.trim():"";
-// A model's reasoning levels are its OpenCode variants, by the names OpenCode gives them (T3 Code's "variant" option).
+// A model's reasoning levels are its OpenCode variants, by the names OpenCode gives them.
 const OPENCODE_VARIANT=/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export function openCodeModelVariants(entry){
   const variants=entry?.variants&&typeof entry.variants==="object"&&!Array.isArray(entry.variants)?entry.variants:{};
   return Object.entries(variants).filter(([name,options])=>OPENCODE_VARIANT.test(name)&&options?.disabled!==true).map(([name])=>name);
 }
-// T3 Code's inferDefaultVariant: the level OpenCode's own clients start a provider's models on.
+// The level OpenCode's own clients start a provider's models on.
 export function inferOpenCodeDefaultVariant(providerID,variants=[]){
   const values=Array.isArray(variants)?variants:[],provider=String(providerID||"");
   if(values.length===1)return values[0];
@@ -287,13 +287,13 @@ export async function openCodeModelPreferences({client,directory,env=process.env
   return {configured,recent};
 }
 
-// The agents a session can run as: OpenCode's primary agents (build, plan and the user's own), as T3 Code offers them. Subagents run
+// The agents a session can run as: OpenCode's primary agents (build, plan and the user's own). Subagents run
 // only through the task tool, and hidden agents (title, summary, compaction) are OpenCode's internals.
 export function openCodePrimaryAgents(agents=[]){
   return (Array.isArray(agents)?agents:[]).filter(agent=>agent&&typeof agent==="object"&&agent.name&&agent.hidden!==true&&agent.mode!=="subagent");
 }
 // One of OpenCode's lists (commands, skills, agents), waited for at most timeoutMs: OpenCode lists MCP prompts among its commands, which
-// can take long (T3 Code waits ten seconds too). null when it did not answer in time or failed: the list is pending, and a later read
+// can take long. null when it did not answer in time or failed: the list is pending, and a later read
 // fills it in. A null timeoutMs waits for OpenCode's answer, for a list nothing waits on.
 export function openCodeListWithin(read,timeoutMs=COMMAND_LIST_TIMEOUT_MS){
   const listed=Promise.resolve().then(read).then(value=>Array.isArray(value)?value:[]);
@@ -365,10 +365,10 @@ export function openCode2ModelId(model){
   return modelID?`${providerID}/${modelID}`:"";
 }
 function openCode2Variants(model){return (Array.isArray(model?.variants)?model.variants:[]).map(item=>String(item?.id||"").trim()).filter(value=>OPENCODE_VARIANT.test(value))}
-// What two reads of OpenCode 2's model list compare (T3 Code's catalogFingerprint): each model's provider, id, name, variants and
+// What two reads of OpenCode 2's model list compare: each model's provider, id, name, variants and
 // whether it is enabled, in no particular order.
 const openCode2CatalogFingerprint=models=>models.map(model=>JSON.stringify([String(model?.providerID??""),String(model?.id??""),String(model?.name??""),model?.enabled!==false,(Array.isArray(model?.variants)?model.variants:[]).map(item=>String(item?.id??"")).sort()])).sort().join("\n");
-// A cold OpenCode 2 server can list part of its catalog at first (T3 Code's makeOpenCode2ModelLoader), so a list counts once two reads
+// A cold OpenCode 2 server can list part of its catalog at first, so a list counts once two reads
 // in a row, intervalMs apart, list the same models. A list with models (and with requiredModel, at a session's start) is waited for at
 // most timeoutMs, and one that agrees with it settleMs more, within timeoutMs; the latest list with models stands then, settled false.
 // A read that fails after a list with models leaves that list; one that fails before it fails the wait.
@@ -460,7 +460,7 @@ export function openCodePermissionDisposition(mode,type){
   return permissionDisposition(mode,normalizePermissionKind(type),{readOnlyAllowsRead:false});
 }
 
-// A session's permission rules (T3 Code's openCodePermissionRules). OpenCode has no sandbox of its own: its rules are what keeps a tool
+// A session's permission rules. OpenCode has no sandbox of its own: its rules are what keeps a tool
 // from running unasked. It evaluates the agent's rules and then the session's, and the last rule that matches decides; "*" matches every
 // permission and path. Without session rules OpenCode's agents run edits and commands without asking in every Trebell mode.
 const OPENCODE_ALLOWED_PERMISSIONS=Object.freeze(["question","read","glob","grep","list","lsp","todowrite","todoread","task","skill"]);
@@ -477,7 +477,7 @@ export function openCodePermissionRules(mode,{allowedTools=[],trustedDirectories
   // Read only: edits, searches outside the workspace and folders outside it are removed outright; any other tool asks, and Trebell's
   // read-only policy answers it (a URL fetch is a read, everything else is refused). The shell tool asks rather than being removed:
   // OpenCode leaves a tool whose last rule denies it out of the request, and OpenCode Zen's free tier refuses a request without it
-  // ("OpenCode's free tier can only be used from within OpenCode"; T3 Code never denies shell or read). Every command is refused
+  // ("OpenCode's free tier can only be used from within OpenCode"). Every command is refused
   // unasked. The leading denies are what a subagent's session starts with, so a subagent gets no commands at all.
   if(profile==="read-only"){
     const removed=OPENCODE_RESTRICTED_PERMISSIONS.filter(permission=>permission!=="webfetch");
@@ -492,7 +492,7 @@ export function openCodePermissionRules(mode,{allowedTools=[],trustedDirectories
   }
   // A subagent's (task tool's) session inherits only the parent's deny rules and its external_directory rules, and runs on the rules it
   // started with. The leading denies keep commands, edits and network tools away from subagents in the asking modes, where nobody
-  // could be asked for them. OpenCode drops a tool whose last rule denies it from the model's tool list, so T3's leading "*" deny would
+  // could be asked for them. OpenCode drops a tool whose last rule denies it from the model's tool list, so a leading "*" deny would
   // leave a subagent no tools at all; OpenCode Zen then refuses the request. Auto lets Trebell answer every request, so nothing is
   // held back from its subagents, and auto-accept edits lets them edit.
   const seeds=profile==="auto"?[]:OPENCODE_RESTRICTED_PERMISSIONS.filter(permission=>profile!=="edits"||permission!=="edit");
@@ -511,7 +511,7 @@ export function openCodeRulesEndWith(current=[],rules=[]){
   const have=Array.isArray(current)?current:[];
   return rules.length>0&&have.length>=rules.length&&rules.every((rule,index)=>sameRule(have[have.length-rules.length+index],rule));
 }
-// T3 Code's openCodeChildPermissionRules: a subagent's session gets the parent's whole policy, followed by the rules OpenCode added for
+// A subagent's session gets the parent's whole policy, followed by the rules OpenCode added for
 // that agent (no nested tasks or todo list, for one), which must stay last.
 export function openCodeChildPermissionRules(parentRules=[],nativeChildRules=[]){
   const inherited=parentRules.filter(rule=>rule.permission==="external_directory"||rule.action==="deny");
@@ -530,7 +530,7 @@ export function openCodeTrustedDirectories(agents=[]){
 
 // OpenCode message IDs: "msg_", 12 hex digits of (milliseconds * 0x1000 + a counter) in 48 bits, then random characters. OpenCode
 // orders a session's messages and forks by comparing these IDs, so a client ID must sort after every message the session has. Trebell
-// names each user message itself (as T3 Code does), which gives a turn its rewind point before OpenCode answers.
+// names each user message itself, which gives a turn its rewind point before OpenCode answers.
 const MESSAGE_ID_ALPHABET="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 export function openCodeMessageTime(id){
   const match=/^msg_([0-9a-f]{12})/.exec(String(id||""));
@@ -562,7 +562,7 @@ export function remapOpenCodeTurns(turns=[],mapping={}){
 
 // OpenCode's read tool wraps what it read in tags, each on a line of its own: <path>, <type> (file or directory), then <content> (the
 // file's numbered lines) or <entries> (the folder's). A read's output is what it read, with any text OpenCode added after the wrapping
-// (a system reminder, say) kept as it is (T3 Code's nativeReadOutput). Output in any other shape is left alone.
+// (a system reminder, say) kept as it is. Output in any other shape is left alone.
 export function openCodeReadOutput(output){
   if(typeof output!=="string")return output;
   const header=/^<path>[^\r\n]+<\/path>\r?\n<type>(directory|file)<\/type>\r?\n/.exec(output);if(!header)return output;
@@ -645,7 +645,7 @@ export function openCodeRetryStop(status,{now=Date.now(),model=null,limits=OPENC
   return `${reason}. ${plan}, so Trebell stopped the turn. Try again later or choose another model.`;
 }
 // A retry Trebell waits for is the turn's retry row (an `error` with willRetry, which reads recovered once the turn goes on): what
-// failed, which model OpenCode sends the request to again, in how long, and which retry that is (T3 Code's provider retry item).
+// failed, which model OpenCode sends the request to again, in how long, and which retry that is.
 export function openCodeRetryNotice({message=null,model=null,retry=1,waitMs=0,subagent=false}={}){
   const reason=String(openCodeErrorText(message)||"The model provider request failed").replace(/[\s.]+$/,"");
   const seconds=Math.max(1,Math.round((Number(waitMs)||0)/1000)),count=Math.max(1,Math.floor(Number(retry)||1));
@@ -710,7 +710,7 @@ export class OpenCodeAgentSession{
     }
     if(info){this.#useSession(info);await this.#applyPermissionRules()}
     else{
-      // No title: OpenCode names the session from its first prompt only when it is created without one (T3 Code).
+      // No title: OpenCode names the session from its first prompt only when it is created without one.
       const rules=this.#permissionRules();
       info=unwrap(await this.client.session.create({query:{directory:this.cwd},body:{permission:rules}}),"session create");
       this.#useSession(info,rules);
@@ -748,10 +748,10 @@ export class OpenCodeAgentSession{
       if(turn.cancelled||turn.stopError)response=PROMPT_STOPPED;
       else{
         const query={directory:this.cwd},path={id:this.sessionId};
-        // A slash command runs as OpenCode's own command (T3 Code): its template, agent and model come from the command, with the
+        // A slash command runs as OpenCode's own command: its template, agent and model come from the command, with the
         // user's text after the command as its arguments and only their attachments as parts. An attachment OpenCode gets as a line
-        // instead (a document without text, audio, video) and a document's line naming its text follow the arguments, as T3 reads
-        // the command from the text its attachment lines are in, so none drops out of the command unsaid.
+        // instead (a document without text, audio, video) and a document's line naming its text follow the arguments, so none drops
+        // out of the command unsaid.
         const lines=command?openCodeBodyParts(given.filter(part=>part?.type==="resource_link")).filter(part=>part.type==="text").map(part=>part.text):[];
         const request=command
           ?this.client.session.command({path,query,body:{messageID,command:command.name,arguments:[command.arguments,...lines].filter(Boolean).join("\n\n"),...(modelId?{model:modelId}:{}),...(agent?{agent}:{}),...(variant?{variant}:{}),parts:bodyParts.filter(part=>part.type==="file")},fetch:openCodeLongRequestFetch})
@@ -798,7 +798,7 @@ export class OpenCodeAgentSession{
     if(turn.sessionError&&!this.#recentlyReported(turn.sessionError)){this.#remember(turn.sessionError);this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:turn.sessionError}})}
     return {stopReason:"end_turn",providerMessageId,assistantMessageId:info.id||null,raw:result};
   }
-  // A message sent while a turn runs joins it (T3 Code's steerTurn): it goes into the busy session, whose loop takes it at its next
+  // A message sent while a turn runs joins it: it goes into the busy session, whose loop takes it at its next
   // step, and the turn ends once it is answered.
   async steer(parts){
     const turn=this.activePrompt,ended=()=>this.activePrompt!==turn||turn.done||turn.cancelled||turn.stopError;
@@ -818,7 +818,7 @@ export class OpenCodeAgentSession{
     this.#stopPrompt(this.activePrompt);
     if(this.client&&this.sessionId)await this.client.session.abort({path:{id:this.sessionId},query:{directory:this.cwd}}).catch(()=>{});
   }
-  // A copy of the whole conversation (T3 Code's forkThread). The result maps each message to its copy, so the forked thread's turns keep
+  // A copy of the whole conversation. The result maps each message to its copy, so the forked thread's turns keep
   // their rewind points.
   async fork(){
     this.#assertIdle("forking");
@@ -828,7 +828,7 @@ export class OpenCodeAgentSession{
     if(copied.length!==source.length||copied.some((message,index)=>message?.info?.role!==source[index]?.info?.role))throw new Error("OpenCode did not copy this conversation into the fork as it is.");
     return {...info,sessionId:info.id,...this.#copyMapping(source,copied)};
   }
-  // Rewinds the conversation to just before the user message `messageID` (T3 Code's rollbackThread): OpenCode copies the messages before
+  // Rewinds the conversation to just before the user message `messageID`: OpenCode copies the messages before
   // it into a new session, which this session continues in. Files are left as they are: Trebell restores them itself, from the
   // checkpoint the app offers. OpenCode's session.revert would also undo the files changed since that message.
   async rewind(messageID){
@@ -919,7 +919,7 @@ export class OpenCodeAgentSession{
     return Array.isArray(updated?.permission)?updated.permission:[...(Array.isArray(current)?current:[]),...rules];
   }
   async #applyPermissionRules(){this.sessionPermission=await this.#updateRules(this.sessionId,this.sessionPermission)}
-  // A subagent's session started with only the parent's deny and folder rules; it gets the whole policy for its later runs (T3 Code).
+  // A subagent's session started with only the parent's deny and folder rules; it gets the whole policy for its later runs.
   async #applyChildRules(childId){
     const id=String(childId||"");if(!id||id===this.sessionId||this.childRules.has(id)||!this.client)return;
     this.childRules.add(id);
@@ -930,7 +930,7 @@ export class OpenCodeAgentSession{
       await this.#updateRules(id,child.permission,openCodeChildPermissionRules(this.#permissionRules(),child.permission));
     }catch{this.childRules.delete(id)}
   }
-  // A message starting with "/name" runs OpenCode's command of that name (T3 Code reads the list fresh, waiting at most ten seconds); a
+  // A message starting with "/name" runs OpenCode's command of that name; a
   // name OpenCode does not list stays a message. Only the user's own text counts, not the working context Trebell adds before it.
   async #slashCommand(parts){
     const own=parts.filter(part=>part?.[NATIVE_PROMPT_PROVENANCE]?.kind!=="working_context");
@@ -994,7 +994,7 @@ export class OpenCodeAgentSession{
     const disposition=openCodePermissionDisposition(this.permissionMode,kind);let decision="decline";
     // What the mode allows is answered once. OpenCode keeps an "always" answer in its server's approvals, which outrank every session
     // rule, so a grant made automatically in Auto would still run those commands and edits unasked after a switch to Supervised (and,
-    // on a shared server, in its other sessions). Only the user's own "Always allow" saves one (T3 Code answers it the same way).
+    // on a shared server, in its other sessions). Only the user's own "Always allow" saves one.
     if(disposition==="allow")decision="accept";
     else if(disposition==="ask"&&this.onPermission){
       const toolCall=asked
@@ -1062,7 +1062,7 @@ export class OpenCodeAgentSession{
     }
     // OpenCode 1.x streams a text or reasoning part as message.part.delta events between the part's first update (empty) and its last
     // (the full text). Reasoning is the model's thinking, not its reply; each reasoning part is a thought of its own (its id is the
-    // thought's message id), as T3 Code keeps one reasoning item per OpenCode part.
+    // thought's message id).
     if(event.type==="message.part.delta"){
       if(p.field!=="text"||typeof p.delta!=="string"||!p.delta)return;
       const sessionUpdate=this.assistantTextParts.has(p.partID)?"agent_message_chunk":this.reasoningParts.has(p.partID)?"agent_thought_chunk":null;if(!sessionUpdate)return;
@@ -1102,7 +1102,7 @@ export class OpenCodeAgentSession{
       else if(part.type==="step-finish")this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"usage_update",used:Number(part.tokens?.input||0)+Number(part.tokens?.output||0)+Number(part.tokens?.reasoning||0),size:this.contextByModel.get(this.model)||0,cost:{amount:Number(part.cost||0),currency:"USD"},usage:{input_tokens:Number(part.tokens?.input||0),output_tokens:Number(part.tokens?.output||0),reasoning_tokens:Number(part.tokens?.reasoning||0),cache_read_input_tokens:Number(part.tokens?.cache?.read||0),cache_write_input_tokens:Number(part.tokens?.cache?.write||0)}}});
     }
     // A cancelled todo is no work left to do, and a plan step has no cancelled status: it is left out of the plan rather than shown as
-    // pending (T3 Code).
+    // pending.
     else if(event.type==="todo.updated")this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"plan",entries:(p.todos||[]).filter(todo=>todo?.status!=="cancelled").map(todo=>({content:todo.content,status:todo.status,priority:todo.priority}))}});
     else if((event.type==="permission.asked"||event.type==="permission.updated")&&p.sessionID===this.sessionId)await this.#permission(event.type,p);
     else if(event.type==="question.asked"&&p.sessionID===this.sessionId)await this.#question(p);

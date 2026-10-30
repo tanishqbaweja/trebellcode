@@ -1,5 +1,5 @@
 // A model's settings beyond its effort and speed, as a harness lists them per model (Cursor's context size and thinking
-// switch), in the shape of T3 Code's model option descriptors: a true/false choice is a switch, anything else a list.
+// switch), in the shape of the model option descriptors: a true/false choice is a switch, anything else a list.
 // The user's picks are kept per runtime, provider and model in settings.modelOptionValues; a setting the user has not
 // picked stays as the harness has it.
 const OPTION_ID=/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;

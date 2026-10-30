@@ -7,7 +7,7 @@ import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 
 // An attached Word, Excel, PowerPoint, OpenDocument, RTF, EPUB or Jupyter notebook file is an archive or markup that an agent's tools
 // read as bytes, so Trebell extracts its text once into a file in its attachments folder that every harness is told of ("(text
-// extracted to: …)"), as T3 Code does (DocumentText.ts, 888a3d47d). The extraction runs in a process of its own on Trebell's own Node,
+// extracted to: …)"). The extraction runs in a process of its own on Trebell's own Node,
 // hidden and without a shell, under a 192 MB heap and 15 s, one at a time: the file is untrusted (a zip bomb, XML nested or repeated
 // without end).
 export const DOCUMENT_TEXT_EXTENSIONS=Object.freeze(new Set([".docx",".xlsx",".pptx",".odt",".ods",".odp",".rtf",".epub",".ipynb"]));
@@ -30,9 +30,9 @@ export function documentTextPath(path,{home,info}){
 }
 
 // The file the text of the document at path was extracted to, or null while it has none: nothing is extracted here. A message's
-// prompt names it this way, as T3's prompt builders look for it (resolveExtractedTextPath), and so does a send's second check of its
-// files: attaching the file and the first check of a message about to go extract it (ensureDocumentText, T3's claim of a message's
-// attachments), so a send extracts at most once.
+// prompt names it this way (resolveExtractedTextPath), and so does a send's second check of its
+// files: attaching the file and the first check of a message about to go extract it (ensureDocumentText), so a send extracts at
+// most once.
 export async function extractedDocumentText(path,{home=null}={}){
   if(!home||!isDocumentTextPath(path))return null;
   const file=resolve(String(path)),info=await stat(file).catch(()=>null);
@@ -42,7 +42,7 @@ export async function extractedDocumentText(path,{home=null}={}){
 }
 
 // The text extracted from the document at path, or null: a file that is no document, a document over 16 MB or one the worker
-// refused gets none, and the person's file is never changed. A failure of the system's is tried again a second later, as T3 does.
+// refused gets none, and the person's file is never changed. A failure of the system's is tried again a second later.
 // home: Trebell's home, whose attachments folder keeps the text. worker and env are the process's, for tests.
 const failures=new Map();let turn=Promise.resolve();
 export async function ensureDocumentText(path,{home=null,env=process.env,now=Date.now,worker=WORKER}={}){

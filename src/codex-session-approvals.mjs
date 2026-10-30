@@ -1,4 +1,4 @@
-// "Allow session" on a Codex approval allows that kind of request for the rest of the thread's session (T3 39aeaf404): Codex's own
+// "Allow session" on a Codex approval allows that kind of request for the rest of the thread's session: Codex's own
 // acceptForSession only skips the exact command or patch it answered, so every new command asked again. The allowances are kept
 // per thread and permission mode. A turn in another mode ends them, and so does the thread unloading (thread/unsubscribe, closed,
 // archived or deleted) or its app-server ending, as with Codex's own session approvals. Network access and extra permissions

@@ -1,7 +1,7 @@
 // Codex works toward an active goal with turns it starts itself, the next one as soon as one ends. A goal still active once Codex
 // has started no turn within CODEX_GOAL_CONTINUATION_GRACE_MS of a completed one (the model ended its work without meeting the goal)
-// would read Active with nothing running, so it is paused (T3 cc0b86ddf pauseUncontinuedGoal, CODEX_GOAL_CONTINUATION_GRACE). A very
-// slow next turn could be paused too, as T3 accepts. timers: where setTimeout and clearTimeout are looked up as each wait starts, so a
+// would read Active with nothing running, so it is paused. A very
+// slow next turn could be paused too. timers: where setTimeout and clearTimeout are looked up as each wait starts, so a
 // test's fake clock takes them.
 export const CODEX_GOAL_CONTINUATION_GRACE_MS=5_000;
 

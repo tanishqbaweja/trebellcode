@@ -1,13 +1,13 @@
 import spawn from "cross-spawn";
 import { TREBELL_VERSION } from "./version.mjs";
 
-// Codex readiness follows T3 Code's provider probe: a short-lived `codex app-server` answers `account/read`. Codex
+// Codex readiness comes from a provider probe: a short-lived `codex app-server` answers `account/read`. Codex
 // itself decides whether its configured model provider needs OpenAI sign-in (`requiresOpenaiAuth`), so a profile that
 // runs Ollama, LM Studio, Azure or another API-key provider is ready without `codex login`.
 
 export const CODEX_ACCOUNT_PROBE_TIMEOUT_MS = 20_000;
 
-// ChatGPT's own plan names (T3 codexPlanLabel): Pro is Pro 200, its lighter and larger tiers Pro 100 and Pro 500, and Team is now
+// ChatGPT's own plan names: Pro is Pro 200, its lighter and larger tiers Pro 100 and Pro 500, and Team is now
 // Business, beside Business Premium.
 const PLAN_LABELS = Object.freeze({
   free: "ChatGPT Free",
@@ -38,7 +38,7 @@ export function codexAccountLabel(account) {
   return account.type ? String(account.type) : null;
 }
 
-// T3 accountProbeStatus: an account means signed in; no account plus requiresOpenaiAuth means sign-in is required;
+// An account means signed in; no account plus requiresOpenaiAuth means sign-in is required;
 // no account without that requirement is a provider Codex can use as configured (authentication unknown, ready).
 export function codexAccountStatus(response) {
   const account = response?.account && typeof response.account === "object" ? response.account : null;

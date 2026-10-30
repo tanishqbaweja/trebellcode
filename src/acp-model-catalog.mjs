@@ -1,9 +1,8 @@
-// Model lists for the ACP harnesses, read from the harness itself the way T3 Code reads them:
-// - Grok Build: initialize._meta.modelState, with no session and no sign-in step (T3 discoverGrokMetadataViaAcpInitialize).
-// - Cursor: cursor/list_available_models after an initialize that announces the parameterized model picker
-//   (T3's ACP-era CursorProvider discoverCursorModelsViaListAvailableModels).
-// - Antigravity: the model option (or models) of a session (T3 buildAntigravityModelsFromSession), starting from T3's
-//   manifest list until a session has reported the account's real list.
+// Model lists for the ACP harnesses, read from the harness itself:
+// - Grok Build: initialize._meta.modelState, with no session and no sign-in step.
+// - Cursor: cursor/list_available_models after an initialize that announces the parameterized model picker.
+// - Antigravity: the model option (or models) of a session, starting from a stand-in list until a session has reported the
+//   account's real list.
 // - OpenCode over ACP (remote environments): the model option of a session, whose current value is OpenCode's default.
 import { AcpClient, defaultAcpClientCapabilities } from "./acp-client.mjs";
 import { acpConfigChoices, acpConfigSelect } from "./acp-session-config.mjs";
@@ -16,7 +15,7 @@ export const GROK_INITIALIZE_META=Object.freeze({clientType:"extension"});
 
 // The id Trebell used for "Antigravity's current model" before it listed real models; never sent to Antigravity.
 export const ANTIGRAVITY_MODEL_ALIAS="antigravity-default";
-// T3's model manifest for Antigravity (apps/server/src/provider/model-manifest.json), default gemini-3.8-flash-high.
+// The stand-in model list for Antigravity until a session reports the account's, default gemini-3.8-flash-high.
 export const ANTIGRAVITY_SEED_MODELS=Object.freeze([
   Object.freeze({id:"gemini-3.8-flash-high",name:"Gemini 3.8 Flash (High)"}),
   Object.freeze({id:"gemini-3.8-flash-medium",name:"Gemini 3.8 Flash (Medium)"}),
@@ -24,7 +23,7 @@ export const ANTIGRAVITY_SEED_MODELS=Object.freeze([
 ]);
 
 // Cursor names its efforts low, medium, high, max and Extra High (xhigh); anything else (none) is not an effort level
-// Trebell offers (T3 normalizeCursorReasoningValue).
+// Trebell offers.
 export function cursorEffortValue(value){
   const normalized=text(value).toLowerCase();
   if(["low","medium","high","max"].includes(normalized))return normalized;
@@ -33,7 +32,7 @@ export function cursorEffortValue(value){
 }
 
 // The option a Cursor model changes its effort with. Its id differs per model (effort, reasoning, reasoning_effort) and a
-// "thinking" on/off option can share its thought_level category, so it is found by name (T3 findCursorEffortConfigOption).
+// "thinking" on/off option can share its thought_level category, so it is found by name.
 export function cursorEffortOption(configOptions){
   const selects=(Array.isArray(configOptions)?configOptions:[]).filter(option=>option&&option.type==="select"&&text(option.id));
   const category=option=>text(option.category).toLowerCase(),id=option=>text(option.id).toLowerCase();
@@ -45,8 +44,7 @@ export function cursorEffortOption(configOptions){
     ||null;
 }
 
-// Cursor's Fast switch: a model_config option named fast whose values are true and false (T3 isCursorFastConfigOption with
-// isBooleanLikeConfigOption). Trebell shows it as the model's Fast speed.
+// Cursor's Fast switch: a model_config option named fast whose values are true and false. Trebell shows it as the model's Fast speed.
 export function cursorFastOption(configOptions){
   return (Array.isArray(configOptions)?configOptions:[]).find(option=>{
     if(!option||!text(option.id)||text(option.category).toLowerCase()!=="model_config")return false;
@@ -58,16 +56,15 @@ export function cursorFastOption(configOptions){
   })||null;
 }
 
-// The value that turns a Cursor switch on or off: the boolean itself, or the select's "true"/"false" value (T3
-// findCursorBooleanConfigValue).
+// The value that turns a Cursor switch on or off: the boolean itself, or the select's "true"/"false" value.
 export function cursorSwitchValue(option,on){
   if(!option)return undefined;
   if(option.type==="boolean")return Boolean(on);
   return acpConfigChoices(option).find(choice=>choice.value.toLowerCase()===String(Boolean(on)))?.value;
 }
 
-// The rest of a Cursor model's settings, such as its context size and thinking switch, as model option descriptors (T3
-// buildCursorCapabilitiesFromSdkModel): a true/false choice is a switch, anything else a list, and the current value is the
+// The rest of a Cursor model's settings, such as its context size and thinking switch, as model option descriptors: a
+// true/false choice is a switch, anything else a list, and the current value is the
 // default. The effort option and the Fast switch have their own pickers, and the model and mode are not model settings.
 export function cursorModelOptions(configOptions){
   const list=(Array.isArray(configOptions)?configOptions:[]).filter(option=>option&&text(option.id));

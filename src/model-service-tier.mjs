@@ -8,7 +8,7 @@ export function normalizeModelServiceTier(value){
   return ALLOWED.has(tier)?tier:null;
 }
 
-// Codex lists its service tiers per model ({id:"priority",name:"Fast"}); Trebell keeps Codex's ids, like T3 Code, and
+// Codex lists its service tiers per model ({id:"priority",name:"Fast"}); Trebell keeps Codex's ids, and
 // "default" is Codex's standard tier.
 const CODEX_TIER=/^[a-z][a-z0-9_-]{0,31}$/;
 export const CODEX_STANDARD_SERVICE_TIER="default";
@@ -18,7 +18,7 @@ export function normalizeRuntimeModelServiceTier(runtime,value){
   return CODEX_TIER.test(tier)?tier:null;
 }
 
-// T3 mapCodexModelCapabilities: catalog serviceTiers, or the older additionalSpeedTiers list.
+// The tiers a model offers: the catalog's serviceTiers, or the older additionalSpeedTiers list.
 export function codexServiceTierOptions(metadata={}){
   const listed=Array.isArray(metadata?.serviceTiers)&&metadata.serviceTiers.length
     ?metadata.serviceTiers
@@ -34,7 +34,7 @@ export function codexServiceTierOptions(metadata={}){
 
 // The tier a Codex turn sends: the explicit pick (matched by id or by name, so an older saved "fast" still selects
 // Codex's "priority"; "default" is Standard), else the custom model's tier. Without a pick nothing is sent and Codex keeps
-// the thread's own tier, as T3 sends serviceTier only for a chosen tier. Models without tiers send only a custom tier.
+// the thread's own tier: serviceTier goes only for a chosen tier. Models without tiers send only a custom tier.
 export function codexServiceTierForTurn({configured=null,custom=null,metadata={}}={}){
   const options=codexServiceTierOptions(metadata);
   const pick=value=>{
@@ -46,14 +46,14 @@ export function codexServiceTierForTurn({configured=null,custom=null,metadata={}
   return pick(configured)||pick(custom)||null;
 }
 
-// T3's currentValue for the Service Tier select: the catalog's default tier when it lists it, else Standard.
+// The current value of the Service Tier select: the catalog's default tier when it lists it, else Standard.
 export function codexDefaultServiceTier(metadata={}){
   const wanted=normalizeRuntimeModelServiceTier("codex",metadata?.defaultServiceTier);
   return wanted&&codexServiceTierOptions(metadata).some(option=>option.id===wanted)?wanted:CODEX_STANDARD_SERVICE_TIER;
 }
 
-// The tier of this model that the person's Codex config runs new threads at (config/read's service_tier, as T3
-// applyConfiguredCodexServiceTier reads it: Codex's "fast" is the model's "priority" tier), or null when the model lists none such.
+// The tier of this model that the person's Codex config runs new threads at (config/read's service_tier; Codex's "fast" is the
+// model's "priority" tier), or null when the model lists none such.
 // The catalog gives it as the model's default tier, so the Speed picker shows it while nothing is picked, and no turn sends it.
 export function codexConfiguredServiceTier(metadata={},serviceTier=null){
   const wanted=normalizeRuntimeModelServiceTier("codex",serviceTier);if(!wanted)return null;

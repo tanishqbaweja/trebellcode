@@ -207,7 +207,7 @@ export function attachCodexRelay(httpServer, {
           const sendable=(code>=1000&&code<=1014&&![1004,1005,1006].includes(code))||(code>=3000&&code<=4999);
           // A thread's own app-server that died (its target is still where the thread's requests go, so nothing released it) is told
           // the same way: the browser connects again and resumes the thread shown, which starts that app-server again and loads the
-          // thread on it, as T3 resumes a thread on the next app-server after one exits. A connection that never opened fails only
+          // thread on it. A connection that never opened fails only
           // the request it was made for.
           if((record.key===context.primaryKey||record.opened&&targetLive(record))&&!context.closed)closeClient(sendable?code:1011,String(reason||"codex disconnected"));
         });

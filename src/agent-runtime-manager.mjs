@@ -71,17 +71,17 @@ export function withProbeAdvice(message,status){
   if(!advice||said.includes(advice))return message;
   return said?`${/[.!?…]$/.test(said)?said:said+"."} ${advice}`:advice;
 }
-// An ACP harness's model list is kept this long once it has models (T3 keeps Cursor's for 30 minutes per version).
+// An ACP harness's model list is kept this long once it has models.
 const ACP_MODEL_LIST_REUSE_MS=30*60_000;
 const INSTALLABLE_PACKAGES=Object.freeze({
   codex:"@openai/codex",
   claude:"@anthropic-ai/claude-code",
-  // OpenCode 1.x ships as opencode-ai and 2.x as @opencode/cli (T3 openCodeUpdateFor). A new OpenCode is 1.x, and an update keeps
+  // OpenCode 1.x ships as opencode-ai and 2.x as @opencode/cli. A new OpenCode is 1.x, and an update keeps
   // an install in its own line (npmPackageFor): Trebell never moves one between the two, as 2.x converts OpenCode's shared database
   // in place.
   opencode:"opencode-ai",
 });
-// The harnesses Trebell updates through whatever installed the binary a profile runs, or says how to (T3's provider maintenance).
+// The harnesses Trebell updates through whatever installed the binary a profile runs, or says how to.
 const UPDATABLE=new Set(["codex","claude","opencode","grok"]);
 // Those whose npm package needs no version, so one in npm's prefix whose install never finished can be installed there again
 // (OpenCode's line names its package), with what each one's own launcher says then: Claude Code's placeholder claude.exe when its
@@ -98,7 +98,7 @@ const unfinishedInstall=(kind,result)=>{
   return Boolean(words)&&(failure==="spawn"||(failure==="exit"&&words.test(stripAnsi(`${result.stderr||""}\n${result.stdout||""}`))));
 };
 // The npm package of the release line a harness's version is in: OpenCode 2.x is @opencode/cli, and Grok Build @xai-official/grok,
-// whose latest is what `grok update` installs (T3 Grok driver).
+// whose latest is what `grok update` installs.
 const npmPackageFor=(kind,version)=>kind==="opencode"&&parsedSemver(version)?.major===2?"@opencode/cli":kind==="grok"?"@xai-official/grok":INSTALLABLE_PACKAGES[kind]||null;
 // Two releases of a harness in order: Muse Code's by its own versions (X.Y.Z-R<revision>), every other's by X.Y.Z.
 const releaseOrder=(kind,a,b)=>kind==="muse"?compareMuseVersions(a,b):compareSemver(parsedSemver(a),parsedSemver(b));
@@ -106,17 +106,17 @@ const releaseOrder=(kind,a,b)=>kind==="muse"?compareMuseVersions(a,b):compareSem
 const MUSE_LOCAL_ONLY="Muse Code runs only on this machine in Trebell Code. Switch to the local environment to use it.";
 // A model list reads OpenCode's provider list again once the last read is this old. A status check (every thread start and the
 // window's poll make one) reuses the last read of the same binary, version and environment that was complete (openCodeCatalogComplete),
-// and one that was not for OPENCODE_INCOMPLETE_REUSE_MS: each read starts an `opencode serve`. (T3 Code checks such an OpenCode again on
-// its five-minute health interval.) Settings' Refresh (its Refresh buttons and a sign-in's follow-up) reads again. Any other fresh check
+// and one that was not for OPENCODE_INCOMPLETE_REUSE_MS: each read starts an `opencode serve`. Settings' Refresh (its Refresh
+// buttons and a sign-in's follow-up) reads again. Any other fresh check
 // (Settings' open, a switch, the listing a profile's Save or Delete or an install answers with) reads again a read that is
 // OPENCODE_CATALOG_REUSE_MS old, so a switch's read also serves the listing right after it, and going between Settings' sections starts
-// at most one `opencode serve` in that time. A failed turn's recheck keeps a complete read, as T3 Code does not read OpenCode's catalog
+// at most one `opencode serve` in that time. A failed turn's recheck keeps a complete read: OpenCode's catalog is not read
 // again when a turn fails.
 const OPENCODE_CATALOG_REUSE_MS=10_000;
 const OPENCODE_INCOMPLETE_REUSE_MS=5*60_000;
 const OPENCODE_STATUS_TIMEOUT_MS=20_000;
-// How long after it began Settings' harness list waits for a newest-release read still on its way (T3 publishes the list first and
-// the release after it): a registry or an npm that does not answer never holds the list back for longer.
+// How long after it began Settings' harness list waits for a newest-release read still on its way: a registry or an npm that
+// does not answer never holds the list back for longer.
 const RELEASE_WAIT_MS=1500;
 
 const RUNTIME_COMPATIBILITY=Object.freeze({
@@ -128,7 +128,7 @@ const RUNTIME_COMPATIBILITY=Object.freeze({
       Object.freeze({range:">=1.14.19 <3.0.0",status:"supported"}),
     ]),
   }),
-  // T3 Code's model manifest: Muse Code 1.4.2 and later, compared without its -R<revision> (runtimeCompatibility).
+  // Muse Code 1.4.2 and later, compared without its -R<revision> (runtimeCompatibility).
   muse:Object.freeze({
     recommendedRange:">=1.4.2",
     ranges:Object.freeze([
@@ -172,9 +172,9 @@ function runtimeProbeFailure(def,result={}){
   const first=raw.split(/\r?\n/).map(line=>line.trim()).find(Boolean);
   return (first||`${def?.name||"Runtime"} executable was not found`).slice(0,500);
 }
-// How long a harness's --version may take (T3's budgets): Claude Code's native CLI can take longer to start on a cold Windows start
+// How long a harness's --version may take: Claude Code's native CLI can take longer to start on a cold Windows start
 // or while Defender scans it, and an OpenCode behind its npm shim several seconds. Codex keeps 6 s: one that runs out of time leaves
-// the answer to its account read, which has 20 s of its own (T3's one Codex check), so a longer --version would only add waiting.
+// the answer to its account read, which has 20 s of its own, so a longer --version would only add waiting.
 const VERSION_CHECK_TIMEOUT_MS=Object.freeze({claude:20_000,opencode:10_000});
 const versionCheckTimeoutMs=kind=>VERSION_CHECK_TIMEOUT_MS[kind]||6000;
 // Why a --version did not answer: "missing" only when its command is not there (the spawn's own ENOENT, cmd.exe's "is not
@@ -237,7 +237,7 @@ export function parseGrokModelsAuth(output){
   return null;
 }
 // Muse Code's version as it names its builds, X.Y.Z-R<revision> ("Muse Code 1.4.13 (1.4.13-R6996.1)" is 1.4.13-R6996.1), else a
-// plain X.Y.Z (T3 parseMuseVersion); the shared reading stops at the -R.
+// plain X.Y.Z; the shared reading stops at the -R.
 export function parseMuseVersion(output){
   const value=stripAnsi(output);
   return value.match(/\b\d+\.\d+\.\d+-R\d+(?:\.\d+)?\b/)?.[0]||value.match(/\b\d+\.\d+\.\d+\b/)?.[0]||null;
@@ -254,20 +254,20 @@ export function parseOpenCodeAuthList(output){
   const connected=(Number.isFinite(credentials)?credentials:0)+(Number.isFinite(environment)?environment:0);
   return {connected,authenticated:known&&connected>0?true:null};
 }
-// T3 Code's OpenCode status message, from the connected providers OpenCode's server lists and the models it lists for them.
+// OpenCode's status message, from the connected providers its server lists and the models it lists for them.
 export function openCodeStatusMessage(connected,{external=false,models=null}={}){
   const count=Math.max(0,Number(connected)||0),where=external?"the configured OpenCode server":"OpenCode";
   if(count>0&&models===0)return `${count} upstream provider${count===1?" is":"s are"} connected through ${where}, but it lists no models yet. Press Refresh to check again.`;
   if(count>0)return `${count} upstream provider${count===1?"":"s"} connected through ${where}.`;
   return external?"Connected to the configured OpenCode server, but it did not report any connected upstream providers.":"OpenCode is available, but it did not report any connected upstream providers.";
 }
-// OpenCode is ready once upstream providers are connected and it lists models for them (T3 Code). Its answer is complete, and kept, when
+// OpenCode is ready once upstream providers are connected and it lists models for them. Its answer is complete, and kept, when
 // nothing in it is pending either: a command, skill or agent list that timed out or failed, or an OpenCode 2 model list still changing.
 const openCodeCatalogReady=catalog=>Boolean(catalog?.connectedProviders?.length&&catalog?.models?.length);
 const openCodeCatalogComplete=catalog=>openCodeCatalogReady(catalog)&&!catalog?.pending?.length;
 // A profile's own OpenCode server that refused the password: an HTTP 401 or 403 (OpenCode 1.x answers an empty one, whose status the
 // error keeps), OpenCode 2's UnauthorizedError or ForbiddenError, or a 401 or 403 said as a status, or Unauthorized or Forbidden, in its
-// text. The digits alone are not one, as a port or a path can hold them (http://127.0.0.1:4010); T3 Code reads them as strictly.
+// text. The digits alone are not one, as a port or a path can hold them (http://127.0.0.1:4010).
 const OPENCODE_REFUSED_STATUS=new Set([401,403]),OPENCODE_REFUSED_TAG=new Set(["UnauthorizedError","ForbiddenError"]);
 export function openCodeServerRefused(error){
   if(OPENCODE_REFUSED_STATUS.has(Number(error?.status))||OPENCODE_REFUSED_STATUS.has(Number(error?.cause?.status))||OPENCODE_REFUSED_TAG.has(String(error?._tag||error?.name||"")))return true;
@@ -297,7 +297,7 @@ export function commandOnPath(command,{env=process.env,platform=process.platform
 }
 // A local binary's files (its path, modification time and size) as a version check or a probe answer saw them; null for none.
 const binarySignature=paths=>paths?.length?JSON.stringify(paths.map(path=>{try{const info=statSync(path);return [path,info.mtimeMs,info.size]}catch{return [path,null]}})):null;
-// Who installed the OpenCode 1.x at a real path, judged from the path as T3 Code judges an update (openCodeUpdateFor, through
+// Who installed the OpenCode 1.x at a real path, judged from the path, as an update is (openCodeUpdateFor, through
 // harnessInstallOwner): OpenCode's own installer keeps it in ~/.opencode/bin and updates it with `opencode upgrade`; npm keeps a
 // global opencode-ai in <prefix>/node_modules/opencode-ai beside its opencode shims on Windows, and in
 // <prefix>/lib/node_modules/opencode-ai elsewhere. Any other path (2.x's @opencode/cli, another package manager, a project's
@@ -600,7 +600,7 @@ export class AgentRuntimeManager{
     if(instance?.kind==="antigravity")return join(trebellHome(this.env),"agent-runtimes","antigravity","current",this.platform==="win32"?"agy_acp_server.exe":"agy_acp_server.par");
     const discovered=runtimeExecutableCandidates(instance?.kind,{env:this.env,platform:this.platform}).find(candidate=>existsSync(candidate));
     if(discovered)return resolveWindowsCommandShim(discovered,{platform:this.platform});
-    // An OpenCode only PATH names (nvm-windows, another npm prefix) runs the opencode.exe behind npm's launcher itself, as T3 does,
+    // An OpenCode only PATH names (nvm-windows, another npm prefix) runs the opencode.exe behind npm's launcher itself,
     // when the launcher is exactly npm's for a native binary: started through cmd.exe, the opencode.exe escapes the kill-on-close
     // job of the process that started it, so its servers outlived a Trebell that was killed or crashed.
     if(instance?.kind==="opencode"&&this.platform==="win32"){
@@ -681,8 +681,8 @@ export class AgentRuntimeManager{
       if(layout.effectiveHomePath)env.CODEX_HOME=layout.effectiveHomePath;
     }
     if(kind==="claude"&&instance?.homePath)env.CLAUDE_CONFIG_DIR=instance.homePath;
-    // Meta's launcher would otherwise update Muse Code in the foreground, or start its updater, each time Trebell runs it (T3 Code
-    // sets it too); a profile's own value wins.
+    // Meta's launcher would otherwise update Muse Code in the foreground, or start its updater, each time Trebell runs it; a
+    // profile's own value wins.
     if(kind==="muse"&&env.MUSE_NO_AUTO_UPDATE==null)env.MUSE_NO_AUTO_UPDATE="1";
     // Antigravity runs in Trebell's home for it, with no Google credential of anyone else's, and the Gemini key only on an API key.
     if(kind==="antigravity")return antigravityEnvironment(env,{home:antigravityHome(this.env),apiKey:keys.GEMINI_API_KEY||null});
@@ -747,7 +747,7 @@ export class AgentRuntimeManager{
     };
   }
   // What the harness's own short commands on this machine run with (its version and sign-in checks, its model listing, runCli):
-  // its child environment, with Grok's updater off for that one process (T3 grokProbeEnvironment), so a Settings poll neither opens
+  // its child environment, with Grok's updater off for that one process, so a Settings poll neither opens
   // npm's console windows on Windows nor replaces the Grok binary underneath. Sessions, Git text and the sign-in terminal keep
   // childEnv, and a host's commands run with the host's own variables.
   #probeEnv(instance){const env=this.childEnv(instance);return instance?.kind==="grok"?{...env,GROK_DISABLE_AUTOUPDATER:"1"}:env}
@@ -868,7 +868,7 @@ export class AgentRuntimeManager{
     const plan=await this.installPlan(target.runtime,{environmentId,instanceId}),def=RUNTIMES[target.runtime];
     const result={runtime:target.runtime,packageName:plan.packageName,method:plan.method,targetVersion:plan.targetVersion,...(plan.compatibility?{compatibility:plan.compatibility}:{})};
     if(plan.installedVersion&&plan.targetVersion&&releaseOrder(target.runtime,plan.installedVersion,plan.targetVersion)>=0)return {ok:true,...result,status:await this.probe(plan.instance,{environmentId,fresh:true}),output:`${def.name} ${plan.installedVersion} is already the newest ${target.runtime==="opencode"?`OpenCode ${parsedSemver(plan.installedVersion).major}.x`:def.name} release.`};
-    // An updater can download a few hundred MB (Claude Code's native binary): T3 gives one 5 minutes. Meta's launcher downloads the
+    // An updater can download a few hundred MB (Claude Code's native binary), so it gets 5 minutes. Meta's launcher downloads the
     // whole muse-bin before it answers, bounding each request of its own, so it gets half an hour.
     const minutes=target.runtime==="muse"?30:5,ran=await this.#runCommand(plan.command,plan.args,{timeoutMs:minutes*60_000,environmentId,env:plan.env||null});
     if(!ran.ok){
@@ -877,7 +877,7 @@ export class AgentRuntimeManager{
       throw new Error((ran.stderr||ran.stdout||ran.error||(`Could not ${plan.installedVersion?"update":"install"} ${def.name}`)).trim().slice(-2000));
     }
     // The binary this profile runs must start and report what was installed, a pinned version or, after the harness's own updater,
-    // another version than before (T3 25f8fcb18): an update that left it where it was is said, not shown as ready.
+    // another version than before: an update that left it where it was is said, not shown as ready.
     const status=await this.probe(plan.instance,{environmentId,fresh:true}),running=target.runtime==="muse"?parseMuseVersion(status.version):parsedSemver(status.version)?.raw||null;
     const where=status.binary||plan.binary||def.command,named=plan.targetVersion&&plan.pinned?`${def.name} ${plan.targetVersion}`:def.name;
     if(!status.installed||!running){const said=String(status.message||"no answer").trim();throw new Error(`${named} was installed, but the ${def.name} this profile runs (${where}) did not start: ${/[.!?…]$/.test(said)?said:said+"."}`)}
@@ -900,7 +900,7 @@ export class AgentRuntimeManager{
     if(!viewed.ok)throw new Error((viewed.stderr||viewed.stdout||"Could not determine the compatible runtime version").trim().slice(-1000));
     return newestListed(viewed.stdout);
   }
-  // What installing or updating a harness runs, decided without changing anything (T3 Code's maintenance resolver). One that is not
+  // What installing or updating a harness runs, decided without changing anything. One that is not
   // there gets its npm package (OpenCode the newest supported 1.x). One that is updates through what installed the binary the profile
   // runs (harnessInstallOwner): npm into its own prefix, or its own updater, to the newest release of its own line (an OpenCode 1.x
   // stays 1.x and a 2.x 2.x, the newest below 3.0.0). An install no updater is proven for, a version Trebell cannot read, a host's
@@ -962,7 +962,7 @@ export class AgentRuntimeManager{
       :{command:owner.binary,args:runtime==="opencode"?["upgrade",targetVersion]:owner.args,env:{...this.childEnv(instance,{key:false}),...(owner.env||{})},pinned:runtime==="opencode"};
     return {instance,method:owner.method,binary:owner.real,installedVersion:installed,targetVersion,packageName,...(compatibility?{compatibility}:{}),...step,shown:shownCommand(step.command,step.args,remote?"linux":this.platform)};
   }
-  // Muse Code's update (T3 museMaintenance), from installed, the version the profile's Muse Code answered: Meta's launcher, run with its
+  // Muse Code's update, from installed, the version the profile's Muse Code answered: Meta's launcher, run with its
   // update on, synchronous and due, installs the newest release of its channel (read again now) before it answers --version, and the
   // version must then have moved. A Muse Code that Meta's launcher does not run is the person's to update.
   async #museUpdatePlan(instance,installed){
@@ -981,7 +981,7 @@ export class AgentRuntimeManager{
     let real=found;try{real=(this.platform==="win32"?realpathSync.native:realpathSync)(found)}catch{}
     return {binary:found,real,updates:isMuseLauncher(real,{platform:this.platform})};
   }
-  // What Settings says of a newer Muse Code release (T3 enrichMuseSnapshot), as #updateAdvisory says it of the others: the newest
+  // What Settings says of a newer Muse Code release, as #updateAdvisory says it of the others: the newest
   // release of the profile's channel beside the version it runs, an update that Meta's launcher runs, or how to update one it does not.
   async #museUpdateAdvisory(instance,status,{waitMs=null}={}){
     if(!status?.installed||this.processSpawner(instance))return null;
@@ -1010,9 +1010,9 @@ export class AgentRuntimeManager{
     return {...harnessInstallOwner(instance.kind,{paths:{found,binary,real},packageName:npmPackageFor(instance.kind,version),command:RUNTIMES[instance.kind].command,platform:this.platform,env:this.env,codexHome,grokHome}),binary,real};
   }
   #releases=new Map();
-  // The newest release kept under key: npm's registry's for a package (T3 fetchNpmLatestVersion), or the one read gives (npm's own
-  // answer, Muse Code's channel, kept by its URL), kept an hour once read and a minute when it could not be read (T3
-  // ProviderLatestVersions); reads at once share one. wait:false answers from what is kept and reads nothing; waitMs waits for a read
+  // The newest release kept under key: npm's registry's for a package, or the one read gives (npm's own answer, Muse Code's
+  // channel, kept by its URL), kept an hour once read and a minute when it could not be read; reads at once share one. wait:false
+  // answers from what is kept and reads nothing; waitMs waits for a read
   // on its way only that long after it began, then answers what was kept before while the read goes on for the next answer.
   async #latestRelease(key,{wait=true,fresh=false,waitMs=null,read=()=>registryRelease(this.fetchImpl,key)}={}){
     const kept=this.#releases.get(key);
@@ -1031,7 +1031,7 @@ export class AgentRuntimeManager{
   }
   // How a profile's newest release is read and the key it is kept under: npm's own answer for an install npm updates on this machine
   // (`npm view`, through the person's npm registry and proxy, as its update reads it; OpenCode 2.x's below 3.0.0), and npm's registry
-  // for a harness's own updater (T3) and for a host's harness. owner: the profile's (#installOwner), when it is known.
+  // for a harness's own updater and for a host's harness. owner: the profile's (#installOwner), when it is known.
   #releaseRead(instance,version,owner=null){
     const packageName=npmPackageFor(instance.kind,version);if(!packageName)return null;
     if(this.processSpawner(instance)||(owner||this.#installOwner(instance,version)).method!=="npm")return this.#registryRead(instance.kind,packageName,parsedSemver(version)?.major);
@@ -1059,8 +1059,8 @@ export class AgentRuntimeManager{
       if(release)void this.#latestRelease(release.key,{...started,read:release.read});
     }catch{}
   }
-  // What Settings says of a newer release of the harness a profile runs (T3's version advisory): {current, latest (null when it could
-  // not be read), newer, canUpdate (Trebell runs the update: command, what it runs), binary (the file the profile runs), message (how
+  // What Settings says of a newer release of the harness a profile runs: {current, latest (null when it could not be read),
+  // newer, canUpdate (Trebell runs the update: command, what it runs), binary (the file the profile runs), message (how
   // the person updates one Trebell does not), command}. Only a harness Trebell updates has one, when it is there; an OpenCode on a
   // server of its own has the one of this machine's opencode, whose version its row shows and its Update installs. waitMs (Settings'
   // own listing): the newest release is read when its last answer is gone, and waited for that long after its read began.
@@ -1144,7 +1144,7 @@ export class AgentRuntimeManager{
     if(instance.kind==="grok"){
       if(permissionMode==="full")return ["agent","--always-approve","stdio"];
       if(permissionMode==="auto")return ["--permission-mode","auto","agent","stdio"];
-      // `grok agent` has no accept-edits mode (it treats acceptEdits as asking, T3 grokAcpSpawnArgs): it asks, and Trebell
+      // `grok agent` has no accept-edits mode (it treats acceptEdits as asking): it asks, and Trebell
       // answers its edit requests itself in the edits mode.
       return ["--permission-mode","default","agent","stdio"];
     }
@@ -1279,14 +1279,14 @@ export class AgentRuntimeManager{
     if(instance.kind==="codex"){
       const checked=await this.#versionCheck(instance,{environmentId,fresh}),failure=checked.ok?null:versionCheckFailure(checked),host=Boolean(failure&&this.processSpawner(instance,environmentId));
       // Here a --version that ran out of time leaves the answer to Codex's account read, which has 20 s of its own and names the
-      // version (T3 asks only that). On a host (SSH, WSL) a failed check is unavailable as before (see below).
+      // version. On a host (SSH, WSL) a failed check is unavailable as before (see below).
       if(failure&&(host||failure!=="timeout")){
         const missing=failure==="missing";
         return {id:instance.id,kind:"codex",name:def.name,available:false,installed:!host&&!missing,authenticated:false,protocol:"codex",version:null,binary:this.executable(instance,{environmentId}),message:missing?"Codex CLI was not found. Install it (npm install -g @openai/codex), then sign in with codex login.":(checked.stderr||checked.error||"Codex CLI is unavailable").trim().slice(0,500)};
       }
       const version=failure?null:(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null;
       const refused=this.#refusedAfterVersion(instance,environmentId,{protocol:"codex",version,binary:this.executable(instance,{environmentId})});if(refused)return refused;
-      // Readiness is Codex's own account/read answer (T3 accountProbeStatus), so non-OpenAI model providers need no login.
+      // Readiness is Codex's own account/read answer, so non-OpenAI model providers need no login.
       const probed=await this.#codexAccount(instance,environmentId);
       if(probed.error)return {id:instance.id,kind:"codex",name:def.name,available:false,installed:true,authenticated:null,protocol:"codex",version,binary:this.executable(instance,{environmentId}),message:("Codex app-server account check failed: "+probed.error).slice(0,500)};
       const status=codexAccountStatus(probed.result.account);
@@ -1316,7 +1316,7 @@ export class AgentRuntimeManager{
     }
     const versionResult=await this.#versionCheck(instance,{environmentId,fresh}),failure=versionResult.ok?null:versionCheckFailure(versionResult),host=Boolean(failure&&this.processSpawner(instance,environmentId));
     // Here a --version that ran out of time (a cold start, a scan) or exited with an error says nothing of whether the harness
-    // runs: it stays installed and may start (T3 refuses no turn on its check), and its own error says why if it then fails
+    // runs: it stays installed and may start, and its own error says why if it then fails
     // (withProbeAdvice). Its sign-in is not read, and the answer is kept for a minute (probe). On a host (SSH, WSL) a
     // failed check is unavailable as before: ssh's own failures (a host it cannot reach) are no answer of the harness's. OpenCode
     // is not ready without its version: its 1.x and 2.x servers each speak only their own client, which the relay, Git text and its
@@ -1339,7 +1339,7 @@ export class AgentRuntimeManager{
       // A CLI that answers in words: its exit code says.
       else authenticated=auth.ok;
       // A profile here that runs through a router or gateway has no Claude sign-in for `claude auth status` to find: the endpoint
-      // holds its credentials, which only a session can check (T3 skips the signed-out verdict for it).
+      // holds its credentials, which only a session can check.
       const endpoint=authenticated===false&&!this.processSpawner(instance,environmentId)&&claudeCustomEndpoint(this.childEnv(instance));
       if(endpoint){authenticated=null;account={...(account||{}),type:"customEndpoint",label:"Custom API endpoint"};message="Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts."}
       else if(authenticated===false)message="Claude Code is not authenticated. Run `claude auth login` and try again.";
@@ -1362,7 +1362,7 @@ export class AgentRuntimeManager{
       }else{
         const signedIn=async()=>{const models=await this.#run(instance,["models"],{timeoutMs:10_000,environmentId});return models.ok?parseGrokModelsAuth((models.stdout||"")+"\n"+(models.stderr||"")):null};
         // Grok prints the logged-out line for an access token that has just expired, then refreshes it in the same process: a
-        // second `grok models` tells that from a sign-out (T3 checkGrokProviderStatus). One that reads nothing keeps the first.
+        // second `grok models` tells that from a sign-out. One that reads nothing keeps the first.
         authenticated=await signedIn();
         if(authenticated===false)authenticated=(await signedIn())??false;
         if(authenticated===false)message="Grok CLI is installed but not logged in. Run grok login.";
@@ -1372,7 +1372,7 @@ export class AgentRuntimeManager{
       const versionLine=(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null,compatibility=runtimeCompatibility("opencode",versionLine);
       const unavailable=(message,fields={})=>({id:instance.id,kind:instance.kind,name:def.name,available:false,installed:true,authenticated:null,protocol:def.protocol,managed:false,binary:command,version:versionLine,account:null,message,...(compatibility?{compatibility}:{}),...fields});
       if(compatibility?.status==="unsupported")return unavailable(compatibility.message);
-      // T3 Code's status check: the upstream providers OpenCode's matching 1.x/2.x server adapter reports connected, ready once it lists
+      // The status check: the upstream providers OpenCode's matching 1.x/2.x server adapter reports connected, ready once it lists
       // models for them.
       let catalog;
       try{catalog=await this.#openCodeStatusCatalog(instance,compatibility?.version||null,{fresh,refresh,keepCatalog})}
@@ -1398,7 +1398,7 @@ export class AgentRuntimeManager{
     const compatibility=runtimeCompatibility(instance.kind,version);
     return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated!==false,installed:true,authenticated,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version,account,message,...(compatibility?{compatibility}:{})};
   }
-  // Muse Code's status check (T3 checkMuseProviderStatus): `muse --version`, then the models a short read-only host lists. The Muse
+  // Muse Code's status check: `muse --version`, then the models a short read-only host lists. The Muse
   // Session Protocol says nothing of the sign-in and Muse lists Meta's models only once signed in, so a list with models is ready
   // with the sign-in unknown (a turn checks it), and an empty one is not. A failed version check starts no host.
   async #museStatus(instance,{environmentId=undefined,fresh=false}={}){
@@ -1408,7 +1408,7 @@ export class AgentRuntimeManager{
     const checked=await this.#versionCheck(instance,{environmentId,fresh}),said=(checked.stdout||"")+"\n"+(checked.stderr||"");
     if(!checked.ok){
       if(/ENOENT|not recognized as an internal or external command|command not found/i.test(String(checked.error||checked.stderr||"")))return answer({available:false,installed:false,version:null,message:`Muse Code (muse) was not found. Install it with ${museInstallCommand(this.platform)} (https://dev.meta.ai/docs/muse-code), then sign in with muse login.`});
-      // What Muse printed stays out of the answer, which Settings shows (T3 Code's status check leaves it out too).
+      // What Muse printed stays out of the answer, which Settings shows.
       return answer({available:false,installed:true,version:parseMuseVersion(said),message:checked.error==="probe timed out"?"Muse Code did not answer `muse --version` in time. Press Refresh to check it again.":`Muse Code is installed, but \`muse --version\` failed${Number.isInteger(checked.code)?` with exit code ${checked.code}`:""}. Check its executable path, or install Muse Code again.`});
     }
     const version=parseMuseVersion(said),compatibility=runtimeCompatibility("muse",version),known={installed:true,version,...(compatibility?{compatibility}:{})};
@@ -1459,14 +1459,14 @@ export class AgentRuntimeManager{
     if(instance.kind==="native")return {models:[],metadata:[],source:"provider"};
     if(instance.kind==="codex")return {models:[],metadata:[],source:"codex"};
     const status=await this.probe(instance,{environmentId});if(!status.available)return {models:[],metadata:[],source:"unavailable",error:status.message};
-    // Muse Code's are the list its status check read (T3 builds the provider snapshot's models from it); Refresh reads it again.
+    // Muse Code's are the list its status check read; Refresh reads it again.
     if(instance.kind==="muse"){
       try{const catalog=await this.#museCatalog(instance,status.version);return {models:catalog.models,metadata:catalog.metadata,preferred:catalog.preferred,source:"live"}}
       catch(error){return {models:[],metadata:[],source:"unavailable",error:"Muse Code could not list its models: "+(error?.message||String(error))}}
     }
     if(instance.kind==="opencode"){
       // Where the relay runs OpenCode through its SDK (the profile runs on this machine): the model list, and the commands, skills and
-      // agents a new chat offers before its first message (T3 Code's provider snapshot).
+      // agents a new chat offers before its first message.
       if(!this.processSpawner(instance,environmentId)){
         const catalog=await this.#openCodeCatalog(instance,{version:status.compatibility?.version||null});
         return {models:catalog.models,metadata:catalog.metadata,source:catalog.source,preferred:catalog.preferred,connectedProviders:catalog.connectedProviders,inventory:catalog.inventory};
@@ -1475,19 +1475,18 @@ export class AgentRuntimeManager{
       return this.#acpModelList(instance,status,environmentId,"OpenCode",()=>this.#openCodeAcpModels(instance,environmentId));
     }
     if(instance.kind==="claude"){
-      // The models Claude Code itself lists in its initialize answer, "default" (its own default model) first, as T3 Code reads them.
+      // The models Claude Code itself lists in its initialize answer, "default" (its own default model) first.
       // A probe of the last five minutes lists them, also one whose plan usage read failed: the Usage card reads that again.
       let probe;
       try{probe=await this.claudeCapabilities(instance,{environmentId,maxAgeMs:CLAUDE_CAPABILITIES_TTL_MS})}
       catch(error){return {models:[],metadata:[],source:"unavailable",error:"Claude Code could not list its models: "+(error?.message||String(error))}}
       const catalog=claudeModelCatalog(probe);
-      // The same probe's slash commands and agents fill the composer's menus before a new chat's first message (T3 Code's
-      // provider slash commands); a thread's own folder probe replaces them once it starts.
+      // The same probe's slash commands and agents fill the composer's menus before a new chat's first message; a thread's own
+      // folder probe replaces them once it starts.
       return {models:catalog.models,metadata:catalog.metadata,preferred:catalog.preferred,source:"live",inventory:{commands:Array.isArray(probe?.commands)?probe.commands:[],agents:Array.isArray(probe?.agents)?probe.agents:[]}};
     }
-    // Cursor lists its models with display names and per-model effort to a client with the parameterized model picker
-    // (T3's ACP-era Cursor discovery); Grok Build lists them in its initialize answer (T3 discoverGrokMetadataViaAcpInitialize),
-    // with its slash commands, which a new chat's menu shows before its thread exists (T3 grokSlashCommandsFromInitialize).
+    // Cursor lists its models with display names and per-model effort to a client with the parameterized model picker; Grok
+    // Build lists them in its initialize answer, with its slash commands, which a new chat's menu shows before its thread exists.
     if(instance.kind==="cursor")return this.#acpModelList(instance,status,environmentId,"Cursor",()=>withAcpProbe({
       ...this.#acpProbeOptions(instance,environmentId),capabilities:{...defaultAcpClientCapabilities(),_meta:{parameterizedModelPicker:true}},
     },async client=>cursorModelCatalog(await client.request("cursor/list_available_models",{},60_000))));
@@ -1542,13 +1541,13 @@ export class AgentRuntimeManager{
     }
   }
   #antigravityModelLists=new Map();#antigravityRefreshes=new Map();#modelListeners=new Set();
-  // Hears that a harness's model list changed after it was served, so an open composer can take the new list (T3 publishes
-  // provider snapshots as they change). Returns the unsubscribe function.
+  // Hears that a harness's model list changed after it was served, so an open composer can take the new list. Returns the
+  // unsubscribe function.
   onModelsChanged(listener){
     if(typeof listener!=="function")return()=>{};
     this.#modelListeners.add(listener);return()=>{this.#modelListeners.delete(listener)};
   }
-  // Antigravity's list comes from its sessions (T3 buildAntigravityModelsFromSession): every session start reports it here.
+  // Antigravity's list comes from its sessions: every session start reports it here.
   rememberAcpSessionModels(instance,setup,{environmentId=undefined}={}){
     if(instance?.kind!=="antigravity")return;
     const catalog=antigravityModelCatalog(setup);if(!catalog.models.length)return;
@@ -1558,9 +1557,9 @@ export class AgentRuntimeManager{
     if(signature(served)===signature(catalog))return;
     for(const listener of [...this.#modelListeners]){try{listener({runtime:"antigravity",instanceId:instance.id,environmentId:environment})}catch{}}
   }
-  // Until a session has reported the account's list, T3's manifest list stands in and one throwaway local session reads the
-  // real list in the background. Each launch unpacks Antigravity's bundle (about 1 GB), so listing never starts it again
-  // (T3 AntigravityDriver: status checks never spawn; sessions and refreshes do).
+  // Until a session has reported the account's list, a stand-in list serves and one throwaway local session reads the
+  // real list in the background. Each launch unpacks Antigravity's bundle (about 1 GB), so listing never starts it again:
+  // status checks never start it; sessions and refreshes do.
   // Its session signs in with the key method on an API key when Antigravity asks (never by itself on Sign in); a refresh that ended because the machine gives Antigravity
   // no IPv6 sockets says so with the stand-in list (#antigravityModelFailures), as nothing of Antigravity's can run there.
   #antigravityModelFailures=new Map();

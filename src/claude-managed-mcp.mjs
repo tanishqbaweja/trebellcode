@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 
-// An administrator's managed-mcp.json, where Claude Code reads it (its managed settings folder, as T3 Code's hasClaudeManagedMcpConfig
-// checks it). Next to that file Claude Code loads only the managed MCP servers and exits at startup on --strict-mcp-config, so a run
+// An administrator's managed-mcp.json, where Claude Code reads it (its managed settings folder). Next to that file Claude Code
+// loads only the managed MCP servers and exits at startup on --strict-mcp-config, so a run
 // that wants no MCP servers of its own (the capability probe, Git text) leaves the flag out there.
 export function claudeManagedMcpPath(platform=process.platform){
   if(platform==="darwin")return "/Library/Application Support/ClaudeCode/managed-mcp.json";

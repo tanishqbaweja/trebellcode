@@ -1,7 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 
-// Reads newline-delimited JSON from a stream as its lines, split on "\n" alone, with one "\r" before it dropped (T3 frames ACP so,
-// as NDJSON is framed). readline also ends a line at U+2028 and U+2029, which JSON.stringify leaves raw inside strings, so a
+// Reads newline-delimited JSON from a stream as its lines, split on "\n" alone, with one "\r" before it dropped, as NDJSON is
+// framed. readline also ends a line at U+2028 and U+2029, which JSON.stringify leaves raw inside strings, so a
 // message holding one came apart into pieces that are not JSON and was lost: an agent's reply, a permission request or a turn's
 // answer, a terminal's output or a person's input to it. onLine gets each line; at the end of the stream, a last line without its
 // "\n" too. onEnd is told once, when the stream ends, fails or closes; a failed stream is no error thrown. close() stops reading.

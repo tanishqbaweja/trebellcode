@@ -2,7 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { win32 } from "node:path";
 import { shownCommand } from "./harness-install-plan.mjs";
 
-// Muse Code's releases and its updates, as T3 Code reads them (provider-muse maintenance.ts): Meta names the newest release of each
+// Muse Code's releases and its updates: Meta names the newest release of each
 // channel at https://api.meta.ai/muse-code/channels/<channel>, and only Meta's launcher updates a Muse Code. It has no update
 // command: run with its update on, synchronous and due (MUSE_NO_AUTO_UPDATE=0, MUSE_SYNC_UPDATE=1, MUSE_UPDATE_INTERVAL_SECONDS=0),
 // it installs the newest release of the channel it runs on before it answers. Every Trebell launch turns that update off
@@ -15,10 +15,9 @@ const RELEASE=/^\d+\.\d+\.\d+-R\d+(?:\.\d+)?$/;
 // The channel a profile's Muse Code runs on: MUSE_CHANNEL, else muse-stable, as Meta's launcher reads it.
 export const museChannel=env=>String(env?.MUSE_CHANNEL||"").trim()||"muse-stable";
 export const museChannelUrl=channel=>`https://api.meta.ai/muse-code/channels/${channel}`;
-// The release a channel's manifest names in Meta's form (X.Y.Z-R<revision>), or null for a manifest that names none (T3
-// ChannelManifest).
+// The release a channel's manifest names in Meta's form (X.Y.Z-R<revision>), or null for a manifest that names none.
 export function museChannelRelease(manifest){const version=manifest?.version;return typeof version==="string"&&RELEASE.test(version)?version:null}
-// The newest release of a channel Meta publishes (T3 latestMuseVersion: 4 s), or null when it could not be read.
+// The newest release of a channel Meta publishes, or null when it could not be read.
 export async function latestMuseRelease(fetchImpl,channel,{timeoutMs=4000}={}){
   if(!MUSE_CHANNELS.includes(channel))return null;
   try{
@@ -26,7 +25,7 @@ export async function latestMuseRelease(fetchImpl,channel,{timeoutMs=4000}={}){
     return response?.ok?museChannelRelease(await response.json()):null;
   }catch{return null}
 }
-// Two Muse Code versions in order (T3 compareMuseVersions): by X.Y.Z, then by the -R revision and its build when both have one; a
+// Two Muse Code versions in order: by X.Y.Z, then by the -R revision and its build when both have one; a
 // version without a revision equals each revision of it. One that is no Muse Code version orders as equal.
 export function compareMuseVersions(a,b){
   const parts=value=>/^(\d+)\.(\d+)\.(\d+)(?:-R(\d+)(?:\.(\d+))?)?$/.exec(String(value||"").trim())?.slice(1).map(part=>part==null?null:Number(part))||null;
@@ -37,13 +36,13 @@ export function compareMuseVersions(a,b){
 }
 
 const LAUNCHER_MAX_BYTES=128*1024;
-// A small script's text, or "" for a larger or unreadable file (T3 reads up to 128 KiB).
+// A small script's text, or "" for a larger or unreadable file.
 export function readLauncherScript(path){try{return statSync(path).size>LAUNCHER_MAX_BYTES?"":readFileSync(path,"utf8")}catch{return ""}}
-// Meta's launcher script: it names its user agent muse-code/launcher-<n> and reads MUSE_SYNC_UPDATE (T3's test of it).
+// Meta's launcher script: it names its user agent muse-code/launcher-<n> and reads MUSE_SYNC_UPDATE.
 const metaLauncher=text=>text.includes("muse-code/launcher-")&&text.includes("MUSE_SYNC_UPDATE");
 // Whether the Muse Code a profile runs, at its real path, is Meta's launcher, which updates it: elsewhere the launcher script itself
 // (install.sh's ~/.local/bin/muse); on Windows the muse.cmd Meta's install.ps1 writes, which runs the .muse-launcher.ps1 beside it, a
-// launcher that reads the same switches (T3 leaves Windows to the person). Anything else, a muse-bin-<version> binary or another
+// launcher that reads the same switches. Anything else, a muse-bin-<version> binary or another
 // wrapper, is not: Trebell never guesses an updater.
 export function isMuseLauncher(real,{platform=process.platform,read=readLauncherScript}={}){
   const path=String(real||"");if(!path)return false;

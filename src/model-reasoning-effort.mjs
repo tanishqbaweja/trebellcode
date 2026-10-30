@@ -8,9 +8,9 @@ export function normalizeReasoningEffort(value){
   return ALLOWED.has(effort)?effort:null;
 }
 
-// Codex advertises its own effort ids per model (for example "ultra"); keep them as Codex lists them, like T3 Code.
+// Codex advertises its own effort ids per model (for example "ultra"); keep them as Codex lists them.
 const CODEX_EFFORT=/^[a-z][a-z0-9_-]{0,31}$/;
-// OpenCode's reasoning levels are its model variants, by the names OpenCode gives them (T3 Code's "variant" option); kept verbatim.
+// OpenCode's reasoning levels are its model variants, by the names OpenCode gives them; kept verbatim.
 const OPENCODE_VARIANT=/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 // Muse Code's levels are the Muse Session Protocol's, Ultra included, without None, which Meta's provider refuses.
 export const MUSE_REASONING_EFFORTS=Object.freeze(["minimal","low","medium","high","xhigh","max","ultra"]);

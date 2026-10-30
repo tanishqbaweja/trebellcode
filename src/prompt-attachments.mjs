@@ -7,7 +7,7 @@ import { SessionRefusalError } from "./session-refusal.mjs";
 export const PROMPT_IMAGE_PATH=Symbol.for("trebell.prompt.image-path");
 export const PROMPT_AUDIO_PATH=Symbol.for("trebell.prompt.audio-path");
 // A document's link keeps the file its text was extracted to (document-text.mjs), which each harness's prompt names after the
-// document's path, as T3 Code names it: "(text extracted to: <file>)".
+// document's path: "(text extracted to: <file>)".
 export const PROMPT_TEXT_PATH=Symbol.for("trebell.prompt.text-path");
 function withPath(part,key,path){
   if(part&&typeof part==="object"&&path)Object.defineProperty(part,key,{value:String(path),enumerable:false,configurable:true});
@@ -25,8 +25,8 @@ export function attachmentName(path){
   return name.replace(/^\d{10,}-[0-9a-f]{8}-(?=.)/i,"");
 }
 
-// An attached file Trebell cannot read, said by its name with what to do instead of Node's bare error (T3 names "an attachment could
-// not be read" as the reason a turn could not start). The harness has nothing yet, so the relay ends the turn with it and asks the
+// An attached file Trebell cannot read, said by its name with what to do instead of Node's bare error. The harness has
+// nothing yet, so the relay ends the turn with it and asks the
 // harness nothing.
 export function unreadableAttachment(kind,path,error){
   const code=typeof error?.code==="string"&&error.code?` (${error.code})`:"";
