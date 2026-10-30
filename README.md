@@ -133,7 +133,7 @@ npm run ui:dev
 
 ### Model provider
 
-Trebell Native calls the model provider you select with your own API key: OpenAI (the default), Anthropic, Google Gemini, xAI, the Meta Model API, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi. Every provider needs a key, so add one in **Settings → Agents & models** before the first Native turn (without one, each provider reads its own environment variable, such as `OPENAI_API_KEY`, `XAI_API_KEY` or `META_API_KEY`).
+Trebell Native calls the model provider you select with your own API key: OpenAI (the default), Anthropic, Google Gemini, xAI, the Meta Model API, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi. Every provider needs a key, so add one in **Settings → Agents & models** before the first Native turn (without one, each provider reads its own environment variable, such as `OPENAI_API_KEY`, `XAI_API_KEY` or `META_API_KEY`). The composer's model picker lists every model the key gives: OpenAI starts on its measured default, `gpt-6-luna`, and a provider that names no default model (the Meta Model API, xAI and the rest) asks which one to use before the first message, unless it lists only one.
 
 ### How each harness signs in
 

@@ -275,7 +275,7 @@ async function runCodexGoalCommand(deps,command){
 // name, or one of the composer's commands. It answers true when the command ran (the composer empties), "kept" when the composer
 // keeps what it holds, and false for text that names no command, which App then sends as a message.
 export async function runSlashCommand(deps,text){
-  const {currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt,setGoal,setEvents,setComposerAlert}=deps;
+  const {currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt,setGoal,setEvents,setComposerAlert,askForModel}=deps;
   const [command,...rest]=text.split(/\s+/);
   const recipe=(currentProject?.recipes||[]).find(item=>item.name===command);
   if(recipe){
@@ -283,6 +283,9 @@ export async function runSlashCommand(deps,text){
       const resolved=await api("/api/project-recipe/resolve",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,recipe:recipe.id||recipe.name,input:rest.join(" "),currentPermission:permissionMode,runtime:agentRuntime}});
       const execution=resolved.execution;if(!execution)throw new Error("Recipe could not be resolved");
       if(execution.model&&!models.includes(execution.model))throw new Error(`Recipe ${recipe.name} requires model ${execution.model}, which is not available in the active runtime.`);
+      // A recipe that names no model runs on the composer's. With none chosen from a catalog that lists some (Trebell Native on a
+      // provider that names no default), the composer asks for one as it does for a message (App's dispatchSend) and keeps the command.
+      if(!execution.model&&!models.includes(model)&&models.length&&askForModel){askForModel();return "kept"}
       // Its message shows in the conversation while an automatic compaction runs before it (pending): the composer let it go already.
       await startTurn(execution.turnInput,attachments,execution.model||model,null,null,repositoryFocusPaths(attachments,contextChips),{
         permissionModeOverride:execution.permissionMode,

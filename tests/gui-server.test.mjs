@@ -369,6 +369,13 @@ test("Git commit and review text use the active harness and never the Native pro
     assert.deepEqual(nativeCommit,{message:"chore: native provider subject",style:"repository",model:"gpt-native-fixture",runtime:"native",generatedWith:"OpenAI API"});
     assert.equal(directChats.length,1);assert.equal(directChats[0].providerId,"openai");assert.match(directChats[0].prompt,/harness-diff-marker/);
     assert.equal(harnessCalls.length,4,"Trebell Native keeps the provider path");
+    // With no model chosen in the composer and no Git text model set (a provider that names no default), Native says what to do,
+    // and nothing reaches the provider, which would only say "Provider turn requires a model.".
+    for(const path of ["/api/git/commit-message","/api/git/review-text"]){
+      const noModel=await post(path,{cwd:repo,environmentId:null,model:""});
+      assert.equal(noModel.status,400);assert.equal((await noModel.json()).error,"Choose a model in the composer first, or set a Git text model in Settings.");
+    }
+    assert.equal(directChats.length,1,"no Git text request goes to the provider without a model");
   }finally{
     ProviderManager.prototype.directChat=originalDirectChat;
     await gui.close();
