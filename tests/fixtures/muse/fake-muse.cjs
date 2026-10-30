@@ -18,7 +18,7 @@
 //                          once the file MUSE_FAKE_COMPACT_HOLD names is there; "noop" Muse has nothing to compact
 //                          (no_compactable_history); "hold" the compaction runs until the host ends. A session with no turn yet is
 //                          refused (missing_run) whatever it says
-//   MUSE_FAKE_CONTEXT_USED how many tokens of the model's 1,007,997 the context holds after each plain turn (session/tokenUsage and
+//   MUSE_FAKE_CONTEXT_USED how many tokens of the model's 1,048,576 the context holds after each plain turn (session/tokenUsage and
 //                          session/contextUsage), as a long conversation's does
 //   MUSE_FAKE_CHILD_ASK_HOLD  a file: once it is there, a workflow child still running from the session's last turn asks to run
 //                          `touch trebell-approved.txt`, as "child approval" asks it, whether a turn runs or not. A child's approval

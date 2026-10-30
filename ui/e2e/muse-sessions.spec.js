@@ -118,8 +118,8 @@ test("a Muse Code subagent and its todo list show as the running turn's row and 
     await expect(row(page,"Subagent · greeter")).toHaveClass(/status-done/);
     await expect(row(page,"Spawn the greeter")).toHaveClass(/status-done/);
     const meter=page.locator(".composer-context");
-    await expect(meter).toContainText("3% · 33,267/1,007,997");
-    await expect(meter).toHaveAttribute("title","Context 3% · 33,267 input · 66,296 total");
+    await expect(meter).toContainText("3% · 30,528/1,048,576");
+    await expect(meter).toHaveAttribute("title","Context 3% · 30,528 input · 60,788 total");
     for(const mode of ["dark","light"]){await switchMode(page,mode);await page.screenshot({animations:"disabled",path:auditDir+`muse-subagent-done-${mode}-1280x800.png`})}
   }finally{await harness.close()}
 });

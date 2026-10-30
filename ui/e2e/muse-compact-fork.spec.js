@@ -303,7 +303,7 @@ test("Stop while Muse Code's host is still starting again for a compaction ends 
 
 test("Stop during Muse Code's automatic compaction sends the message on uncompacted, saying the compaction was stopped, instead of giving the draft back",async({page})=>{
   test.setTimeout(90_000);
-  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"907200",MUSE_FAKE_COMPACT:"hold"}});
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"943721",MUSE_FAKE_COMPACT:"hold"}});
   try{
     Object.assign(harness.settings,{autoCompactContext:true,autoCompactThresholdPercent:85});
     await routeMuseApp(page,harness);
@@ -359,7 +359,7 @@ test("a message that fails while Muse Code compacts the thread is no end of the 
 
 test("a message sent with the context nearly full waits for Muse Code's automatic compaction to end, however long Muse takes, and then goes",async({page})=>{
   test.setTimeout(90_000);
-  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"907200"},holds:["compact"]});
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"943721"},holds:["compact"]});
   try{
     Object.assign(harness.settings,{autoCompactContext:true,autoCompactThresholdPercent:85});
     await routeMuseApp(page,harness);
@@ -390,7 +390,7 @@ test("a message sent with the context nearly full waits for Muse Code's automati
 
 // A thread at 90% of its context with automatic compaction on, which the stand-in Muse holds compacting (release "compact").
 async function nearlyFullThread(page){
-  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"907200"},holds:["compact"]});
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"943721"},holds:["compact"]});
   Object.assign(harness.settings,{autoCompactContext:true,autoCompactThresholdPercent:85});
   await routeMuseApp(page,harness);
   await page.setViewportSize({width:1280,height:800});
@@ -471,7 +471,7 @@ test("a reload while a message waits for Muse Code's automatic compaction keeps 
 // The person's message sent in one window waits for Muse Code's automatic compaction (the stand-in holds it), with the context at
 // 90%; the threads' meta is shared with the person's other windows, as the server's is. The window is returned with the harness.
 async function heldInFirstWindow(page,meta){
-  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"907200"},holds:["compact"]});
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"943721"},holds:["compact"]});
   Object.assign(harness.settings,{autoCompactContext:true,autoCompactThresholdPercent:85});
   await routeMuseApp(page,harness,{meta});
   await page.setViewportSize({width:1280,height:800});
@@ -596,7 +596,7 @@ test("a message waiting for Muse Code's automatic compaction stays on its way in
 
 test("a project's recipe sent with the context nearly full shows its message in the thread while Muse Code compacts first, and goes once, when Muse has compacted",async({page})=>{
   test.setTimeout(90_000);
-  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"907200"},holds:["compact"]});
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"943721"},holds:["compact"]});
   try{
     Object.assign(harness.settings,{autoCompactContext:true,autoCompactThresholdPercent:85});
     await routeMuseApp(page,harness,{recipes:[{id:"tidy",name:"/tidy",description:"Tidy what the conversation built"}]});
@@ -699,7 +699,7 @@ test("once the window has waited its ten minutes for Muse Code's compaction, its
 
 test("a message whose automatic compaction Muse Code has not finished in the window's ten minutes goes on, its row saying the window stopped waiting while Muse may still compact, and Muse's later end replaces that row",async({page})=>{
   test.setTimeout(90_000);
-  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"907200"},holds:["compact"]});
+  const harness=await startMuseHarness({environment:{MUSE_FAKE_CONTEXT_USED:"943721"},holds:["compact"]});
   try{
     Object.assign(harness.settings,{autoCompactContext:true,autoCompactThresholdPercent:85});
     await routeMuseApp(page,harness);
