@@ -140,7 +140,7 @@ test("approval answers keep to the request: allow-once first, reject-once only, 
   assert.equal(acpDecisionOption("grok",grokOptions.filter(option=>option.optionId!=="allow-edits-session"),"acceptForSession"),"allow-once","a project-wide always answer is never sent for a session answer");
   assert.equal(acpDecisionOption("cursor",grokOptions,"acceptForSession"),"allow-edits-session");
   assert.equal(acpDecisionOption("cursor",grokOptions,"decline"),"reject-once");assert.equal(acpDecisionOption("cursor",grokOptions,"cancel"),null);
-  assert.deepEqual(acpApprovalOptions("grok",grokOptions).map(option=>option.label),["Cancel","Decline","Allow all edits this session","Approve"]);
+  assert.deepEqual(acpApprovalOptions("grok",grokOptions).map(option=>option.label),["Cancel","Decline","Allow edits for the rest of this session","Approve"]);
   const agy=acpApprovalOptions("antigravity",[{kind:"allow_once",optionId:"once"},{kind:"allow_always",optionId:"always",_meta:{"agy.security.warning":{title:"Careful",message:"This allows every command in this thread."}}},{kind:"reject_once",optionId:"deny"}]);
   assert.deepEqual(agy.map(option=>[option.decision,option.label]),[["accept","Allow once"],["acceptForSession","Allow for this thread"],["decline","Deny"],["cancel","Cancel"]]);
   assert.equal(agy[1].warning,"This allows every command in this thread.");

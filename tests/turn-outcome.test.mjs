@@ -79,14 +79,14 @@ test("a turn's first reply carries the harness heading and its last reply carrie
 // too. While the live card lists the failure, the card says it, once.
 test("the last reply of a turn that failed or was stopped says the error the turn ended with, unless the live card lists that failure",()=>{
   const turnInfo={
-    [turnInfoKey("th","t1")]:{status:"failed",durationMs:1200,error:"Claude gave up after repeated API errors."},
+    [turnInfoKey("th","t1")]:{status:"failed",durationMs:1200,error:"Claude Code stopped after the API kept failing."},
     [turnInfoKey("th","t2")]:{status:"interrupted",error:"Stopped while the tests ran."},[turnInfoKey("th","t3")]:{status:"completed",durationMs:900},
     [turnInfoKey("th","t4")]:{status:"failed"},
   };
   const messages=[user("u1","t1"),reply("a1","t1"),thought("r1","t1"),reply("a2","t1"),user("u2","t2"),reply("a3","t2"),user("u3","t3"),reply("a4","t3"),user("u4","t4"),reply("a5","t4")];
   const rows=assistantRowDecorations(messages,{harnessLabel:"Claude Code",turnInfo,threadId:"th"});
   assert.deepEqual(rows.get("a1"),{heading:"Claude Code",outcomeLabel:"",outcomeTone:""});
-  assert.deepEqual(rows.get("a2"),{heading:"",outcomeLabel:"failed · 1.2s",outcomeTone:"err",outcomeMessage:"Claude gave up after repeated API errors."});
+  assert.deepEqual(rows.get("a2"),{heading:"",outcomeLabel:"failed · 1.2s",outcomeTone:"err",outcomeMessage:"Claude Code stopped after the API kept failing."});
   assert.deepEqual(rows.get("a3"),{heading:"Claude Code",outcomeLabel:"stopped",outcomeTone:"warn",outcomeMessage:"Stopped while the tests ran."});
   assert.deepEqual(rows.get("a4"),{heading:"Claude Code",outcomeLabel:"done · 0.9s",outcomeTone:"ok"});
   assert.deepEqual(rows.get("a5"),{heading:"Claude Code",outcomeLabel:"failed",outcomeTone:"err"},"an error nobody sent is not made up");

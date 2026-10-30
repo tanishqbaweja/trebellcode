@@ -219,7 +219,7 @@ export function acpApprovalOptions(runtime,options=[]){
   if(runtime==="grok")return [
     {decision:"cancel",label:"Cancel"},
     ...(find("reject_once")?[{decision:"decline",label:"Decline"}]:[]),
-    ...(find("allow_always",GROK_ALLOW_EDITS_SESSION)?[{decision:"acceptForSession",label:"Allow all edits this session"}]:[]),
+    ...(find("allow_always",GROK_ALLOW_EDITS_SESSION)?[{decision:"acceptForSession",label:"Allow edits for the rest of this session"}]:[]),
     ...(find("allow_once")?[{decision:"accept",label:"Approve"}]:[]),
   ];
   if(runtime==="antigravity"){

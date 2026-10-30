@@ -6,7 +6,7 @@ import { CLAUDE_USAGE_LIMIT_HINT, ClaudeAgentSession, claudeResultFailure } from
 import { generateTextWithHarness } from "../src/harness-text-generation.mjs";
 import { claudeResult, scriptedClaudeSdk } from "./fixtures/scripted-claude-sdk.mjs";
 
-const CONTEXT_FULL="Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
+const CONTEXT_FULL="Claude Code stopped: this thread no longer fits the model's context window. Run /compact, or start a new thread.";
 const failed=(terminal_reason,extra={})=>({type:"result",subtype:"success",is_error:true,terminal_reason,result:"",...extra});
 // The reset of a rejected five-hour window 90 minutes from now; the wait reads 1h 30m, or 1h 29m once a minute has turned.
 const resetsAt=()=>Math.floor(Date.now()/1000)+90*60;
@@ -24,10 +24,10 @@ test("an API failure keeps the API's own words, secrets redacted and cut to 500 
   assert.equal(claudeResultFailure(failed("api_error",{is_error:false,api_error_status:400,result:"  API Error: 400 Request rejected by a safeguard.\n"})),"API Error: 400 Request rejected by a safeguard.");
   const leaked=failed("api_error",{api_error_status:400,result:`API Error: 400 ${"x".repeat(440)} Bearer ${"s".repeat(100)} ${"y".repeat(100)}`});
   assert.equal(claudeResultFailure(leaked),`API Error: 400 ${"x".repeat(440)} Bearer [redacted] ${"y".repeat(26)}`,"the token is gone before the cut");
-  assert.equal(claudeResultFailure(failed("api_error",{api_error_status:500,result:"I found three files."})),"Claude gave up after repeated API errors.","an ordinary reply is not an API error");
+  assert.equal(claudeResultFailure(failed("api_error",{api_error_status:500,result:"I found three files."})),"Claude Code stopped after the API kept failing.","an ordinary reply is not an API error");
   assert.equal(claudeResultFailure(failed("api_error",{api_error_status:400,result:"API Error: 400 Request rejected.",errors:["[ede_diagnostic] internal detail","Tool execution failed: EACCES"]})),"Tool execution failed: EACCES");
-  assert.equal(claudeResultFailure(failed("api_error",{api_error_status:529,result:"API Error: 529 Overloaded."})),"Claude API is overloaded (529). Try again shortly.");
-  assert.equal(claudeResultFailure(failed("api_error",{api_error_status:429,result:"API Error: 429 Rate limited."})),"Claude API rate limit reached. Try again later.");
+  assert.equal(claudeResultFailure(failed("api_error",{api_error_status:529,result:"API Error: 529 Overloaded."})),"The Claude API is overloaded (529). Send the message again in a moment.");
+  assert.equal(claudeResultFailure(failed("api_error",{api_error_status:429,result:"API Error: 429 Rate limited."})),"The Claude API rate limit was hit (429). Send the message again later.");
   assert.equal(claudeResultFailure(failed("api_error",{api_error_status:500,result:"API Error: 500"}),{failureHint:CLAUDE_USAGE_LIMIT_HINT}),CLAUDE_USAGE_LIMIT_HINT);
 });
 
@@ -84,7 +84,7 @@ test("a quick retry into a usage limit still says when it resets, from the windo
   const retried=await claudeTurn([blockedReply(info),message=>failed("api_error",{api_error_status:429,result:"API Error: Rate limited",user_message_uuid:message.uuid})]);
   assert.deepEqual(retried.notices.length,1,"the usage-limit notice comes back");
   assert.match(retried.notices[0],/^Claude usage limit reached\. This turn is paused until the 5-hour limit resets in 1h (?:29|30)m\.$/);
-  assert.equal(retried.error?.message,"Claude API rate limit reached. Try again later.");
+  assert.equal(retried.error?.message,"The Claude API rate limit was hit (429). Send the message again later.");
   const unstated=await claudeTurn([blockedReply(info),message=>failed("api_error",{result:"API Error: Rate limited",user_message_uuid:message.uuid})]);
   assert.match(unstated.error?.message||"",/^Claude usage limit reached\. Send the message again once the 5-hour limit resets in 1h (?:29|30)m\.$/,"the turn's error carries the wait too");
   // An allowed overage takes over the window: nothing is paused.
@@ -129,14 +129,14 @@ test("a usage limit a reply ran into no longer names the turn's failure once a l
   const reply=(uuid,parent=null)=>({type:"assistant",uuid,parent_tool_use_id:parent,message:{id:"m-"+uuid,content:[{type:"text",text:"Claude could not complete this request."}]}});
   const gaveUp=message=>failed("api_error",{result:"API Error",user_message_uuid:message.uuid});
   const recovered=await claudeTurn([blockedReply(info),reply("ok"),gaveUp]);
-  assert.equal(recovered.error?.message,"Claude gave up after repeated API errors.","no longer a usage limit with a wait");
+  assert.equal(recovered.error?.message,"Claude Code stopped after the API kept failing.","no longer a usage limit with a wait");
   assert.equal(recovered.notices.length,1,"the notice the blocked reply gave stays");
   const nestedReply=await claudeTurn([blockedReply(info),reply("nested-ok","toolu_agent"),gaveUp]);
   assert.match(nestedReply.error?.message||"",/^Claude usage limit reached\. Send the message again once the 5-hour limit resets in 1h (?:29|30)m\.$/);
   const nestedLimit=await claudeTurn([blockedReply(info,{parent_tool_use_id:"toolu_agent"}),gaveUp]);
-  assert.equal(nestedLimit.error?.message,"Claude gave up after repeated API errors.");
+  assert.equal(nestedLimit.error?.message,"Claude Code stopped after the API kept failing.");
   // A window Claude Code itself rejected counts for the whole turn, whatever replies follow.
   const rejected=await claudeTurn([{type:"rate_limit_event",rate_limit_info:info},reply("ok"),gaveUp]);
   assert.match(rejected.error?.message||"",/^Claude usage limit reached\. Send the message again once the 5-hour limit resets in 1h (?:29|30)m\.$/);
-  assert.equal(await gitText([blockedReply(info),reply("ok"),failed("api_error",{result:"API Error"})]),"Claude Code could not write the Git text: Claude gave up after repeated API errors.","Git text reads the same evidence");
+  assert.equal(await gitText([blockedReply(info),reply("ok"),failed("api_error",{result:"API Error"})]),"Claude Code could not write the Git text: Claude Code stopped after the API kept failing.","Git text reads the same evidence");
 });

@@ -527,7 +527,7 @@ async function forgejoApi(ctx,path,{method="GET",body}={}){
   if(target.command==="fj"){
     const base=new URL(target.baseUrl.replace(/\/+$/,"")+"/api/v1/");
     const url=new URL(String(path||"").replace(/^\/+/,""),base);
-    if(url.origin!==base.origin||!url.pathname.startsWith(base.pathname))throw new Error("Invalid Forgejo API path.");
+    if(url.origin!==base.origin||!url.pathname.startsWith(base.pathname))throw new Error("Trebell does not call that Forgejo API path.");
     const headers={Accept:"application/json",Authorization:`token ${target.token}`};
     if(body!==undefined)headers["Content-Type"]="application/json";
     const response=await serviceRequest(url,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000),redirect:"manual"});

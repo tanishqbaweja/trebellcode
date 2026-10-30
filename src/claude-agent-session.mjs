@@ -27,8 +27,8 @@ export const CLAUDE_BACKGROUND_WORK_BLOCKS_CHANGE="Claude is still running backg
 // Work that never ends by itself (a watcher) would hold every message back until the process is released, up to 4 hours: Edit from here
 // on the refused message ends the process, and the work with it (rewindConversation closes it), and gives the message back to send.
 export const CLAUDE_PLAN_STUCK="Claude Code could not leave the Plan mode Claude switched to, and restarting it would end the background agents or commands it is still running. Wait for them to finish, then send the message again. To end them now, choose Edit from here on this message and send it again.";
-export const CLAUDE_USAGE_LIMIT_HINT="Claude usage limit reached. Send the message again once the limit resets.";
-export const CLAUDE_CONTEXT_FULL="Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
+export const CLAUDE_USAGE_LIMIT_HINT="Claude usage limit reached. Send the message again once it resets.";
+export const CLAUDE_CONTEXT_FULL="Claude Code stopped: this thread no longer fits the model's context window. Run /compact, or start a new thread.";
 export const CLAUDE_MCP_REGISTRATION_TIMED_OUT="Claude Code did not finish connecting this thread's MCP servers within 90 seconds. Send the message again; if it keeps timing out, check the MCP servers in Settings.";
 // The SDK sets no deadline for setMcpServers, and Claude Code waits up to 30 s for each server.
 const CLAUDE_MCP_REGISTRATION_TIMEOUT_MS=90_000;
@@ -53,7 +53,7 @@ const CLAUDE_EXIT_CONFIRM_MS=10_000;
 const CLAUDE_STDERR_TAIL=4096;
 const CLAUDE_USAGE_LIMIT_WINDOWS=Object.freeze({five_hour:"5-hour",seven_day:"7-day",seven_day_opus:"7-day Opus",seven_day_sonnet:"7-day Sonnet",seven_day_overage_included:"7-day model",overage:"overage"});
 // API errors Claude Code does not retry, whose own error message names the problem (an unknown model, a bad request, an
-// account or billing issue): that message is the turn's error, not "Claude gave up after repeated API errors."
+// account or billing issue): that message is the turn's error, not "Claude Code stopped after the API kept failing."
 const CLAUDE_EXPLAINED_API_ERRORS=new Set(["invalid_request","model_not_found","billing_error","oauth_org_not_allowed","account_on_hold","verification_required","cloud_credential_error"]);
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // What Claude Code prints, and exits on, when it is asked to resume a session it has no transcript for.
@@ -351,19 +351,19 @@ export function claudeSignedOutMessage(configDir=""){
 // result's "API Error: …"), which never names a blocking limit.
 function terminalResultError(reason,failureHint,apiError=null){
   switch(reason){
-    case "api_error":return failureHint||apiError||"Claude gave up after repeated API errors.";
-    case "malformed_tool_use_exhausted":return "Claude gave up after repeated malformed tool calls.";
-    case "budget_exhausted":return "Claude stopped: the turn's token budget was exhausted.";
-    case "structured_output_retry_exhausted":return "Claude could not produce the requested structured output.";
-    case "tool_deferred_unavailable":return "Claude could not resume a deferred tool call: the tool is no longer available.";
-    case "turn_setup_failed":return "Claude could not start the turn.";
+    case "api_error":return failureHint||apiError||"Claude Code stopped after the API kept failing.";
+    case "malformed_tool_use_exhausted":return "Claude Code stopped after its tool calls kept coming out malformed.";
+    case "budget_exhausted":return "Claude Code stopped: this turn used up its token budget.";
+    case "structured_output_retry_exhausted":return "Claude Code could not give the structured output asked for.";
+    case "tool_deferred_unavailable":return "Claude Code could not go back to a deferred tool call, because that tool is gone.";
+    case "turn_setup_failed":return "Claude Code could not start this turn.";
     // Claude Code also ends a turn on blocking_limit once the context window is full, after an invalid_request reply saying "Prompt is
     // too long": only sign-in or usage-limit evidence (the hint) names it otherwise.
     case "blocking_limit":return failureHint||CLAUDE_CONTEXT_FULL;
-    case "rapid_refill_breaker":return "Claude stopped: the context refilled too quickly after compaction.";
+    case "rapid_refill_breaker":return "Claude Code stopped: the context filled up again right after compaction.";
     case "prompt_too_long":return CLAUDE_CONTEXT_FULL;
-    case "image_error":return "Claude stopped: an image in the conversation could not be processed.";
-    case "model_error":return "Claude stopped: the model returned an error.";
+    case "image_error":return "Claude Code stopped: it could not read an image in this thread.";
+    case "model_error":return "Claude Code stopped: the model answered with an error.";
     default:return null;
   }
 }
@@ -392,8 +392,8 @@ export function claudeResultFailure(result,{failureHint=null,explainedError=null
   // The API's own words for the request it refused ("API Error: 400 …"), secrets redacted and cut to 500 characters, when nothing
   // names the failure better.
   const apiError=success&&result.terminal_reason==="api_error"&&String(result.result||"").trim().startsWith("API Error:")?redactApiErrorText(result.result).slice(0,500):null;
-  const structured=success&&result.api_error_status===529?"Claude API is overloaded (529). Try again shortly."
-    :success&&result.api_error_status===429?"Claude API rate limit reached. Try again later."
+  const structured=success&&result.api_error_status===529?"The Claude API is overloaded (529). Send the message again in a moment."
+    :success&&result.api_error_status===429?"The Claude API rate limit was hit (429). Send the message again later."
     :terminalResultError(result.terminal_reason,failureHint,explainedError||apiError);
   if(!success)return listed||structured||`Claude Code turn failed: ${result.subtype||"unknown error"}`;
   if(!result.is_error&&!structured)return null;

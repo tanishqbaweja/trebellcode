@@ -304,8 +304,8 @@ test("Claude aborted or interrupted results are cancellations, never errors",asy
 test("Claude errors read plainly: no SDK wrapper, no diagnostics, no API error streamed as the reply",async()=>{
   assert.equal(claudeResultFailure({subtype:"error_during_execution",errors:["[ede_diagnostic] result_type=user","Real failure"]}),"Real failure");
   assert.equal(claudeResultFailure({subtype:"success",is_error:false,result:"fine"}),null);
-  assert.equal(claudeResultFailure({subtype:"success",is_error:true,api_error_status:529,result:"overloaded"}),"Claude API is overloaded (529). Try again shortly.");
-  assert.equal(claudeResultFailure({subtype:"success",is_error:true,terminal_reason:"blocking_limit",result:""}),"Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.");
+  assert.equal(claudeResultFailure({subtype:"success",is_error:true,api_error_status:529,result:"overloaded"}),"The Claude API is overloaded (529). Send the message again in a moment.");
+  assert.equal(claudeResultFailure({subtype:"success",is_error:true,terminal_reason:"blocking_limit",result:""}),"Claude Code stopped: this thread no longer fits the model's context window. Run /compact, or start a new thread.");
   const apiError="There's an issue with the selected model (claude-nonexistent-9). It may not exist or you may not have access to it.";
   const {sdk}=fakeClaude({turn:({message,emit})=>{
     emit({type:"assistant",uuid:"err-1",parent_tool_use_id:null,error:"model_not_found",message:{id:"m",content:[{type:"text",text:apiError}]}});
@@ -344,7 +344,7 @@ test("Claude sign-in failures and usage limits get Trebell's explanations",async
     emit({type:"result",subtype:"success",is_error:true,terminal_reason:"api_error",api_error_status:429,result:"limit",user_message_uuid:message.uuid});
   }});
   const capped=session(limited);await capped.start();
-  await assert.rejects(()=>capped.prompt([{type:"text",text:"x"}]),/Claude API rate limit reached/);
+  await assert.rejects(()=>capped.prompt([{type:"text",text:"x"}]),/Claude API rate limit was hit/);
   const notices=capped.updates.filter(update=>update.sessionUpdate==="tool_call"&&String(update.toolCallId).startsWith("usage-limit:"));
   assert.equal(notices.length,1,"one notice per window and reset");
   assert.match(notices[0].title,/5-hour limit resets in/);

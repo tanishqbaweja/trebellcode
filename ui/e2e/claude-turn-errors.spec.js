@@ -9,7 +9,7 @@ import { claudeReply,routeClaudeApp,startClaudeRelay } from "./claude-relay-harn
 // blocked, a turn whose later reply got past the limit names the failure it ended on, and the API's own words for a request it refused
 // keep no token its JSON repeats.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
-const CONTEXT_FULL="Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread.";
+const CONTEXT_FULL="Claude Code stopped: this thread no longer fits the model's context window. Run /compact, or start a new thread.";
 const LEAKED_TOKEN="tok-live-5f2c9a81e7d34b06";
 const failedResult=(message,terminal_reason,extra={})=>({type:"result",subtype:"success",is_error:true,terminal_reason,result:"",user_message_uuid:message.uuid,total_cost_usd:0,usage:{input_tokens:3,output_tokens:0},...extra});
 
@@ -57,7 +57,7 @@ test("a Claude turn that fills its context says to compact, and a quick retry in
     await send(page,"Try again");
     const notice=page.getByText(/^Claude usage limit reached\. This turn is paused until the 5-hour limit resets in 1h (?:29|30)m\.$/);
     await expect(notice).toBeVisible({timeout:15_000});
-    await expect(errors.filter({hasText:"Claude API rate limit reached. Try again later."})).toBeVisible();
+    await expect(errors.filter({hasText:"The Claude API rate limit was hit (429). Send the message again later."})).toBeVisible();
     for(const mode of ["dark","light"]){
       if(mode==="light"){await page.locator("[data-testid=appearance-toggle]:visible").first().click();await expect(page.locator("html")).toHaveAttribute("data-mode","light")}
       await notice.scrollIntoViewIfNeeded();
@@ -68,7 +68,7 @@ test("a Claude turn that fills its context says to compact, and a quick retry in
     await send(page,"Summarize the parser module");
     await expect(page.getByText("Picking the summary up on the fallback model.",{exact:true})).toBeVisible({timeout:15_000});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0,{timeout:15_000});
-    await expect.soft(errors.filter({hasText:"Claude gave up after repeated API errors."}),"the failure the turn ended on").toBeVisible();
+    await expect.soft(errors.filter({hasText:"Claude Code stopped after the API kept failing."}),"the failure the turn ended on").toBeVisible();
     await expect.soft(errors.filter({hasText:"Send the message again once the 5-hour limit resets"}),"not the limit a later reply got past").toHaveCount(0);
     await page.getByText("Picking the summary up on the fallback model.",{exact:true}).scrollIntoViewIfNeeded();
     await page.screenshot({animations:"disabled",path:`${auditDir}claude-limit-then-reply-error-light-1280x800.png`});
@@ -90,7 +90,7 @@ test("a Claude turn that fills its context says to compact, and a quick retry in
 test("a Claude turn that fails after Claude wrote part of its reply keeps that part, and says why it failed, after the next message and a reload",async({page})=>{
   test.setTimeout(90_000);
   await page.setViewportSize({width:1280,height:800});
-  const PARTIAL="Picking the summary up on the fallback model.",FAILED="Claude gave up after repeated API errors.";
+  const PARTIAL="Picking the summary up on the fallback model.",FAILED="Claude Code stopped after the API kept failing.";
   const harness=await startClaudeRelay({turn:async({message,index,emit})=>{
     // The first turn's reply goes through, then the turn fails on the API; the next one is answered.
     if(index===0){
