@@ -36,8 +36,8 @@ import { migrateHarnessSecrets } from "./legacy-harness-key-migration.mjs";
 import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { importClaudeHistory, publicHistoryCandidate, scanLocalAgentHistory } from "./agent-history-import.mjs";
 import { agentPermissionModeFromStart, attachAgentRelay } from "./agent-relay.mjs";
-import { NATIVE_REPLY_STREAM } from "./native-agent-session.mjs";
-import { nativeStreamOptions } from "./native-reply-streaming.mjs";
+import { nativeProviderTurn as sharedNativeProviderTurn } from "./native-provider-turn.mjs";
+import { nativeDefaultModel } from "./native-configuration.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { codexAppServerToken, codexUpstreamToken } from "./codex-app-server-auth.mjs";
 import { extendConnectAttemptTimeout } from "./connect-attempt-timeout.mjs";
@@ -1893,7 +1893,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     }
     if(mock) return finish({models:fakeModels(provider),defaultModel:fakeDefaultModel(provider),metadata:{provider:provider,models:fakeModels(provider).map(id=>({id,provider:provider}))}});
     const result=nativeProviderCatalog||await providers.models(provider);
-    return finish({models:result.models||[],defaultModel:result.defaultModel||null,metadata:{provider:provider,source:result.source,models:result.metadata||[]},error:result.error||null});
+    // Native's default is the provider's measured model when the catalog lists it (native-configuration.mjs), so a person who picks
+    // no model runs the configuration the benchmarks measured; else the catalog's own.
+    return finish({models:result.models||[],defaultModel:nativeDefaultModel(provider,result.models||[],result.defaultModel||null),metadata:{provider:provider,source:result.source,models:result.metadata||[]},error:result.error||null});
   }
   async function selectedModelsPayload(){
     const catalog=await selectedModels(),runtime=catalog.scope.agentRuntime;
@@ -1933,11 +1935,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     }
     if(!knownModelProvider(request.provider||selectedProvider))throw Object.assign(new Error("Trebell Native cannot use this thread's model provider because it is not available. Choose a model provider in Settings > Agents & models."),{retryable:false});
     if(isRetiredProviderModel(model))throw Object.assign(new Error("Trebell Native cannot use this thread's model because it is no longer available. Choose another model and send again."),{retryable:false});
-    if(typeof request[NATIVE_REPLY_STREAM]!=="function")return providers.turn(provider,request,{signal:request.signal,promptCaching:provider==="anthropic",streamResponses:provider==="openai"});
-    // A request the session wants to show as it streams carries its observer under a Symbol; the provider gets the request
-    // without it (its other Symbol keys stay, the identity caches are keyed by them) and only the options say how to stream.
-    const {[NATIVE_REPLY_STREAM]:onStream,...providerRequest}=request;
-    return providers.turn(provider,providerRequest,{signal:request.signal,promptCaching:provider==="anthropic",streamResponses:provider==="openai",...nativeStreamOptions(provider,onStream)});
+    // The one provider turn the benchmark runner sends too (native-provider-turn.mjs): the shared transport options and reasoning
+    // context, and a draft's stream observer passed as options only.
+    return sharedNativeProviderTurn(providers,request,{provider});
   }
   function sourceControlStyleInstruction(style,kind,customInstructions=""){
     if(style==="conventional")return kind==="review"

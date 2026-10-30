@@ -101,6 +101,23 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // That row's repairs (a key Trebell reads from the environment said as from its variable, and Remove key on the row) then added
 // nothing to the first bundle and 0.2 / 0.1 KB to the lazy chunks: 780.8 / 258.0 KB, 0.2 / 0.0 KB under the limit (the Settings
 // chunk 47 gzip bytes from its next 0.1 KB).
+// Native's one configuration (src/native-configuration.mjs, shared with the benchmark runner) then added 0.7 / 0.2 KB to the first
+// bundle (618.6 / 198.7 KB: the measured Thinking default, and the tool selection and developer text the window now reads from it)
+// and took 0.0 / 0.1 KB from the lazy chunks: 780.1 / 257.8 KB, 0.9 / 0.2 KB under the limit.
+// Its repair (review of native-one-config) then added 1.9 / 0.8 KB to the first bundle (620.5 / 199.5 KB, 0.5 KB gzip of room left:
+// the source-control rule that reads Git work a message asks for instead of the bare words, and the Thinking picker that lists a
+// measured model's level instead of a Default) and 0.0 / 0.1 KB to the lazy chunks (the first bundle's new name in their import
+// lines): 780.1 / 257.9 KB, 0.9 / 0.1 KB under the limit.
+// Its second repair then added 0.4 / 0.1 KB to the first bundle (620.9 / 199.6 KB, 0.4 KB gzip of room left: the everyday Git asks the
+// source-control rule selects again, read in linear time, and the developer text's web-research sentence kept for other harnesses
+// only) and took 0.0 / 0.1 KB from the lazy chunks (the first bundle's new name in their import lines): 780.1 / 257.8 KB, 0.9 / 0.2 KB
+// under the limit.
+// Its third repair then added 0.3 / 0.1 KB to the first bundle (621.2 / 199.7 KB, 0.3 KB gzip of room left: 347 bytes raw and 89
+// gzip, all of them the source-control rule's close variants of everyday Git asks and its narrower version control) and nothing to the
+// lazy chunks: 780.1 / 257.8 KB, 0.9 / 0.2 KB under the limit.
+// Its fourth repair then added 0.3 / 0.1 KB to the first bundle (621.5 / 199.8 KB, 0.2 KB gzip of room left: the source-control
+// rule's asks followed by a comma and thanks or an if, when or once clause, and setting up version control) and nothing to the lazy
+// chunks: 780.1 / 257.8 KB.
 const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:781,gzipKB:258}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 

@@ -1,13 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { configuredReasoningEffort, defaultReasoningEffort, modelReasoningEffortKey, normalizeReasoningEffort, normalizeRuntimeReasoningEffort, supportedReasoningEfforts } from "../src/model-reasoning-effort.mjs";
+import * as efforts from "../src/model-reasoning-effort.mjs";
 
-test("reasoning effort helpers preserve provider defaults unless the user explicitly overrides them",()=>{
-  assert.equal(defaultReasoningEffort("native","openai","gpt-6-luna"),null);
+// Native's default is the effort a model was measured with (src/native-configuration.mjs: Max for gpt-6-luna, which the benchmarks
+// run); a model without a measured row keeps the provider's default, and a saved Thinking level always wins.
+test("reasoning effort helpers give the measured default and keep the provider default for unmeasured models unless the user overrides them",()=>{
+  assert.equal(defaultReasoningEffort("native","openai","gpt-6-luna"),"max");
   assert.equal(defaultReasoningEffort("native","openai","gpt-6-sol"),null);
+  assert.equal(defaultReasoningEffort("native","openai","gpt-5"),null);
+  assert.equal(defaultReasoningEffort("codex","openai","gpt-6-luna"),null,"only Native's default comes from its configuration");
   const key=modelReasoningEffortKey("native","openai","gpt-6-luna");
   assert.equal(configuredReasoningEffort({modelReasoningEfforts:{[key]:"high"}},"native","openai","gpt-6-luna"),"high");
-  assert.equal(configuredReasoningEffort({},"native","openai","gpt-6-luna"),null);
+  assert.equal(configuredReasoningEffort({},"native","openai","gpt-6-luna"),"max");
+  assert.equal(configuredReasoningEffort({},"native","openai","gpt-6-sol"),null);
   assert.equal(normalizeReasoningEffort(" MAX "),"max");
   assert.equal(normalizeReasoningEffort("turbo"),null);
 });
@@ -99,4 +105,23 @@ test("OpenCode reasoning levels are the model's own OpenCode variants, kept by t
   const key=modelReasoningEffortKey("opencode","opencode",model);
   assert.equal(configuredReasoningEffort({modelReasoningEfforts:{[key]:"Thinking"}},"opencode","opencode",model),"Thinking");
   assert.equal(configuredReasoningEffort({modelReasoningEfforts:{[key]:"not a variant"}},"opencode","opencode",model),null);
+});
+
+// The composer's Thinking picker (review of native-one-config, 2026-10-29): on gpt-6-luna it showed Max with nothing saved, and its
+// Default option, which deletes the saved level, jumped back to Max, so it could never be chosen and its "the provider's own level"
+// was untrue. A model with a measured level now lists that level and offers no Default; other models keep Default.
+test("the Thinking picker on gpt-6-luna shows Max with no Default option, and other models keep Default for the provider's level",()=>{
+  assert.equal(typeof efforts.reasoningEffortPicker,"function");
+  assert.deepEqual(efforts.reasoningEffortPicker({},"native","openai","gpt-6-luna"),{value:"max",defaultOption:false,defaultLevel:"max"});
+  assert.ok(supportedReasoningEfforts("native","openai","gpt-6-luna").includes("max"),"the default is one of the listed levels");
+  const picked={modelReasoningEfforts:{"native:openai:gpt-6-luna":"high"}};
+  assert.deepEqual(efforts.reasoningEffortPicker(picked,"native","openai","gpt-6-luna"),{value:"high",defaultOption:false,defaultLevel:"max"});
+  assert.equal(configuredReasoningEffort(picked,"native","openai","gpt-6-luna"),"high","a message runs at the level shown");
+  // An unmeasured model: Default, the provider's own level, which a message sends no effort for.
+  assert.deepEqual(efforts.reasoningEffortPicker({},"native","openai","gpt-5"),{value:"",defaultOption:true,defaultLevel:null});
+  assert.equal(configuredReasoningEffort({},"native","openai","gpt-5"),null);
+  // A level the model no longer takes shows as Default there and as the measured level on gpt-6-luna.
+  assert.equal(efforts.reasoningEffortPicker({modelReasoningEfforts:{"native:openai:gpt-5":"xhigh"}},"native","openai","gpt-5").value,"");
+  // Other harnesses keep Default and their saved level.
+  assert.deepEqual(efforts.reasoningEffortPicker({modelReasoningEfforts:{"opencode:opencode:big":"Thinking"}},"opencode","opencode","big"),{value:"Thinking",defaultOption:true,defaultLevel:null});
 });

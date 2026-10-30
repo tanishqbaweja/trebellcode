@@ -6,6 +6,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 import { windowsHarborEnv } from "./harbor-process-env.mjs";
+import { NATIVE_SERVICE_TIER_DEFAULT, nativeHarborRunConfiguration, nativeReadoutRefusal } from "../src/native-configuration.mjs";
 import { waitForJobProcessDrain } from "./terminal-bench-process-drain.mjs";
 import { jobsForPairReport } from "./terminal-bench-pair-report.mjs";
 import { isSweBenchDataset, readJobVerifierSummary, readTrialVerifierSummary, sweBenchVerifierReportMissing } from "./terminal-bench-verifier-summary.mjs";
@@ -36,7 +37,8 @@ const DATASET=String(process.env.TREBELL_TERMINAL_BENCH_DATASET||"terminal-bench
 const MODEL=String(process.env.TREBELL_TERMINAL_BENCH_MODEL||"gpt-6-luna").trim();
 const EFFORT=String(process.env.TREBELL_TERMINAL_BENCH_REASONING_EFFORT||"max").trim().toLowerCase();
 const serviceTierArg=process.argv.find(arg=>arg.startsWith("--service-tier="));
-const SERVICE_TIER=String(serviceTierArg?.slice("--service-tier=".length)||process.env.TREBELL_TERMINAL_BENCH_SERVICE_TIER||"fast").trim().toLowerCase();
+// Every lane runs the tier the app's Native runs with no Speed pick (src/native-configuration.mjs: none, so Standard).
+const SERVICE_TIER=String(serviceTierArg?.slice("--service-tier=".length)||process.env.TREBELL_TERMINAL_BENCH_SERVICE_TIER||NATIVE_SERVICE_TIER_DEFAULT||"default").trim().toLowerCase();
 if(!["default","fast"].includes(SERVICE_TIER))throw new Error("Terminal-Bench service tier must be default or fast.");
 const taskArg=process.argv.find(arg=>arg.startsWith("--task="));
 const TASK=String(taskArg?.slice("--task=".length)||process.env.TREBELL_TERMINAL_BENCH_TASK||"terminal-bench/session-window-debug").trim();
@@ -78,10 +80,17 @@ const CODEX_PINNED_TARBALL_SHA256="3fe84106aaf2fbfc13299068510d34b3d0157eeb9af4b
 const NATIVE_PINNED_NODE_VERSION="22.23.3";
 const NATIVE_PINNED_NODE_TARBALL_SHA256="1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af";
 const NATIVE_PINNED_NODE_URL=`https://nodejs.org/download/release/v${NATIVE_PINNED_NODE_VERSION}/node-v${NATIVE_PINNED_NODE_VERSION}-linux-x64.tar.gz`;
-const NATIVE_CONTEXT_WINDOW=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_CONTEXT_WINDOW)||272_000));
-const NATIVE_COMPACT_THRESHOLD=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_COMPACT_THRESHOLD)||245_000));
+// The Native lane runs the app's Native (src/native-configuration.mjs). A readout carries no benchmark switch and the shared effort
+// and tier; anything else runs only as a named experiment (--native-experiment=<name>, recorded in the report), never as readout evidence.
+const nativeExperimentArg=process.argv.find(arg=>arg.startsWith("--native-experiment="));
+const NATIVE_EXPERIMENT=String(nativeExperimentArg?.slice("--native-experiment=".length)||"").trim()||null;
+const nativeLaneEnv={...process.env,TREBELL_MODEL:MODEL,TREBELL_REASONING_EFFORT:EFFORT,TREBELL_SERVICE_TIER:SERVICE_TIER,...(NATIVE_REASONING_CONTEXT?{TREBELL_OPENAI_REASONING_CONTEXT:NATIVE_REASONING_CONTEXT}:{})};
+const NATIVE_RUN=nativeHarborRunConfiguration(nativeLaneEnv),NATIVE_READOUT_REFUSAL=nativeReadoutRefusal(nativeLaneEnv);
+if(NATIVE_READOUT_REFUSAL&&!NATIVE_EXPERIMENT&&(!only.size||only.has("native")))throw new Error("Refusing a Native benchmark readout: "+NATIVE_READOUT_REFUSAL+" Pass --native-experiment=<name> to run it as an experiment, which is never readout evidence.");
+const NATIVE_CONTEXT_WINDOW=NATIVE_RUN.contextWindow;
+const NATIVE_COMPACT_THRESHOLD=NATIVE_RUN.compactionThreshold;
 const NATIVE_SALVAGE_WAIT_MS=Math.max(5_000,Math.trunc(Number(process.env.TREBELL_TERMINAL_BENCH_NATIVE_SALVAGE_WAIT_MS)||180_000));
-if(NATIVE_COMPACT_THRESHOLD>=NATIVE_CONTEXT_WINDOW)throw new Error("Native Harbor compact threshold must be below its operating context window.");
+if(NATIVE_COMPACT_THRESHOLD&&NATIVE_CONTEXT_WINDOW&&NATIVE_COMPACT_THRESHOLD>=NATIVE_CONTEXT_WINDOW)throw new Error("Native Harbor compact threshold must be below its operating context window.");
 const validationDir=join(root,".harbor-validation");
 
 function run(command,args,{env=process.env,shell=false}={}){
@@ -240,8 +249,7 @@ try{
   const sharedEnv={
     ...process.env,
     PYTHONPATH:pythonPath,
-    TREBELL_HARBOR_CONTEXT_WINDOW:String(NATIVE_CONTEXT_WINDOW),
-    TREBELL_HARBOR_COMPACT_THRESHOLD:String(NATIVE_COMPACT_THRESHOLD),
+    // The window and threshold are the shared configuration's (the runner reads them there); set ones pass through as switches.
     ...windowsHarborEnv(process.env),
     ...(nativePinnedNodeTarballPath?{TREBELL_NODE_PINNED_TARBALL:nativePinnedNodeTarballPath}: {}),
     ...(codexPinnedTarballPath?{TREBELL_CODEX_PINNED_TARBALL:codexPinnedTarballPath}: {}),
@@ -290,6 +298,7 @@ try{
     sameModel:true,sameReasoningEffort:true,sameServiceTier:true,sameHostedWebSearchPolicy:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
     nativeEnvironmentRetention:STANDALONE_NATIVE_RERUN?"retain-until-sealed-or-regraded":"harbor-default",
     nativeContextPolicy:{operatingContextWindow:NATIVE_CONTEXT_WINDOW,serverCompactionThreshold:NATIVE_COMPACT_THRESHOLD,retroactiveOpenAiReadCooling:false},
+    nativeExperiment:NATIVE_EXPERIMENT,nativeExperimentSwitches:NATIVE_RUN.experimentSwitches,nativeReadoutRefusal:NATIVE_READOUT_REFUSAL,
     ...sourceProvenance,
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
     ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),

@@ -26,7 +26,7 @@ The target is:
 
 **same or better verified quality → lower total model cost.**
 
-Public benchmark work compares Trebell Native against mature harnesses using the **same model and reasoning settings**, then measures the quality-normalized cost required to finish the task.
+Public benchmark work compares Trebell Native against mature harnesses using the **same model and reasoning settings**, then measures the quality-normalized cost required to finish the task. The Native the benchmarks run is the Native you download: both read one configuration ([`src/native-configuration.mjs`](src/native-configuration.mjs)), and a test compares what each sends byte for byte. The benchmarks ran `gpt-6-luna` at Full access, which is Native's OpenAI default when your key lists it; on another model Native runs the app's unmeasured defaults for it (the catalog's context window, client-side history cooling, the provider's thinking level).
 
 ## What works today
 

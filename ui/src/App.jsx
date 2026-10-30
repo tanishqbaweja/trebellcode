@@ -69,7 +69,8 @@ import { sidebarAutoCollapses } from "./sidebar-layout.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
 import { DEFAULT_MODEL_PROVIDER, MISSING_PROVIDER_KEY, modelProviderLabel } from "./provider-labels.js";
 import { specializedToolNamespaceNames, specializedToolSelection } from "./lazy-tool-exposure.js";
-import { configuredReasoningEffort, modelReasoningEffortKey, supportedReasoningEfforts } from "../../src/model-reasoning-effort.mjs";
+import { nativeTurnContextOptions, trebellDeveloperInstructions } from "../../src/native-configuration.mjs";
+import { configuredReasoningEffort, modelReasoningEffortKey, reasoningEffortPicker, supportedReasoningEfforts } from "../../src/model-reasoning-effort.mjs";
 import { CODEX_STANDARD_SERVICE_TIER, configuredModelServiceTier, modelServiceTierKey, modelServiceTierLabel, supportedModelServiceTiers } from "../../src/model-service-tier.mjs";
 import { configuredModelOptions, modelOptionSettingsWith, supportedModelOptions } from "../../src/model-options.mjs";
 import { codexReasoningEffortLabel } from "../../src/codex-model-catalog.mjs";
@@ -1123,7 +1124,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // Codex shows the open thread's own effort and tier while it runs this model, and its Standard tier is "default", as
   // T3 Code's Codex selects do.
   const codexChoices=agentRuntime==="codex"?codexModelChoices({settings,provider,model,metadata:modelMeta?.[model]||{},custom:(settings.customModels||[]).find(item=>item.id===model&&item.runtime==="codex")||null,thread:codexThread}):null;
-  const reasoningEffort=codexChoices?codexChoices.effort||"":configuredReasoningEffort(settings,agentRuntime,provider,model,modelMeta?.[model]||{})||"";
+  // The picker shows the level a message runs at; a model with a measured level (Max on gpt-6-luna) lists it among the levels and
+  // offers no Default option, which could never stay chosen there (reasoningEffortPicker).
+  const effortPicker=codexChoices?null:reasoningEffortPicker(settings,agentRuntime,provider,model,modelMeta?.[model]||{});
+  const reasoningEffort=codexChoices?codexChoices.effort||"":effortPicker.value;
   const serviceTier=codexChoices?codexChoices.serviceTierPicker:configuredModelServiceTier(settings,agentRuntime,provider,model)||"";
   const effortChoices=reasoningEffort&&!reasoningEffortOptions.includes(reasoningEffort)?[...reasoningEffortOptions,reasoningEffort]:reasoningEffortOptions;
   // Every harness's effort ids read the same way (xhigh is Extra High); a harness's own names (OpenCode variants) stay as given.
@@ -1232,7 +1236,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
       <select className="permission-picker" value={permissionMode} onChange={e=>setPermissionMode(e.target.value)}><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select>
-      {reasoningEffortOptions.length>0&&<select data-testid="reasoning-effort-picker" className="permission-picker reasoning-effort-picker" value={reasoningEffort} disabled={running} onChange={e=>onReasoningEffort?.(e.target.value)} title="Model reasoning / thinking effort (Default: the provider's own level)"><option value="">Thinking · Default</option>{effortChoices.map(effort=><option key={effort} value={effort}>Thinking · {effortLabel(effort)}</option>)}</select>}
+      {reasoningEffortOptions.length>0&&<select data-testid="reasoning-effort-picker" className="permission-picker reasoning-effort-picker" value={reasoningEffort} disabled={running} onChange={e=>onReasoningEffort?.(e.target.value)} title={"Model reasoning / thinking effort (Default: "+(effortPicker?.defaultLevel?effortLabel(effortPicker.defaultLevel)+", the level Trebell Native was measured with on this model":"the provider's own level")+")"}>{effortPicker?.defaultOption!==false&&<option value="">Thinking · Default</option>}{effortChoices.map(effort=><option key={effort} value={effort}>Thinking · {effortLabel(effort)}</option>)}</select>}
       {serviceTierOptions.length>0&&<select data-testid="service-tier-picker" className="permission-picker service-tier-picker" value={serviceTier} disabled={running} onChange={e=>onServiceTier?.(e.target.value)} title={serviceTierPickerTitle(agentRuntime)}><option value={agentRuntime==="codex"?CODEX_STANDARD_SERVICE_TIER:""}>Speed · Standard</option>{serviceTierOptions.map(tier=><option key={tier} value={tier}>Speed · {modelServiceTierLabel(agentRuntime,tier,modelMeta?.[model]||{})}</option>)}</select>}
       {modelOptionDescriptors.map(option=>{const value=modelOptionPicks[option.id]??option.defaultValue??"";return <select key={option.id} data-testid="model-option-picker" data-option-id={option.id} className="permission-picker model-option-picker" value={value} disabled={running} onChange={e=>onModelOption?.(option.id,e.target.value)} title={`${agentRuntimeLabel} model setting: ${option.label}`}>{!option.choices.some(choice=>choice.value===value)&&<option value="">{option.label} · {agentRuntimeLabel}'s setting</option>}{option.choices.map(choice=><option key={choice.value} value={choice.value}>{option.label} · {choice.label}</option>)}</select>})}
       {runtimeCapabilities.collaborationModes&&collaborationModes.length>0&&<select data-testid="collaboration-mode-picker" className="permission-picker collaboration-mode-picker" value={collaborationMode} disabled={running||collaborationModeBusy||threadSettingsWait} onChange={e=>onCollaborationMode?.(e.target.value)} title="Collaboration mode">{collaborationModes.map(item=><option key={item.mode} value={item.mode}>{item.name} mode</option>)}</select>}
@@ -4404,10 +4408,9 @@ export default function App(){
     const specializedTools=specializedToolSelection(taskText,specializedToolAvailability({projectless}));
     const {sharedDynamicToolNamespaces}=await loadSharedToolCatalog();
     const dynamicTools=sharedDynamicToolNamespaces(specializedTools);
-    const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task."+(specializedTools.browser?" Use trebell_browser for interactive pages.":"")+(runtimeCapabilities.dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"")+(specializedTools.delegation?" Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.":"");
-    const developerInstructions=projectless
-      ?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+researchInstruction
-      :researchInstruction;
+    // The developer text every thread starts with, Native's shared with the benchmark runner (src/native-configuration.mjs); only other
+    // harnesses' threads keep the web-research sentence.
+    const developerInstructions=trebellDeveloperInstructions({projectless,dynamicTools:Boolean(runtimeCapabilities.dynamicTools),browser:specializedTools.browser,delegation:specializedTools.delegation,webResearch:agentRuntime!=="native"});
     let nativeProjectId=null;
     if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&!projectless&&!workspaceEnvironmentId){
       let trebellProject=currentProject&&sameWorkspacePath(currentProject.path,cwd)?currentProject:null;
@@ -4589,7 +4592,7 @@ export default function App(){
       const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
       const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
       reached(true);const contextPacket=await contextReady;
-      const turnContext={...repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
+      const turnContext={...repositoryContextEntries(contextPacket,agentRuntime==="native"?nativeTurnContextOptions(text):{seedOnly:false,currentTask:text}),...(goalContext||{}),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
       if(pendingSend.stopped)throw sendStoppedError();pendingSend.requested=true;
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode:permissionModeOverride||permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:goalResume?[]:inputsFor(inputText??text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;if(shown())setActiveTurnId(turnId);if(turnId&&liveSendRef.current?.threadId===String(thread.id))liveSendRef.current={threadId:String(thread.id),turnId:String(turnId)};if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
@@ -4644,7 +4647,7 @@ export default function App(){
       const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
       turnRequestStarted=true;
       const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
-      const contextPacket=await contextReady,contextEntries=repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native",currentTask:text});
+      const contextPacket=await contextReady,contextEntries=repositoryContextEntries(contextPacket,agentRuntime==="native"?nativeTurnContextOptions(text):{seedOnly:false,currentTask:text});
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(contextEntries).length?{additionalContext:contextEntries}:{})});const turnId=result?.turn?.id||null;
       // The sidebar row shows the task running even when the harness sends no turn/started for a thread that is not open.
       if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);

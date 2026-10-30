@@ -1,3 +1,4 @@
+import { NATIVE_SERVICE_TIER_DEFAULT } from "./native-configuration.mjs";
 export const MODEL_SERVICE_TIERS=Object.freeze(["fast"]);
 const ALLOWED=new Set(MODEL_SERVICE_TIERS);
 
@@ -90,6 +91,7 @@ export function supportedModelServiceTiers(runtime,provider,model,metadata={}){
   return [];
 }
 
+// Native's tier when the person picked none is the shared default (native-configuration.mjs): none, so Standard.
 export function configuredModelServiceTier(settings,runtime,provider,model){
-  return normalizeRuntimeModelServiceTier(runtime,settings?.modelServiceTiers?.[modelServiceTierKey(runtime,provider,model)]);
+  return normalizeRuntimeModelServiceTier(runtime,settings?.modelServiceTiers?.[modelServiceTierKey(runtime,provider,model)])||(runtime==="native"?NATIVE_SERVICE_TIER_DEFAULT:null);
 }

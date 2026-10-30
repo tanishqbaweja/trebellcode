@@ -25,6 +25,7 @@ import { NativeMcpBroker } from "./native-mcp-broker.mjs";
 import { createNativeToolExecutor } from "./native-tool-executor.mjs";
 import { nativeSystemPrompt } from "./native-system-prompt.mjs";
 import { attachNativePromptProvenance } from "./native-request-metrics.mjs";
+import { NATIVE_COMPACTION, continuityCheckpoints, nativeModelSettings, nativePolicyContext, nativePromptBudgets, nativeSessionSettings, nativeToolNamespaceOptions } from "./native-configuration.mjs";
 import { configuredReasoningEffort } from "./model-reasoning-effort.mjs";
 import { configuredModelServiceTier } from "./model-service-tier.mjs";
 import { discoverRepositoryCapabilities, exposedToolNamed, platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
@@ -889,7 +890,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     return continuitySnapshot({
       threadId,thread,meta,goal:durableGoal(threadId),
       verificationRecords:state?.verificationRecords?.({threadId,limit:10})||[],
-      checkpoints:state?.checkpoints?.(threadId)||[],
+      // Only checkpoints linked to a turn: the one the window makes before a message is not something the work created.
+      checkpoints:continuityCheckpoints(state?.checkpoints?.(threadId)||[]),
       traces:journal?.list?.({threadId,limit:80})||[],
     });
   }
@@ -913,14 +915,6 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     const thread=threadMetadata(threadId),meta=thread?.providerMeta||{};
     journal?.record?.({runtime:thread?.runtime||runtimeManager.activeRuntime(),provider:meta.runtimeInstanceId||null,environmentId:meta.environmentId??state?.settings?.().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,turnBudget:goal?.turnBudget??null,turnsUsed:goal?.turnsUsed??0,toolCallBudget:goal?.toolCallBudget??null,toolCallsUsed:goal?.toolCallsUsed??0,toolCallTelemetryComplete:goal?.toolCallTelemetryComplete??true,childAgentBudget:goal?.childAgentBudget??null,childAgentsUsed:goal?.childAgentsUsed??null,childAgentTelemetryComplete:goal?.childAgentTelemetryComplete??false,costBudgetUsd:goal?.costBudgetUsd??null,costUsedUsd:goal?.costUsedUsd??null,costTelemetryComplete:goal?.costTelemetryComplete??true,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,childAgentExhausted:gate.childAgentExhausted,costExhausted:gate.costExhausted}});
     throw Object.assign(new Error(gate.reason),{code:-32001});
-  }
-  function nativeGoalPromptOptions(goal){
-    const options={};if(!goal)return options;
-    if(goal.turnBudgetRemaining!=null)options.maxModelTurns=Math.max(1,Math.min(500,Math.floor(Number(goal.turnBudgetRemaining)||1)));
-    if(goal.timeBudgetRemainingMinutes!=null)options.maxWallTimeMs=Math.max(1,Math.floor(Number(goal.timeBudgetRemainingMinutes)*60_000));
-    if(goal.toolCallBudget!=null&&goal.toolCallTelemetryComplete!==false)options.maxToolCalls=Math.max(0,Number(goal.toolCallBudget)-Number(goal.toolCallsUsed||0));
-    if(goal.tokenBudgetRemaining!=null)options.maxOutputTokens=Math.max(1,Math.floor(Number(goal.tokenBudgetRemaining)||1));
-    return options;
   }
   function reserveDelegation(threadId){
     const goal=durableGoal(threadId),pending=Math.max(0,Number(pendingDelegations.get(threadId))||0);
@@ -1150,13 +1144,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const namespaceNames=new Set(thread.providerMeta?.dynamicToolNamespaces||[]),projectless=Boolean(thread.providerMeta?.projectless);
       const nativeProviderId=thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null;
       const stableOutputTools=providerFeatureEnabled(nativeProviderId,"promptCaching")||providerFeatureEnabled(nativeProviderId,"explicitCacheControl");
-      const platformTools=platformDynamicToolNamespaces({
-        repository:!projectless,
-        progressiveRepository:!projectless,
-        output:stableOutputTools,workspaceTools:true,terminal:true,process:namespaceNames.has("trebell_process"),
+      // Native's tools (native-configuration.mjs): background processes always, the specialized namespaces the thread's messages chose.
+      const platformTools=platformDynamicToolNamespaces(nativeToolNamespaceOptions({projectless,stableOutputTools,selected:{
         browser:namespaceNames.has("trebell_browser"),computer:namespaceNames.has("trebell_computer"),
-        sourceControl:!projectless&&namespaceNames.has("trebell_source_control"),delegation:namespaceNames.has("trebell_delegate"),
-      });
+        sourceControl:namespaceNames.has("trebell_source_control"),delegation:namespaceNames.has("trebell_delegate"),
+      }}));
       const repoIo=remoteIo?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
       const environmentProfile=environmentId&&environments?environments.get(environmentId):null;
       const mcpServers=nativeMcpServersForSession(state?.settings?.().mcpServers||[],{environmentId});
@@ -1205,10 +1197,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,mcpBroker,
         discoverRepositoryTools,directTool:requested=>exposedToolNamed(tools,requested),outputStore,
         projectAvailable:!projectless,
-        policyContext:()=>({
-          permissionProfile:normalizePermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||effectivePermissionMode),runtime:"native",workspace:runtimeCwd,projectAvailable:!projectless,
+        policyContext:()=>nativePolicyContext({
+          permissionProfile:normalizePermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||effectivePermissionMode),workspace:runtimeCwd,projectAvailable:!projectless,
           desktopAvailable:namespaceNames.has("trebell_browser")||namespaceNames.has("trebell_computer"),delegationAvailable:namespaceNames.has("trebell_delegate"),
-          environmentType:environmentProfile?.type||"local",environmentIsolated:false,provenance:"model",
+          environmentType:environmentProfile?.type||"local",
         }),
         executeShared:async call=>{
           if(["trebell_workspace","trebell_terminal","trebell_process"].includes(call.namespace))return nativeBuiltins(call);
@@ -1245,7 +1237,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       const compactedMessage=compactionBoundary?nativeCompactionMessage(compactionBoundary.summary):null;
       // Native updates name the session that sent them, so a draft's frames belong to the turn that session is running.
       const runtime=new NativeAgentSession({
-        ...common,streamDrafts:true,onUpdate:params=>handleUpdate(thread.id,params,runtime),provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),semanticCompletionGate:true,tools,executeTool,toolOutputStore:outputStore,
+        ...common,streamDrafts:true,onUpdate:params=>handleUpdate(thread.id,params,runtime),provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),serviceTier:configuredModelServiceTier(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),
+        // The shared configuration's gate, window and server compaction threshold (native-configuration.mjs); turn/start applies the
+        // window and threshold again for the model each message runs.
+        ...nativeSessionSettings({provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null}),
+        tools,executeTool,toolOutputStore:outputStore,
         onClose:()=>mcpBroker.close(),
         providerTurn:request=>nativeProviderTurn(request),initialMessages:[
           {role:"system",content:nativeSystemPrompt({tools,permissionMode:effectivePermissionMode,projectless})},
@@ -1516,7 +1512,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const continueText="Continue where you left off.",input=[{type:"text",text:continueText}];
         const durable=await withDurableContext(thread.id,{},continueText),pending=pendingHistoryHandoff(thread.id,turn.id);
         const prompt=await contextualAgentPrompt(input,{...durable,...pending?.context});
-        const promptOptions={messageId:randomUUID(),agent:thread.agent||null,...(thread.runtime==="native"?nativeGoalPromptOptions(goal):{}),...handoffDelivery(thread.id,turn.id,pending)};
+        const promptOptions={messageId:randomUUID(),agent:thread.agent||null,...(thread.runtime==="native"?nativePromptBudgets(goal):{}),...handoffDelivery(thread.id,turn.id,pending)};
         settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:thread.model||null,context,resend:claudeLostSessionResend({thread,turn,session,input,durable,promptOptions})});
       }catch(error){
         // The open window says what the turn stores, so the error reads the same live and after a reload.
@@ -1634,11 +1630,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       // usage: only a cost of its own that comes with them is.
       const runtimeSession=sessions.get(threadId),own=update.carried?(update.cost?Object.fromEntries(Object.keys(snapshot).map(key=>[key,0])):null):snapshot;
       if(runtimeSession&&own)runtimeSession.__usage={usage:own,cost:update.cost||null,at:Date.now()};
-      // A harness that reports what its context holds apart from the turn's tokens sends it: Claude Code its latest request's prompt
-      // (context, by kind of token), Muse Code what its context holds (contextTokens, from session/contextUsage). The context meter
-      // reads it as the last request's input, as it reads Codex's, and the turn keeps its own totals.
+      // A harness that reports what its context holds apart from the turn's tokens sends it: Claude Code and Trebell Native their latest
+      // request's prompt (context, by kind of token), Muse Code what its context holds (contextTokens, from session/contextUsage). The
+      // context meter, automatic compaction and the next message's context budget read it as the last request's input, as they read
+      // Codex's, and the turn keeps its own totals.
       const context=update.context&&typeof update.context==="object"?update.context:null,contextTokens=Number(update.contextTokens)>0?Number(update.contextTokens):0;
-      const last=context?{totalTokens:Number(context.totalTokens)||0,inputTokens:Number(context.inputTokens)||0,cachedInputTokens:Number(context.cachedInputTokens)||0,cacheWriteInputTokens:Number(context.cacheWriteInputTokens)||0,outputTokens:Number(context.outputTokens)||0,reasoningOutputTokens:0}
+      const last=context?{totalTokens:Number(context.totalTokens)||0,inputTokens:Number(context.inputTokens)||0,cachedInputTokens:Number(context.cachedInputTokens)||0,cacheWriteInputTokens:Number(context.cacheWriteInputTokens)||0,outputTokens:Number(context.outputTokens)||0,reasoningOutputTokens:Number(context.reasoningOutputTokens)||0}
         :contextTokens?{totalTokens:contextTokens,inputTokens:contextTokens,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0}:snapshot;
       emit("thread/tokenUsage/updated",{threadId,turnId,tokenUsage:{total:snapshot,last,modelContextWindow:size||null,cost:update.cost||null}});
     }else if(type==="diff"){
@@ -1685,7 +1682,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
     if(!thread)return {supported:false,reason:"thread_missing",thread:null,added:[],namespaces:[]};
     if(thread.runtime!=="native")return {supported:false,reason:"runtime_does_not_support_dynamic_tool_expansion",thread,added:[],namespaces:[]};
     if(thread.status?.type==="active")throw new Error("Stop the running turn before expanding thread tools.");
-    const requested=expandableNativeToolNamespaces(requestedNamespaces);
+    // Background processes are always Native's (nativeToolNamespaceOptions), so asking for them adds nothing and restarts nothing.
+    const requested=expandableNativeToolNamespaces(requestedNamespaces).filter(name=>name!=="trebell_process");
     const current=expandableNativeToolNamespaces(thread.providerMeta?.dynamicToolNamespaces||[]),currentSet=new Set(current),added=requested.filter(name=>!currentSet.has(name));
     if(!added.length)return {supported:true,thread,added:[],namespaces:current};
     const activeSession=sessions.get(thread.id);if(activeSession instanceof NativeAgentSession&&activeSession.turnActive)throw new Error("Stop the running turn before expanding thread tools.");
@@ -2206,10 +2204,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         if(params.model&&params.model!==thread.model){await session.setModel(params.model);threadStore.update(thread.id,{model:session.model||params.model})}
       }
       else if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
+      // The window (the model's NATIVE_MEASURED_MODELS row's, which rests on the readouts, else the catalog's) and the server
+      // compaction threshold of the model this message runs (nativeModelSettings), so a model switch takes its own and a model with a
+      // row keeps its window over a catalog without one.
       if(runtime==="native"&&typeof session.setContextWindow==="function"){
         let contextWindow=null;
         if(typeof nativeModelContextWindow==="function")try{contextWindow=await nativeModelContextWindow({provider:requestedProvider||thread.providerMeta?.modelProvider||null,model:params.model||thread.model||null,thread:threadStore.get(thread.id)||thread})}catch(error){log("Native model context metadata unavailable: "+(error?.message||String(error)))}
-        session.setContextWindow(contextWindow);
+        const modelSettings=nativeModelSettings({provider:session.provider??requestedProvider??thread.providerMeta?.modelProvider??null,model:session.model||params.model||thread.model||null,catalogContextWindow:contextWindow});
+        session.setContextWindow(modelSettings.contextWindow);
+        session.setServerCompactionThreshold?.(modelSettings.serverCompactionThreshold);
       }
       // The message's files are read before its turn exists: one Trebell cannot read refuses the send by its name, the draft kept,
       // and leaves no turn running behind it.
@@ -2237,7 +2240,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
       if(selectedAgent!==thread.agent)threadStore.update(thread.id,{agent:selectedAgent});
       const promptOptions={messageId:randomUUID(),agent:selectedAgent,...handoffDelivery(thread.id,turn.id,pending)};
       if(session instanceof NativeAgentSession&&Array.isArray(params.toolAllowlist)&&params.toolAllowlist.length)promptOptions.toolAllowlist=params.toolAllowlist.map(item=>String(item||"").trim()).filter(Boolean).slice(0,100);
-      if(session instanceof NativeAgentSession)Object.assign(promptOptions,nativeGoalPromptOptions(turnGoal));
+      // The shared per-message ceilings, lowered by what an active goal has left (native-configuration.mjs).
+      if(session instanceof NativeAgentSession)Object.assign(promptOptions,nativePromptBudgets(turnGoal));
       // A thread deleted meanwhile has no turn left to end.
       if(send?.stopped){if(!threadStore.get(thread.id))throw stoppedBeforeTurn();return {turn:endStoppedTurn(thread.id,turn.id)}}
       settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null,context,resend:claudeLostSessionResend({thread,turn,session,input,durable,promptOptions,excludeTurnId:turn.id})});
@@ -2299,7 +2303,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,state,enviro
         const retainTurnCount=Math.min(2,Math.max(0,turns.length-1)),throughIndex=turns.length-retainTurnCount-1,throughTurn=turns[throughIndex];
         const retainedTurns=retainTurnCount?turns.slice(throughIndex+1):[],recentMessages=retainTurnCount?nativeMessagesFromThread(thread,{afterTurnId:throughTurn.id}):[];
         const deterministicContext=continuityContextValue(durableContinuity(thread.id));
-        const result=await session.compact({maxOutputTokens:params.maxOutputTokens||4096,recentMessages,deterministicContext});
+        const result=await session.compact({maxOutputTokens:params.maxOutputTokens||NATIVE_COMPACTION.maxOutputTokens,recentMessages,deterministicContext});
         const compaction={id:`native-compact-${randomUUID()}`,summary:result.summary,throughTurnId:throughTurn.id,retainedTurnIds:retainedTurns.map(item=>item.id),createdAt:Date.now(),model:result.model||thread.model||null,provider:result.provider||thread.providerMeta?.modelProvider||null,sourceMessageCount:result.sourceMessageCount||0,retainedRecentMessageCount:result.retainedRecentMessageCount||0,continuityChars:result.continuityChars||0};
         const current=threadMetadata(thread.id)||thread;threadStore.update(thread.id,{providerMeta:{...(current.providerMeta||{}),nativeCompaction:compaction}});
         if(result.usage)state?.recordUsage?.({id:`native:${thread.id}:compaction:${compaction.id}`,runtime:"native",provider:compaction.provider,model:compaction.model,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:`compaction:${compaction.id}`,usage:result.usage,at:compaction.createdAt});

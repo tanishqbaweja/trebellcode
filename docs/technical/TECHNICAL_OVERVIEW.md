@@ -237,6 +237,7 @@ Common engineering primitives stay available without bloating every turn:
 
 - workspace/file operations;
 - terminal operations;
+- background processes (Trebell Native has them in every session, for servers, watchers and daemons a task needs running);
 - repository search/intelligence;
 - bounded context helpers.
 
@@ -557,6 +558,25 @@ These may optionally read an ignored root **.env** containing test credentials o
 ### Benchmarks
 
 Public benchmark comparisons live in **[../../BENCHMARKS.md](../../BENCHMARKS.md)**.
+
+### One Native for the app and the benchmarks
+
+The Trebell Native a person runs and the one the benchmark runner (`benchmarks/harbor/native-harbor-run.mjs`) runs are one program with one configuration, **`src/native-configuration.mjs`**, which both read. It holds every setting that changes what Native does, each with its evidence: measured on fresh benchmark tasks, what every readout ran without a fresh comparison, the app's product default, or new (the last three unmeasured):
+
+| Setting | Value |
+|---|---|
+| Model | `gpt-6-luna` on OpenAI when the catalog lists it, unless the person picks another; only `gpt-6-luna` has measured settings, and another model runs the unmeasured defaults below |
+| Semantic completion gate, its recovery and the mid-task controller checkpoints | Off (measured: no extra resolution, about a third more cost) |
+| Ceilings per message | 500 model turns, 5,000 tool calls, no wall-time cap (what every readout ran, the owner's choice for the app; not compared with the app's old 24 and 100); Stop and a goal's budgets stay the person's controls, and a goal's remaining budgets lower them |
+| Long context on `gpt-6-luna` | A 272,000-token window with OpenAI server compaction at 245,000 (armed once an input reaches half of it), which rests on the readouts: every readout since 2026-10-01 ran it, but it was never compared on fresh tasks with the client-side read cooling the app ran; other models keep the catalog window and client-side read cooling |
+| Reasoning | `reasoning.context` `current_turn` on OpenAI, which rests on the readouts: its fresh comparison with `all_turns` was withdrawn, as a run with one user message shows the model the same reasoning under either, and the app's multi-message threads, where they differ, were never measured; Thinking defaults to Max on `gpt-6-luna` (measured on fresh tasks; the provider's default on other models) unless the person picks a level |
+| Speed | No service tier unless the person picks Fast |
+| Tools | Repository, workspace, terminal and background processes in every request; output tools from the first request on prompt-caching providers (elsewhere once an output is stored); source control when the message asks for Git work (a git command, a pull or merge request to open, a commit, branch, push, rebase or merge said as such, or an everyday ask such as "fix it and commit", "push it", "new branch", "revert the last commit", "Looks good, commit it" or "Can you commit this?", also at a line's end; never a link or a cited commit, nor a data store's version control), a new rule, narrowed from the product's word rule on 2026-10-29 and unmeasured, which also decides whether a Codex thread gets `trebell_source_control`, from its first message only; browser, desktop control and delegation where the window has them. Background processes were seen only on OpenAI, a prompt-caching provider; elsewhere their tool JSON goes uncached (unmeasured) |
+| First message | The repository seed; the continuity block lists only checkpoints already linked to a turn |
+| Developer text | The repository-lookup sentence and those of the namespaces the message selected, with no web-research sentence (dropped on 2026-10-29 for the app and the runner alike: no benchmark ran with it, Native has no web search tool, only its terminal's network access, and it invites looking up the upstream fix); other harnesses' threads keep it |
+| Context meter and between-turn compaction | Read the last request's input, not the turn's summed input; the window compacts before a message at the person's threshold (85% by default, unmeasured), and the brief runs at the provider's own thinking level under a 4,096-token cap whatever the Thinking pick (unmeasured) |
+
+The runner differs only where a task container cannot have the thing (the browser panel, desktop control, delegation, a person's MCP servers, the permission mode, which stands for Full access, and reply drafts, which change no request); `NATIVE_CONTAINER_ONLY` lists each with its reason. `tests/native-one-config-parity.test.mjs` builds the app's Native and the runner's for the same task and compares their settings, tools, prompts and every byte they send. Benchmark-only environment switches are registered in `NATIVE_RUN_SWITCHES`, off by default and written to each run's metrics; the comparison launcher refuses a readout with any of them set (or with another effort or tier) unless it is named as an experiment, and the integrity audit fails such a lane.
 
 ---
 

@@ -1,5 +1,6 @@
-// The Harbor benchmark runner's provider path, rebuilt from benchmarks/harbor/trebell-native-runner.mjs (its session
-// options and its providerTurn) over the real ProviderManager and the real OpenAiResponsesWebSocket. Only the socket and
+// The Harbor benchmark runner's provider path, rebuilt from benchmarks/harbor/native-harbor-run.mjs (its session options, read
+// from the shared configuration in src/native-configuration.mjs as the runner reads them, and its providerTurn, the shared
+// src/native-provider-turn.mjs) over the real ProviderManager and the real OpenAiResponsesWebSocket. Only the socket and
 // fetch underneath are scripted, so every byte the runner would send and everything it would record can be compared
 // against tests/fixtures/native-benchmark-path-parity.json.
 import { EventEmitter } from "node:events";
@@ -7,6 +8,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NativeAgentSession } from "../../src/native-agent-session.mjs";
+import { nativeHarborRunConfiguration, nativeSessionSettings, nativeSpecializedSelection, nativeToolNamespaceOptions, trebellDeveloperInstructions } from "../../src/native-configuration.mjs";
+import { nativeProviderTurn } from "../../src/native-provider-turn.mjs";
 import { attachNativePromptProvenance } from "../../src/native-request-metrics.mjs";
 import { nativeSystemPrompt } from "../../src/native-system-prompt.mjs";
 import { NativeToolOutputStore } from "../../src/native-tool-output-store.mjs";
@@ -33,15 +36,15 @@ function recordedHeaders(headers={}){
   const out={};for(const [key,value] of Object.entries(headers||{}))out[key]=key.toLowerCase()==="user-agent"&&value===TREBELL_USER_AGENT?"<TREBELL_USER_AGENT>":value;return out;
 }
 
-const usage=(input,output,cached=0,reasoning=0)=>({input_tokens:input,input_tokens_details:{cached_tokens:cached},output_tokens:output,output_tokens_details:{reasoning_tokens:reasoning},total_tokens:input+output});
+export const usage=(input,output,cached=0,reasoning=0)=>({input_tokens:input,input_tokens_details:{cached_tokens:cached},output_tokens:output,output_tokens_details:{reasoning_tokens:reasoning},total_tokens:input+output});
 function terminal(id,output,tokens,{withOutput}){
   return {type:"response.completed",response:{id,object:"response",model:MODEL,status:"completed",service_tier:"priority",reasoning:{effort:"max",context:"current_turn"},...(withOutput?{output}:{}),usage:tokens}};
 }
-function reasoningItem(index,id){
+export function reasoningItem(index,id){
   const item={id,type:"reasoning",summary:[]};
   return {events:[{type:"response.output_item.added",output_index:index,item},{type:"response.output_item.done",output_index:index,item}],item};
 }
-function messageItem(index,id,phase,chunks){
+export function messageItem(index,id,phase,chunks){
   const text=chunks.join(""),item={id,type:"message",role:"assistant",status:"completed",...(phase?{phase}:{}),content:[{type:"output_text",text,annotations:[]}]};
   return {
     item,
@@ -54,7 +57,7 @@ function messageItem(index,id,phase,chunks){
     ],
   };
 }
-function functionCallItem(index,id,callId,name,args){
+export function functionCallItem(index,id,callId,name,args){
   const item={id,type:"function_call",status:"completed",call_id:callId,name,arguments:args};
   return {
     item,
@@ -66,7 +69,7 @@ function functionCallItem(index,id,callId,name,args){
     ],
   };
 }
-function reply(transport,id,parts,tokens){
+export function reply(transport,id,parts,tokens){
   const output=parts.map(part=>part.item);
   return {transport,events:[{type:"response.created",response:{id,object:"response",model:MODEL,status:"in_progress"}},...parts.flatMap(part=>part.events),terminal(id,output,tokens,{withOutput:transport==="https"})]};
 }
@@ -147,7 +150,7 @@ function withEncryptedReasoning(scenario){
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
-function scriptedTransport(scenario,record){
+export function scriptedTransport(scenario,record){
   const queue=[...scenario.replies];
   const next=transport=>{
     const item=queue.shift();
@@ -193,14 +196,18 @@ export async function runBenchmarkPathScenario(name,{sessionOptions=null,prepare
   const env={OPENAI_API_KEY:"golden-fixture-key",TREBELL_HOME:home,...(scenario.env||{})};
   const scripted=scriptedTransport(scenario,record);
   const manager=new ProviderManager({env,fetchFn:scripted.fetchFn,openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket({...options,WebSocketClass:scripted.RecordingSocket})});
-  // The runner's settings with nothing set in its environment: gpt-6-luna, max effort, the fast tier, the server's reasoning context.
-  const provider="openai",model=MODEL,reasoningEffort="max",serviceTier="fast",reasoningContext=null,contextWindow=272_000,compactionThreshold=245_000;
-  const tools=platformDynamicToolNamespaces({repository:true,progressiveRepository:true,output:true,workspaceTools:true,terminal:true,process:true,browser:false,computer:false,sourceControl:false,delegation:false});
+  // The runner's settings with nothing set in its environment (nativeHarborRunConfiguration): gpt-6-luna, max effort, no tier, the
+  // shared reasoning context, the measured window and server compaction threshold.
+  const config=nativeHarborRunConfiguration({}),{provider,model,reasoningEffort,serviceTier,contextWindow,compactionThreshold}=config;
+  if(model!==MODEL)throw new Error("The golden scenarios script "+MODEL+", the runner's model is "+model);
+  const selected=nativeSpecializedSelection(scenario.prompt,{sourceControl:true});
+  const tools=platformDynamicToolNamespaces(nativeToolNamespaceOptions({projectless:false,stableOutputTools:true,selected}));
   const outputStore=new NativeToolOutputStore({directory:join(home,"trebell-output"),environment:env});
   const session=new NativeAgentSession({
     cwd:"/workspace/golden",
     provider,
     model,
+    ...nativeSessionSettings({provider,model}),
     semanticCompletionGate:scenario.semanticCompletionGate===true,
     contextWindow,
     openAiServerCompactionThreshold:compactionThreshold,
@@ -216,10 +223,15 @@ export async function runBenchmarkPathScenario(name,{sessionOptions=null,prepare
       const handler=scenario.tools?.[call.namespace+"/"+call.name];if(!handler)throw new Error("Unscripted tool "+call.namespace+"/"+call.name);
       return handler(call.arguments);
     },
-    initialMessages:[{role:"system",content:nativeSystemPrompt({tools,permissionMode:"full",projectless:false})}],
+    initialMessages:[
+      {role:"system",content:nativeSystemPrompt({tools,permissionMode:"full",projectless:false})},
+      {role:"developer",content:trebellDeveloperInstructions({projectless:false,dynamicTools:true,browser:selected.browser,delegation:selected.delegation})},
+    ],
     providerTurn:async request=>{
       const source=typeof prepareRequest==="function"?prepareRequest(request):request;
-      const response=await manager.turn(provider,{...source,provider,model,reasoningContext},{signal:request.signal,streamResponses:true,...(typeof turnOptions==="function"?turnOptions(request):{})});
+      // The shared provider turn; a case's own turn options (drafts wired by hand) ride on the options it sends.
+      const extra=typeof turnOptions==="function"?turnOptions(request):{};
+      const response=await nativeProviderTurn({turn:(name,body,options)=>manager.turn(name,body,{...options,...extra})},{...source,provider,model});
       record.responses.push(plain(response));
       return response;
     },
@@ -228,7 +240,7 @@ export async function runBenchmarkPathScenario(name,{sessionOptions=null,prepare
   try{
     await session.start({providerSessionId:"trebell-harbor",model});
     const userParts=[scenario.prompt],prompt=[attachNativePromptProvenance({type:"text",text:scenario.prompt},{kind:"user_input",userParts})];
-    try{record.result=plain(await session.prompt(prompt,{maxModelTurns:500,maxToolCalls:5000,maxWallTimeMs:null}))}
+    try{record.result=plain(await session.prompt(prompt,{...config.budgets}))}
     catch(error){record.error=plain({message:String(error?.message||error),code:error?.code??null})}
     record.unusedReplies=scripted.remaining();
     return record;

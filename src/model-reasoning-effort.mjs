@@ -1,3 +1,5 @@
+import { nativeModelSettings } from "./native-configuration.mjs";
+
 export const REASONING_EFFORTS=Object.freeze(["none","minimal","low","medium","high","xhigh","max"]);
 const ALLOWED=new Set(REASONING_EFFORTS);
 
@@ -63,8 +65,10 @@ export function supportedReasoningEfforts(runtime,provider,model,metadata={}){
   return runtime==="codex"?advertised:[];
 }
 
+// Native's effort when the person picked none: the level a model was measured with (native-configuration.mjs: max for gpt-6-luna),
+// else none, so the provider's own default applies.
 export function defaultReasoningEffort(runtime,provider,model){
-  return null;
+  return runtime==="native"?nativeModelSettings({provider,model}).reasoningEffort:null;
 }
 
 // metadata is the model's catalog row, which may list its own levels. Native sends a saved level to the provider as is, and
@@ -74,4 +78,13 @@ export function configuredReasoningEffort(settings,runtime,provider,model,metada
   const configured=normalizeRuntimeReasoningEffort(runtime,settings?.modelReasoningEfforts?.[modelReasoningEffortKey(runtime,provider,model)]);
   if(configured&&runtime==="native"&&!supportedReasoningEfforts(runtime,provider,model,metadata).includes(configured))return defaultReasoningEffort(runtime,provider,model);
   return configured||defaultReasoningEffort(runtime,provider,model);
+}
+
+// The composer's Thinking picker for a model: the level it shows (the saved one, else the level a message runs at) and whether it
+// offers a Default option. A model with a measured level (Max on gpt-6-luna) offers none: its default is one of the levels it lists, so
+// a Default there would show that level and never stay chosen (review of native-one-config, 2026-10-29). Elsewhere Default stands
+// for the provider's own level.
+export function reasoningEffortPicker(settings,runtime,provider,model,metadata={}){
+  const measured=defaultReasoningEffort(runtime,provider,model);
+  return {value:configuredReasoningEffort(settings,runtime,provider,model,metadata)||"",defaultOption:!measured,defaultLevel:measured||null};
 }

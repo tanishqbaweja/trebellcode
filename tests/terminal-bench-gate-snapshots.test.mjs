@@ -98,7 +98,7 @@ test("Gate snapshot paths reach only the Native lane and are captured at complet
   assert.match(comparison,/\}else delete harnessEnv\.TREBELL_HARBOR_GATE_SNAPSHOT_PATHS;/);
   const adapter=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
   assert.match(adapter,/env\["TREBELL_HARBOR_GATE_SNAPSHOT_PATHS"\] = gate_snapshot_paths/);
-  const runner=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
+  const runner=await readFile(new URL("../benchmarks/harbor/native-harbor-run.mjs",import.meta.url),"utf8");
   assert.match(runner,/row\.name==="native\.completion\.gate_requested"\)\{try\{gateSnapshots\.snapshot\(/);
   assert.match(runner,/gateSnapshots:gateSnapshots\.count/);
 });
