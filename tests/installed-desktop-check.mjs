@@ -194,17 +194,26 @@ try {
   if(browserRecording.stopTimedOut)throw new Error(`Agent browser recording did not stop within 3s (chunks=${browserRecording.chunks}, track=${JSON.stringify(browserRecording.trackState)}).`);
   if(!(browserRecording.bytes>1000)||!browserRecording.type.startsWith("video/")) throw new Error(`Agent browser recording did not produce encoded video (${browserRecording.bytes} bytes, ${browserRecording.type}, chunks=${browserRecording.chunks}, track=${JSON.stringify(browserRecording.trackState)}).`);
 
-const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureScreen());
-  if(!desktopSnapshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Desktop snapshot is not a PNG data URL.");
-  if(!(desktopSnapshot.width>0&&desktopSnapshot.height>0)) throw new Error("Desktop snapshot dimensions are invalid.");
-
+// Both captures read what the machine's screen shows. The smoke runs hidden, so on a person's own machine the foreground window is
+// theirs (a release smoke's SnapShot took the person's browser window). With TREBELL_RELEASE_SCREEN_CAPTURE=off the check only makes
+// sure both captures are there and leaves the screen alone; the SnapShot settings are still checked.
+const screenCapture=String(process.env.TREBELL_RELEASE_SCREEN_CAPTURE||"").trim().toLowerCase()!=="off";
+let desktopSnapshot=null,captured=null,persisted=null;
   const snapshotConfig=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.configure({enabled:true,shortcut:"CommandOrControl+Shift+F11",includeText:false,playSound:false,sound:"camera-shutter",flash:false,animations:false}));
   if(!snapshotConfig?.enabled||!snapshotConfig?.registered||snapshotConfig.playSound!==false||snapshotConfig.sound!=="camera-shutter"||snapshotConfig.flash!==false||snapshotConfig.animations!==false) throw new Error("SnapShot settings did not persist in the packaged desktop app.");
+if(!screenCapture){
+  const present=await mainPage.evaluate(()=>typeof window.trebellDesktop.captureScreen==="function"&&typeof window.trebellDesktop.snapshots?.capture==="function");
+  if(!present) throw new Error("The desktop capture or the SnapShot capture is missing from the packaged desktop app.");
+  console.log("Screen captures not taken (TREBELL_RELEASE_SCREEN_CAPTURE=off): they would read this machine's screen.");
+}else{
+desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureScreen());
+  if(!desktopSnapshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Desktop snapshot is not a PNG data URL.");
+  if(!(desktopSnapshot.width>0&&desktopSnapshot.height>0)) throw new Error("Desktop snapshot dimensions are invalid.");
   await mainPage.bringToFront();
   await mainPage.waitForTimeout(150);
-  const captured=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.capture());
+  captured=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.capture());
   if(!captured?.id||!(captured.width>0&&captured.height>0)) throw new Error("Foreground SnapShot capture did not return valid metadata.");
-  const persisted=await mainPage.evaluate(id=>window.trebellDesktop.snapshots.read(id),captured.id);
+  persisted=await mainPage.evaluate(id=>window.trebellDesktop.snapshots.read(id),captured.id);
   if(!persisted?.dataBase64||persisted.id!==captured.id) throw new Error("SnapShot was not persisted for renderer recovery.");
   const pendingBeforeAck=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.pending());
   const wasPending=pendingBeforeAck.some(item=>item.id===captured.id);
@@ -217,6 +226,7 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     const attached=await mainPage.locator('.context-chip').filter({hasText:'SnapShot'}).count();
     if(!attached) throw new Error("SnapShot disappeared from pending storage without being attached to the draft.");
   }
+}
   await mainPage.evaluate(()=>window.trebellDesktop.snapshots.configure({enabled:false,shortcut:"CommandOrControl+Shift+F11",includeText:false,playSound:false,flash:false,animations:false}));
 
   await mainPage.evaluate(()=>window.trebellDesktop.zoom.reset());
@@ -429,8 +439,8 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     browser:{url:snapshot.url,title:snapshot.title,elements:snapshot.elements?.length||0,screenshotBytes:screenshot.dataUrl.length,cookieImport},
     browserViewport:{width:viewportState.width,height:viewportState.height},
     browserRecording,
-    desktopSnapshot:{width:desktopSnapshot.width,height:desktopSnapshot.height,bytes:desktopSnapshot.dataUrl.length},
-    snapShot:{width:captured.width,height:captured.height,title:captured.title,process:captured.process,persistedBytes:persisted.dataBase64.length},
+    desktopSnapshot:desktopSnapshot?{width:desktopSnapshot.width,height:desktopSnapshot.height,bytes:desktopSnapshot.dataUrl.length}:"not taken",
+    snapShot:captured?{width:captured.width,height:captured.height,title:captured.title,process:captured.process,persistedBytes:persisted.dataBase64.length}:"not taken",
     zoom:{before:zoomBefore,afterCtrlWheelUp:zoomAfter,reset:zoomReset},
     voice,
     providerCompatibility,

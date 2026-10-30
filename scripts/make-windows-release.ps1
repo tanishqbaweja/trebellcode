@@ -1,7 +1,10 @@
 param(
   [switch]$Publish,
   [string]$Tag = "",
-  [switch]$SkipTests
+  [switch]$SkipTests,
+  # The packaged smoke runs hidden, so its desktop and SnapShot captures would read whatever the builder's screen shows: they run
+  # only on a machine kept for building, with this switch.
+  [switch]$CaptureScreen
 )
 
 $ErrorActionPreference = "Stop"
@@ -242,7 +245,8 @@ $OldFixturePort = $env:TREBELL_BROWSER_FIXTURE_PORT
 $OldTestHidden = $env:TREBELL_TEST_HIDDEN
 $OldTrebellHome = $env:TREBELL_HOME
 $OldVisualDir = $env:TREBELL_RELEASE_VISUAL_DIR
-$VisualDir = Join-Path $Root ("release-artifacts\" + $Tag + "\visual")
+$OldScreenCapture = $env:TREBELL_RELEASE_SCREEN_CAPTURE
+$VisualDir =Join-Path $Root ("release-artifacts\" + $Tag + "\visual")
 if (Test-Path $VisualDir) { Remove-Item $VisualDir -Recurse -Force }
 New-Item -ItemType Directory -Path $VisualDir -Force | Out-Null
 $SmokeHome = Join-Path ([IO.Path]::GetTempPath()) ("trebell-release-smoke-" + [Guid]::NewGuid().ToString("N"))
@@ -270,6 +274,7 @@ try {
   $env:TREBELL_BROWSER_FIXTURE_PORT = [string]$FixturePort
   $env:TREBELL_TEST_HIDDEN = "1"
   $env:TREBELL_RELEASE_VISUAL_DIR = $VisualDir
+  $env:TREBELL_RELEASE_SCREEN_CAPTURE = if ($CaptureScreen) { "on" } else { "off" }
 
   if (-not ($env:TREBELL_TEST_VYCE_API_KEY -or $env:VYCEAI_API_KEY -or $env:VYCE_API_KEY)) {
     Write-Host "No Vyce key is set locally; desktop smoke will test native features and bundled Codex, while Vyce compatibility remains covered by Railway." -ForegroundColor DarkGray
@@ -348,6 +353,7 @@ try {
   $env:TREBELL_TEST_HIDDEN = $OldTestHidden
   $env:TREBELL_HOME = $OldTrebellHome
   $env:TREBELL_RELEASE_VISUAL_DIR = $OldVisualDir
+  $env:TREBELL_RELEASE_SCREEN_CAPTURE = $OldScreenCapture
   if (Test-Path $SmokeHome) {
     Remove-Item $SmokeHome -Recurse -Force -ErrorAction SilentlyContinue
   }
