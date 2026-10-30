@@ -227,10 +227,22 @@ test("source-control tools follow Git work the message asks for, not a link or t
     "push to remote",
     "link this to the PR",
     "link it to the PR",
+    // The fourth review's (2026-10-30): please before a line's end, a comma and thanks, and an if, when or once clause after the ask.
+    "Fix the failing test and commit please\nThanks!",
+    "Fix the failing test and commit, thanks!",
+    "commit, thanks",
+    "Fix the bug and push, thanks",
+    "Run the tests and commit if they pass",
+    "fix the lint errors and commit when done",
+    "commit once the tests pass",
     // Version control in Git's sense.
     "Put the project under version control",
     "which version control system is this?",
     "Is this folder under source control?",
+    // Setting it up (the fourth review's).
+    "Set up version control for this project",
+    "initialize version control",
+    "Add version control to this project",
   ];
   // The review's examples, each of which the word rule selected, and the other senses of commit and merge.
   const not=[
@@ -264,6 +276,11 @@ test("source-control tools follow Git work the message asks for, not a link or t
     "Supports push now via websockets.",
     "Link this to the parent record.",
     "The values you push onto the stack must be popped in order.",
+    "Each worker buffers rows and must commit when the batch is full.",
+    "The client should commit if the write succeeded.",
+    // A comma and then ends no ask: it would select a list of operations.
+    "Ops: pop, push, then halt.",
+    "Records are validated, commit, then flushed.",
     // Left out on purpose: "commit that" and "force push" would add Terminal-Bench Pro's two Git-history tasks
     // (recover-git-history-secrets, recover-prod-db-password-from-git-history).
     "commit that",
@@ -306,7 +323,7 @@ test("the source-control rule reads a message as long as the composer holds in l
   // under a second: a rule that goes back over a run from each of its characters takes about a minute at 400,000.
   const fill=(size,unit,lead)=>{const start=typeof lead==="function"?lead(size):lead||"",n=size-start.length-1;return start+unit.repeat(Math.ceil(n/unit.length)).slice(0,n)+"x"};
   const shapes=[["a"],["eHh4"],["QUJDRA=="],["\n"],["\r\n"],[" ",size=>".".repeat(size/2)],[" ","commit"],["\t","."],[". "],[".\n"],["& "],[" ","and"],["and "],["then "],["please "],["and then "],["commit "],["push "],["commit it "],[" it","push"],["it ","push "],["the ","open "],["the ","commit "],["the ","revert "],["the ","undo "],["the ","in "],["the ","show me "],["1 ","undo "],[" ","for"],["x/y.z-w ","create "],["https://a.b/c "],["https://a.b/c"],[":"],["; "],[" ","fix it and commit"],["2026-10-29 12:00:01 INFO commit offset 123 for partition 4 on branch predictor push notification\n"],[" ","."],["é中 "],
-    [", "],[",\n"],["you "],["ok "],["now "],["just also so "],["commit\n"],["and commit\n"],[" ","and commit"],[" ",", commit"],["\t","and commit"],["\t\r","commit"],["commit now "],["commit these "],[", please"],["push to "],["push it to my "],["link this to "],["under version "],["version control "],["in version control x "]];
+    [", "],[",\n"],["you "],["ok "],["now "],["just also so "],["commit\n"],["and commit\n"],[" ","and commit"],[" ",", commit"],["\t","and commit"],["\t\r","commit"],["commit now "],["commit these "],[", please"],["push to "],["push it to my "],["link this to "],["under version "],["version control "],["in version control x "],[", thanks "],["commit if "],[" ","commit, thanks"],["commit please\n"],["set up version control "],["version control to this "]];
   for(const size of [120_000,400_000])for(const [unit,lead] of shapes){
     const text=fill(size,unit,lead),started=performance.now();nativeConfiguration.nativeSpecializedSelection(text,all);const ms=performance.now()-started;
     assert.equal(text.length,size);assert.ok(ms<1_000,JSON.stringify(unit)+" at "+size+": "+ms.toFixed(0)+" ms");
