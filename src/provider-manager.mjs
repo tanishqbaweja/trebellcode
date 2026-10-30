@@ -494,10 +494,22 @@ async function readOpenAiResponsesStream(source,{requestStartedAt=performance.no
 // limit (rate_limit_exceeded, a 429) as back-pressure, a server error, a shutdown, an overload or an unavailable backend (a 500 or 503)
 // as transient, the whole request sent again ("Retry the whole request"); any other (a content policy refusal, a bad request) ends the
 // turn with its error.
+// Coming after a 200, an error event names the wait it asks for only in its message: Meta's docs give "Rate limit exceeded. Please retry
+// after 15 seconds." (dev.meta.ai/docs/error-handling); "try again in 2.5s" is read too. When the message names none, a rate limit waits
+// 15 s and an overload or an unavailable backend 60 s, the waits those docs give, on the loop's rate-limit retries (the team's 150 requests
+// and 3M tokens a minute are shared with everything else on its key), instead of the quick retries that would spend the minute's budget.
 const META_TRANSIENT_STREAM_ERRORS=new Set(["server_error","server_shutting_down","service_overloaded","backend_unavailable"]);
+const META_STREAM_BACKOFF_MS=Object.freeze({rate_limit_exceeded:15_000,service_overloaded:60_000,backend_unavailable:60_000});
+function metaStreamRetryAfterMs(message){
+  const match=/\b(?:retry after|try again in)\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?)\b/i.exec(String(message||""));
+  if(!match)return null;
+  const unit=match[2].toLowerCase(),scale=unit==="ms"||unit.startsWith("milli")?1:unit==="m"||unit.startsWith("min")?60_000:1000;
+  return Math.ceil(Number(match[1])*scale);
+}
 function metaStreamErrorRetry(providerError={}){
   const code=String(providerError?.code??"").trim().toLowerCase(),type=String(providerError?.type??"").trim().toLowerCase();
-  if(code==="rate_limit_exceeded"||type==="rate_limit_error"){const retryAfterMs=openAiRetryAfterMs({message:providerError?.message});return {retryable:true,rateLimited:true,...(retryAfterMs!=null?{retryAfterMs}:{})}}
+  const rateLimit=code==="rate_limit_exceeded"||type==="rate_limit_error",backoff=rateLimit?META_STREAM_BACKOFF_MS.rate_limit_exceeded:META_STREAM_BACKOFF_MS[code]??null;
+  if(backoff!=null)return {retryable:true,rateLimited:true,retryAfterMs:metaStreamRetryAfterMs(providerError?.message)??backoff};
   return {retryable:META_TRANSIENT_STREAM_ERRORS.has(code)||(!code&&type==="server_error")};
 }
 // The stateless providers whose Responses stream a turn reads when it asks to stream (streamResponses, Native's Meta lane in

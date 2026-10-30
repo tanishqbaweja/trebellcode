@@ -255,3 +255,32 @@ test("a Meta stream whose connection drops after its final event gives that answ
     assert.deepEqual(result.usage,{inputTokens:655,outputTokens:305,totalTokens:960,cachedInputTokens:497,cacheWriteInputTokens:0,reasoningOutputTokens:295});
   }finally{rmSync(root,{recursive:true,force:true})}
 });
+
+test("an error inside a Meta stream asks the loop to wait as its message says, else as Meta's docs say, on the rate-limit retries",async()=>{
+  const root=home();
+  try{
+    const inStream=(code,message)=>({event:"error",data:{type:"error",code,message,sequence_number:3}});
+    for(const [code,message,expected] of [
+      // Meta's documented wording (dev.meta.ai/docs/error-handling), verbatim, and the recorded fixture's.
+      ["rate_limit_exceeded","Rate limit exceeded. Please retry after 15 seconds.",{rateLimited:true,retryAfterMs:15_000}],
+      ["rate_limit_exceeded",fixture.documentedErrors.rateLimitedInStream.data.message,{rateLimited:true,retryAfterMs:15_000}],
+      ["rate_limit_exceeded","Rate limit exceeded. Please try again in 2.5s.",{rateLimited:true,retryAfterMs:2_500}],
+      ["rate_limit_exceeded","Rate limit exceeded. Please try again in 750ms.",{rateLimited:true,retryAfterMs:750}],
+      ["rate_limit_exceeded","Rate limit exceeded. Please retry after 1 minute.",{rateLimited:true,retryAfterMs:60_000}],
+      // No wait named: Meta's documented waits.
+      ["rate_limit_exceeded","Rate limit exceeded.",{rateLimited:true,retryAfterMs:15_000}],
+      ["service_overloaded","The service is overloaded.",{rateLimited:true,retryAfterMs:60_000}],
+      ["backend_unavailable","The backend is unavailable.",{rateLimited:true,retryAfterMs:60_000}],
+      // A server error or a shutdown is retried at once, as before.
+      ["server_error","The server had an error while processing your request.",{rateLimited:undefined,retryAfterMs:undefined}],
+      ["server_shutting_down","The server is shutting down. Retry the request.",{rateLimited:undefined,retryAfterMs:undefined}],
+    ]){
+      const meta=metaApi([answer(fixture.text,{events:failingStream(inStream(code,message))})]);
+      await assert.rejects(managerFor(root,meta.fetchFn).turn("meta",nativeRequest(),configuration.nativeProviderTurnOptions("meta")),error=>{
+        assert.equal(error.code,code);assert.equal(error.retryable,true,message);
+        assert.equal(error.rateLimited,expected.rateLimited,message);assert.equal(error.retryAfterMs,expected.retryAfterMs,message);return true;
+      });
+      assert.equal(meta.requests.length,1);
+    }
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
