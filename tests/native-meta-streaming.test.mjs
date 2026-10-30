@@ -6,7 +6,7 @@ import { join } from "node:path";
 import * as configuration from "../src/native-configuration.mjs";
 import { runNativeAgentTurn } from "../src/native-agent-loop.mjs";
 import { nativeProviderTurn } from "../src/native-provider-turn.mjs";
-import { ProviderManager } from "../src/provider-manager.mjs";
+import { MODEL_PROVIDERS, ProviderManager } from "../src/provider-manager.mjs";
 
 // Native's Meta lane streams Meta's Responses. Meta answers a JSON request only once the whole answer is written, under a whole-request
 // timeout of 300 s, so a turn whose answer took longer timed out on every attempt (regex-chess and adaptive-rejection-sampler on
@@ -211,6 +211,30 @@ test("xAI keeps its JSON request even when a turn asks to stream",async()=>{
     const manager=new ProviderManager({env:{TREBELL_HOME:root,XAI_API_KEY:"xai-test-key"},fetchFn:async(url,init={})=>{requests.push(JSON.parse(String(init.body)));return Response.json({...completedOf(fixture.text),model:"grok-4.7"})}});
     const result=await manager.turn("xai",{model:"grok-4.7",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true});
     assert.equal(requests[0].stream,false);assert.equal(result.telemetry.streaming,false);assert.equal(result.text,"208");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("only Meta's streamed request, the long one, asks its fetch for no timeout of its own (timeout:false, which Bun's fetch reads)",async()=>{
+  // On a task image with Bun the runner runs on Bun, whose fetch is then the long request's transport and keeps its own timeout unless
+  // the init says timeout:false. Bun is not on this machine: what is checked here is the init every provider's requests are sent with.
+  const root=home();
+  try{
+    const sent=[];
+    for(const provider of Object.keys(MODEL_PROVIDERS)){
+      const definition=MODEL_PROVIDERS[provider],fetchFn=async(url,init={})=>{sent.push({provider,url:String(url),init});throw Object.assign(new Error("stand-in: no answer"),{retryable:false})};
+      const manager=new ProviderManager({env:{TREBELL_HOME:join(root,provider),[definition.envKey]:"test-key-"+provider},fetchFn});
+      const request={provider,model:provider==="meta"?MODEL:"test-model",messages:[{role:"user",content:"hello"}],tools:[],maxOutputTokens:65536};
+      for(const run of [()=>nativeProviderTurn(manager,request),()=>manager.turn(provider,request)]){
+        const before=sent.length;await run().catch(()=>{});assert.ok(sent.length>before,provider+" sent its request");
+      }
+      manager.close?.();
+    }
+    const long=sent.filter(item=>Object.hasOwn(item.init,"timeout"));
+    assert.equal(long.length,1,"one request asks for no timeout: "+long.map(item=>item.provider).join(", "));
+    assert.equal(long[0].provider,"meta");assert.equal(long[0].url,"https://api.meta.ai/v1/responses");assert.equal(long[0].init.timeout,false);
+    assert.equal(JSON.parse(long[0].init.body).stream,true);
+    assert.deepEqual(sent.filter(item=>item.provider==="meta").map(item=>JSON.parse(item.init.body).stream),[true,false],"Meta's plain JSON request has none");
+    assert.ok(sent.some(item=>item.provider==="openai"&&JSON.parse(item.init.body).stream===true),"OpenAI's streamed request has none");
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 

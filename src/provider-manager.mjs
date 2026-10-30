@@ -997,7 +997,10 @@ export class ProviderManager {
     }finally{headerGuard?.release()}
   }
 
-  // longRequest: a streamed request sent through longRequestFetchFn, whose only bounds are the header guard and the stream's reader.
+  // longRequest: a streamed request sent through longRequestFetchFn, whose only bounds are the header guard and the stream's reader. Its
+  // init carries timeout:false, which Bun's fetch reads to drop its own default timeout (the Harbor adapter runs the runner on Bun when a
+  // task image has it, and Bun's fetch is then the transport, isNodeFetch being false); Node's fetch, providerLongRequestFetch and the
+  // stand-ins ignore it, as they ignore any init member they do not know.
   async forwardResponses(providerId, responsesBody, { signal, onWire, timeoutMs=this.requestTimeoutMs, longRequest=false } = {}) {
     const provider = this.get(providerId);
     if (provider.wireApi !== "responses") {
@@ -1007,7 +1010,7 @@ export class ProviderManager {
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
     const stream = Boolean(responsesBody?.stream);
     const endpoint=provider.baseUrl + "/responses",body=this.reusePreSerializedToolJson?stringifyProviderBody(responsesBody):JSON.stringify(responsesBody);onWire?.({endpoint,wireApi:"openai-responses",requestBytes:Buffer.byteLength(body,"utf8")});
-    const headerGuard=stream?providerHeadersSignal(signal,timeoutMs):null,fetchFn=stream&&longRequest?this.longRequestFetchFn:this.fetchFn;
+    const long=stream&&longRequest,headerGuard=stream?providerHeadersSignal(signal,timeoutMs):null,fetchFn=long?this.longRequestFetchFn:this.fetchFn;
     try{
       return await fetchFn(endpoint, {
         method: "POST",
@@ -1024,6 +1027,7 @@ export class ProviderManager {
             },
         body,
         signal: headerGuard?.signal||providerRequestSignal(signal, timeoutMs),
+        ...(long ? { timeout: false } : {}),
       });
     }finally{headerGuard?.release()}
   }
