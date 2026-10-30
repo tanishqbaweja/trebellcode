@@ -989,7 +989,7 @@ test("a call still pending when Trebell restarts ends stopped with its turn, and
     const first=new AgentThreadStore(env);
     const deploy=first.create({runtime:"antigravity",cwd:home,providerSessionId:"agy-saved",model:"fixture/model"}),deployTurn=first.addTurn(deploy.id,{inputText:"Deploy the docs"});
     first.addItem(deploy.id,deployTurn.id,{type:"commandExecution",id:"deploy",command:"npm run deploy",cwd:"",processId:null,source:"agent",status:"pending",commandActions:[],aggregatedOutput:null,exitCode:null,durationMs:null});
-    first.addItem(deploy.id,deployTurn.id,{type:"dynamicToolCall",id:"agent",namespace:"agent",tool:"Workflow · ping",arguments:{},status:"pending",runsPastTurn:true});
+    first.addItem(deploy.id,deployTurn.id,{type:"dynamicToolCall",id:"agent",namespace:"agent",tool:"Workflow · alpha",arguments:{},status:"pending",runsPastTurn:true});
     const notes=first.create({runtime:"cursor",cwd:home,providerSessionId:""}),notesTurn=first.addTurn(notes.id,{inputText:"Edit the notes"});
     first.addItem(notes.id,notesTurn.id,{type:"fileChange",id:"read",status:"completed",changes:[{path:"todo.md",kind:"edit"}]});
     first.addItem(notes.id,notesTurn.id,{type:"fileChange",id:"edit",status:"pending",changes:[{path:"notes.txt",kind:"edit"}]});

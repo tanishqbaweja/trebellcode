@@ -713,7 +713,7 @@ test("Stop withdraws an ACP harness's waiting approval card and answers the harn
 test("a call still pending when its turn is stopped or fails ends stopped before the turn's end, and one its completed turn never started stays pending",async t=>{
   const pending=(toolCallId,title,kind,extra={})=>({update:{sessionUpdate:"tool_call",toolCallId,title,kind,status:"pending",...extra}});
   const fx=await scenario(t,{...GROK,prompts:[
-    {steps:[pending("edit","Edit File","edit"),pending("agent","Workflow · ping","other",{runsPastTurn:true}),{hang:true}]},
+    {steps:[pending("edit","Edit File","edit"),pending("agent","Workflow · alpha","other",{runsPastTurn:true}),{hang:true}]},
     {steps:[pending("echo","echo PARITY","execute")],error:{code:-32603,message:"Internal error",data:{message:"The connection to the model dropped."}}},
     {steps:[pending("lint","npm run lint","execute")]},
   ]});
