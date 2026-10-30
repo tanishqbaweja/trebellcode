@@ -426,9 +426,10 @@ test("Send now whose turn support cannot load says so, by mouse and by keyboard,
 
 // Trebell Native in a real Git repository with two models, Model A and Model B: a new task sent with both picked (Shift-click in the
 // model picker) goes to each in a worktree of its own, made as the server makes them. providerCalls: the model of each turn the
-// provider was asked for (the completion gate answered apart); worktrees: the ones made.
+// provider was asked for (the completion gate answered apart); worktrees: the ones made. defaultModel: the model the catalog names its
+// default, null for a provider that names none, as the Meta Model API.
 const execFileAsync=promisify(execFile),git=(cwd,args)=>execFileAsync("git",args,{cwd,windowsHide:true,encoding:"utf8"});
-async function nativeFanout(page){
+async function nativeFanout(page,{defaultModel="model-a"}={}){
   const root=await mkdtemp(join(tmpdir(),"trebell-idle-actions-fanout-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   await git(repo,["init"]);await git(repo,["config","user.email","trebell-test@example.invalid"]);await git(repo,["config","user.name","Trebell Test"]);
   await writeFile(join(repo,"README.md"),"seed\n","utf8");await git(repo,["add","README.md"]);await git(repo,["commit","-m","seed"]);
@@ -448,7 +449,7 @@ async function nativeFanout(page){
     await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"auto",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:meta}));
     // The catalog names Model A its default, as OpenAI's names gpt-6-luna, so a new task starts on it: a Native catalog that names none
     // asks for a model first (native-providers.spec.js).
-    await page.route(/\/api\/models$/,route=>json(route,{models,defaultModel:models[0],metadata:{provider:"agentrouter",models:models.map(id=>({id,name:"Model "+id.slice(-1).toUpperCase(),provider:"agentrouter",agent:"Trebell Native"}))}}));
+    await page.route(/\/api\/models$/,route=>json(route,{models,defaultModel,metadata:{provider:"agentrouter",models:models.map(id=>({id,name:"Model "+id.slice(-1).toUpperCase(),provider:"agentrouter",agent:"Trebell Native"}))}}));
     await page.route(/\/api\/projects(?:\?.*)?$/,route=>route.request().method()==="POST"?json(route,{project:{...project,id:"project-"+worktrees.length,path:route.request().postDataJSON().path,environmentId:null}}):json(route,{projects:[project],project}));
     await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:true,cwd:repo,root:repo,branch:baseBranch,branches:[baseBranch],status:[],remotes:[],worktrees:[{path:repo,branch:baseBranch}]}));
     await page.route(/\/api\/git\/action$/,async route=>{
@@ -517,6 +518,30 @@ test("a task sent to two models whose turn support cannot load says so and keeps
     await shootModes(page,"two-model-send-cannot-load",()=>expect(alert).toBeVisible());
     await appStays(page);
   }finally{await fixture.close()}
+});
+
+// Native on a provider that names no default model asks which model to use (model choice), also for a background send pressed before
+// the turn support has come: it waits as a send does, its text out of the composer, then asks for a model as a send does, with the
+// picker open and the draft back, and starts no worktree, thread or model run.
+test("a background send pressed before the turn support has loaded on a provider that names no default model asks for one once it has come and keeps the draft",async({page})=>{
+  test.setTimeout(90_000);
+  const script=await holdScript(page,"turn-support");
+  const fixture=await nativeFanout(page,{defaultModel:null}),task="Rename the session helper in the background";
+  try{
+    await script.asked();
+    const composer=page.getByTestId("composer"),picker=page.getByTestId("model-picker"),menu=page.locator(".model-picker-menu"),alert=page.getByTestId("composer-alert");
+    await expect(picker).toHaveText("Choose a model");
+    await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
+    await expect(composer).toHaveAttribute("placeholder",/^Sending/);await expect(composer).toHaveValue("");
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
+    await script.release();
+    await expect(alert).toHaveText("Choose a model first. Your draft is kept.");await expect(menu).toBeVisible();
+    await expect(composer).toHaveValue(task);
+    await shootModes(page,"background-send-asks-for-model",()=>expect(alert).toBeVisible());
+    await settle(page);
+    await expect(page.locator(".thread-row")).toHaveCount(0);expect(fixture.worktrees,"no worktree made").toHaveLength(0);expect(fixture.providerCalls).toHaveLength(0);
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
 });
 
 // A Codex thread open in a project on a GitHub branch whose pull request #78 links another thread, one the sidebar does not list: the
