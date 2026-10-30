@@ -75,6 +75,9 @@ let pageLeaving=false;
 if(typeof window!=="undefined"){window.addEventListener("pagehide",()=>{pageLeaving=true});window.addEventListener("pageshow",()=>{pageLeaving=false})}
 // Muse Code's status says nothing of its sign-in (a turn checks it): one that lists its models is ready.
 const installedText=(label,status)=>status?.installed&&!(status?.authenticated||status?.kind==="muse"&&status.available)?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.";
+// What a harness row says under it, with each command it names (between backticks) as code that reads as one (code.run-command): its
+// words stay whole, so `pnpm add -g …` no longer breaks into "pnpm add -" and "g …".
+const withCommands=text=>{const parts=String(text).split("`");return parts.length%2?parts.map((part,index)=>index%2?<code className="run-command" key={index}>{part.split(" ").map((word,at)=><React.Fragment key={at}>{at?" ":""}<span>{word}</span></React.Fragment>)}</code>:part):text};
 // A shortcut or condition being typed is a draft. It is saved when the field is left or Enter is pressed, and only once it can work,
 // so a half-typed "Ctrl+" or "threadOpen &&" never replaces the one in use. A draft that cannot work stays in the field, marked
 // invalid, until it is fixed or Escape gives it up. `shown` is the saved value as the field reads while it is not being edited. A saved
@@ -498,10 +501,12 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
   async function installAgentRuntime(kind,verb="Install",status=null){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind),update=status?.update;if(!definition?.installable&&!update)return;
     const label=definition.name||kind;const packageName=definition.packageName||"the official package";
+    // The command as code that reads as one (askChoice's {command}), and after it what the server says of it in brackets ("(with
+    // CODEX_HOME set to …)", "(OpenCode 1.x)").
+    const [,command,beside=""]=/^(.*?)( \([^()]*\))?$/.exec(String(update?update.command:definition.installCommand||"npm install -g "+packageName));
     const confirmation=kind==="antigravity"
       ?"Install or update "+label+" ACP runtime on this machine?\n\nTrebell will download Google's published Antigravity ACP runtime through the official Agent Client Protocol registry."
-      :update?"Update "+label+" to "+update.latest+" in the selected environment?\n\nTrebell will run: "+update.command
-      :"Install or update "+label+" in the selected environment?\n\nTrebell will run: "+(definition.installCommand||"npm install -g "+packageName);
+      :[(update?"Update "+label+" to "+update.latest:"Install or update "+label)+" in the selected environment?\n\nTrebell will run: ",{command},beside];
     // One install of a harness at a time, also from a Settings page opened while one runs.
     if(!await askConfirm(confirmation,{confirm:verb+" "+label,tone:"primary"})||agentInstalls.running.includes(kind))return;
     const id=newInstallId();handledInstalls.add(id);keepTabInstall(kind,id);followInstall(kind);
@@ -1145,7 +1150,7 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
           const update=status?.update,verb=status?.installed?(update?update.canUpdate&&update.newer:def.installable)&&"Update":def.installable&&"Install";
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={(switchingAgent&&!active)||(!active&&!status?.available)} onClick={()=>!active&&!switchingAgent&&status?.available&&selectAgentRuntime(def.id,status.id)}>
             <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em className={"is-"+String(actionText).toLowerCase().replace(/\s+/g,"-")}>{actionText}</em>
-          </button>{def.canAuthenticate&&!onKey&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{(verb||installing)&&<button className="agent-runtime-install" disabled={installing} onClick={()=>installAgentRuntime(def.id,verb,status)}>{installing?"Installing…":verb}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}{update?.message&&<p className="agent-runtime-option-note">{update.message}</p>}{installNote&&<p ref={installNoteRef} className={installNote.error?"agent-runtime-option-error":"agent-runtime-option-note"} role={installNote.error?"alert":"status"}>{installNote.text}</p>}{def.apiKey&&status&&<HarnessSignIn def={def} profile={profile} busy={harnessAuthBusy} onMethod={setHarnessMethod} onKey={saveHarnessKey}/>}</div>;
+          </button>{def.canAuthenticate&&!onKey&&status?.installed&&status?.authenticated!==true&&!noSignIn&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{(verb||installing)&&<button className="agent-runtime-install" disabled={installing} onClick={()=>installAgentRuntime(def.id,verb,status)}>{installing?"Installing…":verb}</button>}{switchRefusal&&!switchRefusal.profile&&switchRefusal.kind===def.id&&!active&&<p className="agent-runtime-option-error" role="alert">{switchRefusal.text}</p>}{update?.message&&<p className="agent-runtime-option-note">{withCommands(update.message)}</p>}{installNote&&<p ref={installNoteRef} className={installNote.error?"agent-runtime-option-error":"agent-runtime-option-note"} role={installNote.error?"alert":"status"}>{withCommands(installNote.text)}</p>}{def.apiKey&&status&&<HarnessSignIn def={def} profile={profile} busy={harnessAuthBusy} onMethod={setHarnessMethod} onKey={saveHarnessKey}/>}</div>;
         })}</div>
         {settingDrawn["agents-profiles"]&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={!selectedAgentDefinition||selectedAgentDefinition.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>

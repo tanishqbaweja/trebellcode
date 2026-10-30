@@ -1151,7 +1151,14 @@
 :root:root .inspector-text-prompt>form{display:grid;gap:16px;margin:0;padding:18px 18px 16px}
 :root:root .inspector-text-prompt label{display:grid;gap:9px;margin:0;font:600 13px/1.4 var(--font);color:var(--tx0)!important;overflow-wrap:anywhere}
 /* A question with no field (askConfirm) reads as the field's label does. */
-:root:root .inspector-text-prompt p{margin:0;font:600 13px/1.4 var(--font);color:var(--tx0)!important;overflow-wrap:anywhere;white-space:pre-line}
+:root:root .inspector-text-prompt p{min-width:0;margin:0;font:600 13px/1.4 var(--font);color:var(--tx0)!important;overflow-wrap:anywhere;white-space:pre-line}
+/* A command Trebell runs or tells a person to run (a question's {command}, a harness row's note in Settings) reads as one: its words
+   stay whole, so its lines break only between them, a word wider than the line (a long path) scrolls it instead, and it keeps to the
+   baseline of the text around it. In a question it stands on lines of its own, and the dialog is wider, as a multi-line one is. */
+:root:root code.run-command{display:inline-block;max-width:100%;overflow-x:auto;baseline-source:last}
+:root:root code.run-command>span{white-space:nowrap}
+:root:root .inspector-text-prompt:has(code.run-command){width:min(560px,calc(100vw - 32px))}
+:root:root .inspector-text-prompt code.run-command{display:block;width:fit-content;margin-top:6px;padding:3px 7px;border:1px solid var(--line2);border-radius:6px;background:var(--bg2);color:var(--tx0)!important;font:500 12px/1.5 var(--mono)}
 :root:root .inspector-text-prompt input{
   box-sizing:border-box;width:100%;height:36px;min-width:0;padding:0 12px;border:1px solid var(--line2)!important;border-radius:9px;background:var(--bg2)!important;
   color:var(--tx0)!important;font:400 13px/1 var(--font);outline:none;box-shadow:none;transition:border-color .15s,box-shadow .15s;
