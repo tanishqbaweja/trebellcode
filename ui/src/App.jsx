@@ -30,6 +30,7 @@ import { answeringClick, approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
 import { isListedThread, prependThread } from "./thread-list-state.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
+import { landingModel, newestModelsFirst } from "./model-choice.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
 import { THREAD_SCROLL_END_THRESHOLD, captureConversationPosition, captureHistoryPrependAnchor, captureThreadScrollPosition, conversationWelcome, historyAnchorDisturbed, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
 import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
@@ -1119,8 +1120,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   const runtimeProfileLabel=runtimeProfiles?.label||`${agentRuntimeLabel} profile`;
   const steerFollowUps=Boolean(runtimeCapabilities.steering)&&settings.followUpMode==="steer";
   const modelProviderRuntime=Boolean(runtimeCapabilities.managedInference);
-  const reasoningEffortOptions=supportedReasoningEfforts(agentRuntime,provider,model,modelMeta?.[model]||{});
-  const serviceTierOptions=supportedModelServiceTiers(agentRuntime,provider,model,modelMeta?.[model]||{});
+  // A model's own levels and tiers: none until a model is chosen.
+  const reasoningEffortOptions=model?supportedReasoningEfforts(agentRuntime,provider,model,modelMeta?.[model]||{}):[];
+  const serviceTierOptions=model?supportedModelServiceTiers(agentRuntime,provider,model,modelMeta?.[model]||{}):[];
   // Codex shows the open thread's own effort and tier while it runs this model, and its Standard tier is "default", as
   // T3 Code's Codex selects do.
   const codexChoices=agentRuntime==="codex"?codexModelChoices({settings,provider,model,metadata:modelMeta?.[model]||{},custom:(settings.customModels||[]).find(item=>item.id===model&&item.runtime==="codex")||null,thread:codexThread}):null;
@@ -1185,7 +1187,10 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
   // While Trebell is starting it does not know which harness to set up yet: the model picker waits for the catalog instead. A
   // model provider without a key is set up first, also one whose catalog lists its fixed model anyway (JustWorker, HCNSec).
   const configureLabel="Configure "+(modelProviderRuntime?providerLabel:agentRuntimeLabel),setupRequired=!starting&&!providerReady&&(!models.length||modelProviderRuntime);
-  const modelBlocker=runtimeSwitchLabel||(modelReady&&!setupRequired)||running?"":modelsLoading?"Loading models…":modelError||"No models available — check Settings";
+  // A catalog that lists models but none chosen (Trebell Native on a provider that names no default) asks for one: Send stays on,
+  // and a send opens the picker and says to choose first, keeping the draft (App's dispatchSend).
+  const modelChoice=!modelReady&&models.length>0&&!setupRequired&&!modelsLoading;
+  const modelBlocker=runtimeSwitchLabel||(modelReady&&!setupRequired)||running||modelChoice?"":modelsLoading?"Loading models…":modelError||"No models available — check Settings";
   // Send is off, and Enter with it, while the draft cannot go; the line under the composer and Send's title say why. A message waits
   // for the harness and a model (messageOff), but an app command typed out in full (/model, /palette) needs neither: Enter runs it.
   const messageOff=!providerReady||!transportReady||Boolean(runtimeSwitchLabel)||Boolean(modelBlocker)||submitting||openingThread,draftOff=!prompt.trim()||promptTooLong||uploadingFiles.length>0||Boolean(mentionWaits);
@@ -1244,7 +1249,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
     </div><div className="composer-right">
       {setupRequired?<button className="login-btn" onClick={onConfigureProvider}>{configureLabel}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} disabled={threadSettingsWait} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
-        <div className="model-picker-wrap"><button ref={modelButtonRef} data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onMouseDown={event=>{if((pressShowsRef.current=pickerHidden())){event.preventDefault();showModelMenu()}}} onClick={event=>{if(!event.detail||!pressShowsRef.current)setModelOpen(value=>!value);pressShowsRef.current=false}} onKeyDown={modelPickerKeyDown} aria-haspopup="true" aria-expanded={modelOpen&&models.length>0?"true":"false"} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":modelError?"Models unavailable":"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu" ref={modelMenuRef} onKeyDown={modelMenuKeyDown} onMouseDown={modelMenuMouseDown}>{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)closeModelMenu()}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>{event.stopPropagation();if(event.key==="ArrowDown"){event.preventDefault();focusModelOption("first")}}} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
+        <div className="model-picker-wrap"><button ref={modelButtonRef} data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":modelChoice?"choose":"")} disabled={!models.length} onMouseDown={event=>{if((pressShowsRef.current=pickerHidden())){event.preventDefault();showModelMenu()}}} onClick={event=>{if(!event.detail||!pressShowsRef.current)setModelOpen(value=>!value);pressShowsRef.current=false}} onKeyDown={modelPickerKeyDown} aria-haspopup="true" aria-expanded={modelOpen&&models.length>0?"true":"false"} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model)||(runtimeSwitchLabel||modelsLoading?"Loading models…":models.length?"Choose a model":modelError?"Models unavailable":"No models"))}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu" ref={modelMenuRef} onKeyDown={modelMenuKeyDown} onMouseDown={modelMenuMouseDown}>{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)closeModelMenu()}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>{event.stopPropagation();if(event.key==="ArrowDown"){event.preventDefault();focusModelOption("first")}}} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} aria-label="Voice dictation" aria-pressed={listening} title={speechSupported?(listening?"Listening… click to stop":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button data-testid="send" className="send-btn" aria-label={sendLabel} onClick={()=>sendDraft(onSend)} disabled={sendOff} title={tooLongNote||runtimeSwitchLabel||(!transportReady?transportMessage:modelBlocker||(submitting?sendingText:uploadingFiles.length?"Waiting for attachments to upload":mentionWaits?`Waiting for ${mentionBusy.label} to attach`:sendLabel))}><Send size={16}/></button>
@@ -2151,8 +2156,13 @@ export default function App(){
   },[threadFind.open,threadFind.query,runtimeCapabilities.threadSearch,activeThread?.id,rpc,rpcStatus]);
   useEffect(()=>{threadTelemetryRef.current={};setThreadTelemetry({})},[provider,agentRuntime]);
   // preferredModel may be a function, read when the catalog lands (a project opened meanwhile can name its default model).
+  // Trebell Native assumes no model a provider's catalog does not name as its default (only OpenAI's names one, the measured
+  // gpt-6-luna): a catalog of several models with none named lands on no model, newest listed first, and the composer asks which
+  // one, unless a saved choice is listed (the thread's own model, the project's default, a pick made earlier in the window). A
+  // harness's catalog lands on its own default, else its first model, as before.
   function applyModelCatalog(d,{preferredModel=modelRef.current}={}){
-    const ids=Array.isArray(d?.models)?d.models:[],preferred=typeof preferredModel==="function"?preferredModel():preferredModel;
+    const listed=Array.isArray(d?.models)?d.models:[],preferred=typeof preferredModel==="function"?preferredModel():preferredModel;
+    const ask=(d?.agentRuntime||agentRuntimeRef.current)==="native"&&!listed.includes(d?.defaultModel),ids=ask&&listed.length>1?newestModelsFirst(listed,d?.metadata?.models):listed;
     setModelError(d?.error||"");
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
     // A new chat shows the harness's own menus, whole: what the new harness does not list (another harness's commands, agents
@@ -2167,7 +2177,7 @@ export default function App(){
       if(!providerAgentsListedRef.current&&thread.agent)setProviderAgent(thread.agent);
       applyProviderInventory(harnessInventory(inventory,thread.providerMeta));
     }
-    const next=ids.includes(preferred)?preferred:(ids.includes(d?.defaultModel)?d.defaultModel:(ids[0]||""));
+    const next=landingModel(ids,{saved:[preferred],catalogDefault:d?.defaultModel,ask});
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
     return next;
   }
@@ -2399,11 +2409,12 @@ export default function App(){
   }
 
   // The model Trebell's first load lands on: the open thread's (one opened while its harness still listed its models), else the open
-  // project's default, else the catalog's own.
+  // project's default, else the catalog's own; with none of them listed, applyModelCatalog decides (a harness's first model, or
+  // Native asking which).
   const startupModelChoice=useLatestCallback((ids,catalogDefault)=>{
     const thread=activeThreadRef.current;
     const threadModel=!thread?null:agentRuntime==="codex"?(codexThreadState?.threadId===thread.id?codexThreadState.model:null):thread.model;
-    return [threadModel,currentProject?.effectiveSettings?.defaultModel,catalogDefault].find(id=>id&&ids.includes(id))||ids[0]||"";
+    return [threadModel,currentProject?.effectiveSettings?.defaultModel,catalogDefault].find(id=>id&&ids.includes(id))||"";
   });
   useEffect(()=>{
     let cancelled=false;
@@ -4833,6 +4844,9 @@ export default function App(){
     // Never start a turn with a model the active runtime does not list: a stale pick from another harness, or a catalog that is loading or failed.
     if(!modelsRef.current.includes(model)&&selectedModels.filter(id=>modelsRef.current.includes(id)).length<2){
       keepDraft();
+      // A catalog that lists models, none of them chosen (Native on a provider that names no default), asks for one: the picker opens,
+      // and the line under the composer says to choose first.
+      if(modelsRef.current.length&&!modelsLoadingRef.current&&initialLoaded){setComposerAlert({kind:"model",text:"Choose a model first. Your draft is kept."});window.dispatchEvent(new CustomEvent("trebell:model-picker",{detail:{action:"open"}}));return}
       const reason=modelsLoadingRef.current||!initialLoaded?`${agentRuntimeLabel} models are still loading`:modelError?`${agentRuntimeLabel} has no usable model: ${modelError}`:`No ${agentRuntimeLabel} model is available`;
       setEvents(prev=>[...prev.filter(item=>item.id!=="model-unavailable"),{id:"model-unavailable",kind:"error",title:reason+". Your draft was kept; send it again once a model is selected.",status:"done",raw:{model:model||null}}]);return;
     }
@@ -5602,7 +5616,9 @@ export default function App(){
   const historyDetached=historyPage.threadId===activeThread?.id?historyPage.detached||null:null;
   const conversationHistoryGap=useMemo(()=>historyDetached&&historyPage.nextCursor?{beforeId:historyGapBeforeId(messages,historyDetached),missing:historyDetached.missing||null}:null,[messages,historyDetached,historyPage.nextCursor]);
   const conversationCite=useLatestCallback((message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text"));
-  const composerPromptEdit=useLatestCallback(()=>{setPromptHistoryIndex(-1);setComposerAlert(current=>current?.kind==="send"?null:current)});
+  const composerPromptEdit=useLatestCallback(()=>{setPromptHistoryIndex(-1);setComposerAlert(current=>current?.kind==="send"||current?.kind==="model"?null:current)});
+  // A model chosen ends the note asking for one.
+  useEffect(()=>{if(model)setComposerAlert(current=>current?.kind==="model"?null:current)},[model]);
   const composerSend=useLatestCallback(send);
   const queuedSendNow=useLatestCallback(sendQueuedNow);
   const composerBackgroundSend=useLatestCallback(sendInBackground);

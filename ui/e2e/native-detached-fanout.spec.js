@@ -24,7 +24,9 @@ async function freePort(){const server=createServer();await new Promise((resolve
 async function git(cwd,args){return execFileAsync("git",args,{cwd,windowsHide:true,encoding:"utf8"})}
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});
 const modelName=id=>"Model "+id.slice(-1).toUpperCase();
-const catalog=models=>({models,metadata:{provider:"agentrouter",models:models.map(id=>({id,name:modelName(id),provider:"agentrouter",agent:"Trebell Native"}))}});
+// The catalog names Model A its default, as OpenAI's names gpt-6-luna, so a new task starts on it: a Native catalog that names none
+// asks for a model first (native-providers.spec.js).
+const catalog=models=>({models,defaultModel:models[0],metadata:{provider:"agentrouter",models:models.map(id=>({id,name:modelName(id),provider:"agentrouter",agent:"Trebell Native"}))}});
 
 // Trebell Native on the real relay in a real Git repository, with the provider scripted: every turn answers "Completed <model>." and
 // providerCalls keeps the model and provider of each (the completion gate is answered apart). worktrees: the fan-out's own, real ones,
@@ -75,7 +77,7 @@ test("Trebell Native multi-model fan-out launches real isolated worktrees and pr
 });
 
 const heldGate=()=>{let open=()=>{};const promise=new Promise(resolve=>{open=resolve});return {promise,open}};
-// Model A, the first model, with Model B picked by Shift-click for a new task's fan-out; the composer it is sent from.
+// Model A, the catalog's default, with Model B picked by Shift-click for a new task's fan-out; the composer it is sent from.
 async function pickBothModels(page){
   const picker=page.getByTestId("model-picker"),menu=page.locator(".model-picker-menu");
   await picker.click();await menu.getByRole("button",{name:/Model B/}).click({modifiers:["Shift"]});await expect(picker).toContainText("2 models");
@@ -259,7 +261,7 @@ test("a multi-model run with a model that cannot start opens its rows to what fa
   try{
     await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null}));
     await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"auto",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:metaByThread}));
-    await page.route(/\/api\/models$/,route=>json(route,{models:["model-a","model-b"],metadata:{provider:"agentrouter",models:[{id:"model-a",name:"Model A",provider:"agentrouter",agent:"Trebell Native"},{id:"model-b",name:"Model B",provider:"agentrouter",agent:"Trebell Native"}]}}));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["model-a","model-b"],defaultModel:"model-a",metadata:{provider:"agentrouter",models:[{id:"model-a",name:"Model A",provider:"agentrouter",agent:"Trebell Native"},{id:"model-b",name:"Model B",provider:"agentrouter",agent:"Trebell Native"}]}}));
     await page.route(/\/api\/projects(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();return json(route,{project:{...project,id:"project-"+worktrees.length,path:body.path,environmentId:body.environmentId||null}})}return json(route,{projects:[project],project})});
     await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:true,cwd:repo,root:repo,branch:baseBranch,branches:[baseBranch],status:[],remotes:[],worktrees:[{path:repo,branch:baseBranch}]}));
     // Model B's worktree cannot be made, so it never starts.

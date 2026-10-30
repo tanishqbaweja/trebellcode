@@ -57,19 +57,22 @@ for(const mode of ["dark","light"])test(`xAI and the Meta Model API are picked i
     await card.scrollIntoViewIfNeeded();await settle(page);
     await page.screenshot({animations:"disabled",path:auditDir+`native-provider-${provider.id}-key-saved-${mode}.png`});
 
-    // The composer lists the provider's models, with the Thinking levels its models take.
+    // The composer lists the provider's models. Neither provider names a default model, so none is assumed: the picker asks for
+    // one, and the model picked shows with the Thinking levels it takes.
     await page.getByRole("button",{name:"Threads",exact:true}).click();
-    const picker=page.getByTestId("model-picker");
-    await expect(picker).toBeEnabled({timeout:15_000});await expect(picker).toContainText(provider.models[0]);
-    if(provider.thinking.length)await expect(page.getByTestId("reasoning-effort-picker").locator("option")).toHaveText(provider.thinking);
-    else await expect(page.getByTestId("reasoning-effort-picker")).toHaveCount(0);
+    const picker=page.getByTestId("model-picker"),thinking=page.getByTestId("reasoning-effort-picker");
+    await expect(picker).toBeEnabled({timeout:15_000});await expect(picker).toHaveText("Choose a model");
+    await expect(thinking).toHaveCount(0);
     await picker.click();
     const menu=page.locator(".model-picker-menu");await expect(menu).toBeVisible();
     await expect(menu.locator("> button strong")).toHaveText(provider.models);
     await expect(page.locator(".sidebar-provider")).toContainText(provider.name);
     await settle(page);
     await page.screenshot({animations:"disabled",path:auditDir+`native-provider-${provider.id}-models-${mode}.png`});
-    await page.keyboard.press("Escape");await expect(menu).toBeHidden();
+    await menu.getByRole("button",{name:provider.models[0],exact:true}).click();await expect(menu).toBeHidden();
+    await expect(picker).toHaveText(provider.models[0]);
+    if(provider.thinking.length)await expect(thinking.locator("option")).toHaveText(provider.thinking);
+    else await expect(thinking).toHaveCount(0);
     await openProviderCard(page);
   }
 });

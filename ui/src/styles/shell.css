@@ -562,6 +562,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 .composer-wrap .model-picker-button:hover:not(:disabled){border-color:var(--line2);color:var(--tx0)}
 .composer-wrap .model-picker-button svg{flex:none;color:var(--tx2)}
 .composer-wrap .model-picker-button.multi{border-color:color-mix(in srgb,var(--ac) 35%,transparent);background:var(--acsoft);color:var(--ac)}
+.composer-wrap .model-picker-button.choose{border-color:color-mix(in srgb,var(--ac) 45%,transparent);color:var(--ac)}
 .composer-wrap .model-picker-current{gap:6px}
 .composer-wrap .model-picker-current strong{font:500 11px var(--mono)}
 .composer-wrap .model-picker-current small{max-width:96px;color:var(--tx3);font:10px var(--mono)}
@@ -737,6 +738,7 @@ html[data-theme] .app-shell,.app-shell{background:var(--bg0)}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .model-picker-button{background:var(--bg3)!important;border-color:var(--line)!important;color:var(--tx1)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .model-picker-button:hover:not(:disabled){border-color:var(--line2)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .model-picker-button.multi{background:var(--acsoft)!important;color:var(--ac)!important}
+:is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .model-picker-button.choose{border-color:color-mix(in srgb,var(--ac) 45%,transparent)!important;color:var(--ac)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap :is(.circle-btn,.mic-btn){color:var(--tx2)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap :is(.circle-btn,.mic-btn):hover:not(:disabled){background:var(--bg3)!important;color:var(--tx0)!important}
 :is(html[data-mode="light"]:not([data-custom-theme="true"]),html[data-custom-theme="true"]) .composer-wrap .mic-btn.active{background:var(--acsoft)!important;color:var(--ac)!important}

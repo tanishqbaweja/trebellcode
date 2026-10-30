@@ -10,16 +10,17 @@ import { keepThreadMeta } from "./test-home.js";
 // HTTP API, as runtime-switch.spec.js does.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
-const PROVIDER_NAMES={openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Google Gemini API",justworker:"JustWorker.icu",hcnsec:"HCNSec.cn",vyceai:"VyceAi"};
+const PROVIDER_NAMES={openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Google Gemini API",meta:"Meta Model API",justworker:"JustWorker.icu",hcnsec:"HCNSec.cn",vyceai:"VyceAi"};
 const MODES=["dark","light"];
 const REFUSAL="HTTP 402: Insufficient balance. Please top up your account. The key was not saved.";
 
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
 // The Native relay answers what a new chat asks for. A turn completes at once with a fixed reply, and turnStarts keeps what
-// each turn/start asked the provider for.
-async function startNativeRelay(){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),open=new Set(),requests=[],turnStarts=[];
+// each turn/start asked the provider for. listThreads: the relay keeps the threads it starts, with their model, lists them and
+// opens them again, as the Native relay does after a reload.
+async function startNativeRelay({listThreads=false}={}){
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),open=new Set(),requests=[],turnStarts=[],threads=new Map();
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>{
     open.add(ws);ws.on("close",()=>open.delete(ws));
@@ -39,7 +40,12 @@ async function startNativeRelay(){
       }
       let result={};
       if(message.method==="initialize")result={userAgent:"native-providers-fixture"};
-      else if(message.method==="thread/start")result={thread:{id:"native-thread-"+requests.length,name:"Native",preview:"",cwd:params.cwd||process.cwd(),createdAt:Date.now()/1000,updatedAt:Date.now()/1000,status:{type:"idle"},turns:[]}};
+      else if(message.method==="thread/start"){
+        const thread={id:"native-thread-"+requests.length,name:"Native",preview:"",cwd:params.cwd||process.cwd(),createdAt:Date.now()/1000,updatedAt:Date.now()/1000,status:{type:"idle"},turns:[],...(listThreads?{name:"Native thread "+(threads.size+1),model:params.model||null,modelProvider:params.modelProvider||null}:{})};
+        threads.set(thread.id,thread);result={thread};
+      }
+      else if(listThreads&&message.method==="thread/list")result={data:[...threads.values()],nextCursor:null};
+      else if(listThreads&&["thread/resume","thread/read"].includes(message.method)&&threads.has(params.threadId))result={thread:threads.get(params.threadId)};
       else if(["thread/list","thread/turns/list","thread/queue/list","thread/attachment/list","thread/timeline/list"].includes(message.method))result={data:[],nextCursor:null};
       else if(["threadSection/list","skills/list","collaborationMode/list"].includes(message.method))result={data:[]};
       else if(message.method==="thread/goal/get")result={goal:null};
@@ -59,16 +65,16 @@ async function startNativeRelay(){
 // long, as the GUI server lists the models live from the provider with the key it has, for up to 12 s. reasoningEfforts are the saved
 // Thinking levels, and a level picked in the composer is saved into them.
 const STATIC_MODELS={justworker:["claude-opus-4-8"],hcnsec:["glm-5.3"]};
-async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false,keyCheckMs=0,reasoningEfforts={}}){
+async function startNativeHarness(page,{provider,mode="dark",hasKey=false,models=[],defaultModel=null,refuseKey=false,keyCheckMs=0,reasoningEfforts={},listThreads=false}){
   const server={provider,hasKey,keyCheck:null,posts:[],checks:[],refuseKey,modelsMs:0,reasoningEfforts:{...reasoningEfforts}};
-  const relay=await startNativeRelay();
+  const relay=await startNativeRelay({listThreads});
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:mode,panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:server.provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",modelReasoningEfforts:server.reasoningEfforts});
   const bootstrap=()=>({mock:false,provider:server.provider,providerReady:server.hasKey,agentRuntime:"native",agentRuntimeInstanceId:"native-default",agentRuntimeReady:true,appServerReady:true,wsUrl:relay.wsUrl,cwd:process.cwd(),platform:process.platform,version:"native-providers-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const keyless=()=>STATIC_MODELS[server.provider]||[];
   const catalog=()=>server.hasKey
     ?{provider:server.provider,agentRuntime:"native",ready:true,models,defaultModel,metadata:{provider:server.provider,source:"live",models:models.map(id=>({id,provider:server.provider}))},error:null}
     :{provider:server.provider,agentRuntime:"native",ready:false,models:keyless(),defaultModel:keyless()[0]||null,metadata:{provider:server.provider,source:keyless().length?"static":"none",models:keyless().map(id=>({id,provider:server.provider}))},error:server.keyCheck?"API key check failed: "+server.keyCheck.message:"API key required"};
-  const row=id=>({id,name:PROVIDER_NAMES[id],official:["openai","anthropic","gemini"].includes(id),requiresKey:true,hasKey:id===server.provider&&server.hasKey,keyCheck:id===server.provider?server.keyCheck:null});
+  const row=id=>({id,name:PROVIDER_NAMES[id],official:["openai","anthropic","gemini","meta"].includes(id),requiresKey:true,hasKey:id===server.provider&&server.hasKey,keyCheck:id===server.provider?server.keyCheck:null});
   const providers=()=>({selected:server.provider,providers:Object.keys(PROVIDER_NAMES).map(row),status:{...row(server.provider),ready:server.hasKey},ready:server.hasKey});
   const runtimes=()=>({selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native"}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true}],statuses:[{id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true,version:"Built into Trebell Code"}]});
   await keepThreadMeta(page);
@@ -410,5 +416,90 @@ for(const mode of MODES)test(`a Thinking level the model does not offer reads an
     expect(relay.turnStarts[1]).toMatchObject({model:"gpt-5",reasoningEffort:"high"});
     await expect(picker).toBeEnabled();await expect(picker).toHaveValue("high");
     await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-thinking-level-picked-${mode}.png`});
+  }finally{await close()}
+});
+
+// Trebell Native assumes no model a provider does not name as its default, and shows the options instead (the owner, 2026-10-30:
+// "If someone is putting in their meta api key, just show all models available"). Meta's /v1/models names none: a Meta key landed
+// the composer silently on the first id sorted, muse-spark-1.1, Meta's oldest model, and a message went with it.
+const META_MODELS=["muse-spark-1.1","muse-spark-1.2","muse-spark-1.3","muse-spark-1.3-contributor","muse-wonder-1.0"];
+const META_NEWEST_FIRST=["muse-spark-1.3","muse-spark-1.2","muse-spark-1.1","muse-spark-1.3-contributor","muse-wonder-1.0"];
+const CHOOSE=/(?:^|\s)choose(?:\s|$)/;
+for(const mode of MODES)test(`Native on a provider that names no default model asks for one, lists them all, keeps the draft until one is picked and keeps the pick (${mode})`,async({page})=>{
+  test.setTimeout(90_000);
+  const {relay,close}=await startNativeHarness(page,{provider:"meta",mode,hasKey:true,models:META_MODELS,defaultModel:null,listThreads:true});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openGeneralChat(page,relay);
+    const picker=page.getByTestId("model-picker"),menu=page.locator(".model-picker-menu"),composer=page.getByTestId("composer"),send=page.getByTestId("send");
+    const alert=page.getByTestId("composer-alert"),thinking=page.getByTestId("reasoning-effort-picker");
+    // No model is assumed: the picker reads as a choice still to make, and no Thinking level shows for a model nobody chose.
+    await expect(picker).toHaveText("Choose a model");await expect(picker).toHaveClass(CHOOSE);
+    await expect(thinking).toHaveCount(0);
+    await picker.click();await expect(menu).toBeVisible();
+    await expect(menu.locator(":scope > button strong"),"every model the provider gave, newest version first").toHaveText(META_NEWEST_FIRST);
+    await expect(menu.locator(":scope > button.selected")).toHaveCount(0);
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-model-choice-menu-${mode}.png`});
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+
+    // A send before a pick, with Send or with Enter, opens the picker and says to choose first; the draft stays and nothing is sent.
+    await composer.fill("Summarize the release notes");
+    await expect(send).toBeEnabled();await send.click();
+    await expect(menu).toBeVisible();await expect(alert).toHaveText("Choose a model first. Your draft is kept.");
+    await expect(composer).toHaveValue("Summarize the release notes");
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-model-choice-asked-${mode}.png`});
+    await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+    await composer.click();await page.keyboard.press("End");await page.keyboard.press("Enter");
+    await expect(menu).toBeVisible();await expect(alert).toHaveText("Choose a model first. Your draft is kept.");
+    await expect(composer).toHaveValue("Summarize the release notes");
+    expect(relay.turnStarts,"nothing is sent without a model").toHaveLength(0);
+    expect(relay.requests,"no thread is started without a model").not.toContain("thread/start");
+
+    // The pick ends the note, shows that model's Thinking levels, and the draft goes with it; so does a follow-up in its thread.
+    await menu.getByRole("button",{name:"muse-spark-1.3",exact:true}).click();
+    await expect(menu).toHaveCount(0);await expect(picker).toHaveText("muse-spark-1.3");await expect(picker).not.toHaveClass(CHOOSE);
+    await expect(alert).toHaveCount(0);
+    await expect(thinking.locator("option")).toHaveText(["Default","Minimal","Low","Medium","High","Extra High","Max"].map(level=>"Thinking · "+level));
+    await expect(composer).toHaveValue("Summarize the release notes");
+    await send.click();
+    await expect.poll(()=>relay.turnStarts.length,{timeout:15_000}).toBe(1);
+    expect(relay.turnStarts[0]).toMatchObject({model:"muse-spark-1.3",modelProvider:"meta"});
+    await expect(page.getByText("Fixture reply").first()).toBeVisible({timeout:15_000});
+    await composer.fill("And the open issues");await send.click();
+    await expect.poll(()=>relay.turnStarts.length,{timeout:15_000}).toBe(2);
+    expect(relay.turnStarts[1]).toMatchObject({threadId:relay.turnStarts[0].threadId,model:"muse-spark-1.3"});
+    await expect(picker).toHaveText("muse-spark-1.3");
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-model-choice-picked-${mode}.png`});
+
+    // After a reload a new task assumes nothing again, and the thread opened again keeps the model it was started with.
+    await page.reload();
+    await expect(composer).toBeVisible({timeout:15_000});
+    await expect(picker).toHaveText("Choose a model",{timeout:15_000});
+    const row=page.locator(".thread-row").first();await expect(row).toBeVisible({timeout:15_000});await row.locator(".thread-main").click();
+    await expect(picker).toHaveText("muse-spark-1.3",{timeout:15_000});
+    await composer.fill("One more follow-up");await send.click();
+    await expect.poll(()=>relay.turnStarts.length,{timeout:15_000}).toBe(3);
+    expect(relay.turnStarts[2]).toMatchObject({threadId:relay.turnStarts[0].threadId,model:"muse-spark-1.3"});
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-model-choice-reloaded-${mode}.png`});
+  }finally{await close()}
+});
+
+// A provider that lists exactly one model uses it, and OpenAI lands on its measured default, gpt-6-luna, as before.
+for(const {provider,models,defaultModel,picked} of [
+  {provider:"vyceai",models:["claude-sonnet-4-6"],defaultModel:null,picked:"claude-sonnet-4-6"},
+  {provider:"openai",models:["gpt-5","gpt-6-luna","gpt-6.1-sol"],defaultModel:"gpt-6-luna",picked:"gpt-6-luna"},
+])for(const mode of MODES)test(`${PROVIDER_NAMES[provider]} ${defaultModel?"with its default model":"with one model"} picks it by itself and sends with it (${mode})`,async({page})=>{
+  test.setTimeout(60_000);
+  const {relay,close}=await startNativeHarness(page,{provider,mode,hasKey:true,models,defaultModel});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await openGeneralChat(page,relay);
+    const picker=page.getByTestId("model-picker");
+    await expect(picker).toHaveText(picked);await expect(picker).not.toHaveClass(CHOOSE);
+    await page.getByTestId("composer").fill("hello");await page.getByTestId("send").click();
+    await expect.poll(()=>relay.turnStarts.length,{timeout:15_000}).toBe(1);
+    expect(relay.turnStarts[0]).toMatchObject({model:picked,modelProvider:provider});
+    await expect(page.getByTestId("composer-alert")).toHaveCount(0);
+    await settle(page);await page.screenshot({animations:"disabled",path:auditDir+`native-provider-model-choice-${provider}-${mode}.png`});
   }finally{await close()}
 });
