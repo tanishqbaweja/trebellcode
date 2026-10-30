@@ -447,9 +447,10 @@ function createStreamSink(onStream){
   };
 }
 
-// A Responses stream, read to its final event. label names the stream in its errors and codePrefix their fallback codes (OpenAI's by
-// default); classifyError, a streamed stateless provider's, says whether an error event inside the stream retries.
-async function readOpenAiResponsesStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,onEvent=null,label="OpenAI Responses stream",codePrefix="openai_stream",classifyError=null}={}){
+// A Responses stream, read to its end. label names the stream in its errors and codePrefix their fallback codes (OpenAI's by default);
+// a streamed stateless provider's classifyError says whether an error event inside the stream retries, and its finalGraceMs how long
+// the stream may stay open after its final event before the response is taken as it is.
+async function readOpenAiResponsesStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,onEvent=null,label="OpenAI Responses stream",codePrefix="openai_stream",classifyError=null,finalGraceMs=null}={}){
   if(!source||typeof source.getReader!=="function")throw new Error(label+" body is unavailable.");
   const reader=source.getReader(),decoder=new TextDecoder();let buffer="",response=null,responseBytes=0,timeToFirstTokenMs=null;
   const consume=block=>{
@@ -469,12 +470,17 @@ async function readOpenAiResponsesStream(source,{requestStartedAt=performance.no
     }
   };
   try{
+    let ended=true;
     for(;;){
-      const {done,value}=await readProviderStreamChunk(reader,{signal,idleTimeoutMs,label});if(done)break;
+      // Once the final event is in, finalGraceMs (when given) bounds the wait for the stream's end: nothing after it is needed.
+      const wait=response&&finalGraceMs>0?Math.min(idleTimeoutMs,finalGraceMs):idleTimeoutMs;let chunk;
+      try{chunk=await readProviderStreamChunk(reader,{signal,idleTimeoutMs:wait,label})}
+      catch(error){if(response&&finalGraceMs>0&&error?.name==="TimeoutError"&&!signal?.aborted){ended=false;break}throw error}
+      const {done,value}=chunk;if(done)break;
       responseBytes+=Number(value?.byteLength||0);buffer+=decoder.decode(value,{stream:true});
       const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";for(const block of blocks)consume(block);
     }
-    buffer+=decoder.decode();if(buffer.trim())consume(buffer);
+    if(ended){buffer+=decoder.decode();if(buffer.trim())consume(buffer)}
   }catch(error){error.streamTelemetry={responseBytes,timeToFirstTokenMs};throw error}
   finally{reader.releaseLock()}
   if(!response)throw new Error(label+" ended before a completed response was received.");
@@ -493,8 +499,10 @@ function metaStreamErrorRetry(providerError={}){
   return {retryable:META_TRANSIENT_STREAM_ERRORS.has(code)||(!code&&type==="server_error")};
 }
 // The stateless providers whose Responses stream a turn reads when it asks to stream (streamResponses, Native's Meta lane in
-// src/native-configuration.mjs), each once a live check showed its events, usage and errors: Meta, 2026-10-30.
-const STREAMED_STATELESS_RESPONSES=Object.freeze({meta:Object.freeze({codePrefix:"meta_stream",classifyError:metaStreamErrorRetry})});
+// src/native-configuration.mjs), each once a live check showed its events, usage and errors: Meta, 2026-10-30. Meta ends a stream with
+// "data: [DONE]" and closes it right after response.completed; one held open after its final event is let go after 5 s, so a response
+// already complete is never waited out to the idle bound and sent again.
+const STREAMED_STATELESS_RESPONSES=Object.freeze({meta:Object.freeze({codePrefix:"meta_stream",classifyError:metaStreamErrorRetry,finalGraceMs:5_000})});
 
 // An error that arrives inside a stream comes after a 200, so it names its class instead of carrying a status. It retries as the same
 // error does when it comes back as an HTTP status: a rate limit (429) as back-pressure, a server error, overload or timeout as transient.
@@ -1231,7 +1239,7 @@ export class ProviderManager {
     if(upstream.ok&&statelessStream&&upstream.body&&contentType.includes("text/event-stream")){
       const idle=Math.trunc(Number(streamIdleTimeoutMs)),idleTimeoutMs=Number.isFinite(idle)&&idle>0?idle:this.requestTimeoutMs;
       try{
-        const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs,label:provider.name+" Responses stream",codePrefix:statelessStream.codePrefix,classifyError:statelessStream.classifyError,...(sink?{onEvent:sink.responsesEvent}:{})}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
+        const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs,label:provider.name+" Responses stream",codePrefix:statelessStream.codePrefix,classifyError:statelessStream.classifyError,finalGraceMs:statelessStream.finalGraceMs,...(sink?{onEvent:sink.responsesEvent}:{})}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
         result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,requestedServiceTier,serviceTier:result.serviceTier||null};
         return result;

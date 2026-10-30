@@ -29,8 +29,8 @@ const managerFor=(root,fetchFn,options={})=>new ProviderManager({env:{TREBELL_HO
 
 // One answer of the stand-in. A streamed request gets its headers at once, then the recorded events every gapMs (stallAfter: no more
 // bytes after that many events, with the connection held open), then "data: [DONE]". A JSON request gets headers and body together once
-// every event would have been written (events x gapMs), as Meta's JSON replies come.
-function answer(recorded,{gapMs=0,stallAfter=null,events=null}={}){
+// every event would have been written (events x gapMs), as Meta's JSON replies come. holdOpen: the stream stays open after "data: [DONE]".
+function answer(recorded,{gapMs=0,stallAfter=null,events=null,holdOpen=false}={}){
   return async({body,signal})=>{
     const list=events||recorded.events;
     if(body.stream!==true){await sleep(list.length*gapMs,signal);return Response.json(completedOf(recorded),{headers:{"x-request-id":"req-meta-test"}})}
@@ -40,7 +40,7 @@ function answer(recorded,{gapMs=0,stallAfter=null,events=null}={}){
         let index=0;
         const push=()=>{
           if(closed||(stallAfter!=null&&index>=stallAfter))return;
-          if(index>=list.length){closed=true;controller.enqueue(encoder.encode("data: [DONE]\n\n"));controller.close();return}
+          if(index>=list.length){closed=true;controller.enqueue(encoder.encode("data: [DONE]\n\n"));if(!holdOpen)controller.close();return}
           controller.enqueue(encoder.encode(frame(list[index++])));timer=setTimeout(push,gapMs);
         };
         signal?.addEventListener?.("abort",()=>{if(closed)return;closed=true;clearTimeout(timer);try{controller.error(signal.reason)}catch{}},{once:true});
@@ -135,6 +135,17 @@ test("a Meta stream that goes idle is sent again as the loop retries a timed-out
     assert.equal(retries.length,1);assert.match(retries[0].message,/Meta Model API Responses stream idle timeout exceeded/);
     assert.equal(retries[0].providerTelemetry.streaming,true);assert.equal(retries[0].providerTelemetry.providerRequestId,"req-meta-test");
     assert.deepEqual(result.usage,{inputTokens:655,outputTokens:305,totalTokens:960,cachedInputTokens:497,cacheWriteInputTokens:0,reasoningOutputTokens:295},"only the answer that completed is counted");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("a Meta stream held open after its final event ends the turn without waiting out the idle bound or sending it again",async()=>{
+  const root=home();
+  try{
+    const meta=metaApi([answer(fixture.text,{holdOpen:true})]),events=[],started=Date.now();
+    const result=await runNativeAgentTurn(loopOptions(managerFor(root,meta.fetchFn),events,60_000));
+    const elapsed=Date.now()-started;
+    assert.equal(result.text,"208");assert.equal(meta.requests.length,1);assert.equal(events.filter(event=>event.name==="native.model.retrying").length,0);
+    assert.ok(elapsed>=4_900&&elapsed<15_000,`let go after the 5 s grace, not the 60 s idle bound (${elapsed} ms)`);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
