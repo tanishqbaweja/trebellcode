@@ -1511,11 +1511,27 @@ test("Enter on the Updates card's Check again keeps the keyboard on it while it 
   before=checks;await page.keyboard.down("Enter");for(let repeat=0;repeat<5;repeat++){await page.waitForTimeout(33);await page.keyboard.down("Enter")}await page.keyboard.up("Enter");
   await answer(false);await expect(check).toHaveText("Check again");
   await page.waitForTimeout(300);expect(checks-before,"Enter held checks once").toBe(1);
-  // A check that finds the latest release takes Check again away: the keyboard goes on to Open latest release, not to the page.
-  await expect(check).toBeFocused();await page.keyboard.press("Enter");await answer(true);
-  await expect(updates).toContainText("Latest: 2.0.1");await expect(check).toHaveCount(0);
-  await expect(updates.getByRole("button",{name:"Open latest release",exact:true}),"the keyboard goes on to Open latest release").toBeFocused();
-  await shootModes(page,"updates-check-again-found",{show:updates});
+  // A check that finds the latest release takes Check again away: the keyboard goes on to Open latest release, not to the page, with
+  // its focus ring, which the screenshots show. Each mode is chosen before the Enter (the header's mode button takes the keyboard when
+  // it is pressed), the page in light from the walk above, then in dark, opened again with its check failed so Check again shows.
+  const openLatest=updates.getByRole("button",{name:"Open latest release",exact:true});
+  for(const mode of ["light","dark"]){
+    if(mode==="dark"){
+      await page.reload();await page.getByRole("button",{name:"Settings",exact:true}).click();
+      await answer(false);await expect(check).toHaveText("Check again");
+      await switchMode(page,mode);await updates.locator("h3").click();await page.keyboard.press("Tab");
+    }
+    await expect(check).toBeFocused();await page.keyboard.press("Enter");await answer(true);
+    await expect(updates).toContainText("Latest: 2.0.1");await expect(check).toHaveCount(0);
+    await expect(openLatest,"the keyboard goes on to Open latest release").toBeFocused();
+    await expect.poll(()=>openLatest.evaluate(button=>button.matches(":focus-visible")&&getComputedStyle(button).outlineStyle!=="none"),{message:`Open latest release shows its focus ring in ${mode}`}).toBe(true);
+    for(const width of [1280,900]){
+      await page.setViewportSize({width,height:800});await updates.scrollIntoViewIfNeeded();
+      await expect(openLatest,`the keyboard is on Open latest release as it is shot at ${width} in ${mode}`).toBeFocused();
+      await page.screenshot({animations:"disabled",path:shots+`updates-check-again-found-${mode}-${width}.png`});
+    }
+    await page.setViewportSize({width:1280,height:800});
+  }
 });
 
 test("Enter on the desktop app's Check now keeps the keyboard on it while it checks and after, and a press meanwhile checks nothing",async({page,request})=>{
