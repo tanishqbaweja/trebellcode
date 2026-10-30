@@ -77,7 +77,10 @@ The test fixtures in `tests/fixtures/muse/` (`simple`, `multi_turn`, `turn_inter
 (`apps/server/src/orchestration-v2/testkit/fixtures/*/muse_transcript.ndjson`: `workflow` from `muse_workflow`, `subagent` from
 `subagent_v2` and `subagent_interrupt` from `muse_subagent_interrupt`; `permission-approved` is the whole permission transcript
 and `permission` the same transcript without its first turn). So are the scripted frames of `tests/fixtures/muse/fake-muse.cjs`
-that repeat those transcripts' texts and token counts, and the recorded identifiers and texts the Muse Code tests check.
+that repeat those transcripts' texts and token counts, and the recorded identifiers and texts the Muse Code tests check. The
+usage report and quota refusal that `tests/muse-failures.test.mjs`, `tests/muse-usage-windows.test.mjs`,
+`ui/e2e/muse-subscription-usage.spec.js` and `fake-muse.cjs` use come from T3 Code's Muse provider tests
+(`packages/provider-muse/src/server/adapter.test.ts` and `usageLimits.test.ts`, revision below).
 
 Upstream: https://github.com/pingdotgg/t3code (revision `d6fb62ac3f2ab54a100202f5aea1428cfda977cd`)  
 License: MIT License, Copyright (c) 2026 T3 Tools Inc.
