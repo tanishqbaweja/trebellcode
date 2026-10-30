@@ -89,6 +89,20 @@ function useEscapeToCancel(ref,active,cancelRef){
 // click only once the form goes (answerableClick): one it refused for a field left empty leaves the next Submit free to answer.
 function pressOnce(event){if(event.target.closest("button"))ignorePressRest(!event.detail)}
 
+// A Codex user-verification challenge answered with the device's proof (userVerification/verify), which App asks this module for as
+// this modal's Verify (onVerify): only this modal asks, so it comes with it (B11). Codex alone gives one, for a local workspace only.
+export async function verifyMcpUser({agentRuntime,rpc,workspaceEnvironmentId},request){
+  if(agentRuntime!=="codex"||!rpc)throw new Error("Device-backed user verification requires the Codex runtime.");
+  if(workspaceEnvironmentId)throw new Error("Device verification is unavailable for remote workspaces.");
+  const params=request?.params||{};
+  if(params.mode!=="openai/userVerification")throw new Error("This request is not a Codex user-verification challenge.");
+  const challenge=String(params.challenge||"").trim(),title=String(params.title||"").trim(),description=String(params.description||"");
+  if(!challenge||!title)throw new Error("The verification challenge is incomplete.");
+  const result=await rpc.request("userVerification/verify",{challenge,title,description});
+  if(!result?.proof)throw new Error("Codex did not return a verification proof.");
+  return result.proof;
+}
+
 export default function McpElicitationModal({request,onResolve,onVerify,verificationAvailable=true,verificationUnavailableReason=""}){
   const kind=mcpElicitationKind(request);
   const params=request?.params||{};

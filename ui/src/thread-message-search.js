@@ -1,6 +1,7 @@
 import { normalizedPath } from "./codex-projects.js";
 import { threadTitle } from "./thread-catalog.js";
-import { nativeThreadSearchMatches } from "./thread-list-query.js";
+import { nativeThreadSearchMatches, rankSearchHits } from "./thread-list-query.js";
+import { threadsInListOrder } from "./thread-order.js";
 
 export function searchableThreadMessage(item={}){
   if(item?.type!=="userMessage"&&item?.type!=="agentMessage")return "";
@@ -116,4 +117,28 @@ export async function searchThreadMessages({rpc,threads,threadMeta,runtimeCapabi
   if(nativeError)warnings.push("Full thread search unavailable: "+(nativeError?.message||String(nativeError))+". Searching loaded threads only.");
   if(readErrors.length)warnings.push(`${readErrors.length} loaded thread${readErrors.length===1?"":"s"} could not be searched: ${readErrors[0]?.message||String(readErrors[0])}.`);
   return{matches:results,warning:warnings.join(" ")};
+}
+
+// The sidebar's search as the person types (App's effect): the threads whose titles match at once, then, after a moment's pause,
+// those whose messages match, in the sidebar's order. The cleanup it returns drops what a search the next letters replace finds.
+export function searchSidebar({query,threads,threadMeta,projectRecords,rpc,rpcStatus,agentRuntime,orderedSectionsRef,searchThreadMessages,setSearchResults,setThreadSearchError}){
+  let cancelled=false;
+  const titleMatches=sidebarSearchMatches(threads,query.toLowerCase(),{threadMeta,projects:projectRecords});
+  setThreadSearchError("");
+  if(!rpc||rpcStatus!=="connected"||query.length<2){setSearchResults(titleMatches);return()=>{}}
+  const timer=setTimeout(async()=>{
+    const found=new Map(titleMatches.map(t=>[t.id,t]));
+    try{
+      const outcome=await searchThreadMessages(query);
+      for(const match of outcome.matches||[]){const thread=match.thread||threads.find(item=>item.id===match.threadId);if(thread)found.set(thread.id,thread)}
+      // Message matches join the title matches where the list has them: the sidebar's order (and a move made in it) holds. Codex's
+      // search gives a thread no place in its section, so one beyond the listed page takes the place its section gives it.
+      const shown=threadsInListOrder([...found.values()],threads);
+      const results=agentRuntime==="codex"?await rankSearchHits(rpc,shown,threads,{orderedSections:orderedSectionsRef.current}).catch(()=>shown):shown;
+      if(!cancelled){setSearchResults(results);setThreadSearchError(outcome.warning||"")}
+    }catch(error){
+      if(!cancelled){setSearchResults(threadsInListOrder([...found.values()],threads));setThreadSearchError("Could not search thread messages: "+(error?.message||String(error)))}
+    }
+  },250);
+  return()=>{cancelled=true;clearTimeout(timer)};
 }
