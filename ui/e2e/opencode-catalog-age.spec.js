@@ -14,7 +14,7 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 const shots=fileURLToPath(new URL("../../visual-audit/opencode-catalog-age/",import.meta.url));mkdirSync(shots,{recursive:true});
 const json=(route,value,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(value)}).catch(()=>{});
 const catalog=connected=>({models:connected.map(id=>`${id}/model`),metadata:connected.map(id=>({id:`${id}/model`,name:id,provider:"opencode",agent:"OpenCode"})),preferred:connected.length?`${connected[0]}/model`:null,connectedProviders:connected,inventory:{commands:[],skills:[],agents:[]},source:"live-connected"});
-const NONE="OpenCode is available, but it did not report any connected upstream providers.";
+const NONE="OpenCode runs, but no upstream provider is connected through it.";
 async function switchMode(page,mode){
   if(await page.locator("html").getAttribute("data-mode")!==mode)await page.getByTestId("appearance-toggle").click();
   await expect(page.locator("html")).toHaveAttribute("data-mode",mode);

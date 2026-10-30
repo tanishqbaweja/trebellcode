@@ -47,7 +47,7 @@ export function codexAccountStatus(response) {
     return { ready: true, authenticated: true, authType: account.type || null, label, message: label ? `Signed in with ${label}` : "Signed in" };
   }
   if (response?.requiresOpenaiAuth) {
-    return { ready: false, authenticated: false, authType: null, label: null, message: "Codex CLI is not authenticated. Run codex login and try again." };
+    return { ready: false, authenticated: false, authType: null, label: null, message: "Codex CLI is signed out. Sign in with codex login and try again." };
   }
   return { ready: true, authenticated: null, authType: null, label: null, message: "Ready · this Codex model provider does not use OpenAI sign-in" };
 }

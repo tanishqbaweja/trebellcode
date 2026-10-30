@@ -61,8 +61,8 @@ const PROBE_REUSE_MS=60_000;
 // OpenAI sign-in, and Antigravity's that a session checks it.
 const SIGN_IN_READ_BY_PROBE=new Set(["claude","cursor","grok","opencode"]);
 const keptProbeAnswer=value=>Boolean(value?.available)&&!(value.authenticated==null&&SIGN_IN_READ_BY_PROBE.has(value.kind));
-// A harness failure's message, with the advice of a probe answer that the harness cannot run or is not signed in after it ('Run
-// `claude auth login` and try again.'): the harness's own words stay. A ready answer, or advice the message already has, adds none.
+// A harness failure's message, with the advice of a probe answer that the harness cannot run or is not signed in after it ('Sign in
+// with `claude auth login` and try again.'): the harness's own words stay. A ready answer, or advice the message already has, adds none.
 // An answer with a reason of its own advises that, not its message for Settings (Muse Code's failed model list, which names Settings'
 // Refresh), so a host that failed as its check did says it once.
 export function withProbeAdvice(message,status){
@@ -259,7 +259,7 @@ export function openCodeStatusMessage(connected,{external=false,models=null}={})
   const count=Math.max(0,Number(connected)||0),where=external?"the configured OpenCode server":"OpenCode";
   if(count>0&&models===0)return `${count} upstream provider${count===1?" is":"s are"} connected through ${where}, but it lists no models yet. Press Refresh to check again.`;
   if(count>0)return `${count} upstream provider${count===1?"":"s"} connected through ${where}.`;
-  return external?"Connected to the configured OpenCode server, but it did not report any connected upstream providers.":"OpenCode is available, but it did not report any connected upstream providers.";
+  return external?"The configured OpenCode server answers, but no upstream provider is connected through it.":"OpenCode runs, but no upstream provider is connected through it.";
 }
 // OpenCode is ready once upstream providers are connected and it lists models for them. Its answer is complete, and kept, when
 // nothing in it is pending either: a command, skill or agent list that timed out or failed, or an OpenCode 2 model list still changing.
@@ -1342,7 +1342,7 @@ export class AgentRuntimeManager{
       // holds its credentials, which only a session can check.
       const endpoint=authenticated===false&&!this.processSpawner(instance,environmentId)&&claudeCustomEndpoint(this.childEnv(instance));
       if(endpoint){authenticated=null;account={...(account||{}),type:"customEndpoint",label:"Custom API endpoint"};message="Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts."}
-      else if(authenticated===false)message="Claude Code is not authenticated. Run `claude auth login` and try again.";
+      else if(authenticated===false)message="Claude Code is signed out. Sign in with `claude auth login` and try again.";
       else if(authenticated==null)message="Claude Code is installed, but Trebell could not verify its authentication status.";
       // On its API key `claude auth status` reads the ANTHROPIC_API_KEY its launch has (apiKeySource), as the row then says.
       else if(this.authMethod(instance)===HARNESS_API_KEY)message="Runs on the Anthropic API key.";

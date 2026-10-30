@@ -34,7 +34,7 @@ test("Trebell runs the user's installed Codex, never the package it depends on i
 test("Codex readiness is its own account/read answer",()=>{
   assert.deepEqual(codexAccountStatus({account:{type:"chatgpt",email:"a@b.c",planType:"pro"},requiresOpenaiAuth:true}),{ready:true,authenticated:true,authType:"chatgpt",label:"ChatGPT Pro 200",message:"Signed in with ChatGPT Pro 200"});
   assert.equal(codexAccountStatus({account:{type:"apiKey"}}).label,"OpenAI API key");
-  assert.deepEqual(codexAccountStatus({account:null,requiresOpenaiAuth:true}),{ready:false,authenticated:false,authType:null,label:null,message:"Codex CLI is not authenticated. Run codex login and try again."});
+  assert.deepEqual(codexAccountStatus({account:null,requiresOpenaiAuth:true}),{ready:false,authenticated:false,authType:null,label:null,message:"Codex CLI is signed out. Sign in with codex login and try again."});
   const ollama=codexAccountStatus({account:null,requiresOpenaiAuth:false});
   assert.equal(ollama.ready,true,"a model provider without OpenAI sign-in is ready as configured");assert.equal(ollama.authenticated,null);
   assert.equal(codexAccountLabel({type:"chatgpt",planType:"something-new"}),"ChatGPT");
@@ -80,7 +80,7 @@ test("a Codex profile is ready when signed in or when its model provider needs n
     const status=async mode=>{const value=await manager.probe(manager.instances().find(item=>item.id==="codex-"+mode));return {available:value.available,authenticated:value.authenticated,version:value.version,message:value.message,account:value.account}};
     assert.deepEqual(await status("chatgpt"),{available:true,authenticated:true,version:"codex-cli 0.162.0",message:"Signed in with ChatGPT Plus",account:{type:"chatgpt",label:"ChatGPT Plus"}});
     assert.deepEqual(await status("local"),{available:true,authenticated:null,version:"codex-cli 0.162.0",message:"Ready · this Codex model provider does not use OpenAI sign-in",account:{type:null,label:null}});
-    assert.deepEqual(await status("signedout"),{available:false,authenticated:false,version:"codex-cli 0.162.0",message:"Codex CLI is not authenticated. Run codex login and try again.",account:{type:null,label:null}});
+    assert.deepEqual(await status("signedout"),{available:false,authenticated:false,version:"codex-cli 0.162.0",message:"Codex CLI is signed out. Sign in with codex login and try again.",account:{type:null,label:null}});
     const before=(await readFile(log,"utf8")).trim().split("\n").length;
     await status("chatgpt");
     assert.equal((await readFile(log,"utf8")).trim().split("\n").length,before,"a probe answer is reused for a minute: nothing runs again");

@@ -125,7 +125,7 @@ test("a Claude Code signed out while its plan shows says so, and how to sign in,
     await expect(rows.filter({hasText:"Session"})).toContainText("12% used",{timeout:15_000});
     // The person signs out in a terminal (claude auth logout); a turn fails, and Trebell's recheck finds `claude auth status` signed out.
     usage.claude.loggedIn=false;usage.claude.next={account:SIGNED_OUT,usage:NO_PLAN};
-    expect((await usage.manager.recheck("claude")).message).toBe("Claude Code is not authenticated. Run `claude auth login` and try again.");
+    expect((await usage.manager.recheck("claude")).message).toBe("Claude Code is signed out. Sign in with `claude auth login` and try again.");
     // Refresh from the keyboard.
     const refresh=page.locator(".usage-toolbar .usage-refresh");
     await refresh.focus();

@@ -124,7 +124,7 @@ test("harness text generation refuses Trebell Native and reports an unavailable 
 // The probe answer a request starts on is kept for a minute: a harness that then fails is asked again once, as the relay asks after
 // a failed session, and an answer that it is not signed in (a sign-out outside Trebell) adds its advice after the harness's words.
 test("a harness that fails to write the Git text is asked again once, and a sign-out it finds adds the probe's advice",async()=>{
-  const advice="Claude Code is not authenticated. Run `claude auth login` and try again.",rechecks=[];
+  const advice="Claude Code is signed out. Sign in with `claude auth login` and try again.",rechecks=[];
   const failing=()=>(async function*(){yield {type:"result",subtype:"error_during_execution",is_error:true,errors:["Claude Code process exited"]}})();
   let status={available:false,authenticated:false,message:advice};
   const manager=fakeRuntimeManager("claude",{recheck:async(instance,options)=>{rechecks.push({id:instance.id,options});return status}});

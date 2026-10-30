@@ -341,7 +341,7 @@ test("runtime installer uses only official allowlisted packages in the selected 
     const installed=await manager.install("claude");
     assert.equal(installed.packageName,"@anthropic-ai/claude-code");
     assert.equal(installed.status.installed,true);assert.equal(installed.status.authenticated,false);
-    assert.equal(installed.status.message,"Claude Code is not authenticated. Run `claude auth login` and try again.");
+    assert.equal(installed.status.message,"Claude Code is signed out. Sign in with `claude auth login` and try again.");
     // npm 12 runs no install script unless allowed, and Claude Code's puts its native binary in place.
     assert.equal(calls.some(call=>call.command==="npm"&&call.args.join(" ")==="install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code"),true);
     await assert.rejects(()=>manager.install("cursor"),/not installable/i);
@@ -542,7 +542,7 @@ test("Trebell updates an OpenCode only the way it was installed, judged from whe
   // The status wording, from the providers OpenCode's server reports connected.
   assert.equal(openCodeStatusMessage(4),"4 upstream providers connected through OpenCode.");
   assert.equal(openCodeStatusMessage(1,{external:true}),"1 upstream provider connected through the configured OpenCode server.");
-  assert.equal(openCodeStatusMessage(0),"OpenCode is available, but it did not report any connected upstream providers.");
+  assert.equal(openCodeStatusMessage(0),"OpenCode runs, but no upstream provider is connected through it.");
 });
 
 // A stand-in OpenCode CLI (`--version`, `upgrade`, `serve`) and npm, run through Windows command launchers. They keep their state in
@@ -855,7 +855,7 @@ test("remote runtime probes use provider-native auth status without treating unk
     const claudeUnknown=await manager.probe("claude");
     assert.deepEqual([claudeUnknown.available,claudeUnknown.authenticated,claudeUnknown.message],[true,null,"Claude Code is installed, but Trebell could not verify its authentication status."]);
     claudeAuth={loggedIn:false};const claudeSignedOut=await manager.probe("claude");
-    assert.deepEqual([claudeSignedOut.available,claudeSignedOut.authenticated,claudeSignedOut.message],[false,false,"Claude Code is not authenticated. Run `claude auth login` and try again."]);
+    assert.deepEqual([claudeSignedOut.available,claudeSignedOut.authenticated,claudeSignedOut.message],[false,false,"Claude Code is signed out. Sign in with `claude auth login` and try again."]);
     claudeAuth={loggedIn:true};assert.equal((await manager.probe("claude")).authenticated,true);
   }finally{await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });

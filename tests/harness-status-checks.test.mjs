@@ -269,7 +269,7 @@ test("a Codex whose --version ran out of time and whose account read finds no si
   const env={PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,COMSPEC:process.env.COMSPEC,TEMP:home,TMP:home,HOME:home,USERPROFILE:home,CODEX_HOME:join(home,"codex-home"),TREBELL_HOME:join(home,"trebell")};
   const manager=new AgentRuntimeManager({state:memoryState({agentRuntimeInstances:[{id:"codex-default",kind:"codex",binaryPath}]}),env,runFn});
   const status=await manager.probe("codex");
-  assert.deepEqual([status.installed,status.available,status.authenticated,status.versionCheckFailed,status.message],[true,false,false,true,"Codex CLI is not authenticated. Run codex login and try again."]);
+  assert.deepEqual([status.installed,status.available,status.authenticated,status.versionCheckFailed,status.message],[true,false,false,true,"Codex CLI is signed out. Sign in with codex login and try again."]);
   await manager.probe("codex");
   assert.deepEqual(calls,["--version","--version"],"the next check asked again");
 });
@@ -385,7 +385,7 @@ test("a logged-out `grok models` is read once more, and the second answer decide
 test("a Claude Code profile with a custom API endpoint is not called signed out; one on Anthropic's own API is",async t=>{
   const signedOut=args=>args[0]==="auth"?{...exited(1,""),stdout:JSON.stringify({loggedIn:false,authMethod:"none",apiProvider:"firstParty"})}:answered("2.1.310 (Claude Code)\n");
   const CUSTOM="Claude Code is configured for a custom API endpoint; authentication will be verified when a session starts.";
-  const ADVICE="Claude Code is not authenticated. Run `claude auth login` and try again.";
+  const ADVICE="Claude Code is signed out. Sign in with `claude auth login` and try again.";
   for(const [where,options,expected] of [
     ["ANTHROPIC_BASE_URL from Trebell's own environment",{env:{ANTHROPIC_BASE_URL:"https://proxy.example"}},[true,null,CUSTOM]],
     ["the profile's own ANTHROPIC_BASE_URL",{instance:{environment:{ANTHROPIC_BASE_URL:"http://localhost:4000/v1"}}},[true,null,CUSTOM]],

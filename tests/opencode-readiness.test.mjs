@@ -50,7 +50,7 @@ test("a provider connected after OpenCode's last read shows on Settings' Refresh
   fake.answer=catalog({connected:[],models:["anthropic/claude-x","openai/gpt"]});
   // Settings' listing checks with refresh (snapshot).
   const before=await manager.probe("opencode",{fresh:true,refresh:true});
-  assert.deepEqual([before.authenticated,before.message],[null,"OpenCode is available, but it did not report any connected upstream providers."]);
+  assert.deepEqual([before.authenticated,before.message],[null,"OpenCode runs, but no upstream provider is connected through it."]);
   // The person signs in to a provider with OpenCode's own `opencode auth login`, then presses Refresh.
   fake.answer=catalog();
   const after=await manager.probe("opencode",{fresh:true,refresh:true});

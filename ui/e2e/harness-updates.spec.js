@@ -305,7 +305,7 @@ test("each command Trebell tells a person to run, in a harness's note, its statu
     const claudeRow=harnessRow(page,"Claude Code"),refused=claudeRow.getByRole("alert"),status=claudeRow.locator("button").first().locator("small");
     await page.setViewportSize({width:1280,height:900});await switchMode(page,"dark");
     await claudeRow.locator("button").first().click();
-    await expect(refused).toHaveText("Could not switch to Claude Code: Claude Code is not authenticated. Run claude auth login and try again.");
+    await expect(refused).toHaveText("Could not switch to Claude Code: Claude Code is signed out. Sign in with claude auth login and try again.");
     for(const width of [1280,900,700])for(const mode of ["dark","light"]){
       await page.setViewportSize({width,height:900});await switchMode(page,mode);
       seen.push({where:`Claude Code's refused switch at ${width} in ${mode}`,command:"claude auth login",...await commandShown(refused,"claude auth login",{within:".agent-runtime-option"})});
@@ -314,7 +314,7 @@ test("each command Trebell tells a person to run, in a harness's note, its statu
     }
     await page.setViewportSize({width:1280,height:900});await switchMode(page,"dark");
     await page.getByRole("button",{name:"Refresh",exact:true}).click();
-    await expect(status).toHaveText("Claude Code is not authenticated. Run claude auth login and try again.");
+    await expect(status).toHaveText("Claude Code is signed out. Sign in with claude auth login and try again.");
     for(const width of [1280,900,700])for(const mode of ["dark","light"]){
       await page.setViewportSize({width,height:900});await switchMode(page,mode);
       seen.push({where:`Claude Code's status line at ${width} in ${mode}`,command:"claude auth login",...await commandShown(status,"claude auth login",{within:".agent-runtime-option"})});

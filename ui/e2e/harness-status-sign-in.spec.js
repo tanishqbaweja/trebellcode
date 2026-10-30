@@ -64,7 +64,7 @@ readline.createInterface({input:process.stdin}).on("line",line=>{const m=JSON.pa
     await openHarnessSettings(page);
     const codex=harnessRow(page,"Codex");
     // Its account read found no sign-in: Not ready, why, and Sign in.
-    await expect(said(codex)).toHaveText("Codex CLI is not authenticated. Run codex login and try again.");
+    await expect(said(codex)).toHaveText("Codex CLI is signed out. Sign in with codex login and try again.");
     await expect(action(codex)).toHaveText("Not ready");
     await expect(signIn(codex)).toBeVisible();
     await expect(signIn(codex)).toBeEnabled();
@@ -139,7 +139,7 @@ test("the Profiles list under the active Claude Code offers no Sign in for a pro
     await expect(action(slow)).toHaveText("Use");
     await expect(signIn(slow)).toHaveCount(0);
     // One whose `claude auth status` says it is signed out is offered Sign in, as before.
-    await expect(said(signedOut)).toHaveText("Claude Code is not authenticated. Run claude auth login and try again.");
+    await expect(said(signedOut)).toHaveText("Claude Code is signed out. Sign in with claude auth login and try again.");
     await expect(said(signedOut).locator("code.run-command"),"the command it names reads as code").toHaveText("claude auth login");
     await expect(signIn(signedOut)).toBeVisible();
     await expect(signIn(signedOut)).toBeEnabled();

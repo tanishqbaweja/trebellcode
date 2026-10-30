@@ -45,7 +45,7 @@ test("Settings shows OpenCode connected after a provider sign-in and Refresh, no
     const said=row.locator("button").first().locator("small"),action=row.locator("button").first().locator("em");
     const refresh=async()=>{const asked=listings;await page.locator(".agent-runtime-settings").getByRole("button",{name:"Refresh",exact:true}).click();await expect.poll(()=>listings).toBeGreaterThan(asked)};
     // No provider connected yet: OpenCode runs, and Settings offers its sign-in.
-    await expect(said).toHaveText("OpenCode is available, but it did not report any connected upstream providers.");
+    await expect(said).toHaveText("OpenCode runs, but no upstream provider is connected through it.");
     await expect(action).toHaveText("Needs setup");await expect(row.getByRole("button",{name:"Sign in",exact:true})).toBeVisible();
     // The person connects a provider with OpenCode's own sign-in, then presses Refresh: Settings reads OpenCode again.
     opencode.answer=catalog();

@@ -17,7 +17,7 @@ import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
 
-const CLAUDE_ADVICE="Claude Code is not authenticated. Run `claude auth login` and try again.";
+const CLAUDE_ADVICE="Claude Code is signed out. Sign in with `claude auth login` and try again.";
 const GROK_ADVICE="Grok CLI is installed but not logged in. Run grok login.";
 const CLAUDE_EXIT="Claude Code process exited with code 1";
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
