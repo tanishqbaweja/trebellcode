@@ -255,12 +255,20 @@ test("the source-control rule reads a message as long as the composer holds in l
   assert.equal(nativeConfiguration.nativeSpecializedSelection("Push the branch to origin, then reply on https://github.com/o/r/pull/1",all).sourceControl,true);
 });
 
-test("the settings evidence says what each value rests on: the ceilings and background processes on the readouts, the compactions as app defaults, the source-control rule as new",()=>{
+test("the settings evidence says what each value rests on: only the gate and gpt-6-luna's effort on fresh tasks, the ceilings and background processes on the readouts, the compactions as app defaults, the source-control rule as new",()=>{
   const rows=nativeConfiguration.NATIVE_SETTINGS_EVIDENCE,row=name=>rows.find(item=>item.setting===name);
   for(const item of rows){
     assert.ok(["fresh tasks","readouts","app default","new"].includes(item.basis),item.setting);
     assert.equal(item.measured,item.basis==="fresh tasks",item.setting+": measured only when compared on fresh tasks");
   }
+  // Only these rows may claim fresh tasks, each with its fresh A/B in the ledgers, so a row cannot claim it with both fields wrong
+  // (third review of native-one-config, 2026-10-30: the reasoning context did).
+  const fresh={
+    "Semantic completion gate, its recovery and the mid-task checkpoints":/3906e454 \(2026-10-09\): 8 fresh SWE-bench Verified pairs/,
+    "Default reasoning effort for gpt-6-luna":/Adaptive reasoning evaluation \(2026-10-13, 32 fresh SWE-bench tasks\)/,
+  };
+  assert.deepEqual(rows.filter(item=>item.basis==="fresh tasks").map(item=>item.setting).sort(),Object.keys(fresh).sort());
+  for(const [name,abTest] of Object.entries(fresh))assert.match(row(name).evidence,abTest,name);
   // The source-control rule is new and unmeasured, and it also decides a Codex thread's trebell_source_control from its first message
   // (second review of native-one-config, 2026-10-29).
   const sourceControl=row("Source control tools (trebell_source_control)");
@@ -283,6 +291,15 @@ test("the long context on gpt-6-luna rests on the readouts: it was never compare
   assert.equal(longContext.value,"272,000-token window, server compaction at 245,000 armed at half");
   assert.match(longContext.evidence,/every readout since 2026-10-01/);assert.match(longContext.evidence,/C4[^.]*cost v1/);assert.match(longContext.evidence,/3\.9%[^.]*since replaced/);
   assert.deepEqual(nativeConfiguration.nativeMeasuredModel("openai","gpt-6-luna"),{reasoningEffort:"max",contextWindow:272_000,serverCompactionThreshold:245_000});
+});
+
+test("the reasoning context rests on the readouts: its fresh A/B was withdrawn, as a one-message run cannot tell current_turn from all_turns",()=>{
+  // Third review of native-one-config (2026-10-30); the value stays, as the guardrail does.
+  const reasoning=nativeConfiguration.NATIVE_SETTINGS_EVIDENCE.find(item=>item.setting==="Reasoning context");
+  assert.equal(reasoning.measured,false);assert.equal(reasoning.basis,"readouts");
+  assert.equal(reasoning.value,"current_turn");assert.equal(nativeConfiguration.NATIVE_REASONING_CONTEXT,"current_turn");
+  for(const fact of [/521937a2 \(2026-10-02\)[^.]*freight-dispatch-shift/,/2-3 requests disagreed/,/3 v 3 control[^.]*mixed \(all_turns 66\/81 checks, current_turn 63\/81\)/,/withdrawn on 2026-10-12 before any run/,/one user message[^.]*same reasoning/,/Every readout since ran current_turn/,/multi-message threads[^.]*never measured/])assert.match(reasoning.evidence,fact);
+  assert.doesNotMatch(reasoning.evidence,/conflicting and sometimes much costlier/);
 });
 
 test("Native's developer text has no web-research sentence, in the app and the runner alike, while other harnesses' threads keep it",async t=>{

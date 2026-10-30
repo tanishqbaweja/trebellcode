@@ -48,6 +48,15 @@ test("the overview and the benchmark page say the long context on gpt-6-luna res
   assert.match(benchmarks,/the long context on `gpt-6-luna`[^.]*rest on the readouts/);
 });
 
+test("the overview and the benchmark page say the reasoning context rests on the readouts, not on fresh tasks",async()=>{
+  // Third review of native-one-config (2026-10-30).
+  const [overview,benchmarks]=await Promise.all(["docs/technical/TECHNICAL_OVERVIEW.md","BENCHMARKS.md"].map(read));
+  assert.match(overviewRow(overview,"Reasoning"),/`current_turn` on OpenAI, which rests on the readouts/);
+  assert.match(overviewRow(overview,"Reasoning"),/multi-message threads[^|]*never measured/);
+  assert.match(benchmarks,/as does the OpenAI reasoning context, `current_turn`/);
+  assert.match(benchmarks,/no gate and Max thinking were measured better on fresh tasks;/);
+});
+
 test("the overview and the benchmark page say Native's developer text has no web-research sentence",async()=>{
   const [overview,benchmarks,readme]=await Promise.all(["docs/technical/TECHNICAL_OVERVIEW.md","BENCHMARKS.md","README.md"].map(read));
   assert.match(overviewRow(overview,"Developer text"),/no web-research sentence/);
