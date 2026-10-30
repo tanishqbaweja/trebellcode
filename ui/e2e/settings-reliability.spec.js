@@ -1064,8 +1064,9 @@ test("the custom model form says what is wrong with a draft by the form",async({
   }
 });
 
-// OpenCode's provider/model check on the same form is said there too. OpenCode is a fixture here: nothing runs it on this host.
-test("the custom model form says by the form that an OpenCode model needs provider/model",async({page})=>{
+// Settings' Agents & models with OpenCode the harness in use, a fixture: nothing runs it on this host. Its settings keep what is
+// saved (fixture.settings).
+async function openCodeSettings(page){
   let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",agentRuntimeInstanceId:"opencode-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",customModels:[]};
   const json=body=>({status:200,contentType:"application/json",body:JSON.stringify(body)});
   await page.route(/\/api\/bootstrap$/,route=>route.fulfill(json({mock:true,provider:"openai",providerReady:true,agentRuntime:"opencode",agentRuntimeInstanceId:"opencode-default",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"custom-model-opencode-fixture",activeEnvironmentId:null,activeEnvironment:null})));
@@ -1081,8 +1082,14 @@ test("the custom model form says by the form that an OpenCode model needs provid
   await page.goto("/");
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
+  await expect(page.locator('[data-setting-target="agents-harness"]')).toContainText("OpenCode");
+  return {get settings(){return settings}};
+}
+
+// OpenCode's provider/model check on the same form is said there too.
+test("the custom model form says by the form that an OpenCode model needs provider/model",async({page})=>{
+  const fixture=await openCodeSettings(page);
   const card=page.locator('[data-setting-target="agents-models"]'),harness=page.locator('[data-setting-target="agents-harness"]');
-  await expect(harness).toContainText("OpenCode");
   await card.getByRole("button",{name:"Add custom model",exact:true}).click();
   await typeInto(page,card.getByLabel("Model ID"),"lane-model");
   const save=card.getByRole("button",{name:"Save custom model",exact:true});
@@ -1092,8 +1099,32 @@ test("the custom model form says by the form that an OpenCode model needs provid
   await expect(problem).toBeInViewport({ratio:1});
   await expect(harness).not.toContainText("provider/model format");
   await expect(card.getByLabel("Model ID")).toHaveValue("lane-model");
-  expect(settings.customModels).toEqual([]);
+  expect(fixture.settings.customModels).toEqual([]);
   await shootModes(page,"custom-model-opencode-format",{show:problem});
+});
+
+// That refusal is said under the custom model editor, not in it, so the strip of room b8cfa291 keeps under a refusal the editors
+// scroll into view missed it: Save custom model near the window's foot, it was scrolled flush to the window's bottom edge, its
+// border on that edge. Pressed with the mouse and from the keyboard (Tab from the last price to Save custom model, Enter).
+test("an OpenCode custom model's refusal is scrolled into view with a strip of room above the window's bottom edge, at 1280 and 900, dark and light",async({page})=>{
+  test.setTimeout(60_000);
+  const fixture=await openCodeSettings(page);
+  const card=page.locator('[data-setting-target="agents-models"]'),save=card.getByRole("button",{name:"Save custom model",exact:true});
+  const problem=card.getByRole("alert").filter({hasText:"OpenCode custom models must use provider/model format."});
+  for(const [mode,width,keys] of [["dark",1280,false],["light",1280,true],["dark",900,true],["light",900,false]]){
+    await page.setViewportSize({width,height:800});await switchMode(page,mode);
+    await card.getByRole("button",{name:"Add custom model",exact:true}).click();
+    await typeInto(page,card.getByLabel("Model ID"),"lane-model");
+    await wheelUntilShown(page,save);
+    if(keys){await card.getByLabel("Cache write / 1M").click();await page.keyboard.press("Tab");await expect(save).toBeFocused();await page.keyboard.press("Enter")}
+    else await save.click();
+    await expect(problem).toBeInViewport({ratio:1});
+    // The room the runtime profile editor's refusal keeps under it: 12 px, less the half pixel its bottom can sit on.
+    await expect.poll(()=>problem.evaluate(node=>Math.round((innerHeight-node.getBoundingClientRect().bottom)*100)/100),`room under the refusal at ${width} in ${mode}${keys?", by the keyboard":""}`).toBeGreaterThanOrEqual(11);
+    await page.screenshot({animations:"disabled",path:shots+`custom-model-refusal-room-${mode}-${width}.png`});
+    await card.getByRole("button",{name:"Cancel",exact:true}).click();await expect(problem).toHaveCount(0);
+  }
+  expect(fixture.settings.customModels).toEqual([]);
 });
 
 // A theme import says how it went right under Import JSON, in view, not under the theme editor the import opens further down the
