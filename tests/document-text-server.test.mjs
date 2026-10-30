@@ -38,7 +38,7 @@ test("an uploaded, imported or checked document answers with the file its text w
   const {files:[imported]}=await post("/api/attachments/import",{paths:[own]});
   assert.equal(imported.path,own,"an attached file stays where the person keeps it");
   assert.equal(join(imported.textPath,".."),join(home,"attachments"),"its text is kept in Trebell's attachments folder");
-  assert.match(await readFile(imported.textPath,"utf8"),/^## Sheet: Budget\nItem\tCost\tDue\nLantern\t37/);
+  assert.match(await readFile(imported.textPath,"utf8"),/^## Sheet: Supplies\nPart\tPrice\tOrdered\nRope\t52/);
   assert.deepEqual(await readdir(projects),["Budget 2027.xlsx"],"nothing is written beside it");
   const {files:[again]}=await post("/api/attachments/import",{paths:[report.path]});
   assert.equal(again.textPath,report.textPath,"an upload taken in again keeps the text beside it");

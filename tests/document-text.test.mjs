@@ -18,14 +18,14 @@ const TRUNCATED="[The extracted text stops here, at Trebell Code's limits for a 
 // The text of each fixture (tests/fixtures/documents/make-fixtures.mjs), as an agent is to read it.
 const EXPECTED={
   "report.docx":"# Quarterly Harbor Report\nCargo volume rose 12 percent & the new crane is running.\nPort\tTons\nJuniper\t4200\nNext review: March.",
-  "budget.xlsx":"## Sheet: Budget\nItem\tCost\tDue\nLantern\t37\t45292 [Excel number format 14, 1900 date system]",
+  "budget.xlsx":"## Sheet: Supplies\nPart\tPrice\tOrdered\nRope\t52\t46000.25 [Excel number format 22, 1900 date system]",
   "deck.pptx":"## Slide 1\n\nDeparture plan\nFerries leave at 06:40\nNotes:\n\nBoard at gate 4\n\n## Slide 2\n\nQuestions",
-  "notes.odt":"# Orchard notes\n19   violet crates by the gate.",
+  "notes.odt":"# Pier log\n7  blue buoys off the north pier.",
   "inventory.ods":"## Sheet: Cargo\nViolet\t19\t27.50 EUR",
   "slides.odp":"## Slide 1\nMorning briefing\n\n## Slide 2\nTide tables",
   "memo.rtf":"Memo:\tRelease on Friday\nCafé opens at 8\u2014bring the \u201charbor\u201d keys\nGreek: \u03b1\u03b2",
   "novel.epub":"## Chapter 1\n\nOne# The Lamp\nThe keeper climbed\u00a0the stairs at dusk.\n\n## Chapter 2\n\nTwo## The Storm\nWaves broke over the rocks & the light held.",
-  "analysis.ipynb":"## Cell 1 (markdown)\n# Survey\nVessel: Larkspur\n\n## Cell 2 (code)\nprint(43 * 7)\nOutput:\n301\n\n## Cell 3 (code)\n1 / 0\nOutput:\nZeroDivisionError: division by zero\n----> 1 1 / 0\nZeroDivisionError: division by zero",
+  "analysis.ipynb":"## Cell 1 (markdown)\n# Tide check\nStation: Kestrel Point\n\n## Cell 2 (code)\nprint(sum(range(5)))\nOutput:\n10\n\n## Cell 3 (code)\nlevels['noon']\nOutput:\nKeyError: 'noon'\nKeyError Traceback (most recent call last)\n----> 1 levels['noon']\nKeyError: 'noon'",
 };
 const extension=name=>"."+name.split(".").pop();
 async function folder(t,prefix="trebell-document-text-"){
@@ -91,7 +91,7 @@ test("an upload's text goes beside it in the attachments folder, and a file atta
 test("a corrupt, encrypted, oversized or empty document, or a file of another kind, gets no text and stays as it was",async t=>{
   const root=await folder(t),home=join(root,"home"),{worker,runs}=await countingWorker(root);
   const encrypted=zipArchive({"word/document.xml":'<w:document xmlns:w="urn:w"><w:p><w:t>Secret</w:t></w:p></w:document>'},{encrypted:true});
-  const cases={"broken.docx":"invalid document","locked.docx":encrypted,"blank.docx":docx(""),"broken.ipynb":"{","plain.rtf":"no RTF header","bad-codepage.rtf":String.raw`{\rtf1\ansi\ansicpg99999 Unsupported}`};
+  const cases={"broken.docx":"invalid document","locked.docx":encrypted,"blank.docx":docx(""),"broken.ipynb":"{","plain.rtf":"no RTF header","bad-codepage.rtf":String.raw`{\rtf1\ansi\ansicpg437 An old DOS page}`};
   for(const [name,bytes] of Object.entries(cases)){
     const path=await upload(home,name,bytes);
     assert.equal(await documentText.ensureDocumentText(path,{home,worker}),null,name);
@@ -155,7 +155,7 @@ test("the extraction runs on Trebell's own Node, hidden, with no shell, none of 
   // The heap limit holds in the process itself, whatever the server's NODE_OPTIONS ask for.
   const root=await folder(t),home=join(root,"home"),probe=join(root,"heap-probe.mjs");
   await writeFile(probe,'import { getHeapStatistics } from "node:v8";process.stdout.write(String(getHeapStatistics().heap_size_limit));',"utf8");
-  const sidecar=await documentText.ensureDocumentText(await upload(home,"heap.rtf",String.raw`{\rtf1 heap}`),{home,worker:probe,env:{...process.env,NODE_OPTIONS:"--max-old-space-size=1024"}});
+  const sidecar=await documentText.ensureDocumentText(await upload(home,"heap.rtf",String.raw`{\rtf1 heap}`),{home,worker:probe,env:{...process.env,NODE_OPTIONS:"--max-old-space-size=3072"}});
   const limit=Number(await readFile(sidecar,"utf8"));
   assert.ok(limit>192*1024*1024&&limit<=384*1024*1024,`the worker's heap limit is ${limit} bytes`);
 });
@@ -176,13 +176,14 @@ test("an archive past its limits has its text cut with a note, or none, instead 
   assert.equal(count(rows,"High water"),10_000);assert.ok(rows.endsWith(TRUNCATED),"more than 10,000 rows");
   const columns=await extract("columns.ods",odf('<document><table:table table:name="Wide"><table:table-row table:style-name="ro1"><table:table-cell office:value-type="string" table:number-columns-repeated="513"><text:p>Cell</text:p></table:table-cell></table:table-row></table:table></document>',stored));
   assert.equal(count(columns,"Cell"),512);assert.ok(columns.endsWith(TRUNCATED),"more than 512 columns");
-  assert.equal(await extract("spaces.odt",odf('<document><text:p>Start<text:s text:c="1000001"/>Unneeded</text:p></document>',stored)),"Start"+CUT,"a space repeated past the text's limit");
+  assert.equal(await extract("spaces.odt",odf('<document><text:p>Kept<text:s text:c="1500000"/>Dropped</text:p></document>',stored)),"Kept"+CUT,"a space repeated past the text's limit");
   const padded=await extract("padded.ods",odf('<document><table:table table:name="Crew rota"><table:table-row table:style-name="ro1"><table:table-cell office:value-type="string"><text:p>Mara</text:p></table:table-cell><table:table-cell table:style-name="ce1" table:number-columns-repeated="12000"/></table:table-row><table:table-row table:style-name="ro2" table:number-rows-repeated="900000"><table:table-cell table:style-name="ce1" table:number-columns-repeated="12001"><text:p/></table:table-cell></table:table-row></table:table></document>',stored));
   assert.equal(padded,"## Sheet: Crew rota\nMara","a sheet's padding of empty rows and cells is never expanded");
-  const long=await extract("long.docx",docx(`<w:p><w:t>${"A".repeat(1_000_100)}</w:t></w:p><w:p><w:t>Unneeded</w:t></w:p>`,stored));
+  const long=await extract("long.docx",docx(`<w:p><w:t>${"A".repeat(1_000_100)}</w:t></w:p><w:p><w:t>Dropped</w:t></w:p>`,stored));
   assert.ok(long==="A".repeat(1_000_000)+CUT,"text past 1,000,000 characters stops there");
   const notebook=await extract("cells.ipynb",JSON.stringify({cells:Array.from({length:10_001},(_,cell)=>({cell_type:"markdown",source:[`c${cell}`]}))}));
-  assert.ok(notebook.endsWith(TRUNCATED)&&notebook.includes("## Cell 10000 (markdown)")&&!notebook.includes("Cell 10001"),"more than 10,000 notebook cells");
+  assert.ok(notebook.endsWith(TRUNCATED),"more than 10,000 notebook cells");
+  assert.deepEqual([notebook.match(/^## Cell \d+ \(markdown\)$/gm).length,notebook.match(/^c\d+$/gm).at(-1)],[10_000,"c9999"],"the first 10,000 cells, in order");
   assert.equal(await extract("nested.rtf",String.raw`{\rtf1 `+"{".repeat(129)+"Lost"+"}".repeat(130)),CUT,"RTF groups nested more than 128 deep");
   await assert.rejects(extract("locked.docx",zipArchive({"word/document.xml":"<document><p>Secret</p></document>"},{encrypted:true})),/Password-protected document/);
   // A part that is missing or is not XML is left out, said, and the rest still read.
