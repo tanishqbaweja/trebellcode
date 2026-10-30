@@ -643,26 +643,34 @@ export async function sendModelFanout(deps,text){
   Promise.all(launches).then(results=>import("./background-send-outcome.js").then(({settleModelFanout})=>settleModelFanout({results,fanout,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),error=>{if(results.some(item=>!item.ok))restoreFailedDraft(draft);showActionError(error,"Could not show how the multi-model run went")}));
   return true;
 }
-export async function sendInBackground(deps,promptOverride=null){
-  const {activeThread,agentRuntimeLabel,attachments,bootstrap,contextChips,desktopNotify,maxComposerChars,model,modelsRef,projectPath,projectlessMode,prompt,resetAssistantStream,restoreFailedDraft,rpc,rpcStatus,running,runtimeCapabilities,runtimeSwitchRef,send,setAttachments,setContextChips,setEvents,setPrompt,setPromptHistoryIndex,setSection,showActionError,validateAttachmentPaths,waitForActiveClone}=deps;
+// A send in the background (Ctrl+Enter from New task): true once it has launched, "kept" when one of its checks keeps the task, which
+// does not go, and nothing when it went as a plain send instead (send, which keeps or gives back its own draft). Once it launches,
+// only the text it sent leaves the composer, and only the files and context it took, so what the person typed or attached while it
+// waited for a clone or checked its files stays for the next task, as with a fan-out, where it emptied the composer and dropped them.
+// taken: its text left the composer already, at a press made before this module had come (App's sendInBackground), which gives the
+// text back when this keeps it.
+export async function sendInBackground(deps,promptOverride=null,{taken=false}={}){
+  const {activeThread,agentRuntimeLabel,attachments,bootstrap,contextChips,desktopNotify,dropSentDraft,maxComposerChars,model,modelsRef,projectPath,projectlessMode,prompt,resetAssistantStream,restoreFailedDraft,rpc,rpcStatus,running,runtimeCapabilities,runtimeSwitchRef,send,setEvents,setPrompt,setPromptHistoryIndex,setSection,showActionError,validateAttachmentPaths,waitForActiveClone}=deps;
   if(!runtimeCapabilities.detachedTasks){await send(promptOverride);return}
   if(activeThread?.id||running||runtimeSwitchRef.current){await send(promptOverride);return}
   const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim();if(!text)return;
-  if(visiblePrompt.length>maxComposerChars){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${maxComposerChars.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
+  const takeSent=()=>{if(!taken)setPrompt(current=>current.startsWith(visiblePrompt)?current.slice(visiblePrompt.length).replace(/^\s+/,""):current)};
+  if(visiblePrompt.length>maxComposerChars){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${maxComposerChars.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return "kept"}
   if(text.startsWith("/")){await send(promptOverride);return}
-  try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
+  try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return "kept"}
   // A fan-out that has launched takes the text it sent out of the composer, as Enter and Send take a draft out as its send starts
   // (dispatchSend): what the person typed on after it while the fan-out waited for a clone or checked its files stays there, for the
   // next message. The text stayed, and a second Enter launched the same fan-out again. One that cannot start ("kept") leaves it.
-  const fanned=await sendModelFanout(deps,text);if(fanned){if(fanned===true)setPrompt(current=>current.startsWith(visiblePrompt)?current.slice(visiblePrompt.length).replace(/^\s+/,""):current);return}
+  const fanned=await sendModelFanout(deps,text);if(fanned){if(fanned===true)takeSent();return fanned}
   if(bootstrap.mock||!rpc||rpcStatus!=="connected"||runtimeSwitchRef.current||!modelsRef.current.includes(model)){await send(promptOverride);return}
-  if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
-  try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
+  if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return "kept"}
+  try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return "kept"}
   const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
-  setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
+  takeSent();setPromptHistoryIndex(-1);dropSentDraft(draft);setEvents([]);resetAssistantStream();setSection("chat");
   // A launch that fails is told by background-send-outcome.js, which loads then: should it not load, the draft goes back to the
   // composer.
   startDetachedTurn(deps,draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips),checked:true}).catch(error=>import("./background-send-outcome.js").then(({settleFailedBackgroundSend})=>settleFailedBackgroundSend({error,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),()=>{restoreFailedDraft(draft);showActionError(error,"Background task failed")}));
+  return true;
 }
 
 // A desktop SnapShot (window.trebellDesktop.snapshots) goes to the composer: its image, and the window's accessibility text when it

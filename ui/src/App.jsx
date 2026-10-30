@@ -3933,8 +3933,9 @@ export default function App(){
     };
     // The composer is held only for a send of the thread shown: another thread opened releases it, as a new task does (showNewTask).
     // The send's files and context go with its hold: the thread opened does not show them (a send from it would carry them again),
-    // and the send's own thread, opened again before its turn starts, has them back.
-    if(previousThreadId!==thread.id&&submittingRef.current){dropSentDraft(sendDraftsRef.current.get(submittingRef.current));submittingRef.current=null;setSubmitting(false)}
+    // and the send's own thread, opened again before its turn starts, has them back. A send in the background still waiting for its
+    // script (held, sendInBackground) does not go once released, so its text comes back to the composer, as a draft that is kept.
+    if(previousThreadId!==thread.id&&submittingRef.current){const left=sendDraftsRef.current.get(submittingRef.current);dropSentDraft(left);if(left?.held)restoreSentDraft({text:left.text});submittingRef.current=null;setSubmitting(false)}
     if(pendingSend?.view&&!submittingRef.current){submittingRef.current=pendingSend.view;setSubmitting(true);returnSentDraft(sendDraftsRef.current.get(pendingSend.view))}
     // A Stop already sent for the turn that still runs reads Stopping again, and a press sends no second one (stop()).
     const stoppedTurnKey=resumedRunning&&resumedTurnId?String(thread.id)+"\0"+resumedTurnId:null;
@@ -4548,17 +4549,22 @@ export default function App(){
     finally{if(submittingRef.current===token){submittingRef.current=null;setSubmitting(false)}}
   }
   // A send in the background pressed before turn-support.js has come holds the composer as a send does (submitting: Sending…, and
-  // Enter and Ctrl+Enter wait), with its draft there, and goes once that module is in, from the view it was pressed in only: another
-  // thread opened meanwhile lets the composer go (openThread), and then it does not go, nor touch that thread's composer or rows.
+  // Enter and Ctrl+Enter wait): its text leaves the composer at the press (dispatchSend), so what the person types meanwhile stays
+  // there for the next task, as the line under the composer says, and its files stay on the shelf until it goes, which takes only
+  // the ones it sends (turn-support.js). It goes once that module is in, from the view it was pressed in only: another thread opened
+  // meanwhile lets the composer go and gives the text back (held, openThread), and then it does not go, nor touch that thread's
+  // composer or rows. One that does not go (the module cannot load, or one of its checks keeps it: "kept") gives the text back before
+  // what was typed meanwhile (restoreSentDraft), as a send's draft comes back. Its text stayed in the composer while it waited, the
+  // composer stayed editable, and what was typed or attached meanwhile was dropped once it went.
   async function sendInBackground(promptOverride=null){
-    if(!turnSupport){
-      if(submittingRef.current)return;
-      const token={};submittingRef.current=token;setSubmitting(true);
-      let failed=null;try{await loadTurnSupport()}catch(error){failed=error}
-      if(submittingRef.current!==token)return;submittingRef.current=null;setSubmitting(false);
-      if(failed){setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(failed.message)+" Your draft is kept."});return}
-    }
-    return turnSupport.sendInBackground(turnDeps(),promptOverride);
+    if(turnSupport)return turnSupport.sendInBackground(turnDeps(),promptOverride);
+    const visiblePrompt=promptOverride==null?prompt:String(promptOverride);if(submittingRef.current||!visiblePrompt.trim())return;
+    const token={},keep=()=>restoreSentDraft({text:visiblePrompt});submittingRef.current=token;setSubmitting(true);
+    sendDraftsRef.current.set(token,{text:visiblePrompt,held:true});setPrompt(current=>current===visiblePrompt?"":current);
+    let failed=null;try{await loadTurnSupport()}catch(error){failed=error}
+    if(submittingRef.current!==token)return;submittingRef.current=null;setSubmitting(false);
+    if(failed){keep();setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(failed.message)+" Your draft is kept."});return}
+    if(await turnSupport.sendInBackground(turnDeps(),visiblePrompt,{taken:true})==="kept")keep();
   }
   // A follow-up's button pressed from the keyboard keeps the keyboard, as the sidebar's rows do, instead of dropping it on the page with
   // the button its action takes away or turns off: Edit gives it to the composer, where the edit is made; Send now and Remove, whose

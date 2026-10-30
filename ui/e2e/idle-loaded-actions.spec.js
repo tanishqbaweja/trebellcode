@@ -245,8 +245,9 @@ test("a background send made before the turn support has loaded starts once it h
     const composer=page.getByTestId("composer"),task="Summarize the session helper in the background";
     await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
     expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
-    // It waits for the turn support with the draft where it was.
-    await expect(composer).toHaveValue(task);await expect(page.locator(".thread-row")).toHaveCount(1);
+    // It waits for the turn support as a send goes, Sending…, its text out of the composer.
+    await expect(composer).toHaveAttribute("placeholder",/^Sending/);await expect(composer).toHaveValue("");
+    await expect(page.locator(".thread-row")).toHaveCount(1);
     expect(fixture.threadStore.list("native")).toHaveLength(1);
     await script.release();
     // Once it has come, the task starts in a thread of its own, once, and the composer is empty for the next.
@@ -638,24 +639,64 @@ test("a background send waiting for the turn support says Sending…, takes no s
   try{
     await page.setViewportSize({width:1280,height:800});
     await script.asked();
-    const composer=page.getByTestId("composer"),task="Summarize the session helper in the background",sending=page.getByTestId("composer-sending");
+    const composer=page.getByTestId("composer"),task="Summarize the session helper in the background",next="List the session helper's tests",sending=page.getByTestId("composer-sending");
     await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
-    // It says it is sending, with the draft still in the composer, and Send is off until it has gone.
-    await expect(sending).toBeVisible();await expect(sending).toContainText("Sending");
-    await expect(composer).toHaveValue(task);await expect(page.getByTestId("send")).toBeDisabled();
+    // It says it is sending, its text out of the composer as a send's is, and Send is off until it has gone.
+    await expect(composer).toHaveAttribute("placeholder",/^Sending/);await expect(composer).toHaveValue("");
+    await expect(page.getByTestId("send")).toBeDisabled();
+    // The next task typed meanwhile waits for it, as the line under the composer says.
+    await page.keyboard.type(next,{delay:5});await expect(sending).toHaveText(/^Sending.* · your draft stays here until the last message has gone\.$/);
     await shootModes(page,"background-send-waiting",()=>expect(sending).toBeVisible());
-    // Pressed again, from the keyboard both ways, it starts nothing more.
-    await composer.focus();await page.keyboard.press("Control+Enter");await page.keyboard.press("Enter");
+    // Pressed again, from the keyboard both ways, it starts nothing more, and the next task stays.
+    await composer.focus();await page.keyboard.press("Control+Enter");await page.keyboard.press("Enter");await expect(composer).toHaveValue(next);
     expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
     await expect(page.locator(".thread-row")).toHaveCount(1);expect(fixture.threadStore.list("native")).toHaveLength(1);
     await script.release();
-    // Once it has come, one task starts, and the composer is free for the next.
+    // Once it has come, one task starts, and the composer keeps the next one.
     await expect(page.locator(".thread-row")).toHaveCount(2,{timeout:15_000});
-    await expect(composer).toHaveValue("");await expect(sending).toHaveCount(0);
+    await expect(composer).toHaveValue(next);await expect(sending).toHaveCount(0);
     const started=()=>fixture.threadStore.list("native").filter(thread=>thread.id!==fixture.threads[0].id);
     await expect.poll(()=>started()[0]?.id&&fixture.threadStore.get(started()[0].id)?.turns?.[0]?.items?.find(item=>item.type==="userMessage")?.content?.[0]?.text,{timeout:10_000}).toBe(task);
     await settle(page);
     expect(started(),"one task for one task").toHaveLength(1);await expect(page.locator(".thread-row")).toHaveCount(2);
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+// What the person types or attaches while a background send waits for the turn support stays in the composer for the next task, as
+// while a send goes: the text sent left the composer at the press, and only the files sent leave it once it goes. The text stayed in
+// the composer, which took more typing, and what was typed or attached meanwhile was dropped once the task went.
+test("text typed and a file attached while a background send waits for the turn support stay for the next task once it has gone",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"turn-support");
+  await keepSettings(page);
+  const fixture=await startStreamingFixture(page,{providerTurn:backgroundTurn});
+  try{
+    await page.setViewportSize({width:1280,height:800});
+    await script.asked();
+    const composer=page.getByTestId("composer"),task="Summarize the session helper in the background",next="Then list its tests",files=page.locator(".attachment-shelf > span");
+    await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
+    await expect(composer).toHaveAttribute("placeholder",/^Sending/);
+    await expect(composer,"the text sent leaves the composer at the press").toHaveValue("");
+    await page.keyboard.type(next,{delay:5});await expect(composer).toHaveValue(next);
+    const [chooser]=await Promise.all([page.waitForEvent("filechooser"),page.getByRole("button",{name:"Attach files"}).click()]);
+    await chooser.setFiles({name:"next-notes.txt",mimeType:"text/plain",buffer:Buffer.from("Notes for the next task.\n")});
+    await expect(files).toHaveText(["next-notes.txt"]);
+    await expect(page.getByTestId("composer-sending")).toHaveText(/^Sending.* · your draft stays here until the last message has gone\.$/);
+    await shootModes(page,"background-send-typed-while-waiting",()=>expect(files).toHaveText(["next-notes.txt"]));
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
+    await script.release();
+    // The task goes with its own text and no file, and the next task's text and file stay in the composer.
+    await expect(page.locator(".thread-row")).toHaveCount(2,{timeout:15_000});
+    const started=()=>fixture.threadStore.list("native").filter(thread=>thread.id!==fixture.threads[0].id);
+    const sent=()=>started()[0]?.id&&fixture.threadStore.get(started()[0].id)?.turns?.[0]?.items?.find(item=>item.type==="userMessage")?.content;
+    await expect.poll(()=>sent()?.[0]?.text,{timeout:10_000}).toBe(task);
+    expect(JSON.stringify(sent()),"the file attached meanwhile did not go with it").not.toContain("next-notes");
+    await expect(composer).toHaveValue(next);await expect(files).toHaveText(["next-notes.txt"]);
+    await expect(page.getByTestId("composer-sending")).toHaveCount(0);
+    await shootModes(page,"background-send-typed-while-waiting-kept",()=>expect(composer).toHaveValue(next));
+    await settle(page);
+    expect(started(),"one task for one task").toHaveLength(1);
     await appStays(page);
   }finally{await script.drop();await fixture.close()}
 });
@@ -671,8 +712,10 @@ test("a background send waiting for the turn support does not go once a thread i
     const composer=page.getByTestId("composer"),task="Summarize the session helper in the background",draft="A draft for this thread";
     await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
     await expect(page.getByTestId("composer-sending")).toBeVisible();
-    // The thread opened meanwhile lets the composer go: no longer sending, and its draft is the person's to write.
+    // The thread opened meanwhile lets the composer go: no longer sending, with the task's text back as a draft that is kept, and its
+    // draft is the person's to write.
     const row=page.locator(".thread-row").filter({hasText:"Native streaming"});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(composer).not.toHaveAttribute("placeholder",/^Sending/);await expect(composer).toHaveValue(task);
     await expect(page.getByTestId("composer-sending")).toHaveCount(0);
     await composer.click();await page.keyboard.press("Control+A");await page.keyboard.type(draft,{delay:5});await expect(composer).toHaveValue(draft);
     await script.release();
