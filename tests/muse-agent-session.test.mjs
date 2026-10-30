@@ -351,9 +351,9 @@ test("turn/start sends Trebell's runtime notes first, then the parts, with the p
 });
 
 test("Muse's verbatim roots: drives, shares and a root already verbatim; Windows spells a root as the disk does",async()=>{
-  assert.equal(museVerbatimPath("C:\\Users\\Person\\repo"),"\\\\?\\C:\\Users\\Person\\repo");
-  assert.equal(museVerbatimPath("\\\\server\\share\\repo"),"\\\\?\\UNC\\server\\share\\repo");
-  assert.equal(museVerbatimPath("\\\\?\\C:\\repo"),"\\\\?\\C:\\repo");
+  assert.equal(museVerbatimPath("\\\\?\\E:\\site"),"\\\\?\\E:\\site");
+  assert.equal(museVerbatimPath("D:\\Projects\\trebell-site"),"\\\\?\\D:\\Projects\\trebell-site");
+  assert.equal(museVerbatimPath("\\\\buildbox\\code\\app"),"\\\\?\\UNC\\buildbox\\code\\app");
   assert.equal(await museWorkspaceRoot("C:/work/repo",{platform:"win32",resolveReal:async()=>{throw new Error("missing")}}),"\\\\?\\C:\\work\\repo");
   assert.equal(await museWorkspaceRoot("/work/repo",{platform:"linux",resolveReal:async path=>path+"-real"}),"/work/repo-real");
   if(process.platform!=="win32")return;
@@ -455,32 +455,33 @@ test("deltas: text streams the reply, summary.N the reasoning's parts and output
 });
 
 test("tools map to rows: an edit keeps its exact old and new text, a write its content, a patch its diff, a search its hits",()=>{
-  const item=fields=>({itemId:"native-item",kind:"toolCall",status:"completed",revision:1,...fields});
-  const edit=acpToolFrame(museToolUpdate(item({tool:"edit_file",args:JSON.stringify({file_path:"src/index.ts",old_string:"old\n",new_string:""})})));
+  const item=fields=>({itemId:"row-7",kind:"toolCall",status:"completed",revision:3,...fields});
+  const shell=museToolUpdate({itemId:"shell-2",kind:"userShell",status:"completed",revision:1,commandText:"npm test",visibleOutput:"12 passing",exitCode:0,turnId:null});
+  assert.deepEqual([shell.kind,shell.title,shell.rawOutput,shell.exitCode],["execute","npm test","12 passing",0]);
+  const write=acpToolFrame(museToolUpdate(item({tool:"write_file",args:JSON.stringify({path:"docs/notes.md",content:"# Notes\n"})})));
+  assert.deepEqual(write.changes,[{path:"docs/notes.md",kind:"add",newText:"# Notes\n"}]);
+  const edit=acpToolFrame(museToolUpdate(item({tool:"edit_file",args:JSON.stringify({file_path:"lib/retry.mjs",old_string:"const retries = 2;\n",new_string:"const retries = 3;\n"})})));
   assert.equal(edit.kind,"edit");assert.equal(edit.status,"completed");
-  assert.deepEqual(edit.content,[{type:"diff",path:"src/index.ts",oldText:"old\n",newText:""}]);
-  assert.deepEqual(edit.changes,[{path:"src/index.ts",kind:"update",oldText:"old\n",newText:""}]);
-  const write=acpToolFrame(museToolUpdate(item({tool:"write_file",args:JSON.stringify({path:"README.md",content:"Hello\n"})})));
-  assert.deepEqual(write.changes,[{path:"README.md",kind:"add",newText:"Hello\n"}]);
-  const patch=acpToolFrame(museToolUpdate(item({tool:"apply_patch",args:JSON.stringify({path:"README.md",patch:"@@ -1 +1 @@\n-old\n+new"})})));
-  assert.deepEqual(patch.changes,[{path:"README.md",kind:"update",diff:"@@ -1 +1 @@\n-old\n+new"}]);
-  for(const status of ["rejected","timedOut","handedOff"]){
-    const failed=museToolUpdate(item({tool:"search_files",status,fallbackText:"Native explanation"}));
+  assert.deepEqual(edit.content,[{type:"diff",path:"lib/retry.mjs",oldText:"const retries = 2;\n",newText:"const retries = 3;\n"}]);
+  assert.deepEqual(edit.changes,[{path:"lib/retry.mjs",kind:"update",oldText:"const retries = 2;\n",newText:"const retries = 3;\n"}]);
+  const patch=acpToolFrame(museToolUpdate(item({tool:"apply_patch",args:JSON.stringify({path:"docs/notes.md",patch:"@@ -2 +2 @@\n-draft\n+final"})})));
+  assert.deepEqual(patch.changes,[{path:"docs/notes.md",kind:"update",diff:"@@ -2 +2 @@\n-draft\n+final"}]);
+  const page=museToolUpdate(item({tool:"web_fetch",args:JSON.stringify({url:"https://sqlite.org/about.html"}),visibleOutput:"SQLite is a C library"}));
+  assert.deepEqual(page.rawOutput.results,[{url:"https://sqlite.org/about.html",snippet:"SQLite is a C library"}]);
+  const found={query:"sqlite wal mode",results:[{url:"https://sqlite.org/wal.html",title:"Write-Ahead Logging",snippet:"Readers run beside a writer",rank:2},{url:"",title:"",snippet:"A hit with no address"}]};
+  const search=museToolUpdate(item({tool:"web_search",args:JSON.stringify({query:found.query}),visibleOutput:JSON.stringify(found)}));
+  assert.equal(search.kind,"fetch");assert.equal(search.title,"web_search: sqlite wal mode");
+  assert.deepEqual(search.rawOutput,{query:"sqlite wal mode",results:[{url:"https://sqlite.org/wal.html",title:"Write-Ahead Logging",snippet:"Readers run beside a writer"},{snippet:"A hit with no address"}]});
+  assert.equal(search.content[0].content.text,"Write-Ahead Logging (https://sqlite.org/wal.html)\nReaders run beside a writer\n\nA hit with no address");
+  for(const status of ["handedOff","timedOut","rejected"]){
+    const failed=museToolUpdate(item({tool:"list_dir",status,fallbackText:"The folder is outside the workspace"}));
     assert.equal(failed.status,"failed",status);
-    assert.equal(failed.rawOutput,`Muse Code reported ${status}.\nNative explanation`);
-    assert.equal(failed.title,`search_files: Muse Code reported ${status}.`);
+    assert.equal(failed.rawOutput,`Muse Code reported ${status}.\nThe folder is outside the workspace`);
+    assert.equal(failed.title,`list_dir: Muse Code reported ${status}.`);
   }
-  const search=museToolUpdate(item({tool:"web_search",args:JSON.stringify({query:"node lts"}),visibleOutput:JSON.stringify({query:"node lts",results:[{url:"https://nodejs.org/",title:"Node.js",snippet:"Node 24 is LTS",extra:1},{url:"",title:"",snippet:"No link"}]})}));
-  assert.equal(search.kind,"fetch");assert.equal(search.title,"web_search: node lts");
-  assert.deepEqual(search.rawOutput,{query:"node lts",results:[{url:"https://nodejs.org/",title:"Node.js",snippet:"Node 24 is LTS"},{snippet:"No link"}]});
-  assert.equal(search.content[0].content.text,"Node.js (https://nodejs.org/)\nNode 24 is LTS\n\nNo link");
-  const page=museToolUpdate(item({tool:"web_fetch",args:JSON.stringify({url:"https://nodejs.org/en/about"}),visibleOutput:"About Node.js"}));
-  assert.deepEqual(page.rawOutput.results,[{url:"https://nodejs.org/en/about",snippet:"About Node.js"}]);
-  const shell=museToolUpdate({itemId:"u1",kind:"userShell",status:"completed",revision:2,commandText:"git status",visibleOutput:"clean",exitCode:0,turnId:null});
-  assert.deepEqual([shell.kind,shell.title,shell.rawOutput,shell.exitCode],["execute","git status","clean",0]);
-  const other=museToolUpdate(item({tool:"read_file",args:"{\"path\":\"a.txt\"",status:"inProgress"}));
-  assert.deepEqual([other.kind,other.title,other.status,other.rawInput],["other","read_file","in_progress",{args:"{\"path\":\"a.txt\""}],"arguments still streaming stay as text");
-  assert.equal(museToolUpdate(item({kind:"subagent",tool:undefined,objective:"Review the diff"})).title,"Subagent · Review the diff");
+  const other=museToolUpdate(item({tool:"read_file",args:"{\"path\":\"notes/todo.md\"",status:"inProgress"}));
+  assert.deepEqual([other.kind,other.title,other.status,other.rawInput],["other","read_file","in_progress",{args:"{\"path\":\"notes/todo.md\""}],"arguments still streaming stay as text");
+  assert.equal(museToolUpdate(item({kind:"subagent",tool:undefined,objective:"Check the release notes"})).title,"Subagent · Check the release notes");
 });
 
 test("Stop interrupts the running turn and waits for Muse's turn/completed: a recorded interrupted turn ends as a stop the person asked for",async()=>{
@@ -513,14 +514,14 @@ test("a Stop Muse does not confirm within the wait drops the host, and the turn 
 
 test("a message steers only the running turn, naming the turn it is meant for",async()=>{
   const {session,muse}=await startSession();
-  await assert.rejects(session.steer([{type:"text",text:"Focus on the parser"}]),/no running turn to steer/);
+  await assert.rejects(session.steer([{type:"text",text:"Keep the change to the CLI flags"}]),/no running turn to steer/);
   assert.equal(muse.sent("turn/steer").length,0);
   const running=session.prompt([{type:"text",text:"go"}]);
   const {params:{commandId:turnId}}=await muse.next("turn/start");
-  assert.deepEqual(await session.steer([{type:"text",text:"Focus on the parser"}]),{accepted:true,pending:0,providerMessageId:null});
+  assert.deepEqual(await session.steer([{type:"text",text:"Keep the change to the CLI flags"}]),{accepted:true,pending:0,providerMessageId:null});
   const [steer]=muse.sent("turn/steer");
   assert.equal(steer.params.expectedTurnId,turnId);
-  assert.deepEqual(steer.params.input,[{type:"text",text:"Focus on the parser"}]);
+  assert.deepEqual(steer.params.input,[{type:"text",text:"Keep the change to the CLI flags"}]);
   muse.handlers["turn/steer"]=params=>({commandId:params.commandId,status:"accepted",turnId:"01a00000-0000-7000-8000-0000000000aa"});
   await assert.rejects(session.steer([{type:"text",text:"more"}]),/another turn than the running one/);
   muse.notify("turn/completed",{sessionId:session.sessionId,viewCursor:"v",terminal:"completed",turnId});

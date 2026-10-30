@@ -24,14 +24,14 @@ const RECORDED_CHOICES=[
   {choiceId:"abort",label:"Reject",decision:"abort",scope:"once",acceptsFeedback:true},
 ];
 const shellApproval=(sessionId,turnId,{approvalId="ap-1",sourceIndex=0,availableChoices=RECORDED_CHOICES,...extra}={})=>({
-  sessionId,approvalId,turnId,taskId:approvalId,itemId:approvalId,toolCallId:"call_"+approvalId,toolName:"bash",rawArgs:"{\"command\":\"touch result.txt\"}",viewCursor:"v",sourceRange:{},
-  subject:{kind:"shell",command:"touch result.txt",workspaceRoot:"\\\\?\\H:\\repo",stages:[]},currentRequirementId:{approvalId,sourceIndex},availableChoices,protectedWrite:false,judgeEscalated:false,...extra,
+  sessionId,approvalId,turnId,taskId:approvalId,itemId:approvalId,toolCallId:"call_"+approvalId,toolName:"bash",rawArgs:"{\"command\":\"touch build-done.txt\"}",viewCursor:"v",sourceRange:{},
+  subject:{kind:"shell",command:"touch build-done.txt",workspaceRoot:"\\\\?\\H:\\repo",stages:[]},currentRequirementId:{approvalId,sourceIndex},availableChoices,protectedWrite:false,judgeEscalated:false,...extra,
 });
 const childApproval=(sessionId,{approvalId="child-1",...extra}={})=>({...shellApproval(sessionId,"child-run-1",{approvalId,...extra}),subagentOrigin:{subagentId:"a7",childRunId:"child-run-1",childSessionId:"child-session"}});
 const resolved=(sessionId,turnId,approvalId="ap-1",{decision="approved",resolvedBy="user"}={})=>({sessionId,approvalId,itemId:approvalId,turnId,decision,policyResult:decision==="abort"||decision==="denied"?"deny":"allow",resolvedBy,stageEvidence:[],sourceRange:{},viewCursor:"v"});
 const QUESTIONS=[
-  {id:"approach",header:"Approach",question:"Which approach?",options:[{label:"Small"},{label:"Large"}],selection:{mode:"single"}},
-  {id:"checks",header:"Checks",question:"Which checks should run?",options:[{label:"Unit"},{label:"Lint"},{label:"E2E"}],selection:{mode:"multiple",minSelections:1,maxSelections:2}},
+  {id:"approach",header:"Approach",question:"How wide should the change be?",options:[{label:"Narrow"},{label:"Broad"}],selection:{mode:"single"}},
+  {id:"checks",header:"Checks",question:"Which checks run before you finish?",options:[{label:"Types"},{label:"Format"},{label:"Browser"}],selection:{mode:"multiple",minSelections:1,maxSelections:2}},
 ];
 const question=(sessionId,turnId,{userInputId="q-1",questions=QUESTIONS}={})=>({sessionId,userInputId,turnId,itemId:userInputId,toolCallId:"call_"+userInputId,toolName:"request_user_input",viewCursor:"v",questions});
 const settledQuestion=(sessionId,userInputId,outcome="answered",answers=[])=>({sessionId,userInputId,outcome,answers,clarification:null,decidedAt:null,decidedByCommandId:null,reason:null,sourceRange:{},viewCursor:"v"});
@@ -329,7 +329,7 @@ test("the approval card says what Muse asks: a protected write, a read outside t
   assert.deepEqual(fileAccess("read","docs/notes.txt"),{title:"File read needs approval",reason:"docs/notes.txt"},"Muse names a path inside its workspace relative to it");
   assert.deepEqual(card({subject:{kind:"network",host:"example.com",port:443}}),{title:"Network access needs approval",reason:"example.com"});
   // A command keeps the card's own title (Command needs approval), and one of a single stage reads as it did.
-  assert.deepEqual(card({}),{reason:"touch result.txt"});
+  assert.deepEqual(card({}),{reason:"touch build-done.txt"});
   const stage=(index,argv,total=2)=>({requirementId:{approvalId:"ap-1",sourceIndex:index},position:index+1,totalStages:total,argv,argvComplete:true,resolution:{kind:"unresolved"}});
   const staged=sourceIndex=>({subject:{kind:"shell",command:"touch a.txt && rm b.txt",stages:[stage(0,["touch","a.txt"]),stage(1,["rm","b.txt"])]},currentRequirementId:{approvalId:"ap-1",sourceIndex}});
   assert.deepEqual(card(staged(0)),{reason:"Stage 1 of 2: touch a.txt",command:"touch a.txt && rm b.txt"});
@@ -339,7 +339,7 @@ test("the approval card says what Muse asks: a protected write, a read outside t
   // A child's says which agent asks, by name once Trebell was told of it, and that it runs on past the turn that started it only once
   // that turn has ended with it running (runsPast); what is asked is what a desktop notification says (notice).
   const origin={subagentOrigin:{subagentId:"a7",childRunId:"child-run-1",childSessionId:"child-session"}};
-  assert.deepEqual(card(origin),{reason:"Asked by a Muse Code workflow agent.",command:"touch result.txt",notice:"touch result.txt"});
+  assert.deepEqual(card(origin),{reason:"Asked by a Muse Code workflow agent.",command:"touch build-done.txt",notice:"touch build-done.txt"});
   assert.deepEqual(card({...origin,...staged(1)},{agent:"workflow agent alpha",runsPast:true}),{reason:"Asked by the workflow agent alpha, which runs on past the turn that started it. Stage 2 of 2: rm b.txt",command:"touch a.txt && rm b.txt",notice:"Stage 2 of 2: rm b.txt"});
   assert.deepEqual(card({...origin,...staged(1)},{agent:"workflow agent alpha"}).reason,"Asked by the workflow agent alpha. Stage 2 of 2: rm b.txt");
   assert.deepEqual(card({...origin,subject:{kind:"fileAccess",access:"write",path:".muse/settings.json"},protectedWrite:true},{agent:"subagent greeter"}),{title:"Write to a protected file needs approval",reason:"Asked by the subagent greeter.",command:".muse/settings.json",notice:".muse/settings.json"});
@@ -353,14 +353,14 @@ test("a subagent's approval asked while its turn runs names the subagent, not th
   fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-1"}),subagentOrigin:{subagentId:"subagent-1",childRunId:"run-counter",childSessionId:"session-counter"}});
   await until(()=>fixture.asks.length===1,"the card");
   const said=()=>[fixture.asks[0].request.card.reason,fixture.asks[0].request.card.command,fixture.asks[0].request.card.notice];
-  assert.deepEqual(said(),["Asked by the subagent counter.","touch result.txt","touch result.txt"]);
+  assert.deepEqual(said(),["Asked by the subagent counter.","touch build-done.txt","touch build-done.txt"]);
   const stopping=fixture.session.cancel();
   await fixture.muse.next("turn/interrupt");
   complete(fixture,turnId,"cancelled");
   await stopping;
   assert.equal((await running).stopReason,"cancelled");
   assert.equal(fixture.asks[0].withdrawn,false,"a child's card outlives the Stop");
-  assert.deepEqual(said(),["Asked by the subagent counter.","touch result.txt","touch result.txt"]);
+  assert.deepEqual(said(),["Asked by the subagent counter.","touch build-done.txt","touch build-done.txt"]);
   // The same subagent asking again after the Stop is not said to run on either: it ended with its turn.
   fixture.muse.notify("approval/requested",{...childApproval(sid,{approvalId:"child-2"}),subagentOrigin:{subagentId:"subagent-1",childRunId:"run-counter",childSessionId:"session-counter"}});
   await until(()=>fixture.asks.length===2,"the second card");
@@ -382,9 +382,9 @@ test("a child's approval card names the agent that asks as its row does, a workf
   fixture.muse.notify("approval/requested",childApproval(sid,{approvalId:"child-3"}));
   await until(()=>fixture.asks.length===3,"three cards");
   assert.deepEqual(fixture.asks.map(ask=>[ask.request.card.reason,ask.request.card.command,ask.request.runless]),[
-    ["Asked by the workflow agent alpha, which runs on past the turn that started it.","touch result.txt",true],
-    ["Asked by the subagent greeter, which runs on past the turn that started it.","touch result.txt",true],
-    ["Asked by a Muse Code workflow agent.","touch result.txt",true],
+    ["Asked by the workflow agent alpha, which runs on past the turn that started it.","touch build-done.txt",true],
+    ["Asked by the subagent greeter, which runs on past the turn that started it.","touch build-done.txt",true],
+    ["Asked by a Muse Code workflow agent.","touch build-done.txt",true],
   ]);
   await fixture.session.close();
 });
@@ -399,7 +399,7 @@ test("Trebell's policy answers a Supervised approval first; a protected write, a
   fixture.muse.notify("approval/requested",shellApproval(sid,turnId,{approvalId:"no-once",availableChoices:[RECORDED_CHOICES[1],RECORDED_CHOICES[2]]}));
   await until(()=>fixture.asks.length===4,"four asks");
   assert.deepEqual(fixture.asks.map(ask=>[ask.request.params.toolCall.kind,ask.request.params.toolCall.title,ask.request.askUser]),[
-    ["edit","src/app.js",false],["edit","src/app.js",true],["other","the whole screen",true],["execute","touch result.txt",true],
+    ["edit","src/app.js",false],["edit","src/app.js",true],["other","the whole screen",true],["execute","touch build-done.txt",true],
   ]);
   assert.deepEqual(fixture.asks[0].request.params.toolCall.rawInput,{path:"src/app.js",access:"write"},"the path Trebell's policy places in the workspace");
   complete(fixture,turnId);await running;
@@ -426,17 +426,17 @@ test("Stop withdraws the turn's own open approval and question without answering
 });
 
 test("answers go back as Muse takes them: one choice by its label, several within their bounds, and the person's own words as a free-text answer or a note beside the choices",async()=>{
-  assert.deepEqual(muse.museUserInputAnswers?.(QUESTIONS,{approach:["Small","Keep tests focused"],checks:["Unit","Lint"]}),{answers:[{questionId:"approach",selectedLabel:"Small",note:"Keep tests focused"},{questionId:"checks",selectedLabels:["Unit","Lint"]}]});
-  assert.deepEqual(muse.museUserInputAnswers(QUESTIONS,{approach:["Something else entirely"],checks:["E2E"]}),{answers:[{questionId:"approach",freeText:"Something else entirely"},{questionId:"checks",selectedLabels:["E2E"]}]});
-  const fixture=await startSession({reply:()=>({approach:["Large"],checks:["Unit","E2E","Unit"]})});
+  assert.deepEqual(muse.museUserInputAnswers?.(QUESTIONS,{approach:["Narrow","Leave the CLI alone"],checks:["Types","Format"]}),{answers:[{questionId:"approach",selectedLabel:"Narrow",note:"Leave the CLI alone"},{questionId:"checks",selectedLabels:["Types","Format"]}]});
+  assert.deepEqual(muse.museUserInputAnswers(QUESTIONS,{approach:["Ask me again after lunch"],checks:["Browser"]}),{answers:[{questionId:"approach",freeText:"Ask me again after lunch"},{questionId:"checks",selectedLabels:["Browser"]}]});
+  const fixture=await startSession({reply:()=>({approach:["Broad"],checks:["Types","Browser","Types"]})});
   const {running,turnId,sid}=await runningTurn(fixture);
   fixture.muse.write({jsonrpc:"2.0",id:71,method:"userInput/request",params:question(sid,turnId)});
   fixture.muse.notify("userInput/requested",question(sid,turnId));
   const answer=await fixture.muse.next("userInput/answer");
-  assert.deepEqual({...answer.params,commandId:"C"},{sessionId:sid,userInputId:"q-1",answers:[{questionId:"approach",selectedLabel:"Large"},{questionId:"checks",selectedLabels:["Unit","E2E"]}],commandId:"C"});
+  assert.deepEqual({...answer.params,commandId:"C"},{sessionId:sid,userInputId:"q-1",answers:[{questionId:"approach",selectedLabel:"Broad"},{questionId:"checks",selectedLabels:["Types","Browser"]}],commandId:"C"});
   assert.equal(fixture.asks.length,1,"its request and its notification ask once");
   assert.deepEqual(fixture.asks[0].request.input.questions.map(item=>[item.id,item.header,item.question,item.multiSelect,item.allowCustomAnswer,item.options.map(option=>option.label)]),[
-    ["approach","Approach","Which approach?",false,true,["Small","Large"]],["checks","Checks","Which checks should run?",true,true,["Unit","Lint","E2E"]],
+    ["approach","Approach","How wide should the change be?",false,true,["Narrow","Broad"]],["checks","Checks","Which checks run before you finish?",true,true,["Types","Format","Browser"]],
   ]);
   fixture.muse.notify("userInput/settled",settledQuestion(sid,"q-1","answered",answer.params.answers));
   complete(fixture,turnId);await running;
@@ -446,23 +446,23 @@ test("answers go back as Muse takes them: one choice by its label, several withi
 
 test("an answer Muse would refuse is asked again, saying what it lacked: over 500 characters of the person's own words, two choices for one, too many or too few",async()=>{
   const refusals=[
-    [{approach:["x".repeat(501)],checks:["Unit"]},"approach",/^Muse Code takes at most 500 characters of your own words; the last answer had 501\.$/],
-    [{approach:["Small","Large"],checks:["Unit"]},"approach",/^Choose one option\.$/],
-    [{approach:["Small"],checks:["Unit","Lint","E2E"]},"checks",/^Choose at most 2 options\.$/],
-    [{approach:["Small"],checks:[]},"checks",/^Answer this question to go on\.$/],
+    [{approach:["x".repeat(501)],checks:["Types"]},"approach",/^Muse Code takes at most 500 characters of your own words; the last answer had 501\.$/],
+    [{approach:["Narrow","Broad"],checks:["Types"]},"approach",/^Choose one option\.$/],
+    [{approach:["Narrow"],checks:["Types","Format","Browser"]},"checks",/^Choose at most 2 options\.$/],
+    [{approach:["Narrow"],checks:[]},"checks",/^Answer this question to go on\.$/],
   ];
   for(const [answers,questionId,message] of refusals){const {error}=muse.museUserInputAnswers?.(QUESTIONS,answers)||{};assert.equal(error?.questionId,questionId);assert.match(error?.message,message)}
-  assert.match(muse.museUserInputAnswers([{...QUESTIONS[1],selection:{mode:"multiple",minSelections:2}}],{checks:["Unit"]}).error.message,/^Choose at least 2 options\.$/);
-  assert.equal(muse.museUserInputAnswers(QUESTIONS,{approach:["x".repeat(500)],checks:["Unit"]}).answers[0].freeText.length,500,"500 characters go");
+  assert.match(muse.museUserInputAnswers([{...QUESTIONS[1],selection:{mode:"multiple",minSelections:2}}],{checks:["Types"]}).error.message,/^Choose at least 2 options\.$/);
+  assert.equal(muse.museUserInputAnswers(QUESTIONS,{approach:["x".repeat(500)],checks:["Types"]}).answers[0].freeText.length,500,"500 characters go");
   let count=0;
-  const fixture=await startSession({reply:()=>++count===1?{approach:["x".repeat(501)],checks:["Unit"]}:{approach:["Small"],checks:["Unit"]}});
+  const fixture=await startSession({reply:()=>++count===1?{approach:["x".repeat(501)],checks:["Types"]}:{approach:["Narrow"],checks:["Types"]}});
   const {running,turnId,sid}=await runningTurn(fixture);
   fixture.muse.notify("userInput/requested",question(sid,turnId));
   const answer=await fixture.muse.next("userInput/answer");
   assert.equal(fixture.asks.length,2,"asked again");
-  assert.equal(fixture.asks[1].request.input.questions[0].question,"Which approach? (Muse Code takes at most 500 characters of your own words; the last answer had 501.)");
-  assert.equal(fixture.asks[1].request.input.questions[1].question,"Which checks should run?");
-  assert.deepEqual(answer.params.answers,[{questionId:"approach",selectedLabel:"Small"},{questionId:"checks",selectedLabels:["Unit"]}]);
+  assert.equal(fixture.asks[1].request.input.questions[0].question,"How wide should the change be? (Muse Code takes at most 500 characters of your own words; the last answer had 501.)");
+  assert.equal(fixture.asks[1].request.input.questions[1].question,"Which checks run before you finish?");
+  assert.deepEqual(answer.params.answers,[{questionId:"approach",selectedLabel:"Narrow"},{questionId:"checks",selectedLabels:["Types"]}]);
   assert.equal(fixture.muse.sent("userInput/answer").length,1,"the refused answer never went to Muse");
   complete(fixture,turnId);await running;
   await fixture.session.close();
@@ -545,17 +545,17 @@ test("through the relay, a file Muse asks to read outside the workspace shows on
 });
 
 test("through the relay, Muse's question opens Trebell's question dialog, and the person's choice and own words reach Muse as its answer",{timeout:120_000},async()=>{
-  const relay=await museRelay("trebell-muse-questions-",{answer:request=>request.method==="item/tool/requestUserInput"?{answers:{approach:{answers:["Small","Keep the tests focused"]}}}:undefined});
+  const relay=await museRelay("trebell-muse-questions-",{answer:request=>request.method==="item/tool/requestUserInput"?{answers:{approach:{answers:["Narrow","Leave the CLI alone"]}}}:undefined});
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});
     await relay.rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"Please ask question about the approach"}]});
     await relay.completed(thread.id,1);
     const [dialog]=relay.requests;
     assert.equal(dialog.method,"item/tool/requestUserInput");
-    assert.deepEqual(dialog.params.questions,[{id:"approach",header:"Approach",question:"Which approach should I take?",required:true,allowMultiple:false,options:[{label:"Small",description:"One file at a time"},{label:"Large",description:"Everything at once"}]}]);
+    assert.deepEqual(dialog.params.questions,[{id:"approach",header:"Approach",question:"Which approach should I take?",required:true,allowMultiple:false,options:[{label:"Narrow",description:"One file at a time"},{label:"Broad",description:"Everything at once"}]}]);
     const [answer]=await relay.frames("userInput/answer");
-    assert.deepEqual(answer.params.answers,[{questionId:"approach",selectedLabel:"Small",note:"Keep the tests focused"}]);
-    assert.equal(relay.reply(thread.id),"ANSWERED: Small — Keep the tests focused");
+    assert.deepEqual(answer.params.answers,[{questionId:"approach",selectedLabel:"Narrow",note:"Leave the CLI alone"}]);
+    assert.equal(relay.reply(thread.id),"ANSWERED: Narrow — Leave the CLI alone");
   }finally{await relay.close()}
 });
 

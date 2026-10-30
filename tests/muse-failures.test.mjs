@@ -18,8 +18,8 @@ import { historyFromItemEntries } from "../ui/src/thread-history.js";
 // A usage report as Muse sends it, observed at NOW, and a quota refusal as Meta relays it through Muse.
 const USAGE={observedAtMs:1793610930250,tier:"tier-1",window:{usedPercent:3,windowDurationMins:300,resetsAtMs:1793626800000},weekly:{usedPercent:8,resetsAtMs:1794182400000}};
 const NOW=USAGE.observedAtMs;
-const REAL_REFUSAL="API error 429: All credentials for model muse-spark-1.3 are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2026-11-03T06:30:00Z.) (after 4 provider attempts)";
-const QUOTA_MESSAGE="API error 429: Subscription quota exhausted. Your usage window resets later today. (rate_limit_error)";
+const REAL_REFUSAL="API error 429: muse-spark-1.3 is past this plan's quota until the window resets at 2026-11-03T06:30:00Z (3 retries spent)";
+const QUOTA_MESSAGE="API error 429: this plan's quota is spent; the window opens again later today. (limit_reached)";
 const limited=(error,message)=>muse.museUsageLimited?.(error,message);
 const resetAt=(...args)=>muse.museUsageLimitResetAt?.(...args);
 
@@ -29,8 +29,8 @@ async function runningTurn(fixture){
   return {running,turnId,sid:fixture.session.sessionId};
 }
 const complete=(fixture,turnId,terminal="completed",extra={})=>fixture.muse.notify("turn/completed",{sessionId:fixture.session.sessionId,viewCursor:"v",terminal,turnId,...extra});
-const shellApproval=(sessionId,turnId,approvalId="ap-1",extra={})=>({sessionId,approvalId,turnId,itemId:approvalId,toolCallId:"call_"+approvalId,toolName:"bash",viewCursor:"v",sourceRange:{},subject:{kind:"shell",command:"touch result.txt",stages:[]},currentRequirementId:{approvalId,sourceIndex:0},availableChoices:[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"abort",label:"Reject",decision:"abort",scope:"once"}],...extra});
-const question=(sessionId,turnId)=>({sessionId,userInputId:"q-1",turnId,itemId:"q-1",toolCallId:"call_q",toolName:"request_user_input",viewCursor:"v",questions:[{id:"approach",header:"Approach",question:"Which approach?",options:[{label:"Small"},{label:"Large"}],selection:{mode:"single"}}]});
+const shellApproval=(sessionId,turnId,approvalId="ap-1",extra={})=>({sessionId,approvalId,turnId,itemId:approvalId,toolCallId:"call_"+approvalId,toolName:"bash",viewCursor:"v",sourceRange:{},subject:{kind:"shell",command:"touch build-done.txt",stages:[]},currentRequirementId:{approvalId,sourceIndex:0},availableChoices:[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"abort",label:"Reject",decision:"abort",scope:"once"}],...extra});
+const question=(sessionId,turnId)=>({sessionId,userInputId:"q-1",turnId,itemId:"q-1",toolCallId:"call_q",toolName:"request_user_input",viewCursor:"v",questions:[{id:"approach",header:"Approach",question:"How wide should the change be?",options:[{label:"Narrow"},{label:"Broad"}],selection:{mode:"single"}}]});
 const failure=async promise=>{try{await promise}catch(error){return error}assert.fail("the turn did not fail")};
 const local=iso=>new Date(iso).toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});
 
@@ -38,9 +38,9 @@ test("Meta's quota refusal is a usage limit, and no other failure is",()=>{
   assert.equal(limited({},QUOTA_MESSAGE),true);
   assert.equal(limited({},REAL_REFUSAL),true);
   assert.equal(limited({},"API error 429: Too many requests for now. (rate_limit_error)"),false,"a plain 429 rate limit is an ordinary failure");
-  assert.equal(limited({},"Subscription quota exhausted."),false,"the quota without a 429");
+  assert.equal(limited({},"This plan's quota is spent."),false,"the quota without a 429");
   assert.equal(limited({},""),false);
-  assert.equal(limited({kind:"modelError",message:"Model request refused.",quota:{limitKind:"tierLimit",resetsAtMs:USAGE.window.resetsAtMs}},"Model request refused."),true,"one Muse types as quota");
+  assert.equal(limited({kind:"modelError",message:"The model call was declined.",quota:{limitKind:"tierLimit",resetsAtMs:USAGE.window.resetsAtMs}},"The model call was declined."),true,"one Muse types as quota");
 });
 
 test("a usage limit lifts once every used-up window has reset, at the reset a refusal names or types when no report has one, and has no reset otherwise",()=>{
@@ -79,7 +79,7 @@ test("a turn the quota stopped says the Muse Code usage limit was reached and wh
   assert.deepEqual([error.usageLimit,error.resetAt],[true,named.replace("Z",".000Z")]);
   // A stop Muse types as quota, with no reset known.
   turn=await runningTurn(fixture);
-  complete(fixture,turn.turnId,"failed",{error:{kind:"modelError",message:"Model request refused.",quota:{limitKind:"tierLimit",resetsAtMs:Date.now()-1000},retryable:true}});
+  complete(fixture,turn.turnId,"failed",{error:{kind:"modelError",message:"The model call was declined.",quota:{limitKind:"tierLimit",resetsAtMs:Date.now()-1000},retryable:true}});
   error=await failure(turn.running);
   assert.deepEqual([error.usageLimit,error.resetAt,error.message],[true,null,"Muse Code usage limit reached. Send the message again once it resets."]);
   // A plain rate limit is Muse's own failure.
@@ -181,8 +181,8 @@ test("a failed turn settles its running tools failed and withdraws the approvals
   fixture.muse.write(itemFrame("item/started",sid,{itemId:"sh",kind:"toolCall",tool:"bash",turnId,revision:1,status:"inProgress",args:"{\"command\":\"npm test\"}"}));
   fixture.muse.notify("approval/requested",shellApproval(sid,turnId));
   await until(()=>fixture.asks.length===1,"the card");
-  complete(fixture,turnId,"failed",{error:{kind:"modelError",message:"Provider rejected this turn",retryable:false}});
-  assert.equal((await failure(running)).message,"Provider rejected this turn");
+  complete(fixture,turnId,"failed",{error:{kind:"modelError",message:"The model service turned this turn down",retryable:false}});
+  assert.equal((await failure(running)).message,"The model service turned this turn down");
   assert.equal(fixture.asks[0].withdrawn,true);
   assert.equal(fixture.updates.filter(update=>update.toolCallId==="sh").at(-1).status,"failed");
   assert.equal(fixture.session.dead,false,"Muse's own failure leaves the host for the next turn");

@@ -392,13 +392,13 @@ test("a Muse Code thread is not rewound: a revert is refused at once, with no Mu
   const relay=await museRelay("trebell-muse-revert-");
   try{
     // A saved Muse Code thread opened again: its session starts with its next message.
-    const saved=relay.threadStore.create({runtime:"muse",cwd:relay.root,providerSessionId:"01a11a6a-bbb5-7000-ad0b-0c9e728406e5",model:"muse-wonder-1.0",providerMeta:{runtimeInstanceId:"muse-default"}});
+    const saved=relay.threadStore.create({runtime:"muse",cwd:relay.root,providerSessionId:"019a3c55-7d21-7000-8a4e-5b1f2c9d0e61",model:"muse-wonder-1.0",providerMeta:{runtimeInstanceId:"muse-default"}});
     const turn=relay.threadStore.addTurn(saved.id,{inputText:"Earlier message",status:"completed"});
     relay.threadStore.updateTurn?.(saved.id,turn.id,{status:"completed"});
     await assert.rejects(relay.rpc("thread/revert",{threadId:saved.id,beforeTurnId:turn.id}),{message:"Muse Code cannot rewind its conversation, so this thread cannot go back to an earlier message."});
     assert.equal((await relay.hosts()).length,0,"no Muse Code started to refuse it");
     const after=relay.threadStore.get(saved.id);
-    assert.equal(after.turns.length,1);assert.equal(after.providerSessionId,"01a11a6a-bbb5-7000-ad0b-0c9e728406e5");
+    assert.equal(after.turns.length,1);assert.equal(after.providerSessionId,"019a3c55-7d21-7000-8a4e-5b1f2c9d0e61");
     assert.equal(relay.notifications.some(item=>item.method==="thread/reverted"),false);
   }finally{await relay.close()}
 });

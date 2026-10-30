@@ -167,7 +167,7 @@ test("a model change goes to Muse once as session/setModel {modelId, providerId 
 });
 
 test("a resumed session on another model is moved to the thread's model, or to the catalog default for 'default', before its turn; 'default' never reaches Muse",async()=>{
-  const resumed=await museSession({providerSessionId:"01a11a6a-bbb5-7000-ad0b-0c9e728406e5",model:"muse-wonder-1.0"});
+  const resumed=await museSession({providerSessionId:"019a3c55-7d21-7000-8a4e-5b1f2c9d0e61",model:"muse-wonder-1.0"});
   try{
     assert.equal(resumed.session.model,"muse-spark-1.3","the session Muse kept runs muse-spark-1.3");
     await resumed.session.prompt([{type:"text",text:"Continue"}]);

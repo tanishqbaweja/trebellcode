@@ -478,7 +478,7 @@ test("a message sent while a Muse Code turn runs steers that turn, and a Muse Co
     assert.equal(steer.params.expectedTurnId,(await frames(relay.log,"turn/start"))[0].params.commandId,"the steer names the running turn");
     assert.match(replyOf(relay.threadStore,thread.id),/Steered: use the second file\./);
     // A saved Muse Code thread opened again shows its transcript; Muse Code starts with its next turn.
-    const saved=relay.threadStore.create({runtime:"muse",cwd:relay.root,providerSessionId:"01a11a6a-bbb5-7000-ad0b-0c9e728406e5",model:"muse-wonder-1.0",providerMeta:{runtimeInstanceId:"muse-default"}});
+    const saved=relay.threadStore.create({runtime:"muse",cwd:relay.root,providerSessionId:"019a3c55-7d21-7000-8a4e-5b1f2c9d0e61",model:"muse-wonder-1.0",providerMeta:{runtimeInstanceId:"muse-default"}});
     const before=(await hosts(relay.log)).length;
     const opened=await relay.rpc("thread/resume",{threadId:saved.id,cwd:relay.root});
     assert.equal(opened.thread.id,saved.id);

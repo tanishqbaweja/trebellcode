@@ -232,7 +232,7 @@ function releaseReport(sessionId,params){
     setTimeout(()=>startTurn(sessionId,params,{usage:{prompt:500,output:20}}),20);
   });
 }
-const QUOTA_REFUSAL="API error 429: All credentials for model muse-spark-1.3 are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2031-03-14T07:20:00Z.) (after 4 provider attempts)";
+const QUOTA_REFUSAL="API error 429: muse-spark-1.3 is past this plan's quota until the window resets at 2031-03-14T07:20:00Z (3 retries spent)";
 // The approval Muse asks before running `touch trebell-approved.txt` (as in fixtures/muse/permission-approved.ndjson), and how it settles.
 const approvals=new Map(),questions=new Map();
 const SHELL_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"allow_local_prefix",label:"Always allow in this workspace: touch ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: touch ..."},{choiceId:"abort",label:"Reject",decision:"abort",scope:"once",acceptsFeedback:true}];
@@ -276,7 +276,7 @@ function settleApproval(approvalId,{decision,resolvedBy="user",commandId=null,ch
 function askQuestion(sessionId,turnId){
   const userInputId=turnId+"-question";
   const params={sessionId,userInputId,turnId,itemId:userInputId,toolCallId:"call_"+userInputId,toolName:"request_user_input",viewCursor:`v:${sessionId}:${++cursor}`,
-    questions:[{id:"approach",header:"Approach",question:"Which approach should I take?",options:[{label:"Small",description:"One file at a time"},{label:"Large",description:"Everything at once"}],selection:{mode:"single"}}]};
+    questions:[{id:"approach",header:"Approach",question:"Which approach should I take?",options:[{label:"Narrow",description:"One file at a time"},{label:"Broad",description:"Everything at once"}],selection:{mode:"single"}}]};
   questions.set(userInputId,{sessionId,turnId,settled:false});
   write({jsonrpc:"2.0",id:++nextRequest,method:"userInput/request",params});
   notify("userInput/requested",sessionId,params);

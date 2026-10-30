@@ -134,19 +134,19 @@ test("Muse Code's question opens Trebell's question dialog with Muse's options, 
       await send(page,`Please ask question about the approach (${mode})`);
       await expect(modal).toContainText("Which approach should I take?",{timeout:20_000});
       await expect(modal).toContainText("Approach");
-      const small=modal.getByRole("button",{name:/^Small/});
+      const small=modal.getByRole("button",{name:/^Narrow/});
       await expect(modal.locator(".question-options button")).toHaveCount(2);
       await expect(small).toContainText("One file at a time");
       await small.click();
       await expect(small).toHaveAttribute("aria-pressed","true");
-      await modal.getByPlaceholder("Custom answer…").click();await page.keyboard.type("Keep the tests focused");
+      await modal.getByPlaceholder("Custom answer…").click();await page.keyboard.type("Leave the CLI alone");
       await page.screenshot({animations:"disabled",path:auditDir+`muse-question-dialog-${mode}-1280x800.png`});
       await modal.getByRole("button",{name:"Submit",exact:true}).click();
       await expect(modal).toHaveCount(0);
-      await expect(reply(page,"ANSWERED: Small — Keep the tests focused").last()).toBeVisible({timeout:20_000});
+      await expect(reply(page,"ANSWERED: Narrow — Leave the CLI alone").last()).toBeVisible({timeout:20_000});
     }
     const answers=(await harness.frames("userInput/answer")).map(frame=>frame.params.answers);
-    expect(answers).toEqual([[{questionId:"approach",selectedLabel:"Small",note:"Keep the tests focused"}],[{questionId:"approach",selectedLabel:"Small",note:"Keep the tests focused"}]]);
+    expect(answers).toEqual([[{questionId:"approach",selectedLabel:"Narrow",note:"Leave the CLI alone"}],[{questionId:"approach",selectedLabel:"Narrow",note:"Leave the CLI alone"}]]);
   }finally{await harness.close()}
 });
 
