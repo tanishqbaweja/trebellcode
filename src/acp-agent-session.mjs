@@ -45,7 +45,7 @@ const GROK_ALLOW_EDITS_SESSION="allow-edits-session";
 const GROK_HIDDEN_COMMANDS=new Set(["always-approve","context"]);
 const GROK_SESSION_NOTIFICATIONS=new Set(["x.ai/session_notification","_x.ai/session_notification","_x.ai/session/update"]);
 const GROK_PROMPT_COMPLETE=new Set(["x.ai/session/prompt_complete","_x.ai/session/prompt_complete"]);
-export const GROK_USAGE_LIMIT_MESSAGE="Grok usage limit reached. Try again later.";
+export const GROK_USAGE_LIMIT_MESSAGE="Grok Build usage limit reached. Send the message again once it resets.";
 export const GROK_EMPTY_PLAN="# No plan written yet\n\n(The agent exited plan mode without writing a plan.)";
 export const GROK_PLAN_FEEDBACK="Trebell Code has shown your plan to the user. Stop here: the user answers with feedback, or asks you to carry it out, in a later turn.";
 

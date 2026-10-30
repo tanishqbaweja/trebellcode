@@ -37,7 +37,7 @@ const local=iso=>new Date(iso).toLocaleString(undefined,{dateStyle:"medium",time
 test("Meta's quota refusal is a usage limit, and no other failure is",()=>{
   assert.equal(limited({},QUOTA_MESSAGE),true);
   assert.equal(limited({},REAL_REFUSAL),true);
-  assert.equal(limited({},"API error 429: Rate limit exceeded. (rate_limit_error)"),false,"a plain 429 rate limit is an ordinary failure");
+  assert.equal(limited({},"API error 429: Too many requests for now. (rate_limit_error)"),false,"a plain 429 rate limit is an ordinary failure");
   assert.equal(limited({},"Subscription quota exhausted."),false,"the quota without a 429");
   assert.equal(limited({},""),false);
   assert.equal(limited({kind:"modelError",message:"Model request refused.",quota:{limitKind:"tierLimit",resetsAtMs:USAGE.window.resetsAtMs}},"Model request refused."),true,"one Muse types as quota");
@@ -84,9 +84,9 @@ test("a turn the quota stopped says the Muse Code usage limit was reached and wh
   assert.deepEqual([error.usageLimit,error.resetAt,error.message],[true,null,"Muse Code usage limit reached. Send the message again once it resets."]);
   // A plain rate limit is Muse's own failure.
   turn=await runningTurn(fixture);
-  complete(fixture,turn.turnId,"failed",{error:{kind:"modelError",message:"API error 429: Rate limit exceeded. (rate_limit_error)",retryable:true}});
+  complete(fixture,turn.turnId,"failed",{error:{kind:"modelError",message:"API error 429: Too many requests for now. (rate_limit_error)",retryable:true}});
   error=await failure(turn.running);
-  assert.deepEqual([error.usageLimit,error.message,error.code],[undefined,"API error 429: Rate limit exceeded. (rate_limit_error)","modelError"]);
+  assert.deepEqual([error.usageLimit,error.message,error.code],[undefined,"API error 429: Too many requests for now. (rate_limit_error)","modelError"]);
   assert.equal(fixture.session.dead,false,"a refused turn leaves the session as it was");
   await fixture.session.close();
 });
