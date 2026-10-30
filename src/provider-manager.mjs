@@ -1268,6 +1268,11 @@ export class ProviderManager {
         // does a timed-out request: an idle timeout, a dropped connection (its socket error under it), a stream closed before its final
         // event. An error event says itself whether it retries (classifyError); a stop does not.
         if(!signal?.aborted&&error?.name!=="AbortError"&&typeof error?.retryable!=="boolean")error.retryable=true;
+        // The stream is given up whatever ended it, so its body is cancelled, which closes its connection: an error event (or a
+        // response.failed, or an event that does not parse) ends the read while the server may keep the stream open, and on the long
+        // request's transport, which has no body deadline, that socket would stay open for as long as the server kept it, and keep a
+        // runner whose turn failed from exiting.
+        try{void Promise.resolve(upstream.body.cancel(error)).catch(()=>{})}catch{}
         const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         error.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:Number(error?.streamTelemetry?.responseBytes||0),responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:error?.streamTelemetry?.timeToFirstTokenMs??null,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:null,requestedServiceTier};throw error;
       }

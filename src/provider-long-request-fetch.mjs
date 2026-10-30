@@ -65,7 +65,8 @@ export async function providerLongRequestFetch(input,init={}){
     // abort handling and idle bound cancel it as well).
     const onAbort=()=>req.destroy(aborted());
     signal?.addEventListener?.("abort",onAbort,{once:true});
-    req.once("error",error=>{connected();if(answered)return;answered=true;reject(signal?.aborted?aborted():new TypeError("fetch failed",{cause:error}))});
+    // on, not once: an error after the answer (the body cancelled, the socket broken) reaches the body's reader, and is only absorbed here.
+    req.on("error",error=>{connected();if(answered)return;answered=true;reject(signal?.aborted?aborted():new TypeError("fetch failed",{cause:error}))});
     req.once("close",()=>{connected();signal?.removeEventListener?.("abort",onAbort)});
     req.end(body||undefined);
   });

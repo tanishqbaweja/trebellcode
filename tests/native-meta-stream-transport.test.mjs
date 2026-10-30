@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import net from "node:net";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -24,9 +25,11 @@ const frame=({event,data})=>`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 const home=()=>mkdtempSync(join(tmpdir(),"trebell-meta-transport-"));
 
 // The stand-in: the recorded text answer's first three events at once, then silenceMs with no byte, then the rest and "data: [DONE]".
-// Any other path answers "ok" at once (the warm-up that makes Node's fetch set up its dispatcher).
+// With a failure set, the failure (an event, or raw text) comes after the first three events instead, and the stream is held open, as
+// a server may hold it after an error event. Any other path answers "ok" at once (the warm-up that makes Node's fetch set up its
+// dispatcher).
 async function startMeta(){
-  const state={silenceMs:0,requests:[],closed:0};
+  const state={silenceMs:0,failure:null,requests:[],closed:0};
   const server=createServer((req,res)=>{
     const chunks=[];req.on("data",chunk=>chunks.push(chunk));
     req.on("end",()=>{
@@ -34,6 +37,7 @@ async function startMeta(){
       state.requests.push({url:req.url,headers:req.headers,body:JSON.parse(Buffer.concat(chunks).toString("utf8")||"{}")});
       res.writeHead(200,{"content-type":"text/event-stream","cache-control":"no-cache","x-request-id":"req-meta-local"});
       const events=fixture.text.events;for(const item of events.slice(0,3))res.write(frame(item));
+      if(state.failure){res.write(typeof state.failure==="string"?state.failure:frame(state.failure));res.on("close",()=>{if(!res.writableFinished)state.closed++});return}
       const timer=setTimeout(()=>{for(const item of events.slice(3))res.write(frame(item));res.end("data: [DONE]\n\n")},state.silenceMs);
       res.on("close",()=>{clearTimeout(timer);if(!res.writableFinished)state.closed++});
     });
@@ -217,4 +221,50 @@ test("a connection the Meta stream's transport cannot make in 10 s fails as Node
     assert.deepEqual(viaTransport,viaNode);
     assert.equal(longRequest.PROVIDER_LONG_REQUEST_CONNECT_TIMEOUT_MS,10_000);
   }finally{await silent.close()}
+});
+
+// Failures inside the stream after which the server keeps it open: an error event that ends the turn, a response.failed that retries,
+// and an event that does not parse.
+const HELD_OPEN_FAILURES=[
+  ["an error event",{event:"error",data:{type:"error",code:"invalid_prompt",message:"Invalid prompt.",sequence_number:3}},false],
+  ["a response.failed",fixture.documentedErrors.responseFailed,true],
+  ["an event that does not parse",'event: response.output_text.delta\ndata: {"type":"response.output_text.delta",\n\n',true],
+];
+
+test("a Meta stream that fails while the server holds it open is cancelled at once, so its connection closes",async()=>{
+  const root=home(),meta=await startMeta();
+  try{
+    for(const [name,failure,retryable] of HELD_OPEN_FAILURES){
+      meta.state.failure=failure;const closed=meta.state.closed,started=Date.now();
+      await assert.rejects(metaTurn(managerFor(root,meta),{idleMs:60_000}),error=>{assert.equal(error.retryable,retryable,name);return true});
+      for(let wait=0;wait<80&&meta.state.closed===closed;wait++)await new Promise(resolve=>setTimeout(resolve,25));
+      assert.equal(meta.state.closed,closed+1,`${name}: the server sees the connection closed`);
+      assert.ok(Date.now()-started<2_500,`${name}: at once, not at a bound`);
+    }
+  }finally{await meta.close();rmSync(root,{recursive:true,force:true})}
+});
+
+test("a runner process whose Meta turn failed on a stream the server holds open exits on its own",async()=>{
+  const root=home(),meta=await startMeta();
+  try{
+    meta.state.failure=HELD_OPEN_FAILURES[0][1];
+    // The runner's shape: a manager with Node's own fetch (so the Meta stream goes through the long request's transport), one turn, and
+    // nothing else that would end the process.
+    const script=`
+      const { ProviderManager }=await import(${JSON.stringify(new URL("../src/provider-manager.mjs",import.meta.url).href)});
+      const configuration=await import(${JSON.stringify(new URL("../src/native-configuration.mjs",import.meta.url).href)});
+      const root=${JSON.stringify(root)},local=url=>String(url).replace("https://api.meta.ai",${JSON.stringify(meta.origin)});
+      const transport=new ProviderManager({env:{TREBELL_HOME:root}}).longRequestFetchFn;
+      const manager=new ProviderManager({env:{TREBELL_HOME:root,META_API_KEY:"meta-test-key"},fetchFn:(url,init)=>fetch(local(url),init),longRequestFetchFn:(url,init)=>transport(local(url),init)});
+      try{await manager.turn("meta",{model:${JSON.stringify(MODEL)},messages:[{role:"user",content:"hi"}],tools:[]},configuration.nativeProviderTurnOptions("meta"));console.log("answered")}
+      catch(error){console.log("failed "+error.code)}`;
+    const env=Object.fromEntries(Object.entries(process.env).filter(([name])=>!/API_KEY|_TOKEN$|^(CLAUDE|ANTHROPIC|OPENAI)|^CODEX_HOME$/i.test(name)));
+    const child=spawn(process.execPath,["--input-type=module","-e",script],{env,stdio:["ignore","pipe","pipe"],windowsHide:true});
+    let output="";child.stdout.on("data",chunk=>output+=chunk);child.stderr.on("data",chunk=>output+=chunk);
+    const exited=await new Promise(resolve=>{const timer=setTimeout(()=>resolve(null),15_000);child.once("exit",code=>{clearTimeout(timer);resolve({code})})});
+    if(!exited)child.kill();
+    assert.ok(exited,`the process exited on its own (still running after 15 s; output: ${output.trim()})`);
+    assert.equal(output.trim(),"failed invalid_prompt");assert.equal(exited.code,0);
+    assert.equal(meta.state.closed,1,"its connection closed");
+  }finally{await meta.close();rmSync(root,{recursive:true,force:true})}
 });
