@@ -208,6 +208,8 @@ export async function createHarborNativeRun({root=process.cwd(),instruction,env=
       backgroundProcessesAtEnd:backgroundProcesses.list("trebell-harbor",{limit:200}).data.map(item=>({handle:item.handle,command:item.command})),
       auditArtifacts:{toolCalls:toolCallsPath,finalDiff:finalDiff?{path:finalDiffPath,...finalDiff}:null},
       finalReply:assistantChunks.join("").trim().slice(-4000),
+      // How the turn ended, as the app's thread shows it: completed, cancelled, or failed with its error.
+      turnStatus:error?"failed":result?.stopReason==="cancelled"?"cancelled":"completed",
       error:error?String(error?.stack||error?.message||error).slice(-8000):null,
     };
     await eventWrites;
@@ -224,7 +226,10 @@ export async function createHarborNativeRun({root=process.cwd(),instruction,env=
       await session.close().catch(()=>{});
       manager.close();
     }
-    if(error)throw error;
+    // A turn that failed, its provider retries spent, ends with its error as the app ends it (agent-relay's settlePrompt: the turn is
+    // failed with its message and the app goes on): the metrics carry the error and the run returns, so the runner exits normally and
+    // Harbor collects the artifacts and verifies the work as it is, instead of an uncaught exception ending the process.
+    if(error)console.error("Trebell Native turn failed: "+String(error?.message||error));
     return metrics;
   }
   return {config,tools,session,prompt,promptOptions,selected,executor,startCommit,run};
