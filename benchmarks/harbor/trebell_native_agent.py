@@ -417,5 +417,8 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 "strategy": metrics.get("strategy") or {},
                 "budgets": metrics.get("budgets") or {},
                 "context_policy": metrics.get("contextPolicy") or {},
+                # How the turn ended (completed, cancelled or failed) and a failed turn's error, as the runner wrote them.
+                "turn_status": metrics.get("turnStatus"),
+                "error": (str(metrics.get("error"))[:2000] if metrics.get("error") else None),
             },
         }

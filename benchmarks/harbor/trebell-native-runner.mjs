@@ -14,4 +14,8 @@ const instruction=String(await readFile(instructionPath,"utf8")).trim();
 if(!instruction)throw new Error("Benchmark instruction is empty.");
 
 const run=await createHarborNativeRun({root:process.cwd(),instruction,env:process.env});
-await run.run();
+const metrics=await run.run();
+// A turn that failed exits 1 once its metrics and its stderr line are written: the adapter (trebell_native_agent.py) passes a non-zero
+// exit through when the metrics hold an error, and Harbor then records the agent's failure and classes it from the output (an invalid
+// key, spent credits, a rate limit), while it still collects the artifacts and verifies the work.
+if(metrics?.turnStatus==="failed")process.exitCode=1;
