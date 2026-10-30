@@ -136,10 +136,12 @@ const askConfirm=(...args)=>loadAskDialog().then(dialog=>dialog.askConfirm(...ar
 const askText=(...args)=>loadAskDialog().then(dialog=>dialog.askText(...args));
 // What App does around an agent's turn beyond showing it (turn-support.js: a send's repository context, new worktree and the
 // compaction it runs first, a send that is a slash command or a project's recipe, the agent's calls to Trebell's own tools, a
-// completed turn's verification, the turns a restart interrupted) and what a person does to threads (thread-actions.js: pin,
-// snooze, settle, archive, fork, delete, Undo, a move up or down) load the same way: neither the first screen nor opening and
-// reading a thread needs them. Each is kept once loaded (turnSupport, threadActions), so what needs it runs at once, as before;
-// what comes before the load waits for it, and what cannot load it fails and says so.
+// completed turn's verification, the turns a restart interrupted, and what the person starts around a turn: a send in the
+// background or to several models, a delegated task, a queued follow-up's Send now, Edit from here, Compact and a desktop SnapShot
+// attached) and what a person does to threads (thread-actions.js: pin, snooze, settle, archive, fork, delete, Undo, a move up or
+// down, and opening a thread a pull request links) load the same way: neither the first screen nor opening and reading a thread
+// needs them. Each is kept once loaded (turnSupport, threadActions), so what needs it runs at once, as before; what comes before
+// the load waits for it, and what cannot load it fails and says so.
 let turnSupport=null,turnSupportLoad=null,threadActions=null,threadActionsLoad=null;
 const loadTurnSupport=()=>turnSupportLoad||=import("./turn-support.js").then(module=>turnSupport=module,error=>{
   turnSupportLoad=null;throw loadFailed(error);
@@ -147,12 +149,13 @@ const loadTurnSupport=()=>turnSupportLoad||=import("./turn-support.js").then(mod
 const loadThreadActions=()=>threadActionsLoad||=import("./thread-actions.js").then(module=>threadActions=module,error=>{
   threadActionsLoad=null;throw loadFailed(error);
 });
-// And what App draws or runs only once the person does something (idle-parts.js: the Cite button of text selected in a reply, the
-// find bar of Ctrl+F, what the sidebar's and the palette's searches find in the threads, the right panel's Runtime tab and History's
-// list), in one chunk. Once it is in (idleParts) each part draws or runs at once, as before: lazy() is handed the loaded part itself,
-// which it takes without suspending. What comes before then waits for it. The Cite button is drawn with every conversation, so one
-// drawn before then waits for the idle load; a part drawn only once the person opens it (the find bar, the Runtime tab, History)
-// asks for the chunk at once. One that cannot load says so in its place (LazySlot), with loadFailed's words.
+// And what App draws or runs only once the person does something (idle-parts.js: the Cite button of text selected in a reply and
+// its action, the find bar of Ctrl+F and its search, what the sidebar's and the palette's searches find in the threads, the right
+// panel's Runtime tab, History's list and its pages, and a thread's history beyond its first page), in one chunk. Once it is in
+// (idleParts) each part draws or runs at once, as before: lazy() is handed the loaded part itself, which it takes without
+// suspending. What comes before then waits for it. The Cite button is drawn with every conversation, so one drawn before then waits
+// for the idle load; a part drawn only once the person opens it (the find bar, the Runtime tab, History) asks for the chunk at once.
+// One that cannot load says so in its place (LazySlot), with loadFailed's words.
 let idleParts=null,idlePartsLoad=null,reachIdle;const idleReached=new Promise(resolve=>reachIdle=resolve);
 const loadIdleParts=()=>idlePartsLoad||=import("./idle-parts.js").then(module=>idleParts=module,error=>{
   idlePartsLoad=null;throw loadFailed(error);

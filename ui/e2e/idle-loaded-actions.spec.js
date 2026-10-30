@@ -1,13 +1,28 @@
 import { test,expect } from "@playwright/test";
+import { execFile } from "node:child_process";
+import { mkdir,mkdtemp,rm,writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
+import { attachAgentRelay } from "../../src/agent-relay.mjs";
+import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
+import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
+import { attachCodexRelay } from "../../src/codex-relay.mjs";
+import { ContextEngine } from "../../src/context-engine.mjs";
+import { createWorktree,removeWorktree } from "../../src/git-service.mjs";
+import { TrebellStateStore } from "../../src/trebell-state.mjs";
 import { auditDir,startStreamingFixture } from "./native-stream-fixture.js";
+import { keepThreadMeta } from "./test-home.js";
 
 // What the person starts in a thread or the composer, beyond drawing them, loads in the scripts App loads at idle right after the
-// first paint (B11): a thread's earlier history (Load earlier messages) with the idle parts (idle-parts.js), and a send in the
-// background, Edit from here, Compact and a desktop SnapShot attached with the turn support (turn-support.js). Each done before its
-// script has come (here with the script's request held from the page's first ask, which comes at idle) waits for it and then does
-// what it did before, once; where the script cannot load, each says so in loadFailed's words where its own failure is said.
+// first paint (B11): a thread's earlier history (Load earlier messages) with the idle parts (idle-parts.js), a send in the
+// background or to several models, a queued follow-up's Send now, Edit from here, Compact and a desktop SnapShot attached with the
+// turn support (turn-support.js), and a thread a pull request links, opened from the Source panel, with the thread actions
+// (thread-actions.js). Each done before its script has come (here with the script's request held from the page's first ask, which
+// comes at idle) waits for it and then does what it did before, once; where the script cannot load, each says so in loadFailed's
+// words where its own failure is said.
 
 const RELOAD="Part of Trebell could not load. Reload Trebell to get it back.";
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
@@ -306,6 +321,298 @@ test("a background send and a SnapShot say so when the turn support cannot load,
     await expect(composer).toHaveValue(task);
     await expect(page.locator(".thread-row")).toHaveCount(1);expect(fixture.threadStore.list("native")).toHaveLength(1);
     await shootModes(page,"background-send-cannot-load",()=>expect(alert).toBeVisible());
+    await appStays(page);
+  }finally{await fixture.close()}
+});
+
+// A Codex thread at rest whose follow-up waits in Codex's own queue, left there before the window opened: it shows under the
+// composer with Send now, which starts it as the thread's next turn (thread/queue/start). started(): how many Codex was asked to start.
+const QUEUED="Queued before the window opened";
+async function codexQueuedThread(page){
+  const thread={id:"idle-actions-queue",name:"Idle actions queue",preview:"A follow-up left queued",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
+  let queue=[{id:"queued-1",input:[{type:"text",text:QUEUED}],clientUserMessageId:"idle-actions-queued-1"}];
+  const calls=[],upstream=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set();
+  upstream.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  const notify=(ws,method,params)=>ws.readyState===ws.OPEN&&ws.send(JSON.stringify({method,params}));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",raw=>{
+      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;calls.push(message);let result={};
+      if(message.method==="initialize")result={userAgent:"idle-actions-queue"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/resume"||message.method==="thread/read")result={thread};
+      else if(["thread/items/list","thread/attachment/list","threadSection/list"].includes(message.method))result={data:[],nextCursor:null};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="skills/list")result={data:[]};
+      else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
+      else if(message.method==="thread/queue/list")result={data:queue,nextCursor:null};
+      else if(message.method==="thread/queue/start"){
+        queue=queue.filter(item=>item.id!==message.params.queuedSubmissionId);const turn={id:"turn-queued-"+calls.length,status:"inProgress",items:[]};
+        ws.send(JSON.stringify({id:message.id,result:{turn}}));
+        setTimeout(()=>{notify(ws,"thread/queue/changed",{threadId:thread.id});notify(ws,"turn/started",{threadId:thread.id,turn})},0);return;
+      }
+      else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstream.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachCodexRelay(relayHttp,{targetUrl:`ws://127.0.0.1:${upstreamPort}`});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  const close=async()=>{relay.close();for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstream.close(resolve))])};
+  try{
+    const meta={[thread.id]:{projectless:true,environmentId:null}};await keepThreadMeta(page,meta);
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"};
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/codex/ws`,cwd:process.cwd(),platform:process.platform,version:"idle-actions-queue",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:meta}));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai",agent:"Codex"}]}}));
+    await page.route(/\/api\/projects(?:\?.*)?$/,route=>json(route,{projects:[]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await keepSettings(page);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({hasText:"Idle actions queue"});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await expect(page.locator(".queued-message")).toHaveCount(1,{timeout:10_000});
+  }catch(error){await close();throw error}
+  return {started:()=>calls.filter(call=>call.method==="thread/queue/start").length,close};
+}
+const sendNow=page=>page.locator(".queued-message").getByRole("button",{name:"Send now",exact:true});
+
+test("Send now pressed before the turn support has loaded starts the queued follow-up once it has come",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"turn-support");
+  const fixture=await codexQueuedThread(page);
+  try{
+    await script.asked();
+    await sendNow(page).click();
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
+    // It waits for the turn support: the follow-up stays queued, and Codex is asked to start nothing yet.
+    await expect(page.locator(".queued-message")).toContainText(QUEUED);
+    expect(fixture.started(),"no follow-up started before the turn support has come").toBe(0);
+    await script.release();
+    // Once it has come, the follow-up starts as the thread's next turn, once: it leaves the queue and shows as the person's message.
+    const sent=page.locator(".user-bubble").filter({hasText:QUEUED});
+    await expect(sent).toHaveCount(1,{timeout:10_000});await expect(page.locator(".queued-message")).toHaveCount(0);
+    expect(fixture.started(),"started once").toBe(1);
+    await expect(page.locator("[data-testid=app-action-error]")).toHaveCount(0);
+    await shootModes(page,"send-now-after-script",()=>expect(sent).toBeVisible());
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("Send now whose turn support cannot load says so, by mouse and by keyboard, and the follow-up stays queued",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"turn-support",{refuse:true});
+  const fixture=await codexQueuedThread(page);
+  try{
+    await script.asked();
+    await sendNow(page).click();
+    const toast=page.getByTestId("app-action-error");
+    await expect(toast).toHaveText("Could not send queued follow-up: "+RELOAD);
+    await expect(page.locator(".queued-message")).toContainText(QUEUED);expect(fixture.started(),"nothing started").toBe(0);
+    await shootModes(page,"send-now-cannot-load",()=>expect(toast).toBeVisible());
+    // From the keyboard the same: said again, and the keyboard stays on Send now, whose follow-up is still there.
+    await sendNow(page).focus();await page.keyboard.press("Enter");
+    await expect(toast).toHaveText("Could not send queued follow-up: "+RELOAD);
+    await expect(sendNow(page)).toBeFocused();
+    await expect(page.locator(".queued-message")).toHaveCount(1);expect(fixture.started(),"nothing started").toBe(0);
+    await appStays(page);
+  }finally{await fixture.close()}
+});
+
+// Trebell Native in a real Git repository with two models, Model A and Model B: a new task sent with both picked (Shift-click in the
+// model picker) goes to each in a worktree of its own, made as the server makes them. providerCalls: the model of each turn the
+// provider was asked for (the completion gate answered apart); worktrees: the ones made.
+const execFileAsync=promisify(execFile),git=(cwd,args)=>execFileAsync("git",args,{cwd,windowsHide:true,encoding:"utf8"});
+async function nativeFanout(page){
+  const root=await mkdtemp(join(tmpdir(),"trebell-idle-actions-fanout-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  await git(repo,["init"]);await git(repo,["config","user.email","trebell-test@example.invalid"]);await git(repo,["config","user.name","Trebell Test"]);
+  await writeFile(join(repo,"README.md"),"seed\n","utf8");await git(repo,["add","README.md"]);await git(repo,["commit","-m","seed"]);
+  const baseBranch=(await git(repo,["branch","--show-current"])).stdout.trim(),models=["model-a","model-b"];
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),providerCalls=[],worktrees=[];
+  const nativeProviderTurn=async request=>{
+    if(request.metadata?.completionGate||request.responseJsonSchema?.name==="trebell_completion_gate")return {id:"idle-actions-fanout-gate",provider:request.provider,model:request.model,text:JSON.stringify({status:"complete",progress:"improved",edit_support:"unsupported",mutation_safety:"allowed",recovery_mode:"none",constraint_audit:[],unresolved:[],reason:"Done."}),toolCalls:[],finishReason:"stop",usage:{}};
+    providerCalls.push(request.model);return {id:"idle-actions-fanout-"+request.model,provider:request.provider,model:request.model,text:`Completed ${request.model}.`,toolCalls:[],finishReason:"stop",usage:{}};
+  };
+  const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"idle-actions-fixture"});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  const close=async()=>{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));for(const path of [...worktrees].reverse())await removeWorktree(repo,path,{force:true}).catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})};
+  try{
+    const project={id:"idle-actions-fanout-project",name:"Idle Actions Fan-out",path:repo,environmentId:null,effectiveSettings:{defaultWorkspaceMode:"current"}},meta={};
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"idle-actions-fixture",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"auto",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:meta}));
+    await page.route(/\/api\/models$/,route=>json(route,{models,metadata:{provider:"agentrouter",models:models.map(id=>({id,name:"Model "+id.slice(-1).toUpperCase(),provider:"agentrouter",agent:"Trebell Native"}))}}));
+    await page.route(/\/api\/projects(?:\?.*)?$/,route=>route.request().method()==="POST"?json(route,{project:{...project,id:"project-"+worktrees.length,path:route.request().postDataJSON().path,environmentId:null}}):json(route,{projects:[project],project}));
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>json(route,{isGit:true,cwd:repo,root:repo,branch:baseBranch,branches:[baseBranch],status:[],remotes:[],worktrees:[{path:repo,branch:baseBranch}]}));
+    await page.route(/\/api\/git\/action$/,async route=>{
+      const body=route.request().postDataJSON();if(body.action!=="worktree-create")return route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:"unexpected git action "+body.action})});
+      await createWorktree(repo,{branch:body.branch,path:body.path,baseBranch:body.baseBranch,submodules:"none"});worktrees.push(body.path);
+      return json(route,{ok:true,result:{worktree:body.path,info:{root:body.path,branch:body.branch}}});
+    });
+    await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>{
+      if(route.request().method()!=="POST")return json(route,meta[new URL(route.request().url()).searchParams.get("threadId")]||{});
+      const body=route.request().postDataJSON();meta[body.threadId]={...(meta[body.threadId]||{}),...(body.patch||{})};return json(route,meta[body.threadId]);
+    });
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,route.request().method()==="POST"?{supported:false}:{checkpoints:[]}));
+    await page.route(/\/api\/context\/packet$/,route=>json(route,{id:"idle-actions-fanout-context",skipped:true,budget:{mode:"skip",pressure:"normal",reserveTokens:1024,maxTokens:0,maxFiles:0}}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await keepSettings(page);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");await expect(page.locator(".branch-control")).toContainText(baseBranch,{timeout:10_000});
+  }catch(error){await close();throw error}
+  return {threadStore,providerCalls,worktrees,close};
+}
+// Model B picked beside Model A by Shift-click, and the picker closed with Escape: the composer the task is sent from.
+async function pickBothModels(page){
+  const picker=page.getByTestId("model-picker"),menu=page.locator(".model-picker-menu");
+  await picker.click();await menu.getByRole("button",{name:/Model B/}).click({modifiers:["Shift"]});await expect(picker).toContainText("2 models");
+  await page.keyboard.press("Escape");await expect(menu).toHaveCount(0);
+  return page.getByTestId("composer");
+}
+
+test("a task sent to two models before the turn support has loaded starts on both once it has come",async({page})=>{
+  test.setTimeout(90_000);
+  const script=await holdScript(page,"turn-support");
+  const fixture=await nativeFanout(page),task="Rename the session helper with both models";
+  try{
+    await script.asked();
+    const composer=await pickBothModels(page);
+    await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Enter");
+    expect(script.held(),"the turn support is still on its way").toBeGreaterThan(0);
+    // It waits for the turn support: the text has left the composer as a send's does, and no worktree, thread or model run starts yet.
+    await expect(composer).toHaveValue("");
+    expect(fixture.worktrees,"no worktree made before the turn support has come").toHaveLength(0);
+    await expect(page.locator(".thread-row")).toHaveCount(0);expect(fixture.providerCalls).toHaveLength(0);
+    await script.release();
+    // Once it has come, the task starts once on each model, each in a worktree and a thread of its own.
+    await expect(page.locator(".thread-row")).toHaveCount(2,{timeout:30_000});
+    await expect.poll(()=>fixture.providerCalls.length,{timeout:15_000}).toBe(2);
+    expect(new Set(fixture.providerCalls)).toEqual(new Set(["model-a","model-b"]));expect(fixture.worktrees).toHaveLength(2);
+    await expect(page.getByTestId("composer-alert")).toHaveCount(0);await expect(composer).toHaveValue("");
+    await shootModes(page,"two-model-send-after-script",()=>expect(page.locator(".thread-row")).toHaveCount(2));
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("a task sent to two models whose turn support cannot load says so and keeps the draft",async({page})=>{
+  test.setTimeout(90_000);
+  const script=await holdScript(page,"turn-support",{refuse:true});
+  const fixture=await nativeFanout(page),task="Rename the session helper with both models";
+  try{
+    await script.asked();
+    const composer=await pickBothModels(page);
+    await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Enter");
+    const alert=page.getByTestId("composer-alert");
+    await expect(alert).toHaveText("Not sent: "+RELOAD+" Your draft is kept.");
+    await expect(composer).toHaveValue(task);await expect(page.getByTestId("model-picker")).toContainText("2 models");
+    await expect(page.locator(".thread-row")).toHaveCount(0);expect(fixture.worktrees,"no worktree made").toHaveLength(0);expect(fixture.providerCalls).toHaveLength(0);
+    await shootModes(page,"two-model-send-cannot-load",()=>expect(alert).toBeVisible());
+    await appStays(page);
+  }finally{await fixture.close()}
+});
+
+// A Codex thread open in a project on a GitHub branch whose pull request #78 links another thread, one the sidebar does not list: the
+// Git tab of the right panel shows it under the pull request, and its button opens it (read from Codex, then shown as the open
+// thread). reads(): how many times Codex was asked to read it.
+const threadRow=(page,name)=>page.locator(".thread-row").filter({has:page.locator(`.thread-main[title="${name}"]`)});
+async function linkedThreadFixture(page){
+  const parent={id:"idle-actions-parent",name:"Idle actions parent",preview:"Parent chat",cwd:process.cwd(),createdAt:Date.now()/1000-30,updatedAt:Date.now()/1000,turns:[]};
+  const linked={id:"idle-actions-linked",name:"Linked review thread",preview:"Linked from the pull request",cwd:process.cwd(),createdAt:Date.now()/1000-60,updatedAt:Date.now()/1000-60,turns:[]};
+  const project={id:"idle-actions-source",name:"Idle Actions Source",path:process.cwd(),environmentId:null,effectiveSettings:{}};
+  const pr={number:78,title:"Linked thread fixture",state:"OPEN",headRefName:"feature/linked",baseRefName:"main",provider:"github",url:"https://github.com/example/fixture/pull/78"};
+  const calls=[],upstream=createServer(),wss=new WebSocketServer({noServer:true}),sockets=new Set(),byId=id=>id===linked.id?linked:parent;
+  upstream.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",raw=>{
+      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;calls.push(message);let result={};
+      if(message.method==="initialize")result={userAgent:"idle-actions-linked"};
+      else if(message.method==="thread/list")result={data:[parent],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread:byId(message.params?.threadId),itemsBackwardsCursor:null,turnsBackwardsCursor:null};
+      else if(message.method==="thread/read")result={thread:byId(message.params?.threadId)};
+      else if(["thread/items/list","thread/attachment/list","thread/queue/list","threadSection/list","collaborationMode/list","skills/list"].includes(message.method))result={data:[],nextCursor:null};
+      else if(message.method==="thread/timeline/list")result={data:[],nextCursor:null,activeRealtimeSessionAtPageStart:null};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
+      else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstream.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()}),relay=attachCodexRelay(relayHttp,{targetUrl:`ws://127.0.0.1:${upstreamPort}`});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  const close=async()=>{relay.close();for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstream.close(resolve))])};
+  try{
+    const meta={[parent.id]:{projectless:false,environmentId:null}};await keepThreadMeta(page,meta);
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"openai",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+    await page.route(/\/api\/bootstrap$/,route=>json(route,{mock:false,provider:"openai",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/codex/ws`,cwd:process.cwd(),platform:process.platform,version:"idle-actions-linked",activeEnvironmentId:null,activeEnvironment:null}));
+    await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[project],threadMeta:meta}));
+    await page.route(/\/api\/models$/,route=>json(route,{models:["test/coding-fast"],metadata:{provider:"openai",models:[{id:"test/coding-fast",name:"Coding Fast",provider:"openai"}]}}));
+    await page.route(/\/api\/projects$/,route=>json(route,{projects:[project],project}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>json(route,{checkpoints:[]}));
+    await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
+    await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
+    await page.route(/\/api\/git\/info\?/,route=>json(route,{isGit:true,root:process.cwd(),branch:"feature/linked",branches:["main","feature/linked"],upstream:"origin/feature/linked",status:[],remotes:[{name:"origin",url:"https://github.com/example/fixture.git"}],worktrees:[]}));
+    await page.route(/\/api\/source-control\/diagnostics\?/,route=>json(route,{selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,comment:true,review:true,merge:true}}}));
+    await page.route(/\/api\/source-control\/prs\?/,route=>json(route,{items:[pr],capabilities:{create:true,comment:true,review:true,merge:true}}));
+    await page.route(/\/api\/source-control\/pr-detail\?/,route=>json(route,{provider:"github",item:{...pr,body:"Fixture PR",identity:{provider:"github",host:"github.com",repository:"example/fixture",number:78},files:[],comments:[],reviews:[],statusCheckRollup:[]}}));
+    await page.route(/\/api\/source-control\/pr-viewed\?/,route=>json(route,{store:"environment",files:[]}));
+    await page.route(/\/api\/source-control\/thread-link\?/,route=>json(route,{threads:[{threadId:linked.id,title:linked.name,archived:false}]}));
+    await keepSettings(page);
+    await page.setViewportSize({width:1280,height:800});
+    await page.goto("/");
+    const row=threadRow(page,parent.name);await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+  }catch(error){await close();throw error}
+  return {parent,linked,reads:()=>calls.filter(call=>call.method==="thread/read"&&call.params?.threadId===linked.id).length,close};
+}
+// The Git tab of the right panel, opened by mouse, with the pull request's linked thread under it: its button.
+async function linkedThreadButton(page,fixture){
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  await panel.getByRole("button",{name:/#78 Linked thread fixture/}).click();
+  const button=panel.getByRole("button",{name:fixture.linked.name,exact:true});await expect(button).toBeVisible({timeout:10_000});
+  return {panel,button};
+}
+
+test("a linked thread opened from the Source panel before the thread actions have loaded opens once they have come",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"thread-actions");
+  const fixture=await linkedThreadFixture(page);
+  try{
+    await script.asked();
+    const {panel,button}=await linkedThreadButton(page,fixture);
+    await button.click();
+    expect(script.held(),"the thread actions are still on their way").toBeGreaterThan(0);
+    // It waits for the thread actions: the parent thread stays open, and Codex is asked nothing about the linked thread yet.
+    await expect(threadRow(page,fixture.parent.name)).toHaveClass(/active/);
+    expect(fixture.reads(),"no read before the thread actions have come").toBe(0);
+    await script.release();
+    // Once they have come, the linked thread is read and opens, once, in the sidebar's list too.
+    const linkedRow=threadRow(page,fixture.linked.name);
+    await expect(linkedRow).toHaveClass(/active/,{timeout:10_000});
+    expect(fixture.reads(),"read once").toBe(1);
+    await expect(panel.getByRole("alert")).toHaveCount(0);
+    await shootModes(page,"linked-thread-after-script",()=>expect(linkedRow).toHaveClass(/active/));
+    await appStays(page);
+  }finally{await script.drop();await fixture.close()}
+});
+
+test("a linked thread whose thread actions cannot load says so in the Source panel, and the open thread stays",async({page})=>{
+  test.setTimeout(60_000);
+  const script=await holdScript(page,"thread-actions",{refuse:true});
+  const fixture=await linkedThreadFixture(page);
+  try{
+    await script.asked();
+    const {panel,button}=await linkedThreadButton(page,fixture);
+    await button.click();
+    const alert=panel.getByRole("alert");
+    await expect(alert).toHaveText("Could not open the linked thread: "+RELOAD);
+    await expect(threadRow(page,fixture.parent.name)).toHaveClass(/active/);
+    await expect(threadRow(page,fixture.linked.name)).toHaveCount(0);expect(fixture.reads(),"no read").toBe(0);
+    await expect(button).toBeVisible();
+    await shootModes(page,"linked-thread-cannot-load",()=>expect(alert).toBeVisible());
     await appStays(page);
   }finally{await fixture.close()}
 });
