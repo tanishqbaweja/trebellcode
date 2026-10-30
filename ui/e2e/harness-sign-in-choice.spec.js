@@ -401,6 +401,11 @@ async function readyMachine(page,{runtime,keys={}}){
     return missingCommand(command);
   };
   const manager=new AgentRuntimeManager({state:{settings:()=>settings,updateSettings:patch=>Object.assign(settings,patch)},env,providers,runFn,fetchImpl:async url=>{throw new Error("offline e2e: no request to "+url)}});
+  // What the test holds back until it lets it go (hold(name) gives the release): Antigravity's sign-in, which answers once the person
+  // has finished Google's page in the browser (or fails, with signIn.error), and the model list, read when it is asked but answered
+  // late, as Claude Code's capability probe can take seconds. models counts the model lists asked for and answered.
+  const gates={},hold=name=>{let open;gates[name]=new Promise(resolve=>{open=resolve});return ()=>{delete gates[name];open()}};
+  const models={asked:0,answered:0},signIn={error:null};
   // The harness that runs as the server reads it: its status, and whether Native's provider has its key.
   const active=async()=>{const instance=manager.activeInstance();return {instance,status:await manager.probe(instance).catch(()=>null),providerReady:providers.hasKey("openai")}};
   const catalog=({instance,status,providerReady})=>{
@@ -411,7 +416,7 @@ async function readyMachine(page,{runtime,keys={}}){
   await page.route(/\/api\/state$/,route=>json(route,{settings,projects:[],threadMeta:{}}));
   await page.route(/\/api\/bootstrap$/,async route=>{const {instance,status,providerReady}=await active();return json(route,{mock:false,provider:"openai",providerReady,agentRuntime:instance.kind,agentRuntimeInstanceId:instance.id,runtimeCapabilities:manager.capabilities(instance),agentRuntimeReady:Boolean(status?.available),agentRuntimeStatus:status,appServerReady:false,wsUrl:"",cwd:home,platform:process.platform,version:"ready-follows-settings",activeEnvironment:null,appServerError:null})});
   await page.route(/\/api\/runtime$/,async route=>{const {instance,status,providerReady}=await active();return json(route,{agentRuntime:instance.kind,agentRuntimeInstanceId:instance.id,agentRuntimeStatus:status,provider:"openai",providerReady,appServerReady:false,appServerExitCode:null,activeEnvironment:null,appServerError:null,logs:[]})});
-  await page.route(/\/api\/models$/,async route=>json(route,catalog(await active())));
+  await page.route(/\/api\/models$/,async route=>{models.asked++;const value=catalog(await active());await gates.models;await json(route,value);models.answered++});
   await page.route(/\/api\/projects$/,route=>json(route,{projects:[]}));
   await page.route(/\/api\/environment\/themes$/,route=>json(route,{environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}));
   await page.route(/\/api\/recovery$/,route=>json(route,{enabled:false,items:[]}));
@@ -428,6 +433,8 @@ async function readyMachine(page,{runtime,keys={}}){
     const body=route.request().postDataJSON()||{};
     if(body.action==="method"){const {instance}=manager.setAuthMethod(body.instanceId,body.method);return json(route,{ok:true,instanceId:instance.id,method:instance.auth||"sign-in",stoppedChats:0,agentSnapshot:await manager.snapshot()})}
     if(body.runtime==="antigravity"){
+      await gates.signIn;
+      if(signIn.error)return json(route,{ok:false,error:signIn.error},400);
       const agyAcp=join(trebell,"antigravity-home","antigravity-acp");mkdirSync(agyAcp,{recursive:true});
       writeFileSync(join(agyAcp,"settings.json"),JSON.stringify({auth:{type:"oauth-personal"}}));writeFileSync(join(agyAcp,"acp_token.json"),"fixture");
       return json(route,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:"antigravity-default",methodId:"oauth-personal",methodName:"Log in with Google"},stoppedChats:0,agentSnapshot:await manager.snapshot()});
@@ -436,7 +443,7 @@ async function readyMachine(page,{runtime,keys={}}){
   });
   // The page is left first, so no read of the app's still runs in the home. Windows can hold the home a moment longer (it was free
   // again within a second, with no process left in it), so it is removed again until it goes, for up to 10 s.
-  return {signedIn,close:async()=>{
+  return {signedIn,hold,models,signIn,close:async()=>{
     await page.goto("about:blank").catch(()=>{});
     for(let attempt=1;;attempt++){try{rmSync(home,{recursive:true,force:true});return}catch(error){if(attempt>=40)throw error;await new Promise(resolve=>setTimeout(resolve,250))}}
   }};
@@ -478,6 +485,88 @@ test("Antigravity signed in from its row in Settings takes a message at once, wi
     await toNewTask(page);
     await expectReady(page,"antigravity",true);
     await shootComposer(page,"ready-antigravity-signed-in");
+  }finally{await machine.close()}
+});
+
+// Antigravity's sign-in answers once the person has finished Google's page in the browser, which can take minutes, then Antigravity's
+// own check and a fresh harness list: the person may have gone on to New task by then, Settings gone. The composer still takes a
+// message once it answers, with no reload, as it does when Settings shows the answer; and a sign-in that fails meanwhile is said in the
+// app's alert, as no harness row is on screen to say it (round 13's repair of GR13-23).
+test("Antigravity signed in from its row while the person has gone on to New task takes a message once its sign-in answers, with no reload",async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:900});
+  const machine=await readyMachine(page,{runtime:"antigravity"});
+  try{
+    await page.goto("/");
+    await expectReady(page,"antigravity",false);
+    await toAgentsHere(page);
+    const row=harnessRow(page,"Antigravity"),release=machine.hold("signIn");
+    await row.getByRole("button",{name:"Sign in",exact:true}).click();
+    await expect(page.getByTestId("agent-runtime-message")).toContainText("Opening Antigravity sign in…");
+    // At New task while the sign-in is still on its way: the composer takes no message yet.
+    await toNewTask(page);
+    await expectReady(page,"antigravity",false);
+    release();
+    await expectReady(page,"antigravity",true);
+    await shootComposer(page,"ready-antigravity-signed-in-away");
+    // Settings, opened again, says so.
+    await toAgentsHere(page);
+    await expect(rowSaid(row)).toHaveText("1.4.3 · Signed in with Antigravity's own sign-in.");
+  }finally{await machine.close()}
+});
+
+test("Antigravity's sign-in that fails once the person has gone on to New task says why in the app's alert",async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:900});
+  const machine=await readyMachine(page,{runtime:"antigravity"});
+  try{
+    await page.goto("/");
+    await toAgentsHere(page);
+    const release=machine.hold("signIn");
+    await harnessRow(page,"Antigravity").getByRole("button",{name:"Sign in",exact:true}).click();
+    await expect(page.getByTestId("agent-runtime-message")).toContainText("Opening Antigravity sign in…");
+    await toNewTask(page);
+    machine.signIn.error="Antigravity's sign-in ended before Google's page was finished.";release();
+    const alert=page.getByTestId("app-action-error");
+    await expect(alert).toHaveText("Could not sign in to Antigravity: Antigravity's sign-in ended before Google's page was finished.");
+    await page.screenshot({animations:"disabled",path:shots+"ready-antigravity-sign-in-failed-away-dark-1280.png"});
+    await expectReady(page,"antigravity",false);
+  }finally{await machine.close()}
+});
+
+// A Settings action that answers while the app still reads the harness's status and models for the action before it: Claude Code's
+// key removed on its row while the read the saved key started still waits for Claude Code's model list (its capability probe can take
+// seconds). The app reads them again for the removed key, so the older read, which lands after that, does not leave the composer taking
+// messages with no key (round 13's repair of GR13-23).
+const MISSING_KEY="Claude Code is set to run on the Anthropic API key, and Trebell Code has none. Add it under Claude Code in Settings → Agents & models, or set Claude Code to Sign in.";
+const drawn=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(resolve)))));
+test("a key removed on Claude Code's row while the app still reads its models for the key saved just before leaves it taking no message, with no reload",async({page})=>{
+  test.setTimeout(120_000);
+  await page.setViewportSize({width:1280,height:900});
+  const machine=await readyMachine(page,{runtime:"claude"});
+  try{
+    await page.goto("/");
+    await expectReady(page,"claude",false);
+    await toAgentsHere(page);
+    const claude=harnessRow(page,"Claude Code"),panel=claude.getByTestId("harness-auth-claude"),message=page.getByTestId("agent-runtime-message");
+    await claude.getByRole("radiogroup",{name:"Claude Code signs in with"}).getByRole("radio",{name:"API key"}).check();
+    await expect(message).toContainText("Claude Code runs on its API key.");
+    await expect(rowSaid(claude)).toHaveText(MISSING_KEY);
+    const release=machine.hold("models"),reading=()=>machine.models.asked-machine.models.answered;
+    await panel.getByLabel("Anthropic API key for Claude Code").click();await page.keyboard.type(KEY,{delay:2});
+    await panel.getByRole("button",{name:"Save key"}).click();
+    await expect(message).toContainText("API key saved.");
+    await expect.poll(reading,{message:"the app reads Claude Code's models for the saved key"}).toBe(1);
+    await panel.getByRole("button",{name:"Remove key"}).click();
+    await expect(message).toContainText("API key removed.");
+    await expect(rowSaid(claude)).toHaveText(MISSING_KEY);
+    // The model lists answer now, the one read for the saved key among them.
+    release();
+    await expect.poll(reading,{message:"every model list asked for has answered"}).toBe(0);
+    await drawn(page);
+    await toNewTask(page);
+    await expectReady(page,"claude",false);
+    await shootComposer(page,"ready-claude-key-removed-while-read");
   }finally{await machine.close()}
 });
 

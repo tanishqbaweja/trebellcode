@@ -359,15 +359,25 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
   // earlier visit (opening another harness's thread switches profiles meanwhile), so it decides neither the Active markers nor the gated reload path.
   const activeInstanceId=(runtimeKnown?settings.agentRuntimeInstanceId:null)||(appRuntime?`${appRuntime}-default`:agentInfo?.selectedInstanceId)||null;
   // The app's composer, model picker and harness status go by its own read of whether the harness that runs is ready (harnessReady,
-  // null in mock mode). A harness list that says otherwise has the app read its status and models again, so a sign-in, a sign-in
-  // method or key change, an install, a profile change or a Refresh after a sign-in in its terminal shows there with no reload. The
-  // list a page opens with, this window's last one, was compared when it came.
-  const openedAgentInfo=useRef(agentInfo);
-  useEffect(()=>{
-    if(agentInfo===openedAgentInfo.current||typeof harnessReady!=="boolean"||switchingAgent||agentInfo?.selectedInstanceId!==activeInstanceId)return;
-    const status=runtimeStatusForKind(agentInfo,appRuntime,{preferSelected:true});
-    if(status&&Boolean(status.available)!==harnessReady)Promise.resolve(onProviderUpdated?.({agentRuntime:appRuntime})).catch(()=>{});
-  },[agentInfo]);
+  // null in mock mode). A harness list that says otherwise, or otherwise than the list compared before it, has the app read its status
+  // and models again, so a sign-in, a sign-in method or key change, an install, a profile change or a Refresh after a sign-in in its
+  // terminal shows there with no reload. The second is for a read the app started for an earlier list that is still on its way (Claude
+  // Code's model list runs its capability probe): it would land that list's readiness after this one, and the newer read replaces it.
+  // A list that comes while this page shows is compared in an effect; one that comes once Settings was left (Antigravity's sign-in
+  // answers once the person has finished Google's page, maybe at New task by then) is compared as it comes (rememberAgentInfo), with
+  // what this page last knew. The list a page opens with, this window's last one, was compared when it came.
+  const following=useRef(null),compared=useRef(null),pageShown=useRef(false),openedAgentInfo=useRef(agentInfo);
+  following.current={harnessReady,switchingAgent,activeInstanceId,appRuntime,onProviderUpdated};
+  useEffect(()=>{pageShown.current=true;return()=>{pageShown.current=false}},[]);
+  function followHarnessList(info){
+    const {harnessReady,switchingAgent,activeInstanceId,appRuntime,onProviderUpdated}=following.current;
+    if(typeof harnessReady!=="boolean"||switchingAgent||!info||info.selectedInstanceId!==activeInstanceId)return;
+    const status=runtimeStatusForKind(info,appRuntime,{preferSelected:true});if(!status)return;
+    const available=Boolean(status.available),before=compared.current?.instanceId===activeInstanceId?compared.current.available:available;
+    compared.current={instanceId:activeInstanceId,available};
+    if(available!==harnessReady||available!==before)Promise.resolve(onProviderUpdated?.({agentRuntime:appRuntime})).catch(()=>{});
+  }
+  useEffect(()=>{if(agentInfo!==openedAgentInfo.current)followHarnessList(agentInfo)},[agentInfo]);
   const selectedManagedInference=Boolean(sharedRuntimeCapabilities(selectedAgent).managedInference);
   const keybindingRules=useMemo(()=>normalizeKeybindingRules(settings),[settings.keybindingRules,settings.keyboardShortcuts]);
   // A shortcut another command takes over is said on both rows: the one that never runs names the commands that run instead, and
@@ -406,6 +416,8 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
   function rememberAgentInfo(info){
     if(info&&!info.error&&Array.isArray(info.definitions)&&info.definitions.length)lastAgentRuntimeInfo=info;
     setAgentInfoState(info);
+    // No page effect runs for a list that comes once Settings was left: it is compared here.
+    if(!pageShown.current)followHarnessList(info);
   }
   // A mutation answer is newer than any probe still in flight, so that probe's answer is discarded.
   function setAgentInfo(info){agentInfoSeqRef.current++;setAgentInfoRefreshing(false);setAgentInfoError("");rememberAgentInfo(info)}
@@ -567,7 +579,12 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
       if(result?.agentSnapshot){setAgentInfo(result.agentSnapshot);showAgentMessage(`${definition.name||kind} signed in (${result.auth?.methodName||"its own sign-in"}).`)}
       else showAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
       if(result?.session)onOpenRuntimeAuthTerminal?.(result.session,pressed);
-    }catch(error){showAgentMessage(error.message,true)}
+    }catch(error){
+      // With no harness rows on screen as it comes (Antigravity's can take minutes, and the person may have gone on), the app's alert
+      // says it, as a refused switch.
+      showAgentMessage(error.message,true);
+      if(!agentRowsShown)onActionError?.(error,"Could not sign in to "+(definition.name||kind));
+    }
     finally{setAuthenticatingAgent(null)}
   }
   // A harness profile's sign-in method, and a key for the provider it runs on, from its row.
