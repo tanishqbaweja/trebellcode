@@ -11,6 +11,7 @@ import { providerCapabilities } from "./provider-capabilities.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY, OpenAiResponseContinuationTracker } from "./openai-response-continuation.mjs";
 import { OpenAiResponsesWebSocket, openAiResponsesWebSocketStreamId, openAiRetryAfterMs } from "./openai-responses-websocket.mjs";
 import { NATIVE_TOOL_SCHEMA_FINGERPRINT } from "./native-request-metrics.mjs";
+import { providerLongRequestFetch } from "./provider-long-request-fetch.mjs";
 
 export const DEFAULT_MODEL_PROVIDER = "openai";
 
@@ -609,9 +610,13 @@ function remainingProviderRequestMs(deadlineAt){
 }
 
 export class ProviderManager {
-  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, chatToolManifestCacheSize=32, reusePreSerializedToolJson=true, reuseOpenAiContinuationInputBuild=true, reuseChatMessageConversion=true, reuseAnthropicMessageBuild=true, nowFn=Date.now } = {}) {
+  constructor({ env = process.env, fetchFn = fetch, longRequestFetchFn = null, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, chatToolManifestCacheSize=32, reusePreSerializedToolJson=true, reuseOpenAiContinuationInputBuild=true, reuseChatMessageConversion=true, reuseAnthropicMessageBuild=true, nowFn=Date.now } = {}) {
     this.env = env;
     this.fetchFn = fetchFn;
+    // A streamed stateless provider's Responses stream (Meta's) goes through a fetch with no body or header deadline of its own
+    // (src/provider-long-request-fetch.mjs): Node's fetch cuts a body after 300 s without a byte, before the lane's idle bound. A caller
+    // that brings its own fetch (a test's stand-in, the offline E2E guard) has those streams sent through it unless it names this one too.
+    this.longRequestFetchFn = typeof longRequestFetchFn === "function" ? longRequestFetchFn : fetchFn === globalThis.fetch ? providerLongRequestFetch : fetchFn;
     const timeoutMs = Math.trunc(Number(requestTimeoutMs));
     this.requestTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS;
     this.path = providerSecretsPath(env);
@@ -978,7 +983,8 @@ export class ProviderManager {
     }finally{headerGuard?.release()}
   }
 
-  async forwardResponses(providerId, responsesBody, { signal, onWire, timeoutMs=this.requestTimeoutMs } = {}) {
+  // longRequest: a streamed request sent through longRequestFetchFn, whose only bounds are the header guard and the stream's reader.
+  async forwardResponses(providerId, responsesBody, { signal, onWire, timeoutMs=this.requestTimeoutMs, longRequest=false } = {}) {
     const provider = this.get(providerId);
     if (provider.wireApi !== "responses") {
       throw new Error(`${provider.name} does not use direct Responses forwarding.`);
@@ -987,9 +993,9 @@ export class ProviderManager {
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
     const stream = Boolean(responsesBody?.stream);
     const endpoint=provider.baseUrl + "/responses",body=this.reusePreSerializedToolJson?stringifyProviderBody(responsesBody):JSON.stringify(responsesBody);onWire?.({endpoint,wireApi:"openai-responses",requestBytes:Buffer.byteLength(body,"utf8")});
-    const headerGuard=stream?providerHeadersSignal(signal,timeoutMs):null;
+    const headerGuard=stream?providerHeadersSignal(signal,timeoutMs):null,fetchFn=stream&&longRequest?this.longRequestFetchFn:this.fetchFn;
     try{
-      return await this.fetchFn(endpoint, {
+      return await fetchFn(endpoint, {
         method: "POST",
         headers: provider.id === "agentrouter"
           ? agentRouterHeaders(key, {
@@ -1056,7 +1062,7 @@ export class ProviderManager {
     // A stateless provider (xAI, Meta) that refuses include for a model is sent the body again without it and without the reasoning
     // it carried, and that model's later requests leave both out.
     const forwardResponsesBody=async body=>{
-      const send=sent=>this.forwardResponses(provider.id,sent,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});
+      const send=sent=>this.forwardResponses(provider.id,sent,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt),...(statelessStream?{longRequest:true}:{})});
       const upstream=await send(body);
       const sentInclude=provider.statelessResponses===true&&Array.isArray(body?.include)&&body.include.length>0;
       if(upstream.ok||Number(upstream.status)!==400||(!sentInclude&&(replayRefused||!replayedReasoningCount(body))))return upstream;
