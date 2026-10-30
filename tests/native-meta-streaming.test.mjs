@@ -75,13 +75,21 @@ const loopProviderTurn=(manager,idleMs)=>request=>manager.turn("meta",{...reques
 const loopOptions=(manager,events,idleMs)=>({provider:"meta",model:MODEL,messages:[{role:"user",content:fixture.text.prompt}],tools:[],retryBaseDelayMs:0,maxModelTurns:2,onEvent:event=>events.push(event),providerTurn:loopProviderTurn(manager,idleMs),executeTool:async()=>""});
 
 test("Native's Meta lane streams, with an idle bound, and every other provider keeps its transport options",()=>{
-  assert.deepEqual(configuration.nativeProviderTurnOptions("meta"),{promptCaching:false,streamResponses:true,streamIdleTimeoutMs:600_000});
-  assert.equal(configuration.NATIVE_META_STREAM_IDLE_TIMEOUT_MS,600_000);
+  assert.deepEqual(configuration.nativeProviderTurnOptions("meta"),{promptCaching:false,streamResponses:true,streamIdleTimeoutMs:1_800_000});
+  assert.equal(configuration.NATIVE_META_STREAM_IDLE_TIMEOUT_MS,1_800_000);
+  // The bound outlasts one silent item as long as an action turn's max_output_tokens (65,536) at the slowest output rate seen on the Meta
+  // lane (44 tokens a second): about 1,490 s. The settings evidence says so.
+  const longestItemMs=Math.ceil(65_536/44)*1000;
+  assert.equal(longestItemMs,1_490_000);assert.ok(configuration.NATIVE_META_STREAM_IDLE_TIMEOUT_MS>longestItemMs);
+  const evidence=configuration.NATIVE_SETTINGS_EVIDENCE.find(row=>row.setting==="Meta Responses streaming");
+  assert.match(evidence.value,/\b1,800 s idle bound\b/);assert.match(evidence.value,/TCP keepalive \(60 s\) and 10 s connect timeout/);
+  assert.match(evidence.evidence,/max_output_tokens \(65,536\) at the slowest rate seen \(44 output tokens a second, about 1,490 s/);
+  assert.match(evidence.evidence,/only a genuine server stall waits the full bound/);assert.doesNotMatch(evidence.value+evidence.evidence,/\b600 s\b/);
   assert.deepEqual(configuration.nativeProviderTurnOptions("openai"),{promptCaching:false,streamResponses:true});
   assert.deepEqual(configuration.nativeProviderTurnOptions("anthropic"),{promptCaching:true,streamResponses:false});
   for(const provider of ["xai","gemini","agentrouter","justworker","hcnsec","vyceai"])assert.deepEqual(configuration.nativeProviderTurnOptions(provider),{promptCaching:false,streamResponses:false},provider);
   // The runner records the configuration's hash: the Meta lane's options are part of it.
-  assert.deepEqual(configuration.nativeConfigurationSnapshot().providerTurnOptions,{openai:{promptCaching:false,streamResponses:true},anthropic:{promptCaching:true,streamResponses:false},meta:{promptCaching:false,streamResponses:true,streamIdleTimeoutMs:600_000}});
+  assert.deepEqual(configuration.nativeConfigurationSnapshot().providerTurnOptions,{openai:{promptCaching:false,streamResponses:true},anthropic:{promptCaching:true,streamResponses:false},meta:{promptCaching:false,streamResponses:true,streamIdleTimeoutMs:1_800_000}});
 });
 
 test("a Native turn on Meta is sent as the JSON request with stream:true only, and the streamed answer reads as the JSON answer",async()=>{

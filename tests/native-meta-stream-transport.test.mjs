@@ -15,7 +15,7 @@ import { TREBELL_USER_AGENT } from "../src/version.mjs";
 // The transport Native's Meta stream goes through, against a real HTTP server on 127.0.0.1 standing in for api.meta.ai. Meta sends no
 // byte while the model writes one output item (its reasoning, a tool call's arguments), and Node's fetch (undici) ends a response body
 // after 300 s without a byte, so through Node's fetch a long silent item failed at about 300 s on every attempt, whatever the lane's idle
-// bound (NATIVE_META_STREAM_IDLE_TIMEOUT_MS, 600 s) said. Here Node's fetch gets a 400 ms body timeout in place of its 300 s one, the
+// bound (NATIVE_META_STREAM_IDLE_TIMEOUT_MS, 1,800 s) said. Here Node's fetch gets a 400 ms body timeout in place of its 300 s one, the
 // silences are a few seconds (undici checks its timeouts about every half second), and the lane's bound is set in milliseconds. No request leaves the machine.
 
 const { providerLongRequestFetch }=longRequest;
