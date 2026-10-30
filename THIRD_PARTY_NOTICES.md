@@ -70,5 +70,62 @@ shows them for that package:
 - `@opencode/client@2.0.24`: `LICENSE` of https://github.com/anomalyco/opencode at tag `v2.0.24`, whose `packages/client` is
   that release.
 
+## T3 Code
+
+Parts of Trebell Code were written from T3 Code's source, and some of its tests use cases and inputs from T3 Code's tests:
+
+- `src/document-text-extract.mjs`, the reader of attached documents' text: its Excel (.xlsx) and RTF readers, its limits and its
+  checks follow `apps/server/src/provider/documentTextWorker.ts`.
+- `src/muse-agent-session.mjs`: the tool rows, item statuses, approval choices and usage-limit reading follow
+  `packages/provider-muse/src/server/itemPresentation.ts`, `protocol.ts` and `usageLimits.ts`.
+- `src/opencode-agent-session.mjs`: the reading of OpenCode's file-read output follows
+  `packages/provider-opencode/src/server/toolItems.ts`.
+- `src/acp-agent-session.mjs`: Grok Build's approval choices follow `packages/provider-grok/src/server/acpSupport.ts`.
+- `src/agent-usage-limits.mjs`: the Grok Build and Claude Code usage readers follow
+  `packages/provider-grok/src/server/usageLimits.ts` and `apps/server/src/provider/claudeUsageLimits.ts`.
+- `src/claude-agent-session.mjs`: the usage merge and the task-list tools follow
+  `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`.
+- `src/secret-redactor.mjs`: the secret patterns follow `packages/provider-acp/src/server/stderr.ts`.
+- `src/source-control-service.mjs`: the reading of pull request templates follows
+  `packages/source-control-github/src/server/gitHubChangeRequestTemplate.ts`.
+- Tests: the tool-row, verbatim-path and question cases of `tests/muse-agent-session.test.mjs`, the refusal and quota sentences
+  of `tests/muse-failures.test.mjs` and `tests/fixtures/muse/fake-muse.cjs`, the approval subject and answers of
+  `tests/muse-approvals.test.mjs`, the recorded session id in `tests/muse-compact-fork.test.mjs`,
+  `tests/muse-model-catalog.test.mjs` and `tests/muse-runtime.test.mjs` (from
+  `packages/provider-muse/src/server/itemPresentation.test.ts`, `sdk.test.ts`, `adapter.test.ts`, `usageLimits.test.ts` and
+  `apps/server/src/orchestration-v2/testkit/fixtures/simple/muse_transcript.ndjson`), and the notebook, OpenDocument,
+  spreadsheet, RTF and limit inputs of `tests/document-text.test.mjs` and `tests/fixtures/documents/make-fixtures.mjs`, with
+  the documents it makes (from `apps/server/src/provider/userInputAttachments.test.ts`).
+
+Upstream: https://github.com/pingdotgg/t3code (revision `d6fb62ac3f2ab54a100202f5aea1428cfda977cd`)  
+License: MIT License, Copyright (c) 2026 T3 Tools Inc.
+Local modifications: rewritten in Trebell's own JavaScript, with its own names, messages and structure around them.
+
+The license's text:
+
+```
+MIT License
+
+Copyright (c) 2026 T3 Tools Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 The exact Codex package/version used by Trebell is recorded above; upstream Codex
 license/notice material remains available from the linked OpenAI source release.
