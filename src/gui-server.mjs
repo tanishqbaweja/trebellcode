@@ -553,17 +553,17 @@ async function runLocalHookCommand(command,{cwd=null,env=process.env,timeoutMs=3
 
 async function projectActionSuggestions(projectPath){
   const root=resolve(projectPath);
-  const [t3,pkg,pnpmLock,yarnLock,bunLock,bunLockb]=await Promise.all([
-    readOptionalJson(join(root,"t3.json"),{jsonc:true}),
+  const [projectFile,pkg,pnpmLock,yarnLock,bunLock,bunLockb]=await Promise.all([
+    readOptionalJson(join(root,"trebell.json"),{jsonc:true}),
     readOptionalJson(join(root,"package.json")),
     stat(join(root,"pnpm-lock.yaml")).then(()=>true).catch(()=>false),
     stat(join(root,"yarn.lock")).then(()=>true).catch(()=>false),
     stat(join(root,"bun.lock")).then(()=>true).catch(()=>false),
     stat(join(root,"bun.lockb")).then(()=>true).catch(()=>false),
   ]);
-  const fileScripts=Array.isArray(t3?.scripts)?t3.scripts.slice(0,50).map((script,index)=>({
-    id:`t3-${index}-${String(script?.name||"action").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,32)}`,
-    source:"t3.json",
+  const fileScripts=Array.isArray(projectFile?.scripts)?projectFile.scripts.slice(0,50).map((script,index)=>({
+    id:`file-${index}-${String(script?.name||"action").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,32)}`,
+    source:"trebell.json",
     name:String(script?.name||`Action ${index+1}`).trim().slice(0,80),
     command:String(script?.command||"").trim().slice(0,8000),
     previewUrl:script?.previewUrl?String(script.previewUrl).trim().slice(0,1000):null,
@@ -584,7 +584,7 @@ async function projectActionSuggestions(projectPath){
     waitForSetup:false,
   }));
   return {
-    t3:{present:Boolean(t3),defaultThreadEnvMode:t3?.defaultThreadEnvMode==="worktree"?"worktree":t3?.defaultThreadEnvMode==="local"?"current":null,worktreeSubmodules:["recursive","top-level","none"].includes(t3?.worktreeSubmodules)?t3.worktreeSubmodules:null},
+    projectFile:{present:Boolean(projectFile),defaultThreadEnvMode:projectFile?.defaultThreadEnvMode==="worktree"?"worktree":projectFile?.defaultThreadEnvMode==="local"?"current":null,worktreeSubmodules:["recursive","top-level","none"].includes(projectFile?.worktreeSubmodules)?projectFile.worktreeSubmodules:null},
     packageManager,
     scripts:[...fileScripts,...packageScripts],
   };
@@ -2695,9 +2695,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
           case "auto-pull": result=await tracedSourceControlMutation("git.auto-pull",{cwd},()=>safeAutoPull(cwd)); break;
           case "worktree-create": {
             const sourceProject=state.project(resolve(cwd),null);
-            const projectConfig=await projectActionSuggestions(cwd).catch(()=>({t3:{}}));
+            const projectConfig=await projectActionSuggestions(cwd).catch(()=>({projectFile:{}}));
             const scoped=sourceProject?state.projectSettings(sourceProject.path,null):{defaults:state.environmentDefaults(null),overrides:{}};
-            const submodules=scoped.overrides.worktreeSubmodules||projectConfig?.t3?.worktreeSubmodules||scoped.defaults.worktreeSubmodules||"recursive";
+            const submodules=scoped.overrides.worktreeSubmodules||projectConfig?.projectFile?.worktreeSubmodules||scoped.defaults.worktreeSubmodules||"recursive";
             result=await tracedSourceControlMutation("git.worktree-create",{cwd},()=>createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null,submodules}));
             const inherited=sourceProject?{
               defaultModel:sourceProject.defaultModel??null,

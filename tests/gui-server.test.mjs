@@ -1306,8 +1306,8 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const suggested=await fetch(gui.url+"/api/project-actions/suggestions?path="+encodeURIComponent(projectPath)).then(r=>r.json());
     assert.ok(Array.isArray(suggested.scripts));
     assert.ok(suggested.scripts.some(script=>script.source==="package.json"));
-    const configProject=join(home,"t3-project");await import("node:fs/promises").then(fs=>fs.mkdir(configProject,{recursive:true}));
-    await writeFile(join(configProject,"t3.json"),JSON.stringify({defaultThreadEnvMode:"worktree",worktreeSubmodules:"top-level",scripts:[]}));
+    const configProject=join(home,"file-project");await import("node:fs/promises").then(fs=>fs.mkdir(configProject,{recursive:true}));
+    await writeFile(join(configProject,"trebell.json"),JSON.stringify({defaultThreadEnvMode:"worktree",worktreeSubmodules:"top-level",scripts:[]}));
     await mkdir(join(configProject,"src"),{recursive:true});
     await mkdir(join(configProject,"tests"),{recursive:true});
     await writeFile(join(configProject,"AGENTS.md"),"Prefer deterministic repository context.\n");
@@ -1429,8 +1429,8 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const remoteContextResponse=await fetch(gui.url+"/api/context/packet",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:"/srv/app",task:"remote task",environmentId:"ssh-test"})});
     assert.equal(remoteContextResponse.status,400);
     assert.doesNotMatch((await remoteContextResponse.json()).error,/local workspaces only/i);
-    const t3Suggested=await fetch(gui.url+"/api/project-actions/suggestions?path="+encodeURIComponent(configProject)).then(r=>r.json());
-    assert.equal(t3Suggested.t3.defaultThreadEnvMode,"worktree");assert.equal(t3Suggested.t3.worktreeSubmodules,"top-level");
+    const fileSuggested=await fetch(gui.url+"/api/project-actions/suggestions?path="+encodeURIComponent(configProject)).then(r=>r.json());
+    assert.equal(fileSuggested.projectFile.defaultThreadEnvMode,"worktree");assert.equal(fileSuggested.projectFile.worktreeSubmodules,"top-level");
     const visualizationDir=join(configProject,"artifacts");await mkdir(visualizationDir,{recursive:true});
     const visualizationPath=join(visualizationDir,"chart.html");await writeFile(visualizationPath,"<!doctype html><style>body{margin:0}</style><script>document.body.dataset.ready='1'</script>","utf8");
     const visualizationResponse=await fetch(gui.url+"/api/visualization?"+new URLSearchParams({root:configProject,path:visualizationPath}));

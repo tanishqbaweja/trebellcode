@@ -18,7 +18,7 @@ async function routeProjectsShell(page,{projects:items,environments={profiles:[]
     const path=new URL(route.request().url()).searchParams.get("path");
     return json(route,String(path||"").startsWith("C:/repos/")?await git(path):{isGit:false,root:path,branch:null,remotes:[]});
   });
-  await page.route(/\/api\/project-actions\/suggestions\?/,route=>json(route,{scripts:[],t3:{present:false},packageManager:null}));
+  await page.route(/\/api\/project-actions\/suggestions\?/,route=>json(route,{scripts:[],projectFile:{present:false},packageManager:null}));
 }
 
 test("project cards use one local-or-remote rule and leave out a missing time",async({page})=>{
@@ -234,7 +234,7 @@ test("large project lists paint before bounded enrichment finishes",async({page}
     if(!String(path||"").startsWith("C:/repos/project-"))return json(route,{isGit:false,root:path,branch:null,remotes:[]});
     return enrich(route,{isGit:true,root:path,branch:"main",remotes:[{name:"origin",kind:"fetch",url:"https://example.test/shared.git"}]});
   });
-  await page.route(/\/api\/project-actions\/suggestions\?/,route=>enrich(route,{scripts:[{name:"Test",command:"npm test"}],t3:{present:false},packageManager:"npm"}));
+  await page.route(/\/api\/project-actions\/suggestions\?/,route=>enrich(route,{scripts:[{name:"Test",command:"npm test"}],projectFile:{present:false},packageManager:"npm"}));
 
   await page.goto("/");
   await page.getByRole("button",{name:"Projects",exact:true}).click();

@@ -3820,7 +3820,7 @@ test("project polling failures preserve active clone cards and stay visible",asy
     return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})});
   });
   await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:project.path,branch:"main",branches:["main"],status:[],remotes:[],worktrees:[]})}));
-  await page.route(/\/api\/project-actions\/suggestions\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({scripts:[],t3:{present:false},packageManager:null})}));
+  await page.route(/\/api\/project-actions\/suggestions\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({scripts:[],projectFile:{present:false},packageManager:null})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
   await page.route(/\/api\/environments$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({profiles:[]})}));
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));

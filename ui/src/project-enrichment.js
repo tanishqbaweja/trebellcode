@@ -1,7 +1,7 @@
 export const PROJECT_ENRICH_CONCURRENCY=6;
 
 function defaultSuggested(){
-  return {scripts:[],t3:{present:false},packageManager:null};
+  return {scripts:[],projectFile:{present:false},packageManager:null};
 }
 
 // What a project card says about its checkout: the branch, a detached HEAD, or that the folder is not a Git checkout.

@@ -43,7 +43,7 @@ test("enrichment never probes Git for a project that names an environment withou
   const probed=[];
   const records=[baseProjectRecord({id:"local",path:"C:/repo",environmentId:null}),baseProjectRecord({id:"remote",path:"/srv/app",environmentId:"box"})];
   assert.equal(records[1].git,null);
-  const enriched=await enrichProjectRecords(records,{fetchGit:async project=>{probed.push(project.path);return {isGit:true,branch:"main"}},fetchSuggestions:async()=>({scripts:[],t3:{present:false},packageManager:null})});
+  const enriched=await enrichProjectRecords(records,{fetchGit:async project=>{probed.push(project.path);return {isGit:true,branch:"main"}},fetchSuggestions:async()=>({scripts:[],projectFile:{present:false},packageManager:null})});
   assert.deepEqual(probed,["C:/repo"]);assert.equal(enriched[0].git.branch,"main");assert.equal(enriched[1].git,null);
 });
 
@@ -77,7 +77,7 @@ test("project enrichment preserves prior fields when one enrichment request fail
   const [result]=await enrichProjectRecords([base],{
     concurrency:2,
     fetchGit:async()=>{throw new Error("git offline")},
-    fetchSuggestions:async()=>({scripts:[{name:"New"}],t3:{present:false},packageManager:"npm"}),
+    fetchSuggestions:async()=>({scripts:[{name:"New"}],projectFile:{present:false},packageManager:"npm"}),
     onError:(project,kind,error)=>errors.push(project.id+":"+kind+":"+error.message),
   });
   assert.deepEqual(result.git,{branch:"old"});assert.equal(result.remote,"old-url");assert.equal(result.suggested.scripts[0].name,"New");
