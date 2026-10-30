@@ -711,7 +711,7 @@ test("a background send waiting for the turn support does not go once a thread i
     await script.asked();
     const composer=page.getByTestId("composer"),task="Summarize the session helper in the background",draft="A draft for this thread";
     await composer.click();await page.keyboard.type(task,{delay:5});await page.keyboard.press("Control+Enter");
-    await expect(page.getByTestId("composer-sending")).toBeVisible();
+    await expect(composer).toHaveAttribute("placeholder",/^Sending/);await expect(composer).toHaveValue("");
     // The thread opened meanwhile lets the composer go: no longer sending, with the task's text back as a draft that is kept, and its
     // draft is the person's to write.
     const row=page.locator(".thread-row").filter({hasText:"Native streaming"});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
