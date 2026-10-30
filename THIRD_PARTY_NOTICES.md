@@ -72,7 +72,7 @@ shows them for that package:
 
 ## T3 Code
 
-Parts of Trebell Code were written from T3 Code's source, and some of its tests use cases and inputs from T3 Code's tests:
+Parts of Trebell Code were written from T3 Code's source:
 
 - `src/document-text-extract.mjs`, the reader of attached documents' text: its Excel (.xlsx) and RTF readers, its limits and its
   checks follow `apps/server/src/provider/documentTextWorker.ts`.
@@ -88,14 +88,6 @@ Parts of Trebell Code were written from T3 Code's source, and some of its tests 
 - `src/secret-redactor.mjs`: the secret patterns follow `packages/provider-acp/src/server/stderr.ts`.
 - `src/source-control-service.mjs`: the reading of pull request templates follows
   `packages/source-control-github/src/server/gitHubChangeRequestTemplate.ts`.
-- Tests: the tool-row, verbatim-path and question cases of `tests/muse-agent-session.test.mjs`, the refusal and quota sentences
-  of `tests/muse-failures.test.mjs` and `tests/fixtures/muse/fake-muse.cjs`, the approval subject and answers of
-  `tests/muse-approvals.test.mjs`, the recorded session id in `tests/muse-compact-fork.test.mjs`,
-  `tests/muse-model-catalog.test.mjs` and `tests/muse-runtime.test.mjs` (from
-  `packages/provider-muse/src/server/itemPresentation.test.ts`, `sdk.test.ts`, `adapter.test.ts`, `usageLimits.test.ts` and
-  `apps/server/src/orchestration-v2/testkit/fixtures/simple/muse_transcript.ndjson`), and the notebook, OpenDocument,
-  spreadsheet, RTF and limit inputs of `tests/document-text.test.mjs` and `tests/fixtures/documents/make-fixtures.mjs`, with
-  the documents it makes (from `apps/server/src/provider/userInputAttachments.test.ts`).
 
 Upstream: https://github.com/pingdotgg/t3code (revision `d6fb62ac3f2ab54a100202f5aea1428cfda977cd`)  
 License: MIT License, Copyright (c) 2026 T3 Tools Inc.
