@@ -7,8 +7,7 @@ import { parseCodexHistoryPrefix, scanCodexHistory } from "../src/agent-history-
 
 // Codex history as the import lists it: the person's own Codex sessions, named after what they asked. A subagent's session (a
 // spawned child agent, a review, a compaction or a guardian check) is Codex's own and is left out before it counts toward the
-// recent-session limit, and the setup text Codex records ahead of a request does not become the title. Fixtures after T3 Code's
-// AgentSessionScanner tests (002ef3652, 0b896d9ff).
+// recent-session limit, and the setup text Codex records ahead of a request does not become the title.
 const rollout=(records)=>records.map(record=>JSON.stringify(record)).join("\n");
 const SUBAGENT_SOURCES=[
   {subagent:{thread_spawn:{parent_thread_id:"session-100",depth:1}}},
@@ -40,7 +39,7 @@ test("Codex history leaves out subagent sessions before they use up the recent-s
   }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
-// T3 Code's fix is for exactly this: "Newer subagents would exhaust the import budget before any parent". Each rollout's own first
+// Without this, newer subagent sessions used up the import budget before any parent was read. Each rollout's own first
 // session_meta is read before it counts toward the 240 rollouts the scan reads, so newer subagent sessions, more of them than that,
 // use none of it.
 test("Codex history passes over more newer subagent sessions than the rollouts it reads, and lists the person's own after them",async()=>{
@@ -75,8 +74,8 @@ test("only a subagent or subAgent key in a session's source marks it as Codex's 
   for(const source of ["cli","vscode","exec",undefined,null,{custom:"launcher"},["subagent"]])assert.equal(parse(source)?.title,"Fix the thing",JSON.stringify(source)??"undefined");
 });
 
-// A Codex fork copies its ancestors' session_meta records in after its own (T3 Code's "uses the first valid Codex session ID when a
-// fork copies ancestor metadata"): the person's fork of a review or child-agent thread is theirs, under its own id.
+// A Codex fork copies its ancestors' session_meta records in after its own, and its first valid session id is its own: the
+// person's fork of a review or child-agent thread is theirs, under its own id.
 test("a person's fork of a subagent's thread is listed under its own id, whatever ancestor session_meta it copied",()=>{
   const fork=parseCodexHistoryPrefix(rollout([
     {type:"session_meta",payload:{id:"fork-session",forked_from_id:"review-session",cwd:"C:\\repo",source:"vscode"}},

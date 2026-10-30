@@ -1,4 +1,4 @@
-// Settings' Antigravity sign-in runs one at a time on the server, whichever window asked (T3 refuses a second Antigravity setup): a
+// Settings' Antigravity sign-in runs one at a time on the server, whichever window asked: a
 // sign-in can take up to 5 minutes while the person finishes it in the browser, and a page opened again meanwhile (Agents & models
 // left and opened again, another window) has no sign-in of its own running. A second one would start another Antigravity, which
 // unpacks about 1 GB: it is refused, saying why, until the sign-in has ended. The GUI server runs outside mock mode with a stand-in

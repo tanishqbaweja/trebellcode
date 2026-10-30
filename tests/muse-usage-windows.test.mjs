@@ -3,8 +3,7 @@
 // sessions' own store by the Muse home the profile's status check found), a 5-hour row named by the window length Muse reports and a
 // Weekly row, each with its reset and its percentage held to 0-100 (Meta's may exceed 100), and the time the report was observed;
 // nothing before a report, and nothing of a window whose reset has passed since. No command runs and nothing is fetched for it: MSP's
-// usage/read answers only the host's last report too, with no model call. The report's shape and numbers are those of T3 Code's
-// recorded Muse 1.4 usage/changed (provider-muse adapter.test.ts SUBSCRIPTION_USAGE).
+// usage/read answers only the host's last report too, with no model call. The report has the shape of Muse 1.4's usage/changed.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";

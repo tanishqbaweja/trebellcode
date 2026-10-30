@@ -16,7 +16,7 @@ import { keepThreadMeta } from "./test-home.js";
 // composer's context meter, a workflow's agents in the turn that launched it with Muse's report on it as a turn of its own, and an
 // MCP server saved in Settings for Muse Code reaching its session beside Trebell's repository tools. Behind the page run the real
 // agent relay and runtime manager on the stand-in Muse Code (tests/fixtures/muse/fake-muse.cjs), which runs its subagent and its
-// workflow as T3's recorded Muse sessions do and records what Trebell sends it.
+// workflow as the recorded Muse sessions do and records what Trebell sends it.
 const auditDir=fileURLToPath(new URL("../../visual-audit/muse-sessions/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const FAKE_MUSE=fileURLToPath(new URL("../../tests/fixtures/muse/fake-muse.cjs",import.meta.url));
 const MODEL_LIST=fileURLToPath(new URL("../../tests/fixtures/muse/model-list-1.4.13.json",import.meta.url));

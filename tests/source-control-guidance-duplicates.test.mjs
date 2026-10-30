@@ -9,7 +9,7 @@ import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { git } from "../src/git-service.mjs";
 
 // The prompt a harness writes commit and pull request text from carries the repository's AGENTS.md, CLAUDE.md and CONTRIBUTING.md,
-// up to 6,000 characters each. CLAUDE.md is often a link to AGENTS.md or a copy of it (T3 Code 1d9060b9a): the same guidance then
+// up to 6,000 characters each. CLAUDE.md is often a link to AGENTS.md or a copy of it: the same guidance then
 // went twice. A file that says what one already added says is now left out; one that says something else still goes.
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 const sections=prompt=>[...String(prompt).matchAll(/^### (\S+)$/gm)].map(match=>match[1]);

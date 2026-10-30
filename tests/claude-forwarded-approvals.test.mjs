@@ -1,5 +1,5 @@
 // What Claude Code still forwards to Trebell's canUseTool in Full access, in Plan mode or for an ask rule goes to the person with
-// Claude's own reason (T3 Code's requiresClaudeApproval): nothing Claude Code asked about is approved for them by Trebell's policy.
+// Claude's own reason: nothing Claude Code asked about is approved for them by Trebell's policy.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";

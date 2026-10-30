@@ -24,7 +24,7 @@ test("the open thread's effort and tier apply while the composer is on its model
   assert.deepEqual(codexModelChoices({settings:{},provider:"openai",model:"custom",metadata:{},custom:{effort:"xhigh",serviceTier:"flex"}}),{fromThread:false,effort:"xhigh",serviceTier:"flex",serviceTierPicker:"flex"},"a custom model's own effort and tier");
 });
 
-test("Codex attachments are named with their saved paths in the prompt, and images and audio also go as items (T3)",()=>{
+test("Codex attachments are named with their saved paths in the prompt, and images and audio also go as items",()=>{
   const input=codexTurnInput("Review these.",["H:/a/spec.pdf","H:/a/diagram.PNG","H:/a/voice.mp3"],{displayName:path=>path.split("/").pop()});
   assert.deepEqual(input,[
     {type:"text",text:'Review these.\n\n[Attached file "spec.pdf" is saved at: H:/a/spec.pdf]\n\n[Attached image "diagram.PNG" is saved at: H:/a/diagram.PNG]\n\n[Attached file "voice.mp3" is saved at: H:/a/voice.mp3]',textElements:[]},
@@ -34,7 +34,7 @@ test("Codex attachments are named with their saved paths in the prompt, and imag
   assert.equal(input.some(item=>item.type==="mention"),false,"Codex reads a mention item's file as nothing; the path line replaces it");
   assert.deepEqual(codexTurnInput("Hi",[]),[{type:"text",text:"Hi",textElements:[]}]);
   assert.equal(codexTurnInput("",["C:\\x\\notes.txt"])[0].text,'[Attached file "notes.txt" is saved at: C:\\x\\notes.txt]');
-  // The input limit never hides an attachment (T3 550f119c3): a prompt at it still names its files, and the image item still goes.
+  // The input limit never hides an attachment: a prompt at it still names its files, and the image item still goes.
   const long="x".repeat(CODEX_MAX_INPUT_CHARS-10),[full,image]=codexTurnInput(long,["H:/a/spec.pdf","H:/a/big.png"]);
   assert.ok(full.text.startsWith(long));
   assert.equal(full.text.slice(long.length),'\n\n[Attached file "spec.pdf" is saved at: H:/a/spec.pdf]\n\n[Attached image "big.png" is saved at: H:/a/big.png]');
@@ -51,7 +51,7 @@ test("a queued Codex follow-up is edited as the draft it was, with its attachmen
   assert.equal(draft.editable,true);
 });
 
-test("/goal parses like the Codex TUI and T3 Code",()=>{
+test("/goal parses like the Codex TUI",()=>{
   assert.deepEqual(parseCodexGoalCommand("/goal"),{type:"show"});
   assert.deepEqual(parseCodexGoalCommand("  /goal edit "),{type:"show"});
   assert.deepEqual(parseCodexGoalCommand("/goal clear"),{type:"clear"});
@@ -77,7 +77,7 @@ test("a Codex without goals is told by its refusal of thread/goal/*, not by any 
   assert.equal(codexGoalsMissing(null),false);
 });
 
-test("Codex error notifications read like T3's: details first, limits and sign-in with a hint, retries keep the turn",()=>{
+test("Codex error notifications read plainly: details first, limits and sign-in with a hint, retries keep the turn",()=>{
   assert.equal(codexErrorInfoCode("usageLimitExceeded"),"usageLimitExceeded");
   assert.equal(codexErrorInfoCode({httpConnectionFailed:{httpStatusCode:502}}),"httpConnectionFailed");
   assert.equal(codexErrorInfoCode(null),null);

@@ -5,7 +5,7 @@ import { eventually, fakeOpenCode2Client } from "./fixtures/fake-opencode2-clien
 import { openCode1Relay } from "./fixtures/opencode1-relay.mjs";
 
 // An OpenCode 2 question (a form) the person dismisses, with the question dialog's Cancel or its close button (both answer with no
-// answers), or leaves unanswered until the window's wait for it ends. T3 Code cancels such a form without a message, which OpenCode
+// answers), or leaves unanswered until the window's wait for it ends. Such a form is cancelled without a message, which OpenCode
 // takes as the person dismissing the question: the asking session's run stops ("The user dismissed this question", then
 // session.execution.interrupted, seen live on OpenCode 2.0.24). Cancelled with a message, only the question tool fails and the model
 // goes on as if it had not asked.

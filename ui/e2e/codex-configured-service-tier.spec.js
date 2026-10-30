@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { routeCodexApp, startCodexHarness } from "./codex-history-harness.js";
 
 // A person whose Codex config runs Fast (service_tier = "fast" in config.toml) saw the Speed picker read Standard while Codex ran each
-// new thread at Fast. Trebell's Codex model list now reads the configured tier (config/read, as T3 Code 3b844dab5 does) and gives it
+// new thread at Fast. Trebell's Codex model list now reads the configured tier (config/read) and gives it
 // to each model that lists it as its default tier: the picker reads Fast while nothing is picked, a turn sends no tier, so Codex
 // keeps applying its config, and a tier the person picks still goes with the turn.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});

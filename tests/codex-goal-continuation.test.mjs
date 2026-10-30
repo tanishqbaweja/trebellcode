@@ -77,7 +77,7 @@ test("a goal's wait gathers the windows that can pause it, and one that ends wit
 
 // On a fake clock: of six threads with an active goal whose turn ends, only the one Codex starts no next turn for is paused. One Codex
 // goes on with, one whose window has a follow-up's start on its way, one whose goal was paused or cleared meanwhile, and one whose turn
-// failed (T3 waits only after a completed turn) are left as they are.
+// failed are left as they are.
 test("the server pauses an active Codex goal Codex started no turn for within 5 s of a completed one, and leaves the others",async()=>{
   const fixture=await startCodexGui("trebell-goal-continuation-"),{upstream}=fixture,[idleId,busyId,sendingId,pausedId,failedId,clearedId]=["goal-stalls","goal-continues","goal-follow-up","goal-paused","goal-failed","goal-cleared"];
   const ids=[idleId,busyId,sendingId,pausedId,failedId,clearedId];

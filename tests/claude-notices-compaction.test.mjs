@@ -1,7 +1,7 @@
 // Claude Code's own notices and failed compactions: a warning such as a hook's reason for dropping the prompt, and a switch to the
-// fallback model after a refusal, show once as a finished row of the turn, never again as its answer (T3 Code's e51c0d677), and a
+// fallback model after a refusal, show once as a finished row of the turn, never again as its answer, and a
 // compaction that failed fails Compact with Claude Code's reason, which the session's status carries too, instead of reading as
-// compacted, as a /compact sent as a message fails once the usage limit stopped it (T3 Code's 499c9ee68). The SDK is scripted: nothing
+// compacted, as a /compact sent as a message fails once the usage limit stopped it. The SDK is scripted: nothing
 // runs.
 import test from "node:test";
 import assert from "node:assert/strict";

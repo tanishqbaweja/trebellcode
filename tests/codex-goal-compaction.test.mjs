@@ -1,4 +1,4 @@
-// A Codex goal command never stops a compaction of the thread's own (T3 queues it after a maintenance run such as /compact): /goal with
+// A Codex goal command never stops a compaction of the thread's own: /goal with
 // an objective, or /goal resume, waits for the compaction's turn to end, then sets the goal and starts its turn; /goal clear and pause
 // leave the compaction running. A turn that compacts as it works is stopped as any other running turn (codex-goal-commands.test.mjs):
 // an ordinary turn, and a goal's own, also one that opens with a compaction. The window's side is turn-support.js runSlashCommand, with

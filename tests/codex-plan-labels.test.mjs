@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexAccountLabel, codexAccountStatus, readCodexAccount } from "../src/codex-account-probe.mjs";
 
-// ChatGPT renamed its plans (T3 Code 33f1fe5eb): Pro is Pro 200, its lighter and larger tiers Pro 100 and Pro 500, and Team is
+// ChatGPT renamed its plans: Pro is Pro 200, its lighter and larger tiers Pro 100 and Pro 500, and Team is
 // Business, next to Business Premium. A Codex profile signed in with one of them is named the way ChatGPT names it.
 test("a Codex profile signed in with ChatGPT names its plan with ChatGPT's current plan names",()=>{
   const label=planType=>codexAccountLabel({type:"chatgpt",email:"a@b.c",planType});

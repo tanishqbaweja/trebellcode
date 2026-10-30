@@ -14,7 +14,7 @@ import { keepThreadMeta } from "./test-home.js";
 // Muse Code asking the person, as they meet it in Trebell: its approval on Trebell's approval card with Muse's own three choices, its
 // question in Trebell's question dialog, a card Muse's reviewer takes away by deciding it, a retry on the turn's retry row, and a turn
 // the subscription quota stopped. Behind the page run the real agent relay and runtime manager on the stand-in Muse Code
-// (tests/fixtures/muse/fake-muse.cjs), which asks as T3's recorded Muse session asks and records what Trebell answers.
+// (tests/fixtures/muse/fake-muse.cjs), which asks as the recorded Muse sessions ask and records what Trebell answers.
 const auditDir=fileURLToPath(new URL("../../visual-audit/muse-requests/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const FAKE_MUSE=fileURLToPath(new URL("../../tests/fixtures/muse/fake-muse.cjs",import.meta.url));
 const MODEL_LIST=fileURLToPath(new URL("../../tests/fixtures/muse/model-list-1.4.13.json",import.meta.url));

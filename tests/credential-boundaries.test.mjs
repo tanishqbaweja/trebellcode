@@ -1,11 +1,11 @@
 // What this scan holds Trebell's server and desktop code to (the owner's rule): it never reads Claude Code's stored Claude.ai login
 // (.credentials.json, claudeAiOauth), never uses Antigravity's token file (acp_token.json) beyond checking that it exists, and never
-// poses as another app's client. T3 Code has three probes that break it, and Trebell does not port them:
-// - claudeResetCredits.ts reads Claude Code's <CLAUDE_CONFIG_DIR>/.credentials.json (claudeAiOauth.accessToken) and calls
+// poses as another app's client. Three kinds of probe would break it, and Trebell has none of them:
+// - one that reads Claude Code's <CLAUDE_CONFIG_DIR>/.credentials.json (claudeAiOauth.accessToken) and calls
 //   Anthropic's OAuth API as claude-cli/<version>. Anthropic: "developers may not collect, store, or intermediate Claude.ai
 //   credentials or session tokens".
-// - cliproxyApi.ts sends the subscription's OAuth calls through a proxy as claude-code/<version>.
-// - antigravityUsageLimits.ts reads Antigravity's acp_token.json (its OAuth client secret and refresh token) and calls Google's
+// - one that sends the subscription's OAuth calls through a proxy as claude-code/<version>.
+// - one that reads Antigravity's acp_token.json (its OAuth client secret and refresh token) and calls Google's
 //   internal quota endpoints as Antigravity's own client (aidev_client), the use Antigravity's terms (section 6) name.
 // Cursor's usage read went out as the Cursor CLI (x-cursor-client-type: cli) too. The scan fails on any of them and names the file
 // and line it found.
@@ -123,7 +123,7 @@ test("no Trebell code reads a harness's stored Claude.ai or Antigravity login or
 
 test("the scan names the file and line of each thing it stops, and leaves Trebell's own names and install paths alone",()=>{
   const files=[
-    // T3's claudeResetCredits.ts and cliproxyApi.ts, in short.
+    // A Claude credentials read and a proxied subscription call, in short.
     {file:"src/reset-credits.mjs",text:[
       'const stored=JSON.parse(await readFile(join(configDir,".credentials.json"),"utf8"));',
       "const token=stored.claudeAiOauth?.accessToken;",
@@ -131,7 +131,7 @@ test("the scan names the file and line of each thing it stops, and leaves Trebel
     ].join("\n")},
     {file:"src/proxy-usage.mjs",text:'await fetch(url,{headers:{"User-Agent":"claude-code/2.1.273"}});'},
     {file:"src/cursor-usage.mjs",text:'const headers={"content-type":"application/json","x-cursor-client-type":"cli"};'},
-    // T3's antigravityUsageLimits.ts, in short.
+    // An Antigravity token read, in short.
     {file:"src/agy-usage.mjs",text:[
       'const raw=await readFile(join(home,".gemini","antigravity-acp","acp_token.json"),"utf8");',
       'const agent="antigravity/hub/1.0.0 (aidev_client; windows)";',

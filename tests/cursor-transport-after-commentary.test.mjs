@@ -1,5 +1,5 @@
-// Cursor streams a lost backend connection as its reply and ends the turn normally. Each assistant message is classified on its own
-// (T3 656f3f409): a turn whose last message is only that diagnostic fails, even after commentary, a thought, a plan or a tool call
+// Cursor streams a lost backend connection as its reply and ends the turn normally. Each assistant message is classified on its own:
+// a turn whose last message is only that diagnostic fails, even after commentary, a thought, a plan or a tool call
 // earlier in the turn, while a message that quotes the diagnostic in prose is an answer. The failed turn keeps what Cursor wrote before
 // the diagnostic as its reply, as another harness's failed turn keeps all it wrote.
 import test from "node:test";

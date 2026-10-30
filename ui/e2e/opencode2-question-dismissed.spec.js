@@ -2,7 +2,7 @@ import { test,expect } from "@playwright/test";
 import { openCode2App,send,shots,stopButton } from "./opencode-relay-app.js";
 
 // An OpenCode 2 question the person closes without answering, as they see it. Before, Trebell told the model to continue without the
-// answer, and the turn ran on as if nothing had been asked. Now the question is cancelled as T3 Code cancels it (no message), which
+// answer, and the turn ran on as if nothing had been asked. Now the question is cancelled with no message, which
 // OpenCode takes as the person dismissing it and stops its run, and the turn ends saying why. The real relay, OpenCode 2 session and
 // @opencode/client run against the fake OpenCode 2 server (tests/fixtures/fake-opencode2-server.mjs).
 const DISMISSED="OpenCode's question was dismissed, so Trebell declined it and stopped the turn.";

@@ -1,5 +1,5 @@
 // Muse Code's updates in Settings, as AgentRuntimeManager plans, runs and lists them (installPlan, install, and the update reading of
-// Settings' harness list), after T3 Code's provider-muse maintenance: Meta's channel manifest names the newest release, and Meta's
+// Settings' harness list): Meta's channel manifest names the newest release, and Meta's
 // launcher, which has no update command, updates the Muse Code it runs when it runs its --version with its update on, synchronous
 // and due, on the profile's channel. Every Trebell launch keeps that update off, so this is the one way Muse Code updates under it.
 // On Windows the launcher is Meta's own muse.cmd beside a stand-in .muse-launcher.ps1 that updates as Meta's does

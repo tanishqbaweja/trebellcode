@@ -1,6 +1,6 @@
 // A send extracts an attached document's text at most once, where its text can be used: attaching a file on this machine extracts it
-// (/api/attachments/import) and the check of a message about to go extracts what attaching did not (/api/attachments/validate, T3's
-// claim of a message's attachments), while the relay only names the text that is there, as T3's prompt builders only look for it
+// (/api/attachments/import) and the check of a message about to go extracts what attaching did not (/api/attachments/validate),
+// while the relay only names the text that is there
 // (resolveExtractedTextPath). So the relay never runs a second extraction while the turn waits, for Trebell Native neither, whose
 // prompt names no text, and an upload is not extracted before the composer takes it in, which for a thread in a remote environment
 // copies it to that host, where no harness is told of text on this machine.

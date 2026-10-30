@@ -10,7 +10,7 @@ import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
 // A Cursor turn that loses its backend connection, which Cursor streams as its reply's last message ("Error: ConnectError:
-// [unavailable] ...", with a stack line) before it ends the turn normally. The turn fails with that error (T3 656f3f409). The dump is
+// [unavailable] ...", with a stack line) before it ends the turn normally. The turn fails with that error. The dump is
 // the turn's error, not its answer: a turn keeps what Cursor wrote before it as its reply, whose failed pill says that error once the
 // card that said it is gone, and a turn whose only message is the dump keeps none and ends with a row of its own under the failed
 // pill, its error in it.

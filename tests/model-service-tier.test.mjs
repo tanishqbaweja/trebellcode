@@ -40,14 +40,14 @@ test("Codex speed options are its catalog's service tiers by id, with Standard a
   assert.deepEqual(codexServiceTierOptions({additionalSpeedTiers:["fast"]}),[{id:"fast",label:"Fast",description:""}],"the older additionalSpeedTiers list");
   assert.equal(normalizeRuntimeModelServiceTier("codex"," Priority "),"priority");
   assert.equal(normalizeRuntimeModelServiceTier("codex","has space"),null);
-  // Only an explicit pick is sent (T3 sends serviceTier only when chosen); a saved "fast" still picks Codex's Fast tier.
+  // Only an explicit pick is sent; a saved "fast" still picks Codex's Fast tier.
   assert.equal(codexServiceTierForTurn({configured:"priority",metadata}),"priority");
   assert.equal(codexServiceTierForTurn({configured:"fast",metadata}),"priority");
   assert.equal(codexServiceTierForTurn({configured:"default",metadata}),"default","Standard is sent as Codex's default tier");
   assert.equal(codexServiceTierForTurn({metadata}),null,"no pick keeps the thread's own tier");
   assert.equal(codexServiceTierForTurn({configured:"turbo",custom:"flex",metadata}),"flex","an unknown pick falls to the custom model's tier");
   assert.equal(codexServiceTierForTurn({custom:"priority",metadata:{}}),"priority","a model without listed tiers sends only a custom tier");
-  // The picker shows the pick, else the catalog's default tier, else Standard (T3 currentValue).
+  // The picker shows the pick, else the catalog's default tier, else Standard.
   assert.equal(codexServiceTierPickerValue("priority",metadata),"priority");
   assert.equal(codexServiceTierPickerValue(null,metadata),"default");
   assert.equal(codexDefaultServiceTier({...metadata,defaultServiceTier:"priority"}),"priority");

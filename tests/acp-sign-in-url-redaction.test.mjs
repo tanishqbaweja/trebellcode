@@ -1,4 +1,4 @@
-// An ACP agent's log excerpt, as an error or warning shows it, keeps no Google sign-in page address (T3 stderr.ts): its state and
+// An ACP agent's log excerpt, as an error or warning shows it, keeps no Google sign-in page address: its state and
 // the local address it answers to become [sign-in-url]. Trebell Native's redaction (redactSecretText) leaves such an address as it
 // was, and its other redactions are the same as before. A chat whose agent exits as it starts says so in plain words: the harness,
 // its exit code and what it printed, and for a log that asks for a Google sign-in, where the harness signs in instead of that link.

@@ -5,7 +5,7 @@ import { FAKE_OPENCODE1_MODEL, startFakeOpenCode1 } from "./fixtures/fake-openco
 import { eventuallyReal as eventually, openCode1Relay } from "./fixtures/opencode1-relay.mjs";
 
 // OpenCode 1.x's question tool says whether a question also takes the person's own words (custom, true unless it says false). Trebell
-// dropped the flag, so the question card offered a typed answer OpenCode did not ask for (T3 Code's 04bd86951 keeps it).
+// dropped the flag, so the question card offered a typed answer OpenCode did not ask for.
 const QUESTIONS=[
   {header:"Color",question:"Which color do you prefer?",options:[{label:"Red",description:"Warm"},{label:"Blue",description:"Cool"}],custom:false},
   {header:"Name",question:"What should the theme be called?",options:[{label:"Sunrise",description:"A morning theme"}]},

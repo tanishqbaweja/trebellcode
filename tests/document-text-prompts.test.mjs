@@ -1,5 +1,5 @@
-// Every harness is told the file an attached document's text was extracted to, after the document's own path, as T3 Code tells every
-// harness ('... is saved at: <path> (text extracted to: <file>)', 888a3d47d): Claude Code, Muse Code, OpenCode 1.x and 2.x, Cursor and
+// Every harness is told the file an attached document's text was extracted to, after the document's own path
+// ('... is saved at: <path> (text extracted to: <file>)'): Claude Code, Muse Code, OpenCode 1.x and 2.x, Cursor and
 // Grok, Codex and a question's answer. OpenCode 1.x reads that text as the file's text instead of the document's bytes, and Antigravity,
 // which cannot open Trebell's attachments folder, gets the text embedded. A document Trebell has no text of is named by its path alone.
 import test from "node:test";

@@ -2746,7 +2746,7 @@ test("slash menu only advertises commands that can run in the current context",a
   for(const command of ["/compact","/ps","/stop","/feedback","/review"]){
     await expect(menu.getByText(command,{exact:true})).toHaveCount(0);
   }
-  // Codex lists /goal among its own commands (T3 CodexProvider slashCommands), so a new Codex task can start with a goal.
+  // Codex lists /goal among its own commands, so a new Codex task can start with a goal.
   for(const command of ["/terminal","/diff","/git","/preview","/model","/plan","/goal"]){
     await expect(menu.getByText(command,{exact:true})).toBeVisible();
   }
@@ -4041,7 +4041,7 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     const boundedRow=page.locator(".thread-row").filter({hasText:"OpenCode bounded history"});
     await expect(boundedRow.getByRole("img",{name:"Running"})).toBeVisible();
     const composer=page.getByTestId("composer");
-    // OpenCode steers a busy turn the way T3 Code does (00c28de7 made it advertise steering), so with followUpMode "steer" the
+    // OpenCode steers a busy turn (it advertises steering), so with followUpMode "steer" the
     // follow-up goes into the running turn instead of the queue.
     await expect(composer).toHaveAttribute("placeholder","Steer the running agent…");
     await expect(page.locator(".composer-status")).toContainText("Steer follow-ups");
@@ -4456,7 +4456,7 @@ test("workspace diff lines wrap by default, can scroll instead, and the choice i
   };
   let panel=await openDiff();
   const diff=panel.locator(".git-diff"),size=()=>diff.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
-  // Wrapped by default, as in T3 Code: the whole change reads without scrolling sideways, in the code's own characters.
+  // Wrapped by default: the whole change reads without scrolling sideways, in the code's own characters.
   await expect(diff).toHaveClass(/\bwrap\b/);
   await expect(panel.getByRole("button",{name:"Disable diff line wrapping"})).toHaveAttribute("aria-pressed","true");
   let metrics=await size();expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);

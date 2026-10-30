@@ -53,7 +53,7 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(manager.capabilities("claude").runtimeProfileSwitching,true);
     assert.equal(manager.capabilities("cursor").fork,"runtime");
     assert.equal(manager.capabilities("cursor").mcpInjection,true);
-    assert.equal(manager.capabilities("cursor").clientFilesystem,false,"Cursor runs its own file tools (T3 offers ACP agents no client files)");
+    assert.equal(manager.capabilities("cursor").clientFilesystem,false,"Cursor runs its own file tools");
     assert.equal(manager.capabilities("antigravity").clientFilesystem,true);
     assert.equal(manager.capabilities("grok").clientTerminal,false);
     assert.equal(manager.capabilities("cursor").nativeSandbox,false);
@@ -92,9 +92,9 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   const acp=runtimeCapabilities("grok");
   assert.equal(acp.queue,true,"Trebell supplies the queue for external runtimes");
   assert.equal(acp.fork,"runtime","ACP forking must stay conditional on what the connected runtime advertises");
-  assert.equal(acp.rewind,true,"a Grok revert starts a fresh session, as T3's ACP rollbackThread does");
+  assert.equal(acp.rewind,true,"a Grok revert starts a fresh session");
   assert.equal(runtimeCapabilities("antigravity").rewind,true);
-  assert.equal(runtimeCapabilities("cursor").rewind,false,"Cursor offers no rollback (T3 canRollbackThread false)");
+  assert.equal(runtimeCapabilities("cursor").rewind,false,"Cursor offers no rollback");
   assert.equal(acp.delegation,true,"manual Trebell delegation stays available even when the runtime cannot invoke dynamic tools itself");
   assert.equal(acp.videoAttachments,true);
   assert.equal(runtimeCapabilities("antigravity").videoAttachments,false,"Antigravity attachment limits belong in the capability contract, not UI runtime-name checks");
@@ -168,7 +168,7 @@ test("the official Cursor .cmd launcher wins over PATH and serves version, about
     const status=await manager.probe(instance);
     assert.equal(status.installed,true);assert.equal(status.available,true);assert.equal(status.binary,launcher);
     assert.equal(status.version,"2026.09.26-dd393fe");assert.equal(status.authenticated,true);assert.equal(status.account?.email,"dev@example.test");
-    // The model list is Cursor's own (T3's ACP-era discovery), with names and per-model effort; Auto is the default.
+    // The model list is Cursor's own, with names and per-model effort; Auto is the default.
     const listed=await manager.models(instance);
     assert.deepEqual(listed.models,["default","gpt-5.6-sol"]);assert.equal(listed.preferred,"default");assert.equal(listed.source,"live");
     assert.equal(listed.metadata[1].name,"GPT-5.6 Sol");assert.deepEqual(listed.metadata[1].reasoningEfforts,["low","medium","high","xhigh"]);assert.equal(listed.metadata[1].defaultReasoningEffort,"medium");
@@ -387,7 +387,7 @@ test("OpenCode compatibility blocks known-broken managed updates and pins verifi
     const installed=await manager.install("opencode");
     assert.equal(installed.targetVersion,"1.14.19");assert.equal(installed.packageName,"opencode-ai");assert.equal(installed.method,"npm");
     assert.equal(installed.compatibility.status,"supported");
-    // OpenCode 1.x's own package, with its install script allowed (npm 12 skips it otherwise, T3 Code); never 2.x's @opencode/cli.
+    // OpenCode 1.x's own package, with its install script allowed (npm 12 skips it otherwise); never 2.x's @opencode/cli.
     assert.deepEqual(installs(),["install -g --allow-scripts=opencode-ai opencode-ai@1.14.19"]);
     assert.equal(installed.status.version,"opencode 1.14.19");assert.equal(installed.status.compatibility.status,"supported");
     // Already the newest release: nothing is installed again.
@@ -539,7 +539,7 @@ test("Trebell updates an OpenCode only the way it was installed, judged from whe
   assert.equal(commandOnPath("opencode",{platform:"linux",env:{PATH:"/usr/bin:/home/dev/.opencode/bin"},exists:exists(["/home/dev/.opencode/bin/opencode"])}),"/home/dev/.opencode/bin/opencode");
   assert.equal(commandOnPath("/opt/opencode",{platform:"linux",env:{},exists:exists([])}),null);
   assert.equal(commandOnPath("C:\\oc\\opencode.exe",{platform:"win32",env:{},exists:exists(["C:\\oc\\opencode.exe"])}),"C:\\oc\\opencode.exe");
-  // T3 Code's status wording, from the providers OpenCode's server reports connected.
+  // The status wording, from the providers OpenCode's server reports connected.
   assert.equal(openCodeStatusMessage(4),"4 upstream providers connected through OpenCode.");
   assert.equal(openCodeStatusMessage(1,{external:true}),"1 upstream provider connected through the configured OpenCode server.");
   assert.equal(openCodeStatusMessage(0),"OpenCode is available, but it did not report any connected upstream providers.");
@@ -903,7 +903,7 @@ test("a remote Codex account check's kept answer is its home's: another home ask
   assert.match(checks[1],/\.codex-moved/);
 });
 
-// Antigravity is the one harness offered the client's files (T3 AntigravityAcpSupport); no harness is offered its terminal.
+// Antigravity is the one harness offered the client's files; no harness is offered its terminal.
 test("ACP agent session serves Antigravity bounded client files end to end and refuses the terminal it does not offer", async () => {
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-session-"));
   const fixture=join(root,"fake-acp.mjs");

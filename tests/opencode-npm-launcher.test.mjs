@@ -1,5 +1,5 @@
 // Windows: an OpenCode that only PATH names (nvm-windows' C:\nvm4w\nodejs, another npm prefix) runs the opencode.exe behind npm's
-// launcher itself, as T3 Code does (npmShimExecutable), when the launcher is exactly npm's for a native binary. Started through
+// launcher itself, when the launcher is exactly npm's for a native binary. Started through
 // cmd.exe, that opencode.exe escapes the kill-on-close job of the process that started it, so its `opencode serve` outlived a
 // Trebell that was killed or crashed. A launcher that sets anything up first stays the one that runs.
 import test from "node:test";

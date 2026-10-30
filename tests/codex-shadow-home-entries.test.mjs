@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { prepareCodexHome } from "../src/codex-home-layout.mjs";
 
-// Two entries a Codex shadow home meets in real use (T3 Code's CodexHomeLayout): Finder's .DS_Store, which macOS writes into every
+// Two entries a Codex shadow home meets in real use: Finder's .DS_Store, which macOS writes into every
 // folder it opens, the shadow home's too, and the SQLite maintenance lock Codex makes in a shadow home it starts in before the
 // shared home has one. With either one a real file in both homes, the profile could not start: "Cannot create Codex shadow home
 // entry … because … already exists and is not a symlink."

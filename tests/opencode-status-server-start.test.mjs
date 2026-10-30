@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { discoverOpenCode2ModelCatalog } from "../src/opencode-agent-session.mjs";
 
-// OpenCode 2 converts the shared database on its first run, so `opencode serve` may take up to 30 seconds to start (T3 Code waits as
-// long). The status check, which every switch and thread start makes first, gave OpenCode's whole answer 20 seconds: a server that took
+// OpenCode 2 converts the shared database on its first run, so `opencode serve` may take up to 30 seconds to start. The status
+// check, which every switch and thread start makes first, gave OpenCode's whole answer 20 seconds: a server that took
 // 20 to 30 seconds to start failed the switch with "OpenCode did not answer within 20 seconds." Now the 20 seconds start once the
 // read's server is up; a read that hangs after that, or one that starts no server, still ends at 20 seconds. On mocked timers.
 const flush=async(turns=20)=>{for(let index=0;index<turns;index++)await new Promise(resolve=>setImmediate(resolve))};

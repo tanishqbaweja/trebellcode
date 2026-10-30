@@ -15,9 +15,9 @@ const AGENT=fileURLToPath(new URL("./fixtures/antigravity-acp-agent.mjs",import.
 const KEY="AIzaSyTrebellFixtureKey0123456789abcdef";
 const inside=(path,root)=>{const rel=relative(resolve(root),resolve(path));return Boolean(rel)&&!rel.startsWith("..")&&!isAbsolute(rel)};
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
-// Trebell words these itself: T3 Code's own sentences for them are not reused.
+// Trebell words these itself: sentences written elsewhere for them are not reused.
 const UNREACHABLE="Antigravity's sign-in did not finish within 5 minutes. Finish it in the browser page Antigravity opened; Antigravity does not fall back to IPv4 when IPv6 fails, so also check that this machine reaches Google, then sign in again.";
-const T3_WORDS=/could not reach Google\. Check this machine's network connection|Broken IPv6 is a common cause|eligible Antigravity subscription/;
+const BORROWED_WORDS=/could not reach Google\. Check this machine's network connection|Broken IPv6 is a common cause|eligible Antigravity subscription/;
 
 // A scenario for the stand-in in a folder of its own, removed after the test; env is a launch's environment as Trebell builds it.
 async function standIn(t,scenario,{key=null}={}){
@@ -71,7 +71,7 @@ test("a sign-in Antigravity never finishes ends after 5 minutes saying how to fi
   await signing;
   assert.ok(settled instanceof Error,"the sign-in failed");
   assert.equal(settled.message,UNREACHABLE);
-  assert.doesNotMatch(settled.message,T3_WORDS,"not T3 Code's sentences");
+  assert.doesNotMatch(settled.message,BORROWED_WORDS,"Trebell's own sentences");
 });
 
 test("an Antigravity that exits for want of IPv6 sockets says it needs them, as it starts or as it signs in",async t=>{
@@ -89,6 +89,6 @@ test("Google's subscription refusal, a refused sign-in and a session that cannot
   ];
   for(const [scenario,said] of cases){
     const fx=await standIn(t,scenario);
-    await assert.rejects(signIn(fx),error=>{assert.match(error.message,said);assert.doesNotMatch(error.message,T3_WORDS);return true});
+    await assert.rejects(signIn(fx),error=>{assert.match(error.message,said);assert.doesNotMatch(error.message,BORROWED_WORDS);return true});
   }
 });

@@ -13,9 +13,9 @@ import { keepThreadMeta } from "./test-home.js";
 // A Cursor tool call whose first frame has a location that is no object, after a plan with an entry that is no object. The relay leaves
 // such entries out (agent-relay.mjs acpEntries): the plan shows its other step, and the call shows in the turn's card from that frame, by
 // its title, as it names no file. Both updates used to be dropped whole. An update the relay fails on while it
-// handles it is dropped with a warning (acp-client.mjs), and it does not join the call's state, as T3 drops an update it cannot decode:
-// the next update shows the call. The drop is listed in the thread's Execution trace by its method and reason, as T3 logs one it cannot
-// decode; the warning reached no one before. The relay no longer fails on this frame, so the trace test's journal refuses it instead.
+// handles it is dropped with a warning (acp-client.mjs), and it does not join the call's state:
+// the next update shows the call. The drop is listed in the thread's Execution trace by its method and reason;
+// the warning reached no one before. The relay no longer fails on this frame, so the trace test's journal refuses it instead.
 const TRACE_REFUSED="The trace could not take this event";
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const json=(route,value)=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(value)});

@@ -6,7 +6,7 @@ import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 // Muse Code's subscription windows on the Usage page, as a person on a Muse Code window reads them. The page's subscription limits
 // read is answered as gui-server.mjs answers /api/agent-runtime-usage, by a runtime manager of the test's own: what it shows is the
 // last usage/changed Muse Code's sessions keep for the account (read through museUsageReport, which a stand-in for that store answers
-// here), in the shape of T3 Code's recorded Muse 1.4 report. Before any
+// here), in the shape of Muse 1.4's usage/changed report. Before any
 // report the card says none came yet; then a 5-hour row (the length Muse reports) and a Weekly row, a window Meta reports at 103%
 // held at 100% used, with their resets and the time the report was observed; a later report shows at the next Refresh.
 const shots=fileURLToPath(new URL("../../visual-audit/polish/muse-usage/",import.meta.url));mkdirSync(shots,{recursive:true});

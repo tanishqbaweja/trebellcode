@@ -116,7 +116,7 @@ test("OpenCode advertised controls surface SDK failures instead of pretending su
   session.model="unknown";session.modelMap.clear();await assert.rejects(()=>session.compact(),/select a model/i);
 });
 
-test("each Trebell mode is a set of OpenCode session rules (T3 Code's openCodePermissionRules)",()=>{
+test("each Trebell mode is a set of OpenCode session rules",()=>{
   // OpenCode's evaluation: the agent's rules, then the session's; the last rule whose permission and pattern match decides.
   const glob=value=>new RegExp("^"+String(value).replace(/[.+^${}()|[\]\\]/g,"\\$&").replace(/\*/g,".*").replace(/\?/g,".")+"$");
   const decide=(rules,permission,pattern="src/app.js")=>[{permission:"*",pattern:"*",action:"allow"},...rules].findLast(rule=>glob(rule.permission).test(permission)&&glob(rule.pattern).test(pattern)).action;
@@ -135,13 +135,13 @@ test("each Trebell mode is a set of OpenCode session rules (T3 Code's openCodePe
   assert.deepEqual(table("read-only"),{bash:"ask",edit:"deny",read:"allow",env:"deny",envExample:"allow",webfetch:"ask",outside:"deny",trusted:"allow",repository:"allow",mcp:"ask",task:"allow"});
   assert.equal(openCodePermissionDisposition("read-only","bash"),"deny","every command a read-only session asks for is refused unasked");
   // OpenCode leaves out of the request a tool whose last "*" rule denies it, and OpenCode Zen's free tier refuses a request without
-  // the shell or read tool, so no mode removes them from the session itself (T3 Code never denies shell or read).
+  // the shell or read tool, so no mode removes them from the session itself.
   const removedTools=rules=>["bash","read","edit"].filter(permission=>rules.findLast(rule=>glob(rule.permission).test(permission)&&rule.pattern==="*")?.action==="deny");
   for(const mode of ["supervised","edits","auto","read-only","full"])assert.deepEqual(removedTools(openCodePermissionRules(mode)).filter(tool=>tool!=="edit"),[],mode);
   assert.deepEqual(removedTools(openCodePermissionRules("read-only")),["edit"],"read only removes the edit tools");
   assert.deepEqual(table("full"),{bash:"allow",edit:"allow",read:"allow",env:"allow",envExample:"allow",webfetch:"allow",outside:"allow",trusted:"allow",repository:"allow",mcp:"allow",task:"allow"});
   // A subagent's session starts with only the parent's denies and folder rules: in the asking modes it gets no commands or edits, since
-  // nobody could be asked for them there, and it keeps its read tools (T3's leading "*" deny would leave it none).
+  // nobody could be asked for them there, and it keeps its read tools.
   const child=mode=>openCodePermissionRules(mode).filter(rule=>rule.action==="deny"||rule.permission==="external_directory");
   assert.deepEqual({bash:decide(child("supervised"),"bash"),edit:decide(child("supervised"),"edit"),read:decide(child("supervised"),"read")},{bash:"deny",edit:"deny",read:"allow"});
   assert.deepEqual({bash:decide(child("edits"),"bash"),edit:decide(child("edits"),"edit")},{bash:"deny",edit:"allow"});
@@ -162,7 +162,7 @@ test("OpenCode rule updates are sent only when they change something, and a suba
   ]),["/skills/*","/tmp/opencode/*"],"sorted, whatever order OpenCode lists its folders in");
 });
 
-test("OpenCode model variants, default levels, primary agents and message IDs follow OpenCode and T3 Code",()=>{
+test("OpenCode model variants, default levels, primary agents and message IDs follow OpenCode",()=>{
   assert.deepEqual(openCodeModelVariants({variants:{low:{},high:{},"bad name":{},off:{disabled:true},"x.high_2":{}}}),["low","high","x.high_2"]);
   assert.deepEqual(openCodeModelVariants({}),[]);
   assert.equal(inferOpenCodeDefaultVariant("opencode",["minimal","low","medium","high"]),"medium");

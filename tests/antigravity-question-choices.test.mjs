@@ -1,5 +1,5 @@
 // Antigravity asks its multiple-choice questions through session/request_permission (an interaction_* tool call) and takes only one
-// of the choices it offered as the answer (T3 extractAntigravityUserInputQuestion, 2d4089432). The question goes to the app marked as
+// of the choices it offered as the answer. The question goes to the app marked as
 // taking no words of the person's own, each choice carrying its option id, so the person picks one of them and two choices of one
 // name stay apart. Other harnesses' questions keep taking the person's own words.
 import test from "node:test";

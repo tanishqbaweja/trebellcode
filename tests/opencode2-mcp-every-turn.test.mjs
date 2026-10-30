@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { OpenCode2AgentSession } from "../src/opencode2-agent-session.mjs";
 import { eventually, fakeOpenCode2Client } from "./fixtures/fake-opencode2-client.mjs";
 
-// OpenCode 2 keeps the MCP servers a client adds at runtime per folder, and drops them when it evicts a folder that sat idle (T3 Code's
-// a5307c44f): a thread left idle lost Trebell's repository tools for good, as Trebell added them once, when the session started.
+// OpenCode 2 keeps the MCP servers a client adds at runtime per folder, and drops them when it evicts a folder that sat idle: a
+// thread left idle lost Trebell's repository tools for good, as Trebell added them once, when the session started.
 const REPOSITORY_MCP={name:"trebell_repository",command:"node",args:["repository-mcp-stdio.mjs"],openCode:{type:"local",command:["node","repository-mcp-stdio.mjs"],environment:{TREBELL_REPOSITORY_ROOT:"/repo",PORT:3000},enabled:true,timeout:15_000}};
 const ADDED={server:"trebell_repository",location:{directory:"/repo"},config:{type:"local",command:["node","repository-mcp-stdio.mjs"],environment:{TREBELL_REPOSITORY_ROOT:"/repo",PORT:"3000"},disabled:false,timeout:{startup:15_000}}};
 const ended=fake=>fake.emit({type:"session.execution.succeeded",data:{sessionID:"ses_main"}});

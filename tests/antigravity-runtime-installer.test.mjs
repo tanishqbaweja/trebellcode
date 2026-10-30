@@ -1,8 +1,8 @@
 // Trebell Code installs Antigravity's ACP runtime from the ACP registry's entry for this machine (antigravity-runtime-installer.mjs),
 // and the runtime in place stays unchanged unless every step passes: the drive has room for the download and for each file it
 // unpacks, the download has the SHA-256 the registry lists beside it (an entry without one is refused), it holds agy_acp_server with
-// localharness_external beside it, and the new runtime starts and says it is antigravity-acp at the registry's version (T3 Code's
-// AntigravityInstallation checks). The unpacked folder is then moved into place, not copied; on Windows a runtime a running chat
+// localharness_external beside it, and the new runtime starts and says it is antigravity-acp at the registry's version. The
+// unpacked folder is then moved into place, not copied; on Windows a runtime a running chat
 // holds is not replaced, and the person is told what frees it. Here the registry and the download are fakes, the
 // archive a real zip that extract-zip unpacks, and the runtime started a stand-in for Antigravity's server (fixtures/
 // antigravity-acp-agent.mjs, or fixtures/scripted-acp-agent.mjs for one that says it is another agent).

@@ -4,8 +4,8 @@ import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { replyItem,routeRelayApp,startRelayHarness } from "./relay-history-harness.js";
 
-// An attachment whose saved file is gone by the time its message goes is named, with what to do, instead of Node's bare ENOENT (T3
-// says "an attachment could not be read"). The composer's check before a send says so and keeps the draft; so does the relay for an
+// An attachment whose saved file is gone by the time its message goes is named, with what to do, instead of Node's bare ENOENT.
+// The composer's check before a send says so and keeps the draft; so does the relay for an
 // image that went after that check, before the message's turn exists, so no turn is left running and the thread takes the next
 // message. Either says so after the conversation's last reply, as the message's own, never as a step of the turn before it: also
 // the queue's refusal of a follow-up whose image went while it waited. A Trebell Native thread on the real agent relay, with its

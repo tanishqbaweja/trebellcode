@@ -1,5 +1,5 @@
 // A Codex goal's first turn sends Codex "Start working toward this goal: <objective>" (codex-goal-start.mjs), so the model works
-// toward the objective rather than echoing it back (T3 Code rewrites only what Codex receives). The person never typed those words:
+// toward the objective rather than echoing it back. The person never typed those words:
 // their message, its checkpoint and the thread's title keep the objective, live and once Codex's own record of the message (its
 // history, the thread's preview) is read back after a reload. The window's side is turn-support.js and thread-history.js; the
 // thread list goes through the GUI server's Codex relay, here in mock mode with a fake Codex app-server (fixtures/codex-gui-fake.mjs).

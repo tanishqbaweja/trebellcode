@@ -46,7 +46,7 @@ test("a TodoWrite a Claude thread stored as a file change is not handed over as 
   assert.deepEqual(threadHistoryEntries([turn("t2",[{type:"fileChange",id:"f2",changes:[]}])]).map(entry=>entry.text),["(files not named)"]);
 });
 
-test("selection keeps T3's priority within the budget and omits an entry too large for it whole",()=>{
+test("selection keeps its priority within the budget and omits an entry too large for it whole",()=>{
   const entry=(turn,role,size,tag)=>({turn,role,label:role,text:tag+"·".repeat(Math.max(0,size-tag.length))});
   const entries=[entry(1,"user",40,"FIRST"),entry(1,"assistant",40,"A1"),entry(2,"user",40,"U2"),entry(2,"activity",40,"CMD"),entry(3,"user",40,"LAST"),entry(3,"assistant",900,"HUGE"),entry(3,"assistant",40,"REPLY")];
   const cost=item=>new TextEncoder().encode(renderHistoryEntry(item)).length+2;
@@ -62,7 +62,7 @@ test("selection keeps T3's priority within the budget and omits an entry too lar
   assert.deepEqual(selectThreadHistory(entries,{budget:10}),{entries:[],included:0,omitted:7});
 });
 
-test("the handoff stays within T3's budget, says what it is and how much it left out",()=>{
+test("the handoff stays within its budget, says what it is and how much it left out",()=>{
   const turns=Array.from({length:60},(_,index)=>turn(`t${index}`,[user(`t${index}`,`Question ${index} `+"q".repeat(400)),reply(`t${index}`,`Answer ${index} `+"a".repeat(400))]));
   const handoff=threadHistoryHandoff(turns,{harness:"Cursor"});
   assert.equal(THREAD_HISTORY_BUDGET,16_000);

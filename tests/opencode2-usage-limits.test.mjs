@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { OpenCode2AgentSession } from "../src/opencode2-agent-session.mjs";
 import { eventually, fakeOpenCode2Client } from "./fixtures/fake-opencode2-client.mjs";
 
-// How an OpenCode 2 turn that OpenCode failed ends (T3 Code's 9b0435369 and 2f021ee7d): a provider's usage window or budget
+// How an OpenCode 2 turn that OpenCode failed ends: a provider's usage window or budget
 // (provider.quota with HTTP 429, or provider.rate-limit) is a usage limit, whose failure says where to check it; an empty balance
 // (provider.quota with HTTP 402) never resets, so it keeps OpenCode's own message, as does any other failure.
 async function failedWith(error){

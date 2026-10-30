@@ -154,8 +154,8 @@ test("text typed on while a Control+Enter fan-out checks its files stays in the 
 });
 
 // A background send checks its files as it is sent, and its launch checks them again right after, as each launch of a fan-out does
-// after the fan-out's own check: only the send's own check may extract an attached document's text (T3 claims a message's attachments
-// once), and the launches' checks only find it, so no document's text is extracted twice, or once more for each model, as it goes.
+// after the fan-out's own check: only the send's own check may extract an attached document's text, and the launches' checks only
+// find it, so no document's text is extracted twice, or once more for each model, as it goes.
 test("a background send's and a fan-out's files are checked as they are sent and again as each task starts, only the send's own check extracting a document's text",async({page})=>{
   test.setTimeout(100_000);
   const fanout=await startNativeFanout(page,{models:["model-a","model-b"]}),{threadStore,providerCalls,worktrees}=fanout;

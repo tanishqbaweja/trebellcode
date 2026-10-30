@@ -63,7 +63,7 @@ test("shim resolution leaves other commands untouched", () => {
   assert.equal(resolveWindowsCommandShim("C:\\npm\\unreadable.cmd", options), "C:\\npm\\unreadable.cmd");
 });
 
-// exact: only npm's launcher for a native binary, line for line (T3 npmShimExecutable), so the binary can run without cmd.exe and end
+// exact: only npm's launcher for a native binary, line for line, so the binary can run without cmd.exe and end
 // with the process that started it. One that sets anything up first is left to run as it is.
 test("exact resolves npm's launcher of a native binary to that binary, and leaves any other launcher as it is", () => {
   const shim = "C:\\nvm4w\\nodejs\\opencode.cmd";

@@ -1,4 +1,4 @@
-// An .aac attached to an Antigravity chat. T3 Code sends audio/aac as audio when Antigravity's promptCapabilities take audio. Trebell's
+// An .aac attached to an Antigravity chat, which takes audio/aac as audio when its promptCapabilities take audio. Trebell's
 // composer sends only mp3, wav, m4a, ogg and flac as audio (App.jsx inputsFor), so an .aac goes as a file link, which Antigravity 1.2.1
 // cannot open in Trebell's attachments folder, and its sound never reached the model. Antigravity's own prompt now adds the audio after
 // the link, within the same 20 MiB a file and 50 MiB a message; every other harness gets the link as before.

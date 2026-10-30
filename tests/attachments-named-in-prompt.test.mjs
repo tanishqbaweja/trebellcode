@@ -1,6 +1,6 @@
-// Every attachment is named in the prompt whatever the length of its text (T3 550f119c3: "The text-input budget must never hide the
-// existence of an attachment"), and one Trebell cannot read is said plainly, with what to do, before the harness has anything (T3
-// 300a35670: "an attachment could not be read"), instead of Node's bare error.
+// Every attachment is named in the prompt whatever the length of its text, so a long message never hides that it has an
+// attachment, and one Trebell cannot read is said plainly, with what to do, before the harness has anything, instead of Node's
+// bare error.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";

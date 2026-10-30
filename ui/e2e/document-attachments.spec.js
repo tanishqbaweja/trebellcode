@@ -13,7 +13,7 @@ import { select } from "../../tests/fixtures/scripted-acp.mjs";
 import { routeCodexApp,startCodexHarness } from "./codex-history-harness.js";
 import { e2eHome,keepThreadMeta } from "./test-home.js";
 
-// A Word document a person attaches reaches the agent as text it can read, as T3 Code makes document attachments readable (888a3d47d):
+// A Word document a person attaches reaches the agent as text it can read:
 // the GUI server extracts its text as it is uploaded, Codex's message names the file the text went to after the document's path, a
 // question's answer does too, and Antigravity, which cannot open Trebell's attachments folder, gets the text itself. The message's bubble
 // still shows the document by its name. The mock GUI server uploads and extracts for real; Codex and Antigravity are stand-ins.

@@ -1,6 +1,6 @@
 // A send checks a message's files twice: the composer's check before it goes (dispatchSend's, Send now's, a background send's or a
 // fan-out's) and, right after it, the one its turn starts with (startTurn's, startDetachedTurn's). Only the first extracts a document's
-// text, as T3 claims a message's attachments once; the second asks for none (extract: false) and only finds the text the first
+// text; the second asks for none (extract: false) and only finds the text the first
 // extracted. So a send runs each document's extraction once, also when it fails and takes its time: a second extraction of each
 // would make the turn wait as long again.
 import test from "node:test";

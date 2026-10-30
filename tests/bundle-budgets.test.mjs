@@ -71,24 +71,24 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // in any reply (R11A), and the first bundle's new name in the import line of the lazy chunks that load it), which took them 0.1 KB
 // gzip over it: its headroom stays 1.0 / 0.0 KB, as on main before round 11. The first bundle grew 619.8 / 198.6 to 622.0 / 199.4 KB
 // with the composer's @-menu fixes (R11C), Cite's place in Tab's order (R11A) and the composer held under the header (R11B).
-// Then by what the first wave of the T3 Code port adds to the lazy chunks, 0.5 / 0.3 KB (Settings' harness and profile rows saying
-// what a version check that did not answer, or a custom API endpoint, found, and the runtime profile editor's note on the proxy and
-// toolchain variables (T3I), and Antigravity's questions answered only by their choices (T3A); Muse Code's name in Settings, Usage
-// and Environments (T3M) about evens out), which took them 0.2 KB gzip over it: its headroom stays 1.0 / 0.1 KB, as on main before
-// the port. The first bundle grew 623.0 / 199.7 to 623.3 / 199.8 KB with Muse Code in App's harness lists (T3M).
-// Then (2026-10-28) by what the second wave of the port adds to the lazy chunks, 3.9 / 1.6 KB (T3M2 only the first bundle's new name
-// in the import lines of the lazy chunks that load it, 0.0 / 0.1 KB; T3D 0.4 / 0.2 KB, Settings' Update to a harness's newer release
-// and Muse Code's windows on Usage; T3K 3.5 / 1.3 KB, Antigravity's Gemini API key form and the Codex goal commands sent while a
-// thread compacts), and by what moved into them out of the first bundle, 10.5 / 3.7 KB, when T3K took it to 624.3 / 200.1 KB with
-// lanes T3O and the one after it still to add to it: the right panel's Runtime tab, History's list and the threads' message search,
+// Then by what the first wave of the harness-integration work adds to the lazy chunks, 0.5 / 0.3 KB (Settings' harness and
+// profile rows saying what a version check that did not answer, or a custom API endpoint, found, and the runtime profile editor's
+// note on the proxy and toolchain variables, and Antigravity's questions answered only by their choices; Muse Code's name in
+// Settings, Usage and Environments about evens out), which took them 0.2 KB gzip over it: its headroom stays 1.0 / 0.1 KB, as on
+// main before that work. The first bundle grew 623.0 / 199.7 to 623.3 / 199.8 KB with Muse Code in App's harness lists.
+// Then (2026-10-28) by what the second wave adds to the lazy chunks, 3.9 / 1.6 KB (the first bundle's new name in the import
+// lines of the lazy chunks that load it, 0.0 / 0.1 KB; 0.4 / 0.2 KB for Settings' Update to a harness's newer release and Muse
+// Code's windows on Usage; 3.5 / 1.3 KB for Antigravity's Gemini API key form and the Codex goal commands sent while a thread
+// compacts), and by what moved into them out of the first bundle, 10.5 / 3.7 KB, when that change took it to 624.3 / 200.1 KB
+// with two changes still to add to it: the right panel's Runtime tab, History's list and the threads' message search,
 // loaded at idle right after the first paint with the Cite button (idle-parts.js), and the palette's commands, which come with the
 // palette's own code (palette-actions.js), since neither the first screen nor a thread's first draw needs them before the person
 // opens them or a search runs, and what is opened before then asks for its code at once and says it is loading meanwhile. The
 // approval card a harness waits on stays in the first bundle. They took them 13.4 / 5.1 KB over it: its headroom stays 1.0 / 0.1 KB,
 // as on main before the second wave. The first bundle went down, 624.3 / 200.1 to 615.8 / 197.8 KB, with 2.2 KB gzip of room for
-// those two lanes. Lane T3O then added 0.1 / 0.0 KB to the lazy chunks (OpenCode's server-refusal and catalog wording in Settings)
+// those two changes. OpenCode's server-refusal and catalog wording in Settings then added 0.1 / 0.0 KB to the lazy chunks
 // and nothing to the first bundle (615.7 / 197.8 KB): the lazy chunks read 780.1 / 257.8 KB, 0.9 / 0.2 KB under the limit.
-// The last lane of the port, T3S, then added 2.2 / 0.7 KB to the first bundle (617.9 / 198.5 KB: Muse Code's work that runs past
+// The last change of that work then added 2.2 / 0.7 KB to the first bundle (617.9 / 198.5 KB: Muse Code's work that runs past
 // its turn kept live on that turn's card, its compaction's wait and Stop, and an attached document's extracted text named in Codex's
 // input) and 0.0 / 0.1 KB to the lazy chunks (the first bundle's new name in their import lines): 780.1 / 257.9 KB, 0.9 / 0.1 KB
 // under the limit.

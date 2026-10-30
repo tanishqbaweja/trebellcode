@@ -7,7 +7,7 @@ import { eventually, fakeOpenCode2Client, flush } from "./fixtures/fake-opencode
 // permission.asked while it waits on the person, and the silence watchdog must not count that wait as a stream gone silent, which would
 // end the turn ("sent nothing for 45 seconds") and interrupt the command just approved. @opencode/client 2.0.24's event.subscribe
 // reads the stream in the background (its shared reader) and reports OpenCode's heartbeats (onActivity) meanwhile, as the fake does,
-// and the session counts the silence only while it waits on the stream, as T3 Code's timeout runs only while a read waits. A guard: the
+// and the session counts the silence only while it waits on the stream. A guard: the
 // code before the repair kept such a turn too (the client's heartbeats reset its watchdog). On mocked timers.
 async function along(t,promise,stepMs=250){
   let done=false;promise.then(()=>{done=true},()=>{done=true});

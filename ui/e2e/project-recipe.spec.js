@@ -65,7 +65,7 @@ test("project recipe slash command starts a bounded turn with stricter permissio
     await expect.poll(()=>calls.filter(call=>call.method==="turn/start").length,{timeout:15_000}).toBe(1);
     const goalCalls=calls.filter(call=>call.method==="thread/goal/set"),goalCall=goalCalls[0],turnCall=calls.find(call=>call.method==="turn/start");
     expect(goalCall.params.childAgentBudget).toBe(0);expect(goalCall.params.validationExpectations).toEqual(["Run affected tests"]);expect(goalCall.params.completionConditions).toEqual(["Green CI"]);
-    // Codex runs an active goal's turns itself, so the goal stays paused until the recipe's first turn has started (T3 runGoalCommand).
+    // Codex runs an active goal's turns itself, so the goal stays paused until the recipe's first turn has started.
     expect(goalCall.params.status).toBe("paused");expect(goalCalls[1].params).toEqual({threadId:thread.id,status:"active"});
     expect(calls.indexOf(goalCall)).toBeLessThan(calls.indexOf(turnCall));expect(calls.indexOf(turnCall)).toBeLessThan(calls.indexOf(goalCalls[1]));
     expect(turnCall.params.additionalContext["trebell.goal"].value).toContain("Fix the failing CI job. — Linux runner only");

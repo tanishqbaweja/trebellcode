@@ -1,7 +1,7 @@
 // A message that names one of OpenCode 1.x's commands runs that command with the person's text after it as its arguments and their
-// attachments as its parts (T3 Code). An attachment OpenCode gets as no part, but as a line naming it (a document Trebell has no text
-// of, audio, video), and the line that names a document's extracted text, go after the arguments, as T3 adds every attachment's line
-// to the text it reads the command from: no attachment drops out of a command unsaid.
+// attachments as its parts. An attachment OpenCode gets as no part, but as a line naming it (a document Trebell has no text
+// of, audio, video), and the line that names a document's extracted text, go after the arguments, with every attachment's line
+// in the text the command is read from: no attachment drops out of a command unsaid.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";

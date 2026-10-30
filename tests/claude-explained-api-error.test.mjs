@@ -1,5 +1,5 @@
 // The words of an API error Claude Code explains in its own reply (an unknown model, a bad request, a billing or account problem)
-// keep no secret they repeat, as its result's "API Error: …" text keeps none: T3 Code redacts every provider failure's message. The
+// keep no secret they repeat, as its result's "API Error: …" text keeps none. The
 // turn's error and Git text written through Claude Code both read them through claudeExplainedApiError. The SDK is scripted.
 import test from "node:test";
 import assert from "node:assert/strict";

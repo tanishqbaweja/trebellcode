@@ -1,5 +1,5 @@
 // An ACP harness that answers a session's setup with auth_required (-32000) is signed in once with its own advertised method, and
-// the setup runs once more (T3 authenticateAfterRequired, selectAcpAgentAuthMethod and resolveGrokAuthMethodId), by how its profile
+// the setup runs once more, by how its profile
 // signs in, never by what its environment holds: Grok with its xAI key method when the profile is set to its API key (then before its
 // session starts, so a login it cached never stands in for the key), else with its cached login even with an XAI_API_KEY around;
 // Cursor, and any other agent, with the first method it runs itself, such as Cursor's

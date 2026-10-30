@@ -218,7 +218,7 @@ test("Claude permission prompts follow Trebell's policy and read-only denials ca
   assert.equal(approvals,1,"read-only denials never ask");
 });
 
-test("a Claude approval prompt says what is approved, as T3 Code's ClaudeAdapter",async()=>{
+test("a Claude approval prompt says what is approved",async()=>{
   assert.equal(claudePermissionPrompt("Bash",{command:"rm -rf build"},{title:"Claude wants to run rm -rf build",displayName:"Run command"}),"Claude wants to run rm -rf build");
   assert.equal(claudePermissionPrompt("PowerShell",{command:"node -e \"console.log('trebell-tour')\""},{displayName:"PowerShell"}),"PowerShell: node -e \"console.log('trebell-tour')\"");
   assert.equal(claudePermissionPrompt("Write",{file_path:"C:\\repo\\notes.txt",content:"hello"},{}),"Write: C:\\repo\\notes.txt");
@@ -301,7 +301,7 @@ test("Claude aborted or interrupted results are cancellations, never errors",asy
   assert.equal((await other.prompt([{type:"text",text:"x"}])).stopReason,"cancelled");
 });
 
-test("Claude errors read like T3 Code's: no SDK wrapper, no diagnostics, no API error streamed as the reply",async()=>{
+test("Claude errors read plainly: no SDK wrapper, no diagnostics, no API error streamed as the reply",async()=>{
   assert.equal(claudeResultFailure({subtype:"error_during_execution",errors:["[ede_diagnostic] result_type=user","Real failure"]}),"Real failure");
   assert.equal(claudeResultFailure({subtype:"success",is_error:false,result:"fine"}),null);
   assert.equal(claudeResultFailure({subtype:"success",is_error:true,api_error_status:529,result:"overloaded"}),"Claude API is overloaded (529). Try again shortly.");
@@ -316,19 +316,19 @@ test("Claude errors read like T3 Code's: no SDK wrapper, no diagnostics, no API 
   assert.equal(failure.message,apiError);
   assert.equal(text(claude.updates),"","the API error is not shown as Claude's reply");
   assert.ok(failure.userMessageId,"a failed turn that reached the transcript keeps its ids");
-  assert.equal(claudeExplainedApiError({error:"server_error",message:{content:[{type:"text",text:"API Error: 500"}]}}),null,"a retried failure keeps T3 Code's wording");
+  assert.equal(claudeExplainedApiError({error:"server_error",message:{content:[{type:"text",text:"API Error: 500"}]}}),null,"a retried failure keeps the API's wording");
   const {sdk:retried}=fakeClaude({turn:({message,emit})=>{
     emit({type:"assistant",uuid:"err-2",parent_tool_use_id:null,error:"server_error",message:{id:"m",content:[{type:"text",text:"API Error: 500"}]}});
     emit({type:"result",subtype:"success",is_error:true,terminal_reason:"api_error",api_error_status:500,result:"API Error: 500",user_message_uuid:message.uuid});
   }});
   const gaveUp=session(retried);await gaveUp.start();
-  await assert.rejects(()=>gaveUp.prompt([{type:"text",text:"x"}]),error=>error.message==="API Error: 500","the API's own words, as T3 Code keeps them");
+  await assert.rejects(()=>gaveUp.prompt([{type:"text",text:"x"}]),error=>error.message==="API Error: 500","the API's own words");
   const {sdk:crashing}=fakeClaude({turn:()=>{throw new Error("Claude Code returned an error result: Invalid API key")}});
   const crashed=session(crashing);await crashed.start();
   await assert.rejects(()=>crashed.prompt([{type:"text",text:"x"}]),error=>error.message==="Invalid API key");
 });
 
-test("Claude sign-in failures and usage limits get T3 Code's explanations",async()=>{
+test("Claude sign-in failures and usage limits get Trebell's explanations",async()=>{
   const {sdk}=fakeClaude({turn:({message,emit})=>{
     emit({type:"assistant",uuid:"err",parent_tool_use_id:null,error:"authentication_failed",message:{id:"m",content:[{type:"text",text:"Invalid API key"}]}});
     emit({type:"result",subtype:"success",is_error:true,terminal_reason:"api_error",api_error_status:401,result:"Invalid API key",user_message_uuid:message.uuid});

@@ -79,7 +79,7 @@ test("a Native Thinking level the model's own list leaves out gives way to the p
   assert.equal(configuredReasoningEffort({modelReasoningEfforts:{[key]:"high"}},"native","vyceai","vyce-thinker"),null,"a model with no levels offered takes none");
 });
 
-test("Codex effort levels are the ones its model list advertises, Ultra included, as T3 Code keeps them",()=>{
+test("Codex effort levels are the ones its model list advertises, Ultra included",()=>{
   assert.deepEqual(supportedReasoningEfforts("codex","ignored","custom",{supportedReasoningEfforts:["low","MAX","ultra","x-high_2","has spaces","","low"]}),["low","max","ultra","x-high_2"]);
   assert.deepEqual(supportedReasoningEfforts("codex","ignored","custom",{supportedReasoningEfforts:[{reasoningEffort:"xhigh"},{effort:"ultra"}]}),["xhigh","ultra"]);
   assert.deepEqual(supportedReasoningEfforts("codex","ignored","custom",{}),[],"a model Codex lists no efforts for offers no picker");

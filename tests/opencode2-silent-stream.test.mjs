@@ -4,8 +4,8 @@ import { OpenCode2AgentSession } from "../src/opencode2-agent-session.mjs";
 import { eventually, fakeOpenCode2Client, flush } from "./fixtures/fake-opencode2-client.mjs";
 
 // OpenCode 2 sends a heartbeat on its event stream every 10 to 15 seconds (15 s live, OpenCode 2.0.24). A stream that sent nothing for
-// 45 seconds is lost (T3 Code's OpenCode2Client and OpenCode's own app wait as long), and a turn waiting on it waited for good. As T3
-// Code does, the session subscribes again and asks OpenCode whether it still runs the turn (opencode2-stream-reconnect has the rest).
+// 45 seconds is lost (OpenCode's own app waits as long), and a turn waiting on it waited for good. Now
+// the session subscribes again and asks OpenCode whether it still runs the turn (opencode2-stream-reconnect has the rest).
 // These run on mocked timers; polling uses setImmediate.
 const UNSENT="OpenCode never confirmed the message and is not running it, so Trebell stopped the turn. Send the message again to retry.";
 // Runs a promise to its end while time goes by in steps (the session's start waits a quarter second between two model reads).

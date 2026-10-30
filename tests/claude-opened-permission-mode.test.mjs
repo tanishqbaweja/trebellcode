@@ -1,5 +1,5 @@
 // The mode a Claude Code process opened in is the one its first init reports, since Claude Code can fall back from the one asked
-// for (T3 Code's 598298cc3), and only a process Claude switched to Plan is put back in it (T3 Code's 0b84aa3fa). A follow-up in Auto
+// for, and only a process Claude switched to Plan is put back in it. A follow-up in Auto
 // on a model without Auto no longer restarts Claude Code each time, ending its background agents and shells.
 import test from "node:test";
 import assert from "node:assert/strict";

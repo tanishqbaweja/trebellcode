@@ -8,10 +8,9 @@ import { sharedRuntimeCapabilities } from "../src/runtime-capabilities.mjs";
 import { FakeMuse, INIT, startSession } from "./fixtures/muse/fake-host.mjs";
 import { museRelay } from "./fixtures/muse/relay-harness.mjs";
 
-// Trebell's MCP servers inside Muse Code sessions (T3 d6f47ff97): the repository tools and the person's own servers for Muse Code, as
+// Trebell's MCP servers inside Muse Code sessions: the repository tools and the person's own servers for Muse Code, as
 // the ACP harnesses get them, in session/start's and session/resume's config.mcpServers, each optional, on a host that granted session
-// MCP servers; a host that did not is refused with the update message (T3 adapter.test.ts: connects the thread's MCP credential on
-// native start and resume; rejects a host without session MCP support).
+// MCP servers; a host that did not is refused with the update message.
 
 const SERVERS=[
   {name:"trebell_repository",command:"C:\\node\\node.exe",args:["H:\\trebell\\src\\repository-mcp-stdio.mjs"],env:[{name:"TREBELL_REPOSITORY_ROOT",value:"H:\\repo"}]},

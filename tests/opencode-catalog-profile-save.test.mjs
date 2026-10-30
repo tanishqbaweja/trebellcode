@@ -10,8 +10,8 @@ import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 // profile and OpenCode version alone: a Save whose environment changed (a provider key now passed on, an OPENCODE_CONFIG pointing
 // elsewhere) kept showing what the old environment gave, and a switch reused a read from hours before. Now the answer is kept per
 // environment too, and a switch, the listing a Save or Delete or an install answers with and Settings' sections read a complete one again
-// once it is ten seconds old (the minimum interval between such reads); a failed turn's recheck keeps it, as T3 Code does not read
-// OpenCode's catalog again when a turn fails. Only the profile's --version answers here (runFn), and the reads are stood in for.
+// once it is ten seconds old (the minimum interval between such reads); a failed turn's recheck keeps it, and OpenCode's
+// catalog is not read again when a turn fails. Only the profile's --version answers here (runFn), and the reads are stood in for.
 async function openCodeManager(t){
   const home=await mkdtemp(join(tmpdir(),"trebell-opencode-profile-save-"));t.after(()=>rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100}));
   const instance={id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true,binaryPath:join(home,"no-opencode-here"),serverUrl:null,environment:{}};

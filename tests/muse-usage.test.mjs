@@ -4,10 +4,10 @@ import * as muse from "../src/muse-agent-session.mjs";
 import { FakeMuse, INIT, ReplayMuse, event, startSession, until } from "./fixtures/muse/fake-host.mjs";
 import { museRelay } from "./fixtures/muse/relay-harness.mjs";
 
-// Muse Code's token usage and context meter (T3 d6f47ff97, protocol.ts MuseUsage, MuseTokenUsageEvent, MuseContextUsage; usage.ts:
-// Muse's cache counters are subsets of input, reasoning of output): each model step's tokens added up over the turn as Trebell keeps
+// Muse Code's token usage and context meter (Muse's cache counters are subsets of input, reasoning of output): each model step's
+// tokens added up over the turn as Trebell keeps
 // OpenAI-style usage, the context Muse holds of its window, the turn's totals at its end, and the last usage/changed kept for the
-// Usage page (T3 93ea95cf4).
+// Usage page.
 
 const usageUpdates=updates=>updates.filter(update=>update.sessionUpdate==="usage_update");
 async function runningTurn(fixture){
@@ -41,7 +41,7 @@ test("a turn's tokens add up over its model steps as Trebell keeps OpenAI-style 
   await fixture.session.close();
 });
 
-test("T3's recorded subagent turn: four model steps add up to the turn's tokens, and the context meter reads the last step's",async()=>{
+test("the recorded subagent turn: four model steps add up to the turn's tokens, and the context meter reads the last step's",async()=>{
   const fixture=await startSession({muse:child=>new ReplayMuse(child,"subagent"),permissionMode:"full"});
   const result=await fixture.session.prompt([{type:"text",text:"Spawn one subagent that replies Hello."}]);
   assert.deepEqual(result.raw.usage,{inputTokens:132949,cachedInputTokens:98899,cacheWriteInputTokens:0,outputTokens:370,reasoningOutputTokens:88,totalTokens:133319});

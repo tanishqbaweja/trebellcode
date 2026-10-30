@@ -1,7 +1,7 @@
 // Claude Code's model list, slash commands and agents come from the same machine-wide probe as its plan usage. A probe whose usage read
 // failed or came without data is read again at the Usage card's next Refresh, but its models and commands do not expire with its usage:
 // the model list (which the composer waits on) takes that probe for five minutes, as before, and a re-probe that fails does not drop
-// what the earlier one listed. T3 Code lists Claude's models from its catalog, so its probe's short reuse costs it no model list.
+// what the earlier one listed.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";

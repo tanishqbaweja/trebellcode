@@ -1,5 +1,5 @@
 // A steer is a "now" message, which cancels the root turn's running tool calls, and a subagent the turn runs in the foreground is one
-// of them. The session first moves each such subagent to the background (T3 Code's 0b68a4a9c), for at most 5 s from the steer, so
+// of them. The session first moves each such subagent to the background, for at most 5 s from the steer, so
 // typing into a running Claude turn no longer ends the subagent it was waiting on.
 import test from "node:test";
 import assert from "node:assert/strict";

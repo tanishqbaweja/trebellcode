@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { routeCodexApp,startCodexHarness } from "./codex-history-harness.js";
 
 // A send checks a message's files twice, as the composer sends it and again as its turn starts, right after. Only the first check
-// extracts an attached document's text, as T3 Code claims a message's attachments once, and the second only finds that text: a message
+// extracts an attached document's text, and the second only finds that text: a message
 // whose documents have no text yet (attached while Trebell Native was the harness, or whose text could not be read then) runs each
 // one's extraction once before its turn starts, not twice, and Codex's message still names the text of each. The mock GUI server
 // uploads, checks and extracts for real; Codex is a stand-in.

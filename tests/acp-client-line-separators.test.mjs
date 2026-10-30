@@ -1,4 +1,4 @@
-// ACP's stdio messages are JSON lines split on "\n" alone (ndjson-lines.mjs), as T3 frames them: an agent's update, request or
+// ACP's stdio messages are JSON lines split on "\n" alone (ndjson-lines.mjs): an agent's update, request or
 // answer that holds U+2028 or U+2029 inside a string, which JSON.stringify leaves raw, arrives whole. readline split the line there
 // into pieces that are not JSON, so the reply lost that part, and a lost permission request left the turn waiting for good.
 import test from "node:test";

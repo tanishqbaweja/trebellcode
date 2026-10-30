@@ -11,7 +11,7 @@ import { select } from "../../tests/fixtures/scripted-acp.mjs";
 import { keepThreadMeta } from "./test-home.js";
 
 // What an Antigravity chat sends of the files a person attaches, as Antigravity 1.2.1 advertises itself (images, audio and embedded
-// context) and as T3 sends them (buildAntigravityPrompt, 532023a24): an mp3 goes as audio after the line that names it, a PNG as an
+// context): an mp3 goes as audio after the line that names it, a PNG as an
 // image and a GIF by its saved path; a message whose image does not fit in the 50 MiB Antigravity takes in one message ends saying
 // which image and what to do. The real relay and Antigravity session run the scripted ACP agent (tests/fixtures/scripted-acp-agent.mjs)
 // as Antigravity, and its log shows what it was sent. A chat whose Antigravity stops as it starts (the stand-in for Antigravity's own

@@ -1,6 +1,6 @@
 // An Antigravity chat's process keeps the sign-in it was started with, for as long as it runs. So once Settings saves another Google
 // Gemini key while Antigravity runs on its API key, or sets it back to its own sign-in, the Antigravity chats open on the earlier one
-// stop (T3 closes a provider instance whose settings changed): the next message starts Antigravity again on the key saved now, or says
+// stop: the next message starts Antigravity again on the key saved now, or says
 // it must sign in, and a turn still running stops as Stop stops it. Here the GUI server runs outside mock mode with a stand-in for
 // Antigravity's ACP server, which logs each key it runs on by a name of the test's (never the key), and its process id; a stand-in
 // for Google's model list answers the key check of a key saved.

@@ -31,7 +31,7 @@ test("Trebell runs the user's installed Codex, never the package it depends on i
   assert.equal(codexBin({TREBELL_CODEX_BIN:" D:\\builds\\codex.exe ",PATH:npm},"win32","x64",{exists,root}),"D:\\builds\\codex.exe");
 });
 
-test("Codex readiness is its own account/read answer, as in T3's provider probe",()=>{
+test("Codex readiness is its own account/read answer",()=>{
   assert.deepEqual(codexAccountStatus({account:{type:"chatgpt",email:"a@b.c",planType:"pro"},requiresOpenaiAuth:true}),{ready:true,authenticated:true,authType:"chatgpt",label:"ChatGPT Pro 200",message:"Signed in with ChatGPT Pro 200"});
   assert.equal(codexAccountStatus({account:{type:"apiKey"}}).label,"OpenAI API key");
   assert.deepEqual(codexAccountStatus({account:null,requiresOpenaiAuth:true}),{ready:false,authenticated:false,authType:null,label:null,message:"Codex CLI is not authenticated. Run codex login and try again."});
@@ -110,7 +110,7 @@ test("a shadow-home Codex profile is probed in the home its app-server runs in",
   }finally{await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
-test("Codex's default model follows T3's ranking over the live catalog, and its effort labels include Ultra",()=>{
+test("Codex's default model follows the preferred-family ranking over the live catalog, and its effort labels include Ultra",()=>{
   assert.equal(preferredCodexDefaultModel([{id:"gpt-5.5",isDefault:true},{id:"gpt-5.6-terra"},{id:"openai.gpt-5.6-sol"}]),"openai.gpt-5.6-sol");
   assert.equal(preferredCodexDefaultModel([{id:"gpt-5.5"},{model:"gpt-5.4",isDefault:true}]),"gpt-5.4");
   assert.equal(preferredCodexDefaultModel([{id:"gpt-5.5"}]),null);

@@ -1,4 +1,4 @@
-// What an ACP client cannot handle no longer ends the server (T3 559c4b1f2, one malformed session update no longer ends the session):
+// What an ACP client cannot handle no longer ends the server:
 // an update a listener throws on, such as the relay's plan mapping did on a null entry, or a JSON line that is not a message, such as
 // null, is dropped with one warning for each kind, without the update's values, and the client reads on. The throw was an unhandled
 // rejection, which Node's default turns into the end of a Trebell server.
@@ -50,7 +50,7 @@ test("a JSON line that is not a message, such as null, is dropped with a warning
 
 // Through the relay, as in a Trebell server: an update the relay throws on while it handles it was an unhandled rejection that ends the
 // server; the update is dropped, and the rest of the turn, its reply with a line separator in it too, reaches the thread. The drop goes
-// to the thread's trace and to the server's log, by its method and reason, as T3 logs one it cannot decode: the warning reached no one.
+// to the thread's trace and to the server's log, by its method and reason: the warning reached no one.
 // The relay maps Cursor's plan with a null entry by leaving that entry out (agent-relay-acp-entries.test.mjs), so here the trace refuses
 // the plan the relay shows, which throws in the relay as its mapping did.
 const TRACE_REFUSED="The trace could not take this event";

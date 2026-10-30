@@ -1,7 +1,7 @@
-// A Claude Code thread's MCP servers go to Claude Code over stdin once it runs (setMcpServers), as T3 Code's layerQueryRunner sends
-// them, never on its command line (--mcp-config) where other local users can read the env values set for them, and where Claude Code
+// A Claude Code thread's MCP servers go to Claude Code over stdin once it runs (setMcpServers), never on its command line
+// (--mcp-config) where other local users can read the env values set for them, and where Claude Code
 // exits at startup next to an administrator's managed-mcp.json. A registration that stalls is bounded, and a resumed conversation
-// opens once more (T3 Code's 572cf7427).
+// opens once more.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -157,7 +157,7 @@ test("a stalled MCP registration on a new conversation, or a second stall, fails
   await resumed.close();
 });
 
-// T3 Code's "only retries after confirmed process exit": the stalled Claude Code is stuck connecting a server, so it may outlast the
+// Retries only after a confirmed process exit: the stalled Claude Code is stuck connecting a server, so it may outlast the
 // SDK's close. One still running is killed and the conversation opens again once it exited; one whose exit is never seen is not
 // opened again, so two Claude Codes never resume one transcript at once.
 test("a stalled resumed conversation opens again only once its stalled Claude Code has exited, killed if it outlasts the close",async t=>{

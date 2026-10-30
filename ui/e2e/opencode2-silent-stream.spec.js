@@ -3,7 +3,7 @@ import { openCode2App,send,shots,stopButton } from "./opencode-relay-app.js";
 
 // An OpenCode 2 turn whose event stream went silent, as a person sees it. OpenCode 2 sends a heartbeat every 15 seconds, so a stream
 // that sent nothing for 45 seconds is lost. Trebell ended the turn then and interrupted OpenCode's run, even when OpenCode still ran it
-// and answered at once. Now, as T3 Code does, Trebell listens on a new stream and asks OpenCode whether it still runs the turn: the turn
+// and answered at once. Now Trebell listens on a new stream and asks OpenCode whether it still runs the turn: the turn
 // goes on and its answer shows, and only a turn Trebell cannot follow again ends, saying so. The fake OpenCode 2 server here sends no
 // heartbeat; the real relay, OpenCode 2 session and @opencode/client run against it (tests/fixtures/fake-opencode2-server.mjs).
 const ANSWER="The parser handles nested quotes now.";
@@ -51,7 +51,7 @@ test("an OpenCode 2 turn whose stream went silent and whose server does not say 
     await expect(stopButton(page)).toHaveCount(0);
     // Letting go of the stream is Trebell's own doing, and no error row of its own.
     await expect(page.locator(".tool-event.kind-error").filter({hasText:"Transport"})).toHaveCount(0);
-    // Each of the five streams opened again counted only once OpenCode said which sessions it runs, as T3 Code's reconnect does, and
+    // Each of the five streams opened again counted only once OpenCode said which sessions it runs, and
     // the run Trebell no longer follows is stopped (the stream reaches OpenCode, so the interrupt does too).
     expect(fake.called("GET /api/session/active").length).toBeGreaterThanOrEqual(5);
     expect(fake.called("POST /api/session/ses_main/interrupt")).toHaveLength(1);

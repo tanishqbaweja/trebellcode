@@ -4,7 +4,7 @@ import { OpenCode2AgentSession } from "../src/opencode2-agent-session.mjs";
 import { eventually, fakeOpenCode2Client, flush } from "./fixtures/fake-opencode2-client.mjs";
 
 // What OpenCode 2 did while Trebell was not listening to its event stream is in the session's history, from this turn's own message on
-// (T3 Code's backfill): the run's end is the idle item OpenCode keeps with its outcome (OpenCode 2.0.24 keeps one for every run, live),
+// (backfill): the run's end is the idle item OpenCode keeps with its outcome (OpenCode 2.0.24 keeps one for every run, live),
 // and its reply is the text of its assistant messages, one per step. Trebell read only the session's newest assistant message: a run
 // that ended without a reply of its own took the previous turn's reply as its answer, and a reply with text Trebell missed, or written
 // over two steps, was shown again in full after what the window had. On mocked timers.

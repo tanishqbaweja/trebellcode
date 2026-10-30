@@ -1,5 +1,5 @@
 // Claude Code turn errors that say what happened: a full context is not a usage limit, an API failure keeps the API's own words, and a
-// quick retry into a usage limit still says when it resets (T3 Code's fb9af9e57, 55a8fe9a9 and 9957790c9). Git text shares them.
+// quick retry into a usage limit still says when it resets. Git text shares them.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CLAUDE_USAGE_LIMIT_HINT, ClaudeAgentSession, claudeResultFailure } from "../src/claude-agent-session.mjs";
@@ -33,7 +33,7 @@ test("an API failure keeps the API's own words, secrets redacted and cut to 500 
 
 test("an API failure's own words keep no secret a JSON key names, quoted as the API repeats it, before they are cut",()=>{
   const apiError=result=>claudeResultFailure(failed("api_error",{api_error_status:400,result}));
-  // T3 Code's case: a token crossing the 500-character cut.
+  // A token crossing the 500-character cut.
   assert.equal(apiError(`API Error: 400 ${"x".repeat(440)} {"token":"${"synthetic-secret".repeat(100)}"} ${"y".repeat(100)}`),`API Error: 400 ${"x".repeat(440)} {"token":"[redacted]"} `.padEnd(500,"y"));
   assert.equal(apiError(`API Error: 400 {"password": "it's-a-secret", "client_secret":"cs-123", "refresh_token":"rt-\\"quoted\\"-456"}`),`API Error: 400 {"password": "[redacted]", "client_secret":"[redacted]", "refresh_token":"[redacted]"}`);
   assert.equal(apiError("API Error: 400 {'api_key': 'key-789', 'Authorization': 'Basic dXNlcjpwYXNz'}"),"API Error: 400 {'api_key': '[redacted]', 'Authorization': '[redacted]'}");
@@ -62,7 +62,7 @@ test("a Claude turn that fills its context says so, and one a usage window block
   assert.equal(limited.notices.length,1);assert.match(limited.notices[0],WAIT);
 });
 
-// What Claude Code sends once the context is full (T3 Code's frames that follow #19832): an invalid_request reply saying "Prompt is too
+// What Claude Code sends once the context is full: an invalid_request reply saying "Prompt is too
 // long", which explains itself as an API error, then a blocking_limit result.
 const promptTooLong={type:"assistant",uuid:"too-long",parent_tool_use_id:null,error:"invalid_request",message:{id:"m-too-long",content:[{type:"text",text:"Prompt is too long"}]}};
 const contextFull=message=>failed("blocking_limit",{result:"Prompt is too long",num_turns:189,user_message_uuid:message.uuid});
@@ -122,7 +122,7 @@ test("a turn Claude Code answers keeps its reply, whatever the window said earli
   await session.close();
 });
 
-// T3 Code's retried terminal API failures: a reply the limit blocked names the turn's failure until a later reply of the turn goes
+// The retried terminal API failures: a reply the limit blocked names the turn's failure until a later reply of the turn goes
 // through (a fallback model, say); a subagent's reply does not clear it, and a subagent's blocked reply is not the turn's.
 test("a usage limit a reply ran into no longer names the turn's failure once a later reply goes through",async()=>{
   const at=resetsAt(),info={status:"rejected",rateLimitType:"five_hour",resetsAt:at};

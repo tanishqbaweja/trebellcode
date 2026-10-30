@@ -9,9 +9,9 @@ import { MuseHost } from "../src/muse-host.mjs";
 import { museModelCatalog } from "../src/muse-model-catalog.mjs";
 import { FakeMuse, fakeChild, fakeStop, until } from "./fixtures/muse/fake-host.mjs";
 
-// Git text (a commit subject, a pull request's title and body) written by Muse Code, as T3 Code's MuseTextGeneration writes it: one
+// Git text (a commit subject, a pull request's title and body) written by Muse Code: one
 // turn in a fresh session on a read-only host of Trebell's own in an empty folder. Meta's SDK (a real Connection) drives a fake
-// `muse serve` (fixtures/muse/fake-host.mjs) whose frames follow Muse 1.4.13's schema; the cases follow T3's textGeneration.test.ts.
+// `muse serve` (fixtures/muse/fake-host.mjs) whose frames follow Muse 1.4.13's schema.
 const CATALOG=museModelCatalog(JSON.parse(readFileSync(new URL("./fixtures/muse/model-list-1.4.13.json",import.meta.url),"utf8")).result);
 const PROMPT="Write one Git commit subject for the current change.\n\nDiff:\n+login form";
 const ACCEPTED=params=>({commandId:params.commandId,status:"accepted",turnId:params.commandId,startedNewTurn:true,disposition:"started"});

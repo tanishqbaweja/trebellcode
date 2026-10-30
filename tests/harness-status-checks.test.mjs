@@ -1,5 +1,5 @@
 // A harness's status check (AgentRuntimeManager probe) as Settings, a harness switch and a chat start read it:
-// - each CLI's --version gets T3's budget (Claude Code 20 s, OpenCode 10 s, the others 6 s), and on this machine one that runs
+// - each CLI's --version gets its own time budget (Claude Code 20 s, OpenCode 10 s, the others 6 s), and on this machine one that runs
 //   out of time or exits with an error reads installed, never "not installed" (only a command that is not there does);
 // - Claude Code, Cursor, Grok and Antigravity may then start; an OpenCode is not ready without its version, which picks the client
 //   that talks to it; each of these answers is kept for a minute, as a ready one is, so a hung CLI costs its wait once a minute; and

@@ -9,13 +9,13 @@ import { itemFrame, settle, settlesWithin, startSession, until } from "./fixture
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 import { historyFromItemEntries } from "../ui/src/thread-history.js";
 
-// Muse Code's turn failures, usage limits and host recovery (T3 93ea95cf4, 4bf8b476f, 300a35670, d6f47ff97): a turn the subscription
+// Muse Code's turn failures, usage limits and host recovery: a turn the subscription
 // quota stopped says the usage limit was reached and when it resets, a retry Muse schedules is the turn's retry row, a delivery gap or
 // a host that exits ends the turn once and takes its cards with it (the reply Muse wrote before stays), a host that died between turns
 // says so as no turn's and comes back on the next message, a message whose host fails is refused once in Muse's own words, and a notice
 // Trebell cannot read is skipped with a log line.
 
-// T3's usageLimits.test.ts: Muse's usage report, observed at nowMs, and the refusal Meta relayed through Muse.
+// Muse's usage report, observed at nowMs, and the refusal Meta relayed through Muse.
 const USAGE={observedAtMs:1791447762610,tier:"tier-1",window:{usedPercent:0,windowDurationMins:300,resetsAtMs:1791465557000},weekly:{usedPercent:5,resetsAtMs:1791763200000}};
 const NOW=USAGE.observedAtMs;
 const REAL_REFUSAL="API error 429: All credentials for model muse-wonder-1.0-contributor are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2026-10-13T10:45:52Z.) (after 10 provider attempts)";
@@ -34,7 +34,7 @@ const question=(sessionId,turnId)=>({sessionId,userInputId:"q-1",turnId,itemId:"
 const failure=async promise=>{try{await promise}catch(error){return error}assert.fail("the turn did not fail")};
 const local=iso=>new Date(iso).toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});
 
-test("Meta's quota refusal is a usage limit, and no other failure is (T3 usageLimits.test.ts)",()=>{
+test("Meta's quota refusal is a usage limit, and no other failure is",()=>{
   assert.equal(limited({},QUOTA_MESSAGE),true);
   assert.equal(limited({},REAL_REFUSAL),true);
   assert.equal(limited({},"API error 429: Rate limit exceeded. (rate_limit_error)"),false,"a plain 429 rate limit is an ordinary failure");
@@ -43,7 +43,7 @@ test("Meta's quota refusal is a usage limit, and no other failure is (T3 usageLi
   assert.equal(limited({kind:"modelError",message:"Model request refused.",quota:{limitKind:"tierLimit",resetsAtMs:USAGE.window.resetsAtMs}},"Model request refused."),true,"one Muse types as quota");
 });
 
-test("a usage limit lifts once every used-up window has reset, at the reset a refusal names or types when no report has one, and has no reset otherwise (T3 usageLimits.test.ts)",()=>{
+test("a usage limit lifts once every used-up window has reset, at the reset a refusal names or types when no report has one, and has no reset otherwise",()=>{
   const sessionOut={...USAGE,window:{...USAGE.window,usedPercent:103}};
   assert.equal(resetAt(sessionOut,NOW),"2026-10-08T13:19:17.000Z");
   const bothOut={...sessionOut,weekly:{...USAGE.weekly,usedPercent:100}};
@@ -91,7 +91,7 @@ test("a turn the quota stopped says the Muse Code usage limit was reached and wh
   await fixture.session.close();
 });
 
-test("a usage report Trebell cannot read is skipped with a log line and the session goes on, and the limit then knows no reset (T3: skips an unreadable usage report)",async()=>{
+test("a usage report Trebell cannot read is skipped with a log line and the session goes on, and the limit then knows no reset",async()=>{
   const fixture=await startSession();
   fixture.muse.notify("usage/changed",{window:"not usage"});
   fixture.muse.notify("usage/changed",{observedAtMs:Date.now(),tier:"tier-1",window:{usedPercent:103,windowDurationMins:300,resetsAtMs:1e16},weekly:{usedPercent:5,resetsAtMs:Date.now()+3_600_000}});

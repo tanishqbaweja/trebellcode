@@ -132,7 +132,7 @@ test("OpenCode turns carry a message ID Trebell names, so every turn has its rew
   try{
     const result=await session.prompt([{type:"text",text:"Reply with exactly OK"}],{messageId:"101b36f4-70d2-447a-b28f-b0dff2796f59"});
     const sent=fixture.called("POST /session/ses_fixture/message")[0].body;
-    // T3 Code's makeOpenCodeMessageId: "msg_", 12 hex digits of the time, then random characters.
+    // OpenCode's message id form: "msg_", 12 hex digits of the time, then random characters.
     assert.match(sent.messageID,/^msg_[0-9a-f]{12}[0-9A-Za-z]{28}$/);
     assert.deepEqual(sent.model,{providerID:"huggingface",modelID:"zai-org/GLM-5.3-Flash"});
     assert.deepEqual({stopReason:result.stopReason,providerMessageId:result.providerMessageId,assistantMessageId:result.assistantMessageId},{stopReason:"end_turn",providerMessageId:sent.messageID,assistantMessageId:"msg_a1"});
@@ -161,7 +161,7 @@ test("Edit from here rewinds an OpenCode thread into a fork before the turn and 
     assert.deepEqual(await session.rewind(messageAt(now)),{sessionId:"ses_fixture",messageIds:[],tailId:null});
     assert.equal(fixture.called("POST /session/ses_fixture/fork").length,0);
     const rewound=await session.rewind(u2);
-    // OpenCode's revert would also undo the files the agent changed since that message (T3 Code's rollbackThread never calls it).
+    // OpenCode's revert would also undo the files the agent changed since that message.
     assert.equal(fixture.calls.some(call=>call.key.endsWith("/revert")),false);
     assert.deepEqual(fixture.called("POST /session/ses_fixture/fork").map(call=>call.body),[{messageID:u2}]);
     assert.equal(rewound.sessionId,"ses_fork1");assert.equal(session.sessionId,"ses_fork1");
@@ -216,7 +216,7 @@ test("a new OpenCode session carries the mode's permission rules and no fixed ti
   const {session,updates}=await startedSession(fixture,{permissionMode:"supervised",repositoryMcp:null});
   try{
     const created=fixture.called("POST /session")[0].body,rules=openCodePermissionRules("supervised",{trustedDirectories:["/tmp/opencode/*"]});
-    assert.deepEqual(created,{permission:rules},"OpenCode names the session from its first prompt (T3 Code sets no title)");
+    assert.deepEqual(created,{permission:rules},"OpenCode names the session from its first prompt");
     // The composer's agent picker lists the primary agents only.
     assert.deepEqual(updates.find(update=>update.sessionUpdate==="session_info_update"&&update.agents).agents.map(agent=>agent.name),["build","plan"]);
     // The same mode again sends nothing; another mode is appended after the session's rules, where it decides.
@@ -757,7 +757,7 @@ function heldPrompts(){
 }
 const answer=(id,parentID,text)=>({info:{id,parentID,role:"assistant",tokens:{}},parts:[{id:`prt_${id}`,type:"text",text}]});
 
-test("a message steered into an OpenCode turn joins the busy session with the turn's model, agent and instructions, and the turn ends with the loop's last answer (T3 Code's steerTurn)",async()=>{
+test("a message steered into an OpenCode turn joins the busy session with the turn's model, agent and instructions, and the turn ends with the loop's last answer",async()=>{
   const prompts=heldPrompts(),fixture=await fakeOpenCode({routes:{"POST /session/ses_fixture/message":prompts.route}});
   const {session,updates}=await startedSession(fixture);
   try{
@@ -817,7 +817,7 @@ test("a steered message OpenCode refuses leaves the OpenCode turn's answer and t
   }finally{await session.close();await fixture.close()}
 });
 
-test("OpenCode gets images, PDFs and other files as file parts, and audio and video by their saved path (T3 Code's toOpenCodeFileParts)",async()=>{
+test("OpenCode gets images, PDFs and other files as file parts, and audio and video by their saved path",async()=>{
   const fixture=await fakeOpenCode();
   const {session}=await startedSession(fixture);
   try{

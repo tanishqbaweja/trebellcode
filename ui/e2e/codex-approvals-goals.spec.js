@@ -367,7 +367,7 @@ test("a Codex goal Codex starts no next turn for reads paused after 5 s, and the
     expect(codex.turns.map(turn=>turn.status)).toEqual(["completed","inProgress"]);expect(codex.turns[1].input).toEqual([]);
     await expect.poll(()=>codex.goals.get(thread.id)?.status).toBe("active");
     const started=codex.requests.findIndex(item=>item.method==="turn/start"),activated=codex.requests.findLastIndex(item=>item.method==="thread/goal/set"&&item.params?.status==="active");
-    expect(started>=0&&started<activated,"the goal active once its turn has started (T3 runGoalCommand)").toBe(true);
+    expect(started>=0&&started<activated,"the goal active once its turn has started").toBe(true);
     await expect(page.getByTestId("composer-alert")).toHaveCount(0);
   }finally{await harness.close()}
 });

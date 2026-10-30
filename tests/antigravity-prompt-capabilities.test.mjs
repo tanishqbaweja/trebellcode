@@ -1,7 +1,7 @@
-// What Antigravity is sent of a message's attachments follows the promptCapabilities its initialize advertises (T3 buildAntigravityPrompt,
-// 532023a24): audio as audio after the line that names it, BMP, JPEG, PNG and WebP images as images, and with embedded context a UTF-8
+// What Antigravity is sent of a message's attachments follows the promptCapabilities its initialize advertises: audio as audio
+// after the line that names it, BMP, JPEG, PNG and WebP images as images, and with embedded context a UTF-8
 // text file as embedded content and a PDF as a document link, within 50 MiB a message; an image it takes that does not fit refuses the
-// message, as T3 refuses it. Any other attachment is named by its saved path, as every other harness gets audio, so a GIF no longer goes
+// message. Any other attachment is named by its saved path, as every other harness gets audio, so a GIF no longer goes
 // as an image Antigravity may refuse, and an mp3 reaches the model instead of a path Antigravity cannot open.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -89,10 +89,10 @@ test("Antigravity is sent at most 50 MiB of attachment content a message, audio 
   ],"45 MiB go as content; a third 18 MiB of audio would pass 50 MiB, so it is named alone");
 });
 
-test("an image Antigravity takes that does not fit in the message refuses it by its name with what to do, as T3 refuses it",async t=>{
+test("an image Antigravity takes that does not fit in the message refuses it by its name with what to do",async t=>{
   const root=await folder(t),report=await sized(join(root,"report.pdf"),50*MiB),shot=join(root,"1761500000000-ab12cd34-shot.png");
   await writeFile(shot,Buffer.from([137,80,78,71]));
-  // A PDF counts toward the 50 MiB by its size (T3: "still rejects images when the native budget is full").
+  // A PDF counts toward the 50 MiB by its size, so the image no longer fits.
   const prompt=await relayPrompt("Inspect both",[{type:"mention",name:"report.pdf",path:report},{type:"localImage",path:shot}]);
   await assert.rejects(antigravityPromptParts(prompt,ADVERTISED),error=>{
     assert.equal(error.message,tooLarge("shot.png"));

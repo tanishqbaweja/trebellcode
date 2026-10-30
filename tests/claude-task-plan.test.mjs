@@ -1,7 +1,7 @@
 // Claude Code's to-do list is the thread's plan, as Cursor's and OpenCode's are: the root's TodoWrite list, and the one task list per
 // Claude session its Task tools keep (TaskCreate, TaskUpdate, TaskList), from their structured results and from the text that is all
-// a subagent's call returns (T3 Code's emitClaudePlanProjection, applyClaudeTaskTool and bda042aad), and from Claude Code's own list on
-// disk for a session Trebell has not followed since it started (29aec6b88). A TodoWrite edits no file: it is no step of the turn, unless
+// a subagent's call returns, and from Claude Code's own list on
+// disk for a session Trebell has not followed since it started. A TodoWrite edits no file: it is no step of the turn, unless
 // it failed. The SDK is scripted: nothing runs, and each session has a Claude home of its own.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -58,7 +58,7 @@ test("Claude's Task tools keep one task list for the Claude session, from the ro
   const {sdk}=scriptedClaudeSdk({turn:({message,index,emit})=>{
     const frames=index===0?[
       ...created("1","Write the migration"),
-      // A subagent's calls reach the same list (bda042aad), through the text their results are.
+      // A subagent's calls reach the same list, through the text their results are.
       call("agent-1","Agent",{description:"Test the migration",prompt:"Run its tests"}),
       ...created("2","Run the migration tests","agent-1"),
       ...updated("2",{status:"in_progress"},"agent-1"),

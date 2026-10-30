@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { classifyToolCall, dynamicToolLabel, searchToolLabel } from "../ui/src/tool-activity.js";
 
-test("Native's own tool calls are named by what they do, as T3 names tool rows",()=>{
+test("Native's own tool calls are named by what they do",()=>{
   assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"read_file",arguments:{path:"src/slug.js"}}),"Read src/slug.js");
   assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"read_source",arguments:{path:"src/slug.js",startLine:1,endLine:40}}),"Read src/slug.js");
   assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"search_code",arguments:{query:"slugify",regex:false}}),"Searched slugify");
@@ -26,7 +26,7 @@ test("an edit or write that failed or was declined names what it attempted, not 
   assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"read_source",arguments:{path:"greet.py"},status:"failed"}),"Read greet.py");
 });
 
-test("a listing or search whose arguments name no query, files or folder is T3's \"Searched files\"",()=>{
+test("a listing or search whose arguments name no query, files or folder is \"Searched files\"",()=>{
   assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"list",arguments:{depth:2}}),"Searched files");
   assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"search_code",arguments:{regex:false}}),"Searched files");
 });
@@ -36,7 +36,7 @@ test("tools whose name says nothing about the action keep their name, and missin
   assert.equal(dynamicToolLabel({namespace:"trebell_repo",tool:"invoke",arguments:{capability:"diagnostics"}}),undefined);
   // A run outside Native's terminal namespace is not assumed to be a command.
   assert.equal(dynamicToolLabel({namespace:"github",tool:"run",arguments:{command:"x"}}),undefined);
-  // Server-prefixed MCP names are not local reads (T3's toolNameToken rule).
+  // Server-prefixed MCP names are not local reads.
   assert.equal(classifyToolCall({namespace:"mcp",tool:"github.read_file"}),"other");
   assert.equal(classifyToolCall({namespace:"mcp",tool:"mcp__db__find"}),"other");
   assert.equal(dynamicToolLabel({namespace:"trebell_workspace",tool:"read_file",arguments:{}}),"Read file");
@@ -51,7 +51,7 @@ test("arguments sent as a JSON string or a command array are read the same way",
   assert.equal(dynamicToolLabel({namespace:"codex",tool:"read_file",arguments:"not json"}),"Read file");
 });
 
-test("search rows use T3's wording for query, glob and folder",()=>{
+test("search rows use one wording for query, glob and folder",()=>{
   assert.equal(searchToolLabel({pattern:"TODO",path:"src/components"}),"Searched TODO in components");
   assert.equal(searchToolLabel({glob:"*.{ts,tsx}",target_directory:"apps/web"}),"Searched files *.{ts,tsx} in web");
   assert.equal(searchToolLabel({glob:"*.md"}),"Searched files *.md");

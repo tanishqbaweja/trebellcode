@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 
 // What Settings shows for an OpenCode profile whose own server (its server URL) refuses Trebell, with that server answering as the real
-// ones answer a wrong or missing password (T3 Code's recorded responses): OpenCode 1.18.32 with an empty 401 on every path, OpenCode 2
+// ones answer a wrong or missing password: OpenCode 1.18.32 with an empty 401 on every path, OpenCode 2
 // with {"_tag":"UnauthorizedError","message":"Authentication required"}. Settings read those as "could not list its providers:
 // provider list failed" and "...: Authentication required". The harness list is the server's (AgentRuntimeManager's snapshot), read
 // through OpenCode's real discovery; only the profile's --version is answered here.

@@ -5,9 +5,9 @@ import * as muse from "../src/muse-agent-session.mjs";
 import { FakeMuse, ReplayMuse, chunks, mspError, settle, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 
-// Muse Code's access modes, approvals and questions (T3 f87dd14da, d81afa0a6, a752363b1): each Trebell mode as Muse's launch flags,
+// Muse Code's access modes, approvals and questions: each Trebell mode as Muse's launch flags,
 // permission profile and approval mode; Muse's approvals as Trebell's approval card with Muse's own choices, answered through
-// Trebell's policy and the person; its questions in Trebell's question dialog. Sessions run on a fake `muse serve` and T3's recorded
+// Trebell's policy and the person; its questions in Trebell's question dialog. Sessions run on a fake `muse serve` and the recorded
 // permission session (fixtures/muse/permission-approved.ndjson), the relay tests on the stand-in Muse Code (fixtures/muse/fake-muse.cjs).
 
 const MODES=[
@@ -17,7 +17,7 @@ const MODES=[
   ["full",["serve","--trust-workspace","--disable-sandbox"],":unrestricted","allowAll"],
   ["read-only",["serve","--disable-shell","--disable-write"],":ask-me","promptUnmatched"],
 ];
-// The shell approval T3 recorded with Muse 1.4.3 (muse_permission), with its three choices.
+// The shell approval recorded with Muse 1.4.3 (the permission transcript), with its three choices.
 const RECORDED_CHOICES=[
   {choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},
   {choiceId:"allow_local_prefix",label:"Always allow in this workspace: touch ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: touch ..."},
@@ -45,7 +45,7 @@ const accepted=params=>({commandId:params.commandId,status:"accepted",approvalId
 // A stage's decision that leaves the approval's later stages to decide, as Muse acknowledges one (terminal false).
 const staged=params=>({...accepted(params),terminal:false});
 
-test("each Trebell mode launches Muse Code's host with its own flags and starts its session in its own permission profile and approval mode (T3 sdk.test.ts)",async()=>{
+test("each Trebell mode launches Muse Code's host with its own flags and starts its session in its own permission profile and approval mode",async()=>{
   for(const [mode,args,permissionProfile,approvalMode] of MODES){
     const {session,muse:fake,spawned}=await startSession({permissionMode:mode});
     assert.deepEqual(spawned[0].args,args,mode);
@@ -80,7 +80,7 @@ test("a mode is fixed when its host launches: one with other flags or another se
   await full.session.close();
 });
 
-test("T3's recorded permission session: Allow once sends Muse's allow_once, the stage update after it asks nothing more, and Reject in the next turn sends its abort",async()=>{
+test("the recorded permission session: Allow once sends Muse's allow_once, the stage update after it asks nothing more, and Reject in the next turn sends its abort",async()=>{
   let count=0;
   const fixture=await startSession({muse:child=>new ReplayMuse(child,"permission-approved"),approve:()=>++count===1?"accept":"decline"});
   assert.equal((await fixture.session.prompt([{type:"text",text:"Run the shell command `touch muse-approved.txt` with your shell tool, then reply DONE."}])).stopReason,"end_turn");
@@ -245,7 +245,7 @@ test("Muse settling an approval itself withdraws its card, its reviewer deciding
   await fixture.session.close();
 });
 
-test("in Full access a workflow child's approval is answered Allow once without a card, while its turn runs and after the turn ended (T3: Muse does not pass allowAll on to workflow children)",async()=>{
+test("in Full access a workflow child's approval is answered Allow once without a card, while its turn runs and after the turn ended (Muse does not pass allowAll on to workflow children)",async()=>{
   for(const turnEnded of [false,true]){
     const fixture=await startSession({permissionMode:"full",muse:child=>new FakeMuse(child,{handlers:{"approval/decide":staged}})});
     const {running,turnId,sid}=await runningTurn(fixture);
@@ -425,7 +425,7 @@ test("Stop withdraws the turn's own open approval and question without answering
   assert.equal(fixture.asks[2].withdrawn,true,"closing the session takes the child's too");
 });
 
-test("answers go back as Muse takes them: one choice by its label, several within their bounds, and the person's own words as a free-text answer or a note beside the choices (T3 respondToRuntimeRequest)",async()=>{
+test("answers go back as Muse takes them: one choice by its label, several within their bounds, and the person's own words as a free-text answer or a note beside the choices",async()=>{
   assert.deepEqual(muse.museUserInputAnswers?.(QUESTIONS,{approach:["Small","Keep tests focused"],checks:["Unit","Lint"]}),{answers:[{questionId:"approach",selectedLabel:"Small",note:"Keep tests focused"},{questionId:"checks",selectedLabels:["Unit","Lint"]}]});
   assert.deepEqual(muse.museUserInputAnswers(QUESTIONS,{approach:["Something else entirely"],checks:["E2E"]}),{answers:[{questionId:"approach",freeText:"Something else entirely"},{questionId:"checks",selectedLabels:["E2E"]}]});
   const fixture=await startSession({reply:()=>({approach:["Large"],checks:["Unit","E2E","Unit"]})});
@@ -559,7 +559,7 @@ test("through the relay, Muse's question opens Trebell's question dialog, and th
   }finally{await relay.close()}
 });
 
-test("through the relay, Stop leaves a workflow child's approval card waiting for the person with nothing sent to Muse for it, and the person's later Allow once reaches Muse (T3 keeps a runless request)",{timeout:120_000},async()=>{
+test("through the relay, Stop leaves a workflow child's approval card waiting for the person with nothing sent to Muse for it, and the person's later Allow once reaches Muse",{timeout:120_000},async()=>{
   const relay=await museRelay("trebell-muse-child-stop-");
   try{
     const {thread}=await relay.rpc("thread/start",{cwd:relay.root,model:"muse-wonder-1.0"});

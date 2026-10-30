@@ -16,8 +16,8 @@ import { MuseHost, MUSE_SHUTDOWN_TIMEOUT_MS, MUSE_STARTUP_TIMEOUT_MS, loadMuseSd
 import { withWorkingContext } from "../src/working-context-envelope.mjs";
 
 // Muse Code is driven through Meta's SDK (@muse-code/sdk, a real Connection) over a fake `muse serve`: a child whose stdio carries
-// MSP frames. Replays use T3 Code's recorded transcripts (MIT, tests/fixtures/muse/*.ndjson, recorded with Muse 1.4.3; their frames
-// match the stable schema of Muse 1.4.13); the initialize answer of the other tests is Muse 1.4.13's own.
+// MSP frames. Replays use the recorded transcripts in tests/fixtures/muse/*.ndjson (MIT, see THIRD_PARTY_NOTICES.md; recorded with Muse
+// 1.4.3, their frames match the stable schema of Muse 1.4.13); the initialize answer of the other tests is Muse 1.4.13's own.
 const FIXTURES=new URL("./fixtures/muse/",import.meta.url);
 const INIT=JSON.parse(readFileSync(new URL("initialize-1.4.13.json",FIXTURES),"utf8")).result;
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
@@ -106,7 +106,7 @@ class FakeMuse{
   notify(method,params){this.write({jsonrpc:"2.0",method,params})}
 }
 
-// Replays one of T3's recorded transcripts: each group of frames Trebell sends (in any order within the group) is followed by
+// Replays one recorded transcript: each group of frames Trebell sends (in any order within the group) is followed by
 // the frames Muse sent then, with the recorded session, turn and command ids replaced by the ones Trebell minted.
 class ReplayMuse{
   constructor(child,name,{exitOnEof=true}={}){
@@ -454,7 +454,7 @@ test("deltas: text streams the reply, summary.N the reasoning's parts and output
   await session.close();
 });
 
-test("tools map as T3's museToolPresentation does: an edit keeps its exact old and new text, a write its content, a patch its diff, a search its hits",()=>{
+test("tools map to rows: an edit keeps its exact old and new text, a write its content, a patch its diff, a search its hits",()=>{
   const item=fields=>({itemId:"native-item",kind:"toolCall",status:"completed",revision:1,...fields});
   const edit=acpToolFrame(museToolUpdate(item({tool:"edit_file",args:JSON.stringify({file_path:"src/index.ts",old_string:"old\n",new_string:""})})));
   assert.equal(edit.kind,"edit");assert.equal(edit.status,"completed");

@@ -4,7 +4,7 @@ import { OpenCode2AgentSession } from "../src/opencode2-agent-session.mjs";
 import { eventually, fakeOpenCode2Client, flush } from "./fixtures/fake-opencode2-client.mjs";
 
 // An OpenCode 2 event stream that is lost (it sends nothing, not even OpenCode's heartbeat, for 45 seconds while the session waits on it,
-// or it fails) is a lost stream, not a lost turn. T3 Code subscribes again (five tries, two seconds apart) and asks OpenCode which
+// or it fails) is a lost stream, not a lost turn. The session subscribes again (five tries, two seconds apart) and asks OpenCode which
 // sessions it still runs: a turn whose run goes on goes on, one whose run ended meanwhile ends as its messages say, and a request asked
 // meanwhile is asked again; only a turn it cannot follow again fails. Trebell ended the turn and interrupted its run after the first 45
 // seconds of silence, even with OpenCode answering at once. On mocked timers.

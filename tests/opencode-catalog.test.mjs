@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { discoverOpenCode2ModelCatalog, waitForOpenCode2Models } from "../src/opencode-agent-session.mjs";
 import { fakeOpenCode2Catalog, openCodeModels as models } from "./fixtures/fake-opencode-catalog-servers.mjs";
 
-// OpenCode 2's model list as a cold server gives it: part of the catalog first (T3 Code's makeOpenCode2ModelLoader settles it).
+// OpenCode 2's model list as a cold server gives it: part of the catalog first.
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // Fails a wait that the code under test would never end.
 const within=(promise,ms,what)=>Promise.race([promise,delay(ms).then(()=>{throw new Error(`${what} took longer than ${ms} ms`)})]);

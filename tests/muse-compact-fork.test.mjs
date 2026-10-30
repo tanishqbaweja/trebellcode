@@ -7,8 +7,8 @@ import { threadHistoryHandoff } from "../src/thread-history-handoff.mjs";
 import { FakeMuse, startSession, until, settlesWithin } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 
-// /compact, fork and revert on Muse Code threads (T3 Code's MuseAdapter compactThread, forkThread and rollbackThread, and
-// docs/user/providers-muse.md): /compact is Muse's session/compact, settled by its compaction item; a fork is a thread of Trebell's own
+// /compact, fork and revert on Muse Code threads: /compact is Muse's session/compact, settled by its compaction item; a fork is
+// a thread of Trebell's own
 // whose next message starts a fresh Muse Code session handed the earlier messages (Muse refuses a fork of completed turns); a revert
 // does not rewind Muse's conversation. The session cases run Meta's SDK on a fake `muse serve` (fixtures/muse/fake-host.mjs), the
 // relay cases the real relay and runtime manager on the stand-in Muse Code (fixtures/muse/fake-muse.cjs).

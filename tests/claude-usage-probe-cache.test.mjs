@@ -18,7 +18,7 @@ function scriptedClaude(answer){
   return {query,probes};
 }
 const SIGNED_IN={email:"person@example.test",subscriptionType:"max",tokenSource:"claude.ai"};
-// What Claude Code answers signed out (T3 Code's recorded fixture): no account but tokenSource "none", and no plan limits.
+// What Claude Code answers signed out: no account but tokenSource "none", and no plan limits.
 const SIGNED_OUT={tokenSource:"none",apiProvider:"firstParty"};
 const PLAN={session:{},rate_limits_available:true,rate_limits:{five_hour:{utilization:12,resets_at:"2026-10-27T05:00:00Z"}}};
 const NO_PLAN={session:{},rate_limits_available:false,rate_limits:null};
@@ -79,7 +79,7 @@ test("an account Claude Code signs in some other way is kept: an API key, anothe
     assert.deepEqual((await read()).unavailable,{reason:"unsupported"},"not said to be signed out: "+JSON.stringify(account));await read();
     assert.equal(claude.probes.length,1,JSON.stringify(account));
   }
-  // First-party account fields cannot show a custom endpoint's sign-in (T3 Code checks ANTHROPIC_BASE_URL the same way).
+  // First-party account fields cannot show a custom endpoint's sign-in.
   for(const [baseUrl,probes,said] of [["https://gateway.example.test/anthropic",1,{reason:"unsupported"}],["https://api.anthropic.com",2,SIGNED_OUT_USAGE],["not a url",2,SIGNED_OUT_USAGE]]){
     const {claude,read}=usageCard([{account:SIGNED_OUT,usage:NO_PLAN}]);
     const input={...MACHINE,env:{...MACHINE.env,ANTHROPIC_BASE_URL:baseUrl}};

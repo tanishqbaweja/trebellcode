@@ -5,9 +5,9 @@ import { eventually, fakeOpenCode2Client, flush } from "./fixtures/fake-opencode
 
 // A turn Trebell stops following because its OpenCode 2 event stream was lost may leave OpenCode running its message. Trebell ended such
 // a turn ("Send the message again to retry") and left the run going, and the next turn took that run's events: its text, and its end
-// as the new turn's end. As T3 Code does, a stream that opens again counts only once OpenCode says which sessions it runs (another try
+// as the new turn's end. Now a stream that opens again counts only once OpenCode says which sessions it runs (another try
 // otherwise), a turn Trebell stops following has its run stopped, and the next message asks OpenCode first: a run still going is
-// stopped and the message refused, saying so (T3's OPENCODE_2_STILL_STOPPING), before its turn starts (afterLostTurn, which the relay
+// stopped and the message refused, saying so, before its turn starts (afterLostTurn, which the relay
 // asks before it makes the message's turn, so the person keeps the draft). On mocked timers.
 const UNKNOWN="Trebell lost OpenCode's event stream, and OpenCode did not say whether it still runs the turn, so Trebell stopped following it. Send the message again to retry.";
 const STILL_STOPPING="OpenCode was still running the turn Trebell stopped following, so Trebell stopped that run. Send the message again in a moment.";
@@ -31,7 +31,7 @@ function running(session,text){
 const settle=async()=>{for(let index=0;index<40;index++)await flush()};
 const chunks=updates=>updates.filter(update=>update.sessionUpdate==="agent_message_chunk").map(update=>update.content.text).join("");
 
-test("an OpenCode 2 stream opened again whose session.active check fails is tried again, as T3 Code tries its reconnect, and the turn goes on once OpenCode answers",{timeout:30_000},async t=>{
+test("an OpenCode 2 stream opened again whose session.active check fails is tried again, and the turn goes on once OpenCode answers",{timeout:30_000},async t=>{
   t.mock.timers.enable({apis:["setTimeout"]});
   let checks=0;
   const fake=fakeOpenCode2Client({overrides:{"session.active":async()=>{if(++checks===1)throw Object.assign(new Error("Internal error"),{_tag:"UnknownError"});return RUNNING}}});

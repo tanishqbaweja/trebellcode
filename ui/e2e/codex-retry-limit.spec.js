@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { routeCodexApp, startCodexHarness } from "./codex-history-harness.js";
 
 // Codex retries a request that fails; when its retries run out it says why only with the last attempt's HTTP status
-// (codexErrorInfo {responseTooManyFailedAttempts:{httpStatusCode}}). A turn whose retries ended on 429 hit a usage or rate limit
-// (T3 Code 58b48274f): its card and the row it leaves say so and point the person to Usage, as a usage-limit failure does. One that
+// (codexErrorInfo {responseTooManyFailedAttempts:{httpStatusCode}}). A turn whose retries ended on 429 hit a usage or rate limit:
+// its card and the row it leaves say so and point the person to Usage, as a usage-limit failure does. One that
 // ended on another status stays a plain error.
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 const exhausted=(status,text)=>({message:`exceeded retry limit, last status: ${status} ${text}`,codexErrorInfo:{responseTooManyFailedAttempts:{httpStatusCode:status}},additionalDetails:null});

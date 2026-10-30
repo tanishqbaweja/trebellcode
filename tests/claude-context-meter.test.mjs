@@ -1,7 +1,7 @@
 // A Claude Code thread's context meter: the latest root request's prompt (its input and cache tokens, from the stream's message_start
 // and message_delta) is the context, against the window Claude Code's own context reading gives for the model (getContextUsage,
-// asked once per model), while the turn's result keeps its usage and cost as the total; a compaction leaves what it kept (T3 Code's
-// 66cae3d75). The relay hands the context on as the last request, which the composer's meter and the auto-compaction cue read. The SDK
+// asked once per model), while the turn's result keeps its usage and cost as the total; a compaction leaves what it kept. The
+// relay hands the context on as the last request, which the composer's meter and the auto-compaction cue read. The SDK
 // is scripted: nothing runs.
 import test from "node:test";
 import assert from "node:assert/strict";

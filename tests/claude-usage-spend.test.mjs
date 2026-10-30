@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { claudeUsageResponseToLimits, readClaudeUsageLimits } from "../src/agent-usage-limits.mjs";
 
 const at="2026-10-27T04:00:00.000Z";
-// A Claude Code usage answer for an Enterprise seat with a monthly spend limit and no rolling windows (T3 Code's capture, #19433):
+// A Claude Code usage answer for an Enterprise seat with a monthly spend limit and no rolling windows:
 // $46.31 of $500.00, which the budget's own rounded percent calls 9.
 const enterprise={
   rate_limits_available:true,

@@ -7,7 +7,7 @@ import * as runtimeManager from "../src/agent-runtime-manager.mjs";
 
 // Every read of OpenCode's own answer (its providers, models, commands, skills and agents) starts an `opencode serve` and takes
 // seconds (2.7 s for 1.18.32, 1.3 s for 2.0.24, measured live). Settings' Refresh and a sign-in's follow-up read it again. A failed
-// turn's recheck keeps a complete answer (T3 Code does not read OpenCode's catalog again when a turn fails), and reads one that is not
+// turn's recheck keeps a complete answer, and reads one that is not
 // complete again at most every ten seconds; any other fresh check (a switch and the listing right after it, a profile's Save or Delete
 // and an install, Settings' sections) keeps an answer for ten seconds. Only the profile's --version answers here (runFn), and the reads
 // are stood in for.

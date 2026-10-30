@@ -1,6 +1,6 @@
 // An ACP session merges each tool frame into its call's last state before the relay maps it (acp-tool-state.mjs). A frame the relay
-// throws on is dropped with a warning (acp-client.mjs), and it stays out of that state, as T3 drops an update it cannot decode before
-// it reaches the call's state: kept, its fields went with every later update of the call, which the relay threw on again, so the
+// throws on is dropped with a warning (acp-client.mjs), and it stays out of that state: kept, its fields went with every later
+// update of the call, which the relay threw on again, so the
 // whole call never showed, though its next update alone was one the relay can map.
 import test from "node:test";
 import assert from "node:assert/strict";

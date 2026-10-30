@@ -7,10 +7,10 @@ import * as muse from "../src/muse-agent-session.mjs";
 import { FakeMuse, ReplayMuse, event, itemFrame, settlesWithin, startSession, until } from "./fixtures/muse/fake-host.mjs";
 import { eventually, museRelay } from "./fixtures/muse/relay-harness.mjs";
 
-// Muse Code's work that runs past its turn (T3 c1d528a34, d81afa0a6, 6ba6a0daf, 519d64f6c): subagents and workflows as rows, the todo
+// Muse Code's work that runs past its turn: subagents and workflows as rows, the todo
 // list as the turn's plan, the report turns Muse starts itself, and the relay's idle sweep keeping a session while that work runs.
-// Sessions run on a fake `muse serve` and on T3's recorded sessions (fixtures/muse/workflow, subagent and subagent_interrupt, from its
-// muse_workflow, subagent_v2 and muse_subagent_interrupt transcripts); the relay test on the stand-in Muse Code (fake-muse.cjs).
+// Sessions run on a fake `muse serve` and on the recorded sessions (fixtures/muse/workflow, subagent and subagent_interrupt; MIT, see
+// THIRD_PARTY_NOTICES.md); the relay test on the stand-in Muse Code (fake-muse.cjs).
 
 // A session whose updates keep the turn they name (turnKey) and whether work still ran then, with the report turns it started.
 async function workSession({muse:host=child=>new FakeMuse(child),options={},...rest}={}){
@@ -30,7 +30,7 @@ const complete=(fixture,turnId,terminal="completed",extra={})=>fixture.muse.noti
 const workflowItem=(turnId,revision,children,fields={})=>({itemId:"wf-1",kind:"workflow",revision,status:"inProgress",turnId,entryId:"Probe workflow",children,...fields});
 const REPORT="01a12d5d-6ba0-75d1-aa8f-0d40852d8721";
 
-test("T3's recorded workflow: its row runs on past the turn that launched it, one row per agent keeps its label and first end, and Muse's report on it is a turn of its own",async()=>{
+test("the recorded workflow: its row runs on past the turn that launched it, one row per agent keeps its label and first end, and Muse's report on it is a turn of its own",async()=>{
   const fixture=await workSession({muse:child=>new ReplayMuse(child,"workflow"),permissionMode:"full"});
   const {session,seen,wakes}=fixture;
   const result=await session.prompt([{type:"text",text:"Run a workflow with two agents, ping and pong."}]);
@@ -83,7 +83,7 @@ test("a workflow agent that completed with a failure kind is failed, with it as 
   await fixture.session.close();
 });
 
-test("T3's recorded subagent: one row titled by its role, done once its result is ready though Muse's item still runs, with its objective as its prompt and its result as its output; the child's own reply is not the turn's",async()=>{
+test("the recorded subagent: one row titled by its role, done once its result is ready though Muse's item still runs, with its objective as its prompt and its result as its output; the child's own reply is not the turn's",async()=>{
   const fixture=await workSession({muse:child=>new ReplayMuse(child,"subagent"),permissionMode:"full"});
   const result=await fixture.session.prompt([{type:"text",text:"Spawn one subagent that replies Hello."}]);
   assert.equal(result.stopReason,"end_turn");
@@ -128,7 +128,7 @@ test("a turn Muse starts while none runs is a turn of its own: the report stream
   await session.close();
 });
 
-test("a message sent while Muse's report turn runs takes it over (T3: a user turn takes a held report turn, approvals included): the report ends, its card stays to answer, its end does not end the message's turn",async()=>{
+test("a message sent while Muse's report turn runs takes it over (approvals included): the report ends, its card stays to answer, its end does not end the message's turn",async()=>{
   const fixture=await workSession(),{session,seen,wakes,asks}=fixture,sid=session.sessionId;
   fixture.muse.write(event("turn/started",sid,{turnId:REPORT,commandId:REPORT}));
   await until(()=>wakes.length===1,"the report turn");
@@ -255,7 +255,7 @@ test("a report Muse starts after the relay asked for a message's turn and before
   }
 });
 
-test("Stop ends a report turn the message's turn took in, then that turn, and a turn Muse starts while Trebell's runs joins it the same way (T3 interruptTurn)",async()=>{
+test("Stop ends a report turn the message's turn took in, then that turn, and a turn Muse starts while Trebell's runs joins it the same way",async()=>{
   const fixture=await workSession(),{session,seen,wakes}=fixture,sid=session.sessionId;
   fixture.muse.write(event("turn/started",sid,{turnId:REPORT,commandId:REPORT}));
   await until(()=>wakes.length===1,"the report turn");
@@ -277,7 +277,7 @@ test("Stop ends a report turn the message's turn took in, then that turn, and a 
   await session.close();
 });
 
-test("T3's recorded interrupted subagent: Stop ends the turn's running subagent with it, and nothing is left pending",async()=>{
+test("the recorded interrupted subagent: Stop ends the turn's running subagent with it, and nothing is left pending",async()=>{
   const fixture=await workSession({muse:child=>new ReplayMuse(child,"subagent_interrupt"),permissionMode:"full"});
   const running=fixture.session.prompt([{type:"text",text:"Spawn a subagent that sleeps for 30 seconds."}]);
   await until(()=>rowsOf(fixture.seen,"01a12d28-8885-71f3-9961-b8f4d747382b").length>0,"the subagent's row");
@@ -333,7 +333,7 @@ test("a command Muse sends to the background holds the host until Muse tells its
   }
 });
 
-test("work that has said nothing for four hours holds the host no more, and each word from it renews that (T3's maximum idle pin)",async()=>{
+test("work that has said nothing for four hours holds the host no more, and each word from it renews that",async()=>{
   let clock=1_800_000_000_000;
   const fixture=await workSession({options:{now:()=>clock}}),{session}=fixture,{running,turnId,sid}=await runningTurn(fixture);
   assert.equal(muse.MUSE_MAX_IDLE_PIN_MS,4*60*60_000);
@@ -348,7 +348,7 @@ test("work that has said nothing for four hours holds the host no more, and each
   await session.close();
 });
 
-test("a report turn whose host dies fails with the host's exit, and nothing of it is left pending for the host the next message starts (T3: a dead host's report is dropped)",async()=>{
+test("a report turn whose host dies fails with the host's exit, and nothing of it is left pending for the host the next message starts",async()=>{
   const fixture=await workSession(),{session,wakes,child}=fixture,sid=session.sessionId;
   fixture.muse.write(event("turn/started",sid,{turnId:REPORT,commandId:REPORT}));
   await until(()=>wakes.length===1,"the report turn");

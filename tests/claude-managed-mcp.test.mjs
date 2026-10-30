@@ -1,6 +1,6 @@
 // Next to an administrator's managed-mcp.json Claude Code exits at startup on --strict-mcp-config (code.claude.com/docs/en/managed-mcp),
-// so the capability probe (models, slash commands, plan usage) and Git text leave that flag out there, and only that (T3 Code's
-// hasClaudeManagedMcpConfig). Creating the real file needs administrator rights, so the check's exists() is injected.
+// so the capability probe (models, slash commands, plan usage) and Git text leave that flag out there, and only that. Creating
+// the real file needs administrator rights, so the check's exists() is injected.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { claudeCapabilitiesProbeOptions, probeClaudeCapabilities } from "../src/claude-capabilities.mjs";

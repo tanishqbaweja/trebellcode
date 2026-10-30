@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 
 // A profile's own OpenCode server (its serverUrl) that refuses Trebell, answered as the real servers answer a wrong or missing
-// password (T3 Code's recorded probe responses): OpenCode 1.18.32 with an empty 401 on every path, OpenCode 2.x with
+// password: OpenCode 1.18.32 with an empty 401 on every path, OpenCode 2.x with
 // {"_tag":"UnauthorizedError","message":"Authentication required"}. Neither says Unauthorized or a status in words, and the SDK clients
 // keep the status apart from the message, so only the status or the error's tag tells a refusal. The status check reads the server
 // through the real discovery (no stand-in reader); only the profile's --version is answered here.

@@ -23,7 +23,7 @@
 //   MUSE_FAKE_CHILD_ASK_HOLD  a file: once it is there, a workflow child still running from the session's last turn asks to run
 //                          `touch muse-approved.txt`, as "child approval" asks it, whether a turn runs or not. A child's approval
 //                          names, as its subagent id, the child id of the agent of "run workflow" running then, if one runs
-// A turn whose message says one of these runs as T3's recorded sessions (muse_permission) and Muse 1.4.13's schema shape them:
+// A turn whose message says one of these runs as the recorded sessions (the permission transcript) and Muse 1.4.13's schema shape them:
 //   "ask approval"      asks to run `touch muse-approved.txt` (approval/request and approval/requested, with Muse's own choices),
 //                       settles it with the choice decided, and replies APPROVED, ALWAYS ALLOWED or REJECTED
 //   "reviewer decides"  asks the same, and Muse's reviewer allows it MUSE_FAKE_REVIEW_MS (300) ms later (approval/resolved by
@@ -52,7 +52,7 @@
 //                       with background true, then settles), completes the turn, and MUSE_FAKE_BACKGROUND_MS (1500) ms later, or once
 //                       the file MUSE_FAKE_BACKGROUND_HOLD names is there, tells the command's end as an item of its own naming the
 //                       call (backgroundTerminalCompletion, MSP 1.4.13)
-// And as T3's recorded subagent_v2 and muse_workflow sessions run them, with the token usage and context those reported:
+// And as the recorded subagent and workflow sessions run them, with the token usage and context those reported:
 //   "spawn subagent"    keeps a todo list and runs a subagent (role "hello agent"), whose child session replies on its own turn, and
 //                       whose result is ready MUSE_FAKE_SUBAGENT_MS (200) ms later; two model steps report their tokens
 //   "run workflow"      launches the ping-pong workflow and completes the turn while it runs; its agents ping and pong run
@@ -233,7 +233,7 @@ function releaseReport(sessionId,params){
   });
 }
 const QUOTA_REFUSAL="API error 429: All credentials for model muse-wonder-1.0-contributor are cooling down (last error: rate_limit_exceeded: Subscription quota exhausted. Your usage window resets at 2031-05-04T10:45:52Z.) (after 10 provider attempts)";
-// The approval Muse asks before running `touch muse-approved.txt` (T3's recorded muse_permission), and how it settles.
+// The approval Muse asks before running `touch muse-approved.txt` (the recorded permission session), and how it settles.
 const approvals=new Map(),questions=new Map();
 const SHELL_CHOICES=[{choiceId:"allow_once",label:"Allow once",decision:"approved",scope:"once"},{choiceId:"allow_local_prefix",label:"Always allow in this workspace: touch ...",decision:"approvedPolicyAmendment",scope:"localPersistent",rulePreview:"Always allow in this workspace: touch ..."},{choiceId:"abort",label:"Reject",decision:"abort",scope:"once",acceptsFeedback:true}];
 // A file read outside the workspace: Muse reads its workspace unasked, and asks with Allow once or Reject for a file beyond it.

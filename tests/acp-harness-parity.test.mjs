@@ -1,4 +1,4 @@
-// Cursor, Grok Build, Antigravity and remote OpenCode over ACP, driven the way T3 Code drives them. A scripted ACP agent
+// Cursor, Grok Build, Antigravity and remote OpenCode over ACP, driven the way the relay drives them. A scripted ACP agent
 // (SCENARIO_AGENT) plays the harness: it answers from a JSON scenario and logs every message it receives.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -132,7 +132,7 @@ const ANTIGRAVITY={initialize:{protocolVersion:1,agentCapabilities:{sessionCapab
 // what its attachments go as (antigravityPromptParts).
 const ANTIGRAVITY_CONTENT={...ANTIGRAVITY,initialize:{...ANTIGRAVITY.initialize,agentCapabilities:{...ANTIGRAVITY.initialize.agentCapabilities,promptCapabilities:{image:true,audio:true,embeddedContext:true}}}};
 
-test("approval answers keep to the request: allow-once first, reject-once only, and T3's choices per harness",()=>{
+test("approval answers keep to the request: allow-once first, reject-once only, and each harness's own choices",()=>{
   const grokOptions=[{kind:"allow_once",optionId:"allow-once",name:"Allow once"},{kind:"allow_always",optionId:"allow-edits-session",name:"Allow edits"},{kind:"allow_always",optionId:"allow-always",name:"Always"},{kind:"reject_once",optionId:"reject-once",name:"Reject"}];
   assert.equal(acpPermissionChoice(grokOptions,"full",null),"allow-once");
   assert.equal(acpPermissionChoice([{kind:"reject_always",optionId:"never"}],"read-only","edit"),null,"a reject-always answer would be saved, so nothing is chosen");
@@ -147,7 +147,7 @@ test("approval answers keep to the request: allow-once first, reject-once only, 
   assert.deepEqual(acpApprovalOptions("antigravity",[{kind:"allow_once",optionId:"once"},{kind:"reject_once",optionId:"deny"}]).map(option=>option.label),["Allow once","Deny","Cancel"],"Allow for this thread only when Antigravity offers it");
 });
 
-test("file reads keep Windows line endings and commands, modes and Grok answers map like T3",()=>{
+test("file reads keep Windows line endings and commands, modes and Grok answers map to what each harness expects",()=>{
   assert.equal(acpFileSlice("a\r\nb\r\nc\r\n"),"a\r\nb\r\nc\r\n");
   assert.equal(acpFileSlice("a\r\nb\r\nc\r\n",2,1),"b\r");assert.equal(acpFileSlice("a\nb\nc",2,null),"b\nc");
   assert.deepEqual(acpCommandsFromAvailable([{name:"compact",description:"Compact"},{name:"always-approve",description:"x"},{name:"context"},{name:"/deep-research",description:"Research",input:{hint:"topic"}}],"grok"),
@@ -359,7 +359,7 @@ test("ACP tool cards keep their title and kind to the end, with the command's ou
   assert.equal(item("edit").type,"fileChange");assert.deepEqual(item("edit").changes,[{path:"notes.txt",kind:"update",oldText:"alpha\n",newText:"alpha\nbeta\n"}]);
 });
 
-test("Grok's questions and plan exits get T3's answers, and Antigravity's choices are questions, never approvals",async t=>{
+test("Grok's questions and plan exits get Trebell's answers, and Antigravity's choices are questions, never approvals",async t=>{
   const grok=await scenario(t,{...GROK,prompts:[{steps:[
     {request:{method:"_x.ai/ask_user_question",params:{method:"x.ai/ask_user_question",params:{questions:[{question:"Proceed?",options:[{label:"Yes"},{label:"No"}]}]}}}},
     {request:{method:"_x.ai/exit_plan_mode",params:{planContent:"# Plan\nShip it"}}},
@@ -484,10 +484,10 @@ test("Antigravity is granted Trebell's attachments folder, its client files stay
   const pasted=join(attachments,"1-ab-pasted-context.txt"),pdf=join(attachments,"2-cd-report.pdf");
   await session.prompt([{type:"text",text:"what is the secret word?"},{type:"resource_link",uri:pathToFileURL(pasted).href,name:"1-ab-pasted-context.txt"},{type:"resource_link",uri:pathToFileURL(pdf).href,name:"2-cd-report.pdf"}]);
   const log=await fx.log();
-  assert.deepEqual(requested(log,"session/new")[0].params.additionalDirectories,[attachments],"the attachments folder is granted, as T3 grants it");
+  assert.deepEqual(requested(log,"session/new")[0].params.additionalDirectories,[attachments],"the attachments folder is granted");
   const sent=requested(log,"session/prompt")[0].params.prompt;
   assert.deepEqual(sent[1],{type:"resource",resource:{uri:pathToFileURL(pasted).href,mimeType:"text/plain",text:"The secret word is PERIWINKLE.\n"}},"the pasted text goes as embedded content");
-  assert.deepEqual(sent[2],{type:"resource_link",uri:pathToFileURL(pdf).href,name:"2-cd-report.pdf",mimeType:"application/pdf"},"a PDF stays a link, as a document (T3)");
+  assert.deepEqual(sent[2],{type:"resource_link",uri:pathToFileURL(pdf).href,name:"2-cd-report.pdf",mimeType:"application/pdf"},"a PDF stays a link, as a document");
   const replies=log.filter(entry=>entry.reply==="fs/read_text_file").map(entry=>entry.message);
   assert.deepEqual(replies[0],{content:"The secret word is PERIWINKLE.\n"},"a file in the attachments folder is served");
   assert.equal(replies[1].error?.code,-32602,"a file outside the workspace and the attachments folder is refused");
@@ -522,7 +522,7 @@ else readline.createInterface({input:process.stdin}).on("line",line=>{const m=JS
   const listed=await manager.models(grok);
   assert.equal(listed.error,undefined);assert.deepEqual(listed.models,["grok-4.7"]);assert.equal(listed.preferred,"grok-4.7");
   assert.deepEqual(listed.metadata[0].reasoningEfforts,["xhigh","high","low"]);assert.equal(listed.metadata[0].contextWindow,256000);
-  // The same initialize answer fills a new chat's slash menu before its thread exists (T3 grokSlashCommandsFromInitialize).
+  // The same initialize answer fills a new chat's slash menu before its thread exists.
   assert.deepEqual(listed.inventory,{commands:[{name:"compact",description:"Compact the context"},{name:"deep-research",description:"Research",input:{hint:"topic"}}]});
   // Antigravity is built in (one profile); a launcher that only answers --version keeps the listing from starting anything.
   const agyLauncher=join(root,"agy.cmd");await writeFile(agyLauncher,["@echo off","echo 1.2.1",""].join("\r\n"),"utf8");
@@ -593,7 +593,7 @@ test("Cursor's other model settings (context, thinking) are listed per model, ke
   assert.deepEqual(cursorModelOptions(opus),[
     {id:"context",label:"Context",type:"select",choices:[{value:"300k",label:"300K"},{value:"1m",label:"1M"}],defaultValue:"300k"},
     {id:"thinking",label:"Thinking",type:"boolean",defaultValue:"true"},
-  ],"effort and Fast keep their own pickers; a true/false choice is a switch, as T3 shows it");
+  ],"effort and Fast keep their own pickers; a true/false choice is a switch");
   assert.deepEqual(cursorModelOptions([select("model","model","default",["default"]),{id:"max",name:"Max",category:"model_config",type:"boolean",currentValue:false}]),[{id:"max",label:"Max",type:"boolean",defaultValue:"false"}]);
   const catalog=cursorModelCatalog({models:[{value:"default",name:"Auto",configOptions:[]},{value:"claude-opus-5",name:"Claude Opus 5",configOptions:opus}]});
   assert.equal(catalog.metadata[0].modelOptions,undefined);
@@ -823,7 +823,7 @@ test("an Antigravity turn's pasted text reaches it as embedded content, in a ses
   assert.equal(sent.some(part=>part.type==="resource_link"),false);
 });
 
-test("a Grok revert cuts the thread and the next turn starts a fresh Grok session, as T3's ACP rollback does",async t=>{
+test("a Grok revert cuts the thread and the next turn starts a fresh Grok session",async t=>{
   const fx=await scenario(t,{...GROK,prompts:[{},{},{}]});
   const {rpc,next,threadStore}=await relayHarness(t,"grok",fx);
   const started=await rpc("thread/start",{cwd:fx.root,approvalPolicy:"on-request",sandbox:"workspace-write"}),threadId=started.thread.id;
@@ -932,7 +932,7 @@ test("Cursor runs a Plan turn in its plan mode and any other turn in its agent m
   session.setCollaborationMode("default");await session.prompt([{type:"text",text:"build it"}]);
   session.setCollaborationMode("plan");session.setPermissionMode("read-only");await session.prompt([{type:"text",text:"look"}]);
   const log=await fx.log(),order=log.filter(entry=>entry.method==="session/set_config_option"||entry.method==="session/prompt").map(entry=>entry.method==="session/prompt"?"prompt":`${entry.params.configId}=${entry.params.value}`);
-  assert.deepEqual(order,["model=default","mode=plan","prompt","mode=agent","prompt","mode=ask","prompt"],"T3's plan or agent; an agent name is not a Cursor mode");
+  assert.deepEqual(order,["model=default","mode=plan","prompt","mode=agent","prompt","mode=ask","prompt"],"Cursor's plan or agent mode; an agent name is not a Cursor mode");
   assert.equal(updates.some(update=>Array.isArray(update.agents)),false,"Cursor's modes are not offered as agents");
   const planless=await scenario(t,{...CURSOR,sessionNew:{...CURSOR_SETUP,configOptions:[select("mode","mode","agent",["agent","ask"]),CURSOR_SETUP.configOptions[1]]}});
   const other=harness(t,planless,{runtime:"cursor"});

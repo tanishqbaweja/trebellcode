@@ -1,6 +1,6 @@
 // xAI's billing answer leaves the used percentage out until something is metered, while it still names the billing period. A
 // weekly or monthly period whose start comes before its end is that period with nothing used yet, so Grok's meter shows it at 0%
-// with the period's end as its reset (T3 79f2bae6a). A period that is not whole, not ordered, not a real date or not weekly or
+// with the period's end as its reset. A period that is not whole, not ordered, not a real date or not weekly or
 // monthly shows no meter, as before.
 import test from "node:test";
 import assert from "node:assert/strict";

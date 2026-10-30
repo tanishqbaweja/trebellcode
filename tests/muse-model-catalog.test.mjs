@@ -8,7 +8,7 @@ import { MuseAgentSession } from "../src/muse-agent-session.mjs";
 import { museModelCatalog, museModelEfforts, museModelName, readMuseModelCatalog, resolveMuseReasoningEffort } from "../src/muse-model-catalog.mjs";
 import { normalizeRuntimeReasoningEffort, supportedReasoningEfforts } from "../src/model-reasoning-effort.mjs";
 
-// Muse Code's model list (model/list, read as T3 Code's modelCatalog.ts reads it) and what a Muse Code session does with it: the
+// Muse Code's model list and what a Muse Code session does with it: the
 // thread's model sent before a turn (session/setModel) and the Thinking level the model lists. The list is composed from Muse
 // 1.4.13's schema (fixtures/muse/model-list-1.4.13.json says how); hosts are a scripted `muse serve` driven by Meta's SDK.
 const LIST=JSON.parse(readFileSync(new URL("./fixtures/muse/model-list-1.4.13.json",import.meta.url),"utf8")).result;
@@ -23,7 +23,7 @@ test("Muse's model list keeps Meta's rows once each, named by their label or a t
     reasoningEfforts:["minimal","low","medium","high","xhigh","max"],defaultReasoningEffort:"high",
     reasoningEffortDescriptions:{minimal:"Fastest answers",high:"Deep reasoning for most coding work",max:"The longest reasoning Wonder offers"},
   });
-  assert.equal(row("muse-spark-1.3").name,"Muse Spark 1.3","a label that is the bare id reads as words (T3 eb1db5ff8)");
+  assert.equal(row("muse-spark-1.3").name,"Muse Spark 1.3","a label that is the bare id reads as words");
   assert.deepEqual(row("muse-spark-1.3").reasoningEfforts,["minimal","low","medium","high","xhigh","max"],"None, which Meta's provider refuses, is never offered");
   assert.deepEqual([row("muse-spark-1.2").reasoningEfforts,row("muse-spark-1.2").defaultReasoningEffort],[["low","medium","high","xhigh","max"],"high"],"unknown levels: Low to Max, High by default");
   assert.equal(row("muse-spark-1.2").isDefault,true);
@@ -43,7 +43,7 @@ test("a list without Meta's provider is refused, and a signed-out Muse lists no 
   assert.deepEqual(museModelEfforts({variants:["xhigh","ultra","bogus"],defaultReasoningEffort:"none"}).efforts,["xhigh","ultra"]);
 });
 
-test("a turn's Thinking level is the one chosen when the model lists it, else the model's default; none chosen leaves Muse's own (T3 resolveMuseReasoningEffort)",()=>{
+test("a turn's Thinking level is the one chosen when the model lists it, else the model's default; none chosen leaves Muse's own",()=>{
   const catalog=museModelCatalog(LIST),row=id=>catalog.metadata.find(item=>item.id===id);
   assert.equal(resolveMuseReasoningEffort(row("muse-wonder-1.0"),"max"),"max");
   assert.equal(resolveMuseReasoningEffort(row("muse-spark-1.3-contributor"),"max"),"medium","Max is not the contributor model's: its default");

@@ -1,7 +1,7 @@
 // How Trebell installs and updates a harness (AgentRuntimeManager installPlan, install, and the update reading each status of Settings'
-// harness list carries), judged as T3 Code's maintenance resolver judges it, from where the binary the profile runs really is:
-// - a table of real Windows, macOS and Linux install paths and what updates each (harnessInstallOwner), mirroring the cases of T3's
-//   maintenanceResolver.test.ts: npm's global prefix, a harness's own updater, and the installs that are the person's to update;
+// harness list carries), judged from where the binary the profile runs really is:
+// - a table of real Windows, macOS and Linux install paths and what updates each (harnessInstallOwner): npm's global prefix, a
+//   harness's own updater, and the installs that are the person's to update;
 // - with a runner of the test's own standing in for every command (the manager's runFn, a host's executeArgv) and a stand-in npm
 //   registry: an npm Claude Code updates into its own prefix with its install script allowed (on an SSH host too, and Codex there), a
 //   native one runs its `claude update`, Codex's standalone tree `codex update` with CODEX_HOME at the profile's shared home, Grok's
@@ -41,7 +41,7 @@ const CASES=[
   ["npm's script launcher for Codex, proven by its package beside it",{kind:"codex",found:"D:\\tools\\npm\\codex.cmd",files:["D:\\tools\\npm\\node_modules\\@openai\\codex\\package.json"]},{method:"npm",prefix:"D:\\tools\\npm"}],
   ["npm's global prefix on Linux",{kind:"claude",platform:"linux",found:"/usr/local/bin/claude",real:"/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"},{method:"npm",prefix:"/usr/local"}],
   ["a global of Homebrew's Node, which is npm's",{kind:"codex",platform:"darwin",found:"/opt/homebrew/bin/codex",real:"/opt/homebrew/Cellar/node/22.1.0/lib/node_modules/@openai/codex/bin/codex.js"},{method:"npm",prefix:"/opt/homebrew/Cellar/node/22.1.0"}],
-  // pnpm 10 runs Claude Code's install script, which puts its binary in place, only when told to (T3 a523b0036).
+  // pnpm 10 runs Claude Code's install script, which puts its binary in place, only when told to.
   ["pnpm's global store",{kind:"claude",platform:"linux",found:"/home/me/.local/share/pnpm/claude",real:"/home/me/.local/share/pnpm/global/5/.pnpm/@anthropic-ai+claude-code@2.1.300/node_modules/@anthropic-ai/claude-code/cli.js"},{method:"manual",by:"pnpm",command:"pnpm add -g --allow-build=@anthropic-ai/claude-code @anthropic-ai/claude-code@latest"}],
   ["bun's global bin",{kind:"claude",platform:"darwin",found:"/Users/me/.bun/bin/claude"},{method:"manual",by:"bun",command:"bun add -g @anthropic-ai/claude-code@latest"}],
   ["Vite+'s bin on Windows",{kind:"claude",found:"C:\\Users\\me\\AppData\\Local\\vite-plus\\bin\\claude.cmd",real:"C:\\Users\\me\\AppData\\Local\\vite-plus\\packages\\@anthropic-ai\\claude-code\\lib\\node_modules\\@anthropic-ai\\claude-code\\cli.js"},{method:"manual",by:"Vite+",command:"vp i -g @anthropic-ai/claude-code"}],

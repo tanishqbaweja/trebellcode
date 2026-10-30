@@ -1,6 +1,6 @@
 // Trebell's runtime notes name the harness and the model an ACP session runs, and go with its first ordinary prompt (and the first
 // after a compaction). They go again with the first prompt after the session's model changed, a switch Trebell made or one the harness
-// reports, so the harness is not left told the model it ran before: T3 sends them with the turn's model on every prompt. A prompt on
+// reports, so the harness is not left told the model it ran before. A prompt on
 // the same model as the notes sent last carries none.
 import test from "node:test";
 import assert from "node:assert/strict";

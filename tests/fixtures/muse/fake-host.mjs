@@ -6,8 +6,8 @@ import { MuseAgentSession } from "../../../src/muse-agent-session.mjs";
 
 // A fake `muse serve` for Muse Code's session tests: a child whose stdio carries MSP frames, driven through Meta's SDK (a real
 // Connection), as tests/muse-agent-session.test.mjs drives it. FakeMuse answers each request with its handler and records every frame
-// Trebell sends; ReplayMuse replays one of T3 Code's recorded transcripts (MIT, this folder's *.ndjson, recorded with Muse 1.4.3, whose
-// frames match Muse 1.4.13's stable schema).
+// Trebell sends; ReplayMuse replays one of the recorded transcripts in this folder (*.ndjson, MIT, see THIRD_PARTY_NOTICES.md;
+// recorded with Muse 1.4.3, whose frames match Muse 1.4.13's stable schema).
 const FIXTURES=new URL("./",import.meta.url);
 export const INIT=JSON.parse(readFileSync(new URL("initialize-1.4.13.json",FIXTURES),"utf8")).result;
 export const settle=()=>new Promise(resolve=>setImmediate(resolve));
@@ -78,7 +78,7 @@ export class FakeMuse{
 // An MSP error a handler throws, as Muse answers it ({code, message, data:{kind}}).
 export const mspError=(kind,message,code=-32000)=>Object.assign(new Error(message),{code,kind});
 
-// Replays one of T3's recorded transcripts: each group of frames Trebell sends (in any order within the group) is followed by the
+// Replays one recorded transcript: each group of frames Trebell sends (in any order within the group) is followed by the
 // frames Muse sent then, with the recorded session, turn and command ids replaced by the ones Trebell minted.
 export class ReplayMuse{
   constructor(child,name,{exitOnEof=true}={}){

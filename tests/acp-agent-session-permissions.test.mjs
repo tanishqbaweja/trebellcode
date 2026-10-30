@@ -23,8 +23,8 @@ test("ACP edits mode auto-allows only explicitly classified edit permissions",()
 });
 
 test("ACP full, auto, supervised and read-only modes preserve their approval contract",()=>{
-  // An automatic yes is allow-once: an always answer can outlive the session (Grok saves it for the project; T3 picks
-  // allow_once first). Allow-always is used only when the agent offers nothing else.
+  // An automatic yes is allow-once: an always answer can outlive the session (Grok saves it for the project). Allow-always is
+  // used only when the agent offers nothing else.
   assert.equal(acpPermissionChoice(options,"full",null),"once");
   assert.equal(acpPermissionChoice(options,"auto","execute"),"once");
   assert.equal(acpPermissionChoice(options.filter(option=>option.kind!=="allow_once"),"full",null),"always");
@@ -33,7 +33,7 @@ test("ACP full, auto, supervised and read-only modes preserve their approval con
   assert.equal(acpPermissionChoice(options,"read-only","execute"),"reject");
 });
 
-test("ACP read, search and think requests are allowed unasked in every mode, Read Only included (T3 acpReadDisposition)",()=>{
+test("ACP read, search and think requests are allowed unasked in every mode, Read Only included",()=>{
   for(const mode of ["supervised","edits","auto","read-only","full"]){
     for(const kind of ["read","search","think"])assert.equal(acpPermissionChoice(options,mode,kind),"once",`${mode} ${kind}`);
   }
@@ -76,7 +76,7 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
   }finally{await session.close().catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}
 });
 
-// No harness is offered the client's terminal (T3: ACP agents run their own shell behind their own permission requests),
+// No harness is offered the client's terminal (ACP agents run their own shell behind their own permission requests),
 // so a terminal/create request is refused outright: nothing runs and no second approval card appears.
 test("ACP terminal requests are refused without running anything, since no harness is offered the client's terminal",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-permission-")),fixture=join(root,"fake-acp.mjs"),marker=join(root,"executed.txt");

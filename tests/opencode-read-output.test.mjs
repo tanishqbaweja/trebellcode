@@ -5,7 +5,7 @@ import { OpenCode2AgentSession } from "../src/opencode2-agent-session.mjs";
 import { FAKE_OPENCODE1_MODEL, eventuallyReal, startFakeOpenCode1 } from "./fixtures/fake-opencode1-server.mjs";
 import { eventually, fakeOpenCode2Client } from "./fixtures/fake-opencode2-client.mjs";
 
-// OpenCode's read tool wraps what it read in XML tags (T3 Code's cfbfbca6e shows the read without them). These are OpenCode 1.18.32's
+// OpenCode's read tool wraps what it read in XML tags. These are OpenCode 1.18.32's
 // own outputs, recorded live for a file and a folder: the read row showed the tags around the file's lines and the folder's entries.
 const FILE_READ="<path>H:\\work\\notes.txt</path>\n<type>file</type>\n<content>\n1: alpha line\n2: beta line\n\n(End of file - total 2 lines)\n</content>";
 const FOLDER_READ="<path>H:\\work\\src</path>\n<type>directory</type>\n<entries>\nenv.ts\nlib/\n\n(2 entries)\n</entries>";

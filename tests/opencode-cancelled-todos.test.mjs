@@ -5,7 +5,7 @@ import { FAKE_OPENCODE1_MODEL, startFakeOpenCode1 } from "./fixtures/fake-openco
 import { eventuallyReal as eventually, openCode1Relay } from "./fixtures/opencode1-relay.mjs";
 
 // OpenCode 1.x's todo list (todo.updated) can mark a step cancelled, which a plan step cannot be: the window showed it as pending, so
-// a plan whose remaining steps OpenCode gave up read as unfinished for good. T3 Code's 2333f1688 leaves cancelled todos out.
+// a plan whose remaining steps OpenCode gave up read as unfinished for good. Cancelled todos are now left out.
 const TODOS=[{content:"Write the fix",status:"completed",priority:"high"},{content:"Try another approach",status:"cancelled",priority:"medium"},{content:"Add a test",status:"in_progress",priority:"medium"}];
 
 test("an OpenCode todo list leaves its cancelled todos out of the turn's plan",async()=>{

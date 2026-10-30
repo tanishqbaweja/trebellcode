@@ -1,5 +1,5 @@
 // Trebell's runtime notes (which harness and model the agent runs in) go with an ACP session's first ordinary prompt, and again
-// with the first one after the harness compacted its context (T3 6b2188aac compactionMarkers): after a lone /compact that the
+// with the first one after the harness compacted its context: after a lone /compact that the
 // harness finished, the relay's or the person's, and after a compaction_update that reports a finished compaction, also one in the
 // turn that carried them. The /compact itself goes alone, and a stopped or refused one, or one still running or failed, keeps them.
 import test from "node:test";

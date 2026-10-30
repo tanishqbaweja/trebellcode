@@ -1,5 +1,5 @@
-// Muse Code's releases and updates as Trebell reads them (muse-maintenance.mjs, after T3 Code's provider-muse maintenance.ts and its
-// tests): the release a channel manifest names, invalid manifests and unreadable channels included; Muse Code's versions in order with
+// Muse Code's releases and updates as Trebell reads them (muse-maintenance.mjs): the release a channel manifest names, invalid
+// manifests and unreadable channels included; Muse Code's versions in order with
 // their -R revisions; Meta's launcher told from anything else on Windows (muse.cmd beside .muse-launcher.ps1) and elsewhere (the
 // launcher script), from files of the test's own; and the environment and command of the launcher's own synchronous update.
 import test from "node:test";

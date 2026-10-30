@@ -5,7 +5,7 @@ import { eventually, fakeOpenCode2Client } from "./fixtures/fake-opencode2-clien
 
 // A profile's own OpenCode 2 server (its serverUrl) keeps running when Trebell restarts. A run that waited on a question (a form) or
 // an approval then still waits: Trebell never saw it asked, so it would neither ask nor stop it, and the thread's next prompt would
-// queue behind a run that never ends. T3 Code stops such leftover requests when it resumes a session (stopLeftoverRequests): a form
+// queue behind a run that never ends. Such leftover requests are now stopped when a session resumes (stopLeftoverRequests): a form
 // cancelled and a permission rejected, both without a message, which ends OpenCode's run.
 const FIELDS=[{key:"q0",type:"string",title:"Color",options:[{value:"Red",label:"Red"}],custom:true}];
 

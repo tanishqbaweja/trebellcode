@@ -31,7 +31,7 @@ test("external thread starts preserve Trebell permission profiles across runtime
   assert.deepEqual(agentPermissionProfilePatch({}),{},"turns without a policy override must retain the thread's current permission profile");
 });
 
-test("a new thread is listed by its first message, as T3 Code seeds a thread's title",()=>{
+test("a new thread is listed by its first message",()=>{
   assert.equal(agentThreadTitleSeed([{type:"text",text:"  Fix the\n\nlogin   bug  "}]),"Fix the login bug");
   assert.equal(agentThreadTitleSeed([{type:"text",text:"x".repeat(60)}]),"x".repeat(50)+"...");
   assert.equal(agentThreadTitleSeed([{type:"localImage",path:"C:\\shots\\screen.png"}]),"Image: screen.png");
@@ -39,7 +39,7 @@ test("a new thread is listed by its first message, as T3 Code seeds a thread's t
   assert.equal(agentThreadTitleSeed([]),null);
 });
 
-test("a harness's text after a tool call starts a new paragraph, as T3 Code starts a new assistant message",()=>{
+test("a harness's text after a tool call starts a new paragraph",()=>{
   // The live tour: Cursor's "I'll run that Node one-liner and report the output." ran into the command output's code fence.
   const session={__assistant:"I'll run that Node one-liner and report the output.",__assistantBreak:true};
   assert.equal(agentTextAfterToolCall(session,"```\ntrebell-tour\n```"),"\n\n```\ntrebell-tour\n```");
@@ -912,7 +912,7 @@ test("a harness's thinking reaches the client as Codex reasoning items, one per 
 
 test("a reopened ACP harness thread shows its transcript without starting the harness, and its next turn resumes the conversation",async()=>{
   // The live tour: reopening a Cursor thread after a restart waited for Cursor to start and load the conversation, a blank
-  // screen for half a minute. T3 Code opens a provider session lazily, with the thread's next turn.
+  // screen for half a minute. The relay now opens a harness session lazily, with the thread's next turn.
   const agent=FAKE_ACP_AGENT.replace('  if(!m.method||m.id==null)return;','  if(!m.method||m.id==null)return;\n  appendFileSync(process.argv[2]+".methods",JSON.stringify({method:m.method,sessionId:m.params?.sessionId??null})+"\\n");');
   assert.notEqual(agent,FAKE_ACP_AGENT);
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-lazy-resume-")),fixture=join(root,"fake-acp.mjs"),recorded=join(root,"prompts.jsonl");
@@ -1179,7 +1179,7 @@ test("the relay runs an OpenCode thread with its mode's rules and the model's va
   try{
     const started=await rpc("thread/start",{cwd:root,model,permissionProfile:"edits"}),threadId=started.thread.id;
     assert.equal(started.thread.providerSessionId,"ses_1");
-    // The new session carries the thread's mode as OpenCode session rules (T3 Code's openCodePermissionRules).
+    // The new session carries the thread's mode as OpenCode session rules.
     assert.deepEqual(fixture.called("POST /session").map(call=>call.body.permission),[openCodePermissionRules("edits")]);
     // Each turn runs with the thread's current mode, and the composer's reasoning level as the model's OpenCode variant.
     await runTurn(threadId,"Reply with exactly OK",{permissionProfile:"supervised",reasoningEffort:"high"});
@@ -1243,7 +1243,7 @@ test("Stop withdraws an OpenCode thread's waiting approval card and answers Open
     assert.equal(threadStore.get(threadId).preview,"run the tests","the thread is listed by its first message");
     const resolved=next(message=>message.method==="serverRequest/resolved"),completed=turnCompleted(ws);
     await rpc("turn/interrupt",{threadId});
-    // The card is withdrawn without an answer from the app, as T3 cancels every pending request of an interrupted run.
+    // The card is withdrawn without an answer from the app.
     assert.deepEqual((await resolved).params,{requestId:asked.id,threadId});
     assert.equal((await completed).turn.status,"cancelled");
     assert.deepEqual(fixture.called("POST /permission/per_fixture/reply").map(call=>call.body.reply),["reject"],"OpenCode is not left waiting for an answer");
@@ -1423,7 +1423,7 @@ test("a Claude Code approval waiting when its thread is deleted leaves the windo
   }
 });
 
-test("an attached audio file reaches every harness by its saved path, as T3 Code names the attachments it does not send as content",async()=>{
+test("an attached audio file reaches every harness by its saved path",async()=>{
   const prompt=await contextualAgentPrompt([{type:"text",text:"Transcribe this"},{type:"localAudio",path:"/recordings/memo 1.mp3"}]);
   assert.deepEqual(prompt.map(part=>({type:part.type,text:part.text})),[{type:"text",text:"Transcribe this"},{type:"text",text:'[Attached audio "memo 1.mp3" is saved at: /recordings/memo 1.mp3]'}]);
   // The line keeps its file for Antigravity's session, which adds the audio after it when Antigravity takes audio

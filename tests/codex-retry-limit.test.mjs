@@ -4,8 +4,8 @@ import { codexErrorNotice, codexTurnFailure } from "../ui/src/codex-turn-options
 import { turnFailureText } from "../ui/src/turn-outcome.js";
 
 // Codex retries a request that fails, and when its retries run out it says why only with the last attempt's HTTP status
-// (codexErrorInfo {responseTooManyFailedAttempts:{httpStatusCode}}). T3 Code (58b48274f) reads one that ended on 429 as a usage or
-// rate limit; Trebell said it as a plain provider error, without pointing the person to Usage.
+// (codexErrorInfo {responseTooManyFailedAttempts:{httpStatusCode}}). One that ended on 429 is a usage or rate limit, which
+// Trebell said as a plain provider error, without pointing the person to Usage.
 const exhausted=httpStatusCode=>({message:`exceeded retry limit, last status: ${httpStatusCode} Too Many Requests`,codexErrorInfo:{responseTooManyFailedAttempts:{httpStatusCode}},additionalDetails:null});
 const USAGE=" · See Usage for your Codex limits.";
 

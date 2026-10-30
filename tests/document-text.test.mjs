@@ -1,5 +1,5 @@
 // An attached Word, Excel, PowerPoint, OpenDocument, RTF, EPUB or notebook file has its text extracted into a file of its own that
-// every harness is told of, as T3 Code does (888a3d47d): in a process of its own with T3's limits (16 MB in, 32 MB unpacked, 1,000,000
+// every harness is told of: in a process of its own with these limits (16 MB in, 32 MB unpacked, 1,000,000
 // characters out, 15 s, a 192 MB heap), beside an upload in Trebell's attachments folder and, for a file attached from the person's
 // own folders, inside that folder and never beside their file. A corrupt, encrypted or oversized file gets no text.
 import test from "node:test";

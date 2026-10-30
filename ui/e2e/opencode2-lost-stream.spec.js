@@ -4,7 +4,7 @@ import { openCode2App,send,shots,stopButton } from "./opencode-relay-app.js";
 // An OpenCode 2 turn whose event stream drops, as a person sees it. The real relay, OpenCode 2 session and @opencode/client run against
 // the fake OpenCode 2 server (tests/fixtures/fake-opencode2-server.mjs), whose history OpenCode 2.0.24 keeps alike (live): each run's
 // end is an idle item with its outcome, and a reply is the run's assistant messages. Trebell listens on a new stream and reads back from
-// the turn's own message what OpenCode did meanwhile, as T3 Code does. It used to take OpenCode's newest assistant message as the
+// the turn's own message what OpenCode did meanwhile. It used to take OpenCode's newest assistant message as the
 // answer, so a run lost meanwhile answered with the earlier turn's reply and a reply with text Trebell missed was shown twice; and a
 // turn Trebell stopped following left OpenCode's run going, whose text and end the next turn took. A message refused while that run
 // went on then stayed in the conversation as sent, its turn failed and the composer empty; and a turn whose run OpenCode lost read

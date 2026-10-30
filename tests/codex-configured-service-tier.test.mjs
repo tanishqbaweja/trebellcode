@@ -14,7 +14,7 @@ import { codexModelChoices } from "../ui/src/codex-turn-options.js";
 
 // A person whose Codex config runs Fast (service_tier = "fast" in config.toml) saw the Speed picker read Standard until the open
 // thread reported its own settings, while Codex ran each new thread at Fast. The catalog now reads the configured tier with
-// config/read, without the launch folder's project layers (T3 Code 3b844dab5), and gives it as each model's default tier: the
+// config/read, without the launch folder's project layers, and gives it as each model's default tier: the
 // picker shows it while nothing is picked, and no turn sends it, so Codex keeps applying its own config.
 const require=createRequire(import.meta.url);
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
@@ -36,7 +36,7 @@ test("a model's tier that the Codex config names is its default tier: the Speed 
   assert.deepEqual((({serviceTier,serviceTierPicker})=>({serviceTier,serviceTierPicker}))(codexModelChoices({settings:picked,provider:"codex",model:"gpt-6.1-sol",metadata:fast})),{serviceTier:"default",serviceTierPicker:"default"});
 });
 
-// The model list's step for the config (T3 applyConfiguredCodexServiceTier), over rows shaped as Codex 0.162.0's model/list gives them:
+// The model list's step for the config, over rows shaped as Codex 0.162.0's model/list gives them:
 // a model whose tiers hold the configured one takes it as its default tier, and the others keep their own.
 test("each Codex model that lists the configured tier takes it as its default tier, and the others keep Codex's",()=>{
   const fast={id:"priority",name:"Fast",description:""};
@@ -113,7 +113,7 @@ test("the Codex model list gives each model the tier the person's Codex config r
       assert.deepEqual(read.picker,{"gpt-6.1-sol":"default","gpt-6-luna":"default","gpt-6-mini":"default"},tier);
       assert.ok(read.ms<10_000,`${tier}: the model list took ${read.ms} ms`);
     }
-    // The shared catalog reads the person's config without the launch folder's project layers, as T3 does.
+    // The shared catalog reads the person's config without the launch folder's project layers.
     assert.deepEqual((await readFile(log,"utf8")).trim().split(/\r?\n/).map(line=>JSON.parse(line)),Array(5).fill({includeLayers:false}));
   }finally{
     AgentRuntimeManager.prototype.probe=probe;
