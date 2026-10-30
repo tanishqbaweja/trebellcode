@@ -172,12 +172,12 @@ test("an archive past its limits has its text cut with a note, or none, instead 
   assert.equal(media,"The memo text beside a large embedded recording","embedded files are never unpacked");
   assert.equal(await extract("deep.docx",docx("<div>".repeat(129)+"Lost"+"</div>".repeat(129),stored)),CUT,"XML nested more than 128 deep");
   assert.equal(await extract("wide.docx",docx("<w:p/>".repeat(200_001),stored)),CUT,"more than 200,000 elements");
-  const rows=await extract("rows.ods",odf('<document><table:table table:name="Tide log"><table:table-row table:number-rows-repeated="10001"><table:table-cell><text:p>High water</text:p></table:table-cell></table:table-row></table:table></document>',stored));
+  const rows=await extract("rows.ods",odf('<document><table:table table:name="Tide log"><table:table-column table:style-name="co1"/><table:table-row table:style-name="ro1" table:number-rows-repeated="10001"><table:table-cell office:value-type="string"><text:p>High water</text:p></table:table-cell></table:table-row></table:table></document>',stored));
   assert.equal(count(rows,"High water"),10_000);assert.ok(rows.endsWith(TRUNCATED),"more than 10,000 rows");
-  const columns=await extract("columns.ods",odf('<document><table:table table:name="Wide"><table:table-row><table:table-cell table:number-columns-repeated="513"><text:p>Cell</text:p></table:table-cell></table:table-row></table:table></document>',stored));
+  const columns=await extract("columns.ods",odf('<document><table:table table:name="Wide"><table:table-row table:style-name="ro1"><table:table-cell office:value-type="string" table:number-columns-repeated="513"><text:p>Cell</text:p></table:table-cell></table:table-row></table:table></document>',stored));
   assert.equal(count(columns,"Cell"),512);assert.ok(columns.endsWith(TRUNCATED),"more than 512 columns");
   assert.equal(await extract("spaces.odt",odf('<document><text:p>Start<text:s text:c="1000001"/>Unneeded</text:p></document>',stored)),"Start"+CUT,"a space repeated past the text's limit");
-  const padded=await extract("padded.ods",odf('<document><table:table table:name="Crew rota"><table:table-row><table:table-cell><text:p>Mara</text:p></table:table-cell><table:table-cell table:number-columns-repeated="12000"/></table:table-row><table:table-row table:number-rows-repeated="900000"><table:table-cell table:number-columns-repeated="12001"><text:p/></table:table-cell></table:table-row></table:table></document>',stored));
+  const padded=await extract("padded.ods",odf('<document><table:table table:name="Crew rota"><table:table-row table:style-name="ro1"><table:table-cell office:value-type="string"><text:p>Mara</text:p></table:table-cell><table:table-cell table:style-name="ce1" table:number-columns-repeated="12000"/></table:table-row><table:table-row table:style-name="ro2" table:number-rows-repeated="900000"><table:table-cell table:style-name="ce1" table:number-columns-repeated="12001"><text:p/></table:table-cell></table:table-row></table:table></document>',stored));
   assert.equal(padded,"## Sheet: Crew rota\nMara","a sheet's padding of empty rows and cells is never expanded");
   const long=await extract("long.docx",docx(`<w:p><w:t>${"A".repeat(1_000_100)}</w:t></w:p><w:p><w:t>Unneeded</w:t></w:p>`,stored));
   assert.ok(long==="A".repeat(1_000_000)+CUT,"text past 1,000,000 characters stops there");
@@ -187,11 +187,11 @@ test("an archive past its limits has its text cut with a note, or none, instead 
   await assert.rejects(extract("locked.docx",zipArchive({"word/document.xml":"<document><p>Secret</p></document>"},{encrypted:true})),/Encrypted archive/);
   // A part that is missing or is not XML is left out, said, and the rest still read.
   const partial=await extract("partial.pptx",zipArchive({
-    "ppt/presentation.xml":'<presentation><sldId r:id="bad"/><sldId r:id="good"/></presentation>',
-    "ppt/_rels/presentation.xml.rels":'<Relationships><Relationship Id="bad" Target="bad.xml"/><Relationship Id="good" Target="good.xml"/></Relationships>',
-    "ppt/bad.xml":"<slide><p>Discard</slide>","ppt/good.xml":"<slide><p>Healthy part</p></slide>",
+    "ppt/presentation.xml":'<presentation><sldIdLst><sldId id="256" r:id="rIdTorn"/><sldId id="257" r:id="rIdWhole"/></sldIdLst></presentation>',
+    "ppt/_rels/presentation.xml.rels":'<Relationships><Relationship Id="rIdTorn" Target="slides/torn.xml"/><Relationship Id="rIdWhole" Target="slides/whole.xml"/></Relationships>',
+    "ppt/slides/torn.xml":"<sld><p>Torn away</sld>","ppt/slides/whole.xml":"<sld><p>The slide that reads whole</p></sld>",
   }));
-  assert.ok(partial.includes("Healthy part")&&partial.includes("[A part of the document was left out: ppt/bad.xml is missing or is not valid XML.]")&&!partial.includes("Discard"));
+  assert.ok(partial.includes("The slide that reads whole")&&partial.includes("[A part of the document was left out: ppt/slides/torn.xml is missing or is not valid XML.]")&&!partial.includes("Torn away"));
   // No DTD is read, so an entity a document declares never expands: the part is left out as not valid XML.
   const entities=await extract("entities.docx",zipArchive({"word/document.xml":'<!DOCTYPE d [<!ENTITY a "AAAAAAAAAA"><!ENTITY b "&a;&a;&a;&a;&a;">]><d><p>&b;</p></d>'}));
   assert.ok(entities.includes("[A part of the document was left out: word/document.xml is missing or is not valid XML.]")&&!entities.includes("AAAA"));
