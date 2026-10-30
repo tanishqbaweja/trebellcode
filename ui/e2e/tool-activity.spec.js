@@ -70,7 +70,7 @@ test("tool rows name what each call did, and a write that failed is renamed in p
 
     const list=call("tool-list","list",{depth:2}),read=call("tool-read","read_file",{path:"greet.py"});
     start(list);end(list,"completed");start(read);end(read,"completed");
-    await expect(row("Searched files").locator("summary em")).toHaveText("done");
+    await expect(row("Looked through the files").locator("summary em")).toHaveText("done");
     await expect(row("Read greet.py").locator("summary em")).toHaveText("done");
 
     // The rejected write: running, it reads as the write it is making; once it fails, the same row names what it attempted.
@@ -93,7 +93,7 @@ test("tool rows name what each call did, and a write that failed is renamed in p
     harness.push("turn/completed",{turn:{id:"turn-2",status:"completed",completedAt:Date.now()/1000}});
     await expect(page.locator(".assistant-message-text").last()).toContainText("tour-readonly.txt was not created");
     await expect(failed.locator("summary em")).toHaveText("failed");
-    await expect(rows.locator("summary strong")).toHaveText(["Searched files","Read greet.py","Write tour-readonly.txt","Wrote notes.txt"]);
+    await expect(rows.locator("summary strong")).toHaveText(["Looked through the files","Read greet.py","Write tour-readonly.txt","Wrote notes.txt"]);
     await page.screenshot({path:join(shotsDir,"tool-activity-failed-write-dark-1280x800.png"),fullPage:true,animations:"disabled"});
   }finally{await harness.close()}
 });
@@ -123,7 +123,7 @@ test("a repository search row opens to its hits grouped by file, not to the item
     const search={type:"dynamicToolCall",id:"tool-search-1",namespace:"trebell_repo",tool:"search_code",arguments:{query:"rotateRefreshToken",path:"src",glob:"*.js"},status:"inProgress"};
     harness.push("item/started",{turnId:"turn-2",item:search,startedAtMs:Date.now()});
     harness.push("item/completed",{turnId:"turn-2",item:{...search,status:"completed",success:true,contentItems:[{type:"inputText",text}],rawOutput:text},completedAtMs:Date.now()});
-    const row=page.locator(".agent-block .tool-event").filter({has:page.locator("summary strong").getByText("Searched rotateRefreshToken in src",{exact:true})});
+    const row=page.locator(".agent-block .tool-event").filter({has:page.locator("summary strong").getByText("Looked for rotateRefreshToken in src",{exact:true})});
     await expect(row.locator("summary em")).toHaveText("done");
     await row.locator("summary").click();
     const output=row.locator(".tool-event-body pre");

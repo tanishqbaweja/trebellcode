@@ -61,7 +61,7 @@ test("a Native draft that goes another way leaves the screen: a tool call, a fai
     await expect(live(page)).toContainText("searching the repository for the SessionManager class");
     toTool.open();
     await expect(page.locator(".history-assistant").filter({hasText:"SessionManager is defined in session.js"})).toHaveCount(1,{timeout:10_000});
-    await expect(page.locator(".tool-event").filter({hasText:"Searched SessionManager"}).first()).toBeVisible();
+    await expect(page.locator(".tool-event").filter({hasText:"Looked for SessionManager"}).first()).toBeVisible();
     await expect(page.getByText("searching the repository for the SessionManager class",{exact:false})).toHaveCount(0);await expect(live(page)).toHaveCount(0);
 
     // A failed attempt: its sentinel draft is cleared and the reply is the retry's.
