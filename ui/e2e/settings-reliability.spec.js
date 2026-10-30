@@ -1400,6 +1400,51 @@ test("a theme note clears once another theme is chosen",async({page,request})=>{
   await page.locator(".settings-grid").screenshot({animations:"disabled",path:auditDir+"settings-theme-note-cleared.png"});
 });
 
+// A refused theme save is said once, under the theme buttons, where the theme note says how a save went: it was also said in the
+// Settings alert, which stood over the Appearance card's heading. Save & apply with the mouse and from the keyboard, and an import,
+// each refused. A refused theme choice, which has no note of its own, is still said in the alert, once.
+test("a refused theme Save & apply or import is said once, under the theme buttons, and a refused theme choice once, in the alert",async({page,request})=>{
+  const refusal="Settings could not be saved: the theme store is read-only on this machine.";
+  await openSettings(page,request,"Theme Refusal Workspace",{customThemes:[],appearance:"dark",environmentThemeSelections:{}});
+  await page.setViewportSize({width:1280,height:800});
+  await page.getByRole("button",{name:/Appearance/}).click();
+  // The themes and the theme chosen cannot be saved; the header's mode button still saves.
+  let refused=0;
+  await page.route(/\/api\/settings$/,route=>{
+    const body=route.request().method()==="POST"?route.request().postDataJSON()||{}:{};
+    if(!("customThemes" in body||"appearance" in body))return route.continue();
+    refused++;return route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:refusal})});
+  });
+  const card=page.locator('[data-setting-target="appearance-theme"]'),note=card.getByRole("alert"),alert=page.locator(".settings-action-error");
+  const save=card.getByRole("button",{name:"Save & apply",exact:true}),create=card.getByRole("button",{name:"Create theme",exact:true});
+  const times=()=>page.evaluate(text=>document.body.innerText.split(text).length-1,refusal);
+  async function saidOnce(said,saves,where){
+    await expect(where==="alert"?alert:note).toHaveText(said);
+    await expect.poll(()=>refused).toBe(saves);
+    await expect(where==="alert"?note:alert,`said ${where==="alert"?"in the alert only":"by the theme buttons only"}`).toHaveCount(0);
+    expect(await times(),"the refusal said once").toBe(1);
+  }
+  await create.click();
+  await save.click();
+  await saidOnce(refusal,1,"note");
+  await shootModes(page,"theme-save-refused",{show:note});
+  // From the keyboard: Tab from the theme's name to Save & apply, Enter.
+  await create.click();await expect(note).toHaveCount(0);
+  await card.getByLabel("Name",{exact:true}).click();
+  for(let step=0;step<8&&!await save.evaluate(button=>button===document.activeElement);step++)await page.keyboard.press("Tab");
+  await expect(save).toBeFocused();
+  await page.keyboard.press("Enter");
+  await saidOnce(refusal,2,"note");
+  // An import the theme store refuses.
+  const chooser=page.waitForEvent("filechooser");await card.getByRole("button",{name:"Import JSON",exact:true}).click();
+  await (await chooser).setFiles({name:"refused.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify({name:"Refused import",appearance:"dark",canvas:"#101814",accent:"#3ddc97"}))});
+  await saidOnce("Import failed: "+refusal,3,"note");
+  // A theme chosen and refused: the alert says it, and the theme note left from the import is gone.
+  await card.getByRole("group",{name:"Theme"}).getByRole("button",{name:"Midnight",exact:true}).click();
+  await saidOnce(refusal,4,"alert");
+  expect((await savedSettings(request)).customThemes).toEqual([]);
+});
+
 test("a failed release check in General can be retried on its own",async({page,request})=>{
   let releaseChecks=0;
   await page.route(/\/api\/update\/check$/,route=>{releaseChecks++;return releaseChecks===1

@@ -588,7 +588,8 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
     }catch(error){showAgentMessage(error.message,true);return false}
     finally{setHarnessAuthBusy(false)}
   }
-  async function save(patch){
+  // alert:false leaves a failure to the caller, which says it by its own control (the theme note), so it is not said twice.
+  async function save(patch,{alert=true}={}){
     setSettingsError("");
     if("appearance" in patch&&environmentThemeCatalog?.environmentKey){
       const selections={...(settings.environmentThemeSelections||{})};
@@ -609,7 +610,7 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
     catch(error){
       if(optimistic){onProviderChanging?.(settings.modelProvider||DEFAULT_MODEL_PROVIDER);onSettings(settings)}
       if(providerChange)setProviderSwitching(false);
-      setSettingsError(error?.message||String(error)||"Could not save settings.");
+      if(alert)setSettingsError(error?.message||String(error)||"Could not save settings.");
       throw error;
     }
     // With the keys this save named, so a read of the settings sent before it answered (Trebell's start-up among them) leaves them.
@@ -721,7 +722,7 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
     if(!themeDraft)return;
     try{
       const theme=normalizeCustomTheme(themeDraft,{id:themeDraft.id});const current=Array.isArray(settings.customThemes)?settings.customThemes:[];
-      await save({customThemes:[...current.filter(item=>item.id!==theme.id),theme],appearance:theme.id});setThemeDraft(theme);setThemeMessage("Theme saved and applied.");
+      await save({customThemes:[...current.filter(item=>item.id!==theme.id),theme],appearance:theme.id},{alert:false});setThemeDraft(theme);setThemeMessage("Theme saved and applied.");
     }catch(error){setThemeMessage(error.message||String(error),true)}
   }
   async function removeTheme(theme){
@@ -741,7 +742,7 @@ export default function SettingsPage({settings,runtimeKnown=true,harnessReady=nu
     setThemeMessage("");
     try{
       const parsed=parseThemeJson(await file.text());const source=Array.isArray(parsed)?parsed[0]:parsed;const theme=normalizeCustomTheme(source,{id:`custom-${crypto.randomUUID()}`});const current=Array.isArray(settings.customThemes)?settings.customThemes:[];
-      await save({customThemes:[...current,theme],appearance:theme.id});setThemeDraft(theme);setThemeMessage(`Imported ${theme.name}.`);
+      await save({customThemes:[...current,theme],appearance:theme.id},{alert:false});setThemeDraft(theme);setThemeMessage(`Imported ${theme.name}.`);
     }catch(error){setThemeMessage("Import failed: "+(error.message||String(error)),true)}
   }
   function exportTheme(theme){
