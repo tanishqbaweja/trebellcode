@@ -1,0 +1,899 @@
+{
+ "source": "Live check of the Meta Model API's streamed Responses on 2026-10-30 (POST https://api.meta.ai/v1/responses with stream: true; model muse-spark-1.3-contributor, reasoning effort high, function tools, store false, include reasoning.encrypted_content, max_output_tokens 4096). Event names, order, framing (an 'event: <type>' line, then 'data: <json>', then 'data: [DONE]') and payloads as recorded, atMs from the first event; each reasoning item's encrypted_content is a placeholder of the recorded length. No bytes arrive while the model writes an item: the reasoning item's added and done events are the whole reasoning's time apart, and a tool call's argument value comes in one delta. documentedErrors are the shapes Meta documents (dev.meta.ai/docs/error-handling, /docs/protocols/responses), not recorded.",
+ "headers": {
+  "cache-control": "no-cache",
+  "content-type": "text/event-stream",
+  "x-ratelimit-limit-requests": "150",
+  "x-ratelimit-limit-tokens": "3000000",
+  "x-ratelimit-remaining-requests": "147",
+  "x-ratelimit-remaining-tokens": "2981280"
+ },
+ "toolCall": {
+  "prompt": "Read the file README.md in the workspace and tell me its first line. Use the read tool.",
+  "status": 200,
+  "headersMs": 1398,
+  "lastByteMs": 1996.2,
+  "endsWithDone": true,
+  "events": [
+   {
+    "atMs": 0,
+    "event": "response.created",
+    "data": {
+     "response": {
+      "background": false,
+      "created_at": 1793385618,
+      "error": null,
+      "id": "resp_6ae4e492a75a30daefad4798",
+      "incomplete_details": null,
+      "instructions": "You are a coding agent working in a small workspace. Be brief.",
+      "max_output_tokens": 4096,
+      "model": "muse-spark-1.3-contributor",
+      "object": "response",
+      "output": [],
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "trebell-meta-live-check",
+      "reasoning": {
+       "effort": "high"
+      },
+      "service_tier": "auto",
+      "status": "in_progress",
+      "store": false,
+      "temperature": 1,
+      "tool_choice": "auto",
+      "tools": [
+       {
+        "description": "Read a UTF-8 text file in the workspace.",
+        "name": "trebell_workspace__read_file",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "path": {
+           "description": "Workspace-relative path.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "path"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       },
+       {
+        "description": "Run a shell command in the workspace and return its output.",
+        "name": "trebell_terminal__run",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "command": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "command"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled"
+     },
+     "sequence_number": 0,
+     "type": "response.created"
+    }
+   },
+   {
+    "atMs": 0,
+    "event": "response.in_progress",
+    "data": {
+     "response": {
+      "background": false,
+      "created_at": 1793385618,
+      "error": null,
+      "id": "resp_6ae4e492a75a30daefad4798",
+      "incomplete_details": null,
+      "instructions": "You are a coding agent working in a small workspace. Be brief.",
+      "max_output_tokens": 4096,
+      "model": "muse-spark-1.3-contributor",
+      "object": "response",
+      "output": [],
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "trebell-meta-live-check",
+      "reasoning": {
+       "effort": "high"
+      },
+      "service_tier": "auto",
+      "status": "in_progress",
+      "store": false,
+      "temperature": 1,
+      "tool_choice": "auto",
+      "tools": [
+       {
+        "description": "Read a UTF-8 text file in the workspace.",
+        "name": "trebell_workspace__read_file",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "path": {
+           "description": "Workspace-relative path.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "path"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       },
+       {
+        "description": "Run a shell command in the workspace and return its output.",
+        "name": "trebell_terminal__run",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "command": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "command"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled"
+     },
+     "sequence_number": 1,
+     "type": "response.in_progress"
+    }
+   },
+   {
+    "atMs": 0.5,
+    "event": "response.output_item.added",
+    "data": {
+     "item": {
+      "id": "rs_6ae4e492a75a30daefad4798:rs_01a18e1cdac1763b93b9e44a5f67f82a",
+      "status": "in_progress",
+      "summary": [],
+      "type": "reasoning"
+     },
+     "output_index": 0,
+     "sequence_number": 2,
+     "type": "response.output_item.added"
+    }
+   },
+   {
+    "atMs": 180.9,
+    "event": "response.output_item.done",
+    "data": {
+     "item": {
+      "encrypted_content": "recorded-encrypted-reasoning-1426-chars",
+      "id": "rs_6ae4e492a75a30daefad4798:rs_01a18e1cdac1763b93b9e44a5f67f82a",
+      "status": "completed",
+      "summary": [],
+      "type": "reasoning"
+     },
+     "output_index": 0,
+     "sequence_number": 3,
+     "type": "response.output_item.done"
+    }
+   },
+   {
+    "atMs": 278.6,
+    "event": "response.output_item.added",
+    "data": {
+     "item": {
+      "content": [],
+      "id": "rs_01a18e1cdb9d701d8e257355148649a2",
+      "phase": "commentary",
+      "role": "assistant",
+      "status": "in_progress",
+      "type": "message"
+     },
+     "output_index": 1,
+     "sequence_number": 4,
+     "type": "response.output_item.added"
+    }
+   },
+   {
+    "atMs": 278.6,
+    "event": "response.content_part.added",
+    "data": {
+     "content_index": 0,
+     "item_id": "rs_01a18e1cdb9d701d8e257355148649a2",
+     "output_index": 1,
+     "part": {
+      "annotations": [],
+      "logprobs": [],
+      "text": "",
+      "type": "output_text"
+     },
+     "sequence_number": 5,
+     "type": "response.content_part.added"
+    }
+   },
+   {
+    "atMs": 278.6,
+    "event": "response.output_text.delta",
+    "data": {
+     "content_index": 0,
+     "delta": "I'll read README.md to get its first line.",
+     "item_id": "rs_01a18e1cdb9d701d8e257355148649a2",
+     "logprobs": [],
+     "output_index": 1,
+     "sequence_number": 6,
+     "type": "response.output_text.delta"
+    }
+   },
+   {
+    "atMs": 278.6,
+    "event": "response.output_text.done",
+    "data": {
+     "content_index": 0,
+     "item_id": "rs_01a18e1cdb9d701d8e257355148649a2",
+     "logprobs": [],
+     "output_index": 1,
+     "sequence_number": 7,
+     "text": "I'll read README.md to get its first line.",
+     "type": "response.output_text.done"
+    }
+   },
+   {
+    "atMs": 278.6,
+    "event": "response.content_part.done",
+    "data": {
+     "content_index": 0,
+     "item_id": "rs_01a18e1cdb9d701d8e257355148649a2",
+     "output_index": 1,
+     "part": {
+      "annotations": [],
+      "logprobs": [],
+      "text": "I'll read README.md to get its first line.",
+      "type": "output_text"
+     },
+     "sequence_number": 8,
+     "type": "response.content_part.done"
+    }
+   },
+   {
+    "atMs": 279.1,
+    "event": "response.output_item.done",
+    "data": {
+     "item": {
+      "content": [
+       {
+        "annotations": [],
+        "logprobs": [],
+        "text": "I'll read README.md to get its first line.",
+        "type": "output_text"
+       }
+      ],
+      "id": "rs_01a18e1cdb9d701d8e257355148649a2",
+      "phase": "commentary",
+      "role": "assistant",
+      "status": "completed",
+      "type": "message"
+     },
+     "output_index": 1,
+     "sequence_number": 9,
+     "type": "response.output_item.done"
+    }
+   },
+   {
+    "atMs": 344.4,
+    "event": "response.output_item.added",
+    "data": {
+     "item": {
+      "arguments": "",
+      "call_id": "call_01a18e1cdc2073029eb90167f5a47334",
+      "id": "fc_01a18e1cdc2073029eb90167f5a47334",
+      "name": "trebell_workspace__read_file",
+      "status": "in_progress",
+      "type": "function_call"
+     },
+     "output_index": 2,
+     "sequence_number": 10,
+     "type": "response.output_item.added"
+    }
+   },
+   {
+    "atMs": 555,
+    "event": "response.function_call_arguments.delta",
+    "data": {
+     "delta": "{\"path\":\"README.md\"}",
+     "item_id": "fc_01a18e1cdc2073029eb90167f5a47334",
+     "output_index": 2,
+     "sequence_number": 11,
+     "type": "response.function_call_arguments.delta"
+    }
+   },
+   {
+    "atMs": 555.6,
+    "event": "response.function_call_arguments.done",
+    "data": {
+     "arguments": "{\"path\":\"README.md\"}",
+     "item_id": "fc_01a18e1cdc2073029eb90167f5a47334",
+     "name": "trebell_workspace__read_file",
+     "output_index": 2,
+     "sequence_number": 12,
+     "type": "response.function_call_arguments.done"
+    }
+   },
+   {
+    "atMs": 555.6,
+    "event": "response.output_item.done",
+    "data": {
+     "item": {
+      "arguments": "{\"path\":\"README.md\"}",
+      "call_id": "call_01a18e1cdc2073029eb90167f5a47334",
+      "id": "fc_01a18e1cdc2073029eb90167f5a47334",
+      "name": "trebell_workspace__read_file",
+      "status": "completed",
+      "type": "function_call"
+     },
+     "output_index": 2,
+     "sequence_number": 13,
+     "type": "response.output_item.done"
+    }
+   },
+   {
+    "atMs": 576.6,
+    "event": "response.completed",
+    "data": {
+     "response": {
+      "background": false,
+      "completed_at": 1793385618,
+      "created_at": 1793385618,
+      "error": null,
+      "id": "resp_6ae4e492a75a30daefad4798",
+      "incomplete_details": null,
+      "instructions": "You are a coding agent working in a small workspace. Be brief.",
+      "max_output_tokens": 4096,
+      "model": "muse-spark-1.3-contributor",
+      "object": "response",
+      "output": [
+       {
+        "encrypted_content": "recorded-encrypted-reasoning-1426-chars",
+        "id": "rs_6ae4e492a75a30daefad4798:rs_01a18e1cdac1763b93b9e44a5f67f82a",
+        "status": "completed",
+        "summary": [],
+        "type": "reasoning"
+       },
+       {
+        "content": [
+         {
+          "annotations": [],
+          "logprobs": [],
+          "text": "I'll read README.md to get its first line.",
+          "type": "output_text"
+         }
+        ],
+        "id": "rs_01a18e1cdb9d701d8e257355148649a2",
+        "phase": "commentary",
+        "role": "assistant",
+        "status": "completed",
+        "type": "message"
+       },
+       {
+        "arguments": "{\"path\":\"README.md\"}",
+        "call_id": "call_01a18e1cdc2073029eb90167f5a47334",
+        "id": "fc_01a18e1cdc2073029eb90167f5a47334",
+        "name": "trebell_workspace__read_file",
+        "status": "completed",
+        "type": "function_call"
+       }
+      ],
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "trebell-meta-live-check",
+      "reasoning": {
+       "effort": "high"
+      },
+      "service_tier": "auto",
+      "status": "completed",
+      "store": false,
+      "temperature": 1,
+      "tool_choice": "auto",
+      "tools": [
+       {
+        "description": "Read a UTF-8 text file in the workspace.",
+        "name": "trebell_workspace__read_file",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "path": {
+           "description": "Workspace-relative path.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "path"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       },
+       {
+        "description": "Run a shell command in the workspace and return its output.",
+        "name": "trebell_terminal__run",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "command": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "command"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+       "input_tokens": 640,
+       "input_tokens_details": {
+        "cached_tokens": 0
+       },
+       "output_tokens": 108,
+       "output_tokens_details": {
+        "reasoning_tokens": 29
+       },
+       "total_tokens": 748
+      }
+     },
+     "sequence_number": 14,
+     "type": "response.completed"
+    }
+   }
+  ]
+ },
+ "text": {
+  "prompt": "Without using any tool: how many positive integers less than 1000 are divisible by 7 or by 11, but not by both? Reply with the number only.",
+  "status": 200,
+  "headersMs": 2314.4,
+  "lastByteMs": 3922.7,
+  "endsWithDone": true,
+  "events": [
+   {
+    "atMs": 0,
+    "event": "response.created",
+    "data": {
+     "response": {
+      "background": false,
+      "created_at": 1793385639,
+      "error": null,
+      "id": "resp_6ae4e4a7eec27e1afa8e4f53",
+      "incomplete_details": null,
+      "instructions": "You are a coding agent working in a small workspace. Be brief.",
+      "max_output_tokens": 4096,
+      "model": "muse-spark-1.3-contributor",
+      "object": "response",
+      "output": [],
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "trebell-meta-live-check",
+      "reasoning": {
+       "effort": "high"
+      },
+      "service_tier": "auto",
+      "status": "in_progress",
+      "store": false,
+      "temperature": 1,
+      "tool_choice": "auto",
+      "tools": [
+       {
+        "description": "Read a UTF-8 text file in the workspace.",
+        "name": "trebell_workspace__read_file",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "path": {
+           "description": "Workspace-relative path.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "path"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       },
+       {
+        "description": "Run a shell command in the workspace and return its output.",
+        "name": "trebell_terminal__run",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "command": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "command"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled"
+     },
+     "sequence_number": 0,
+     "type": "response.created"
+    }
+   },
+   {
+    "atMs": 0,
+    "event": "response.in_progress",
+    "data": {
+     "response": {
+      "background": false,
+      "created_at": 1793385639,
+      "error": null,
+      "id": "resp_6ae4e4a7eec27e1afa8e4f53",
+      "incomplete_details": null,
+      "instructions": "You are a coding agent working in a small workspace. Be brief.",
+      "max_output_tokens": 4096,
+      "model": "muse-spark-1.3-contributor",
+      "object": "response",
+      "output": [],
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "trebell-meta-live-check",
+      "reasoning": {
+       "effort": "high"
+      },
+      "service_tier": "auto",
+      "status": "in_progress",
+      "store": false,
+      "temperature": 1,
+      "tool_choice": "auto",
+      "tools": [
+       {
+        "description": "Read a UTF-8 text file in the workspace.",
+        "name": "trebell_workspace__read_file",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "path": {
+           "description": "Workspace-relative path.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "path"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       },
+       {
+        "description": "Run a shell command in the workspace and return its output.",
+        "name": "trebell_terminal__run",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "command": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "command"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled"
+     },
+     "sequence_number": 1,
+     "type": "response.in_progress"
+    }
+   },
+   {
+    "atMs": 0.6,
+    "event": "response.output_item.added",
+    "data": {
+     "item": {
+      "id": "rs_6ae4e4a7eec27e1afa8e4f53:rs_01a18e1d2ecf767b9b611ef1c80cd17d",
+      "status": "in_progress",
+      "summary": [],
+      "type": "reasoning"
+     },
+     "output_index": 0,
+     "sequence_number": 2,
+     "type": "response.output_item.added"
+    }
+   },
+   {
+    "atMs": 1494.4,
+    "event": "response.output_item.done",
+    "data": {
+     "item": {
+      "encrypted_content": "recorded-encrypted-reasoning-2791-chars",
+      "id": "rs_6ae4e4a7eec27e1afa8e4f53:rs_01a18e1d2ecf767b9b611ef1c80cd17d",
+      "status": "completed",
+      "summary": [],
+      "type": "reasoning"
+     },
+     "output_index": 0,
+     "sequence_number": 3,
+     "type": "response.output_item.done"
+    }
+   },
+   {
+    "atMs": 1515.9,
+    "event": "response.output_item.added",
+    "data": {
+     "item": {
+      "content": [],
+      "id": "msg_01a18e1d34c2762fabdd516f9ad6fa96",
+      "role": "assistant",
+      "status": "in_progress",
+      "type": "message"
+     },
+     "output_index": 1,
+     "sequence_number": 4,
+     "type": "response.output_item.added"
+    }
+   },
+   {
+    "atMs": 1515.9,
+    "event": "response.content_part.added",
+    "data": {
+     "content_index": 0,
+     "item_id": "msg_01a18e1d34c2762fabdd516f9ad6fa96",
+     "output_index": 1,
+     "part": {
+      "annotations": [],
+      "logprobs": [],
+      "text": "",
+      "type": "output_text"
+     },
+     "sequence_number": 5,
+     "type": "response.content_part.added"
+    }
+   },
+   {
+    "atMs": 1517.3,
+    "event": "response.output_text.delta",
+    "data": {
+     "content_index": 0,
+     "delta": "208",
+     "item_id": "msg_01a18e1d34c2762fabdd516f9ad6fa96",
+     "logprobs": [],
+     "output_index": 1,
+     "sequence_number": 6,
+     "type": "response.output_text.delta"
+    }
+   },
+   {
+    "atMs": 1517.3,
+    "event": "response.output_text.done",
+    "data": {
+     "content_index": 0,
+     "item_id": "msg_01a18e1d34c2762fabdd516f9ad6fa96",
+     "logprobs": [],
+     "output_index": 1,
+     "sequence_number": 7,
+     "text": "208",
+     "type": "response.output_text.done"
+    }
+   },
+   {
+    "atMs": 1517.3,
+    "event": "response.content_part.done",
+    "data": {
+     "content_index": 0,
+     "item_id": "msg_01a18e1d34c2762fabdd516f9ad6fa96",
+     "output_index": 1,
+     "part": {
+      "annotations": [],
+      "logprobs": [],
+      "text": "208",
+      "type": "output_text"
+     },
+     "sequence_number": 8,
+     "type": "response.content_part.done"
+    }
+   },
+   {
+    "atMs": 1522.7,
+    "event": "response.output_item.done",
+    "data": {
+     "item": {
+      "content": [
+       {
+        "annotations": [],
+        "logprobs": [],
+        "text": "208",
+        "type": "output_text"
+       }
+      ],
+      "id": "msg_01a18e1d34c2762fabdd516f9ad6fa96",
+      "role": "assistant",
+      "status": "completed",
+      "type": "message"
+     },
+     "output_index": 1,
+     "sequence_number": 9,
+     "type": "response.output_item.done"
+    }
+   },
+   {
+    "atMs": 1605.6,
+    "event": "response.completed",
+    "data": {
+     "response": {
+      "background": false,
+      "completed_at": 1793385641,
+      "created_at": 1793385639,
+      "error": null,
+      "id": "resp_6ae4e4a7eec27e1afa8e4f53",
+      "incomplete_details": null,
+      "instructions": "You are a coding agent working in a small workspace. Be brief.",
+      "max_output_tokens": 4096,
+      "model": "muse-spark-1.3-contributor",
+      "object": "response",
+      "output": [
+       {
+        "encrypted_content": "recorded-encrypted-reasoning-2791-chars",
+        "id": "rs_6ae4e4a7eec27e1afa8e4f53:rs_01a18e1d2ecf767b9b611ef1c80cd17d",
+        "status": "completed",
+        "summary": [],
+        "type": "reasoning"
+       },
+       {
+        "content": [
+         {
+          "annotations": [],
+          "logprobs": [],
+          "text": "208",
+          "type": "output_text"
+         }
+        ],
+        "id": "msg_01a18e1d34c2762fabdd516f9ad6fa96",
+        "role": "assistant",
+        "status": "completed",
+        "type": "message"
+       }
+      ],
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "trebell-meta-live-check",
+      "reasoning": {
+       "effort": "high"
+      },
+      "service_tier": "auto",
+      "status": "completed",
+      "store": false,
+      "temperature": 1,
+      "tool_choice": "auto",
+      "tools": [
+       {
+        "description": "Read a UTF-8 text file in the workspace.",
+        "name": "trebell_workspace__read_file",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "path": {
+           "description": "Workspace-relative path.",
+           "type": "string"
+          }
+         },
+         "required": [
+          "path"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       },
+       {
+        "description": "Run a shell command in the workspace and return its output.",
+        "name": "trebell_terminal__run",
+        "parameters": {
+         "additionalProperties": false,
+         "properties": {
+          "command": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "command"
+         ],
+         "type": "object"
+        },
+        "type": "function"
+       }
+      ],
+      "top_logprobs": 0,
+      "top_p": 1,
+      "truncation": "disabled",
+      "usage": {
+       "input_tokens": 655,
+       "input_tokens_details": {
+        "cached_tokens": 497
+       },
+       "output_tokens": 305,
+       "output_tokens_details": {
+        "reasoning_tokens": 295
+       },
+       "total_tokens": 960
+      }
+     },
+     "sequence_number": 10,
+     "type": "response.completed"
+    }
+   }
+  ]
+ },
+ "documentedErrors": {
+  "responseFailed": {
+   "event": "response.failed",
+   "data": {
+    "type": "response.failed",
+    "sequence_number": 4,
+    "response": {
+     "id": "resp_failed",
+     "object": "response",
+     "status": "failed",
+     "model": "muse-spark-1.3-contributor",
+     "output": [],
+     "error": {
+      "code": "server_error",
+      "message": "The server had an error while processing your request."
+     },
+     "usage": null
+    }
+   }
+  },
+  "streamError": {
+   "event": "error",
+   "data": {
+    "type": "error",
+    "code": "server_shutting_down",
+    "message": "The server is shutting down. Retry the request.",
+    "sequence_number": 3
+   }
+  },
+  "rateLimitedInStream": {
+   "event": "error",
+   "data": {
+    "type": "error",
+    "code": "rate_limit_exceeded",
+    "message": "Rate limit exceeded. Please try again in 15 seconds.",
+    "sequence_number": 2
+   }
+  },
+  "rateLimit429": {
+   "status": 429,
+   "headers": {
+    "content-type": "application/json",
+    "retry-after": "15"
+   },
+   "body": {
+    "error": {
+     "message": "Rate limit exceeded: too many requests per minute for this team. Please try again in 15 seconds.",
+     "type": "rate_limit_error",
+     "param": null,
+     "code": "rate_limit_exceeded"
+    }
+   }
+  }
+ }
+}

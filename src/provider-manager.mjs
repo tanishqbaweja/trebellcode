@@ -447,35 +447,54 @@ function createStreamSink(onStream){
   };
 }
 
-async function readOpenAiResponsesStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,onEvent=null}={}){
-  if(!source||typeof source.getReader!=="function")throw new Error("OpenAI Responses stream body is unavailable.");
+// A Responses stream, read to its final event. label names the stream in its errors and codePrefix their fallback codes (OpenAI's by
+// default); classifyError, a streamed stateless provider's, says whether an error event inside the stream retries.
+async function readOpenAiResponsesStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,onEvent=null,label="OpenAI Responses stream",codePrefix="openai_stream",classifyError=null}={}){
+  if(!source||typeof source.getReader!=="function")throw new Error(label+" body is unavailable.");
   const reader=source.getReader(),decoder=new TextDecoder();let buffer="",response=null,responseBytes=0,timeToFirstTokenMs=null;
   const consume=block=>{
     const data=String(block||"").split(/\r?\n/).filter(line=>line.startsWith("data:")).map(line=>line.slice(5).trimStart()).join("\n");
     if(!data||data==="[DONE]")return;
-    let event;try{event=JSON.parse(data)}catch{throw new Error("OpenAI Responses stream returned an invalid JSON event.")}
+    let event;try{event=JSON.parse(data)}catch{throw new Error(label+" returned an invalid JSON event.")}
     if(event.type==="response.output_text.delta"&&event.delta&&timeToFirstTokenMs==null)timeToFirstTokenMs=Number((performance.now()-requestStartedAt).toFixed(3));
     if(onEvent)try{onEvent(event)}catch{}
     if((event.type==="response.completed"||event.type==="response.incomplete")&&event.response)response=event.response;
     if(event.type==="response.failed"){
-      const error=new Error(event.response?.error?.message||event.error?.message||"OpenAI Responses stream failed.");error.code=event.response?.error?.code||event.error?.code||"openai_stream_failed";throw error;
+      const error=new Error(event.response?.error?.message||event.error?.message||label+" failed.");error.code=event.response?.error?.code||event.error?.code||codePrefix+"_failed";
+      if(classifyError)Object.assign(error,classifyError(event.response?.error||event.error||{}));throw error;
     }
     if(event.type==="error"){
-      const error=new Error(event.message||event.error?.message||"OpenAI Responses stream failed.");error.code=event.code||event.error?.code||"openai_stream_error";throw error;
+      const error=new Error(event.message||event.error?.message||label+" failed.");error.code=event.code||event.error?.code||codePrefix+"_error";
+      if(classifyError)Object.assign(error,classifyError({code:event.code??event.error?.code,type:event.error?.type,message:event.message||event.error?.message}));throw error;
     }
   };
   try{
     for(;;){
-      const {done,value}=await readProviderStreamChunk(reader,{signal,idleTimeoutMs,label:"OpenAI Responses stream"});if(done)break;
+      const {done,value}=await readProviderStreamChunk(reader,{signal,idleTimeoutMs,label});if(done)break;
       responseBytes+=Number(value?.byteLength||0);buffer+=decoder.decode(value,{stream:true});
       const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";for(const block of blocks)consume(block);
     }
     buffer+=decoder.decode();if(buffer.trim())consume(buffer);
   }catch(error){error.streamTelemetry={responseBytes,timeToFirstTokenMs};throw error}
   finally{reader.releaseLock()}
-  if(!response)throw new Error("OpenAI Responses stream ended before a completed response was received.");
+  if(!response)throw new Error(label+" ended before a completed response was received.");
   return {response,responseBytes,timeToFirstTokenMs};
 }
+
+// An error event inside Meta's stream comes after a 200: response.failed with the response's error, or type "error" with a top-level
+// code (dev.meta.ai/docs/error-handling). Meta's transient codes retry as the same failure does when it comes as an HTTP status: a rate
+// limit (rate_limit_exceeded, a 429) as back-pressure, a server error, a shutdown, an overload or an unavailable backend (a 500 or 503)
+// as transient, the whole request sent again ("Retry the whole request"); any other (a content policy refusal, a bad request) ends the
+// turn with its error.
+const META_TRANSIENT_STREAM_ERRORS=new Set(["server_error","server_shutting_down","service_overloaded","backend_unavailable"]);
+function metaStreamErrorRetry(providerError={}){
+  const code=String(providerError?.code??"").trim().toLowerCase(),type=String(providerError?.type??"").trim().toLowerCase();
+  if(code==="rate_limit_exceeded"||type==="rate_limit_error"){const retryAfterMs=openAiRetryAfterMs({message:providerError?.message});return {retryable:true,rateLimited:true,...(retryAfterMs!=null?{retryAfterMs}:{})}}
+  return {retryable:META_TRANSIENT_STREAM_ERRORS.has(code)||(!code&&type==="server_error")};
+}
+// The stateless providers whose Responses stream a turn reads when it asks to stream (streamResponses, Native's Meta lane in
+// src/native-configuration.mjs), each once a live check showed its events, usage and errors: Meta, 2026-10-30.
+const STREAMED_STATELESS_RESPONSES=Object.freeze({meta:Object.freeze({codePrefix:"meta_stream",classifyError:metaStreamErrorRetry})});
 
 // An error that arrives inside a stream comes after a 200, so it names its class instead of carrying a status. It retries as the same
 // error does when it comes back as an HTTP status: a rate limit (429) as back-pressure, a server error, overload or timeout as transient.
@@ -981,8 +1000,10 @@ export class ProviderManager {
     }finally{headerGuard?.release()}
   }
 
-  async turn(providerId, request={}, { signal, promptCaching=false, streamResponses=false, streamChat=false, onStream=null } = {}) {
+  // streamIdleTimeoutMs: how long a streamed stateless provider's Responses stream may send nothing (its lane's, else requestTimeoutMs).
+  async turn(providerId, request={}, { signal, promptCaching=false, streamResponses=false, streamChat=false, onStream=null, streamIdleTimeoutMs=null } = {}) {
     const provider=this.get(providerId),model=String(request.model||"").trim();
+    const statelessStream=streamResponses===true&&provider.statelessResponses===true&&Object.hasOwn(STREAMED_STATELESS_RESPONSES,provider.id)?STREAMED_STATELESS_RESPONSES[provider.id]:null;
     const sink=typeof onStream==="function"?createStreamSink(onStream):null;
     if(!model)throw new Error("Provider turn requires a model.");
     const requestedServiceTierRaw=String(request.serviceTier||request.service_tier||"").trim().toLowerCase(),requestedServiceTier=requestedServiceTierRaw==="priority"?"fast":requestedServiceTierRaw||null;
@@ -1092,6 +1113,8 @@ export class ProviderManager {
       }
     }
     if(provider.id==="openai"&&streamResponses===true&&responsesBody){responsesBody.stream=true;if(fullResponsesBody)fullResponsesBody.stream=true}
+    // A streamed stateless provider's request is its JSON one with stream:true (the same key, in place).
+    if(statelessStream&&responsesBody)responsesBody.stream=true;
     const anthropicScaffold=provider.id==="anthropic"?this.#anthropicToolScaffold({...request,model}):null;
     let anthropicMessageProjector=null;
     if(anthropicScaffold&&this.reuseAnthropicMessageBuild){const identity=request?.[NATIVE_OPENAI_CONTINUATION_IDENTITY];if(identity&&typeof identity==="object"){anthropicMessageProjector=this.anthropicMessageProjectors.get(identity);if(!anthropicMessageProjector){anthropicMessageProjector=createAnthropicMessageProjector();this.anthropicMessageProjectors.set(identity,anthropicMessageProjector)}}}
@@ -1200,6 +1223,25 @@ export class ProviderManager {
       }catch(error){
         const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         error.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:Number(error?.streamTelemetry?.responseBytes||0),responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:error?.streamTelemetry?.timeToFirstTokenMs??null,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:null};throw error;
+      }
+    }
+    // A streamed stateless provider (Meta): the stream's final event holds the same response object its JSON reply is, usage too, so the
+    // result and the usage it records are the same; the telemetry has a JSON turn's fields. The stream is read with its lane's idle
+    // bound: no whole-request timeout, which a long answer always exceeds.
+    if(upstream.ok&&statelessStream&&upstream.body&&contentType.includes("text/event-stream")){
+      const idle=Math.trunc(Number(streamIdleTimeoutMs)),idleTimeoutMs=Number.isFinite(idle)&&idle>0?idle:this.requestTimeoutMs;
+      try{
+        const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs,label:provider.name+" Responses stream",codePrefix:statelessStream.codePrefix,classifyError:statelessStream.classifyError,...(sink?{onEvent:sink.responsesEvent}:{})}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
+        const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
+        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,requestedServiceTier,serviceTier:result.serviceTier||null};
+        return result;
+      }catch(error){
+        // Nothing a stream that stalled, broke or ended early sent is used, so the loop sends the request again as a fresh attempt, as it
+        // does a timed-out request: an idle timeout, a dropped connection (its socket error under it), a stream closed before its final
+        // event. An error event says itself whether it retries (classifyError); a stop does not.
+        if(!signal?.aborted&&error?.name!=="AbortError"&&typeof error?.retryable!=="boolean")error.retryable=true;
+        const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
+        error.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:Number(error?.streamTelemetry?.responseBytes||0),responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:error?.streamTelemetry?.timeToFirstTokenMs??null,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:null,requestedServiceTier};throw error;
       }
     }
     if(upstream.ok&&streamChat===true&&upstream.body&&contentType.includes("text/event-stream")){
