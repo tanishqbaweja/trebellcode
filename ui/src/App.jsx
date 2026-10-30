@@ -917,7 +917,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,alert=null,
       // A shut picker opened while the keyboard is out of the composer takes it on its button, as a hidden one shown again does: one
       // of 24 models or fewer has no search box to take it, so opened under its button over the terminal drawer it stayed hidden.
       if(action==="toggle"){if(!modelMenuRef.current&&!wrapRef.current?.matches(":focus-within,[data-kept]"))modelButtonRef.current?.focus();if(pickerHidden())showModelMenu();else setModelOpen(value=>!value);return}
-      if(action==="open"){setModelOpen(true);return}
+      // A send made before a model is picked opens the menu with the keyboard on its first model (in the search box of a list of
+      // more than 24, which takes it itself), so arrows and Enter pick one; the pick hands the keyboard back to the composer.
+      if(action==="open"){setModelOpen(true);if(event.detail?.focus&&models.length<=24)focusModelOption(event.detail.focus);return}
       if(action==="jump"){
         const index=Math.max(0,Number(event.detail?.index)||0);const id=models[index];
         if(id){setModel(id);onSelectedModels?.([id]);closeModelMenu()}
@@ -1386,6 +1388,9 @@ export default function App(){
   // Another thread shown, or a new task, clears both.
   const [composerAlert,setComposerAlert]=useState(null);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false); const [modelsLoading,setModelsLoading]=useState(false);
+  // The model the catalog lands a new task on with nothing saved (its listed default, its only model, a harness's first), or ""
+  // where the composer asks which (Trebell Native on a provider that names no default): Settings' Default model names it.
+  const [modelDefault,setModelDefault]=useState("");
   // runtimeSwitch is set from the moment a harness switch starts until the server answers it: nothing new is sent meanwhile, while the current transport stays open for running turns and approvals.
   const [runtimeSwitch,setRuntimeSwitch]=useState(null);
   const [collaborationModes,setCollaborationModes]=useState([]); const [collaborationMode,setCollaborationMode]=useState("default"); const [collaborationModeBusy,setCollaborationModeBusy]=useState(false);
@@ -2178,7 +2183,7 @@ export default function App(){
       applyProviderInventory(harnessInventory(inventory,thread.providerMeta));
     }
     const next=landingModel(ids,{saved:[preferred],catalogDefault:d?.defaultModel,ask});
-    setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
+    setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);setModelDefault(landingModel(ids,{catalogDefault:d?.defaultModel,ask}));
     return next;
   }
   function clearModelCatalog(){modelsLoadingRef.current=false;setModelsLoading(false);setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
@@ -2233,7 +2238,7 @@ export default function App(){
   // threadId: the thread open when the switch began, the one resetThread closes.
   // A switch that replaces one still on its way keeps that one's catalog to put back, the catalog of the harness that runs.
   function beginRuntimeSwitch({runtime,instanceId=null,resetThread=true}={}){
-    const pending={id:++runtimeSwitchSeqRef.current,from:agentRuntime,to:String(runtime||agentRuntime),instanceId:instanceId||null,resetThread,threadId:activeThreadRef.current?.id||null,previous:runtimeSwitchRef.current?.previous||{models,modelMeta,model,selectedModels,modelError,scope:modelCatalogScopeRef.current}};
+    const pending={id:++runtimeSwitchSeqRef.current,from:agentRuntime,to:String(runtime||agentRuntime),instanceId:instanceId||null,resetThread,threadId:activeThreadRef.current?.id||null,previous:runtimeSwitchRef.current?.previous||{models,modelMeta,model,selectedModels,modelError,modelDefault,scope:modelCatalogScopeRef.current}};
     runtimeSwitchRef.current=pending;modelRefreshSeqRef.current++;
     setRuntimeSwitch({id:pending.id,from:pending.from,to:pending.to});
     clearModelCatalog();
@@ -2288,7 +2293,7 @@ export default function App(){
     if(runtime===pending.from){
       // The server stayed on the previous harness: restore its catalog as it was. Its transport was never closed, so it does not reconnect.
       const previous=pending.previous;modelRefreshSeqRef.current++;modelCatalogScopeRef.current=previous.scope;
-      setModels(previous.models);setModelMeta(previous.modelMeta);setModel(previous.model);setSelectedModels(previous.selectedModels);setModelError(previous.modelError);
+      setModels(previous.models);setModelMeta(previous.modelMeta);setModel(previous.model);setSelectedModels(previous.selectedModels);setModelError(previous.modelError);setModelDefault(previous.modelDefault||"");
       return;
     }
     // The server moved before the error surfaced: follow it so the transport and the catalog match what actually runs. The new agentRuntime
@@ -4506,6 +4511,10 @@ export default function App(){
     catch(error){if(!await ready)return null;return contextUnavailable(thread,error,{background})}
     return support.prepareTurnContext({agentRuntime,activeThread,tokenUsage,threadMeta,workspaceEnvironmentId,threadTelemetryRef,contextTaskRef,updateThreadMeta,showActionError,setEvents,contextUnavailable},thread,cwd,text,paths,{background,ignoreUsage,ready});
   }
+  // A send that needs a model while none is chosen from a catalog that lists some (Trebell Native on a provider that names no
+  // default) asks for one: the picker opens with the keyboard on its first model, and the line under the composer says to choose
+  // first. The caller keeps the draft.
+  function askForModel(){setComposerAlert({kind:"model",text:"Choose a model first. Your draft is kept."});window.dispatchEvent(new CustomEvent("trebell:model-picker",{detail:{action:"open",focus:"first"}}))}
   function assertTurnModel(modelId){
     if(runtimeSwitchRef.current)throw new Error(`Trebell is switching to ${agentRuntimeName(runtimeSwitchRef.current.to)}; send again once it is ready.`);
     if(!modelsRef.current.includes(modelId))throw new Error(`${agentRuntimeLabel} does not list the model ${modelId||"(none selected)"}. Choose one of its models and send again.`);
@@ -4763,7 +4772,7 @@ export default function App(){
     let filled=false;const fill=value=>{filled=true;restoreSentDraft({text:typeof value==="function"?value(""):String(value??"")})};
     // What tells a compaction of the thread's own, which a goal command never stops: the one this window waits for (compactionWaiters),
     // and the rows and messages of the running turn (events, messages).
-    const result=await support.runSlashCommand({currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,running,activeTurnId,goal,events,messages,compactionWaiters:compactionWaitersRef.current,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,stop,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt:fill,setGoal,setEvents,setComposerAlert},text);
+    const result=await support.runSlashCommand({currentProject,projectPath,workspaceEnvironmentId,permissionMode,setPermissionMode,agentRuntime,agentRuntimeLabel,models,model,attachments,contextChips,running,activeTurnId,goal,events,messages,compactionWaiters:compactionWaitersRef.current,runtimeCapabilities,rpc,activeThread,activeThreadRef,startTurn,stop,compactContext,startReview,runUserAction,newChat,openRightPanel,openProviderSettings,setPanel,setPaletteOpen,setPrompt:fill,setGoal,setEvents,setComposerAlert,askForModel},text);
     if(result==="kept"&&!filled)keepDraft();
     return result;
   }
@@ -4844,9 +4853,8 @@ export default function App(){
     // Never start a turn with a model the active runtime does not list: a stale pick from another harness, or a catalog that is loading or failed.
     if(!modelsRef.current.includes(model)&&selectedModels.filter(id=>modelsRef.current.includes(id)).length<2){
       keepDraft();
-      // A catalog that lists models, none of them chosen (Native on a provider that names no default), asks for one: the picker opens,
-      // and the line under the composer says to choose first.
-      if(modelsRef.current.length&&!modelsLoadingRef.current&&initialLoaded){setComposerAlert({kind:"model",text:"Choose a model first. Your draft is kept."});window.dispatchEvent(new CustomEvent("trebell:model-picker",{detail:{action:"open"}}));return}
+      // A catalog that lists models, none of them chosen (Native on a provider that names no default), asks for one (askForModel).
+      if(modelsRef.current.length&&!modelsLoadingRef.current&&initialLoaded){askForModel();return}
       const reason=modelsLoadingRef.current||!initialLoaded?`${agentRuntimeLabel} models are still loading`:modelError?`${agentRuntimeLabel} has no usable model: ${modelError}`:`No ${agentRuntimeLabel} model is available`;
       setEvents(prev=>[...prev.filter(item=>item.id!=="model-unavailable"),{id:"model-unavailable",kind:"error",title:reason+". Your draft was kept; send it again once a model is selected.",status:"done",raw:{model:model||null}}]);return;
     }
@@ -5973,7 +5981,7 @@ export default function App(){
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…" heading="Environments"><EnvironmentsPage onOfferUndo={offerPageUndo}/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…" heading="Usage"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runningTasks={runningTasks} onActionError={showActionError} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={(session,pressed)=>{setSection("chat");setPanel("terminal");askTerminalKeyboard(pressed);setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>navigateSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage entry={settingsEntry} onSectionChange={setSettingsSectionLabel} settings={settings} runtimeKnown={runtimeKnown} onSettings={settingsPageSettings} onProviderChanging={settingsProviderChanging} onProviderUpdated={settingsProviderUpdated} onAgentRuntimeSwitch={settingsAgentRuntimeSwitch} runningTasks={runningTasks} onActionError={showActionError} runtime={runtime} runtimeCapabilities={runtimeCapabilities} rpcStatus={rpcStatus} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={(session,pressed)=>{setSection("chat");setPanel("terminal");askTerminalKeyboard(pressed);setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>navigateSection("licenses")} models={models} model={model} modelDefault={modelDefault} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes} onOfferUndo={offerSettingsUndo}/></DeferredSurface></div>}
         {/* History's list (ThreadHistoryPage, idle-parts.js) comes at idle right after the first paint; History opened before then asks
             for it at once and says it is loading under its heading. */}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><DeferredSurface label="Loading thread history…"><ThreadHistoryPage threadHistory={threadHistory} threadCatalogCursor={threadCatalogCursor} threadMeta={threadMeta} agentRuntime={agentRuntime} agentRuntimeName={agentRuntimeName} onRetry={()=>setThreadHistory(current=>current.loading?current:{...current,loading:true,retrying:true,retries:(current.retries||0)+1})} onOpen={t=>runUserAction(()=>openThread(t),"Could not open thread")} onNewTask={()=>runUserAction(newTask,"Could not start a new thread")} onLoadOlder={loadOlderThreadHistory}/></DeferredSurface></div>}

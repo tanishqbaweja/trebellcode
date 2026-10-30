@@ -208,7 +208,7 @@ function swallowSecondClick(){
 
 // runningTasks: the tasks whose turns run, as their sidebar rows say ({title,runtime,open}, open for the open thread's). onActionError(error,
 // label) says a failure in the app's alert.
-export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTasks=[],onActionError,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
+export default function SettingsPage({settings,runtimeKnown=true,onSettings,onProviderChanging,onProviderUpdated,onAgentRuntimeSwitch,runningTasks=[],onActionError,runtime,runtimeCapabilities={},rpcStatus,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],model="",modelDefault="",onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes,onOfferUndo,entry:settingsEntry=null,onSectionChange}){
   const [settingsSection,setSettingsSection]=useState(()=>settingsEntry?.nonce&&settingsEntry.nonce!==appliedSettingsEntryNonce&&settingsEntry.section||lastSettingsSection);
   useEffect(()=>{lastSettingsSection=settingsSection},[settingsSection]);
   // The harness rows are on screen while this page shows Agents & models (agentRowsShown), and so is what an install said there. It
@@ -1215,7 +1215,7 @@ export default function SettingsPage({settings,runtimeKnown=true,onSettings,onPr
           </select>
         </label>
       </div>}
-      {settingsSection==="workspace"&&<div className="settings-section-slot" {...targetProps("workspace-defaults")}><ScopedSettingsCard settings={settings} models={models} onChanged={onScopedSettingsChanged} scopeEnvironmentId={workspaceScope.environmentId} scopeProjectId={workspaceScope.projectId} onScopeChange={setWorkspaceScope} onCatalog={setWorkspaceScopeCatalog} showScopeTargets={false}/></div>}
+      {settingsSection==="workspace"&&<div className="settings-section-slot" {...targetProps("workspace-defaults")}><ScopedSettingsCard settings={settings} models={models} currentModel={model} modelDefault={modelDefault} onChanged={onScopedSettingsChanged} scopeEnvironmentId={workspaceScope.environmentId} scopeProjectId={workspaceScope.projectId} onScopeChange={setWorkspaceScope} onCatalog={setWorkspaceScopeCatalog} showScopeTargets={false}/></div>}
       {settingsSection==="workspace"&&<div className="settings-card storage-settings" {...targetProps("workspace-storage")}>
         <h3><HardDrive size={14} aria-hidden="true"/> Storage cleanup</h3>
         <p>Automatic cleanup is opt-in. Trebell only removes its own local attachment cache, stopped terminal history, and managed worktrees that already pass the safe worktree cleanup rules. User project files and Git branches are never deleted by these retention fields.</p>

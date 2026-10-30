@@ -1974,6 +1974,9 @@ export async function createGuiServer({port=3210,appPort=null,host="127.0.0.1",m
     const generator=sourceControlTextGenerator(),harnessInstance=generator.runtime==="native"?null:agentRuntimes.activeInstance();
     const scoped=state.projectSettings(cwd,environmentId).effective;
     const style=scoped.sourceControlTextStyle||"repository";const selectedModel=scoped.sourceControlTextModel||model||null;
+    // Trebell Native assumes no model: with no Git text model set and none chosen in the composer (a provider that names no
+    // default), it says what to do instead of the provider's "Provider turn requires a model.", before the diff is read.
+    if(generator.runtime==="native"&&!selectedModel)throw new Error("Choose a model in the composer first, or set a Git text model in Settings.");
     const customInstructions=String(scoped.sourceControlCustomInstructions||"").trim();const followTemplates=scoped.sourceControlFollowTemplates!==false;
     const diff=kind==="review"
       ?await inSourceControlEnvironment(environmentId,()=>sourceControlReviewRangeContext(cwd))
