@@ -339,6 +339,9 @@ test("the settings evidence says what each value rests on: only the gate and gpt
   // The pools' share after the third review (2026-10-30): version control only in Git's sense drops the one data-store task.
   assert.match(sourceControl.evidence,/23 of 300 SWE-bench Multilingual tasks[^;]*1 of 89 Terminal-Bench 2\.0 \(configure-git-webserver\) and 3 of 200 Terminal-Bench Pro tasks, all Git tasks/);
   assert.match(sourceControl.evidence,/build-grpc-user-profile-service[^.]*no longer selects/);assert.doesNotMatch(sourceControl.evidence,/4 of 200/);
+  // It says which other senses still select, as an ask's shape said of a stack or a database, and they do.
+  assert.match(sourceControl.evidence,/an ask's shape said of a stack or a database \(pop and push ending a line, then commit\.\) still selects, in no benchmark task/);
+  for(const text of ["Implement a stack with pop and push","The queue supports pop and push\nwith O(1) cost.","Write the WAL entry, then commit."])assert.equal(nativeConfiguration.nativeSpecializedSelection(text,{sourceControl:true}).sourceControl,true,text);
   const ceilings=row("Per-message ceilings");assert.equal(ceilings.measured,false);assert.equal(ceilings.basis,"readouts");assert.match(ceilings.evidence,/owner/);assert.match(ceilings.evidence,/not a fresh A\/B/);
   const processes=row("Background processes (trebell_process)");assert.equal(processes.basis,"readouts");assert.match(processes.evidence,/without prompt caching[^.]*unmeasured/);
   for(const name of ["Automatic between-turn compaction","Between-turn compaction brief"])assert.equal(row(name)?.basis,"app default",name);
