@@ -297,7 +297,7 @@ export function commandOnPath(command,{env=process.env,platform=process.platform
 }
 // A local binary's files (its path, modification time and size) as a version check or a probe answer saw them; null for none.
 const binarySignature=paths=>paths?.length?JSON.stringify(paths.map(path=>{try{const info=statSync(path);return [path,info.mtimeMs,info.size]}catch{return [path,null]}})):null;
-// Who installed the OpenCode 1.x at a real path, judged from the path, as an update is (openCodeUpdateFor, through
+// Who installed the OpenCode 1.x at a real path, judged from the path, as an update is (through
 // harnessInstallOwner): OpenCode's own installer keeps it in ~/.opencode/bin and updates it with `opencode upgrade`; npm keeps a
 // global opencode-ai in <prefix>/node_modules/opencode-ai beside its opencode shims on Windows, and in
 // <prefix>/lib/node_modules/opencode-ai elsewhere. Any other path (2.x's @opencode/cli, another package manager, a project's

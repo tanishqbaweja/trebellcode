@@ -1,6 +1,6 @@
 import { codexConfiguredServiceTier } from "./model-service-tier.mjs";
 
-// Codex model catalog helpers (applyPreferredCodexDefaultModel, mapCodexModelCapabilities). The catalog itself always comes
+// Codex model catalog helpers: the default model and each model's capabilities. The catalog itself always comes
 // from the user's installed Codex `model/list`.
 
 export const PREFERRED_DEFAULT_CODEX_MODELS = Object.freeze(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"]);

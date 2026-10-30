@@ -211,8 +211,8 @@ function securityWarning(option){
   return value.length>512?value.slice(0,509)+"...":value;
 }
 
-// The approval choices a request can honor, in the wording Trebell gives each harness's choices (grokApprovalOptions,
-// antigravityApprovalOptions); other agents keep their own option names.
+// The approval choices a request can honor, in the wording Trebell gives Grok's and Antigravity's choices; other agents keep
+// their own option names.
 export function acpApprovalOptions(runtime,options=[]){
   const list=Array.isArray(options)?options:[];
   const find=(kind,optionId=undefined)=>list.find(option=>option?.kind===kind&&text(option.optionId)&&(optionId===undefined||text(option.optionId)===optionId));

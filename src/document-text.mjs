@@ -30,7 +30,7 @@ export function documentTextPath(path,{home,info}){
 }
 
 // The file the text of the document at path was extracted to, or null while it has none: nothing is extracted here. A message's
-// prompt names it this way (resolveExtractedTextPath), and so does a send's second check of its
+// prompt names it this way, and so does a send's second check of its
 // files: attaching the file and the first check of a message about to go extract it (ensureDocumentText), so a send extracts at
 // most once.
 export async function extractedDocumentText(path,{home=null}={}){
