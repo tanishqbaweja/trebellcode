@@ -18,7 +18,7 @@ const TRUNCATED="[The extracted text stops here, at Trebell Code's limits for a 
 // The text of each fixture (tests/fixtures/documents/make-fixtures.mjs), as an agent is to read it.
 const EXPECTED={
   "report.docx":"# Quarterly Harbor Report\nCargo volume rose 12 percent & the new crane is running.\nPort\tTons\nJuniper\t4200\nNext review: March.",
-  "budget.xlsx":"## Sheet: Budget\nItem\tCost\tDue\nLantern\t37\t45292 [Excel numFmtId=14; date system 1900]",
+  "budget.xlsx":"## Sheet: Budget\nItem\tCost\tDue\nLantern\t37\t45292 [Excel number format 14, 1900 date system]",
   "deck.pptx":"## Slide 1\n\nDeparture plan\nFerries leave at 06:40\nNotes:\n\nBoard at gate 4\n\n## Slide 2\n\nQuestions",
   "notes.odt":"# Orchard notes\n19   violet crates by the gate.",
   "inventory.ods":"## Sheet: Cargo\nViolet\t19\t27.50 EUR",
@@ -168,17 +168,17 @@ test("an archive past its limits has its text cut with a note, or none, instead 
   assert.equal(await extract("bomb.docx",docx("<w:p><w:t>A</w:t></w:p>".repeat(100_000))),CUT);
   assert.equal(await extract("crowded.docx",zipArchive({"word/document.xml":"<document><p>Kept</p></document>"},{entryCount:2049})),CUT,"an archive of more than 2048 entries");
   assert.equal(await extract("claims.docx",zipArchive({"word/document.xml":"<document><p>Claims more</p></document>"},{sizes:{"word/document.xml":33*1024*1024}})),CUT,"an entry that says it unpacks past 32 MB");
-  const media=await extract("media.docx",zipArchive({"word/document.xml":"<document><p>Readable despite embedded media</p></document>","word/embeddings/unused.bin":Buffer.alloc(33*1024*1024)}));
-  assert.equal(media,"Readable despite embedded media","embedded files are never unpacked");
+  const media=await extract("media.docx",zipArchive({"word/document.xml":"<document><p>The memo text beside a large embedded recording</p></document>","word/embeddings/unused.bin":Buffer.alloc(33*1024*1024)}));
+  assert.equal(media,"The memo text beside a large embedded recording","embedded files are never unpacked");
   assert.equal(await extract("deep.docx",docx("<div>".repeat(129)+"Lost"+"</div>".repeat(129),stored)),CUT,"XML nested more than 128 deep");
   assert.equal(await extract("wide.docx",docx("<w:p/>".repeat(200_001),stored)),CUT,"more than 200,000 elements");
-  const rows=await extract("rows.ods",odf('<document><table:table table:name="Long"><table:table-row table:number-rows-repeated="10001"><table:table-cell><text:p>Repeated value</text:p></table:table-cell></table:table-row></table:table></document>',stored));
-  assert.equal(count(rows,"Repeated value"),10_000);assert.ok(rows.endsWith(TRUNCATED),"more than 10,000 rows");
+  const rows=await extract("rows.ods",odf('<document><table:table table:name="Tide log"><table:table-row table:number-rows-repeated="10001"><table:table-cell><text:p>High water</text:p></table:table-cell></table:table-row></table:table></document>',stored));
+  assert.equal(count(rows,"High water"),10_000);assert.ok(rows.endsWith(TRUNCATED),"more than 10,000 rows");
   const columns=await extract("columns.ods",odf('<document><table:table table:name="Wide"><table:table-row><table:table-cell table:number-columns-repeated="513"><text:p>Cell</text:p></table:table-cell></table:table-row></table:table></document>',stored));
   assert.equal(count(columns,"Cell"),512);assert.ok(columns.endsWith(TRUNCATED),"more than 512 columns");
   assert.equal(await extract("spaces.odt",odf('<document><text:p>Start<text:s text:c="1000001"/>Unneeded</text:p></document>',stored)),"Start"+CUT,"a space repeated past the text's limit");
-  const padded=await extract("padded.ods",odf('<document><table:table table:name="Padded"><table:table-row><table:table-cell><text:p>Populated</text:p></table:table-cell><table:table-cell table:number-columns-repeated="16383"/></table:table-row><table:table-row table:number-rows-repeated="1048575"><table:table-cell table:number-columns-repeated="16384"><text:p/></table:table-cell></table:table-row></table:table></document>',stored));
-  assert.equal(padded,"## Sheet: Padded\nPopulated","a sheet's padding of empty rows and cells is never expanded");
+  const padded=await extract("padded.ods",odf('<document><table:table table:name="Crew rota"><table:table-row><table:table-cell><text:p>Mara</text:p></table:table-cell><table:table-cell table:number-columns-repeated="12000"/></table:table-row><table:table-row table:number-rows-repeated="900000"><table:table-cell table:number-columns-repeated="12001"><text:p/></table:table-cell></table:table-row></table:table></document>',stored));
+  assert.equal(padded,"## Sheet: Crew rota\nMara","a sheet's padding of empty rows and cells is never expanded");
   const long=await extract("long.docx",docx(`<w:p><w:t>${"A".repeat(1_000_100)}</w:t></w:p><w:p><w:t>Unneeded</w:t></w:p>`,stored));
   assert.ok(long==="A".repeat(1_000_000)+CUT,"text past 1,000,000 characters stops there");
   const notebook=await extract("cells.ipynb",JSON.stringify({cells:Array.from({length:10_001},(_,cell)=>({cell_type:"markdown",source:[`c${cell}`]}))}));
