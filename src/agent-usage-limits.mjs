@@ -94,12 +94,14 @@ export function claudeUsageResponseToLimits(response,at=checkedAt()){
   return available(windows,at);
 }
 
-// readCapabilities runs (or reuses) the no-prompt Claude Code capability probe, which asks the CLI for its plan usage.
+// readCapabilities runs (or reuses) the no-prompt Claude Code capability probe, which asks the CLI for its plan usage. One that
+// answered signed out (its signedOut, claude-capabilities.mjs) says so and how to sign in, whatever its usage read brought.
 export async function readClaudeUsageLimits({readCapabilities}={}){
   const at=checkedAt();
   if(typeof readCapabilities!=="function")return unavailable("unsupported",null,at);
   let probe;
   try{probe=await readCapabilities()}catch{return unavailable("probeFailed","Claude Code could not read usage limits.",at)}
+  if(probe?.signedOut)return unavailable("signedOut","Claude Code is signed out. Use Sign in under Claude Code in Settings → Agents & models, or run claude auth login, then press Refresh.",probe.checkedAt||at);
   if(!probe?.usage)return probe?.usageError?unavailable("probeFailed","Claude Code could not read usage limits.",at):unavailable("unsupported",null,at);
   return claudeUsageResponseToLimits(probe.usage,probe.checkedAt||at);
 }

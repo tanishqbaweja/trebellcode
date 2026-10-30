@@ -22,6 +22,8 @@ const SIGNED_IN={email:"person@example.test",subscriptionType:"max",tokenSource:
 const SIGNED_OUT={tokenSource:"none",apiProvider:"firstParty"};
 const PLAN={session:{},rate_limits_available:true,rate_limits:{five_hour:{utilization:12,resets_at:"2026-10-27T05:00:00Z"}}};
 const NO_PLAN={session:{},rate_limits_available:false,rate_limits:null};
+// What the Usage card says of a Claude Code that answered signed out: that it is, and how to sign in, not that it has no limits.
+const SIGNED_OUT_USAGE={reason:"signedOut",message:"Claude Code is signed out. Use Sign in under Claude Code in Settings → Agents & models, or run claude auth login, then press Refresh."};
 // The machine-wide probe the model list and the Usage card share (AgentRuntimeManager claudeCapabilities).
 const MACHINE={command:"claude",cwd:null,env:{CLAUDE_CONFIG_DIR:"/home/person/.claude"},spawnProcess:null,scope:"",includeUsage:true};
 function usageCard(answers){
@@ -55,9 +57,9 @@ test("Claude Code's plan usage that said limits apply but sent none is read agai
 
 test("a Claude Code probe answered signed out is not kept, so the Usage card fills in at the first refresh after signing in",async()=>{
   const {cache,claude,read}=usageCard([{account:SIGNED_OUT,usage:NO_PLAN},{account:{...SIGNED_OUT,apiKeySource:"none"},usage:NO_PLAN},{account:SIGNED_IN,usage:PLAN}]);
-  assert.deepEqual((await read()).unavailable,{reason:"unsupported"});
+  assert.deepEqual((await read()).unavailable,SIGNED_OUT_USAGE);
   assert.equal(cache.peek(MACHINE),null,"a signed-out answer is not offered as a current answer");
-  assert.deepEqual((await read()).unavailable,{reason:"unsupported"});
+  assert.deepEqual((await read()).unavailable,SIGNED_OUT_USAGE);
   assert.equal(claude.probes.length,2,"still signed out: asked again, and not kept either");
   assert.deepEqual(windowsOf(await read()),[["five_hour",12]],"signed in: the next refresh shows the plan's windows");
   await read();assert.equal(claude.probes.length,3,"the signed-in answer is kept");
@@ -74,14 +76,14 @@ test("an account Claude Code signs in some other way is kept: an API key, anothe
   ];
   for(const account of accounts){
     const {claude,read}=usageCard([{account,usage:NO_PLAN}]);
-    await read();await read();
+    assert.deepEqual((await read()).unavailable,{reason:"unsupported"},"not said to be signed out: "+JSON.stringify(account));await read();
     assert.equal(claude.probes.length,1,JSON.stringify(account));
   }
   // First-party account fields cannot show a custom endpoint's sign-in (T3 Code checks ANTHROPIC_BASE_URL the same way).
-  for(const [baseUrl,probes] of [["https://gateway.example.test/anthropic",1],["https://api.anthropic.com",2],["not a url",2]]){
+  for(const [baseUrl,probes,said] of [["https://gateway.example.test/anthropic",1,{reason:"unsupported"}],["https://api.anthropic.com",2,SIGNED_OUT_USAGE],["not a url",2,SIGNED_OUT_USAGE]]){
     const {claude,read}=usageCard([{account:SIGNED_OUT,usage:NO_PLAN}]);
     const input={...MACHINE,env:{...MACHINE.env,ANTHROPIC_BASE_URL:baseUrl}};
-    await read(input);await read(input);
+    assert.deepEqual((await read(input)).unavailable,said,baseUrl);await read(input);
     assert.equal(claude.probes.length,probes,baseUrl);
   }
 });
