@@ -20,23 +20,23 @@ import { normalizeKeybindingRules, projectKeybindingRules, resolveKeybinding, ru
 import { NAVIGATION_STORE_KEY, browserEntryIndex, browserState, createNavigationHistory, movedDuringStep, navigationKey, recordLocation, settleLocation, startNavigationHistory, stepTarget, storedNavigation } from "./navigation-history.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, movedFileMention, namesFileAt, offeredFileMentions, pickedFileMention, rankFileMentions } from "./composer-mentions.js";
-import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
-import { countUnloadedTurns, detachHistoryTurn, historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, historyGapPage, mergeHistoryGapMessages, mergeHistoryMessages, resumedActiveTurnId, sessionHandoffMessage, withSessionHandoff } from "./thread-history.js";
-import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, prependTurnOrder, recordTurnCompletion, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain, turnTrailers } from "./turn-outcome.js";
+import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
+import { historyFromItemEntries, historyFromTurns, historyGapBeforeId, historyGapLabel, resumedActiveTurnId, sessionHandoffMessage, withSessionHandoff } from "./thread-history.js";
+import { appendTurnOrder, assistantRowDecorations, cardFailedTurnIds, mergeTurnOutcomes, permissionModeLabel, recordTurnCompletion, turnFailureText, turnIdsOldestFirst, turnInfoKey, turnOutcomeStatus, turnStartedAgain, turnTrailers } from "./turn-outcome.js";
 import { activityRow, isCardItem, mergeLiveRow, restoredRow, retryActivityRow, retryRowId, settledRetryRows, settledRow } from "./activity-item.js";
 import { cardRowsFromItemEntries, cardRowsFromTurns, emptyTurnActivity, itemPageBoundaryTurnId, itemPageCompleteness, mergeTurnActivity, newestCardTurnId, storeCardTurnIds, storeCompactionTurnIds, storeIncompleteTurnIds } from "./turn-activity.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { answeringClick, approvalResponse } from "./approval-utils.js";
 import { approvalForeignThreadId, approvalToShow, liveRequests, ownedRequest, requestResolvedBy } from "./approval-scope.js";
 import { isListedThread, prependThread } from "./thread-list-state.js";
-import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
+import { nextModelSelection } from "./fanout-utils.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
-import { THREAD_SCROLL_END_THRESHOLD, captureConversationPosition, captureHistoryPrependAnchor, captureThreadScrollPosition, conversationWelcome, historyAnchorDisturbed, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
+import { captureConversationPosition, captureThreadScrollPosition, conversationWelcome, historyAnchorDisturbed, historyAnchorShortfall, historyHoldAfterScroll, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
 import { runningThreadIds, settleTurnStates } from "./thread-sidebar-groups.js";
 import { createThreadTurnNotes } from "./thread-turn-notes.js";
 import { latestTurnRowsStart } from "./conversation-order.js";
 import { DEFAULT_LAYOUT, LAYOUT_LIMITS, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
-import { rankSearchHits, rankThreadSections, threadListParams } from "./thread-list-query.js";
+import { rankThreadSections, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary } from "./guardian-review.js";
 import { completedItemStatus } from "./tool-event-status.js";
@@ -52,7 +52,7 @@ import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
 import { focusBesideSelection } from "./selection-focus.js";
-import { sectionFirstThread, threadMoveAvailability, threadsInListOrder } from "./thread-order.js";
+import { sectionFirstThread, threadMoveAvailability } from "./thread-order.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { startFocusPoll } from "./focus-poll.js";
 import { userVerificationAvailability } from "./user-verification.js";
@@ -157,6 +157,8 @@ let idleParts=null,idlePartsLoad=null,reachIdle;const idleReached=new Promise(re
 const loadIdleParts=()=>idlePartsLoad||=import("./idle-parts.js").then(module=>idleParts=module,error=>{
   idlePartsLoad=null;throw loadFailed(error);
 });
+// A press of Load earlier messages or Load these turns made before the chunk has come waits for it (loadEarlierMessages in App).
+let earlierPageWait=null;
 // load: what a part drawn before the chunk is in waits for (the chunk itself, or the idle load for the Cite button).
 const idlePart=(name,load=loadIdleParts)=>lazy(()=>idleParts?{then:resolve=>resolve({default:idleParts[name]})}:load().then(parts=>({default:parts[name]})));
 const AssistantSelectionToolbar=idlePart("AssistantSelectionToolbar",()=>idleReached.then(loadIdleParts)),ThreadFindBar=idlePart("ThreadFindBar"),RuntimeSurface=idlePart("RuntimeSurface"),ThreadHistoryPage=idlePart("ThreadHistoryPage");
@@ -469,16 +471,10 @@ function attachmentDisplayName(path){
 const WORKTREE_CARD_ERRORS=new WeakSet();
 // A send Stop ended before its turn existed (startTurn marks the error trebellSendStopped): its draft goes back with no note.
 const sendStoppedError=()=>Object.assign(new Error("Stopped before the turn started."),{trebellSendStopped:true});
-// The harnesses whose compaction takes as long as their model needs to summarize, which the window waits ten minutes for (45 s for
-// the others'): Grok's runs as a turn of its own (its /compact command), Muse Code's in no turn (session/compact).
-const LONG_COMPACTION_RUNTIMES=new Set(["grok","muse"]);
 function upsertEvent(events,event){return events.some(item=>item.id===event.id)?events.map(item=>item.id===event.id?{...item,...event}:item):[...events,event]}
 // The row of a compaction the window waits for in a thread (requestThreadCompaction), until its end says how it went. It has no turn
 // until its item names one: the turn of the last compaction, kept, would take it away.
 const compactingRow=threadId=>({id:"context-compact-"+threadId,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{},turnId:null,waited:false});
-// What a compaction row says once the window stopped waiting for its end (requestThreadCompaction's waited error): neither compacted
-// nor failed, its end not known (status unknown, a step's neutral look and pill).
-const waitedCompactionRow=error=>({kind:"contextCompaction",title:error.message,status:"unknown",waited:true});
 // Whether the live card still lists a turn's steps: the turn that ended last, until the next one starts or a message is sent.
 const showsTurn=(events,turnId)=>events.some(event=>event.fromItem&&event.turnId===turnId);
 // What became of a thread's own Codex app-server that died, as the server noted it (trebellAppServerExit).
@@ -2010,28 +2006,9 @@ export default function App(){
     if(error)waiter.reject(error);else waiter.resolve(result);
     return true;
   }
-  // turnless: the compaction runs in no turn of its own (Muse Code's session/compact), so only the request's answer ends it and the
-  // header's Stop is its own (stop()). turnId: the turn it runs in otherwise, once the request's answer (Grok's /compact) or its item
-  // (Codex's) names it, whose error ends it (the error notification).
-  // Its row in the thread shown (compactingRow) is Compact's, or the one of a message the automatic compaction runs before. At its
-  // limit the window stops waiting while the harness may still compact: the row says so (waited), as a step whose end is not known,
-  // not a failed one, and the compaction's own end, should it come, takes that row (thread/compacted, takeCompactionPlace). One that
-  // runs in no turn (Muse Code's) loses its Stop there, which the row says Compact brings back: Muse joins its running compaction,
-  // which Compact's row then follows, also in place of the row of a message that went on without it (auto-compact), so one
-  // compaction keeps one row.
-  function requestThreadCompaction(threadId){
-    const id=String(threadId||"").trim(),client=rpcRef.current,long=LONG_COMPACTION_RUNTIMES.has(agentRuntime),turnless=agentRuntime==="muse";
-    if(!id||!client)return Promise.reject(new Error("Agent harness is not connected"));
-    if(activeThreadRef.current?.id===id)setEvents(prev=>upsertEvent(turnless?prev.filter(event=>!(event.waited&&event.id==="auto-compact-"+id)):prev,compactingRow(id)));
-    const existing=compactionWaitersRef.current.get(id);if(existing)return existing.promise;
-    let resolvePromise,rejectPromise;
-    const promise=new Promise((resolve,reject)=>{resolvePromise=resolve;rejectPromise=reject});
-    const timer=setTimeout(()=>settleCompactionWaiter(id,Object.assign(new Error(`Trebell stopped waiting for the context compaction after ${long?"10 minutes":"45 seconds"}; ${agentRuntimeLabel} may still be compacting.${turnless?" Press Compact to follow it again; its Stop comes back.":""}`),{waited:true})),long?600_000:45_000);
-    const waiter={promise,resolve:resolvePromise,reject:rejectPromise,timer,turnless,turnId:null};
-    compactionWaitersRef.current.set(id,waiter);if(waiter.turnless)setCompactionStops(count=>count+1);
-    client.request("thread/compact/start",{threadId:id}).then(result=>{if(result?.turn?.id!=null)waiter.turnId??=String(result.turn.id)},error=>settleCompactionWaiter(id,error));
-    return promise;
-  }
+  // A compaction the window asks for (Compact, /compact, and the one a send runs first) and waits for runs in turn-support.js
+  // (requestThreadCompaction), as does its waiter's end here once its notifications come (settleCompactionWaiter).
+  function requestThreadCompaction(threadId){return turnSupport?turnSupport.requestThreadCompaction(turnDeps(),threadId):loadTurnSupport().then(support=>support.requestThreadCompaction(turnDeps(),threadId))}
   // The row of a Muse Code compaction still running, which a send leaves on the live card: it runs in no turn, and Muse runs the
   // message after it.
   function turnlessCompactionRows(rows,threadId){return compactionWaitersRef.current.get(String(threadId||""))?.turnless?rows.filter(row=>row.id==="context-compact-"+threadId&&row.status==="running"):[]}
@@ -2074,22 +2051,7 @@ export default function App(){
     const attachCapture=async id=>{
       if(disposed||!id||handling.has(id))return;handling.add(id);
       try{
-        const capture=await snapshots.read(id);
-        const safeProcess=String(capture.process||"window").replace(/[^a-zA-Z0-9._-]+/g,"-").slice(0,60)||"window";
-        const uploaded=await api("/api/attachments/blob",{method:"POST",body:{name:`snapshot-${safeProcess}-${capture.createdAt||Date.now()}.png`,mime:"image/png",dataBase64:capture.dataBase64}});
-        const [imagePath]=await prepareAttachmentPaths([uploaded.path]);
-        setAttachments(prev=>[...new Set([...prev,imagePath])].slice(-MAX_COMPOSER_ATTACHMENTS));
-        setContextChips(prev=>[...prev.filter(chip=>chip.path!==imagePath),{id:crypto.randomUUID(),path:imagePath,kind:"snapshot",label:`SnapShot: ${capture.process||"App"}`,detail:capture.title||`${capture.width||"?"}×${capture.height||"?"}`}].slice(-MAX_COMPOSER_ATTACHMENTS));
-        if(capture.hasAccessibility&&Array.isArray(capture.accessibility)&&capture.accessibility.length){
-          const context={app:capture.process||null,windowTitle:capture.title||null,bounds:capture.bounds||null,controls:capture.accessibility};
-          try{
-            const metadata=await api("/api/attachments/text",{method:"POST",body:{name:`snapshot-${safeProcess}-ui.json`,text:JSON.stringify(context,null,2)}});
-            const [metadataPath]=await prepareAttachmentPaths([metadata.path]);
-            setAttachments(prev=>[...new Set([...prev,metadataPath])].slice(-MAX_COMPOSER_ATTACHMENTS));
-            setContextChips(prev=>[...prev.filter(chip=>chip.path!==metadataPath),{id:crypto.randomUUID(),path:metadataPath,kind:"snapshot",label:"SnapShot app text",detail:capture.title||capture.process||"Accessibility context"}].slice(-MAX_COMPOSER_ATTACHMENTS));
-          }catch{}
-        }
-        setSection("chat");await snapshots.ack(id);
+        await (turnSupport||await loadTurnSupport()).attachSnapshot({snapshots,prepareAttachmentPaths,setAttachments,setContextChips,setSection,maxAttachments:MAX_COMPOSER_ATTACHMENTS},id);
       }catch(error){
         setEvents(prev=>[...prev,{id:"snapshot-error-"+Date.now(),kind:"error",title:"Could not attach the SnapShot: "+(error.message||String(error)),status:"done",raw:{snapshotId:id}}]);
       }finally{handling.delete(id)}
@@ -2127,27 +2089,8 @@ export default function App(){
   const providerReady=bootstrap.mock||(managedInference?Boolean(bootstrap.providerReady):Boolean(bootstrap.agentRuntimeReady));
   useEffect(()=>{
     if(!threadFind.open)return;
-    const term=threadFind.query.trim();
-    if(term.length<2||!runtimeCapabilities.threadSearch||!activeThread?.id||!rpc||rpcStatus!=="connected"){
-      threadFindSeqRef.current++;
-      setThreadFind(current=>({...current,results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null}));
-      return;
-    }
-    const seq=++threadFindSeqRef.current;let disposed=false;
-    const timer=setTimeout(async()=>{
-      setThreadFind(current=>current.query.trim()===term?{...current,loading:true,error:"",activeItemId:null}:current);
-      try{
-        const result=await rpc.request("thread/searchOccurrences",{threadId:activeThread.id,searchTerm:term,limit:50});
-        if(disposed||seq!==threadFindSeqRef.current||activeThreadRef.current?.id!==activeThread.id)return;
-        const results=result?.data||[];
-        setThreadFind(current=>current.query.trim()===term?{...current,results,index:results.length?0:-1,nextCursor:result?.nextCursor||null,loading:false,error:"",activeItemId:results[0]?.itemId||null}:current);
-        if(results[0])await focusThreadFindOccurrence(results[0],seq);
-      }catch(error){
-        if(disposed||seq!==threadFindSeqRef.current)return;
-        setThreadFind(current=>current.query.trim()===term?{...current,results:[],index:-1,nextCursor:null,loading:false,error:error.message||String(error),activeItemId:null}:current);
-      }
-    },160);
-    return()=>{disposed=true;clearTimeout(timer)};
+    // The bar opens only once its script is in (openThreadFind), and its search comes with it (thread-history-paging.js).
+    return idleParts?.searchThreadFind(historyDeps());
   },[threadFind.open,threadFind.query,runtimeCapabilities.threadSearch,activeThread?.id,rpc,rpcStatus]);
   useEffect(()=>{threadTelemetryRef.current={};setThreadTelemetry({})},[provider,agentRuntime]);
   // preferredModel may be a function, read when the catalog lands (a project opened meanwhile can name its default model).
@@ -2588,82 +2531,18 @@ export default function App(){
   useEffect(()=>{
     // A Retry still reading when History is left ends there: History shown again starts over.
     if(section!=="history"){setThreadHistory(current=>current.retrying?{...current,retrying:false}:current);return}
-    let cancelled=false;
-    if(!rpc||rpcStatus!=="connected"){
-      setThreadHistory(current=>({...current,runtime:"all",items:threads,nextCursor:null,loading:false,retrying:false,error:"",olderError:""}));
-      return;
-    }
-    // The source is the runtime in the environment active (historySource): every environment's Codex has the one address.
-    const sourceKey=historySource();
-    // A first page that failed says so with Retry (retrying): its failure stays until the list answers, so the keyboard stays on
-    // Retry, and one that fails again says it still could not, as a new message (failures keys it). Retry takes only a press of its
-    // own (ignorePressRest): the repeats of Enter held on it asked again after each failure. While it is read, Load older threads
-    // goes on reading this source's next page, which each source keeps (runtimePages) while History reads another's.
-    setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items?.length?current.items:threads,[],{threadMeta}),nextCursor:current.runtimePages?.[sourceKey]?.nextCursor||null,loading:true,error:current.retrying?current.error:"",olderError:""}));
-    rpc.request("thread/list",threadListParams(100)).then(result=>{
-      if(cancelled)return;
-      const incoming=result?.data||[];rememberThreadCatalog(incoming);
-      setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
-      setThreadListError("");setThreadListLoaded(true);setThreadTurnStates(previous=>settleTurnStates(previous,incoming));
-      // Only older pages read to their end (Load older threads) mark every page of the source read. A first page with no next page
-      // does not: a runtime that listed few threads, or none while it started, may list more than a page later in the session.
-      // Older pages read (olderRead) keep the next page after them: the first page's own next page is shown already.
-      setThreadHistory(current=>{
-        const kept=current.runtimePages?.[sourceKey]||{},listed=result?.nextCursor||null,olderRead=Boolean(kept.olderRead&&kept.nextCursor&&listed),nextCursor=kept.exhausted?null:olderRead?kept.nextCursor:listed;
-        return {...current,runtime:"all",runtimePages:{...current.runtimePages,[sourceKey]:{...kept,olderRead,nextCursor}},items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor,loading:false,retrying:false,error:""};
-      });
-    }).catch(error=>{
-      if(cancelled)return;
-      setThreadHistory(current=>({...current,runtime:"all",items:current.items?.length?current.items:threads,loading:false,retrying:false,error:error?.message||String(error),failures:current.error?(current.failures||1)+1:1}));
-    });
-    return()=>{cancelled=true};
+    // History's first page is read by its list's own script (thread-history-paging.js readThreadHistory), which History shown before
+    // the idle load asks for at once; the list says in its place when that script cannot load.
+    let endRead=null,left=false;const read=parts=>{if(!left)endRead=parts.readThreadHistory(historyDeps())};
+    if(idleParts)read(idleParts);else loadIdleParts().then(read,()=>{});
+    return()=>{left=true;endRead?.()};
   },[section,rpc,rpcStatus,agentRuntime,provider,threadHistory.retries]);
   useEffect(()=>{
     if(section!=="history")return;
     setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items,threads,{threadMeta})}));
   },[section,threads,threadMeta]);
-  // What History's pages are read from: the runtime, its instance and its address, in the environment active, whose own catalog
-  // answers there (the GUI server starts the catalog's harness again for an environment switched to). A next page kept from another
-  // environment went to this one's runtime, which refused it or read from wherever it fell in its own list. Each source keeps its own
-  // (runtimePages), so back in an environment Load older threads goes on after the pages of it shown.
-  function historySource(){return [agentRuntime,settings.agentRuntimeInstanceId||"",bootstrap.wsUrl||"",settings.activeEnvironmentId||""].join("\0")}
-  // An older page's read has a state of its own (loadingOlder), which its button says: the first page read again (loading) neither
-  // makes the button say older threads are loading nor refuses its press, and the first page's failure stays. The button keeps the
-  // keyboard, so it takes only a press of its own (ignorePressRest): the repeats of Enter held on it read every page after.
-  async function loadOlderThreadHistory(){
-    const runtimeCursor=threadHistory.nextCursor,catalogCursor=threadCatalogCursor;if((!runtimeCursor&&!catalogCursor)||threadHistory.loadingOlder)return;
-    setThreadHistory(current=>({...current,loadingOlder:true}));
-    // A press while the transport is not connected asks the runtime for nothing, so it reads no page and marks none read: it says why,
-    // and the next page stays for a press once the transport is back. (A read the transport took with it as it closed, for a project
-    // opened in another environment from the palette over History, puts its button back while the new transport connects; a press
-    // there counted as reading the last page of the environment switched to, which then never offered its older threads again.)
-    const asked=Boolean(runtimeCursor&&rpc&&rpcStatus==="connected");
-    const nativeRequest=asked?rpc.request("thread/list",{...threadListParams(100),cursor:runtimeCursor}):runtimeCursor?Promise.reject(new Error(agentRuntimeName(agentRuntime)+" is not connected")):Promise.resolve(null);
-    const catalogRequest=catalogCursor?api("/api/thread-meta?"+new URLSearchParams({view:"catalog",limit:"100",cursor:catalogCursor})):Promise.resolve(null);
-    const [nativeResult,catalogResult]=await Promise.allSettled([nativeRequest,catalogRequest]);
-    const errors=[];let nativePage=null,catalogPage=null;
-    if(nativeResult.status==="fulfilled")nativePage=nativeResult.value;else errors.push("runtime history: "+(nativeResult.reason?.message||String(nativeResult.reason)));
-    if(catalogResult.status==="fulfilled")catalogPage=catalogResult.value;else errors.push("Trebell catalog: "+(catalogResult.reason?.message||String(catalogResult.reason)));
-    const incoming=nativePage?.data||[],catalogMeta=catalogPage?.threadMeta||{},catalogThreads=threadsFromCatalogMeta(catalogMeta),mergedMeta={...threadMeta,...catalogMeta};
-    if(incoming.length)rememberThreadCatalog(incoming);
-    if(Object.keys(catalogMeta).length)setThreadMeta(previous=>({...previous,...catalogMeta}));
-    if(incoming.length||catalogThreads.length)setThreads(previous=>mergeThreadCatalog(previous,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}));
-    if(catalogCursor&&catalogResult.status==="fulfilled")setThreadCatalogCursor(catalogPage?.nextCursor||null);
-    // A next page the runtime refused (its answer an error: the thread it starts from archived since) is not kept past the next first
-    // page, whose own next page History then reads; one it did not answer (a timeout, a connection lost) is still good, and stays. One
-    // it was not asked for leaves the source's pages as they were.
-    const sourceKey=historySource(),refused=Boolean(asked&&nativeResult.status==="rejected"&&nativeResult.reason?.trebellRpcResponse),read=Boolean(asked&&nativeResult.status==="fulfilled");
-    const nextCursor=read?(nativePage?.nextCursor||null):runtimeCursor,pages=kept=>({exhausted:read?!nextCursor:Boolean(kept?.exhausted),olderRead:!refused&&(read||Boolean(kept?.olderRead)),nextCursor});
-    setThreadHistory(current=>({
-      ...current,
-      runtime:"all",
-      runtimePages:asked?{...current.runtimePages,[sourceKey]:pages(current.runtimePages?.[sourceKey])}:current.runtimePages,
-      items:mergeThreadCatalog(current.items,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}),
-      nextCursor:runtimeCursor?nextCursor:current.nextCursor,
-      loadingOlder:false,
-      olderError:errors.join(" · "),
-    }));
-  }
+  // History's Load older threads (thread-history-paging.js) comes with History's list, which draws its button.
+  async function loadOlderThreadHistory(){return (idleParts||await loadIdleParts()).loadOlderThreadHistory(historyDeps())}
   async function loadCollaborationModes(client=rpcRef.current){
     if(!runtimeCapabilities.collaborationModes||!client){
       setCollaborationModes([]);setCollaborationMode("default");return[];
@@ -3058,25 +2937,9 @@ export default function App(){
   useEffect(()=>{
     if(!query.trim()){setSearchResults(null);setThreadSearchError("");return}
     // A search typed before its code has come (idleParts) runs once it is in, or says it could not load.
-    let cancelled=false,timer=0;const search=({sidebarSearchMatches})=>{const titleMatches=sidebarSearchMatches(threads,query.toLowerCase(),{threadMeta,projects:projectRecords});
-    setThreadSearchError("");
-    if(!rpc||rpcStatus!=="connected"||query.length<2){setSearchResults(titleMatches);return}
-    timer=setTimeout(async()=>{
-      const found=new Map(titleMatches.map(t=>[t.id,t]));
-      try{
-        const outcome=await searchThreadMessages(query);
-        for(const match of outcome.matches||[]){const thread=match.thread||threads.find(item=>item.id===match.threadId);if(thread)found.set(thread.id,thread)}
-        // Message matches join the title matches where the list has them: the sidebar's order (and a move made in it) holds. Codex's
-        // search gives a thread no place in its section, so one beyond the listed page takes the place its section gives it.
-        const shown=threadsInListOrder([...found.values()],threads);
-        const results=agentRuntime==="codex"?await rankSearchHits(rpc,shown,threads,{orderedSections:orderedSectionsRef.current}).catch(()=>shown):shown;
-        if(!cancelled){setSearchResults(results);setThreadSearchError(outcome.warning||"")}
-      }catch(error){
-        if(!cancelled){setSearchResults(threadsInListOrder([...found.values()],threads));setThreadSearchError("Could not search thread messages: "+(error?.message||String(error)))}
-      }
-    },250)};
+    let cancelled=false,endSearch=null;const search=module=>{endSearch=module.searchSidebar({query,threads,threadMeta,projectRecords,rpc,rpcStatus,agentRuntime,orderedSectionsRef,searchThreadMessages,setSearchResults,setThreadSearchError})};
     if(idleParts)search(idleParts);else loadIdleParts().then(module=>cancelled||search(module),error=>cancelled||setThreadSearchError("Could not search threads: "+error.message));
-    return()=>{cancelled=true;clearTimeout(timer)}
+    return()=>{cancelled=true;endSearch?.()}
   },[query,threads,threadMeta,projectRecords,rpc,rpcStatus,agentRuntime,runtimeCapabilities.threadSearch]);
 
   // label: what could not be done, said before the error's own words; "" for an error that says it itself (a thread's Undo).
@@ -4187,87 +4050,21 @@ export default function App(){
     }
     if(persistentReadErrors.length)showActionError(new Error(persistentReadErrors.join(" · ")),"Opened thread, but some saved state could not be loaded");
   }
-  // "top" loads the page above the first message shown; "gap" the newest history's next older page, which sits below the gap
-  // under a detached find hit (with nothing detached the two are the same page). Above a detached hit, pages are turn pages.
-  function loadEarlierMessages(target="top"){
-    const threadId=activeThreadRef.current?.id;
-    if(!rpc||rpcStatus!=="connected"||!threadId||historyPage.threadId!==threadId||historyPage.loading)return Promise.resolve();
-    const detached=historyPage.detached||null,above=target==="top"&&Boolean(detached);
-    const cursor=above?detached.cursor:historyPage.nextCursor;if(!cursor)return Promise.resolve();
-    const itemPaging=!above&&Boolean(historyPage.itemPaging),detachedIds=new Set((detached?.ids||[]).map(String));
-    const windowTurnIds=[...new Set(messages.filter(message=>!detachedIds.has(String(message.id))).map(message=>message.turnId).filter(Boolean).map(String))];
-    // at: the button that loads, where a failure is said (Conversation), and which stays there to try again.
-    const at=detached&&!above?"gap":"top";
-    setHistoryPage(current=>current.threadId===threadId?{...current,loading:at,error:null}:current);
-    const run=(async()=>{
-      try{
-        const page=itemPaging
-          ?await loadItemHistoryPage(rpc,threadId,cursor)
-          :await rpc.request("thread/turns/list",{threadId,cursor,limit:HISTORY_TURN_PAGE_LIMIT,sortDirection:"desc",itemsView:"full"});
-        if(activeThreadRef.current?.id!==threadId)return;
-        const outcomeTurns=itemPaging?await turnOutcomesForItemPage(rpc,threadId,turnOutcomePagesRef.current,page?.data):page?.data||[];
-        if(activeThreadRef.current?.id!==threadId)return;
-        const data=[...(page?.data||[])].reverse(),nextCursor=page?.nextCursor||null;
-        const earlier=itemPaging?historyFromItemEntries(data,checkpointByTurn):historyFromTurns(data,checkpointByTurn);
-        const pageTurnIds=[...new Set(data.map(entry=>itemPaging?entry?.turnId:entry?.id).filter(Boolean).map(String))];
-        // The view is measured when the page lands, not when it was asked for (the person may have scrolled or sent meanwhile); a
-        // view that follows the end keeps following it. A view whose rows all fit has no end to follow: its rows stay put.
-        const node=conversationScrollRef.current;
-        if(earlier.length&&node&&(!followConversationEndRef.current||node.scrollHeight-node.clientHeight<=THREAD_SCROLL_END_THRESHOLD)){
-          const anchor=captureHistoryPrependAnchor(node);
-          pendingHistoryPrependRef.current={threadId,scrollHeight:node.scrollHeight,scrollTop:node.scrollTop,anchor};setHistoryAnchorItemId(anchor?.messageId??null);
-        }
-        setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,outcomeTurns));
-        // The page's turns take their steps into their cards: an item page adds older steps and may cut its oldest turn (the boundary
-        // while older pages remain, none once the gap under a find hit joins), a turn page holds whole turns.
-        const cards=itemPaging?cardRowsFromItemEntries(data,{activeTurnId}):cardRowsFromTurns(data,{activeTurnId}),cardMerge=itemPaging?{mode:"older",complete:itemPageCompleteness(page?.data||[],nextCursor)}:{mode:"replace",complete:true};
-        const storeCards=boundaryTurnId=>setTurnActivity(prev=>{if(prev.threadId!==threadId)return prev;const next=mergeTurnActivity(prev,cards,cardMerge);return boundaryTurnId===undefined||next.boundaryTurnId===boundaryTurnId?next:{...next,boundaryTurnId}});
-        // Older turns go in front of the turn order (a run that lies apart from it, above a find hit, is told apart by the gap).
-        setTurnOrder(prev=>prev.threadId===threadId?{...prev,ids:prependTurnOrder(prev.ids,turnIdsOldestFirst(outcomeTurns))}:prev);
-        if(above){
-          // Older turns join the detached hit's group; the gap below it is unchanged.
-          if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));storeCards(undefined);
-          const grown={...detached,ids:[...detached.ids,...earlier.map(message=>String(message.id))],turnIds:[...detached.turnIds,...pageTurnIds],cursor:nextCursor};
-          setHistoryPage(current=>current.threadId===threadId?{...current,loading:false,detached:grown}:current);
-          return;
-        }
-        if(detached){
-          const step=historyGapPage(detached,{earlier,pageTurnIds,nextCursor,windowTurnIds});
-          setMessages(current=>mergeHistoryGapMessages(current,detached,earlier,step.joined));storeCards(itemPaging?(step.joined?null:itemPageBoundaryTurnId(page?.data||[],nextCursor)):undefined);
-          setHistoryPage(current=>current.threadId===threadId?{...current,loading:false,nextCursor:step.nextCursor,itemPaging:step.itemPaging??current.itemPaging,detached:step.detached}:current);
-          return;
-        }
-        if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));storeCards(itemPaging?itemPageBoundaryTurnId(page?.data||[],nextCursor):undefined);
-        setHistoryPage(current=>({threadId,nextCursor,paginated:true,itemPaging,itemHistory:current.threadId===threadId&&Boolean(current.itemHistory),loading:false,detached:null}));
-      }catch(error){
-        setHistoryPage(current=>current.threadId===threadId?{...current,loading:false,error:{at,text:(at==="gap"?"Could not load these turns: ":"Could not load earlier messages: ")+(error.message||String(error))}}:current);
-      }
-    })();
-    historyLoadRef.current=run;run.then(()=>{if(historyLoadRef.current===run)historyLoadRef.current=null});
-    return run;
+  // A thread's history beyond its first page and the find bar's search run in thread-history-paging.js (idle-parts.js), with what
+  // they read of this render (historyDeps): the page above the first message shown or the next one in the gap under a find hit, the
+  // hits the bar finds and places, and History's pages. The find bar and History's list come with that script, so what they run has
+  // it. Load earlier messages and Load these turns, drawn with the thread, wait for it when pressed before it has come (one press:
+  // as while a page loads, the presses meanwhile do nothing), and say under their button that the page could not load when it cannot.
+  function historyDeps(){
+    return {activeThread,activeThreadRef,activeTurnId,agentRuntime,agentRuntimeName,bootstrap,checkpointByTurn,conversationScrollRef,focusThreadFindLatest,followConversationEndRef,historyItemPageLimit:HISTORY_ITEM_PAGE_LIMIT,historyItemScanPages:HISTORY_ITEM_SCAN_PAGES,historyLoadRef,historyPage,historyTurnPageLimit:HISTORY_TURN_PAGE_LIMIT,loadItemHistoryPage,messages,pendingHistoryPrependRef,provider,rememberThreadCatalog,rpc,rpcStatus,runtimeCapabilities,setHistoryAnchorItemId,setHistoryPage,setMessages,setThreadCatalogCursor,setThreadFind,setThreadHistory,setThreadListError,setThreadListLoaded,setThreadMeta,setThreadTurnStates,setThreads,setTurnActivity,setTurnInfo,setTurnOrder,settings,threadCatalogCursor,threadFind,threadFindSeqRef,threadHistory,threadMeta,threads,turnOutcomePagesRef,turnOutcomesForItemPage};
   }
-  // A hit older than the loaded pages joins them when no turn lies between (paging then goes on above it). Otherwise it leads the
-  // list apart from them, with a marker in the gap that counts the turns between (from metadata pages) and loads them.
-  async function placeFoundHistory(threadId,occurrence,found,stale){
-    const page=historyPage.threadId===threadId?historyPage:null,detached=page?.detached||null,detachedIds=new Set((detached?.ids||[]).map(String));
-    const windowTurnIds=[...new Set(messages.filter(message=>!detachedIds.has(String(message.id))).map(message=>message.turnId).filter(Boolean).map(String))];
-    const turnId=String(occurrence.turnId||found[0]?.turnId||"");
-    if(!page?.nextCursor||!occurrence.turnCursor||windowTurnIds.includes(turnId)){setMessages(current=>mergeHistoryMessages(found,current));return}
-    const [earlierCursor,missing]=await Promise.all([
-      // The cursor of the turn before the hit, to load what lies above it (failing that, the hit's own cursor: its repeat is dropped).
-      // The page holds the hit's own turn, which says how that turn ended.
-      rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,sortDirection:"desc",itemsView:"notLoaded"}).then(result=>{setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,result?.data||[]));return result?.nextCursor||null},()=>occurrence.turnCursor),
-      countUnloadedTurns((method,params)=>rpc.request(method,params),{threadId,turnCursor:occurrence.turnCursor,turnId,loadedTurnIds:windowTurnIds}).catch(()=>null),
-    ]);
-    if(stale())return;
-    if(missing&&!missing.count&&!missing.more){
-      setMessages(current=>mergeHistoryMessages(found,current.filter(message=>!detachedIds.has(String(message.id)))));
-      setHistoryPage(current=>current.threadId===threadId?{...current,nextCursor:earlierCursor,itemPaging:false,detached:null,error:null}:current);
-      return;
-    }
-    // What the buttons load changes with the hit, so a failure said at them before goes.
-    setMessages(current=>detachHistoryTurn(current,detached?.ids,found));
-    setHistoryPage(current=>current.threadId===threadId?{...current,detached:{ids:found.map(message=>String(message.id)),turnIds:turnId?[turnId]:[],cursor:earlierCursor,missing},error:null}:current);
+  function loadEarlierMessages(target="top"){
+    const deps=historyDeps();if(idleParts)return idleParts.loadEarlierMessages(deps,target);
+    const threadId=activeThreadRef.current?.id,at=historyPage.detached&&target!=="top"?"gap":"top";
+    return earlierPageWait||=loadIdleParts().then(parts=>{earlierPageWait=null;return parts.loadEarlierMessages(deps,target)},error=>{
+      earlierPageWait=null;
+      setHistoryPage(current=>current.threadId===threadId?{...current,error:{at,text:(at==="gap"?"Could not load these turns: ":"Could not load earlier messages: ")+error.message}}:current);
+    });
   }
   function openThreadFind(){
     const threadId=activeThreadRef.current?.id;if(!runtimeCapabilities.threadSearch||!threadId)return;
@@ -4282,102 +4079,9 @@ export default function App(){
     threadFindSeqRef.current++;
     setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   }
-  async function focusThreadFindOccurrence(occurrence,expectedSeq=null,afterPage=false){
-    if(!occurrence||!runtimeCapabilities.threadSearch||!rpc||rpcStatus!=="connected")return;
-    const threadId=activeThreadRef.current?.id;if(!threadId)return;
-    const itemId=String(occurrence.itemId||"");
-    const stale=()=>activeThreadRef.current?.id!==threadId||(expectedSeq!=null&&expectedSeq!==threadFindSeqRef.current);
-    if(itemId&&!messages.some(message=>String(message.id)===itemId)){
-      // A history page still loading changes where the hit belongs: place it once that page has landed and rendered.
-      if(historyLoadRef.current&&!afterPage){await historyLoadRef.current;await new Promise(resolve=>requestAnimationFrame(resolve));return focusThreadFindLatest(occurrence,expectedSeq,true)}
-      // Paging waits while the hit is placed, for the same reason.
-      const holdPaging=historyPage.threadId===threadId&&!historyPage.loading;
-      if(holdPaging)setHistoryPage(current=>current.threadId===threadId&&!current.loading?{...current,loading:"find"}:current);
-      try{
-        // The hit's turn's card: the steps its scan read, the turn's first ones (all of them when it reached the turn's end), or the whole
-        // turn from its page.
-        let found=[],scanned=[],scanEnded=false,foundTurns=null;
-        if(historyPage.itemPaging){
-          try{
-            let cursor=null;
-            for(let pageIndex=0;pageIndex<HISTORY_ITEM_SCAN_PAGES;pageIndex++){
-              const page=await rpc.request("thread/items/list",{threadId,turnId:occurrence.turnId,cursor,limit:HISTORY_ITEM_PAGE_LIMIT,sortDirection:"asc"});
-              found=mergeHistoryMessages(found,historyFromItemEntries(page?.data||[],checkpointByTurn));scanned.push(...(page?.data||[]));scanEnded=!page?.nextCursor;
-              if(found.some(message=>String(message.id)===itemId)||!page?.nextCursor)break;
-              cursor=page.nextCursor;
-            }
-          }catch{}
-        }
-        if(!found.some(message=>String(message.id)===itemId)&&occurrence.turnCursor){
-          const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
-          found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn));foundTurns=page?.data||[];
-          setTurnInfo(prev=>mergeTurnOutcomes(prev,threadId,page?.data||[]));
-        }
-        if(stale())return;
-        if(scanned.length&&occurrence.turnId)setTurnActivity(prev=>prev.threadId===threadId?mergeTurnActivity(prev,cardRowsFromItemEntries(scanned,{activeTurnId,turnId:occurrence.turnId}),{mode:"first",complete:scanEnded}):prev);
-        if(foundTurns?.length)setTurnActivity(prev=>prev.threadId===threadId?mergeTurnActivity(prev,cardRowsFromTurns(foundTurns,{activeTurnId}),{mode:"replace",complete:true}):prev);
-        if(found.length)await placeFoundHistory(threadId,occurrence,found,stale);
-      }finally{
-        if(holdPaging)setHistoryPage(current=>current.loading==="find"?{...current,loading:false}:current);
-      }
-    }
-    if(stale())return;
-    setThreadFind(current=>({...current,activeItemId:itemId||current.activeItemId}));
-    requestAnimationFrame(()=>requestAnimationFrame(()=>{
-      const node=conversationScrollRef.current;if(!node)return;
-      const target=[...node.querySelectorAll("[data-message-id]")].find(element=>String(element.dataset.messageId)===itemId);
-      if(target){followConversationEndRef.current=false;target.scrollIntoView({block:"center",behavior:"auto"})}
-    }));
-  }
-  async function stepThreadFind(direction){
-    if(!threadFind.results.length||threadFind.loading)return;
-    if(direction<0){
-      if(threadFind.index<=0)return;
-      const index=Math.max(0,threadFind.index-1);const occurrence=threadFind.results[index];
-      setThreadFind(current=>({...current,index,activeItemId:occurrence?.itemId||null}));await focusThreadFindOccurrence(occurrence);return;
-    }
-    if(threadFind.index<threadFind.results.length-1){
-      const index=threadFind.index+1;const occurrence=threadFind.results[index];
-      setThreadFind(current=>({...current,index,activeItemId:occurrence?.itemId||null}));await focusThreadFindOccurrence(occurrence);return;
-    }
-    if(!threadFind.nextCursor||!activeThreadRef.current?.id)return;
-    const threadId=activeThreadRef.current.id;setThreadFind(current=>({...current,loading:true,error:""}));
-    try{
-      const result=await rpc.request("thread/searchOccurrences",{threadId,searchTerm:threadFind.query.trim(),cursor:threadFind.nextCursor,limit:50});
-      if(activeThreadRef.current?.id!==threadId)return;
-      const added=result?.data||[];const index=threadFind.results.length;const occurrence=added[0]||null;
-      setThreadFind(current=>({...current,results:[...current.results,...added],index:occurrence?index:current.index,nextCursor:result?.nextCursor||null,loading:false,error:"",activeItemId:occurrence?.itemId||current.activeItemId}));
-      if(occurrence)await focusThreadFindOccurrence(occurrence);
-    }catch(error){if(activeThreadRef.current?.id===threadId)setThreadFind(current=>({...current,loading:false,error:error.message||String(error)}))}
-  }
-  async function openLinkedThread(reference){
-    if(!rpc||rpcStatus!=="connected"||!reference?.threadId)throw new Error("The agent harness is not connected.");
-    let thread=threads.find(item=>item.id===reference.threadId)||null,readError=null;
-    if(!thread){
-      try{
-        const read=await rpc.request("thread/read",{threadId:reference.threadId,includeTurns:false});
-        thread=read?.thread||null;
-      }catch(error){readError=error}
-    }
-    const archived=Boolean(reference.archived||thread?.archived);
-    if(archived){
-      let restored;
-      try{restored=await rpc.request("thread/unarchive",{threadId:reference.threadId})}
-      catch(error){throw new Error("Could not restore archived thread: "+(error?.message||String(error)),{cause:error})}
-      if(!restored?.thread&&!thread)throw new Error("The agent runtime did not return the restored thread.");
-      thread=restored?.thread||thread;
-      if(!thread){
-        const read=await rpc.request("thread/read",{threadId:reference.threadId,includeTurns:false});
-        thread=read?.thread||null;
-      }
-      await updateThreadMeta(reference.threadId,{archived:false});
-      if(thread)thread={...thread,archived:false};
-    }
-    if(!thread&&readError)throw new Error("Could not load linked thread: "+(readError?.message||String(readError)));
-    if(!thread)throw new Error("Linked thread was not found.");
-    setThreads(prev=>[thread,...prev.filter(item=>item.id!==thread.id)]);
-    await openThread(thread);
-  }
+  async function focusThreadFindOccurrence(occurrence,expectedSeq=null,afterPage=false){return (idleParts||await loadIdleParts()).focusThreadFindOccurrence(historyDeps(),occurrence,expectedSeq,afterPage)}
+  async function stepThreadFind(direction){return (idleParts||await loadIdleParts()).stepThreadFind(historyDeps(),direction)}
+  async function openLinkedThread(reference){return (threadActions||await loadThreadActions()).openLinkedThread({openThread,rpc,rpcStatus,setThreads,threads,updateThreadMeta},reference)}
   async function reloadActiveThread(){if(activeThread)await openThread(activeThread)}
   // A send's new worktree, and a background send's, are made by turn-support.js: a send's in New worktree mode only, a background
   // send's also when it asks for one (force).
@@ -4474,8 +4178,12 @@ export default function App(){
   // Whether a send compacts the context first, and the wait for it, are turn-support.js's (compactBeforeTurn): a send made before that
   // module has loaded waits for it, and one that cannot load it goes on with the context as it is. held: the composer's message, which
   // waits meanwhile in its thread's queue when the queue is Trebell's own (queueMode local); onWait shows a message no queue holds.
+  // A send that cannot compact first waits for nothing here, so its message shows at once, also before that module has loaded: the
+  // automatic compaction is off, or the thread's context is less full than the lowest threshold it takes (70%), or its use is not
+  // known (compactBeforeTurn's decision, auto-compaction.js, compacts none of these).
   async function maybeAutoCompactBeforeTurn(thread,held,onWait){
-    if(!thread?.id||!runtimeCapabilities.compaction||rpcStatus!=="connected")return {};
+    const usage=threadTelemetryRef.current[thread?.id]?.tokenUsage||(activeThread?.id===thread?.id?tokenUsage:null),share=Number(usage?.last?.inputTokens)/Number(usage?.modelContextWindow);
+    if(!thread?.id||!runtimeCapabilities.compaction||rpcStatus!=="connected"||settings.autoCompactContext!==true||!(share>=0.7))return {};
     let support;try{support=await loadTurnSupport()}catch{return {}}
     return support.compactBeforeTurn({activeThread,tokenUsage,threadTelemetryRef,settings,requestThreadCompaction,updateThreadTelemetry,activeThreadRef,setTokenUsage,localQueueStartRef,windowKey:WINDOW_KEY,holdMs:120_000,persistLocalQueue,queueNow},thread,queueMode==="local"&&held,onWait);
   }
@@ -4622,72 +4330,14 @@ export default function App(){
       throw error;
     }
   }
-  // checked: the send checked its files a moment ago (a background send, a fan-out), which extracted their text: this check only finds it.
-  async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null,projectless=projectlessMode,focusPaths=null,checked=false}={}){
-    assertTurnModel(modelId);
-    await validateAttachmentPaths(paths||[],{extract:!checked});if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
-    let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");
-    // Trebell's tool catalog comes before the worktree, so a task that cannot start for want of it leaves no worktree behind.
-    await loadSharedToolCatalog();
-    if(!projectless)cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree,environmentId:workspaceEnvironmentId});
-    let thread=null;let turnRequestStarted=false;
-    try{
-      thread=await createThreadFor(modelId,cwd,{projectless,taskText:text});if(!thread?.id)throw new Error("Agent harness did not create a background thread");
-      backgroundThreadsRef.current.add(thread.id);setThreads(prev=>[thread,...prev.filter(item=>item.id!==thread.id)]);
-      // The context packet only reads files, so it is built while the checkpoint is made.
-      const contextReady=prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true});
-      let checkpoint=null;
-      if(!projectless){
-        try{checkpoint=await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}})}
-        catch(error){reportCheckpointIssue("Could not create background file checkpoint; file restore for this turn is unavailable",error,{threadId:thread.id,cwd})}
-      }
-      const p=presetFor(permissionMode);
-      const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
-      const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{});
-      const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
-      turnRequestStarted=true;
-      const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
-      const contextPacket=await contextReady,contextEntries=repositoryContextEntries(contextPacket,agentRuntime==="native"?nativeTurnContextOptions(text):{seedOnly:false,currentTask:text});
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(contextEntries).length?{additionalContext:contextEntries}:{})});const turnId=result?.turn?.id||null;
-      // The sidebar row shows the task running even when the harness sends no turn/started for a thread that is not open.
-      if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
-      if(checkpoint?.id&&turnId)try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}})}catch(error){reportCheckpointIssue("Background file checkpoint was created but could not be linked to its turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}
-      return {thread,turnId,cwd};
-    }catch(error){
-      const mayHaveSucceeded=!error?.trebellRpcResponse;
-      let uncertainThread=thread;const verificationErrors=[];
-      if(mayHaveSucceeded&&!uncertainThread?.id){
-        for(let attempt=0;attempt<3&&!uncertainThread;attempt++){
-          if(attempt)await new Promise(resolve=>setTimeout(resolve,250));
-          try{
-            const listed=await rpc.request("thread/list",threadListParams(100));
-            uncertainThread=threadForWorktree(listed.data||[],cwd);
-          }catch(listError){verificationErrors.push(listError)}
-        }
-        if(uncertainThread?.id){backgroundThreadsRef.current.add(uncertainThread.id);setThreads(prev=>[uncertainThread,...prev.filter(item=>item.id!==uncertainThread.id)])}
-      }
-      const failure=error instanceof Error?error:new Error(String(error));
-      if(mayHaveSucceeded&&(uncertainThread?.id||turnRequestStarted||verificationErrors.length))failure.trebellUncertain={threadId:uncertainThread?.id||null,cwd,model:modelId,phase:turnRequestStarted?"turn":"thread",verificationError:verificationErrors.at(-1)?.message||null};
-      throw failure;
-    }
+  // What the person starts around a turn runs in turn-support.js, with what it reads of this render (turnDeps): a send in the
+  // background, a multi-model fan-out, a task delegated to a child thread, a queued follow-up's Send now, Edit from here and Compact
+  // (and the compaction a send runs first). Each starts only once the person does it, so one done before that module has loaded
+  // waits for it, and one that cannot load it says so: a send is not sent and keeps its draft.
+  function turnDeps(){
+    return {activeThread,activeThreadRef,activeTurnId,agentRuntime,agentRuntimeLabel,askConfirm,assertTurnModel,attachments,backgroundThreadsRef,bootstrap,cannotSteerReason,clearQueuedDispatch,codexChoicesFor,compactingRow,compactionWaitersRef,contextChips,createThreadFor,currentProject,desktopNotify,dropSentDraft,editFromHereAskingRef,endCompactionRecord,focusComposerAt,followConversationEnd,gitInfo,inputsFor,leavingThread,loadNativeQueue,loadSharedToolCatalog,localQueueStartRef,markThreadTurn,maxComposerChars:MAX_COMPOSER_CHARS,model,modelMeta,models,modelsRef,permissionMode,persistLocalQueue,prepareDetachedWorktree,prepareTurnContext,presetFor,projectPath,projectlessMode,prompt,provider,providerAgent,queueKeysDone,queueNow,queuedEditId,queuedOnItsWay,reloadActiveThread,reportCheckpointIssue,resetAssistantStream,restoreFailedDraft,rpc,rpcRef,rpcStatus,running,runtimeCapabilities,runtimeSwitchRef,selectedCollaborationMode,selectedModels,send,setActiveTurnId,setAttachments,setCompactionStops,setComposerAlert,setContextChips,setEvents,setGoal,setMessages,setPrompt,setPromptHistoryIndex,setQueued,setRunning,setSection,setThreadMeta,setThreads,settings,settleCompactionWaiter,showActionError,startTurn,turnRunsNow,turnStillRuns,upsertEvent,validateAttachmentPaths,waitForActiveClone,workspaceEnvironmentId};
   }
-  async function delegateTask(rawSpec){
-    if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
-    const parent=activeThreadRef.current;if(!parent?.id)throw new Error("Open a parent thread before delegating work.");
-    if(rawSpec?.model&&!models.includes(rawSpec.model))throw new Error("Delegation model is not available in the active runtime: "+rawSpec.model);
-    const result=await rpc.request("thread/delegate",{threadId:parent.id,...rawSpec});
-    if(result?.thread?.id){
-      backgroundThreadsRef.current.add(result.thread.id);
-      setThreads(previous=>[result.thread,...previous.filter(item=>item.id!==result.thread.id)]);
-      const meta=await api("/api/thread-meta?threadId="+encodeURIComponent(result.thread.id)).catch(()=>null);
-      if(meta)setThreadMeta(previous=>({...previous,[result.thread.id]:meta}));
-    }
-    try{
-      const refreshed=(await rpc.request("thread/goal/get",{threadId:parent.id}))?.goal||null;
-      if(activeThreadRef.current?.id===parent.id)setGoal(refreshed);
-    }catch{}
-    return result;
-  }
+  async function delegateTask(rawSpec){return (turnSupport||await loadTurnSupport()).delegateTask(turnDeps(),rawSpec)}
   // The files and context chips that went with a send leave the composer, each chip with its file (addContextPath), so a chip never
   // goes while its file stays on the shelf as a plain attachment.
   function dropSentDraft(draft){
@@ -4719,27 +4369,13 @@ export default function App(){
       return merged;
     });
   }
-  async function saveFailureStash(draft){
-    try{await api("/api/stashes",{method:"POST",body:draft});return{ok:true,error:""}}
-    catch(error){return{ok:false,error:error?.message||String(error)||"Unknown stash error"}}
-  }
-  // A fan-out that cannot start keeps the draft ("kept"): the composer gives it back (dispatchSend), or still holds it (sendInBackground).
+  // A send with several models picked, and no thread open, fans out in turn-support.js (sendModelFanout); any other send goes on at
+  // once, as before, without waiting for that module. "kept": the composer gives the draft back (dispatchSend).
   async function sendModelFanout(text){
-    const fanout=[...new Set(selectedModels.filter(id=>models.includes(id)))];if(activeThread?.id||running||fanout.length<2)return false;
-    if(!runtimeCapabilities.multiModelFanout)return false;
-    const workspaceError=fanoutWorkspaceError(gitInfo);if(workspaceError){setEvents(prev=>[...prev,{id:"fanout-workspace-"+Date.now(),kind:"error",title:workspaceError,status:"done",raw:{}}]);return "kept"}
-    if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"fanout-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{}}]);return "kept"}
-    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"fanout-video-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return "kept"}
-    try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"fanout-attachment-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return "kept"}
-    const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd};
-    // Its text left the composer as the send started (dispatchSend), or leaves it once the fan-out has launched (sendInBackground); its
-    // files and context leave it now, and what was added meanwhile stays.
-    setPromptHistoryIndex(-1);dropSentDraft(draft);setEvents([]);resetAssistantStream();setSection("chat");
-    const launches=fanout.map(modelId=>startDetachedTurn(draft.text,draft.attachments,modelId,{forceWorktree:true,basePath:draft.projectPath,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips),checked:true}).then(result=>({ok:true,modelId,result})).catch(error=>({ok:false,modelId,error})));
-    // What came of each launch is told once all have answered, by background-send-outcome.js, which loads then: should it not load,
-    // the draft of a launch that failed goes back to the composer.
-    Promise.all(launches).then(results=>import("./background-send-outcome.js").then(({settleModelFanout})=>settleModelFanout({results,fanout,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),error=>{if(results.some(item=>!item.ok))restoreFailedDraft(draft);showActionError(error,"Could not show how the multi-model run went")}));
-    return true;
+    const fanout=new Set(selectedModels.filter(id=>models.includes(id)));if(activeThread?.id||running||fanout.size<2||!runtimeCapabilities.multiModelFanout)return false;
+    let support;try{support=await loadTurnSupport()}
+    catch(error){setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return "kept"}
+    return support.sendModelFanout(turnDeps(),text);
   }
   // A send that starts with "/" may be a command rather than a message (a project's recipe or one of the composer's commands), which
   // turn-support.js runs (runSlashCommand): true when it ran, "kept" when the composer keeps the draft, which goes back (keepDraft), or
@@ -4760,23 +4396,11 @@ export default function App(){
   // turn starts with no input, and the goal is active once it has. Set active alone, no turn started: Codex does not go on with a goal
   // Trebell paused because Codex started no next turn for it, and the goal read Active with nothing running.
   function resumeCodexGoal(){return startTurn("",[],model,null,null,null,{goalPatch:{status:"active"},goalResume:true})}
+  // Compact runs in turn-support.js (compactContext); one that cannot load it says so as a compaction that fails does.
   async function compactContext(){
-    if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
-    if(!activeThread?.id||!rpc||leavingThread())return;
-    const threadId=activeThread.id,id="context-compact-"+threadId;
-    try{
-      // Grok's and Muse Code's compaction take as long as the model needs (LONG_COMPACTION_RUNTIMES).
-      await requestThreadCompaction(activeThread.id);
-    }catch(error){
-      // The failure ends the compaction's own row, which no turn ends: it would say "Compacting context" beside its failure. That is
-      // its item's row once the item came (in its turn's record too, so the turn's card says it failed), else the one Compact put up.
-      // One the window stopped waiting for has not failed, as far as it knows: its row says so, a compaction whose end is not known
-      // (requestThreadCompaction).
-      const failed=error.waited?waitedCompactionRow(error):{kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done"};
-      if(activeThreadRef.current?.id!==threadId)return;
-      endCompactionRecord(threadId,null,row=>({...row,...failed}));
-      setEvents(prev=>{const row=prev.findLast(item=>item.kind==="contextCompaction"&&item.status==="running");return row?prev.map(item=>item===row?{...item,...failed}:item):upsertEvent(prev,{id,...failed,raw:{}})});
-    }
+    let support;try{support=turnSupport||await loadTurnSupport()}
+    catch(error){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:"Context compaction failed: "+error.message,status:"done",raw:{}}]);return}
+    return support.compactContext(turnDeps());
   }
   async function dispatchSend(promptOverride=null){
     const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim(),sendView=submittingRef.current,pressed=terminalPresses();if(!text)return;
@@ -4879,24 +4503,9 @@ export default function App(){
     finally{if(submittingRef.current===token){submittingRef.current=null;setSubmitting(false)}}
   }
   async function sendInBackground(promptOverride=null){
-    if(!runtimeCapabilities.detachedTasks){await send(promptOverride);return}
-    if(activeThread?.id||running||runtimeSwitchRef.current){await send(promptOverride);return}
-    const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim();if(!text)return;
-    if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
-    if(text.startsWith("/")){await send(promptOverride);return}
-    try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
-    // A fan-out that has launched takes the text it sent out of the composer, as Enter and Send take a draft out as its send starts
-    // (dispatchSend): what the person typed on after it while the fan-out waited for a clone or checked its files stays there, for the
-    // next message. The text stayed, and a second Enter launched the same fan-out again. One that cannot start ("kept") leaves it.
-    const fanned=await sendModelFanout(text);if(fanned){if(fanned===true)setPrompt(current=>current.startsWith(visiblePrompt)?current.slice(visiblePrompt.length).replace(/^\s+/,""):current);return}
-    if(bootstrap.mock||!rpc||rpcStatus!=="connected"||runtimeSwitchRef.current||!modelsRef.current.includes(model)){await send(promptOverride);return}
-    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
-    try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
-    const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
-    setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
-    // A launch that fails is told by background-send-outcome.js, which loads then: should it not load, the draft goes back to the
-    // composer.
-    startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips),checked:true}).catch(error=>import("./background-send-outcome.js").then(({settleFailedBackgroundSend})=>settleFailedBackgroundSend({error,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),()=>{restoreFailedDraft(draft);showActionError(error,"Background task failed")}));
+    let support;try{support=await loadTurnSupport()}
+    catch(error){setComposerAlert({kind:"send",text:"Not sent: "+sentenceText(error.message)+" Your draft is kept."});return}
+    return support.sendInBackground(turnDeps(),promptOverride);
   }
   // A follow-up's button pressed from the keyboard keeps the keyboard, as the sidebar's rows do, instead of dropping it on the page with
   // the button its action takes away or turns off: Edit gives it to the composer, where the edit is made; Send now and Remove, whose
@@ -4913,77 +4522,9 @@ export default function App(){
     return runUserAction(async()=>{try{return await action()}finally{if(press&&!press.done&&queueKeysRef.current===press)queueKeysRef.current=null}},label);
   }
   function queueKeysDone(id){const press=queueKeysRef.current;if(press?.id===id)press.done=true}
-  async function sendQueuedNow(item){
-    // The follow-up being edited waits for its edit (its Send now is disabled, and the keyboard's steer skips it): sending it now
-    // would send the text the composer is changing. One on its way is being sent already (queuedOnItsWay).
-    if(item?.id&&(item.id===queuedEditId||queuedOnItsWay(item)))return;
-    if(running&&!runtimeCapabilities.steering)throw new Error(cannotSteerReason);
-    // Send now is the next send, so the composer's note about the last one ends.
-    setComposerAlert(null);
-    if(item?.native&&runtimeCapabilities.nativeQueue&&rpc&&activeThread?.id){
-      const requiredToolNamespaces=Array.isArray(item.dynamicToolNamespaces)?item.dynamicToolNamespaces:[],needsToolExpansion=queuedSubmissionNeedsToolExpansion(item,activeThread.providerMeta?.dynamicToolNamespaces||[]);
-      if(running&&activeTurnId&&runtimeCapabilities.steering&&!needsToolExpansion){
-        const originalInput=item.input?.length?item.input:inputsFor(item.draftText||item.text,item.attachments);const originalClientId=item.clientUserMessageId||("trebell-queue-"+crypto.randomUUID());
-        try{
-          await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});
-          await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:originalInput});
-          setQueued(prev=>prev.filter(q=>q.id!==item.id));queueKeysDone(item.id);followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
-        }catch(error){
-          let restored;
-          try{
-            restored=await rpc.request("thread/queue/add",{threadId:activeThread.id,input:originalInput,clientUserMessageId:originalClientId,dynamicToolNamespaces:requiredToolNamespaces});
-          }catch(restoreError){
-            setQueued(prev=>prev.filter(q=>q.id!==item.id));
-            restoreFailedDraft({text:item.draftText||item.text,attachments:item.attachments||[],contextChips:item.contextChips||[]});
-            throw new Error((error?.message||String(error))+" · Native queue restore also failed: "+(restoreError?.message||String(restoreError))+". The queued draft was restored to the composer.");
-          }
-          const restoredDraft={...queuedSubmissionDraft(restored?.queuedSubmission||{}),contextChips:[...(item.contextChips||[])],model:item.model||model};
-          setQueued(prev=>prev.map(q=>q.id===item.id?restoredDraft:q));
-          try{await loadNativeQueue(rpc,activeThread.id)}
-          catch(refreshError){throw new Error((error?.message||String(error))+" · Queue was restored, but refresh failed: "+(refreshError?.message||String(refreshError))+".")}
-          throw error;
-        }
-      }
-      if(running)return;
-      const result=await rpc.request("thread/queue/start",{threadId:activeThread.id,queuedSubmissionId:item.id});const turnId=result?.turn?.id||null;
-      setRunning(Boolean(turnId));setActiveTurnId(turnId);setQueued(prev=>prev.filter(q=>q.id!==item.id));queueKeysDone(item.id);
-      // The harness may tell the message before it answers (the agent relay does, item/completed): it shows once.
-      if(turnId){followConversationEnd();const id=item.clientUserMessageId||("queue-start-"+item.id);setMessages(prev=>prev.some(message=>message.id===id)?prev:[...prev,{id,role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId}])}return;
-    }
-    // From the press on it is on its way (localQueueStartRef), until what became of it is written: its files are checked and its
-    // dispatch mark is written before its card says so, and a Remove, an Edit or a second Send now meanwhile would drop a follow-up
-    // this send sends anyway, or send it twice. Nor does the queue start it as well, as it would once a start that failed has stopped
-    // the thread running.
-    const onItsWay=localQueueStartRef.current;onItsWay.add(item.id);
-    try{
-      await validateAttachmentPaths(item.attachments||[]);
-      if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
-        // Steered into the turn, it is on its way until Codex has it: its card says so and leaves it be, and a steer that fails leaves
-        // it queued as it was (clearQueuedDispatch). One the relay refuses for the mode it is sent in says so as the queue's own note
-        // does, in the relay's words for a follow-up that stays queued (data.queued): the queue sends it once the turn ends, unless a
-        // Stop holds it, and the note ends as it goes, as a Stop holds the queue, or as the follow-up leaves the queue otherwise.
-        let steered=false;
-        try{
-          await persistLocalQueue(activeThread.id,queueNow(activeThread.id).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now()}:q));
-          await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments),...harnessThreadOptions(agentRuntime,{permissionMode})});steered=true;
-          await persistLocalQueue(activeThread.id,queueNow(activeThread.id).filter(q=>q.id!==item.id));queueKeysDone(item.id);followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
-        }catch(error){if(!steered)await clearQueuedDispatch(activeThread.id,item.id);if(error?.rpcCode!==-31000)throw error;setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error.rpcData?.queued||error.message),queuedId:item.id});return}
-      }
-      if(running)return;
-      // Its dispatch mark goes into the queue as it is now (queueNow), not the copy taken at the press.
-      const threadId=activeThread?.id||null,dispatching=queueNow(threadId).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now(),autoStartFailed:false}:q);
-      if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
-      try{
-        await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips),{sentChips:item.contextChips||[],checked:true});
-        await persistLocalQueue(threadId,queueNow(threadId).filter(q=>q.id!==item.id));queueKeysDone(item.id);
-      }catch(error){
-        // Stop ended it before its turn existed: it stays in its place in the queue, which is left as it is but for its dispatch mark, as
-        // when the queue starts it. A start that failed marks only it to retry, in the queue as that is now (queueNow).
-        if(error?.trebellSendStopped){await clearQueuedDispatch(threadId,item.id);return}
-        const failed=queueNow(threadId).map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:true}:q);try{await persistLocalQueue(threadId,failed)}catch{setQueued(failed)}throw error;
-      }
-    }finally{onItsWay.delete(item.id)}
-  }
+  // Send now (its button, and the keyboard's steer) runs in turn-support.js (sendQueuedNow); what cannot load it says so where the
+  // press does (runUserAction).
+  async function sendQueuedNow(item){return (turnSupport||await loadTurnSupport()).sendQueuedNow(turnDeps(),item)}
   // A queued follow-up is edited in the composer and stays queued as it was until the edit is saved (dispatchSend) or Escape ends it
   // (cancelQueuedEdit); the composer's draft is set aside meanwhile.
   async function editQueued(item){
@@ -5062,44 +4603,12 @@ export default function App(){
     if(runtimeCapabilities.nativeQueue&&queueMode==="native"){if(ended){setRunning(false);setActiveTurnId(null)}await loadNativeQueue(rpc,threadId);return}
     if(ended)setRunning(false);
   }
+  // Edit from here runs in turn-support.js (editFromHere): pressed before that module has loaded it waits for it, and one that cannot
+  // load it says so, as an edit that fails does.
   async function editFromHere(message){
-    if(!runtimeCapabilities.rewind||!rpc||!activeThread?.id||!message.turnId)return;
-    // One question at a time: a double click, or Enter held on the button, asks once.
-    if(editFromHereAskingRef.current)return;
-    const threadId=activeThread.id;
-    const normalizePath=value=>String(value||"").replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase();
-    // In a worktree of its own the files go back with the conversation, to the checkpoint taken before this message; anywhere else
-    // only the conversation does.
-    const isolatedWorktree=Boolean(
-      message.checkpointId&&currentProject?.managedWorktree&&!currentProject.managedWorktree.cleanedAt
-      &&normalizePath(currentProject.path)===normalizePath(activeThread.cwd||projectPath)
-    );
-    // Files and conversation go back together or not at all: nothing is restored while a turn runs (the harness refuses that rewind),
-    // and files that could not go back leave the conversation as it is.
-    const refuseWhileRunning=()=>showActionError(new Error("Stop the running turn first."),"Could not edit from this message");
-    if(running){refuseWhileRunning();return}
-    // Asked once, before anything changes, saying what will go: Cancel, Escape or closing the question leaves the conversation, the
-    // composer and the files as they are.
-    editFromHereAskingRef.current=true;
-    let confirmed=false;
-    try{
-      confirmed=await askConfirm("Edit from this message?\n\nThe messages after it are removed from this thread"+(isolatedWorktree
-        ?", this message comes back to the composer to edit, and the files in this worktree go back to how they were before it."
-        :", and this message comes back to the composer to edit."),{confirm:"Edit from here"});
-    }finally{editFromHereAskingRef.current=false}
-    if(!confirmed||String(activeThreadRef.current?.id||"")!==String(threadId))return;
-    // A turn that started while the question was open, in this window or another, is refused the same way. Another window's turn may
-    // not have reached this one yet, so before any file goes back the harness is asked whether the thread runs (the server refuses a
-    // restore under a running turn too).
-    if(turnRunsNow()){refuseWhileRunning();return}
-    // The files and the conversation go back in edit-from-here.js, loaded now.
-    const outcome=await import("./edit-from-here.js").then(({rewindToMessage})=>rewindToMessage({client:rpcRef.current||rpc,message,threadId,isolatedWorktree,turnRunsNow})).catch(error=>({error,title:"Could not edit from this message"}));
-    if(outcome.refused){refuseWhileRunning();return}
-    if(outcome.error){showActionError(outcome.error,outcome.title);return}
-    // A draft already in the composer stays, below the message brought back to edit, and so do its files, with the message's own.
-    setPrompt(current=>String(current||"").trim()&&current!==message.text?message.text+"\n\n"+current:message.text);if(message.attachments?.length)setAttachments(current=>[...new Set([...current,...message.attachments])]);await reloadActiveThread();
-    // The message is the composer's to edit now, so the focus goes there, at its end: the button that had it left with the message.
-    focusComposerAt(String(message.text||"").length);
+    let support;try{support=turnSupport||await loadTurnSupport()}
+    catch(error){showActionError(error,"Could not edit from this message");return}
+    return support.editFromHere(turnDeps(),message);
   }
   // Waits a few frames for a composer that is still held (the thread reloading) and leaves the focus where the person put it meanwhile.
   function focusComposerAt(caret,frames=30){
@@ -5234,15 +4743,8 @@ export default function App(){
   // and the files beside it attach.
   async function onDrop(e){e.preventDefault();const items=[...(e.dataTransfer?.items||[])].filter(item=>item.kind==="file"),isFolder=item=>Boolean(item.webkitGetAsEntry?.()?.isDirectory),folders=items.some(isFolder),files=items.filter(item=>!isFolder(item)).map(item=>item.getAsFile()).filter(Boolean);try{await uploadBrowserFiles(files,"Could not attach dropped files",folders?["Folders cannot be attached"]:[])}catch(error){showActionError(error,"Could not attach dropped files")}}
   async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}
-  async function citeAssistant(message,excerpt=""){
-    const selected=String(excerpt||"").trim();
-    const source=selected||message?.text?.trim();if(!source)return;
-    const threadLabel=activeThread?.name||activeThread?.id||"current thread";
-    const text=[selected?"Assistant response excerpt":"Assistant response citation","Thread: "+threadLabel,message?.id?"Message: "+message.id:null,"",source].filter(value=>value!=null).join("\n");
-    await addContextAttachment({name:"assistant-citation.txt",text,kind:"citation",label:selected?"Assistant excerpt":"Assistant citation",detail:selected?`${selected.length.toLocaleString()} chars · ${threadLabel}`:threadLabel});
-    setPrompt(prev=>CITE_NOTE.test(prev)?prev:(prev?prev+" ":"")+CITE_SENTENCE+" ");
-    return true;
-  }
+  // Cite runs in its button's own module (idle-parts.js), which is in once the button can be pressed.
+  async function citeAssistant(message,excerpt=""){return (idleParts||await loadIdleParts()).citeAssistant({activeThread,addContextAttachment,setPrompt,citeNote:CITE_NOTE,citeSentence:CITE_SENTENCE},message,excerpt)}
   async function attachReviewComment(path,comment){
     const text=["Code review comment","File: "+path,"",comment].join("\n");
     const filename=String(path).split(/[\\/]/).pop();

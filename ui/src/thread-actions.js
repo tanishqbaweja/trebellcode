@@ -1,8 +1,9 @@
 // What a person does to threads from the sidebar's row menu and bulk bar, the keyboard, the Agents page and the Snooze dialog: pin,
 // snooze, settle, wake, archive, fork and delete a thread, the same for several selected at once, Undo, and moving a thread up or down
-// its section (and what App does the same way on its own: waking a snoozed thread, settling a merged one). Drawing the first screen
-// changes no thread, so App loads this module at idle after the first paint (B11), and an action made before then waits for it, App's
-// own wake and settle at startup among them. Each function takes what it reads of App's render as deps, as App's own functions read it.
+// its section (and what App does the same way on its own: waking a snoozed thread, settling a merged one); and opening a thread a
+// pull request links, from the Source panel. Drawing the first screen changes no thread, so App loads this module at idle after the
+// first paint (B11), and an action made before then waits for it, App's own wake and settle at startup among them. Each function
+// takes what it reads of App's render as deps, as App's own functions read it.
 import { bulkActionFailure, movedSectionRanks, orderedSectionWithMove, sectionOrderWrites, threadMoveTarget, threadOrderGroup, threadPlacement, undoOrder } from "./thread-moves.js";
 import { loadThreadListPages, threadSectionOrderParams } from "./thread-list-query.js";
 import { threadTitle } from "./thread-catalog.js";
@@ -199,4 +200,35 @@ export async function submitSnooze(deps,until){
   if(!failed.length){setSnoozeRequest(null);return}
   setSnoozeRequest({...request,threads:failed.map(item=>item.thread)});
   throw new Error(bulkActionFailure("snooze",failed));
+}
+
+// A thread a pull request links, opened from the Source panel: read when the list does not have it, restored first when archived.
+export async function openLinkedThread(deps,reference){
+  const {openThread,rpc,rpcStatus,setThreads,threads,updateThreadMeta}=deps;
+  if(!rpc||rpcStatus!=="connected"||!reference?.threadId)throw new Error("The agent harness is not connected.");
+  let thread=threads.find(item=>item.id===reference.threadId)||null,readError=null;
+  if(!thread){
+    try{
+      const read=await rpc.request("thread/read",{threadId:reference.threadId,includeTurns:false});
+      thread=read?.thread||null;
+    }catch(error){readError=error}
+  }
+  const archived=Boolean(reference.archived||thread?.archived);
+  if(archived){
+    let restored;
+    try{restored=await rpc.request("thread/unarchive",{threadId:reference.threadId})}
+    catch(error){throw new Error("Could not restore archived thread: "+(error?.message||String(error)),{cause:error})}
+    if(!restored?.thread&&!thread)throw new Error("The agent runtime did not return the restored thread.");
+    thread=restored?.thread||thread;
+    if(!thread){
+      const read=await rpc.request("thread/read",{threadId:reference.threadId,includeTurns:false});
+      thread=read?.thread||null;
+    }
+    await updateThreadMeta(reference.threadId,{archived:false});
+    if(thread)thread={...thread,archived:false};
+  }
+  if(!thread&&readError)throw new Error("Could not load linked thread: "+(readError?.message||String(readError)));
+  if(!thread)throw new Error("Linked thread was not found.");
+  setThreads(prev=>[thread,...prev.filter(item=>item.id!==thread.id)]);
+  await openThread(thread);
 }

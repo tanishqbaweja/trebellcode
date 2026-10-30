@@ -118,7 +118,20 @@ import { buildUi, bundleReport } from "../scripts/perf/lib/bundle.mjs";
 // Its fourth repair then added 0.3 / 0.1 KB to the first bundle (621.5 / 199.8 KB, 0.2 KB gzip of room left: the source-control
 // rule's asks followed by a comma and thanks or an if, when or once clause, and setting up version control) and nothing to the lazy
 // chunks: 780.1 / 257.8 KB.
-const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:781,gzipKB:258}};
+// Then (2026-10-30) by what the five changes landed together on land/r17 add to the lazy chunks, 3.6 / 1.1 KB (the keys lane 0.9 /
+// 0.2, R13A 2.1 / 0.8, R13B 0.0 / -0.1, R13C 0.6 / 0.2, Native's one configuration 0.0 / 0.0, each measured at its merge), and by
+// what moved into them out of the first bundle, 29.3 / 10.0 KB, when those changes took it from 617.9 / 198.5 to 627.6 / 202.2 KB
+// (the keys lane 0.2 / 0.1, R13A's Muse Code turns, compactions and rows 3.5 / 1.4, R13B's rows 1.4 / 0.5, R13C's composer menus
+// and pickers 1.1 / 0.4, Native's one configuration with its source-control rule and Thinking default 3.5 / 1.3), with R13S still
+// to add to it: what the person starts around a turn (a send in the background or to several models, a delegated task, a queued
+// follow-up's Send now, Edit from here, Compact, a desktop SnapShot attached) into turn-support.js, a thread's history beyond its
+// first page (Load earlier messages, the find bar's search, History's pages) and the sidebar's search and Cite's action into
+// idle-parts.js, and a linked thread opened from the Source panel into thread-actions.js, since none of it runs before the person
+// does it: what is done before its script has come waits for it, and what cannot load it says so in loadFailed's words. A send
+// waits for turn-support.js before its message shows only when its thread's context is full enough to compact first. Its headroom
+// stays 0.9 / 0.1 KB, as on main before them. The first bundle went down, 627.6 / 202.2 to 608.5 / 196.9 KB, with 3.1 KB gzip of
+// room for R13S and the next round.
+const B11={initialJs:{rawKB:640,gzipKB:200},initialCss:{rawKB:690,gzipKB:102},lazyJs:{rawKB:813.9,gzipKB:269.1}};
 const repoRoot=fileURLToPath(new URL("../",import.meta.url)),buildDir=join(repoRoot,".trebell-budgets"),outDir=join(buildDir,"ui-dist");
 
 test("B11: the UI bundle stays within its budget",{timeout:240_000},async()=>{

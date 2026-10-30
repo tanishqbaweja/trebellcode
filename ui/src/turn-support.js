@@ -1,21 +1,31 @@
 // What the app does around an agent's turn beyond showing it: the repository context a send carries, the new worktree a send can
 // ask for, the compaction a send runs first, a send that is a command rather than a message (a project's recipe or one of the
 // composer's slash commands), the agent's own tool calls (Trebell's browser, computer, source-control, repository and delegation
-// tools), the verification planned once a turn completes, and the turns a restart interrupted. Nothing on the first screen or in
-// opening and reading a thread needs it, so App loads this module at idle after the first paint (B11). Each function takes what it
-// reads of App's render as deps, as App's own functions read it.
+// tools), the verification planned once a turn completes, and the turns a restart interrupted; and what the person starts around a
+// turn: a send in the background or to several models, a delegated task, a queued follow-up's Send now, Edit from here, Compact and
+// a desktop SnapShot attached. Nothing on the first screen or in opening and reading a thread needs it, so App loads this module at
+// idle after the first paint (B11). Each function takes what it reads of App's render as deps, as App's own functions read it.
 import { api } from "./api.js";
 import { codexGoalsMissing, describeCodexGoal } from "./codex-turn-options.js";
 import { parseCodexGoalCommand } from "./codex-goal-command.js";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
-import { repositoryContextDeliveryPacket } from "./context-provenance.js";
+import { repositoryContextDeliveryPacket, repositoryContextEntries } from "./context-provenance.js";
 import { desktopBridgeToolAvailability } from "./desktop-tool-availability.js";
 import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
 import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
 import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
 import { askTerminalKeyboard } from "./terminal-keyboard.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
+import { isVideoAttachment } from "./composer-state.js";
+import { fanoutWorkspaceError, threadForWorktree } from "./fanout-utils.js";
+import { threadListParams } from "./thread-list-query.js";
+import { configuredModelOptions } from "../../src/model-options.mjs";
+import { configuredReasoningEffort } from "../../src/model-reasoning-effort.mjs";
+import { configuredModelServiceTier } from "../../src/model-service-tier.mjs";
+import { nativeTurnContextOptions } from "../../src/native-configuration.mjs";
+import { harnessThreadOptions, harnessTurnOptions } from "./harness-turn-options.js";
+import { queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion } from "./native-queue.js";
 import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
 import { CODEX_GOAL_START } from "../../src/codex-goal-start.mjs";
 
@@ -530,4 +540,311 @@ export async function compactBeforeTurn(deps,thread,held,onWait=null){
     const message=error?.message||String(error);
     return {compacted:false,row:row(error?.waited?{status:"unknown",title:message,waited:true}:{kind:"error",title:"Automatic context compaction failed; continuing: "+message})};
   }finally{if(kept){clearInterval(renew);await renewed;await persistLocalQueue(thread.id,queueNow(thread.id).filter(item=>item.id!==kept.id)).catch(()=>{});onItsWay.delete(kept.id)}}
+}
+
+// Work sent to run apart from the open thread: a send in the background, one task sent to several models at once (each in a worktree
+// of its own) and a task the agent delegates (thread/delegate). Each starts only once the person sends it (the composer's background
+// send, a send with several models picked, the Agents page or the agent's own delegation tool), so App loads it with this module at
+// idle after the first paint (B11); a send made before then waits for it.
+const contextEntriesOf=(packet,options)=>packet?repositoryContextEntries(packet,options):{};
+// checked: the send checked its files a moment ago (a background send, a fan-out), which extracted their text: this check only finds it.
+export async function startDetachedTurn(deps,text,paths,modelId=deps.model,{forceWorktree=false,basePath=null,projectless=deps.projectlessMode,focusPaths=null,checked=false}={}){
+  const {agentRuntime,assertTurnModel,backgroundThreadsRef,bootstrap,codexChoicesFor,contextChips,createThreadFor,inputsFor,loadSharedToolCatalog,markThreadTurn,modelMeta,permissionMode,prepareDetachedWorktree,prepareTurnContext,presetFor,projectPath,provider,providerAgent,reportCheckpointIssue,rpc,rpcStatus,selectedCollaborationMode,setThreads,settings,turnStillRuns,validateAttachmentPaths,workspaceEnvironmentId}=deps;
+  assertTurnModel(modelId);
+  await validateAttachmentPaths(paths||[],{extract:!checked});if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
+  let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");
+  // Trebell's tool catalog comes before the worktree, so a task that cannot start for want of it leaves no worktree behind.
+  await loadSharedToolCatalog();
+  if(!projectless)cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree,environmentId:workspaceEnvironmentId});
+  let thread=null;let turnRequestStarted=false;
+  try{
+    thread=await createThreadFor(modelId,cwd,{projectless,taskText:text});if(!thread?.id)throw new Error("Agent harness did not create a background thread");
+    backgroundThreadsRef.current.add(thread.id);setThreads(prev=>[thread,...prev.filter(item=>item.id!==thread.id)]);
+    // The context packet only reads files, so it is built while the checkpoint is made.
+    const contextReady=prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true});
+    let checkpoint=null;
+    if(!projectless){
+      try{checkpoint=await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}})}
+      catch(error){reportCheckpointIssue("Could not create background file checkpoint; file restore for this turn is unavailable",error,{threadId:thread.id,cwd})}
+    }
+    const p=presetFor(permissionMode);
+    const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
+    const reasoningEffort=configuredReasoningEffort(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{});
+    const serviceTier=configuredModelServiceTier(settings,agentRuntime,provider,modelId);
+    turnRequestStarted=true;
+    const codexChoices=agentRuntime==="codex"?codexChoicesFor(modelId,thread.id):null,collaboration=selectedCollaborationMode(modelId,{effort:codexChoices?.effort||null});
+    const contextPacket=await contextReady,contextEntries=contextEntriesOf(contextPacket,agentRuntime==="native"?nativeTurnContextOptions(text):{seedOnly:false,currentTask:text});
+    const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider,...(reasoningEffort?{reasoningEffort}:{}),...(serviceTier?{serviceTier}:{})}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(codexChoices?.effort?{effort:codexChoices.effort}:{}),...(codexChoices?.serviceTier?{serviceTier:codexChoices.serviceTier}:{}),...harnessTurnOptions(agentRuntime,{permissionMode,reasoningEffort,serviceTier,modelOptions:configuredModelOptions(settings,agentRuntime,provider,modelId,modelMeta?.[modelId]||{})}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(contextEntries).length?{additionalContext:contextEntries}:{})});const turnId=result?.turn?.id||null;
+    // The sidebar row shows the task running even when the harness sends no turn/started for a thread that is not open.
+    if(turnId&&turnStillRuns(result.turn))markThreadTurn(thread.id,true);
+    if(checkpoint?.id&&turnId)try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}})}catch(error){reportCheckpointIssue("Background file checkpoint was created but could not be linked to its turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}
+    return {thread,turnId,cwd};
+  }catch(error){
+    const mayHaveSucceeded=!error?.trebellRpcResponse;
+    let uncertainThread=thread;const verificationErrors=[];
+    if(mayHaveSucceeded&&!uncertainThread?.id){
+      for(let attempt=0;attempt<3&&!uncertainThread;attempt++){
+        if(attempt)await new Promise(resolve=>setTimeout(resolve,250));
+        try{
+          const listed=await rpc.request("thread/list",threadListParams(100));
+          uncertainThread=threadForWorktree(listed.data||[],cwd);
+        }catch(listError){verificationErrors.push(listError)}
+      }
+      if(uncertainThread?.id){backgroundThreadsRef.current.add(uncertainThread.id);setThreads(prev=>[uncertainThread,...prev.filter(item=>item.id!==uncertainThread.id)])}
+    }
+    const failure=error instanceof Error?error:new Error(String(error));
+    if(mayHaveSucceeded&&(uncertainThread?.id||turnRequestStarted||verificationErrors.length))failure.trebellUncertain={threadId:uncertainThread?.id||null,cwd,model:modelId,phase:turnRequestStarted?"turn":"thread",verificationError:verificationErrors.at(-1)?.message||null};
+    throw failure;
+  }
+}
+export async function delegateTask(deps,rawSpec){
+  const {activeThreadRef,backgroundThreadsRef,models,rpc,rpcStatus,setGoal,setThreadMeta,setThreads}=deps;
+  if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
+  const parent=activeThreadRef.current;if(!parent?.id)throw new Error("Open a parent thread before delegating work.");
+  if(rawSpec?.model&&!models.includes(rawSpec.model))throw new Error("Delegation model is not available in the active runtime: "+rawSpec.model);
+  const result=await rpc.request("thread/delegate",{threadId:parent.id,...rawSpec});
+  if(result?.thread?.id){
+    backgroundThreadsRef.current.add(result.thread.id);
+    setThreads(previous=>[result.thread,...previous.filter(item=>item.id!==result.thread.id)]);
+    const meta=await api("/api/thread-meta?threadId="+encodeURIComponent(result.thread.id)).catch(()=>null);
+    if(meta)setThreadMeta(previous=>({...previous,[result.thread.id]:meta}));
+  }
+  try{
+    const refreshed=(await rpc.request("thread/goal/get",{threadId:parent.id}))?.goal||null;
+    if(activeThreadRef.current?.id===parent.id)setGoal(refreshed);
+  }catch{}
+  return result;
+}
+async function saveFailureStash(draft){
+  try{await api("/api/stashes",{method:"POST",body:draft});return{ok:true,error:""}}
+  catch(error){return{ok:false,error:error?.message||String(error)||"Unknown stash error"}}
+}
+// A fan-out that cannot start keeps the draft ("kept"): the composer gives it back (dispatchSend), or still holds it (sendInBackground).
+export async function sendModelFanout(deps,text){
+  const {activeThread,agentRuntimeLabel,attachments,bootstrap,contextChips,desktopNotify,dropSentDraft,gitInfo,maxComposerChars,models,projectPath,prompt,resetAssistantStream,restoreFailedDraft,running,runtimeCapabilities,selectedModels,setEvents,setPromptHistoryIndex,setSection,showActionError,validateAttachmentPaths}=deps;
+  const fanout=[...new Set(selectedModels.filter(id=>models.includes(id)))];if(activeThread?.id||running||fanout.length<2)return false;
+  if(!runtimeCapabilities.multiModelFanout)return false;
+  const workspaceError=fanoutWorkspaceError(gitInfo);if(workspaceError){setEvents(prev=>[...prev,{id:"fanout-workspace-"+Date.now(),kind:"error",title:workspaceError,status:"done",raw:{}}]);return "kept"}
+  if(prompt.length>maxComposerChars){setEvents(prev=>[...prev,{id:"fanout-long-"+Date.now(),kind:"error",title:`Message exceeds the ${maxComposerChars.toLocaleString()} character limit`,status:"done",raw:{}}]);return "kept"}
+  if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"fanout-video-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return "kept"}
+  try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"fanout-attachment-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return "kept"}
+  const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd};
+  // Its text left the composer as the send started (dispatchSend), or leaves it once the fan-out has launched (sendInBackground); its
+  // files and context leave it now, and what was added meanwhile stays.
+  setPromptHistoryIndex(-1);dropSentDraft(draft);setEvents([]);resetAssistantStream();setSection("chat");
+  const launches=fanout.map(modelId=>startDetachedTurn(deps,draft.text,draft.attachments,modelId,{forceWorktree:true,basePath:draft.projectPath,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips),checked:true}).then(result=>({ok:true,modelId,result})).catch(error=>({ok:false,modelId,error})));
+  // What came of each launch is told once all have answered, by background-send-outcome.js, which loads then: should it not load,
+  // the draft of a launch that failed goes back to the composer.
+  Promise.all(launches).then(results=>import("./background-send-outcome.js").then(({settleModelFanout})=>settleModelFanout({results,fanout,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),error=>{if(results.some(item=>!item.ok))restoreFailedDraft(draft);showActionError(error,"Could not show how the multi-model run went")}));
+  return true;
+}
+export async function sendInBackground(deps,promptOverride=null){
+  const {activeThread,agentRuntimeLabel,attachments,bootstrap,contextChips,desktopNotify,maxComposerChars,model,modelsRef,projectPath,projectlessMode,prompt,resetAssistantStream,restoreFailedDraft,rpc,rpcStatus,running,runtimeCapabilities,runtimeSwitchRef,send,setAttachments,setContextChips,setEvents,setPrompt,setPromptHistoryIndex,setSection,showActionError,validateAttachmentPaths,waitForActiveClone}=deps;
+  if(!runtimeCapabilities.detachedTasks){await send(promptOverride);return}
+  if(activeThread?.id||running||runtimeSwitchRef.current){await send(promptOverride);return}
+  const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim();if(!text)return;
+  if(visiblePrompt.length>maxComposerChars){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${maxComposerChars.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
+  if(text.startsWith("/")){await send(promptOverride);return}
+  try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
+  // A fan-out that has launched takes the text it sent out of the composer, as Enter and Send take a draft out as its send starts
+  // (dispatchSend): what the person typed on after it while the fan-out waited for a clone or checked its files stays there, for the
+  // next message. The text stayed, and a second Enter launched the same fan-out again. One that cannot start ("kept") leaves it.
+  const fanned=await sendModelFanout(deps,text);if(fanned){if(fanned===true)setPrompt(current=>current.startsWith(visiblePrompt)?current.slice(visiblePrompt.length).replace(/^\s+/,""):current);return}
+  if(bootstrap.mock||!rpc||rpcStatus!=="connected"||runtimeSwitchRef.current||!modelsRef.current.includes(model)){await send(promptOverride);return}
+  if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
+  try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
+  const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
+  setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
+  // A launch that fails is told by background-send-outcome.js, which loads then: should it not load, the draft goes back to the
+  // composer.
+  startDetachedTurn(deps,draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips),checked:true}).catch(error=>import("./background-send-outcome.js").then(({settleFailedBackgroundSend})=>settleFailedBackgroundSend({error,draft,saveFailureStash,restoreFailedDraft,desktopNotify,addEvents:added=>setEvents(prev=>[...prev,...added])}),()=>{restoreFailedDraft(draft);showActionError(error,"Background task failed")}));
+}
+
+// A desktop SnapShot (window.trebellDesktop.snapshots) goes to the composer: its image, and the window's accessibility text when it
+// has some, each a file with its chip, and the capture is acknowledged once they are there. One comes only once the person takes a
+// SnapShot (or one waits as the window opens), so App loads this with this module at idle after the first paint (B11): a capture
+// before then waits for it, and one that cannot load it says so, as a capture that fails does, and stays pending.
+export async function attachSnapshot({snapshots,prepareAttachmentPaths,setAttachments,setContextChips,setSection,maxAttachments},id){
+  const capture=await snapshots.read(id);
+  const safeProcess=String(capture.process||"window").replace(/[^a-zA-Z0-9._-]+/g,"-").slice(0,60)||"window";
+  const uploaded=await api("/api/attachments/blob",{method:"POST",body:{name:`snapshot-${safeProcess}-${capture.createdAt||Date.now()}.png`,mime:"image/png",dataBase64:capture.dataBase64}});
+  const [imagePath]=await prepareAttachmentPaths([uploaded.path]);
+  setAttachments(prev=>[...new Set([...prev,imagePath])].slice(-maxAttachments));
+  setContextChips(prev=>[...prev.filter(chip=>chip.path!==imagePath),{id:crypto.randomUUID(),path:imagePath,kind:"snapshot",label:`SnapShot: ${capture.process||"App"}`,detail:capture.title||`${capture.width||"?"}×${capture.height||"?"}`}].slice(-maxAttachments));
+  if(capture.hasAccessibility&&Array.isArray(capture.accessibility)&&capture.accessibility.length){
+    const context={app:capture.process||null,windowTitle:capture.title||null,bounds:capture.bounds||null,controls:capture.accessibility};
+    try{
+      const metadata=await api("/api/attachments/text",{method:"POST",body:{name:`snapshot-${safeProcess}-ui.json`,text:JSON.stringify(context,null,2)}});
+      const [metadataPath]=await prepareAttachmentPaths([metadata.path]);
+      setAttachments(prev=>[...new Set([...prev,metadataPath])].slice(-maxAttachments));
+      setContextChips(prev=>[...prev.filter(chip=>chip.path!==metadataPath),{id:crypto.randomUUID(),path:metadataPath,kind:"snapshot",label:"SnapShot app text",detail:capture.title||capture.process||"Accessibility context"}].slice(-maxAttachments));
+    }catch{}
+  }
+  setSection("chat");await snapshots.ack(id);
+}
+
+// A follow-up waiting in the queue sent now (its Send now, or the keyboard's steer): steered into the running turn, or started as the
+// next turn once none runs. The person sends it, so it waits for this module when pressed before it has loaded.
+export async function sendQueuedNow(deps,item){
+  const {activeThread,activeTurnId,agentRuntime,cannotSteerReason,clearQueuedDispatch,followConversationEnd,inputsFor,loadNativeQueue,localQueueStartRef,model,permissionMode,persistLocalQueue,queueKeysDone,queueNow,queuedEditId,queuedOnItsWay,restoreFailedDraft,rpc,running,runtimeCapabilities,setActiveTurnId,setComposerAlert,setMessages,setQueued,setRunning,startTurn,validateAttachmentPaths}=deps;
+  // The follow-up being edited waits for its edit (its Send now is disabled, and the keyboard's steer skips it): sending it now
+  // would send the text the composer is changing. One on its way is being sent already (queuedOnItsWay).
+  if(item?.id&&(item.id===queuedEditId||queuedOnItsWay(item)))return;
+  if(running&&!runtimeCapabilities.steering)throw new Error(cannotSteerReason);
+  // Send now is the next send, so the composer's note about the last one ends.
+  setComposerAlert(null);
+  if(item?.native&&runtimeCapabilities.nativeQueue&&rpc&&activeThread?.id){
+    const requiredToolNamespaces=Array.isArray(item.dynamicToolNamespaces)?item.dynamicToolNamespaces:[],needsToolExpansion=queuedSubmissionNeedsToolExpansion(item,activeThread.providerMeta?.dynamicToolNamespaces||[]);
+    if(running&&activeTurnId&&runtimeCapabilities.steering&&!needsToolExpansion){
+      const originalInput=item.input?.length?item.input:inputsFor(item.draftText||item.text,item.attachments);const originalClientId=item.clientUserMessageId||("trebell-queue-"+crypto.randomUUID());
+      try{
+        await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});
+        await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:originalInput});
+        setQueued(prev=>prev.filter(q=>q.id!==item.id));queueKeysDone(item.id);followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
+      }catch(error){
+        let restored;
+        try{
+          restored=await rpc.request("thread/queue/add",{threadId:activeThread.id,input:originalInput,clientUserMessageId:originalClientId,dynamicToolNamespaces:requiredToolNamespaces});
+        }catch(restoreError){
+          setQueued(prev=>prev.filter(q=>q.id!==item.id));
+          restoreFailedDraft({text:item.draftText||item.text,attachments:item.attachments||[],contextChips:item.contextChips||[]});
+          throw new Error((error?.message||String(error))+" · Native queue restore also failed: "+(restoreError?.message||String(restoreError))+". The queued draft was restored to the composer.");
+        }
+        const restoredDraft={...queuedSubmissionDraft(restored?.queuedSubmission||{}),contextChips:[...(item.contextChips||[])],model:item.model||model};
+        setQueued(prev=>prev.map(q=>q.id===item.id?restoredDraft:q));
+        try{await loadNativeQueue(rpc,activeThread.id)}
+        catch(refreshError){throw new Error((error?.message||String(error))+" · Queue was restored, but refresh failed: "+(refreshError?.message||String(refreshError))+".")}
+        throw error;
+      }
+    }
+    if(running)return;
+    const result=await rpc.request("thread/queue/start",{threadId:activeThread.id,queuedSubmissionId:item.id});const turnId=result?.turn?.id||null;
+    setRunning(Boolean(turnId));setActiveTurnId(turnId);setQueued(prev=>prev.filter(q=>q.id!==item.id));queueKeysDone(item.id);
+    // The harness may tell the message before it answers (the agent relay does, item/completed): it shows once.
+    if(turnId){followConversationEnd();const id=item.clientUserMessageId||("queue-start-"+item.id);setMessages(prev=>prev.some(message=>message.id===id)?prev:[...prev,{id,role:"user",text:item.draftText||item.text,attachments:item.attachments,turnId}])}return;
+  }
+  // From the press on it is on its way (localQueueStartRef), until what became of it is written: its files are checked and its
+  // dispatch mark is written before its card says so, and a Remove, an Edit or a second Send now meanwhile would drop a follow-up
+  // this send sends anyway, or send it twice. Nor does the queue start it as well, as it would once a start that failed has stopped
+  // the thread running.
+  const onItsWay=localQueueStartRef.current;onItsWay.add(item.id);
+  try{
+    await validateAttachmentPaths(item.attachments||[]);
+    if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
+      // Steered into the turn, it is on its way until Codex has it: its card says so and leaves it be, and a steer that fails leaves
+      // it queued as it was (clearQueuedDispatch). One the relay refuses for the mode it is sent in says so as the queue's own note
+      // does, in the relay's words for a follow-up that stays queued (data.queued): the queue sends it once the turn ends, unless a
+      // Stop holds it, and the note ends as it goes, as a Stop holds the queue, or as the follow-up leaves the queue otherwise.
+      let steered=false;
+      try{
+        await persistLocalQueue(activeThread.id,queueNow(activeThread.id).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now()}:q));
+        await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments),...harnessThreadOptions(agentRuntime,{permissionMode})});steered=true;
+        await persistLocalQueue(activeThread.id,queueNow(activeThread.id).filter(q=>q.id!==item.id));queueKeysDone(item.id);followConversationEnd();setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,attachments:item.attachments,turnId:activeTurnId}]);return;
+      }catch(error){if(!steered)await clearQueuedDispatch(activeThread.id,item.id);if(error?.rpcCode!==-31000)throw error;setComposerAlert({kind:"send",text:"Queued follow-up not sent: "+sentenceText(error.rpcData?.queued||error.message),queuedId:item.id});return}
+    }
+    if(running)return;
+    // Its dispatch mark goes into the queue as it is now (queueNow), not the copy taken at the press.
+    const threadId=activeThread?.id||null,dispatching=queueNow(threadId).map(q=>q.id===item.id?{...q,dispatchingAt:Date.now(),autoStartFailed:false}:q);
+    if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
+    try{
+      await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips),{sentChips:item.contextChips||[],checked:true});
+      await persistLocalQueue(threadId,queueNow(threadId).filter(q=>q.id!==item.id));queueKeysDone(item.id);
+    }catch(error){
+      // Stop ended it before its turn existed: it stays in its place in the queue, which is left as it is but for its dispatch mark, as
+      // when the queue starts it. A start that failed marks only it to retry, in the queue as that is now (queueNow).
+      if(error?.trebellSendStopped){await clearQueuedDispatch(threadId,item.id);return}
+      const failed=queueNow(threadId).map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:true}:q);try{await persistLocalQueue(threadId,failed)}catch{setQueued(failed)}throw error;
+    }
+  }finally{onItsWay.delete(item.id)}
+}
+// Edit from here: asked once, then the conversation (and, in a worktree of its own, the files) goes back to the message, which comes
+// back to the composer to edit (edit-from-here.js, loaded once the person has said yes).
+export async function editFromHere(deps,message){
+  const {activeThread,activeThreadRef,askConfirm,currentProject,editFromHereAskingRef,focusComposerAt,projectPath,reloadActiveThread,rpc,rpcRef,running,runtimeCapabilities,setAttachments,setPrompt,showActionError,turnRunsNow}=deps;
+  if(!runtimeCapabilities.rewind||!rpc||!activeThread?.id||!message.turnId)return;
+  // One question at a time: a double click, or Enter held on the button, asks once.
+  if(editFromHereAskingRef.current)return;
+  const threadId=activeThread.id;
+  const normalizePath=value=>String(value||"").replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase();
+  // In a worktree of its own the files go back with the conversation, to the checkpoint taken before this message; anywhere else
+  // only the conversation does.
+  const isolatedWorktree=Boolean(
+    message.checkpointId&&currentProject?.managedWorktree&&!currentProject.managedWorktree.cleanedAt
+    &&normalizePath(currentProject.path)===normalizePath(activeThread.cwd||projectPath)
+  );
+  // Files and conversation go back together or not at all: nothing is restored while a turn runs (the harness refuses that rewind),
+  // and files that could not go back leave the conversation as it is.
+  const refuseWhileRunning=()=>showActionError(new Error("Stop the running turn first."),"Could not edit from this message");
+  if(running){refuseWhileRunning();return}
+  // Asked once, before anything changes, saying what will go: Cancel, Escape or closing the question leaves the conversation, the
+  // composer and the files as they are.
+  editFromHereAskingRef.current=true;
+  let confirmed=false;
+  try{
+    confirmed=await askConfirm("Edit from this message?\n\nThe messages after it are removed from this thread"+(isolatedWorktree
+      ?", this message comes back to the composer to edit, and the files in this worktree go back to how they were before it."
+      :", and this message comes back to the composer to edit."),{confirm:"Edit from here"});
+  }finally{editFromHereAskingRef.current=false}
+  if(!confirmed||String(activeThreadRef.current?.id||"")!==String(threadId))return;
+  // A turn that started while the question was open, in this window or another, is refused the same way. Another window's turn may
+  // not have reached this one yet, so before any file goes back the harness is asked whether the thread runs (the server refuses a
+  // restore under a running turn too).
+  if(turnRunsNow()){refuseWhileRunning();return}
+  // The files and the conversation go back in edit-from-here.js, loaded now.
+  const outcome=await import("./edit-from-here.js").then(({rewindToMessage})=>rewindToMessage({client:rpcRef.current||rpc,message,threadId,isolatedWorktree,turnRunsNow})).catch(error=>({error,title:"Could not edit from this message"}));
+  if(outcome.refused){refuseWhileRunning();return}
+  if(outcome.error){showActionError(outcome.error,outcome.title);return}
+  // A draft already in the composer stays, below the message brought back to edit, and so do its files, with the message's own.
+  setPrompt(current=>String(current||"").trim()&&current!==message.text?message.text+"\n\n"+current:message.text);if(message.attachments?.length)setAttachments(current=>[...new Set([...current,...message.attachments])]);await reloadActiveThread();
+  // The message is the composer's to edit now, so the focus goes there, at its end: the button that had it left with the message.
+  focusComposerAt(String(message.text||"").length);
+}
+// The harnesses whose compaction takes as long as their model needs to summarize, which the window waits ten minutes for (45 s for
+// the others'): Grok's runs as a turn of its own (its /compact command), Muse Code's in no turn (session/compact).
+const LONG_COMPACTION_RUNTIMES=new Set(["grok","muse"]);
+// What a compaction row says once the window stopped waiting for its end (requestThreadCompaction's waited error): neither compacted
+// nor failed, its end not known (status unknown, a step's neutral look and pill).
+const waitedCompactionRow=error=>({kind:"contextCompaction",title:error.message,status:"unknown",waited:true});
+// turnless: the compaction runs in no turn of its own (Muse Code's session/compact), so only the request's answer ends it and the
+// header's Stop is its own (stop()). turnId: the turn it runs in otherwise, once the request's answer (Grok's /compact) or its item
+// (Codex's) names it, whose error ends it (the error notification).
+// Its row in the thread shown (compactingRow) is Compact's, or the one of a message the automatic compaction runs before. At its
+// limit the window stops waiting while the harness may still compact: the row says so (waited), as a step whose end is not known,
+// not a failed one, and the compaction's own end, should it come, takes that row (thread/compacted, takeCompactionPlace). One that
+// runs in no turn (Muse Code's) loses its Stop there, which the row says Compact brings back: Muse joins its running compaction,
+// which Compact's row then follows, also in place of the row of a message that went on without it (auto-compact), so one
+// compaction keeps one row.
+export function requestThreadCompaction(deps,threadId){
+  const {activeThreadRef,agentRuntime,agentRuntimeLabel,compactingRow,compactionWaitersRef,rpcRef,setCompactionStops,setEvents,settleCompactionWaiter,upsertEvent}=deps;
+  const id=String(threadId||"").trim(),client=rpcRef.current,long=LONG_COMPACTION_RUNTIMES.has(agentRuntime),turnless=agentRuntime==="muse";
+  if(!id||!client)return Promise.reject(new Error("Agent harness is not connected"));
+  if(activeThreadRef.current?.id===id)setEvents(prev=>upsertEvent(turnless?prev.filter(event=>!(event.waited&&event.id==="auto-compact-"+id)):prev,compactingRow(id)));
+  const existing=compactionWaitersRef.current.get(id);if(existing)return existing.promise;
+  let resolvePromise,rejectPromise;
+  const promise=new Promise((resolve,reject)=>{resolvePromise=resolve;rejectPromise=reject});
+  const timer=setTimeout(()=>settleCompactionWaiter(id,Object.assign(new Error(`Trebell stopped waiting for the context compaction after ${long?"10 minutes":"45 seconds"}; ${agentRuntimeLabel} may still be compacting.${turnless?" Press Compact to follow it again; its Stop comes back.":""}`),{waited:true})),long?600_000:45_000);
+  const waiter={promise,resolve:resolvePromise,reject:rejectPromise,timer,turnless,turnId:null};
+  compactionWaitersRef.current.set(id,waiter);if(waiter.turnless)setCompactionStops(count=>count+1);
+  client.request("thread/compact/start",{threadId:id}).then(result=>{if(result?.turn?.id!=null)waiter.turnId??=String(result.turn.id)},error=>settleCompactionWaiter(id,error));
+  return promise;
+}
+// Compact (the composer's button and /compact): the thread's context compacted now, its row saying how it went.
+export async function compactContext(deps){
+  const {activeThread,activeThreadRef,agentRuntimeLabel,endCompactionRecord,leavingThread,rpc,runtimeCapabilities,setEvents,upsertEvent}=deps;
+  if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
+  if(!activeThread?.id||!rpc||leavingThread())return;
+  const threadId=activeThread.id,id="context-compact-"+threadId;
+  try{
+    // Grok's and Muse Code's compaction take as long as the model needs (LONG_COMPACTION_RUNTIMES).
+    await requestThreadCompaction(deps,activeThread.id);
+  }catch(error){
+    // The failure ends the compaction's own row, which no turn ends: it would say "Compacting context" beside its failure. That is
+    // its item's row once the item came (in its turn's record too, so the turn's card says it failed), else the one Compact put up.
+    // One the window stopped waiting for has not failed, as far as it knows: its row says so, a compaction whose end is not known
+    // (requestThreadCompaction).
+    const failed=error.waited?waitedCompactionRow(error):{kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done"};
+    if(activeThreadRef.current?.id!==threadId)return;
+    endCompactionRecord(threadId,null,row=>({...row,...failed}));
+    setEvents(prev=>{const row=prev.findLast(item=>item.kind==="contextCompaction"&&item.status==="running");return row?prev.map(item=>item===row?{...item,...failed}:item):upsertEvent(prev,{id,...failed,raw:{}})});
+  }
 }
